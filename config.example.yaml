@@ -1,0 +1,31 @@
+project_name: "Coordinare"
+github_org: "your-org"
+github_project_number: 1
+github_token: "${COORDINARE_GITHUB_TOKEN}"
+
+agent_host: "agent.example.com"
+agent_port: 22
+agent_user: "coordinare"
+agent_key_path: "~/.ssh/id_ed25519"
+agent_command: "agent run --card-context {card_context}"
+
+human_reviewers:
+  - "reviewer-login"
+
+notification_email: "coordinare@example.com"
+smtp_host: "smtp.example.com"
+smtp_port: 587
+smtp_username: "smtp-user"
+smtp_password: "${COORDINARE_SMTP_PASSWORD}"
+
+slack_webhook_url: "${COORDINARE_SLACK_WEBHOOK_URL}"
+slack_channel: "#coordinare"
+
+poll_interval_seconds: 30
+heartbeat_interval_seconds: 30
+health_check_port: 8080
+output_mode: "human"
+log_level: "info"
+# Compose mapping:
+# - COORDINARE_LOG_LEVEL overrides log_level
+# - COORDINARE_OUTPUT_MODE overrides output_mode

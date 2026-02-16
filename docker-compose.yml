@@ -1,0 +1,15 @@
+services:
+  coordinare:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: coordinare:local
+    env_file:
+      - .env
+    environment:
+      COORDINARE_RUN_MODE: compose
+      COORDINARE_LOG_LEVEL: ${COORDINARE_LOG_LEVEL:-info}
+      COORDINARE_OUTPUT_MODE: ${COORDINARE_OUTPUT_MODE:-human}
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+    command: ["python", "-m", "coordinare", "--config", "/app/config.yaml"]

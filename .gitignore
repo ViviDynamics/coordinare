@@ -18,6 +18,8 @@ eggs/
 .eggs/
 lib/
 lib64/
+!src/coordinare/lib/
+!src/coordinare/lib/**
 parts/
 sdist/
 var/
@@ -217,10 +219,13 @@ Thumbs.db
 
 # Project env variants
 .env*
+config.yaml
+config.local.yaml
 
 # Codex local/sensitive artifacts
 .codex/auth.json
 .codex/history.jsonl
+.codex/models_cache.json
 .codex/log/
 .codex/sessions/
 .codex/shell_snapshots/

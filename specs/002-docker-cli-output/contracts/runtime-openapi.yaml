@@ -1,0 +1,129 @@
+openapi: 3.0.3
+info:
+  title: Coordinare Runtime Operations API
+  version: 1.0.0
+  description: >-
+    Operational contract for validating shell and Docker Compose runtime
+    execution paths and runtime visibility behavior.
+paths:
+  /runtime/shell:start:
+    post:
+      summary: Start runtime via shell script contract
+      operationId: startShellRuntime
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ShellStartRequest'
+      responses:
+        '202':
+          description: Runtime startup accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeStartResponse'
+        '400':
+          description: Invalid input
+  /runtime/compose:start:
+    post:
+      summary: Start runtime via docker compose contract
+      operationId: startComposeRuntime
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ComposeStartRequest'
+      responses:
+        '202':
+          description: Runtime startup accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeStartResponse'
+        '400':
+          description: Invalid input
+  /runtime/{executionId}/events:
+    get:
+      summary: Fetch runtime output events for visibility verification
+      operationId: getRuntimeEvents
+      parameters:
+        - in: path
+          name: executionId
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Runtime events
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  executionId:
+                    type: string
+                  events:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/RuntimeOutputEvent'
+components:
+  schemas:
+    ShellStartRequest:
+      type: object
+      required: [configPath]
+      properties:
+        configPath:
+          type: string
+        logLevel:
+          type: string
+          enum: [debug, info, warning, error]
+          default: info
+        structuredOutput:
+          type: boolean
+          default: false
+    ComposeStartRequest:
+      type: object
+      required: [composeFile, serviceName]
+      properties:
+        composeFile:
+          type: string
+          default: docker-compose.yml
+        serviceName:
+          type: string
+          default: coordinare
+        envFile:
+          type: string
+          default: .env
+    RuntimeStartResponse:
+      type: object
+      required: [executionId, mode, status]
+      properties:
+        executionId:
+          type: string
+        mode:
+          type: string
+          enum: [shell, compose]
+        status:
+          type: string
+          enum: [starting, running, failed]
+    RuntimeOutputEvent:
+      type: object
+      required: [eventId, timestamp, category, level, message]
+      properties:
+        eventId:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        category:
+          type: string
+          enum: [startup, heartbeat, activity, state_change, failure, shutdown]
+        level:
+          type: string
+          enum: [debug, info, warning, error]
+        message:
+          type: string
+        redactionApplied:
+          type: boolean

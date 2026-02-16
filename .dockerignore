@@ -33,6 +33,8 @@ htmlcov/
 # Runtime and secrets
 *.log*
 .env*
+config.yaml
+config.local.yaml
 .codex/auth.json
 .codex/history.jsonl
 .codex/log/

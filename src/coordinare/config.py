@@ -38,6 +38,10 @@ class ProjectConfiguration(BaseSettings):
     poll_interval_seconds: int = Field(default=30, ge=10, le=300)
     blocked_reminder_hours: int = 24
     health_check_port: int = 8080
+    output_mode: str = Field(default="human", pattern="^(human|structured)$")
+    log_level: str = Field(default="info", pattern="^(debug|info|warning|error)$")
+    heartbeat_interval_seconds: int = Field(default=30, ge=5, le=300)
+    max_cycles: int | None = Field(default=None, ge=1)
 
     @classmethod
     def settings_customise_sources(

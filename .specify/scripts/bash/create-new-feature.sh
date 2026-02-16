@@ -149,6 +149,36 @@ check_existing_branches() {
     echo $((max_num + 1))
 }
 
+# Return all existing branch/spec identifiers using a given feature prefix (e.g. 001)
+collect_prefix_collisions() {
+    local feature_num="$1"
+    local specs_dir="$2"
+    local collisions=()
+
+    # Local specs directories
+    if [ -d "$specs_dir" ]; then
+        for dir in "$specs_dir"/"$feature_num"-*; do
+            [ -d "$dir" ] || continue
+            collisions+=("spec:$(basename "$dir")")
+        done
+    fi
+
+    # Local and remote git branches
+    if [ "$HAS_GIT" = true ]; then
+        while IFS= read -r ref; do
+            [ -n "$ref" ] || continue
+            collisions+=("branch:$ref")
+        done < <(
+            {
+                git for-each-ref --format='%(refname:short)' refs/heads 2>/dev/null || true
+                git for-each-ref --format='%(refname:short)' refs/remotes 2>/dev/null | sed '/\/HEAD$/d' || true
+            } | sed 's|^[^/]*/||' | grep -E "^${feature_num}-" | sort -u
+        )
+    fi
+
+    printf '%s\n' "${collisions[@]}"
+}
+
 # Function to clean and format a branch name
 clean_branch_name() {
     local name="$1"
@@ -249,6 +279,20 @@ fi
 # Force base-10 interpretation to prevent octal conversion (e.g., 010 → 8 in octal, but should be 10 in decimal)
 FEATURE_NUM=$(printf "%03d" "$((10#$BRANCH_NUMBER))")
 BRANCH_NAME="${FEATURE_NUM}-${BRANCH_SUFFIX}"
+
+# Guard: feature prefix must be globally unique across specs and branches.
+# This prevents multiple active specs sharing the same numeric prefix.
+PREFIX_COLLISIONS="$(collect_prefix_collisions "$FEATURE_NUM" "$SPECS_DIR")"
+if [ -n "$PREFIX_COLLISIONS" ]; then
+    >&2 echo "ERROR: Feature prefix '${FEATURE_NUM}' is already in use."
+    >&2 echo "Existing references:"
+    while IFS= read -r collision; do
+        [ -n "$collision" ] || continue
+        >&2 echo "  - $collision"
+    done <<< "$PREFIX_COLLISIONS"
+    >&2 echo "Use a higher --number value or omit --number to auto-select the next global prefix."
+    exit 1
+fi
 
 # GitHub enforces a 244-byte limit on branch names
 # Validate and truncate if necessary
