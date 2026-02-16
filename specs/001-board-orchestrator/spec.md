@@ -9,25 +9,25 @@
 
 ### User Story 1 - Board Monitoring & Card Dispatch (Priority: P1)
 
-An engineering team has a project board with cards in the ToDo column. The coordinare daemon runs continuously, watching the board. When no cards are in the "In Progress" or "In Review" columns, the coordinare picks the next card from "ToDo / Backlog," moves it to "In Progress," and dispatches it to the configured project agent along with the card's requirements and acceptance criteria. The agent begins working on the card in its own environment.
+An engineering team has a project board with cards in the ToDo / Backlog column. The coordinare daemon runs continuously, watching the board. When no cards are in the "In Progress" or "In Review" columns, the coordinare picks the next card from "ToDo / Backlog," moves it to "In Progress," and dispatches it to the configured project agent along with the card's requirements and acceptance criteria. The agent begins working on the card in its own environment.
 
 **Why this priority**: This is the fundamental value proposition — without the ability to monitor a board and dispatch work to an agent, no other feature has meaning. This story alone delivers an automated workflow that removes the manual step of assigning work.
 
-**Independent Test**: Can be fully tested by setting up a board with cards in ToDo, running the coordinare, and verifying that the first card moves to In Progress and the agent receives the card's context. Delivers automated card pickup and agent dispatch.
+**Independent Test**: Can be fully tested by setting up a board with cards in ToDo / Backlog, running the coordinare, and verifying that the first card moves to In Progress and the agent receives the card's context. Delivers automated card pickup and agent dispatch.
 
 **Acceptance Scenarios**:
 
-1. **Given** a board with 3 cards in ToDo and no cards in In Progress or In Review, **When** the coordinare daemon starts, **Then** the first card in ToDo is moved to In Progress and dispatched to the configured agent with the card's title, description, and acceptance criteria.
-2. **Given** a board with 1 card in In Progress, **When** the coordinare checks the board, **Then** no new cards are moved from ToDo (one-at-a-time constraint enforced).
-3. **Given** a board with 1 card in In Review and none in In Progress, **When** the coordinare checks the board, **Then** no new cards are moved from ToDo (waiting for review to complete).
-4. **Given** a board with no cards in In Progress or In Review and an empty ToDo column, **When** the coordinare checks the board, **Then** the coordinare remains idle and continues polling.
+1. **Given** a board with 3 cards in ToDo / Backlog and no cards in In Progress or In Review, **When** the coordinare daemon starts, **Then** the first card in ToDo / Backlog is moved to In Progress and dispatched to the configured agent with the card's title, description, and acceptance criteria.
+2. **Given** a board with 1 card in In Progress, **When** the coordinare checks the board, **Then** no new cards are moved from ToDo / Backlog (one-at-a-time constraint enforced).
+3. **Given** a board with 1 card in In Review and none in In Progress, **When** the coordinare checks the board, **Then** no new cards are moved from ToDo / Backlog (waiting for review to complete).
+4. **Given** a board with no cards in In Progress or In Review and an empty ToDo / Backlog column, **When** the coordinare checks the board, **Then** the coordinare remains idle and continues polling.
 5. **Given** a coordinare with a project configuration file, **When** the daemon starts, **Then** it connects to the configured board provider and agent endpoint, validating that both are reachable.
 
 ---
 
 ### User Story 2 - PR Review & Merge Cycle (Priority: P2)
 
-When the project agent finishes implementing a card and opens a pull request, the coordinare monitors the PR for reviews from the engineering team. The coordinare explicitly ignores automated CoPilot review comments and only acts on feedback from configured human team members. When human reviewers leave feedback, the coordinare relays that feedback to the agent to address. When the engineering team approves the PR, the coordinare squash-merges it into the main branch, moves the card to "Done," and triggers the next card pickup from ToDo.
+When the project agent finishes implementing a card and opens a pull request, the coordinare monitors the PR for reviews from the engineering team. The coordinare explicitly ignores automated CoPilot review comments and only acts on feedback from configured human team members. When human reviewers leave feedback, the coordinare relays that feedback to the agent to address. When the engineering team approves the PR, the coordinare squash-merges it into the main branch, moves the card to "Done," and triggers the next card pickup from ToDo / Backlog.
 
 **Why this priority**: Without this story, the workflow loop is incomplete — cards get dispatched but never finish. This closes the loop and enables continuous delivery of completed work.
 
@@ -37,8 +37,8 @@ When the project agent finishes implementing a card and opens a pull request, th
 
 1. **Given** a card in In Review with an open PR, **When** a configured human team member leaves review feedback, **Then** the coordinare relays that feedback to the project agent for remediation.
 2. **Given** a card in In Review with an open PR, **When** CoPilot or another automated reviewer leaves comments, **Then** the coordinare ignores those comments and does not relay them to the agent.
-3. **Given** a card in In Review with an approved PR (by a human team member), **When** the coordinare detects the approval, **Then** it squash-merges the PR into main, moves the card to Done, and checks ToDo for the next card.
-4. **Given** a card just moved to Done, **When** there are cards remaining in ToDo and nothing in In Progress or In Review, **Then** the coordinare immediately picks the next card and begins the dispatch cycle.
+3. **Given** a card in In Review with an approved PR (by a human team member), **When** the coordinare detects the approval, **Then** it squash-merges the PR into main, moves the card to Done, and checks ToDo / Backlog for the next card.
+4. **Given** a card just moved to Done, **When** there are cards remaining in ToDo / Backlog and nothing in In Progress or In Review, **Then** the coordinare immediately picks the next card and begins the dispatch cycle.
 
 ---
 
@@ -52,7 +52,7 @@ Whenever a card transitions between columns on the board, the coordinare sends a
 
 **Acceptance Scenarios**:
 
-1. **Given** a card moving from ToDo to In Progress, **When** the transition completes, **Then** an email is sent to coordinare@vividynamics.com containing the card's new status, task description, and any open questions.
+1. **Given** a card moving from ToDo / Backlog to In Progress, **When** the transition completes, **Then** an email is sent to coordinare@vividynamics.com containing the card's new status, task description, and any open questions.
 2. **Given** a card moving from In Progress to In Review, **When** the transition completes, **Then** a Slack message is posted to the project's configured channel with the card's status, task description, and a summary of commits made and the PR link.
 3. **Given** a card moving from In Review to Done, **When** the transition completes, **Then** both email and Slack notifications include a summary of all commits included in the squash-merge.
 4. **Given** a card moving to Blocked, **When** the transition completes, **Then** both notifications clearly indicate that input is required and include the specific questions needing answers.
@@ -124,7 +124,7 @@ When the project agent determines it cannot proceed with a card — either becau
 ### Assumptions
 
 - The coordinare manages exactly one project/board at a time (single-project assignment as stated).
-- Card ordering in the ToDo column is determined by the board's native ordering (position, priority field, or creation date depending on provider).
+- Card ordering in the ToDo / Backlog column is determined by the board's native ordering (position, priority field, or creation date depending on provider).
 - The project agent exposes a well-defined interface for receiving card context and returning work status/results.
 - The engineering team's review is the authoritative approval — no automated review can substitute for human sign-off.
 - Email delivery uses standard SMTP configuration provided in the project configuration.
@@ -144,7 +144,7 @@ When the project agent determines it cannot proceed with a card — either becau
 
 ### Measurable Outcomes
 
-- **SC-001**: The coordinare picks up the next ToDo card and dispatches it to the agent within 60 seconds of In Progress and In Review columns becoming empty.
+- **SC-001**: The coordinare picks up the next ToDo / Backlog card and dispatches it to the agent within 60 seconds of In Progress and In Review columns becoming empty.
 - **SC-002**: Card column transitions trigger email and Slack notifications within 2 minutes of the transition.
 - **SC-003**: The coordinare correctly ignores 100% of automated/CoPilot review comments and acts only on configured human team member feedback.
 - **SC-004**: Approved PRs are squash-merged and the corresponding card moved to Done within 5 minutes of the final approval.

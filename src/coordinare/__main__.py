@@ -4,17 +4,29 @@ import argparse
 import asyncio
 import os
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import structlog
 import uvicorn
-from fastapi import FastAPI
 
 from coordinare import configure_logging
 from coordinare.config import ProjectConfiguration
 from coordinare.daemon import CoordinareDaemon, RuntimeExecutionError
 from coordinare.graph.builder import CoordinareGraphBuilder
+from coordinare.health import create_health_app
+from coordinare.metrics import METRICS
+from coordinare.services.agent_ssh import AgentSSHService
+from coordinare.services.claude import ClaudeService
+from coordinare.services.email import EmailService
+from coordinare.services.github import GitHubService
+from coordinare.services.slack import SlackService
 
 logger = structlog.get_logger(__name__)
+
+if TYPE_CHECKING:
+    from fastapi import FastAPI
+
+    from coordinare.graph.state import CoordinareState
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
@@ -35,17 +47,43 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 
 
 def _create_health_app(daemon: CoordinareDaemon) -> FastAPI:
-    app = FastAPI(title="coordinare-health")
+    return create_health_app(daemon)
 
-    @app.get("/health")
-    async def health() -> dict[str, object]:
-        return {
-            "status": "healthy" if daemon.running else "unhealthy",
-            "phase": daemon.state.get("phase", "unknown"),
-            "error_count": daemon.state.get("error_count", 0),
-        }
 
-    return app
+async def _bootstrap_services(config: ProjectConfiguration) -> CoordinareState:
+    github = GitHubService(
+        token=config.github_token.get_secret_value(),
+        org=config.github_org,
+        project_number=config.github_project_number,
+    )
+    await github.initialize()
+
+    service_state: CoordinareState = {
+        "github_service": github,
+        "agent_service": AgentSSHService(
+            host=config.agent_host,
+            user=config.agent_user,
+            command=config.agent_command,
+            port=config.agent_port,
+            key_path=str(config.agent_key_path),
+        ),
+        "claude_service": ClaudeService(api_key=os.getenv("ANTHROPIC_API_KEY")),
+        "email_service": EmailService(
+            host=config.smtp_host,
+            port=config.smtp_port,
+            username=config.smtp_username,
+            password=config.smtp_password.get_secret_value() if config.smtp_password else None,
+            sender=config.notification_email,
+        ),
+        "slack_service": SlackService(
+            webhook_url=config.slack_webhook_url.get_secret_value(),
+            channel=config.slack_channel,
+        ),
+        "human_reviewers": config.human_reviewers,
+        "notification_email": config.notification_email,
+        "blocked_reminder_hours": config.blocked_reminder_hours,
+    }
+    return service_state
 
 
 async def _run(config: ProjectConfiguration) -> None:
@@ -59,6 +97,8 @@ async def _run(config: ProjectConfiguration) -> None:
         max_cycles=config.max_cycles,
     )
 
+    daemon.state.update(await _bootstrap_services(config))
+
     app = _create_health_app(daemon)
     server = uvicorn.Server(
         uvicorn.Config(app, host="0.0.0.0", port=config.health_check_port, log_level="warning")
@@ -68,9 +108,11 @@ async def _run(config: ProjectConfiguration) -> None:
     server_task = asyncio.create_task(server.serve())
 
     try:
+        METRICS.up.set(1)
         logger.info("startup_mode_selected", run_mode=run_mode)
         await daemon_task
     finally:
+        METRICS.up.set(0)
         server.should_exit = True
         await server_task
 

@@ -4,6 +4,15 @@ from typing import Any, cast
 
 from langgraph.graph import END, START, StateGraph
 
+from coordinare.graph.nodes.assess_card import assess_card
+from coordinare.graph.nodes.check_board import check_board
+from coordinare.graph.nodes.dispatch_card import dispatch_card
+from coordinare.graph.nodes.handle_blocked import handle_blocked
+from coordinare.graph.nodes.merge_pr import merge_pr
+from coordinare.graph.nodes.monitor_agent import monitor_agent
+from coordinare.graph.nodes.monitor_pr import monitor_pr
+from coordinare.graph.nodes.notify import notify
+from coordinare.graph.nodes.relay_feedback import relay_feedback
 from coordinare.graph.routing import (
     route_from_agent_status,
     route_from_board_check,
@@ -16,8 +25,21 @@ async def _placeholder_node(state: CoordinareState) -> CoordinareState:
     return state
 
 
+_DEFAULT_NODES: dict[str, Any] = {
+    "check_board": check_board,
+    "assess_card": assess_card,
+    "dispatch_card": dispatch_card,
+    "monitor_agent": monitor_agent,
+    "monitor_pr": monitor_pr,
+    "relay_feedback": relay_feedback,
+    "merge_pr": merge_pr,
+    "handle_blocked": handle_blocked,
+    "notify": notify,
+}
+
+
 class CoordinareGraphBuilder:
-    """Builds and compiles the orchestrator graph with placeholder nodes."""
+    """Builds and compiles the orchestrator graph."""
 
     def __init__(
         self,
@@ -25,7 +47,7 @@ class CoordinareGraphBuilder:
         node_overrides: dict[str, Any] | None = None,
     ) -> None:
         self._checkpointer = checkpointer
-        self._nodes = node_overrides or {}
+        self._nodes = {**_DEFAULT_NODES, **(node_overrides or {})}
 
     def _node(self, name: str) -> Any:
         return self._nodes.get(name, _placeholder_node)

@@ -3,197 +3,194 @@
 **Input**: Design documents from `/specs/001-board-orchestrator/`
 **Prerequisites**: plan.md (required), spec.md (required), research.md, data-model.md, contracts/
 
-**Tests**: Included per Constitution Principle II (Testing Discipline — NON-NEGOTIABLE).
+**Tests**: Included per constitution and feature spec testing requirements (unit, integration, contract).
 
-**Organization**: Tasks are grouped by user story to enable independent implementation and testing of each story.
+**Organization**: Tasks are grouped by user story to enable independent implementation and testing.
 
 ## Format: `[ID] [P?] [Story] Description`
 
-- **[P]**: Can run in parallel (different files, no dependencies)
-- **[Story]**: Which user story this task belongs to (e.g., US1, US2, US3, US4)
-- Include exact file paths in descriptions
+- **[P]**: Parallelizable (different files, no dependency on incomplete tasks)
+- **[Story]**: User story label for story-phase tasks only (`[US1]`, `[US2]`, `[US3]`, `[US4]`)
+- Every task includes at least one concrete file path
 
 ## Path Conventions
 
-- **Single project**: `src/coordinare/` and `tests/` at repository root (per plan.md)
+- Single backend project: `src/coordinare/` and `tests/`
 
 ---
 
 ## Phase 1: Setup (Shared Infrastructure)
 
-**Purpose**: Project initialization, dependency management, and tooling configuration
+**Purpose**: Project baseline, tooling, and skeletons needed by all stories
 
-- [X] T001 Create project directory structure with all packages and `__init__.py` files per plan.md source code layout
-- [X] T002 Initialize Python project with `pyproject.toml` including all dependencies: langgraph, anthropic, gql[aiohttp], asyncssh, fastapi, uvicorn, structlog, slack-sdk, aiosmtplib, prometheus-client, pydantic-settings, and dev deps: pytest, pytest-asyncio, pytest-cov, ruff, mypy
-- [X] T003 [P] Configure ruff linting and formatting rules in `pyproject.toml` (ruff section)
-- [X] T004 [P] Configure mypy strict mode in `pyproject.toml` (mypy section)
-- [X] T005 [P] Configure pytest with asyncio mode and coverage settings in `pyproject.toml` (pytest section)
+- [X] T001 Create package/module skeleton per plan in `src/coordinare/graph/nodes/__init__.py`, `src/coordinare/services/__init__.py`, and `src/coordinare/models/__init__.py`
+- [X] T002 Define project dependencies and scripts in `pyproject.toml`
+- [X] T003 [P] Configure ruff lint/format settings in `pyproject.toml`
+- [X] T004 [P] Configure strict mypy settings in `pyproject.toml`
+- [X] T005 [P] Configure pytest/asyncio/coverage settings in `pyproject.toml`
+- [X] T006 Create runtime config template in `config.example.yaml`
+- [X] T007 Create developer/runtime orchestration file in `docker-compose.yml`
 
 ---
 
 ## Phase 2: Foundational (Blocking Prerequisites)
 
-**Purpose**: Core infrastructure that MUST be complete before ANY user story can be implemented
+**Purpose**: Core state, config, graph, and service primitives that block all stories
 
-**CRITICAL**: No user story work can begin until this phase is complete
+**⚠️ CRITICAL**: No user story implementation begins until this phase is complete
 
-- [X] T006 Implement ProjectConfiguration model with pydantic-settings, YAML file loading, env var override (COORDINARE_ prefix), and all validation rules from data-model.md in `src/coordinare/config.py`
-- [X] T007 [P] Implement CardStatus enum, CardTransition model, and Card model with all fields and validation rules from data-model.md in `src/coordinare/models/card.py`
-- [X] T008 [P] Implement CoordinareState TypedDict with all fields (current_card, board_snapshot, phase, pending_reviews, last_poll_at, error_count, github_field_cache) in `src/coordinare/graph/state.py`
-- [X] T009 Implement GitHub service core: gql client initialization, authentication, FindProject query (Q1), GetProjectFields query (Q2) with field/option ID caching in `src/coordinare/services/github.py`
-- [X] T010 Create LangGraph StateGraph skeleton with node registration placeholders and compile method with configurable checkpointer in `src/coordinare/graph/builder.py`
-- [X] T011 [P] Implement conditional edge routing functions (route_from_board_check, route_from_review, route_from_agent_status) in `src/coordinare/graph/routing.py`
-- [X] T012 [P] Configure structured JSON logging with structlog (processors, formatters, log level from config) in `src/coordinare/__init__.py`
-- [X] T013 Implement daemon lifecycle: async event loop, signal handlers (SIGTERM/SIGINT), poll-invoke-sleep cycle with configurable interval, exponential backoff on errors in `src/coordinare/daemon.py`
-- [X] T014 Implement CLI entry point that loads config, builds graph, starts daemon and health server in `src/coordinare/__main__.py`
-- [X] T015 Create shared test fixtures: mock GitHub gql client, mock SSH connection, mock SMTP server, mock Slack webhook, sample Card/Review factories in `tests/conftest.py`
-- [X] T016 [P] Unit tests for ProjectConfiguration: YAML loading, env var override precedence, validation rules (min reviewers, poll interval bounds, token non-empty, command placeholder) in `tests/unit/test_config.py`
-- [X] T017 [P] Unit tests for Card model: creation, validation (non-empty title, PR required for IN_REVIEW, questions required for BLOCKED), CardStatus enum values, CardTransition recording in `tests/unit/models/test_card.py`
-- [X] T018 [P] Unit tests for CoordinareState: default values, field types, state update patterns in `tests/unit/test_state.py`
+- [X] T008 Implement layered project configuration model in `src/coordinare/config.py`
+- [X] T009 [P] Implement card domain models (`CardStatus`, `CardTransition`, `Card`) in `src/coordinare/models/card.py`
+- [X] T010 [P] Implement review domain model and enums in `src/coordinare/models/review.py`
+- [X] T011 [P] Implement notification domain model in `src/coordinare/models/notification.py`
+- [X] T012 Implement workflow state schema and initial state helper in `src/coordinare/graph/state.py`
+- [X] T013 Implement routing helpers for graph conditionals in `src/coordinare/graph/routing.py`
+- [X] T014 Implement graph builder with node registration and conditional edges in `src/coordinare/graph/builder.py`
+- [X] T015 Implement structured logging bootstrap in `src/coordinare/__init__.py`
+- [X] T016 Implement daemon lifecycle loop and error/backoff handling in `src/coordinare/daemon.py`
+- [X] T017 Implement CLI entrypoint startup wiring in `src/coordinare/__main__.py`
+- [X] T018 Implement GitHub Projects client foundation (auth, project/field discovery cache) in `src/coordinare/services/github.py`
+- [X] T019 [P] Implement shared pytest fixtures for mocked external systems in `tests/conftest.py`
+- [X] T020 [P] Add configuration model unit tests in `tests/unit/test_config.py`
+- [X] T021 [P] Add card model unit tests in `tests/unit/models/test_card.py`
+- [X] T022 [P] Add review model unit tests in `tests/unit/models/test_review.py`
+- [X] T023 [P] Add state schema unit tests in `tests/unit/test_state.py`
 
-**Checkpoint**: Foundation ready — user story implementation can now begin
+**Checkpoint**: Foundation complete; user story phases can proceed
 
 ---
 
-## Phase 3: User Story 1 — Board Monitoring & Card Dispatch (Priority: P1) MVP
+## Phase 3: User Story 1 - Board Monitoring & Card Dispatch (Priority: P1) 🎯 MVP
 
-**Goal**: The coordinare monitors a board, picks the next card from ToDo when In Progress and In Review are empty, assesses card sufficiency, and dispatches it to the configured agent via SSH.
+**Goal**: Pick next eligible card from ToDo / Backlog, assess sufficiency, dispatch to agent over SSH, enforce one-card-at-a-time.
 
-**Independent Test**: Set up a board with cards in ToDo, run the coordinare, verify the first card moves to In Progress and the agent receives the card's context. Verify one-at-a-time constraint is enforced.
+**Independent Test**: With empty In Progress/In Review and cards in ToDo / Backlog, coordinare moves exactly one card to In Progress and dispatches context to agent.
 
 ### Tests for User Story 1
 
-> **NOTE: Write these tests FIRST, ensure they FAIL before implementation**
-
-- [ ] T019 [P] [US1] Contract tests for GitHub poll (Q3), get issue details (Q4), and move card (M1) query/mutation schemas in `tests/contract/test_github_queries.py`
-- [ ] T020 [P] [US1] Contract tests for agent SSH dispatch (C1) and health check (C4) command/response schemas in `tests/contract/test_agent_interface.py`
-- [ ] T021 [P] [US1] Unit tests for check_board node: returns correct routing for empty board, card in ToDo, card already in progress, card in review in `tests/unit/graph/nodes/test_check_board.py`
-- [ ] T022 [P] [US1] Unit tests for assess_card node: sufficient card passes, insufficient card returns blocked signal, Claude tool use mocked in `tests/unit/graph/nodes/test_assess_card.py`
-- [ ] T023 [P] [US1] Unit tests for dispatch_card node: moves card to In Progress, calls SSH dispatch, updates state with session_id in `tests/unit/graph/nodes/test_dispatch_card.py`
-- [ ] T024 [P] [US1] Unit tests for GitHub service poll_board, get_issue_details, and move_card methods with mocked gql client in `tests/unit/services/test_github.py`
-- [ ] T025 [P] [US1] Unit tests for agent SSH service dispatch_card and check_health methods with mocked asyncssh in `tests/unit/services/test_agent_ssh.py`
-- [ ] T026 [P] [US1] Unit tests for Claude service assess_card_sufficiency method with mocked anthropic client in `tests/unit/services/test_claude.py`
-- [ ] T027 [US1] Integration test for full card dispatch flow: poll board → assess card → dispatch to agent, using MemorySaver and mocked services in `tests/integration/test_graph_execution.py`
+- [X] T024 [P] [US1] Add GitHub board/issue/card-move contract tests mapped to `specs/001-board-orchestrator/contracts/github-graphql.md` in `tests/contract/test_github_queries.py`
+- [X] T025 [P] [US1] Add SSH dispatch/health contract tests mapped to `specs/001-board-orchestrator/contracts/agent-ssh-interface.md` in `tests/contract/test_agent_interface.py`
+- [X] T026 [P] [US1] Add `check_board` node unit tests in `tests/unit/graph/nodes/test_check_board.py`
+- [X] T027 [P] [US1] Add `assess_card` node unit tests in `tests/unit/graph/nodes/test_assess_card.py`
+- [X] T028 [P] [US1] Add `dispatch_card` node unit tests in `tests/unit/graph/nodes/test_dispatch_card.py`
+- [X] T029 [P] [US1] Add GitHub service polling/move tests in `tests/unit/services/test_github.py`
+- [X] T030 [P] [US1] Add agent SSH dispatch/health service tests in `tests/unit/services/test_agent_ssh.py`
+- [X] T031 [P] [US1] Add Claude sufficiency service tests in `tests/unit/services/test_claude.py`
+- [X] T032 [US1] Add dispatch-loop integration test in `tests/integration/test_graph_execution.py`
 
 ### Implementation for User Story 1
 
-- [ ] T028 [P] [US1] Implement GitHub service poll_board method (Q3: PollBoard query, parse items by status column) in `src/coordinare/services/github.py`
-- [ ] T029 [P] [US1] Implement GitHub service get_issue_details method (Q4: full issue body, comments, timeline, linked PRs) in `src/coordinare/services/github.py`
-- [ ] T030 [P] [US1] Implement GitHub service move_card method (M1: updateProjectV2ItemFieldValue mutation) in `src/coordinare/services/github.py`
-- [ ] T031 [US1] Implement Claude service with assess_card_sufficiency method: structured tool use to evaluate card clarity and generate questions in `src/coordinare/services/claude.py`
-- [ ] T032 [US1] Implement agent SSH service: connect, dispatch_card (C1), check_health (C4) with timeout handling and retry logic in `src/coordinare/services/agent_ssh.py`
-- [ ] T033 [US1] Implement check_board node: call github.poll_board, compare columns, determine routing (idle/dispatch/monitor) in `src/coordinare/graph/nodes/check_board.py`
-- [ ] T034 [US1] Implement assess_card node: call github.get_issue_details, call claude.assess_card_sufficiency, route to dispatch or blocked in `src/coordinare/graph/nodes/assess_card.py`
-- [ ] T035 [US1] Implement dispatch_card node: call github.move_card to In Progress, call agent_ssh.dispatch_card with card context JSON in `src/coordinare/graph/nodes/dispatch_card.py`
-- [ ] T036 [US1] Wire US1 nodes (check_board → assess_card → dispatch_card) into graph builder with conditional routing for idle/dispatch paths in `src/coordinare/graph/builder.py`
+- [X] T033 [P] [US1] Implement poll board items operation in `src/coordinare/services/github.py`
+- [X] T034 [P] [US1] Implement issue detail retrieval operation in `src/coordinare/services/github.py`
+- [X] T035 [P] [US1] Implement card status transition mutation in `src/coordinare/services/github.py`
+- [X] T036 [US1] Implement Claude card sufficiency analysis service in `src/coordinare/services/claude.py`
+- [X] T037 [US1] Implement SSH agent dispatch/health service in `src/coordinare/services/agent_ssh.py`
+- [X] T038 [US1] Implement board polling and dispatch gating node in `src/coordinare/graph/nodes/check_board.py`
+- [X] T039 [US1] Implement card assessment node in `src/coordinare/graph/nodes/assess_card.py`
+- [X] T040 [US1] Implement card dispatch node in `src/coordinare/graph/nodes/dispatch_card.py`
+- [X] T041 [US1] Wire US1 node sequence and routes in `src/coordinare/graph/builder.py`
 
-**Checkpoint**: Board monitoring and card dispatch fully functional — cards move from ToDo to In Progress and agent receives context
+**Checkpoint**: US1 independently functional and testable
 
 ---
 
-## Phase 4: User Story 2 — PR Review & Merge Cycle (Priority: P2)
+## Phase 4: User Story 2 - PR Review & Merge Cycle (Priority: P2)
 
-**Goal**: When the agent opens a PR, the coordinare monitors it for human reviews, ignores bot/CoPilot comments, relays human feedback to the agent, and squash-merges on approval.
+**Goal**: Monitor PR reviews, ignore bots/CoPilot, relay human feedback, squash-merge on approval, move card to Done.
 
-**Independent Test**: Create a PR linked to a card in In Review, leave human review comments, verify feedback is relayed. Approve the PR and verify squash-merge occurs and card moves to Done.
+**Independent Test**: For a card in In Review, human feedback is relayed, bot feedback is ignored, approval leads to squash merge and Done transition.
 
 ### Tests for User Story 2
 
-> **NOTE: Write these tests FIRST, ensure they FAIL before implementation**
-
-- [ ] T037 [P] [US2] Unit tests for Review, ReviewerType, ReviewState models: human/bot classification logic, is_actionable derivation in `tests/unit/models/test_review.py`
-- [ ] T038 [P] [US2] Unit tests for monitor_pr node: detects new reviews, filters human vs bot, routes to relay/merge/blocked in `tests/unit/graph/nodes/test_monitor_pr.py`
-- [ ] T039 [P] [US2] Unit tests for relay_feedback node: calls agent SSH feedback command, updates state in `tests/unit/graph/nodes/test_relay_feedback.py`
-- [ ] T040 [P] [US2] Unit tests for merge_pr node: checks mergeability, squash-merges, moves card to Done, triggers next pickup in `tests/unit/graph/nodes/test_merge_pr.py`
-- [ ] T041 [P] [US2] Unit tests for GitHub service get_pr_reviews, check_mergeability, squash_merge methods in `tests/unit/services/test_github.py`
-- [ ] T042 [US2] Integration test for review-merge flow: monitor PR → classify reviews → relay feedback → approve → merge, using MemorySaver in `tests/integration/test_graph_execution.py`
+- [X] T042 [P] [US2] Add PR review/merge GraphQL contract tests mapped to `specs/001-board-orchestrator/contracts/github-graphql.md` in `tests/contract/test_github_queries.py`
+- [X] T043 [P] [US2] Add `monitor_pr` node unit tests in `tests/unit/graph/nodes/test_monitor_pr.py`
+- [X] T044 [P] [US2] Add `relay_feedback` node unit tests in `tests/unit/graph/nodes/test_relay_feedback.py`
+- [X] T045 [P] [US2] Add `merge_pr` node unit tests in `tests/unit/graph/nodes/test_merge_pr.py`
+- [X] T046 [P] [US2] Add GitHub review/merge service tests in `tests/unit/services/test_github.py`
+- [X] T047 [US2] Add review-to-merge integration test in `tests/integration/test_graph_execution.py`
 
 ### Implementation for User Story 2
 
-- [ ] T043 [P] [US2] Implement Review model with ReviewerType enum, ReviewState enum, and is_actionable classification logic per data-model.md in `src/coordinare/models/review.py`
-- [ ] T044 [P] [US2] Implement GitHub service get_pr_reviews method (Q5: reviews with author typename/login, state) in `src/coordinare/services/github.py`
-- [ ] T045 [P] [US2] Implement GitHub service check_mergeability method (Q6: mergeable, mergeStateStatus, reviewDecision) in `src/coordinare/services/github.py`
-- [ ] T046 [P] [US2] Implement GitHub service squash_merge method (M3: mergePullRequest with SQUASH method) in `src/coordinare/services/github.py`
-- [ ] T047 [US2] Implement agent SSH service relay_feedback method (C3: feedback command with review JSON) in `src/coordinare/services/agent_ssh.py`
-- [ ] T048 [US2] Implement monitor_pr node: call github.get_pr_reviews, classify with human_reviewers list, detect approval/changes_requested/conflict in `src/coordinare/graph/nodes/monitor_pr.py`
-- [ ] T049 [US2] Implement relay_feedback node: extract actionable reviews, call agent_ssh.relay_feedback with structured feedback JSON in `src/coordinare/graph/nodes/relay_feedback.py`
-- [ ] T050 [US2] Implement merge_pr node: call github.check_mergeability, call github.squash_merge, call github.move_card to Done in `src/coordinare/graph/nodes/merge_pr.py`
-- [ ] T051 [US2] Wire US2 nodes (monitor_pr → relay_feedback/merge_pr) into graph builder with review routing (approved→merge, changes→relay, conflict→blocked) in `src/coordinare/graph/builder.py`
+- [X] T048 [P] [US2] Implement PR review retrieval in `src/coordinare/services/github.py`
+- [X] T049 [P] [US2] Implement mergeability check in `src/coordinare/services/github.py`
+- [X] T050 [P] [US2] Implement squash merge mutation in `src/coordinare/services/github.py`
+- [X] T051 [US2] Implement agent feedback relay command in `src/coordinare/services/agent_ssh.py`
+- [X] T052 [US2] Implement PR monitoring node with human/bot filtering in `src/coordinare/graph/nodes/monitor_pr.py`
+- [X] T053 [US2] Implement review feedback relay node in `src/coordinare/graph/nodes/relay_feedback.py`
+- [X] T054 [US2] Implement merge-and-close node in `src/coordinare/graph/nodes/merge_pr.py`
+- [X] T055 [US2] Wire review lifecycle routes in `src/coordinare/graph/builder.py`
 
-**Checkpoint**: Full card lifecycle works — ToDo → In Progress → In Review → Done with human review gating
+**Checkpoint**: US2 independently functional and testable
 
 ---
 
-## Phase 5: User Story 3 — Notification System (Priority: P3)
+## Phase 5: User Story 3 - Notification System (Priority: P3)
 
-**Goal**: Every card column transition triggers both an email and a Slack notification with contextual information (status, task description, open questions, commit/PR summary).
+**Goal**: Send email + Slack notifications on all transitions with required contextual content.
 
-**Independent Test**: Trigger a card column transition and verify both an email and a Slack message arrive with the correct contextual information.
+**Independent Test**: Any column transition produces both email and Slack notifications containing status, task context, and applicable questions/PR summaries.
 
 ### Tests for User Story 3
 
-> **NOTE: Write these tests FIRST, ensure they FAIL before implementation**
-
-- [ ] T052 [P] [US3] Unit tests for Notification model: content rules (questions for BLOCKED, commit summary for IN_REVIEW/DONE) in `tests/unit/models/test_notification.py`
-- [ ] T053 [P] [US3] Unit tests for email service: SMTP connection, message formatting, send with retry, failure handling in `tests/unit/services/test_email.py`
-- [ ] T054 [P] [US3] Unit tests for Slack service: webhook POST, message formatting with blocks, failure handling in `tests/unit/services/test_slack.py`
-- [ ] T055 [P] [US3] Unit tests for notify node: builds Notification from state, calls both email and Slack services, handles partial failures in `tests/unit/graph/nodes/test_notify.py`
-- [ ] T056 [US3] Integration test for notification flow: card transition triggers both email and Slack with correct content in `tests/integration/test_notification_flow.py`
+- [X] T056 [P] [US3] Add notification content model tests in `tests/unit/models/test_notification.py`
+- [X] T057 [P] [US3] Add email service tests in `tests/unit/services/test_email.py`
+- [X] T058 [P] [US3] Add Slack service tests in `tests/unit/services/test_slack.py`
+- [X] T059 [P] [US3] Add `notify` node unit tests in `tests/unit/graph/nodes/test_notify.py`
+- [X] T060 [US3] Add notification pipeline integration test in `tests/integration/test_notification_flow.py`
 
 ### Implementation for User Story 3
 
-- [ ] T057 [P] [US3] Implement Notification model with content rendering rules per data-model.md (status-dependent fields) in `src/coordinare/models/notification.py`
-- [ ] T058 [US3] Implement email notification service: aiosmtplib connection, HTML/text message formatting, send with retry, failure logging (non-blocking) in `src/coordinare/services/email.py`
-- [ ] T059 [US3] Implement Slack notification service: webhook POST via httpx/aiohttp, rich message formatting with blocks, failure logging (non-blocking) in `src/coordinare/services/slack.py`
-- [ ] T060 [US3] Implement notify node: build Notification from CoordinareState transition, dispatch to email and Slack services concurrently in `src/coordinare/graph/nodes/notify.py`
-- [ ] T061 [US3] Wire notify node into all transition edges in graph builder so every column change triggers notification in `src/coordinare/graph/builder.py`
+- [X] T061 [US3] Implement SMTP notification service in `src/coordinare/services/email.py`
+- [X] T062 [US3] Implement Slack notification service in `src/coordinare/services/slack.py`
+- [X] T063 [US3] Implement transition notification node in `src/coordinare/graph/nodes/notify.py`
+- [X] T064 [US3] Wire notification node to transition edges in `src/coordinare/graph/builder.py`
 
-**Checkpoint**: All card transitions produce email and Slack notifications — team has full visibility without watching the board
+**Checkpoint**: US3 independently functional and testable
 
 ---
 
-## Phase 6: User Story 4 — Blocked Card & Clarity Requests (Priority: P4)
+## Phase 6: User Story 4 - Blocked Card & Clarity Requests (Priority: P4)
 
-**Goal**: When the agent cannot proceed or card details are insufficient, the coordinare moves the card to Blocked, comments with specific questions, and sends notifications. When the team answers, the coordinare detects the response and resumes work.
+**Goal**: Move blocked work to Blocked with explicit questions, notify team, detect answers, and resume flow.
 
-**Independent Test**: Dispatch a card with vague requirements, verify it moves to Blocked, a comment appears with questions, and notifications are sent. Add a response and verify the card resumes.
+**Independent Test**: Insufficient/blocked work transitions to Blocked with comment + notifications, then resumes when team responses are detected.
 
 ### Tests for User Story 4
 
-> **NOTE: Write these tests FIRST, ensure they FAIL before implementation**
-
-- [ ] T062 [P] [US4] Unit tests for handle_blocked node: posts questions as comment, moves card to Blocked, triggers notification in `tests/unit/graph/nodes/test_handle_blocked.py`
-- [ ] T063 [P] [US4] Unit tests for monitor_agent node: detects working/pr_opened/blocked/error status, routes correctly in `tests/unit/graph/nodes/test_monitor_agent.py`
-- [ ] T064 [P] [US4] Unit tests for GitHub add_comment method (M2) in `tests/unit/services/test_github.py`
-- [ ] T065 [P] [US4] Unit tests for agent SSH check_status method (C2) in `tests/unit/services/test_agent_ssh.py`
-- [ ] T066 [US4] Integration test for blocked card flow: dispatch → agent reports blocked → card moves to Blocked → team answers → card resumes in `tests/integration/test_graph_execution.py`
+- [X] T065 [P] [US4] Add `handle_blocked` node unit tests in `tests/unit/graph/nodes/test_handle_blocked.py`
+- [X] T066 [P] [US4] Add `monitor_agent` node unit tests in `tests/unit/graph/nodes/test_monitor_agent.py`
+- [X] T067 [P] [US4] Add GitHub comment mutation tests in `tests/unit/services/test_github.py`
+- [X] T068 [P] [US4] Add agent status command tests in `tests/unit/services/test_agent_ssh.py`
+- [X] T069 [US4] Add blocked-to-resume integration test in `tests/integration/test_graph_execution.py`
 
 ### Implementation for User Story 4
 
-- [ ] T067 [P] [US4] Implement GitHub service add_comment method (M2: addComment mutation with questions as formatted markdown) in `src/coordinare/services/github.py`
-- [ ] T068 [P] [US4] Implement agent SSH service check_status method (C2: status command, parse working/pr_opened/blocked/error responses) in `src/coordinare/services/agent_ssh.py`
-- [ ] T069 [US4] Implement monitor_agent node: call agent_ssh.check_status, route to monitor_pr (if PR opened), handle_blocked (if blocked/error), or stay monitoring in `src/coordinare/graph/nodes/monitor_agent.py`
-- [ ] T070 [US4] Implement handle_blocked node: call github.move_card to Blocked, call github.add_comment with questions, update state with open_questions in `src/coordinare/graph/nodes/handle_blocked.py`
-- [ ] T071 [US4] Add unblock detection to check_board node: detect new comments on blocked cards from team members, move card back to In Progress, relay answers to agent in `src/coordinare/graph/nodes/check_board.py`
-- [ ] T072 [US4] Implement blocked card reminder: check blocked_reminder_hours config, re-send notification if card has been blocked longer than threshold in `src/coordinare/graph/nodes/handle_blocked.py`
-- [ ] T073 [US4] Wire US4 nodes (monitor_agent, handle_blocked) into graph builder with blocked/unblock routing in `src/coordinare/graph/builder.py`
+- [X] T070 [P] [US4] Implement GitHub add-comment mutation in `src/coordinare/services/github.py`
+- [X] T071 [P] [US4] Implement agent status polling command in `src/coordinare/services/agent_ssh.py`
+- [X] T072 [US4] Implement agent status monitor node in `src/coordinare/graph/nodes/monitor_agent.py`
+- [X] T073 [US4] Implement blocked handling node (move/comment/state update) in `src/coordinare/graph/nodes/handle_blocked.py`
+- [X] T074 [US4] Implement unblock answer-detection path in `src/coordinare/graph/nodes/check_board.py`
+- [X] T075 [US4] Implement blocked reminder scheduling logic in `src/coordinare/graph/nodes/handle_blocked.py`
+- [X] T076 [US4] Wire blocked/recovery routes in `src/coordinare/graph/builder.py`
 
-**Checkpoint**: Exception path fully handled — blocked cards get questions, team gets notified, and work resumes when answers arrive
+**Checkpoint**: US4 independently functional and testable
 
 ---
 
 ## Phase 7: Polish & Cross-Cutting Concerns
 
-**Purpose**: Observability, deployment, and final integration
+**Purpose**: Observability, deployment readiness, and global validation across stories
 
-- [ ] T074 [P] Implement FastAPI health-check endpoint (/health, /ready) with service connectivity checks per health-api.md contract in `src/coordinare/health.py`
-- [ ] T075 [P] Implement Prometheus metrics export (/metrics) with all metrics from health-api.md contract (cards_processed, cycle_time, notifications, dispatch_latency, errors) in `src/coordinare/metrics.py`
-- [ ] T076 [P] Contract tests for health API response schemas (/health, /metrics, /ready) in `tests/contract/test_health_api.py`
-- [ ] T077 Integration test for daemon lifecycle: startup validation, graceful shutdown on SIGTERM, restart recovery from checkpoint in `tests/integration/test_daemon_lifecycle.py`
-- [ ] T078 [P] Create Dockerfile with multi-stage build (builder + runtime) for container deployment
-- [ ] T079 [P] Create docker-compose.yaml with coordinare service, PostgreSQL for checkpointing, and volume-mounted config
-- [ ] T080 Create config.example.yaml with all configuration options documented with comments
-- [ ] T081 Validate quickstart.md: run through setup, configuration, and local execution steps end-to-end
+- [X] T077 [P] Implement health/ready endpoints in `src/coordinare/health.py`
+- [X] T078 [P] Implement Prometheus metrics export in `src/coordinare/metrics.py`
+- [X] T079 [P] Add health/ready/metrics contract tests mapped to `specs/001-board-orchestrator/contracts/health-api.md` in `tests/contract/test_health_api.py`
+- [X] T080 Add daemon lifecycle integration test (startup/shutdown/recovery) in `tests/integration/test_daemon_lifecycle.py`
+- [X] T081 Add quickstart end-to-end validation updates in `specs/001-board-orchestrator/quickstart.md`
+- [X] T082 [P] Add notification latency validation for <=2 minutes (SC-002) in `tests/integration/test_notification_flow.py`
+- [X] T083 [P] Add config-only onboarding validation (SC-007) in `tests/integration/test_daemon_lifecycle.py`
+- [X] T084 Add 24-hour simulated reliability soak validation for zero-loss/zero-duplication/zero-invalid-state (SC-008) in `tests/integration/test_graph_execution.py`
+- [X] T085 Add CI performance regression gate for SC-001/SC-004/SC-006 in `.github/workflows/pr-ci.yml`
+- [X] T086 Run final quality gates (`ruff`, `mypy`, `pytest --cov`) via `pyproject.toml` toolchain
 
 ---
 
@@ -201,61 +198,74 @@
 
 ### Phase Dependencies
 
-- **Setup (Phase 1)**: No dependencies — can start immediately
-- **Foundational (Phase 2)**: Depends on Setup completion — BLOCKS all user stories
-- **User Stories (Phase 3-6)**: All depend on Foundational phase completion
-  - US1 (P1) should complete first as it establishes the core dispatch loop
-  - US2 (P2) depends on US1 (needs card in In Progress/In Review to monitor PRs)
-  - US3 (P3) can start after Foundational — notification is independent of dispatch
-  - US4 (P4) depends on US1 (needs card dispatch to test blocked flow)
-- **Polish (Phase 7)**: Depends on all user stories being complete
+- **Phase 1 (Setup)**: No dependencies
+- **Phase 2 (Foundational)**: Depends on Phase 1; blocks all user stories
+- **Phase 3 (US1)**: Depends on Phase 2
+- **Phase 4 (US2)**: Depends on US1 outputs + Phase 2
+- **Phase 5 (US3)**: Depends on Phase 2; can proceed after core transition model exists
+- **Phase 6 (US4)**: Depends on US1 flow + Phase 2
+- **Phase 7 (Polish)**: Depends on completion of all user story phases
 
 ### User Story Dependencies
 
-- **User Story 1 (P1)**: Can start after Foundational (Phase 2) — No dependencies on other stories
-- **User Story 2 (P2)**: Depends on US1 (uses dispatch_card output, shares GitHub service methods, extends graph routing)
-- **User Story 3 (P3)**: Can start after Foundational (Phase 2) — Notification is additive; integrates into existing transitions
-- **User Story 4 (P4)**: Depends on US1 (extends check_board and dispatch flow with blocked path)
+- **US1 (P1)**: First MVP slice; no dependency on other stories after foundation
+- **US2 (P2)**: Depends on US1 dispatch/review lifecycle
+- **US3 (P3)**: Mostly independent after foundation; integrates with transition events
+- **US4 (P4)**: Depends on US1 dispatch/check_board behavior
 
-### Within Each User Story
+### Within-Story Ordering
 
-- Tests MUST be written and FAIL before implementation
-- Models before services
-- Services before graph nodes
-- Graph nodes before graph builder wiring
-- Story complete before moving to next priority
+- Tests first (must fail) -> Models -> Services -> Nodes -> Graph wiring -> Integration validation
 
 ### Parallel Opportunities
 
-- All Setup tasks T003-T005 marked [P] can run in parallel
-- Foundational tasks T007-T008, T011-T012, T016-T018 marked [P] can run in parallel
-- All test tasks within a story marked [P] can run in parallel
-- US1 and US3 can proceed in parallel after Foundational (US3 is independent)
-- Within US1: T019-T026 (tests) in parallel, then T028-T030 (GitHub methods) in parallel
-- Within US2: T037-T041 (tests) in parallel, then T043-T046 (models + GitHub methods) in parallel
-- Within US3: T052-T055 (tests) in parallel, then T057 (model) while T058-T059 (services) in parallel
-- Within US4: T062-T065 (tests) in parallel, then T067-T068 (services) in parallel
-- Polish: T074-T076, T078-T079 all marked [P] can run in parallel
+- Setup: `T003-T005` in parallel
+- Foundation: `T009-T011`, `T019-T023` in parallel where files are distinct
+- US1 tests: `T024-T031` in parallel
+- US1 GitHub methods: `T033-T035` parallel
+- US2 tests: `T042-T046` parallel
+- US2 GitHub methods: `T048-T050` parallel
+- US3 tests: `T056-T059` parallel
+- US4 tests: `T065-T068` parallel
+- Polish: `T077-T079`, `T082-T083` parallel
 
 ---
 
 ## Parallel Example: User Story 1
 
 ```bash
-# Launch all US1 tests together (write first, verify they fail):
-Task: "Contract tests for GitHub poll/move queries in tests/contract/test_github_queries.py"
-Task: "Contract tests for agent SSH dispatch in tests/contract/test_agent_interface.py"
-Task: "Unit tests for check_board node in tests/unit/graph/nodes/test_check_board.py"
-Task: "Unit tests for assess_card node in tests/unit/graph/nodes/test_assess_card.py"
-Task: "Unit tests for dispatch_card node in tests/unit/graph/nodes/test_dispatch_card.py"
-Task: "Unit tests for GitHub service methods in tests/unit/services/test_github.py"
-Task: "Unit tests for agent SSH service in tests/unit/services/test_agent_ssh.py"
-Task: "Unit tests for Claude service in tests/unit/services/test_claude.py"
+Task: "T024 [US1] Contract tests for GitHub poll/move in tests/contract/test_github_queries.py"
+Task: "T025 [US1] Contract tests for SSH interface in tests/contract/test_agent_interface.py"
+Task: "T026 [US1] Unit tests for check_board node in tests/unit/graph/nodes/test_check_board.py"
+Task: "T027 [US1] Unit tests for assess_card node in tests/unit/graph/nodes/test_assess_card.py"
+Task: "T028 [US1] Unit tests for dispatch_card node in tests/unit/graph/nodes/test_dispatch_card.py"
+```
 
-# Then launch parallelizable GitHub service methods:
-Task: "Implement poll_board in src/coordinare/services/github.py"
-Task: "Implement get_issue_details in src/coordinare/services/github.py"
-Task: "Implement move_card in src/coordinare/services/github.py"
+## Parallel Example: User Story 2
+
+```bash
+Task: "T042 [US2] Contract tests for PR review/merge in tests/contract/test_github_queries.py"
+Task: "T043 [US2] Unit tests for monitor_pr node in tests/unit/graph/nodes/test_monitor_pr.py"
+Task: "T044 [US2] Unit tests for relay_feedback node in tests/unit/graph/nodes/test_relay_feedback.py"
+Task: "T045 [US2] Unit tests for merge_pr node in tests/unit/graph/nodes/test_merge_pr.py"
+```
+
+## Parallel Example: User Story 3
+
+```bash
+Task: "T056 [US3] Notification model tests in tests/unit/models/test_notification.py"
+Task: "T057 [US3] Email service tests in tests/unit/services/test_email.py"
+Task: "T058 [US3] Slack service tests in tests/unit/services/test_slack.py"
+Task: "T059 [US3] Notify node tests in tests/unit/graph/nodes/test_notify.py"
+```
+
+## Parallel Example: User Story 4
+
+```bash
+Task: "T065 [US4] handle_blocked node tests in tests/unit/graph/nodes/test_handle_blocked.py"
+Task: "T066 [US4] monitor_agent node tests in tests/unit/graph/nodes/test_monitor_agent.py"
+Task: "T067 [US4] GitHub comment tests in tests/unit/services/test_github.py"
+Task: "T068 [US4] Agent status tests in tests/unit/services/test_agent_ssh.py"
 ```
 
 ---
@@ -264,38 +274,31 @@ Task: "Implement move_card in src/coordinare/services/github.py"
 
 ### MVP First (User Story 1 Only)
 
-1. Complete Phase 1: Setup
-2. Complete Phase 2: Foundational (CRITICAL — blocks all stories)
-3. Complete Phase 3: User Story 1 — Board Monitoring & Card Dispatch
-4. **STOP and VALIDATE**: Test card pickup and agent dispatch independently
-5. Deploy/demo if ready — coordinare can pick up cards and dispatch to an agent
+1. Complete Phase 1 (Setup)
+2. Complete Phase 2 (Foundational)
+3. Complete Phase 3 (US1)
+4. Validate US1 independently before expanding scope
 
 ### Incremental Delivery
 
-1. Complete Setup + Foundational → Foundation ready
-2. Add User Story 1 → Test independently → Deploy/Demo (**MVP!**)
-3. Add User Story 2 → Test independently → Deploy/Demo (full lifecycle loop)
-4. Add User Story 3 → Test independently → Deploy/Demo (team visibility)
-5. Add User Story 4 → Test independently → Deploy/Demo (exception handling)
-6. Polish → Observability, containerization, production readiness
+1. Deliver US1 (dispatch loop)
+2. Add US2 (review/merge completion)
+3. Add US3 (visibility/notifications)
+4. Add US4 (blocked/recovery path)
+5. Complete Phase 7 polish and gates
 
-### Parallel Team Strategy
+### Team Parallelization
 
-With multiple developers after Foundational is complete:
-
-- **Developer A**: User Story 1 (P1) → User Story 2 (P2) → User Story 4 (P4)
-- **Developer B**: User Story 3 (P3) → Polish (Phase 7)
-
-US3 (notifications) is fully independent and can proceed in parallel with US1.
+1. Team completes Setup + Foundational together
+2. Then split by story track where dependencies permit:
+   - Track A: US1 -> US2
+   - Track B: US3
+   - Track C: US4
 
 ---
 
 ## Notes
 
-- [P] tasks = different files, no dependencies on incomplete tasks
-- [Story] label maps task to specific user story for traceability
-- Each user story should be independently completable and testable
-- Tests MUST fail before implementation (Constitution Principle II)
-- Commit after each task or logical group
-- Stop at any checkpoint to validate story independently
-- All external services mocked in tests — no network calls (Constitution Principle II)
+- All tasks conform to `- [ ] T### [P?] [US?] Description with file path`
+- Story phases are independently testable increments
+- External integrations are validated with contract tests before implementation wiring

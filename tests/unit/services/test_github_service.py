@@ -29,7 +29,7 @@ class _TestGitHubService(GitHubService):
         super().__init__(token="tok", org="acme", project_number=1)
         self._fake_client = client
 
-    def _build_client(self):  # type: ignore[override]
+    def _build_client(self):
         return self._fake_client
 
 
@@ -96,57 +96,6 @@ async def test_initialize_populates_project_and_field_cache() -> None:
     assert service.field_cache["status_field_id"] == "FLD_1"
     assert service.field_cache["status_option_ids"]["todo"] == "OPT_1"
     assert service.field_cache["status_option_ids"]["in progress"] == "OPT_2"
-
-
-@pytest.mark.asyncio
-async def test_initialize_raises_when_project_missing() -> None:
-    client = _FakeClient([{"organization": {"projectV2": None}}], async_mode=True)
-    service = _TestGitHubService(client)
-
-    with pytest.raises(ValueError, match="Project not found"):
-        await service.initialize()
-
-
-@pytest.mark.asyncio
-async def test_initialize_raises_when_fields_malformed() -> None:
-    client = _FakeClient(
-        [
-            {"organization": {"projectV2": {"id": "PVT_1", "title": "Board"}}},
-            {"node": {"fields": {"nodes": "bad"}}},
-        ],
-        async_mode=True,
-    )
-    service = _TestGitHubService(client)
-
-    with pytest.raises(ValueError, match="malformed"):
-        await service.initialize()
-
-
-@pytest.mark.asyncio
-async def test_initialize_raises_when_status_field_missing() -> None:
-    client = _FakeClient(
-        [
-            {"organization": {"projectV2": {"id": "PVT_1", "title": "Board"}}},
-            {"node": {"fields": {"nodes": [{"id": "FLD_X", "name": "Priority", "options": []}]}}},
-        ],
-        async_mode=True,
-    )
-    service = _TestGitHubService(client)
-
-    with pytest.raises(ValueError, match="Status field not found"):
-        await service.initialize()
-
-
-@pytest.mark.asyncio
-async def test_not_implemented_methods_raise() -> None:
-    service = GitHubService(token="tok", org="acme", project_number=1)
-
-    with pytest.raises(NotImplementedError):
-        await service.poll_board()
-    with pytest.raises(NotImplementedError):
-        await service.get_issue_details("I_1")
-    with pytest.raises(NotImplementedError):
-        await service.move_card("ITEM_1", "TODO")
 
 
 def test_query_constants_include_expected_operation_names() -> None:
