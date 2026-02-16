@@ -1,0 +1,32 @@
+from __future__ import annotations
+
+
+def route_from_board_check(state: dict[str, object]) -> str:
+    phase = state.get("phase", "idle")
+    if phase == "dispatching":
+        return "dispatch"
+    if phase == "monitoring_pr":
+        return "monitor_pr"
+    if phase == "monitoring_agent":
+        return "monitor_agent"
+    return "idle"
+
+
+def route_from_review(state: dict[str, object]) -> str:
+    phase = state.get("phase", "monitoring_pr")
+    if phase == "merging":
+        return "merge"
+    if phase == "blocked":
+        return "blocked"
+    if state.get("pending_reviews"):
+        return "relay"
+    return "monitor"
+
+
+def route_from_agent_status(state: dict[str, object]) -> str:
+    phase = state.get("phase", "monitoring_agent")
+    if phase == "monitoring_pr":
+        return "review"
+    if phase == "blocked":
+        return "blocked"
+    return "monitor"

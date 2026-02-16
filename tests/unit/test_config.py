@@ -1,0 +1,111 @@
+from __future__ import annotations
+
+import pytest
+from pydantic import ValidationError
+
+from coordinare.config import ProjectConfiguration
+
+
+def _write_config(tmp_path, github_token: str = "token-from-file"):
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "\n".join(
+            [
+                'project_name: "Demo"',
+                'github_org: "acme"',
+                "github_project_number: 12",
+                f'github_token: "{github_token}"',
+                'agent_host: "agent.example.com"',
+                'agent_user: "coordinare"',
+                'agent_command: "agent run --card-context {card_context}"',
+                'human_reviewers: ["alice"]',
+                'notification_email: "team@example.com"',
+                'smtp_host: "smtp.example.com"',
+                'slack_webhook_url: "https://hooks.slack.com/services/T/B/C"',
+                'slack_channel: "#eng"',
+            ]
+        )
+    )
+    return path
+
+
+def test_loads_yaml_config(tmp_path) -> None:
+    config = ProjectConfiguration.from_yaml(_write_config(tmp_path))
+    assert config.github_org == "acme"
+    assert config.poll_interval_seconds == 30
+
+
+def test_env_var_overrides_yaml(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    monkeypatch.setenv("COORDINARE_GITHUB_TOKEN", "token-from-env")
+    config = ProjectConfiguration.from_yaml(_write_config(tmp_path, github_token="token-from-file"))
+    assert config.github_token.get_secret_value() == "token-from-env"
+
+
+@pytest.mark.parametrize("value", [9, 301])
+def test_poll_interval_bounds(value: int) -> None:
+    with pytest.raises(ValidationError):
+        ProjectConfiguration(
+            project_name="Demo",
+            github_org="acme",
+            github_project_number=1,
+            github_token="tok",
+            agent_host="agent",
+            agent_user="user",
+            agent_command="agent {card_context}",
+            human_reviewers=["alice"],
+            smtp_host="smtp",
+            slack_webhook_url="https://hooks.slack.com/services/T/B/C",
+            slack_channel="#eng",
+            poll_interval_seconds=value,
+        )
+
+
+def test_requires_human_reviewer() -> None:
+    with pytest.raises(ValidationError):
+        ProjectConfiguration(
+            project_name="Demo",
+            github_org="acme",
+            github_project_number=1,
+            github_token="tok",
+            agent_host="agent",
+            agent_user="user",
+            agent_command="agent {card_context}",
+            human_reviewers=[],
+            smtp_host="smtp",
+            slack_webhook_url="https://hooks.slack.com/services/T/B/C",
+            slack_channel="#eng",
+        )
+
+
+def test_requires_non_empty_token() -> None:
+    with pytest.raises(ValidationError):
+        ProjectConfiguration(
+            project_name="Demo",
+            github_org="acme",
+            github_project_number=1,
+            github_token="   ",
+            agent_host="agent",
+            agent_user="user",
+            agent_command="agent {card_context}",
+            human_reviewers=["alice"],
+            smtp_host="smtp",
+            slack_webhook_url="https://hooks.slack.com/services/T/B/C",
+            slack_channel="#eng",
+        )
+
+
+def test_requires_agent_placeholder() -> None:
+    with pytest.raises(ValidationError):
+        ProjectConfiguration(
+            project_name="Demo",
+            github_org="acme",
+            github_project_number=1,
+            github_token="tok",
+            agent_host="agent",
+            agent_user="user",
+            agent_command="agent dispatch",
+            human_reviewers=["alice"],
+            smtp_host="smtp",
+            slack_webhook_url="https://hooks.slack.com/services/T/B/C",
+            slack_channel="#eng",
+        )

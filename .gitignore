@@ -207,3 +207,21 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Universal
+.DS_Store
+Thumbs.db
+*.tmp
+*.swp
+.vscode/
+
+# Project env variants
+.env*
+
+# Codex local/sensitive artifacts
+.codex/auth.json
+.codex/history.jsonl
+.codex/log/
+.codex/sessions/
+.codex/shell_snapshots/
+.codex/tmp/

@@ -1,0 +1,6 @@
+model = "gpt-5.3-codex"
+[projects."~/Workspaces/ViviDynamics/coordinare"]
+trust_level = "trusted"
+
+[notice.model_migrations]
+"gpt-5.2-codex" = "gpt-5.3-codex"

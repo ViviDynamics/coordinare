@@ -1,0 +1,72 @@
+name: Pull Request CI
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+  workflow_dispatch:
+
+concurrency:
+  group: pr-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    runs-on:
+      - self-hosted
+      - linux
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Run Ruff
+        run: uv run --extra dev ruff check src tests
+
+  test:
+    name: Test
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    runs-on:
+      - self-hosted
+      - linux
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Run pytest
+        run: uv run --extra dev pytest
+
+  build-success:
+    name: Build Success
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    runs-on:
+      - self-hosted
+      - linux
+    needs:
+      - lint
+      - test
+    steps:
+      - name: Mark build successful
+        run: echo "Lint and tests passed. Build successful."

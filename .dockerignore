@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Build and package artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+
+# Test and coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage/
+htmlcov/
+
+# VCS and local tooling
+.git/
+.gitignore
+.dockerignore
+.idea/
+.vscode/
+
+# Runtime and secrets
+*.log*
+.env*
+.codex/auth.json
+.codex/history.jsonl
+.codex/log/
+.codex/sessions/
+.codex/shell_snapshots/
+.codex/tmp/
+
+# Docker files
+Dockerfile*

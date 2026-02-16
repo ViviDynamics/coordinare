@@ -23,11 +23,11 @@
 
 **Purpose**: Project initialization, dependency management, and tooling configuration
 
-- [ ] T001 Create project directory structure with all packages and `__init__.py` files per plan.md source code layout
-- [ ] T002 Initialize Python project with `pyproject.toml` including all dependencies: langgraph, anthropic, gql[aiohttp], asyncssh, fastapi, uvicorn, structlog, slack-sdk, aiosmtplib, prometheus-client, pydantic-settings, and dev deps: pytest, pytest-asyncio, pytest-cov, ruff, mypy
-- [ ] T003 [P] Configure ruff linting and formatting rules in `pyproject.toml` (ruff section)
-- [ ] T004 [P] Configure mypy strict mode in `pyproject.toml` (mypy section)
-- [ ] T005 [P] Configure pytest with asyncio mode and coverage settings in `pyproject.toml` (pytest section)
+- [X] T001 Create project directory structure with all packages and `__init__.py` files per plan.md source code layout
+- [X] T002 Initialize Python project with `pyproject.toml` including all dependencies: langgraph, anthropic, gql[aiohttp], asyncssh, fastapi, uvicorn, structlog, slack-sdk, aiosmtplib, prometheus-client, pydantic-settings, and dev deps: pytest, pytest-asyncio, pytest-cov, ruff, mypy
+- [X] T003 [P] Configure ruff linting and formatting rules in `pyproject.toml` (ruff section)
+- [X] T004 [P] Configure mypy strict mode in `pyproject.toml` (mypy section)
+- [X] T005 [P] Configure pytest with asyncio mode and coverage settings in `pyproject.toml` (pytest section)
 
 ---
 
@@ -37,19 +37,19 @@
 
 **CRITICAL**: No user story work can begin until this phase is complete
 
-- [ ] T006 Implement ProjectConfiguration model with pydantic-settings, YAML file loading, env var override (COORDINARE_ prefix), and all validation rules from data-model.md in `src/coordinare/config.py`
-- [ ] T007 [P] Implement CardStatus enum, CardTransition model, and Card model with all fields and validation rules from data-model.md in `src/coordinare/models/card.py`
-- [ ] T008 [P] Implement CoordinareState TypedDict with all fields (current_card, board_snapshot, phase, pending_reviews, last_poll_at, error_count, github_field_cache) in `src/coordinare/graph/state.py`
-- [ ] T009 Implement GitHub service core: gql client initialization, authentication, FindProject query (Q1), GetProjectFields query (Q2) with field/option ID caching in `src/coordinare/services/github.py`
-- [ ] T010 Create LangGraph StateGraph skeleton with node registration placeholders and compile method with configurable checkpointer in `src/coordinare/graph/builder.py`
-- [ ] T011 [P] Implement conditional edge routing functions (route_from_board_check, route_from_review, route_from_agent_status) in `src/coordinare/graph/routing.py`
-- [ ] T012 [P] Configure structured JSON logging with structlog (processors, formatters, log level from config) in `src/coordinare/__init__.py`
-- [ ] T013 Implement daemon lifecycle: async event loop, signal handlers (SIGTERM/SIGINT), poll-invoke-sleep cycle with configurable interval, exponential backoff on errors in `src/coordinare/daemon.py`
-- [ ] T014 Implement CLI entry point that loads config, builds graph, starts daemon and health server in `src/coordinare/__main__.py`
-- [ ] T015 Create shared test fixtures: mock GitHub gql client, mock SSH connection, mock SMTP server, mock Slack webhook, sample Card/Review factories in `tests/conftest.py`
-- [ ] T016 [P] Unit tests for ProjectConfiguration: YAML loading, env var override precedence, validation rules (min reviewers, poll interval bounds, token non-empty, command placeholder) in `tests/unit/test_config.py`
-- [ ] T017 [P] Unit tests for Card model: creation, validation (non-empty title, PR required for IN_REVIEW, questions required for BLOCKED), CardStatus enum values, CardTransition recording in `tests/unit/models/test_card.py`
-- [ ] T018 [P] Unit tests for CoordinareState: default values, field types, state update patterns in `tests/unit/test_state.py`
+- [X] T006 Implement ProjectConfiguration model with pydantic-settings, YAML file loading, env var override (COORDINARE_ prefix), and all validation rules from data-model.md in `src/coordinare/config.py`
+- [X] T007 [P] Implement CardStatus enum, CardTransition model, and Card model with all fields and validation rules from data-model.md in `src/coordinare/models/card.py`
+- [X] T008 [P] Implement CoordinareState TypedDict with all fields (current_card, board_snapshot, phase, pending_reviews, last_poll_at, error_count, github_field_cache) in `src/coordinare/graph/state.py`
+- [X] T009 Implement GitHub service core: gql client initialization, authentication, FindProject query (Q1), GetProjectFields query (Q2) with field/option ID caching in `src/coordinare/services/github.py`
+- [X] T010 Create LangGraph StateGraph skeleton with node registration placeholders and compile method with configurable checkpointer in `src/coordinare/graph/builder.py`
+- [X] T011 [P] Implement conditional edge routing functions (route_from_board_check, route_from_review, route_from_agent_status) in `src/coordinare/graph/routing.py`
+- [X] T012 [P] Configure structured JSON logging with structlog (processors, formatters, log level from config) in `src/coordinare/__init__.py`
+- [X] T013 Implement daemon lifecycle: async event loop, signal handlers (SIGTERM/SIGINT), poll-invoke-sleep cycle with configurable interval, exponential backoff on errors in `src/coordinare/daemon.py`
+- [X] T014 Implement CLI entry point that loads config, builds graph, starts daemon and health server in `src/coordinare/__main__.py`
+- [X] T015 Create shared test fixtures: mock GitHub gql client, mock SSH connection, mock SMTP server, mock Slack webhook, sample Card/Review factories in `tests/conftest.py`
+- [X] T016 [P] Unit tests for ProjectConfiguration: YAML loading, env var override precedence, validation rules (min reviewers, poll interval bounds, token non-empty, command placeholder) in `tests/unit/test_config.py`
+- [X] T017 [P] Unit tests for Card model: creation, validation (non-empty title, PR required for IN_REVIEW, questions required for BLOCKED), CardStatus enum values, CardTransition recording in `tests/unit/models/test_card.py`
+- [X] T018 [P] Unit tests for CoordinareState: default values, field types, state update patterns in `tests/unit/test_state.py`
 
 **Checkpoint**: Foundation ready — user story implementation can now begin
 
