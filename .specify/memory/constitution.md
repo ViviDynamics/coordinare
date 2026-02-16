@@ -1,22 +1,18 @@
 <!--
   Sync Impact Report
   ==================
-  Version change: N/A → 1.0.0 (initial adoption)
-  Modified principles: N/A (initial)
+  Version change: 1.0.0 → 1.1.0
+  Modified principles: None renamed
   Added sections:
-    - Core Principles (4): Code Quality First, Testing Discipline,
-      User Experience Consistency, Performance by Design
-    - Quality Gates
-    - Development Workflow
-    - Governance
-  Removed sections: N/A
+    - Principle V: Clarity Before Action
+  Removed sections: None
   Templates requiring updates:
-    - .specify/templates/plan-template.md — ✅ compatible (Constitution
-      Check section will be populated per-feature by /speckit.plan)
-    - .specify/templates/spec-template.md — ✅ compatible (Success
-      Criteria section aligns with performance and UX principles)
-    - .specify/templates/tasks-template.md — ✅ compatible (Phase
-      structure supports test-first and polish/performance phases)
+    - .specify/templates/plan-template.md — ✅ compatible (Technical
+      Context fields already use NEEDS CLARIFICATION pattern)
+    - .specify/templates/spec-template.md — ✅ compatible (FR examples
+      already demonstrate NEEDS CLARIFICATION markers)
+    - .specify/templates/tasks-template.md — ✅ compatible (Prerequisites
+      section already gates on required input documents)
     - .specify/templates/commands/*.md — no command files exist yet
   Follow-up TODOs: None
 -->
@@ -138,6 +134,36 @@ Performance is a first-class requirement, not an afterthought:
 feels broken. Proactive performance engineering is cheaper than
 retroactive optimization.
 
+### V. Clarity Before Action
+
+When requirements, prompts, or instructions are ambiguous or
+incomplete, clarification MUST be sought before proceeding:
+
+- **Never assume intent**: If a requirement can be interpreted in
+  more than one way, the implementer MUST stop and ask for
+  clarification. Guessing leads to rework.
+- **Mark unknowns explicitly**: Unclear requirements in specs and
+  plans MUST be tagged with `NEEDS CLARIFICATION` followed by a
+  description of what is missing and what options exist.
+- **Block on ambiguity**: Implementation MUST NOT begin on any
+  requirement tagged `NEEDS CLARIFICATION`. Ambiguous items MUST
+  be resolved before work starts.
+- **Ask specific questions**: Clarification requests MUST be
+  targeted and actionable (e.g., "Should authentication use OAuth
+  or email/password?"), not open-ended (e.g., "What do you want
+  here?").
+- **Document resolutions**: Once a clarification is resolved, the
+  answer MUST be recorded in the relevant spec, plan, or task
+  document. Verbal-only resolutions are not acceptable.
+- **Scope boundaries**: If a request's scope is unclear, the
+  implementer MUST confirm the boundary before writing code.
+  Delivering more or less than intended wastes effort either way.
+
+**Rationale**: The cost of asking a question is minutes. The cost
+of building the wrong thing is days or weeks. Ambiguity is a risk
+that compounds — catching it early is the cheapest form of quality
+assurance.
+
 ## Quality Gates
 
 All code changes MUST pass the following gates before merge:
@@ -192,6 +218,7 @@ A feature is complete when:
 - All acceptance criteria from the spec are met.
 - All quality gates pass.
 - Performance budgets are verified.
+- No `NEEDS CLARIFICATION` tags remain in the feature's artifacts.
 - Documentation is updated (if user-facing behavior changed).
 - The feature is deployable independently.
 
@@ -228,4 +255,4 @@ practices, verbal agreements, and outdated documentation.
   justified in writing (see plan template's Complexity Tracking
   table) and approved by a maintainer.
 
-**Version**: 1.0.0 | **Ratified**: 2026-02-16 | **Last Amended**: 2026-02-16
+**Version**: 1.1.0 | **Ratified**: 2026-02-16 | **Last Amended**: 2026-02-16
