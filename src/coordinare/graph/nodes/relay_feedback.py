@@ -12,6 +12,9 @@ async def relay_feedback(state: CoordinareState) -> CoordinareState:
     if agent is None:
         state["phase"] = "monitoring_pr"
         return state
+    if not reviews:
+        state["phase"] = "monitoring_agent"
+        return state
     await agent.relay_feedback({"reviews": reviews})
     state["phase"] = "monitoring_agent"
     return state

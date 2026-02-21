@@ -41,6 +41,8 @@ class CoordinareDaemon:
         self._running = False
         self._stop_event = asyncio.Event()
         self._state: CoordinareState = initial_state()
+        self._cycle_active = False
+        self._stop_during_cycle = False
 
     @property
     def running(self) -> bool:
@@ -51,6 +53,8 @@ class CoordinareDaemon:
         return self._state
 
     def stop(self) -> None:
+        if self._cycle_active:
+            self._stop_during_cycle = True
         self._running = False
         self._stop_event.set()
 
@@ -89,7 +93,9 @@ class CoordinareDaemon:
         failure: RuntimeExecutionError | None = None
         while self._running and not self._stop_event.is_set():
             try:
+                self._cycle_active = True
                 self._state = await self._graph.ainvoke(self._state)
+                self._cycle_active = False
                 cycle_count += 1
                 self._state["error_count"] = 0
                 self._emit(
@@ -131,6 +137,7 @@ class CoordinareDaemon:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                self._cycle_active = False
                 self._state["error_count"] = self._state.get("error_count", 0) + 1
                 self._emit(
                     **build_runtime_event(
@@ -141,6 +148,16 @@ class CoordinareDaemon:
                         error_count=self._state["error_count"],
                     )
                 )
+                previous_phase = self._state.get("phase", "unknown")
+                self._state["phase"] = "recovery"
+                self._emit(
+                    **build_runtime_event(
+                        category="state_change",
+                        message="state transition detected",
+                        previous_phase=previous_phase,
+                        current_phase="recovery",
+                    )
+                )
                 failure = RuntimeExecutionError(phase="runtime", step="cycle_execution", cause=exc)
                 self._running = False
 
@@ -149,6 +166,7 @@ class CoordinareDaemon:
                 category="shutdown",
                 message="daemon stopped",
                 graceful=failure is None,
+                cycle_interrupted=self._stop_during_cycle,
                 run_mode=self._run_mode,
             )
         )

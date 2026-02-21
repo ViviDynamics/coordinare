@@ -14,7 +14,12 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
         state["phase"] = "idle"
         return state
 
-    reviews = await github.get_pr_reviews(str(card.get("pr_node_id", "")))
+    pr_node_id = str(card.get("pr_node_id") or "")
+    if not pr_node_id:
+        state["phase"] = "idle"
+        return state
+
+    reviews = await github.get_pr_reviews(pr_node_id)
     human_reviewers = state.get("human_reviewers", [])
     actionable: list[dict[str, object]] = []
     approved = False

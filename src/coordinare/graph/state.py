@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any, Protocol, TypedDict
+from typing import Any, Literal, Protocol, TypedDict
 
 
 class GitHubServiceProtocol(Protocol):
@@ -32,7 +32,7 @@ class NotificationServiceProtocol(Protocol):
 class CoordinareState(TypedDict, total=False):
     current_card: dict[str, Any] | None
     board_snapshot: dict[str, list[str]]
-    phase: str
+    phase: Literal["idle", "dispatching", "monitoring_agent", "monitoring_pr", "merging", "relay_feedback", "blocked", "recovery"]
     pending_reviews: list[dict[str, Any]]
     last_poll_at: datetime | None
     error_count: int

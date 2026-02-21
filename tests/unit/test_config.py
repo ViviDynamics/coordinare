@@ -109,3 +109,54 @@ def test_requires_agent_placeholder() -> None:
             slack_webhook_url="https://hooks.slack.com/services/T/B/C",
             slack_channel="#eng",
         )
+
+
+def test_rejects_unresolved_github_token_placeholder() -> None:
+    with pytest.raises(ValidationError, match="unresolved placeholder"):
+        ProjectConfiguration(
+            project_name="Demo",
+            github_org="acme",
+            github_project_number=1,
+            github_token="${COORDINARE_GITHUB_TOKEN}",
+            agent_host="agent",
+            agent_user="user",
+            agent_command="agent {card_context}",
+            human_reviewers=["alice"],
+            smtp_host="smtp",
+            slack_webhook_url="https://hooks.slack.com/services/T/B/C",
+            slack_channel="#eng",
+        )
+
+
+def test_rejects_unresolved_slack_webhook_placeholder() -> None:
+    with pytest.raises(ValidationError, match="unresolved placeholder"):
+        ProjectConfiguration(
+            project_name="Demo",
+            github_org="acme",
+            github_project_number=1,
+            github_token="tok",
+            agent_host="agent",
+            agent_user="user",
+            agent_command="agent {card_context}",
+            human_reviewers=["alice"],
+            smtp_host="smtp",
+            slack_webhook_url="${COORDINARE_SLACK_WEBHOOK_URL}",
+            slack_channel="#eng",
+        )
+
+
+def test_rejects_empty_slack_webhook_url() -> None:
+    with pytest.raises(ValidationError, match="non-empty"):
+        ProjectConfiguration(
+            project_name="Demo",
+            github_org="acme",
+            github_project_number=1,
+            github_token="tok",
+            agent_host="agent",
+            agent_user="user",
+            agent_command="agent {card_context}",
+            human_reviewers=["alice"],
+            smtp_host="smtp",
+            slack_webhook_url="   ",
+            slack_channel="#eng",
+        )

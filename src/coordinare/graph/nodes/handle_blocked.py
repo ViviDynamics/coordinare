@@ -3,8 +3,12 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
+import structlog
+
 if TYPE_CHECKING:
     from coordinare.graph.state import CoordinareState
+
+logger = structlog.get_logger(__name__)
 
 
 async def handle_blocked(state: CoordinareState) -> CoordinareState:
@@ -20,6 +24,8 @@ async def handle_blocked(state: CoordinareState) -> CoordinareState:
     raw_questions = state.get("open_questions")
     questions = [str(item) for item in raw_questions] if isinstance(raw_questions, list) else []
     if not questions:
+        logger.warning("handle_blocked_no_open_questions", card_id=card_id,
+                       msg="Arrived at blocked handler with no open questions; using generic fallback")
         questions = ["Please provide additional implementation details."]
 
     await github.move_card(card_id, "BLOCKED")

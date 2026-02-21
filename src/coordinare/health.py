@@ -34,18 +34,32 @@ def create_health_app(daemon: CoordinareDaemon) -> FastAPI:
                 "status": current_card.get("status"),
             }
 
+        # Infer GitHub connectivity from last_poll_at recency (within 2 poll cycles = 60s).
+        # Other services have no observable connectivity signal; report "unknown" while
+        # the daemon is running rather than falsely claiming "connected".
+        last_poll_at = state.get("last_poll_at")
+        if not daemon_running:
+            github_status = "disconnected"
+        elif isinstance(last_poll_at, datetime):
+            age_seconds = (datetime.now(UTC) - last_poll_at).total_seconds()
+            github_status = "connected" if age_seconds < 60 else "degraded"
+        else:
+            github_status = "unknown"
+
+        passive_service_status = "unknown" if daemon_running else "disconnected"
+
         return {
             "status": health_status,
             "uptime_seconds": 0,
             "current_card": card_payload,
             "services": {
                 "github": {
-                    "status": "connected" if daemon_running else "disconnected",
-                    "last_poll_at": state.get("last_poll_at"),
+                    "status": github_status,
+                    "last_poll_at": last_poll_at,
                 },
-                "agent_ssh": {"status": "connected" if daemon_running else "disconnected"},
-                "smtp": {"status": "connected" if daemon_running else "disconnected"},
-                "slack": {"status": "connected" if daemon_running else "disconnected"},
+                "agent_ssh": {"status": passive_service_status},
+                "smtp": {"status": passive_service_status},
+                "slack": {"status": passive_service_status},
             },
             "timestamp": datetime.now(UTC),
         }

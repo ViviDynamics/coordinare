@@ -76,8 +76,30 @@ class ProjectConfiguration(BaseSettings):
     @field_validator("github_token")
     @classmethod
     def _validate_github_token(cls, value: SecretStr) -> SecretStr:
-        if not value.get_secret_value().strip():
+        token = value.get_secret_value().strip()
+        if not token:
             msg = "github_token must be non-empty"
+            raise ValueError(msg)
+        if token.startswith("${") and token.endswith("}"):
+            msg = (
+                "github_token must be a real token value; unresolved placeholder detected. "
+                "Set COORDINARE_GITHUB_TOKEN or update config.yaml."
+            )
+            raise ValueError(msg)
+        return value
+
+    @field_validator("slack_webhook_url")
+    @classmethod
+    def _validate_slack_webhook_url(cls, value: SecretStr) -> SecretStr:
+        webhook = value.get_secret_value().strip()
+        if not webhook:
+            msg = "slack_webhook_url must be non-empty"
+            raise ValueError(msg)
+        if webhook.startswith("${") and webhook.endswith("}"):
+            msg = (
+                "slack_webhook_url must be a real webhook value; unresolved placeholder detected. "
+                "Set COORDINARE_SLACK_WEBHOOK_URL or update config.yaml."
+            )
             raise ValueError(msg)
         return value
 

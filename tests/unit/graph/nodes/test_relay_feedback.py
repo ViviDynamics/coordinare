@@ -21,3 +21,24 @@ async def test_relay_feedback_transitions_to_monitoring_agent() -> None:
     result = await relay_feedback(state)
 
     assert result["phase"] == "monitoring_agent"
+
+
+@pytest.mark.asyncio
+async def test_relay_feedback_skips_relay_when_reviews_empty() -> None:
+    """Guard: agent.relay_feedback must not be called with an empty reviews list."""
+    called = False
+
+    class _AgentShouldNotBeCalled:
+        async def relay_feedback(self, review_payload):
+            nonlocal called
+            called = True
+            return {"status": "acknowledged"}
+
+    state = initial_state()
+    state["agent_service"] = _AgentShouldNotBeCalled()
+    state["pending_reviews"] = []
+
+    result = await relay_feedback(state)
+
+    assert not called, "relay_feedback should not be called when pending_reviews is empty"
+    assert result["phase"] == "monitoring_agent"

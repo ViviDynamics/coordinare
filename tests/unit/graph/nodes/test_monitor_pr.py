@@ -25,3 +25,28 @@ async def test_monitor_pr_routes_to_merge_on_human_approval() -> None:
     result = await monitor_pr(state)
 
     assert result["phase"] == "merging"
+
+
+@pytest.mark.asyncio
+async def test_monitor_pr_routes_to_idle_when_pr_node_id_missing() -> None:
+    """Guard: missing pr_node_id must not propagate an empty string to the GitHub API."""
+    state = initial_state()
+    state["current_card"] = {}  # no pr_node_id key
+    state["human_reviewers"] = ["alice"]
+    state["github_service"] = _GitHub()
+
+    result = await monitor_pr(state)
+
+    assert result["phase"] == "idle"
+
+
+@pytest.mark.asyncio
+async def test_monitor_pr_routes_to_idle_when_pr_node_id_is_none() -> None:
+    state = initial_state()
+    state["current_card"] = {"pr_node_id": None}
+    state["human_reviewers"] = ["alice"]
+    state["github_service"] = _GitHub()
+
+    result = await monitor_pr(state)
+
+    assert result["phase"] == "idle"

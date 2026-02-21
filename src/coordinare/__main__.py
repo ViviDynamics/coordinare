@@ -89,11 +89,20 @@ async def _bootstrap_services(config: ProjectConfiguration) -> CoordinareState:
 async def _run(config: ProjectConfiguration) -> None:
     run_mode = os.getenv("COORDINARE_RUN_MODE", "shell").strip().lower() or "shell"
     graph = CoordinareGraphBuilder().build()
+    # SC-005: heartbeat must not exceed 30s; cap here enforces the spec constraint
+    # regardless of what config.heartbeat_interval_seconds is set to.
+    effective_heartbeat = min(config.heartbeat_interval_seconds, 30)
+    if effective_heartbeat < config.heartbeat_interval_seconds:
+        logger.info(
+            "heartbeat_interval_capped",
+            configured_seconds=config.heartbeat_interval_seconds,
+            effective_seconds=effective_heartbeat,
+        )
     daemon = CoordinareDaemon(
         graph,
         run_mode=run_mode,
         poll_interval_seconds=config.poll_interval_seconds,
-        heartbeat_interval_seconds=min(config.heartbeat_interval_seconds, 30),
+        heartbeat_interval_seconds=effective_heartbeat,
         max_cycles=config.max_cycles,
     )
 

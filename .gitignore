@@ -230,3 +230,4 @@ config.local.yaml
 .codex/sessions/
 .codex/shell_snapshots/
 .codex/tmp/
+.codex/rules/default.rules

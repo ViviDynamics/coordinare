@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from anthropic import AsyncAnthropic
@@ -30,14 +31,23 @@ class ClaudeService:
             blocks = response.content
             if blocks and hasattr(blocks[0], "text"):
                 text = blocks[0].text
-        lowered = text.lower()
-        sufficient = "\"sufficient\": true" in lowered or "sufficient: true" in lowered
         if not text:
             return {"sufficient": True, "questions": [], "rationale": "empty model response"}
-        if sufficient:
-            return {"sufficient": True, "questions": [], "rationale": text}
-        return {
-            "sufficient": False,
-            "questions": ["Please clarify acceptance criteria."],
-            "rationale": text,
-        }
+        try:
+            parsed = json.loads(text)
+            return {
+                "sufficient": bool(parsed.get("sufficient", False)),
+                "questions": list(parsed.get("questions", [])),
+                "rationale": str(parsed.get("rationale", text)),
+            }
+        except (json.JSONDecodeError, AttributeError):
+            # Fall back to heuristic if model response is not valid JSON
+            lowered = text.lower()
+            sufficient = '"sufficient": true' in lowered or "sufficient: true" in lowered
+            if sufficient:
+                return {"sufficient": True, "questions": [], "rationale": text}
+            return {
+                "sufficient": False,
+                "questions": ["Please clarify acceptance criteria."],
+                "rationale": text,
+            }

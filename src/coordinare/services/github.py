@@ -212,11 +212,15 @@ class GitHubService:
     async def _execute(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
         if self._client is None:
             self._client = self._build_client()
-        result_or_awaitable = self._client.execute(gql(query), variable_values=variables)
-        if inspect.isawaitable(result_or_awaitable):
-            result = await result_or_awaitable
+        document = gql(query)
+        if hasattr(self._client, "execute_async"):
+            result = await self._client.execute_async(document, variable_values=variables)
         else:
-            result = result_or_awaitable
+            result_or_awaitable = self._client.execute(document, variable_values=variables)
+            if inspect.isawaitable(result_or_awaitable):
+                result = await result_or_awaitable
+            else:
+                result = result_or_awaitable
         if not isinstance(result, dict):
             msg = "GitHub GraphQL response must be a JSON object"
             raise ValueError(msg)
