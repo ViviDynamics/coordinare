@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "coordinare/workflow-snapshot/v1",
+  "title": "WorkflowSnapshot",
+  "description": "On-disk representation of the coordinare's current workflow position. Written atomically after every phase transition.",
+  "type": "object",
+  "required": ["schema_version", "snapshot_at", "phase"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Schema version. A value other than 1 indicates an incompatible prior version and must be discarded."
+    },
+    "snapshot_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "UTC ISO 8601 timestamp when this snapshot was written."
+    },
+    "phase": {
+      "type": "string",
+      "enum": [
+        "idle",
+        "dispatching",
+        "monitoring_agent",
+        "monitoring_pr",
+        "merging",
+        "relay_feedback",
+        "blocked",
+        "recovery"
+      ],
+      "description": "Current workflow phase at the time the snapshot was written."
+    },
+    "active_card_id": {
+      "type": ["string", "null"],
+      "description": "Board item node ID of the active card. Null when phase is 'idle'.",
+      "default": null
+    },
+    "active_card_title": {
+      "type": ["string", "null"],
+      "description": "Title of the active card. Null when phase is 'idle'.",
+      "default": null
+    },
+    "active_card_column": {
+      "type": ["string", "null"],
+      "description": "Board column name (e.g. 'In Progress') at the time the snapshot was written. Null when phase is 'idle'.",
+      "default": null
+    },
+    "pr_url": {
+      "type": ["string", "null"],
+      "format": "uri",
+      "description": "GitHub PR URL. Non-null in monitoring_pr, merging, relay_feedback phases.",
+      "default": null
+    },
+    "pr_node_id": {
+      "type": ["string", "null"],
+      "description": "GitHub PR node ID. Non-null in monitoring_pr, merging, relay_feedback phases.",
+      "default": null
+    },
+    "agent_session_id": {
+      "type": ["string", "null"],
+      "description": "Agent session identifier. Non-null in monitoring_agent and relay_feedback phases.",
+      "default": null
+    },
+    "open_questions": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Open questions pending team answers. Non-empty only in blocked phase.",
+      "default": []
+    }
+  }
+}

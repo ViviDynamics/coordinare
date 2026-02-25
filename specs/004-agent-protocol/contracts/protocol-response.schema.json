@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "coordinare/protocol-response/v1",
+  "title": "ProtocolResponse",
+  "description": "A structured reply from an agent to the coordinare. Serialised as JSON to the agent process stdout (SubprocessTransport) or equivalent. This schema is the single source of truth for both the coordinare's response validator and external agent implementors.",
+  "type": "object",
+  "required": ["status"],
+  "additionalProperties": false,
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "accepted",
+        "working",
+        "pr_opened",
+        "blocked",
+        "error",
+        "unknown",
+        "busy",
+        "acknowledged",
+        "session_expired"
+      ],
+      "description": "Current agent state. See status semantics below."
+    },
+    "session_id": {
+      "type": "string",
+      "description": "Agent-assigned session identifier. Populated on accepted; echoed on subsequent responses. Empty string if not applicable.",
+      "default": ""
+    },
+    "reason": {
+      "type": ["string", "null"],
+      "description": "Human-readable explanation. Required when status is error, blocked, or session_expired.",
+      "default": null
+    },
+    "questions": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Questions requiring human input. Must be non-empty when status is blocked.",
+      "default": []
+    },
+    "pr_url": {
+      "type": ["string", "null"],
+      "format": "uri",
+      "description": "URL of the pull request opened by the agent. Required when status is pr_opened.",
+      "default": null
+    },
+    "pr_node_id": {
+      "type": ["string", "null"],
+      "description": "GitHub node ID of the pull request. Required when status is pr_opened.",
+      "default": null
+    },
+    "progress": {
+      "type": ["string", "null"],
+      "description": "Optional human-readable description of current activity. May be present when status is working.",
+      "default": null
+    }
+  },
+  "$comment": "Status semantics: accepted=dispatch accepted; working=actively processing; pr_opened=PR created (pr_url+pr_node_id required); blocked=needs human input (questions required); error=unrecoverable failure (reason required); unknown=session not recognised; busy=cannot accept new work; acknowledged=relay_feedback received; session_expired=session context lost (reason required)."
+}

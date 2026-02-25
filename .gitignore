@@ -231,3 +231,4 @@ config.local.yaml
 .codex/shell_snapshots/
 .codex/tmp/
 .codex/rules/default.rules
+.claude/worktrees

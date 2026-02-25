@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "coordinare/health-response/v2",
+  "title": "HealthResponse",
+  "description": "Response schema for GET /health. Version 2 adds phase and snapshot_at fields sourced from persisted state.",
+  "type": "object",
+  "required": ["status", "uptime_seconds", "services", "timestamp"],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["healthy", "unhealthy"],
+      "description": "Overall health status. 'healthy' when daemon is running; 'unhealthy' when stopped."
+    },
+    "uptime_seconds": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Seconds since the daemon started."
+    },
+    "phase": {
+      "type": ["string", "null"],
+      "enum": [
+        "idle",
+        "dispatching",
+        "monitoring_agent",
+        "monitoring_pr",
+        "merging",
+        "relay_feedback",
+        "blocked",
+        "recovery",
+        null
+      ],
+      "description": "Current workflow phase sourced from persisted state. Null if no snapshot has been loaded or written yet.",
+      "default": null
+    },
+    "snapshot_at": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "UTC ISO 8601 timestamp of the last successful state write. Null if persistence has not yet written a snapshot.",
+      "default": null
+    },
+    "current_card": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["id", "title", "status"],
+          "properties": {
+            "id": {
+              "type": ["string", "null"],
+              "description": "Board item node ID."
+            },
+            "issue_number": {
+              "type": ["integer", "null"],
+              "description": "GitHub issue number."
+            },
+            "title": {
+              "type": ["string", "null"],
+              "description": "Card title."
+            },
+            "status": {
+              "type": ["string", "null"],
+              "description": "Board column name."
+            }
+          }
+        },
+        { "type": "null" }
+      ],
+      "description": "Active card details. Null when coordinare is idle."
+    },
+    "services": {
+      "type": "object",
+      "required": ["github", "agent_ssh", "smtp", "slack"],
+      "properties": {
+        "github": {
+          "type": "object",
+          "required": ["status"],
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": ["connected", "degraded", "disconnected", "unknown"]
+            },
+            "last_poll_at": {
+              "type": ["string", "null"],
+              "format": "date-time"
+            }
+          }
+        },
+        "agent_ssh": {
+          "type": "object",
+          "required": ["status"],
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": ["unknown", "disconnected", "connected"]
+            }
+          }
+        },
+        "smtp": {
+          "type": "object",
+          "required": ["status"],
+          "properties": {
+            "status": {
+              "type": "string"
+            }
+          }
+        },
+        "slack": {
+          "type": "object",
+          "required": ["status"],
+          "properties": {
+            "status": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "UTC ISO 8601 timestamp when this health response was generated."
+    }
+  }
+}

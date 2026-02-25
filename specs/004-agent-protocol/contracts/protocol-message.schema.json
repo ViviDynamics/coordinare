@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "coordinare/protocol-message/v1",
+  "title": "ProtocolMessage",
+  "description": "A structured command sent by the coordinare to an agent via any transport. Transport-agnostic; serialised as JSON to stdin of the agent process (SubprocessTransport) or equivalent.",
+  "type": "object",
+  "required": ["action", "session_id", "payload"],
+  "additionalProperties": false,
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": ["dispatch", "status", "relay_feedback", "health"],
+      "description": "The operation to perform."
+    },
+    "session_id": {
+      "type": "string",
+      "description": "Identifies the agent session. Empty string on initial dispatch; must be the session_id returned in the dispatch response for status, relay_feedback, and health actions.",
+      "default": ""
+    },
+    "payload": {
+      "type": "object",
+      "description": "Action-specific data. Shape varies by action (see dispatch_payload and relay_feedback_payload schemas). Empty object for status and health.",
+      "default": {}
+    }
+  },
+  "$defs": {
+    "dispatch_payload": {
+      "title": "DispatchPayload",
+      "description": "Payload for action=dispatch. Contains the full card context.",
+      "type": "object",
+      "required": ["title", "description", "acceptance_criteria", "board_card_id", "column"],
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string"
+        },
+        "acceptance_criteria": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "board_card_id": {
+          "type": "string",
+          "description": "Board item node ID (e.g. PVT_kwDOABCDEF)"
+        },
+        "column": {
+          "type": "string",
+          "description": "Board column name at time of dispatch (e.g. 'In Progress')"
+        },
+        "assigned_agent": {
+          "type": ["string", "null"],
+          "default": null
+        }
+      }
+    },
+    "relay_feedback_payload": {
+      "title": "RelayFeedbackPayload",
+      "description": "Payload for action=relay_feedback.",
+      "type": "object",
+      "required": ["session_id", "pr_url", "reviews"],
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "description": "The session ID from the original dispatch response."
+        },
+        "pr_url": {
+          "type": "string",
+          "format": "uri",
+          "description": "URL of the pull request under review."
+        },
+        "reviews": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["reviewer", "body"],
+            "properties": {
+              "reviewer": {
+                "type": "string",
+                "description": "Identity of the reviewer (e.g. 'copilot', 'human:jdoe')"
+              },
+              "body": {
+                "type": "string",
+                "description": "Comment text."
+              },
+              "file": {
+                "type": ["string", "null"],
+                "default": null,
+                "description": "File path the comment applies to, if applicable."
+              },
+              "line": {
+                "type": ["integer", "null"],
+                "default": null,
+                "description": "Line number the comment applies to, if applicable."
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

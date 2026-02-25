@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12",
+  "$id": "https://coordinare/schemas/005/health-response",
+  "title": "HealthResponse",
+  "description": "Response schema for GET /health (v3 — adds circuit_breakers from spec 005)",
+  "type": "object",
+  "required": ["status", "phase", "circuit_breakers"],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["ok", "degraded", "unhealthy"],
+      "description": "ok = all core circuits closed; degraded = at least one core circuit (github/agent/anthropic) open; unhealthy = daemon stopped"
+    },
+    "phase": {
+      "type": "string",
+      "description": "Current coordinare workflow phase (from spec 003 WorkflowSnapshot)"
+    },
+    "snapshot_at": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "ISO-8601 timestamp of last persisted WorkflowSnapshot (from spec 003)"
+    },
+    "circuit_breakers": {
+      "type": "object",
+      "description": "Current circuit breaker state per service",
+      "properties": {
+        "github":    { "$ref": "#/$defs/CircuitStatus" },
+        "slack":     { "$ref": "#/$defs/CircuitStatus" },
+        "smtp":      { "$ref": "#/$defs/CircuitStatus" },
+        "anthropic": { "$ref": "#/$defs/CircuitStatus" },
+        "agent":     { "$ref": "#/$defs/CircuitStatus" }
+      },
+      "additionalProperties": { "$ref": "#/$defs/CircuitStatus" }
+    },
+    "active_card_id": {
+      "type": ["string", "null"],
+      "description": "Board card ID currently being processed, if any"
+    },
+    "uptime_seconds": {
+      "type": "number",
+      "minimum": 0
+    }
+  },
+  "$defs": {
+    "CircuitStatus": {
+      "type": "object",
+      "required": ["state"],
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": ["closed", "open", "half_open"],
+          "description": "closed = normal; open = calls blocked; half_open = single probe in progress"
+        },
+        "opened_at": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "description": "ISO-8601 timestamp when circuit was last opened (null when closed)"
+        },
+        "failure_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of exhausted retry budgets within the current observation window"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
