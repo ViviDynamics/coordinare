@@ -142,3 +142,106 @@ async def test_check_board_blocked_card_first_time() -> None:
 
     assert result["phase"] == "blocked"
     assert result["current_card"]["id"] == "ITEM_B"
+
+
+# --- Early-return priority tests (in_review > in_progress > blocked > todo) ---
+
+
+class _GitHubInReview:
+    async def poll_board(self):
+        return {
+            "snapshot": {"IN_REVIEW": ["ITEM_R"], "TODO": [], "IN_PROGRESS": [], "BLOCKED": []},
+            "titles": {"ITEM_R": "PR Card"},
+            "descriptions": {"ITEM_R": ""},
+            "issue_numbers": {"ITEM_R": 3},
+        }
+
+
+@pytest.mark.asyncio
+async def test_check_board_routes_to_monitoring_pr_for_in_review() -> None:
+    state = initial_state()
+    state["github_service"] = _GitHubInReview()
+
+    result = await check_board(state)
+
+    assert result["phase"] == "monitoring_pr"
+
+
+class _GitHubInProgress:
+    async def poll_board(self):
+        return {
+            "snapshot": {"IN_PROGRESS": ["ITEM_P"], "TODO": [], "IN_REVIEW": [], "BLOCKED": []},
+            "titles": {"ITEM_P": "Active Card"},
+            "descriptions": {"ITEM_P": ""},
+            "issue_numbers": {"ITEM_P": 4},
+        }
+
+
+@pytest.mark.asyncio
+async def test_check_board_routes_to_monitoring_agent_for_in_progress() -> None:
+    state = initial_state()
+    state["github_service"] = _GitHubInProgress()
+
+    result = await check_board(state)
+
+    assert result["phase"] == "monitoring_agent"
+
+
+class _GitHubEmpty:
+    async def poll_board(self):
+        return {
+            "snapshot": {"TODO": [], "IN_PROGRESS": [], "IN_REVIEW": [], "BLOCKED": []},
+            "titles": {},
+            "descriptions": {},
+            "issue_numbers": {},
+        }
+
+
+@pytest.mark.asyncio
+async def test_check_board_idle_when_board_empty() -> None:
+    state = initial_state()
+    state["github_service"] = _GitHubEmpty()
+
+    result = await check_board(state)
+
+    assert result["phase"] == "idle"
+
+
+# --- Blocked card edge cases: bad comment data ---
+
+
+class _GitHubBlockedBadComments:
+    async def poll_board(self):
+        return {
+            "snapshot": {"BLOCKED": ["ITEM_B"], "TODO": [], "IN_PROGRESS": [], "IN_REVIEW": []},
+            "titles": {"ITEM_B": "Blocked Card"},
+            "descriptions": {"ITEM_B": "Desc"},
+            "issue_numbers": {"ITEM_B": 2},
+        }
+
+    async def get_issue_details(self, issue_id: str):
+        return {
+            "comments": {
+                "nodes": [
+                    "not a dict",
+                    {"createdAt": ""},
+                    {"createdAt": "invalid-date"},
+                ]
+            }
+        }
+
+    async def move_card(self, item_id: str, status: str) -> None:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_check_board_blocked_with_bad_comment_data_sends_reminder() -> None:
+    """Non-dict comments, empty dates, invalid dates should be skipped."""
+    state = initial_state()
+    state["github_service"] = _GitHubBlockedBadComments()
+    state["last_blocked_notified_at"] = datetime(2026, 2, 20, 10, 0, tzinfo=UTC)
+    state["blocked_reminder_hours"] = 24
+
+    result = await check_board(state)
+
+    assert result["phase"] == "blocked"

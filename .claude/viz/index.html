@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Coordinare Run Visualization</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    background: #0d1117;
+    color: #e6edf3;
+    min-height: 100vh;
+    padding: 32px;
+  }
+  h1 {
+    font-size: 18px;
+    font-weight: 600;
+    color: #58a6ff;
+    margin-bottom: 6px;
+    letter-spacing: 0.5px;
+  }
+  .subtitle {
+    font-size: 12px;
+    color: #6e7681;
+    margin-bottom: 36px;
+  }
+
+  /* ── Timeline ───────────────────────────────────── */
+  .timeline {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    margin-bottom: 40px;
+  }
+  .timeline::before {
+    content: '';
+    position: absolute;
+    left: 139px;
+    top: 0; bottom: 0;
+    width: 2px;
+    background: #21262d;
+  }
+
+  .event {
+    display: flex;
+    align-items: flex-start;
+    gap: 16px;
+    padding: 10px 0;
+    opacity: 0;
+    transform: translateX(-8px);
+    animation: fadeIn 0.35s ease forwards;
+  }
+  @keyframes fadeIn {
+    to { opacity: 1; transform: translateX(0); }
+  }
+
+  .ts {
+    font-size: 11px;
+    color: #6e7681;
+    width: 120px;
+    text-align: right;
+    padding-top: 3px;
+    flex-shrink: 0;
+  }
+
+  .dot-wrap {
+    width: 18px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    flex-shrink: 0;
+    position: relative;
+    z-index: 1;
+  }
+  .dot {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    border: 2px solid #0d1117;
+    margin-top: 2px;
+    flex-shrink: 0;
+  }
+  .dot.green  { background: #3fb950; box-shadow: 0 0 8px #3fb95066; }
+  .dot.blue   { background: #58a6ff; box-shadow: 0 0 8px #58a6ff66; }
+  .dot.yellow { background: #d29922; box-shadow: 0 0 8px #d2992266; }
+  .dot.red    { background: #f85149; box-shadow: 0 0 8px #f8514966; }
+  .dot.purple { background: #bc8cff; box-shadow: 0 0 8px #bc8cff44; }
+  .dot.gray   { background: #6e7681; }
+
+  .body { flex: 1; }
+  .event-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: #e6edf3;
+    margin-bottom: 4px;
+  }
+  .event-name .badge {
+    display: inline-block;
+    font-size: 10px;
+    font-weight: 500;
+    padding: 1px 7px;
+    border-radius: 20px;
+    margin-left: 8px;
+    vertical-align: middle;
+  }
+  .badge-startup  { background: #1f6feb33; color: #58a6ff; border: 1px solid #1f6feb; }
+  .badge-activity { background: #23863633; color: #3fb950; border: 1px solid #238636; }
+  .badge-shutdown { background: #6e768133; color: #8b949e; border: 1px solid #6e7681; }
+  .badge-warn     { background: #9e640033; color: #d29922; border: 1px solid #9e6400; }
+  .badge-error    { background: #da363333; color: #f85149; border: 1px solid #da3633; }
+
+  .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 4px;
+  }
+  .kv {
+    font-size: 11px;
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 4px;
+    padding: 2px 8px;
+    color: #8b949e;
+  }
+  .kv span { color: #d2a8ff; }
+
+  .section-label {
+    font-size: 10px;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: #6e7681;
+    padding: 20px 0 8px 154px;
+    font-weight: 600;
+  }
+
+  /* ── Services grid ──────────────────────────────── */
+  .services {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 12px;
+    margin-bottom: 40px;
+  }
+  .svc {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    padding: 14px 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    opacity: 0;
+    animation: fadeIn 0.4s ease forwards;
+  }
+  .svc-icon {
+    font-size: 22px;
+    line-height: 1;
+  }
+  .svc-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: #e6edf3;
+  }
+  .svc-status {
+    font-size: 10px;
+    color: #3fb950;
+    margin-top: 2px;
+  }
+  .svc-note {
+    font-size: 10px;
+    color: #6e7681;
+    margin-top: 2px;
+  }
+
+  /* ── LangGraph flow ─────────────────────────────── */
+  .graph-section {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 10px;
+    padding: 24px 28px;
+    margin-bottom: 40px;
+  }
+  .graph-title {
+    font-size: 12px;
+    color: #58a6ff;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    margin-bottom: 20px;
+  }
+  .flow {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    flex-wrap: wrap;
+    row-gap: 12px;
+  }
+  .node {
+    background: #0d1117;
+    border: 1.5px solid #30363d;
+    border-radius: 6px;
+    padding: 8px 14px;
+    font-size: 12px;
+    color: #e6edf3;
+    font-weight: 500;
+    position: relative;
+    white-space: nowrap;
+  }
+  .node.active {
+    border-color: #3fb950;
+    color: #3fb950;
+    box-shadow: 0 0 10px #3fb95033;
+  }
+  .node.start-end {
+    border-color: #58a6ff;
+    color: #58a6ff;
+    border-radius: 20px;
+  }
+  .node.outcome {
+    border-color: #6e7681;
+    color: #8b949e;
+  }
+  .arrow {
+    font-size: 13px;
+    color: #30363d;
+    padding: 0 6px;
+    user-select: none;
+  }
+  .arrow.taken {
+    color: #3fb950;
+  }
+  .edge-label {
+    font-size: 10px;
+    color: #6e7681;
+    padding: 0 4px;
+  }
+  .edge-label.taken {
+    color: #3fb950;
+  }
+  .flow-note {
+    margin-top: 16px;
+    font-size: 11px;
+    color: #6e7681;
+    border-left: 2px solid #238636;
+    padding-left: 12px;
+  }
+  .flow-note strong { color: #3fb950; }
+
+  /* ── Summary card ───────────────────────────────── */
+  .summary {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 12px;
+  }
+  .stat {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    padding: 16px;
+    opacity: 0;
+    animation: fadeIn 0.5s ease forwards;
+  }
+  .stat-num {
+    font-size: 26px;
+    font-weight: 700;
+    color: #e6edf3;
+    line-height: 1;
+  }
+  .stat-num.green  { color: #3fb950; }
+  .stat-num.blue   { color: #58a6ff; }
+  .stat-num.yellow { color: #d29922; }
+  .stat-label {
+    font-size: 11px;
+    color: #6e7681;
+    margin-top: 6px;
+  }
+
+  /* animation delays */
+  .e1  { animation-delay: 0.05s; }
+  .e2  { animation-delay: 0.15s; }
+  .e3  { animation-delay: 0.25s; }
+  .e4  { animation-delay: 0.35s; }
+  .e5  { animation-delay: 0.45s; }
+  .e6  { animation-delay: 0.55s; }
+  .e7  { animation-delay: 0.65s; }
+  .e8  { animation-delay: 0.75s; }
+  .s1  { animation-delay: 0.30s; }
+  .s2  { animation-delay: 0.40s; }
+  .s3  { animation-delay: 0.50s; }
+  .s4  { animation-delay: 0.60s; }
+  .s5  { animation-delay: 0.70s; }
+  .s6  { animation-delay: 0.80s; }
+  .st1 { animation-delay: 0.80s; }
+  .st2 { animation-delay: 0.90s; }
+  .st3 { animation-delay: 1.00s; }
+  .st4 { animation-delay: 1.10s; }
+  .st5 { animation-delay: 1.20s; }
+</style>
+</head>
+<body>
+
+<h1>coordinare — run trace</h1>
+<p class="subtitle">2026-02-21 21:53:38 UTC · max_cycles=1 · run_mode=shell · exit 0</p>
+
+<!-- ── Phase 1: Startup ─────────────────────────── -->
+<div class="section-label">Phase 1 · Startup</div>
+<div class="timeline">
+
+  <div class="event e1">
+    <div class="ts">21:53:38.448</div>
+    <div class="dot-wrap"><div class="dot blue"></div></div>
+    <div class="body">
+      <div class="event-name">CLI parsed · config loaded <span class="badge badge-startup">startup</span></div>
+      <div class="meta">
+        <div class="kv">config <span>config.yaml</span></div>
+        <div class="kv">log_level <span>debug</span></div>
+        <div class="kv">run_mode <span>shell</span></div>
+        <div class="kv">max_cycles <span>1</span></div>
+        <div class="kv">health_port <span>8081</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="event e2">
+    <div class="ts">21:53:38.449</div>
+    <div class="dot-wrap"><div class="dot blue"></div></div>
+    <div class="body">
+      <div class="event-name">LangGraph compiled · services bootstrapped <span class="badge badge-startup">startup</span></div>
+      <div class="meta">
+        <div class="kv">github <span>initialized ✓</span></div>
+        <div class="kv">agent_ssh <span>configured ✓</span></div>
+        <div class="kv">claude <span>configured ✓</span></div>
+        <div class="kv">email <span>configured ✓</span></div>
+        <div class="kv">slack <span>configured ✓</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="event e3">
+    <div class="ts">21:53:38.449</div>
+    <div class="dot-wrap"><div class="dot green"></div></div>
+    <div class="body">
+      <div class="event-name">daemon startup complete <span class="badge badge-startup">startup</span></div>
+      <div class="meta">
+        <div class="kv">poll_interval <span>30s</span></div>
+        <div class="kv">heartbeat <span>30s</span></div>
+        <div class="kv">uvicorn <span>:8081 ✓</span></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ── Services ────────────────────────────────── -->
+<div class="section-label">Services bootstrapped</div>
+<div class="services">
+  <div class="svc s1">
+    <div class="svc-icon">🐙</div>
+    <div>
+      <div class="svc-label">GitHub</div>
+      <div class="svc-status">● initialized</div>
+      <div class="svc-note">GraphQL · ViviDynamics</div>
+    </div>
+  </div>
+  <div class="svc s2">
+    <div class="svc-icon">🤖</div>
+    <div>
+      <div class="svc-label">Claude</div>
+      <div class="svc-status">● configured</div>
+      <div class="svc-note">anthropic API</div>
+    </div>
+  </div>
+  <div class="svc s3">
+    <div class="svc-icon">🔐</div>
+    <div>
+      <div class="svc-label">Agent SSH</div>
+      <div class="svc-status">● configured</div>
+      <div class="svc-note">agent.example.com</div>
+    </div>
+  </div>
+  <div class="svc s4">
+    <div class="svc-icon">💬</div>
+    <div>
+      <div class="svc-label">Slack</div>
+      <div class="svc-status">● configured</div>
+      <div class="svc-note">webhook · #coordinare</div>
+    </div>
+  </div>
+  <div class="svc s5">
+    <div class="svc-icon">📧</div>
+    <div>
+      <div class="svc-label">Email (SMTP)</div>
+      <div class="svc-status">● configured</div>
+      <div class="svc-note">smtp.mailgun.org:587</div>
+    </div>
+  </div>
+  <div class="svc s6">
+    <div class="svc-icon">❤️</div>
+    <div>
+      <div class="svc-label">Health API</div>
+      <div class="svc-status">● listening</div>
+      <div class="svc-note">FastAPI · :8081</div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Phase 2: Cycle 1 / LangGraph ────────────── -->
+<div class="section-label">Phase 2 · Cycle 1 — LangGraph execution</div>
+
+<div class="graph-section">
+  <div class="graph-title">CoordinareGraph · cycle 1 traversal</div>
+  <div class="flow">
+    <div class="node start-end">START</div>
+    <div class="arrow taken">→</div>
+    <div class="node active">check_board</div>
+    <div class="arrow taken">→</div>
+    <div class="edge-label taken">no actionable<br>cards found</div>
+    <div class="arrow taken">→</div>
+    <div class="node outcome">idle</div>
+    <div class="arrow">→</div>
+    <div class="node start-end">END</div>
+  </div>
+
+  <div style="margin-top:18px; font-size:11px; color:#6e7681; border-left:2px solid #30363d; padding-left:12px; line-height:1.8;">
+    <div><strong style="color:#8b949e;">Skipped nodes:</strong>
+      assess_card · dispatch_card · monitor_agent · monitor_pr · merge_pr · handle_blocked · relay_feedback · notify
+    </div>
+  </div>
+
+  <div class="flow-note" style="margin-top:14px;">
+    <strong>check_board</strong> polled GitHub GraphQL (ViviDynamics project #1).
+    No cards in <em>Ready</em> state → router returned <em>idle</em> → cycle complete.
+  </div>
+</div>
+
+<div class="timeline">
+
+  <div class="event e5">
+    <div class="ts">21:53:38.914</div>
+    <div class="dot-wrap"><div class="dot green"></div></div>
+    <div class="body">
+      <div class="event-name">processing cycle completed <span class="badge badge-activity">activity</span></div>
+      <div class="meta">
+        <div class="kv">cycle <span>1</span></div>
+        <div class="kv">phase <span>idle</span></div>
+        <div class="kv">duration <span>~465 ms</span></div>
+        <div class="kv">max_cycles hit <span>true</span></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ── Phase 3: Shutdown ────────────────────────── -->
+<div class="section-label">Phase 3 · Shutdown</div>
+<div class="timeline">
+
+  <div class="event e6">
+    <div class="ts">21:53:38.914</div>
+    <div class="dot-wrap"><div class="dot gray"></div></div>
+    <div class="body">
+      <div class="event-name">daemon stopped <span class="badge badge-shutdown">shutdown</span></div>
+      <div class="meta">
+        <div class="kv">graceful <span>True</span></div>
+        <div class="kv">cycle_interrupted <span>False</span></div>
+        <div class="kv">run_mode <span>shell</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="event e7">
+    <div class="ts">21:53:38.9xx</div>
+    <div class="dot-wrap"><div class="dot gray"></div></div>
+    <div class="body">
+      <div class="event-name">uvicorn server stopped · process exit 0 <span class="badge badge-shutdown">shutdown</span></div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ── Previous failed attempt note ────────────── -->
+<div class="section-label">Previous attempt (failed)</div>
+<div class="timeline">
+
+  <div class="event e8">
+    <div class="ts">21:47:32</div>
+    <div class="dot-wrap"><div class="dot red"></div></div>
+    <div class="body">
+      <div class="event-name">exit 1 — two failures <span class="badge badge-error">error</span></div>
+      <div class="meta">
+        <div class="kv">issue 1 <span>[Errno 48] port 8080 in use (Docker)</span></div>
+        <div class="kv">issue 2 <span>asyncio CancelledError — GitHub GraphQL mid-flight</span></div>
+      </div>
+      <div style="margin-top:8px; font-size:11px; color:#6e7681;">
+        Port conflict caused uvicorn to call <code style="color:#f85149">sys.exit(1)</code>, which cancelled the daemon task and interrupted the in-flight GitHub API call.
+        Fixed by setting <code style="color:#8b949e">COORDINARE_HEALTH_CHECK_PORT=8081</code>.
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ── Summary ──────────────────────────────────── -->
+<div class="section-label">Run summary</div>
+<div class="summary">
+  <div class="stat st1">
+    <div class="stat-num green">0</div>
+    <div class="stat-label">exit code</div>
+  </div>
+  <div class="stat st2">
+    <div class="stat-num blue">1</div>
+    <div class="stat-label">cycles completed</div>
+  </div>
+  <div class="stat st3">
+    <div class="stat-num blue">~465 ms</div>
+    <div class="stat-label">cycle duration</div>
+  </div>
+  <div class="stat st4">
+    <div class="stat-num green">6</div>
+    <div class="stat-label">services initialized</div>
+  </div>
+  <div class="stat st5">
+    <div class="stat-num yellow">0</div>
+    <div class="stat-label">cards dispatched<br><span style="color:#6e7681;font-size:10px;">(board was empty)</span></div>
+  </div>
+</div>
+
+</body>
+</html>

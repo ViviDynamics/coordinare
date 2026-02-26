@@ -42,6 +42,7 @@ class ProjectConfiguration(BaseSettings):
     log_level: str = Field(default="info", pattern="^(debug|info|warning|error)$")
     heartbeat_interval_seconds: int = Field(default=30, ge=5, le=300)
     max_cycles: int | None = Field(default=None, ge=1)
+    state_file_path: Path = Field(default=Path("./coordinare.state.json"))
 
     @classmethod
     def settings_customise_sources(

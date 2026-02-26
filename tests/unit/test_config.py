@@ -160,3 +160,23 @@ def test_rejects_empty_slack_webhook_url() -> None:
             slack_webhook_url="   ",
             slack_channel="#eng",
         )
+
+
+# --- T040: state_file_path env var override ---
+
+
+def test_state_file_path_env_var_override(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    """COORDINARE_STATE_FILE_PATH env var overrides default state_file_path (FR-010)."""
+    from pathlib import Path
+
+    monkeypatch.setenv("COORDINARE_STATE_FILE_PATH", "/tmp/custom.json")
+    config = ProjectConfiguration.from_yaml(_write_config(tmp_path))
+    assert config.state_file_path == Path("/tmp/custom.json")
+
+
+def test_state_file_path_default(tmp_path) -> None:
+    """Default state_file_path is ./coordinare.state.json."""
+    from pathlib import Path
+
+    config = ProjectConfiguration.from_yaml(_write_config(tmp_path))
+    assert config.state_file_path == Path("./coordinare.state.json")

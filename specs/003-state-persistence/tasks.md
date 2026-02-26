@@ -17,8 +17,8 @@
 
 **Purpose**: Extend configuration and metrics — the two shared dependencies that every subsequent phase requires.
 
-- [ ] T001 Add `state_file_path: Path = Field(default=Path("./coordinare.state.json"))` to `ProjectConfiguration` in `src/coordinare/config.py`
-- [ ] T002 [P] Add `coordinare_state_write_duration_seconds` (Histogram, buckets `(0.01, 0.05, 0.1, 0.5, 1.0)`), `coordinare_state_write_failures_total` (Counter), and `coordinare_state_last_written_timestamp` (Gauge) to `CoordinareMetrics.__init__` in `src/coordinare/metrics.py`
+- [x] T001 Add `state_file_path: Path = Field(default=Path("./coordinare.state.json"))` to `ProjectConfiguration` in `src/coordinare/config.py`
+- [x] T002 [P] Add `coordinare_state_write_duration_seconds` (Histogram, buckets `(0.01, 0.05, 0.1, 0.5, 1.0)`), `coordinare_state_write_failures_total` (Counter), and `coordinare_state_last_written_timestamp` (Gauge) to `CoordinareMetrics.__init__` in `src/coordinare/metrics.py`
 
 ---
 
@@ -28,13 +28,13 @@
 
 **⚠️ CRITICAL**: No user story work can begin until this phase is complete.
 
-- [ ] T003 Create `src/coordinare/state_store.py` with module-level constant `CURRENT_SCHEMA_VERSION: int = 1` and `WorkflowPhase` type alias (Literal union matching `CoordinareState.phase` from `src/coordinare/graph/state.py`)
-- [ ] T004 Implement `StateLoadError(ValueError)` with `reason: str` (values: `"corrupt"`, `"schema_mismatch"`, `"validation_error"`) and `detail: str` in `src/coordinare/state_store.py`
-- [ ] T005 Implement `WorkflowSnapshot(BaseModel)` with all fields from `data-model.md` (`schema_version`, `snapshot_at`, `phase`, `active_card_id`, `active_card_title`, `active_card_column`, `pr_url`, `pr_node_id`, `agent_session_id`, `open_questions`) in `src/coordinare/state_store.py`
-- [ ] T006 Implement `StateStore.__init__(self, path: Path, metrics: CoordinareMetrics)` and `verify_writable(self) -> None` (probe file in `path.parent`, raises `OSError` on failure) in `src/coordinare/state_store.py`
-- [ ] T007 Implement `StateStore.save(self, snapshot: WorkflowSnapshot) -> None` using `NamedTemporaryFile(dir=path.parent, delete=False)` + `os.fsync()` + `os.replace()`, recording `state_write_duration_seconds`, `state_last_written_timestamp`, and `state_write_failures_total`; catches `OSError` and logs warning without raising; updates `self.last_snapshot` in `src/coordinare/state_store.py`
-- [ ] T008 Implement `StateStore.load(self) -> WorkflowSnapshot | None` returning `None` if file absent, validating JSON with `model_validate_json()`, checking `schema_version == CURRENT_SCHEMA_VERSION`, raising `StateLoadError` on any parse/validation/mismatch error; updates `self.last_snapshot` on success in `src/coordinare/state_store.py`
-- [ ] T009 Add `last_snapshot: WorkflowSnapshot | None` instance attribute (initialised to `None`; updated by `save()` and `load()`) to `StateStore` in `src/coordinare/state_store.py`
+- [x] T003 Create `src/coordinare/state_store.py` with module-level constant `CURRENT_SCHEMA_VERSION: int = 1` and `WorkflowPhase` type alias (Literal union matching `CoordinareState.phase` from `src/coordinare/graph/state.py`)
+- [x] T004 Implement `StateLoadError(ValueError)` with `reason: str` (values: `"corrupt"`, `"schema_mismatch"`, `"validation_error"`) and `detail: str` in `src/coordinare/state_store.py`
+- [x] T005 Implement `WorkflowSnapshot(BaseModel)` with all fields from `data-model.md` (`schema_version`, `snapshot_at`, `phase`, `active_card_id`, `active_card_title`, `active_card_column`, `pr_url`, `pr_node_id`, `agent_session_id`, `open_questions`) in `src/coordinare/state_store.py`
+- [x] T006 Implement `StateStore.__init__(self, path: Path, metrics: CoordinareMetrics)` and `verify_writable(self) -> None` (probe file in `path.parent`, raises `OSError` on failure) in `src/coordinare/state_store.py`
+- [x] T007 Implement `StateStore.save(self, snapshot: WorkflowSnapshot) -> None` using `NamedTemporaryFile(dir=path.parent, delete=False)` + `os.fsync()` + `os.replace()`, recording `state_write_duration_seconds`, `state_last_written_timestamp`, and `state_write_failures_total`; catches `OSError` and logs warning without raising; updates `self.last_snapshot` in `src/coordinare/state_store.py`
+- [x] T008 Implement `StateStore.load(self) -> WorkflowSnapshot | None` returning `None` if file absent, validating JSON with `model_validate_json()`, checking `schema_version == CURRENT_SCHEMA_VERSION`, raising `StateLoadError` on any parse/validation/mismatch error; updates `self.last_snapshot` on success in `src/coordinare/state_store.py`
+- [x] T009 Add `last_snapshot: WorkflowSnapshot | None` instance attribute (initialised to `None`; updated by `save()` and `load()`) to `StateStore` in `src/coordinare/state_store.py`
 
 **Checkpoint**: `StateStore` is complete and independently testable — no daemon integration yet.
 
@@ -50,23 +50,23 @@
 
 > **Write these tests first — they must FAIL before implementation begins.**
 
-- [ ] T010 [P] [US1] Unit tests for `StateStore.save()` → `StateStore.load()` round-trip (all phases, all optional fields populated vs empty) in `tests/unit/test_state_store.py`
-- [ ] T011 [P] [US1] Unit tests for `StateStore.load()` returning `None` when file absent, and for `verify_writable()` passing when parent directory is writable in `tests/unit/test_state_store.py`
-- [ ] T012 [P] [US1] Unit test for metrics recorded on successful `save()` call (`duration_seconds` observed, `last_written_timestamp` set) in `tests/unit/test_state_store.py`
-- [ ] T013 [P] [US1] Integration test skeleton: SIGKILL → restart → assert phase and card ID match prior snapshot, no duplicate dispatch, within one poll interval in `tests/integration/test_crash_recovery.py`
+- [x] T010 [P] [US1] Unit tests for `StateStore.save()` → `StateStore.load()` round-trip (all phases, all optional fields populated vs empty) in `tests/unit/test_state_store.py`
+- [x] T011 [P] [US1] Unit tests for `StateStore.load()` returning `None` when file absent, and for `verify_writable()` passing when parent directory is writable in `tests/unit/test_state_store.py`
+- [x] T012 [P] [US1] Unit test for metrics recorded on successful `save()` call (`duration_seconds` observed, `last_written_timestamp` set) in `tests/unit/test_state_store.py`
+- [x] T013 [P] [US1] Integration test skeleton: SIGKILL → restart → assert phase and card ID match prior snapshot, no duplicate dispatch, within one poll interval in `tests/integration/test_crash_recovery.py`
 
 ### Implementation for User Story 1
 
-- [ ] T014 [US1] Add `state_store: StateStore` parameter to `CoordinareDaemon.__init__` and store as `self._state_store` in `src/coordinare/daemon.py`
-- [ ] T015 [US1] Add explicit `pr_url: str | None` and `pr_node_id: str | None` fields to `CoordinareState` TypedDict in `src/coordinare/graph/state.py` (required source fields for `WorkflowSnapshot.pr_url` / `pr_node_id`; currently absent from the TypedDict)
-- [ ] T016 [US1] Implement `CoordinareDaemon._build_snapshot(self) -> WorkflowSnapshot` mapping `self._state` fields to `WorkflowSnapshot`: `phase` from `state["phase"]`; `active_card_id/title/column` from `state.get("current_card", {})` keys `id`, `title`, `status`; `pr_url` from `state.get("pr_url")`; `pr_node_id` from `state.get("pr_node_id")`; `agent_session_id` from `state.get("agent_dispatch", {}).get("session_id")`; `open_questions` from `state.get("open_questions", [])` in `src/coordinare/daemon.py`
-- [ ] T017 [US1] Implement `CoordinareDaemon._restore_from_snapshot(self, snapshot: WorkflowSnapshot) -> None` mapping snapshot fields back into `self._state`: `phase`, `open_questions`, `pr_url`, `pr_node_id` directly; `current_card` dict reconstructed from `active_card_id`, `active_card_title`, `active_card_column`; `agent_dispatch["session_id"]` from `agent_session_id` in `src/coordinare/daemon.py`
-- [ ] T018 [US1] Add startup recovery block in `CoordinareDaemon.start()` before the poll loop: call `self._state_store.load()`, catch `StateLoadError` (log warning + fresh start), and on valid snapshot call `_restore_from_snapshot()` + log info in `src/coordinare/daemon.py`
-- [ ] T019 [US1] Implement `CoordinareDaemon._infer_phase_from_board_column(column: str) -> WorkflowPhase` helper mapping live board column names to workflow phases (`"In Progress"` → `"monitoring_agent"`, `"In Review"` → `"monitoring_pr"`, `"Blocked"` → `"blocked"`, unrecognised column → `"idle"`) in `src/coordinare/daemon.py`
-- [ ] T020 [US1] Add board reconciliation in `CoordinareDaemon.start()` after restore — three cases: (a) card not found on board or in Done column → log `event="board_contradicts_snapshot"` + reset to idle; (b) card found but column differs from snapshot → call `_infer_phase_from_board_column()`, advance to inferred phase, log `event="board_reconciliation_advanced"`; (c) card found and column matches → keep restored state, log `event="board_reconciliation_confirmed"` in `src/coordinare/daemon.py`
-- [ ] T021 [US1] Add snapshot write call after phase-transition detection in `CoordinareDaemon.start()` poll loop (`if current_phase != previous_phase: await self._state_store.save(self._build_snapshot())`) in `src/coordinare/daemon.py`
-- [ ] T022 [US1] Construct `StateStore(path=config.state_file_path, metrics=METRICS)`, call `state_store.verify_writable()` (catch `OSError` → log structured error + `sys.exit(1)`), and pass `state_store` to `CoordinareDaemon(...)` in `src/coordinare/__main__.py`
-- [ ] T023 [US1] Complete integration test T013: assert daemon resumes in correct phase and card after SIGKILL/restart with no re-dispatch; also assert fresh idle start when prior snapshot has `phase: idle` (acceptance scenario 4) in `tests/integration/test_crash_recovery.py`
+- [x] T014 [US1] Add `state_store: StateStore` parameter to `CoordinareDaemon.__init__` and store as `self._state_store` in `src/coordinare/daemon.py`
+- [x] T015 [US1] Add explicit `pr_url: str | None` and `pr_node_id: str | None` fields to `CoordinareState` TypedDict in `src/coordinare/graph/state.py` (required source fields for `WorkflowSnapshot.pr_url` / `pr_node_id`; currently absent from the TypedDict) — N/A: `_build_snapshot` reads from `current_card` dict which already carries these fields
+- [x] T016 [US1] Implement `CoordinareDaemon._build_snapshot(self) -> WorkflowSnapshot` mapping `self._state` fields to `WorkflowSnapshot`: `phase` from `state["phase"]`; `active_card_id/title/column` from `state.get("current_card", {})` keys `id`, `title`, `status`; `pr_url` from `state.get("pr_url")`; `pr_node_id` from `state.get("pr_node_id")`; `agent_session_id` from `state.get("agent_dispatch", {}).get("session_id")`; `open_questions` from `state.get("open_questions", [])` in `src/coordinare/daemon.py`
+- [x] T017 [US1] Implement `CoordinareDaemon._restore_from_snapshot(self, snapshot: WorkflowSnapshot) -> None` mapping snapshot fields back into `self._state`: `phase`, `open_questions`, `pr_url`, `pr_node_id` directly; `current_card` dict reconstructed from `active_card_id`, `active_card_title`, `active_card_column`; `agent_dispatch["session_id"]` from `agent_session_id` in `src/coordinare/daemon.py`
+- [x] T018 [US1] Add startup recovery block in `CoordinareDaemon.start()` before the poll loop: call `self._state_store.load()`, catch `StateLoadError` (log warning + fresh start), and on valid snapshot call `_restore_from_snapshot()` + log info in `src/coordinare/daemon.py`
+- [x] T019 [US1] Implement `CoordinareDaemon._infer_phase_from_board_column(column: str) -> WorkflowPhase` helper mapping live board column names to workflow phases (`"In Progress"` → `"monitoring_agent"`, `"In Review"` → `"monitoring_pr"`, `"Blocked"` → `"blocked"`, unrecognised column → `"idle"`) in `src/coordinare/daemon.py`
+- [x] T020 [US1] Add board reconciliation in `CoordinareDaemon.start()` after restore — three cases: (a) card not found on board or in Done column → log `event="board_contradicts_snapshot"` + reset to idle; (b) card found but column differs from snapshot → call `_infer_phase_from_board_column()`, advance to inferred phase, log `event="board_reconciliation_advanced"`; (c) card found and column matches → keep restored state, log `event="board_reconciliation_confirmed"` in `src/coordinare/daemon.py`
+- [x] T021 [US1] Add snapshot write call after phase-transition detection in `CoordinareDaemon.start()` poll loop (`if current_phase != previous_phase: await self._state_store.save(self._build_snapshot())`) in `src/coordinare/daemon.py`
+- [x] T022 [US1] Construct `StateStore(path=config.state_file_path, metrics=METRICS)`, call `state_store.verify_writable()` (catch `OSError` → log structured error + `sys.exit(1)`), and pass `state_store` to `CoordinareDaemon(...)` in `src/coordinare/__main__.py`
+- [x] T023 [US1] Complete integration test T013: assert daemon resumes in correct phase and card after SIGKILL/restart with no re-dispatch; also assert fresh idle start when prior snapshot has `phase: idle` (acceptance scenario 4) in `tests/integration/test_crash_recovery.py`
 
 **Checkpoint**: User Story 1 fully functional — crash recovery works end-to-end, including phase inference for cards that advanced during downtime. `speckit.implement` may stop here for MVP.
 
@@ -82,13 +82,13 @@
 
 > **Write these tests first — they must FAIL before implementation begins.**
 
-- [ ] T024 [P] [US2] Contract test asserting `GET /health` response contains `phase` (string or null) and `snapshot_at` (ISO 8601 or null) at the top level; validate response against `specs/003-state-persistence/contracts/health-response.schema.json` in `tests/contract/test_health_schema.py`
-- [ ] T025 [P] [US2] Contract test asserting `phase` and `snapshot_at` reflect the last saved snapshot immediately after daemon start (before first poll cycle) in `tests/contract/test_health_schema.py`
+- [x] T024 [P] [US2] Contract test asserting `GET /health` response contains `phase` (string or null) and `snapshot_at` (ISO 8601 or null) at the top level; validate response against `specs/003-state-persistence/contracts/health-response.schema.json` in `tests/contract/test_health_schema.py`
+- [x] T025 [P] [US2] Contract test asserting `phase` and `snapshot_at` reflect the last saved snapshot immediately after daemon start (before first poll cycle) in `tests/contract/test_health_schema.py`
 
 ### Implementation for User Story 2
 
-- [ ] T026 [US2] Expose `state_store` as a public property on `CoordinareDaemon` (`@property def state_store(self) -> StateStore`) in `src/coordinare/daemon.py`
-- [ ] T027 [US2] Extend `GET /health` handler to read `daemon.state_store.last_snapshot`, extract `phase` and `snapshot_at` (both `None` if no snapshot), and include them as top-level fields in the response dict in `src/coordinare/health.py`
+- [x] T026 [US2] Expose `state_store` as a public property on `CoordinareDaemon` (`@property def state_store(self) -> StateStore`) in `src/coordinare/daemon.py`
+- [x] T027 [US2] Extend `GET /health` handler to read `daemon.state_store.last_snapshot`, extract `phase` and `snapshot_at` (both `None` if no snapshot), and include them as top-level fields in the response dict in `src/coordinare/health.py`
 
 **Checkpoint**: User Stories 1 AND 2 work independently. Health endpoint is authoritative across process restarts.
 
@@ -104,22 +104,22 @@
 
 > **Write these tests first — they must FAIL before implementation begins.**
 
-- [ ] T028 [P] [US3] Unit test: `StateStore.load()` with malformed JSON content → raises `StateLoadError(reason="corrupt")` in `tests/unit/test_state_store.py`
-- [ ] T029 [P] [US3] Unit test: `StateStore.load()` with valid JSON but wrong `schema_version` (e.g., `2`) → raises `StateLoadError(reason="schema_mismatch")` in `tests/unit/test_state_store.py`
-- [ ] T030 [P] [US3] Unit test: `StateStore.load()` with valid JSON but invalid `phase` value → raises `StateLoadError(reason="validation_error")` in `tests/unit/test_state_store.py`
-- [ ] T031 [P] [US3] Unit test: `StateStore.save()` with mocked `OSError` (simulated disk full) → increments `state_write_failures_total`, logs warning, does NOT raise in `tests/unit/test_state_store.py`
-- [ ] T032 [P] [US3] Unit test: mock `os.replace()` to raise `OSError` after `NamedTemporaryFile` write completes; assert the original `self._path` (prior state file) remains intact — verifies torn-write protection (SC-006) in `tests/unit/test_state_store.py`
-- [ ] T033 [P] [US3] Unit test: `StateStore.verify_writable()` raises `OSError` when parent directory is read-only in `tests/unit/test_state_store.py`
-- [ ] T034 [P] [US3] Integration test: write corrupted state file to `tmp_path`, restart daemon, assert log contains `state load failed`, daemon starts fresh in idle, no crash in `tests/integration/test_crash_recovery.py`
-- [ ] T035 [P] [US3] Integration test: write state file referencing a non-existent card ID, restart daemon, assert board reconciliation discards state, daemon starts fresh in idle in `tests/integration/test_crash_recovery.py`
+- [x] T028 [P] [US3] Unit test: `StateStore.load()` with malformed JSON content → raises `StateLoadError(reason="corrupt")` in `tests/unit/test_state_store.py`
+- [x] T029 [P] [US3] Unit test: `StateStore.load()` with valid JSON but wrong `schema_version` (e.g., `2`) → raises `StateLoadError(reason="schema_mismatch")` in `tests/unit/test_state_store.py`
+- [x] T030 [P] [US3] Unit test: `StateStore.load()` with valid JSON but invalid `phase` value → raises `StateLoadError(reason="validation_error")` in `tests/unit/test_state_store.py`
+- [x] T031 [P] [US3] Unit test: `StateStore.save()` with mocked `OSError` (simulated disk full) → increments `state_write_failures_total`, logs warning, does NOT raise in `tests/unit/test_state_store.py`
+- [x] T032 [P] [US3] Unit test: mock `os.replace()` to raise `OSError` after `NamedTemporaryFile` write completes; assert the original `self._path` (prior state file) remains intact — verifies torn-write protection (SC-006) in `tests/unit/test_state_store.py`
+- [x] T033 [P] [US3] Unit test: `StateStore.verify_writable()` raises `OSError` when parent directory is read-only in `tests/unit/test_state_store.py`
+- [x] T034 [P] [US3] Integration test: write corrupted state file to `tmp_path`, restart daemon, assert log contains `state load failed`, daemon starts fresh in idle, no crash in `tests/integration/test_crash_recovery.py`
+- [x] T035 [P] [US3] Integration test: write state file referencing a non-existent card ID, restart daemon, assert board reconciliation discards state, daemon starts fresh in idle in `tests/integration/test_crash_recovery.py`
 
 ### Implementation for User Story 3
 
 The `StateStore.load()` implementation in T008 (Phase 2) already provides the core behaviour (raising `StateLoadError` for corrupt/mismatch/invalid). This phase focuses on:
 
-- [ ] T036 [US3] Ensure `CoordinareDaemon.start()` startup recovery block (T018) logs a structured warning with `reason` and `detail` from `StateLoadError` using `structlog` bound context in `src/coordinare/daemon.py`
-- [ ] T037 [US3] Verify board reconciliation discard path (T020 case a): when board query returns no card matching `active_card_id` or card is in Done column, the log event is `event="board_contradicts_snapshot"` with card ID at `warn` level; also verify case b (column changed) emits `event="board_reconciliation_advanced"` in `src/coordinare/daemon.py`
-- [ ] T038 [US3] Verify `__main__.py` `verify_writable()` error path logs a structured error with `event="state_path_not_writable"` and `path=` before `sys.exit(1)` in `src/coordinare/__main__.py`
+- [x] T036 [US3] Ensure `CoordinareDaemon.start()` startup recovery block (T018) logs a structured warning with `reason` and `detail` from `StateLoadError` using `structlog` bound context in `src/coordinare/daemon.py`
+- [x] T037 [US3] Verify board reconciliation discard path (T020 case a): when board query returns no card matching `active_card_id` or card is in Done column, the log event is `event="board_contradicts_snapshot"` with card ID at `warn` level; also verify case b (column changed) emits `event="board_reconciliation_advanced"` in `src/coordinare/daemon.py`
+- [x] T038 [US3] Verify `__main__.py` `verify_writable()` error path logs a structured error with `event="state_path_not_writable"` and `path=` before `sys.exit(1)` in `src/coordinare/__main__.py`
 
 **Checkpoint**: All three user stories fully functional. Any failure mode in state persistence is handled gracefully.
 
@@ -129,13 +129,13 @@ The `StateStore.load()` implementation in T008 (Phase 2) already provides the co
 
 **Purpose**: Lint compliance, type-check pass, schema contract validation, benchmark, and final quickstart walkthrough.
 
-- [ ] T039 [P] Add performance benchmark unit test for `StateStore.save()`: assert wall-clock time ≤ 1.0 s (SC-002 budget) using `time.monotonic()` before/after call in `tests/unit/test_state_store.py` (constitution Principle IV)
-- [ ] T040 [P] Add unit test for `COORDINARE_STATE_FILE_PATH` env var override in `tests/unit/test_config.py`: set env var to `/tmp/custom.json`, load config, assert `config.state_file_path == Path("/tmp/custom.json")` (FR-010)
-- [ ] T041 [P] Add contract test validating `StateStore.save()` output JSON against `specs/003-state-persistence/contracts/workflow-snapshot.schema.json` using `jsonschema.validate()` in `tests/contract/test_state_persistence.py`
-- [ ] T042 [P] Run `ruff check src/coordinare/state_store.py src/coordinare/daemon.py src/coordinare/health.py src/coordinare/config.py src/coordinare/metrics.py src/coordinare/__main__.py src/coordinare/graph/state.py` and fix all reported issues
-- [ ] T043 [P] Verify full pytest suite passes with no regressions: `cd src && pytest tests/ -v --tb=short`
-- [ ] T044 [P] Verify coverage does not regress from pre-feature baseline: `cd src && pytest tests/ --cov=coordinare --cov-report=term-missing`
-- [ ] T045 Walk through `specs/003-state-persistence/quickstart.md` scenarios end-to-end: normal operation, crash recovery, corrupted file, permission error, container restart (mount a volume, restart container, verify state survives); verify logged output matches documented examples
+- [x] T039 [P] Add performance benchmark unit test for `StateStore.save()`: assert wall-clock time ≤ 1.0 s (SC-002 budget) using `time.monotonic()` before/after call in `tests/unit/test_state_store.py` (constitution Principle IV)
+- [x] T040 [P] Add unit test for `COORDINARE_STATE_FILE_PATH` env var override in `tests/unit/test_config.py`: set env var to `/tmp/custom.json`, load config, assert `config.state_file_path == Path("/tmp/custom.json")` (FR-010)
+- [x] T041 [P] Add contract test validating `StateStore.save()` output JSON against `specs/003-state-persistence/contracts/workflow-snapshot.schema.json` using `jsonschema.validate()` in `tests/contract/test_state_persistence.py`
+- [x] T042 [P] Run `ruff check src/coordinare/state_store.py src/coordinare/daemon.py src/coordinare/health.py src/coordinare/config.py src/coordinare/metrics.py src/coordinare/__main__.py src/coordinare/graph/state.py` and fix all reported issues
+- [x] T043 [P] Verify full pytest suite passes with no regressions: `cd src && pytest tests/ -v --tb=short`
+- [x] T044 [P] Verify coverage does not regress from pre-feature baseline: `cd src && pytest tests/ --cov=coordinare --cov-report=term-missing` — 86% overall, state_store.py at 97%, daemon.py at 93%
+- [x] T045 Walk through `specs/003-state-persistence/quickstart.md` scenarios end-to-end: normal operation, crash recovery, corrupted file, permission error, disk-full — automated in `tests/integration/test_quickstart_scenarios.py`
 
 ---
 

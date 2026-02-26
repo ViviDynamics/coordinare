@@ -58,6 +58,27 @@ jobs:
       - name: Run pytest
         run: uv run --extra dev pytest
 
+  coverage:
+    name: Coverage
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    runs-on:
+      - self-hosted
+      - linux
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Run coverage
+        run: uv run --extra dev pytest --cov=coordinare --cov-report=term-missing --cov-fail-under=90
+
   build-success:
     name: Build Success
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
@@ -67,6 +88,7 @@ jobs:
     needs:
       - lint
       - test
+      - coverage
     steps:
       - name: Mark build successful
-        run: echo "Lint and tests passed. Build successful."
+        run: echo "Lint, tests, and coverage passed. Build successful."

@@ -48,8 +48,17 @@ def create_health_app(daemon: CoordinareDaemon) -> FastAPI:
 
         passive_service_status = "unknown" if daemon_running else "disconnected"
 
+        # T027: Expose persisted state phase and snapshot_at from StateStore
+        snapshot = None
+        if daemon.state_store is not None:
+            snapshot = daemon.state_store.last_snapshot
+        phase = snapshot.phase if snapshot else None
+        snapshot_at = snapshot.snapshot_at.isoformat() if snapshot else None
+
         return {
             "status": health_status,
+            "phase": phase,
+            "snapshot_at": snapshot_at,
             "uptime_seconds": 0,
             "current_card": card_payload,
             "services": {

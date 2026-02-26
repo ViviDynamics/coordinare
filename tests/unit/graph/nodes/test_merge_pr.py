@@ -68,3 +68,40 @@ async def test_merge_pr_commit_summary_none_when_no_merge_commit() -> None:
     result = await merge_pr(state)
 
     assert result.get("commit_summary") is None
+
+
+@pytest.mark.asyncio
+async def test_merge_pr_idle_when_no_github() -> None:
+    state = initial_state()
+    state["current_card"] = {"id": "ITEM_1", "pr_node_id": "PR_1"}
+
+    result = await merge_pr(state)
+
+    assert result["phase"] == "idle"
+
+
+@pytest.mark.asyncio
+async def test_merge_pr_idle_when_no_card() -> None:
+    state = initial_state()
+    state["github_service"] = _GitHub()
+
+    result = await merge_pr(state)
+
+    assert result["phase"] == "idle"
+
+
+class _GitHubNotMergeable:
+    async def check_mergeability(self, pr_id: str):
+        return {"mergeable": False, "reason": "conflicts"}
+
+
+@pytest.mark.asyncio
+async def test_merge_pr_blocks_when_not_mergeable() -> None:
+    state = initial_state()
+    state["github_service"] = _GitHubNotMergeable()
+    state["current_card"] = {"id": "ITEM_1", "pr_node_id": "PR_1", "status": "IN_REVIEW"}
+
+    result = await merge_pr(state)
+
+    assert result["phase"] == "blocked"
+    assert any("merge conflicts" in q for q in result["open_questions"])

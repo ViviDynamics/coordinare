@@ -2,13 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import signal
+from datetime import UTC, datetime
 from time import monotonic
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
 from coordinare.graph.state import CoordinareState, initial_state
 from coordinare.lib.runtime_events import build_runtime_event
+from coordinare.state_store import StateLoadError, WorkflowPhase, WorkflowSnapshot
+
+if TYPE_CHECKING:
+    from coordinare.state_store import StateStore
 
 logger = structlog.get_logger(__name__)
 
@@ -31,6 +36,7 @@ class CoordinareDaemon:
         heartbeat_interval_seconds: int = 30,
         max_cycles: int | None = None,
         sleep_func: Any = asyncio.sleep,
+        state_store: StateStore | None = None,
     ) -> None:
         self._graph = graph
         self._run_mode = run_mode
@@ -43,6 +49,7 @@ class CoordinareDaemon:
         self._state: CoordinareState = initial_state()
         self._cycle_active = False
         self._stop_during_cycle = False
+        self._state_store = state_store
 
     @property
     def running(self) -> bool:
@@ -51,6 +58,99 @@ class CoordinareDaemon:
     @property
     def state(self) -> CoordinareState:
         return self._state
+
+    @property
+    def state_store(self) -> StateStore | None:
+        return self._state_store
+
+    def _build_snapshot(self) -> WorkflowSnapshot:
+        card = self._state.get("current_card")
+        card_dict = card if isinstance(card, dict) else {}
+        dispatch = self._state.get("agent_dispatch")
+        dispatch_dict = dispatch if isinstance(dispatch, dict) else {}
+        raw_questions = self._state.get("open_questions")
+        questions = [str(q) for q in raw_questions] if isinstance(raw_questions, list) else []
+        return WorkflowSnapshot(
+            snapshot_at=datetime.now(UTC),
+            phase=self._state.get("phase", "idle"),
+            active_card_id=str(card_dict.get("id", "")) or None if card_dict else None,
+            active_card_title=str(card_dict.get("title", "")) or None if card_dict else None,
+            active_card_column=str(card_dict.get("status", "")) or None if card_dict else None,
+            pr_url=str(card_dict.get("pr_url", "")) or None if card_dict else None,
+            pr_node_id=str(card_dict.get("pr_node_id", "")) or None if card_dict else None,
+            agent_session_id=str(dispatch_dict.get("session_id", "")) or None if dispatch_dict else None,
+            open_questions=questions,
+        )
+
+    def _restore_from_snapshot(self, snapshot: WorkflowSnapshot) -> None:
+        self._state["phase"] = snapshot.phase
+        self._state["open_questions"] = list(snapshot.open_questions)
+        if snapshot.active_card_id:
+            self._state["current_card"] = {
+                "id": snapshot.active_card_id,
+                "title": snapshot.active_card_title or "",
+                "status": snapshot.active_card_column or "",
+                "pr_url": snapshot.pr_url,
+                "pr_node_id": snapshot.pr_node_id,
+            }
+        if snapshot.agent_session_id:
+            self._state["agent_dispatch"] = {"session_id": snapshot.agent_session_id}
+
+    @staticmethod
+    def _infer_phase_from_board_column(column: str) -> WorkflowPhase:
+        normalized = column.strip().lower()
+        if normalized in {"in progress", "in_progress"}:
+            return "monitoring_agent"
+        if normalized in {"in review", "in_review"}:
+            return "monitoring_pr"
+        if normalized == "blocked":
+            return "blocked"
+        return "idle"
+
+    async def _reconcile_with_board(self, snapshot: WorkflowSnapshot) -> None:
+        """Query the live board and reconcile restored state against it."""
+        github = self._state.get("github_service")
+        if github is None:
+            return
+        try:
+            board = await github.poll_board()
+            board_snapshot = board.get("snapshot", {})
+            found_column: str | None = None
+            for column, card_ids in board_snapshot.items():
+                if isinstance(card_ids, list) and snapshot.active_card_id in card_ids:
+                    found_column = column
+                    break
+
+            if found_column is None or found_column.upper() == "DONE":
+                logger.warning(
+                    "board_contradicts_snapshot",
+                    active_card_id=snapshot.active_card_id,
+                    found_column=found_column,
+                )
+                self._state["phase"] = "idle"
+                self._state["current_card"] = None
+            else:
+                inferred = self._infer_phase_from_board_column(found_column)
+                if inferred != snapshot.phase:
+                    logger.info(
+                        "board_reconciliation_advanced",
+                        active_card_id=snapshot.active_card_id,
+                        snapshot_phase=snapshot.phase,
+                        board_column=found_column,
+                        inferred_phase=inferred,
+                    )
+                    self._state["phase"] = inferred
+                else:
+                    logger.info(
+                        "board_reconciliation_confirmed",
+                        active_card_id=snapshot.active_card_id,
+                        phase=snapshot.phase,
+                    )
+        except Exception as exc:
+            logger.warning(
+                "board_reconciliation_skipped",
+                error=str(exc),
+            )
 
     def stop(self) -> None:
         if self._cycle_active:
@@ -80,6 +180,42 @@ class CoordinareDaemon:
         self._install_signal_handlers()
         last_heartbeat = monotonic()
         cycle_count = 0
+
+        # T018: Startup recovery — load persisted state before poll loop
+        if self._state_store is not None:
+            try:
+                snapshot = await self._state_store.load()
+                if snapshot is not None:
+                    self._restore_from_snapshot(snapshot)
+                    self._emit(
+                        **build_runtime_event(
+                            category="startup",
+                            message="prior state loaded",
+                            phase=snapshot.phase,
+                            active_card_id=snapshot.active_card_id,
+                        )
+                    )
+                    # T020: Board reconciliation after restore
+                    if snapshot.active_card_id:
+                        await self._reconcile_with_board(snapshot)
+                else:
+                    self._emit(
+                        **build_runtime_event(
+                            category="startup",
+                            message="no prior state found",
+                        )
+                    )
+            except StateLoadError as exc:
+                self._emit(
+                    **build_runtime_event(
+                        category="warning",
+                        message="state load failed",
+                        reason=exc.reason,
+                        detail=exc.detail,
+                    )
+                )
+                # Fresh start — self._state already initialised by initial_state()
+
         previous_phase = self._state.get("phase")
         self._emit(
             **build_runtime_event(
@@ -117,6 +253,9 @@ class CoordinareDaemon:
                         )
                     )
                     previous_phase = current_phase
+                    # T021: Persist snapshot on every phase transition
+                    if self._state_store is not None:
+                        await self._state_store.save(self._build_snapshot())
 
                 now = monotonic()
                 if now - last_heartbeat >= self._heartbeat_interval_seconds:

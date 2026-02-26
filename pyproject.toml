@@ -127,4 +127,11 @@ exclude_lines = [
     "if __name__ == .__main__.",
     "if TYPE_CHECKING:",
     "raise NotImplementedError",
+    "class \\w+.*Protocol.*:",
+    "\\.\\.\\.$",
+]
+
+[dependency-groups]
+dev = [
+    "jsonschema>=4.26.0",
 ]

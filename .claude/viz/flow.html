@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Coordinare — Multi-Agent Team Flow</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    background: #0d1117;
+    color: #e6edf3;
+    padding: 28px 32px 48px;
+  }
+
+  h1 { font-size: 17px; font-weight: 600; color: #58a6ff; margin-bottom: 4px; }
+  .subtitle { font-size: 11px; color: #6e7681; margin-bottom: 32px; }
+
+  /* ── Phase legend ── */
+  .legend {
+    display: flex; flex-wrap: wrap; gap: 10px;
+    margin-bottom: 28px;
+  }
+  .leg {
+    display: flex; align-items: center; gap: 7px;
+    font-size: 11px; color: #8b949e;
+  }
+  .leg-dot { width: 11px; height: 11px; border-radius: 50%; flex-shrink: 0; }
+
+  /* ── Swimlane table ── */
+  .swimlane-wrap { overflow-x: auto; }
+  table {
+    border-collapse: separate;
+    border-spacing: 0;
+    width: 100%;
+    min-width: 980px;
+  }
+
+  /* Lane headers */
+  th {
+    padding: 10px 14px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+    border-bottom: 2px solid #21262d;
+    white-space: nowrap;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: #0d1117;
+  }
+  th.lane-coordinare  { color: #58a6ff; }
+  th.lane-ca         { color: #d2a8ff; }
+  th.lane-dev        { color: #3fb950; }
+  th.lane-qa         { color: #f0883e; }
+  th.lane-human      { color: #e3b341; }
+
+  /* Rows */
+  tr:nth-child(even) td { background: #0d1117; }
+  tr:nth-child(odd)  td { background: #0d1117; }
+
+  td {
+    padding: 6px 10px;
+    vertical-align: top;
+    border-right: 1px solid #161b22;
+    border-bottom: 1px dashed #161b22;
+    min-width: 160px;
+  }
+  td:last-child { border-right: none; }
+
+  /* Phase separator rows */
+  tr.phase-row td {
+    padding: 4px 10px 4px 0;
+    border-bottom: none;
+    border-right: none;
+    background: transparent;
+  }
+  .phase-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 10px;
+    letter-spacing: 1.4px;
+    text-transform: uppercase;
+    font-weight: 700;
+    padding: 4px 12px;
+    border-radius: 3px;
+    margin-bottom: 2px;
+  }
+
+  /* Node cards */
+  .node {
+    display: inline-flex;
+    flex-direction: column;
+    border: 1.5px solid #30363d;
+    border-radius: 7px;
+    padding: 8px 11px;
+    font-size: 11px;
+    margin: 3px 0;
+    width: 100%;
+    cursor: default;
+    transition: border-color 0.15s;
+  }
+  .node:hover { border-color: #58a6ff44; }
+  .node-name { font-weight: 700; font-size: 12px; margin-bottom: 3px; }
+  .node-desc { color: #8b949e; font-size: 10.5px; line-height: 1.5; }
+  .node-tag {
+    display: inline-block; font-size: 9px; font-weight: 600;
+    padding: 1px 6px; border-radius: 10px; margin-top: 5px;
+    letter-spacing: 0.4px; align-self: flex-start;
+  }
+
+  /* Color themes per phase */
+  .ph0 { border-color: #1f6feb; background: #111827; }
+  .ph0 .node-name { color: #58a6ff; }
+  .ph0 .node-tag { background: #1f6feb22; color: #58a6ff; border: 1px solid #1f6feb55; }
+
+  .ph1 { border-color: #6e40c9; background: #130d2a; }
+  .ph1 .node-name { color: #d2a8ff; }
+  .ph1 .node-tag { background: #6e40c922; color: #d2a8ff; border: 1px solid #6e40c955; }
+
+  .ph2 { border-color: #9e6400; background: #1a1200; }
+  .ph2 .node-name { color: #f0883e; }
+  .ph2 .node-tag { background: #9e640022; color: #f0883e; border: 1px solid #9e640055; }
+
+  .ph3 { border-color: #238636; background: #0d1a0d; }
+  .ph3 .node-name { color: #3fb950; }
+  .ph3 .node-tag { background: #23863622; color: #3fb950; border: 1px solid #23863655; }
+
+  .ph4 { border-color: #9e6400; background: #1a1200; }
+  .ph4 .node-name { color: #f0883e; }
+  .ph4 .node-tag { background: #9e640022; color: #f0883e; border: 1px solid #9e640055; }
+
+  .ph5 { border-color: #9e8800; background: #1a1700; }
+  .ph5 .node-name { color: #e3b341; }
+  .ph5 .node-tag { background: #9e880022; color: #e3b341; border: 1px solid #9e880055; }
+
+  .ph6 { border-color: #6e40c9; background: #130d2a; }
+  .ph6 .node-name { color: #d2a8ff; }
+  .ph6 .node-tag { background: #6e40c922; color: #d2a8ff; border: 1px solid #6e40c955; }
+
+  .ph7 { border-color: #1f6feb; background: #111827; }
+  .ph7 .node-name { color: #58a6ff; }
+  .ph7 .node-tag { background: #1f6feb22; color: #58a6ff; border: 1px solid #1f6feb55; }
+
+  /* Phase label colors */
+  .pl0 { background: #1f6feb22; color: #58a6ff; border: 1px solid #1f6feb44; }
+  .pl1 { background: #6e40c922; color: #d2a8ff; border: 1px solid #6e40c944; }
+  .pl2 { background: #9e640022; color: #f0883e; border: 1px solid #9e640044; }
+  .pl3 { background: #23863622; color: #3fb950; border: 1px solid #23863644; }
+  .pl4 { background: #9e640022; color: #f0883e; border: 1px solid #9e640044; }
+  .pl5 { background: #9e880022; color: #e3b341; border: 1px solid #9e880044; }
+  .pl6 { background: #6e40c922; color: #d2a8ff; border: 1px solid #6e40c944; }
+  .pl7 { background: #1f6feb22; color: #58a6ff; border: 1px solid #1f6feb44; }
+
+  /* Gate / decision nodes */
+  .gate {
+    border-style: dashed;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    padding: 5px 10px;
+    border-radius: 20px;
+    margin: 3px 0;
+    width: 100%;
+  }
+  .gate-yes { border-color: #3fb950; color: #3fb950; background: #23863611; font-size: 10px; font-weight: 600; }
+  .gate-no  { border-color: #f85149; color: #f85149;  background: #da363311; font-size: 10px; font-weight: 600; }
+  .gate-loop{ border-color: #d29922; color: #d29922;  background: #9e640011; font-size: 10px; font-weight: 600; }
+
+  /* Arrow connector */
+  .arrow-down {
+    text-align: center;
+    font-size: 14px;
+    color: #30363d;
+    padding: 1px 0;
+    display: block;
+  }
+  .arrow-down.hot { color: #3fb950; }
+
+  /* Existing / new badges */
+  .badge-existing { background: #30363d; color: #8b949e; }
+  .badge-new      { background: #1f6feb33; color: #58a6ff; }
+  .badge-new-role { background: #6e40c933; color: #d2a8ff; }
+
+  /* Summary section */
+  .summary-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 12px;
+    margin-top: 36px;
+  }
+  .sum-card {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .sum-title { font-size: 11px; color: #6e7681; margin-bottom: 8px; letter-spacing: 0.5px; }
+  .sum-items { font-size: 11px; line-height: 2; }
+  .sum-items span { display: block; }
+
+  .role-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 10px; font-weight: 600;
+    padding: 2px 8px; border-radius: 20px; margin: 1px 0;
+  }
+  .rc-coordinare { background: #1f6feb22; color: #58a6ff; border: 1px solid #1f6feb44; }
+  .rc-ca        { background: #6e40c922; color: #d2a8ff; border: 1px solid #6e40c944; }
+  .rc-dev       { background: #23863622; color: #3fb950; border: 1px solid #23863644; }
+  .rc-qa        { background: #9e640022; color: #f0883e; border: 1px solid #9e640044; }
+  .rc-human     { background: #9e880022; color: #e3b341; border: 1px solid #9e880044; }
+</style>
+</head>
+<body>
+
+<h1>coordinare — multi-agent software team flow</h1>
+<p class="subtitle">Proposed orchestration model · 8 phases · 5 roles · current nodes marked <span style="color:#8b949e">existing</span> / new nodes marked <span style="color:#58a6ff">new</span></p>
+
+<div class="legend">
+  <div class="leg"><div class="leg-dot" style="background:#58a6ff"></div> Coordinare (orchestrator)</div>
+  <div class="leg"><div class="leg-dot" style="background:#d2a8ff"></div> Customer Advocate Agent</div>
+  <div class="leg"><div class="leg-dot" style="background:#3fb950"></div> Developer Agent(s)</div>
+  <div class="leg"><div class="leg-dot" style="background:#f0883e"></div> QA Agent</div>
+  <div class="leg"><div class="leg-dot" style="background:#e3b341"></div> Human Team</div>
+</div>
+
+<div class="swimlane-wrap">
+<table>
+<thead>
+<tr>
+  <th class="lane-coordinare">🤖 Coordinare</th>
+  <th class="lane-ca">🎙 Customer Advocate</th>
+  <th class="lane-dev">👾 Developer Agent(s)</th>
+  <th class="lane-qa">🧪 QA Agent</th>
+  <th class="lane-human">👥 Human Team</th>
+</tr>
+</thead>
+<tbody>
+
+<!-- ── Phase 0: Board Check ── -->
+<tr class="phase-row">
+  <td colspan="5"><div class="phase-label pl0">Phase 0 · Board Check</div></td>
+</tr>
+<tr>
+  <td>
+    <div class="node ph0">
+      <div class="node-name">check_board</div>
+      <div class="node-desc">Poll GitHub Projects for cards in Ready state. Enforce one-at-a-time constraint.</div>
+      <div class="node-tag badge-existing">existing</div>
+    </div>
+    <span class="arrow-down hot">↓</span>
+    <div class="node ph0">
+      <div class="node-name">assess_card</div>
+      <div class="node-desc">Claude LLM pre-screen: is the card minimally specified? Surface obvious gaps before CA review.</div>
+      <div class="node-tag badge-existing">existing</div>
+    </div>
+  </td>
+  <td></td><td></td><td></td><td></td>
+</tr>
+
+<!-- ── Phase 1: Requirements Gate ── -->
+<tr class="phase-row">
+  <td colspan="5"><div class="phase-label pl1">Phase 1 · Requirements Gate</div></td>
+</tr>
+<tr>
+  <td>
+    <div class="node ph1">
+      <div class="node-name">dispatch_ca_review</div>
+      <div class="node-desc">Send card spec to Customer Advocate agent for requirements deep-dive.</div>
+      <div class="node-tag badge-new">new</div>
+    </div>
+    <span class="arrow-down hot">↓</span>
+    <div class="node ph1">
+      <div class="node-name">monitor_ca_review</div>
+      <div class="node-desc">Poll CA agent for verdict: approved or questions pending.</div>
+      <div class="node-tag badge-new">new</div>
+    </div>
+  </td>
+  <td>
+    <div class="node ph1">
+      <div class="node-name">CA: requirements review</div>
+      <div class="node-desc">Reads card spec & acceptance criteria. Identifies ambiguities, missing edge cases, unclear scope. Posts questions to card.</div>
+      <div class="node-tag badge-new-role">new role</div>
+    </div>
+    <div class="gate gate-yes">✓ All Qs answered → CA approves</div>
+    <div class="gate gate-no">✗ Questions remain → Blocked (human)</div>
+  </td>
+  <td></td><td></td>
+  <td>
+    <div class="node ph5">
+      <div class="node-name">Answer CA questions</div>
+      <div class="node-desc">Human team answers clarifying questions on the board card. Coordinare detects responses and re-submits to CA.</div>
+      <div class="node-tag badge-existing">existing path</div>
+    </div>
+  </td>
+</tr>
+
+<!-- ── Phase 2: QA Scaffolding ── -->
+<tr class="phase-row">
+  <td colspan="5"><div class="phase-label pl2">Phase 2 · QA Scaffolding</div></td>
+</tr>
+<tr>
+  <td>
+    <div class="node ph2">
+      <div class="node-name">dispatch_qa_scaffold</div>
+      <div class="node-desc">Send CA-approved card spec to QA agent to build acceptance test suite before dev starts.</div>
+      <div class="node-tag badge-new">new</div>
+    </div>
+    <span class="arrow-down hot">↓</span>
+    <div class="node ph2">
+      <div class="node-name">monitor_qa_scaffold</div>
+      <div class="node-desc">Poll QA agent until test scaffold PR is opened in the test sub-project.</div>
+      <div class="node-tag badge-new">new</div>
+    </div>
+  </td>
+  <td></td>
+  <td></td>
+  <td>
+    <div class="node ph2">
+      <div class="node-name">QA: scaffold acceptance tests</div>
+      <div class="node-desc">Reads CA-approved acceptance criteria. Writes a failing test suite in the test sub-project. Opens a scaffold PR. Tests are written from the spec — not from the implementation.</div>
+      <div class="node-tag badge-new-role">new role</div>
+    </div>
+    <div class="gate gate-yes">✓ Scaffold PR open → proceed to dev</div>
+  </td>
+  <td></td>
+</tr>
+
+<!-- ── Phase 3: Development ── -->
+<tr class="phase-row">
+  <td colspan="5"><div class="phase-label pl3">Phase 3 · Development</div></td>
+</tr>
+<tr>
+  <td>
+    <div class="node ph3">
+      <div class="node-name">dispatch_card</div>
+      <div class="node-desc">Dispatch card + CA-approved spec to developer agent(s). Supports parallel dispatch to multiple developers.</div>
+      <div class="node-tag badge-existing">extended</div>
+    </div>
+    <span class="arrow-down hot">↓</span>
+    <div class="node ph3">
+      <div class="node-name">monitor_agent</div>
+      <div class="node-desc">Poll developer agent(s) for status. Detect PR opened, blocked, or error.</div>
+      <div class="node-tag badge-existing">existing</div>
+    </div>
+  </td>
+  <td></td>
+  <td>
+    <div class="node ph3">
+      <div class="node-name">Dev Agent A</div>
+      <div class="node-desc">Implements feature. Has access to CA-approved spec and QA test scaffold. Opens implementation PR when ready.</div>
+      <div class="node-tag badge-new-role">new role</div>
+    </div>
+    <div class="node ph3" style="margin-top:6px; opacity:0.7;">
+      <div class="node-name">Dev Agent B <span style="font-size:9px; color:#6e7681">(optional parallel)</span></div>
+      <div class="node-desc">Second developer for parallel workstreams (e.g., backend + frontend split).</div>
+      <div class="node-tag badge-new-role">new role</div>
+    </div>
+    <div class="gate gate-no">✗ Blocked → questions to CA/human</div>
+  </td>
+  <td></td><td></td>
+</tr>
+
+<!-- ── Phase 4: QA Validation ── -->
+<tr class="phase-row">
+  <td colspan="5"><div class="phase-label pl4">Phase 4 · QA Validation</div></td>
+</tr>
+<tr>
+  <td>
+    <div class="node ph4">
+      <div class="node-name">dispatch_qa_run</div>
+      <div class="node-desc">Send implementation PR branch to QA agent to run acceptance test suite.</div>
+      <div class="node-tag badge-new">new</div>
+    </div>
+    <span class="arrow-down hot">↓</span>
+    <div class="node ph4">
+      <div class="node-name">monitor_qa_run</div>
+      <div class="node-desc">Poll QA agent for pass/fail verdict and test report.</div>
+      <div class="node-tag badge-new">new</div>
+    </div>
+  </td>
+  <td></td>
+  <td>
+    <div class="gate gate-loop">↩ Tests fail → relay test report to dev, loop back to Phase 3</div>
+  </td>
+  <td>
+    <div class="node ph4">
+      <div class="node-name">QA: run acceptance tests</div>
+      <div class="node-desc">Runs the pre-written test suite against the implementation branch. Produces a structured test report: passed / failed / skipped per scenario.</div>
+      <div class="node-tag badge-new-role">new role</div>
+    </div>
+    <div class="gate gate-yes">✓ All tests pass → proceed</div>
+    <div class="gate gate-no">✗ Failures → detailed report to coordinare</div>
+  </td>
+  <td></td>
+</tr>
+
+<!-- ── Phase 5: Human Code Review ── -->
+<tr class="phase-row">
+  <td colspan="5"><div class="phase-label pl5">Phase 5 · Human Code Review</div></td>
+</tr>
+<tr>
+  <td>
+    <div class="node ph5">
+      <div class="node-name">monitor_pr</div>
+      <div class="node-desc">Watch for human reviewer comments and approval. Filter out bot/CoPilot reviews.</div>
+      <div class="node-tag badge-existing">existing</div>
+    </div>
+    <span class="arrow-down hot">↓</span>
+    <div class="node ph5">
+      <div class="node-name">relay_feedback</div>
+      <div class="node-desc">Relay human review comments to developer agent(s) for remediation.</div>
+      <div class="node-tag badge-existing">existing</div>
+    </div>
+  </td>
+  <td></td>
+  <td>
+    <div class="gate gate-loop">↩ Review comments → address feedback, loop back to Phase 4 QA</div>
+  </td>
+  <td></td>
+  <td>
+    <div class="node ph5">
+      <div class="node-name">Code Review</div>
+      <div class="node-desc">Human engineers review implementation PR. Leave comments, request changes, or approve. Only human approvals count.</div>
+      <div class="node-tag badge-existing">existing path</div>
+    </div>
+    <div class="gate gate-yes">✓ PR approved → proceed to CA demo</div>
+  </td>
+</tr>
+
+<!-- ── Phase 6: Customer Advocate Sign-off ── -->
+<tr class="phase-row">
+  <td colspan="5"><div class="phase-label pl6">Phase 6 · Customer Advocate Sign-off</div></td>
+</tr>
+<tr>
+  <td>
+    <div class="node ph6">
+      <div class="node-name">dispatch_ca_demo</div>
+      <div class="node-desc">Send completed PR, QA report, and original spec to CA agent for final sign-off review.</div>
+      <div class="node-tag badge-new">new</div>
+    </div>
+    <span class="arrow-down hot">↓</span>
+    <div class="node ph6">
+      <div class="node-name">monitor_ca_demo</div>
+      <div class="node-desc">Poll CA agent for sign-off verdict or structured feedback list.</div>
+      <div class="node-tag badge-new">new</div>
+    </div>
+  </td>
+  <td>
+    <div class="node ph6">
+      <div class="node-name">CA: final sign-off</div>
+      <div class="node-desc">Reviews the PR diff, QA test report, and original CA-approved spec side-by-side. Validates that every acceptance criterion is demonstrably satisfied.</div>
+      <div class="node-tag badge-new-role">new role</div>
+    </div>
+    <div class="gate gate-yes">✓ Sign-off → proceed to merge</div>
+    <div class="gate gate-loop">↩ Feedback → relay to dev, loop back to Phase 3</div>
+  </td>
+  <td>
+    <div class="gate gate-loop">↩ CA feedback → address, re-run QA, re-submit for review</div>
+  </td>
+  <td></td><td></td>
+</tr>
+
+<!-- ── Phase 7: Merge & Complete ── -->
+<tr class="phase-row">
+  <td colspan="5"><div class="phase-label pl7">Phase 7 · Merge &amp; Complete</div></td>
+</tr>
+<tr>
+  <td>
+    <div class="node ph7">
+      <div class="node-name">merge_pr</div>
+      <div class="node-desc">Squash-merge implementation PR. Merge QA scaffold PR into test sub-project. Move card to Done.</div>
+      <div class="node-tag badge-existing">extended</div>
+    </div>
+    <span class="arrow-down hot">↓</span>
+    <div class="node ph7">
+      <div class="node-name">notify</div>
+      <div class="node-desc">Send Slack + email summary: card Done, QA coverage, CA sign-off, PR link, commit list.</div>
+      <div class="node-tag badge-existing">existing</div>
+    </div>
+    <span class="arrow-down hot">↓</span>
+    <div class="node ph7">
+      <div class="node-name">check_board</div>
+      <div class="node-desc">← Loop back. Pick next Ready card.</div>
+      <div class="node-tag badge-existing">existing</div>
+    </div>
+  </td>
+  <td></td><td></td><td></td>
+  <td>
+    <div class="node ph5">
+      <div class="node-name">Card moves to Done</div>
+      <div class="node-desc">Board updated. Team receives Slack + email. QA acceptance tests now live as regression suite.</div>
+      <div class="node-tag badge-existing">existing path</div>
+    </div>
+  </td>
+</tr>
+
+</tbody>
+</table>
+</div>
+
+<!-- ── Summary ── -->
+<div class="summary-grid">
+
+  <div class="sum-card">
+    <div class="sum-title">ROLES</div>
+    <div class="sum-items">
+      <div class="role-chip rc-coordinare">🤖 Coordinare</div>
+      <div class="role-chip rc-ca">🎙 Customer Advocate</div>
+      <div class="role-chip rc-dev">👾 Developer (×N)</div>
+      <div class="role-chip rc-qa">🧪 QA Agent</div>
+      <div class="role-chip rc-human">👥 Human Team</div>
+    </div>
+  </div>
+
+  <div class="sum-card">
+    <div class="sum-title">GATES (must pass to advance)</div>
+    <div class="sum-items" style="color:#e6edf3; font-size:11px; line-height:1.9;">
+      <span>✓ CA requirements approval</span>
+      <span>✓ QA scaffold PR open</span>
+      <span>✓ All QA acceptance tests pass</span>
+      <span>✓ Human PR approval</span>
+      <span>✓ CA final sign-off</span>
+    </div>
+  </div>
+
+  <div class="sum-card">
+    <div class="sum-title">FEEDBACK LOOPS</div>
+    <div class="sum-items" style="color:#e6edf3; font-size:11px; line-height:1.9;">
+      <span>↩ CA questions → human → CA recheck</span>
+      <span>↩ QA failures → dev → QA rerun</span>
+      <span>↩ Review comments → dev → QA → review</span>
+      <span>↩ CA sign-off feedback → dev → QA → review → CA</span>
+    </div>
+  </div>
+
+  <div class="sum-card">
+    <div class="sum-title">NEW vs EXISTING NODES</div>
+    <div class="sum-items" style="font-size:11px; line-height:1.9;">
+      <span style="color:#8b949e">Existing: 7 nodes</span>
+      <span style="color:#58a6ff">New coordinare nodes: 6</span>
+      <span style="color:#d2a8ff">New agent roles: 3 (CA, Dev, QA)</span>
+      <span style="color:#f0883e">New sub-project: QA test repo</span>
+    </div>
+  </div>
+
+  <div class="sum-card">
+    <div class="sum-title">NEW SPECS NEEDED</div>
+    <div class="sum-items" style="font-size:11px; line-height:1.9;">
+      <span style="color:#d2a8ff">006 · customer-advocate-agent</span>
+      <span style="color:#f0883e">007 · qa-agent</span>
+      <span style="color:#3fb950">008 · multi-developer-dispatch</span>
+      <span style="color:#58a6ff">009 · agent-registry</span>
+    </div>
+  </div>
+
+  <div class="sum-card">
+    <div class="sum-title">KEY INSIGHT</div>
+    <div class="sum-items" style="font-size:11px; color:#8b949e; line-height:1.7;">
+      <span>QA tests are written <em style="color:#f0883e">before</em> dev starts,</span>
+      <span>from the spec — not the code.</span>
+      <span>They become a permanent</span>
+      <span>regression suite after merge.</span>
+    </div>
+  </div>
+
+</div>
+
+</body>
+</html>

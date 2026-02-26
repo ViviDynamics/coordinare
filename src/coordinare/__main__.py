@@ -20,6 +20,7 @@ from coordinare.services.claude import ClaudeService
 from coordinare.services.email import EmailService
 from coordinare.services.github import GitHubService
 from coordinare.services.slack import SlackService
+from coordinare.state_store import StateStore
 
 logger = structlog.get_logger(__name__)
 
@@ -98,12 +99,26 @@ async def _run(config: ProjectConfiguration) -> None:
             configured_seconds=config.heartbeat_interval_seconds,
             effective_seconds=effective_heartbeat,
         )
+
+    # T022: Construct StateStore and verify writable before daemon start
+    state_store = StateStore(path=config.state_file_path, metrics=METRICS)
+    try:
+        state_store.verify_writable()
+    except OSError as exc:
+        logger.error(
+            "state_path_not_writable",
+            path=str(config.state_file_path),
+            error=str(exc),
+        )
+        raise SystemExit(1) from exc
+
     daemon = CoordinareDaemon(
         graph,
         run_mode=run_mode,
         poll_interval_seconds=config.poll_interval_seconds,
         heartbeat_interval_seconds=effective_heartbeat,
         max_cycles=config.max_cycles,
+        state_store=state_store,
     )
 
     daemon.state.update(await _bootstrap_services(config))

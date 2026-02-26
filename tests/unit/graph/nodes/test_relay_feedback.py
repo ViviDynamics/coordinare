@@ -24,6 +24,16 @@ async def test_relay_feedback_transitions_to_monitoring_agent() -> None:
 
 
 @pytest.mark.asyncio
+async def test_relay_feedback_returns_monitoring_pr_when_no_agent() -> None:
+    state = initial_state()
+    state["pending_reviews"] = [{"id": "RVW_1"}]
+
+    result = await relay_feedback(state)
+
+    assert result["phase"] == "monitoring_pr"
+
+
+@pytest.mark.asyncio
 async def test_relay_feedback_skips_relay_when_reviews_empty() -> None:
     """Guard: agent.relay_feedback must not be called with an empty reviews list."""
     called = False

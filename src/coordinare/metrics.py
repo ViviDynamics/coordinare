@@ -48,6 +48,22 @@ class CoordinareMetrics:
             "Whether the coordinare daemon is running",
             registry=self.registry,
         )
+        self.state_write_duration_seconds = Histogram(
+            "coordinare_state_write_duration_seconds",
+            "Duration of atomic state file write operations",
+            registry=self.registry,
+            buckets=(0.01, 0.05, 0.1, 0.5, 1.0),
+        )
+        self.state_write_failures_total = Counter(
+            "coordinare_state_write_failures_total",
+            "Total number of state write failures",
+            registry=self.registry,
+        )
+        self.state_last_written_timestamp = Gauge(
+            "coordinare_state_last_written_timestamp",
+            "Unix timestamp of the last successful state write",
+            registry=self.registry,
+        )
 
     def observe_notification(self, channel: str, status: Literal["success", "failure"]) -> None:
         self.notifications_total.labels(channel=channel, status=status).inc()
