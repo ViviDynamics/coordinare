@@ -15,6 +15,13 @@ async def relay_feedback(state: CoordinareState) -> CoordinareState:
     if not reviews:
         state["phase"] = "monitoring_agent"
         return state
-    await agent.relay_feedback({"reviews": reviews})
+    card = state.get("current_card") or {}
+    session_id = state.get("agent_dispatch", {}).get("session_id", "")
+    pr_url = card.get("pr_url", "")
+    await agent.relay_feedback({
+        "session_id": session_id,
+        "pr_url": pr_url,
+        "reviews": reviews,
+    })
     state["phase"] = "monitoring_agent"
     return state

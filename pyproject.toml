@@ -12,7 +12,6 @@ dependencies = [
     "langgraph-checkpoint-postgres>=2.0",
     "anthropic>=0.40",
     "gql[aiohttp]>=3.5",
-    "asyncssh>=2.14",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
     "structlog>=24.1",
@@ -91,7 +90,6 @@ mypy_path = "src"
 [[tool.mypy.overrides]]
 module = [
     "gql.*",
-    "asyncssh.*",
     "aiosmtplib.*",
     "slack_sdk.*",
     "prometheus_client.*",

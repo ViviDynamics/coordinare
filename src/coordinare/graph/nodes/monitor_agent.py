@@ -13,7 +13,8 @@ async def monitor_agent(state: CoordinareState) -> CoordinareState:
         state["phase"] = "idle"
         return state
 
-    status = await agent.check_status(str(card.get("id", "")))
+    session_id = state.get("agent_dispatch", {}).get("session_id", "")
+    status = await agent.check_status(str(session_id))
     marker = status.get("status", "working")
     if marker == "pr_opened":
         card["pr_url"] = status.get("pr_url")

@@ -8,7 +8,8 @@ Auto-generated from all feature plans. Last updated: 2026-02-16
 - Python 3.12+ + `pydantic-settings` (existing), `pydantic` v2 (existing), `structlog` (existing), `argparse` (stdlib — existing) (008-config-management)
 - N/A (config is loaded from YAML file or env vars; no persistence) (008-config-management)
 
-- Python 3.12+ + LangGraph (>=0.2), anthropic (>=0.40), gql[aiohttp], asyncssh, FastAPI, structlog, slack-sdk, aiosmtplib, prometheus-client, pydantic-settings (001-board-orchestrator)
+- Python 3.12+ + LangGraph (>=0.2), anthropic (>=0.40), gql[aiohttp], FastAPI, structlog, slack-sdk, aiosmtplib, prometheus-client, pydantic-settings (001-board-orchestrator)
+- Python 3.12+ + Pydantic v2 (existing), `asyncio.create_subprocess_exec` (stdlib), `structlog` (existing); `asyncssh` removed — replaced by pluggable transport architecture (004-agent-protocol)
 
 ## Project Structure
 
@@ -26,6 +27,7 @@ cd src [ONLY COMMANDS FOR ACTIVE TECHNOLOGIES][ONLY COMMANDS FOR ACTIVE TECHNOLO
 Python 3.12+: Follow standard conventions
 
 ## Recent Changes
+- 004-agent-protocol: Replaced `AgentSSHService` with pluggable transport architecture (`SubprocessTransport` + `AgentService`); removed `asyncssh` dependency; added `src/coordinare/protocol.py`, `src/coordinare/transport/`, `src/coordinare/services/agent_service.py`; `check_status(card_id)` renamed to `check_status(session_id)`; config fields: `agent_transport`, `agent_executable`, `transport_timeout_seconds`
 - 009-metrics-observability: No new dependencies — extends existing structlog (contextvars), prometheus-client (new metric families), fastapi (new /live route), pydantic-settings (two new config fields); adds docs/dashboards/ and docs/runbooks/ directories
 - 008-config-management: Added Python 3.12+ + `pydantic-settings` (existing), `pydantic` v2 (existing), `structlog` (existing), `argparse` (stdlib — existing)
 - 006-notification-alerting: Added Python 3.12+ + `httpx` (Slack webhook delivery — already present, not `slack-sdk`), `aiosmtplib` (email delivery — already present), `pydantic` + `pydantic-settings` (config model), `structlog` (structured logging), `prometheus-client` (metrics) — all existing; **no new dependencies required**

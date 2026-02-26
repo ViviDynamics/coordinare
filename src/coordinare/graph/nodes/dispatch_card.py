@@ -21,7 +21,7 @@ async def dispatch_card(state: CoordinareState) -> CoordinareState:
         health_status = "unreachable"
 
     state["agent_health_status"] = health_status
-    if health_status not in {"healthy", "ok"}:
+    if health_status in {"error", "unknown", "unreachable"}:
         state["phase"] = "blocked"
         state["open_questions"] = [
             f"Agent health check failed (status: {health_status}). "

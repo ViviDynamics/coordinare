@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -15,12 +16,15 @@ from coordinare.daemon import CoordinareDaemon, RuntimeExecutionError
 from coordinare.graph.builder import CoordinareGraphBuilder
 from coordinare.health import create_health_app
 from coordinare.metrics import METRICS
-from coordinare.services.agent_ssh import AgentSSHService
+from coordinare.services.agent_service import AgentService
 from coordinare.services.claude import ClaudeService
 from coordinare.services.email import EmailService
 from coordinare.services.github import GitHubService
 from coordinare.services.slack import SlackService
 from coordinare.state_store import StateStore
+from coordinare.transport.kubernetes_transport import KubernetesTransport
+from coordinare.transport.ssh_transport import SshTransport
+from coordinare.transport.subprocess_transport import SubprocessTransport
 
 logger = structlog.get_logger(__name__)
 
@@ -28,6 +32,7 @@ if TYPE_CHECKING:
     from fastapi import FastAPI
 
     from coordinare.graph.state import CoordinareState
+    from coordinare.transport import AgentTransport
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
@@ -51,6 +56,19 @@ def _create_health_app(daemon: CoordinareDaemon) -> FastAPI:
     return create_health_app(daemon)
 
 
+def _build_transport(config: ProjectConfiguration) -> AgentTransport:
+    match config.agent_transport:
+        case "subprocess":
+            return SubprocessTransport(config.agent_executable, config.transport_timeout_seconds)
+        case "ssh":
+            return SshTransport()
+        case "kubernetes":
+            return KubernetesTransport()
+        case _:
+            msg = f"Unknown transport: {config.agent_transport!r}"
+            raise ValueError(msg)
+
+
 async def _bootstrap_services(config: ProjectConfiguration) -> CoordinareState:
     github = GitHubService(
         token=config.github_token.get_secret_value(),
@@ -59,15 +77,19 @@ async def _bootstrap_services(config: ProjectConfiguration) -> CoordinareState:
     )
     await github.initialize()
 
+    try:
+        transport = _build_transport(config)
+    except NotImplementedError as exc:
+        logger.error(
+            "transport_not_implemented",
+            transport=config.agent_transport,
+            message=str(exc),
+        )
+        sys.exit(1)
+
     service_state: CoordinareState = {
         "github_service": github,
-        "agent_service": AgentSSHService(
-            host=config.agent_host,
-            user=config.agent_user,
-            command=config.agent_command,
-            port=config.agent_port,
-            key_path=str(config.agent_key_path),
-        ),
+        "agent_service": AgentService(transport),
         "claude_service": ClaudeService(api_key=os.getenv("ANTHROPIC_API_KEY")),
         "email_service": EmailService(
             host=config.smtp_host,

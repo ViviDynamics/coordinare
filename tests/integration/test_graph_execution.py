@@ -48,17 +48,17 @@ class _Claude:
 class _Agent:
     async def dispatch_card(self, card_context):
         _ = card_context
-        return {"status": "accepted"}
+        return {"status": "accepted", "session_id": "s1"}
 
     async def check_health(self):
-        return {"status": "healthy"}
+        return {"status": "accepted"}
 
     async def relay_feedback(self, review_payload):
         _ = review_payload
-        return {"status": "ack"}
+        return {"status": "acknowledged"}
 
-    async def check_status(self, card_id: str):
-        _ = card_id
+    async def check_status(self, session_id: str):
+        _ = session_id
         return {"status": "working"}
 
 

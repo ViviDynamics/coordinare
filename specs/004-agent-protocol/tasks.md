@@ -15,8 +15,8 @@
 
 **Purpose**: Create package directory structure before any source files are written
 
-- [ ] T001 Create `src/coordinare/transport/` package with `src/coordinare/transport/__init__.py`
-- [ ] T002 [P] Create test package stubs: `tests/fixtures/`, `tests/unit/transport/__init__.py`, `tests/unit/protocol/__init__.py`, `tests/unit/services/`, `tests/contract/`, `tests/integration/`
+- [x] T001 Create `src/coordinare/transport/` package with `src/coordinare/transport/__init__.py`
+- [x] T002 [P] Create test package stubs: `tests/fixtures/`, `tests/unit/transport/__init__.py`, `tests/unit/protocol/__init__.py`, `tests/unit/services/`, `tests/contract/`, `tests/integration/`
 
 ---
 
@@ -26,16 +26,16 @@
 
 **⚠️ CRITICAL**: No user-story work can begin until this phase is complete
 
-- [ ] T003 Create `src/coordinare/protocol.py` with `ActionType = Literal["dispatch", "status", "relay_feedback", "health"]`
-- [ ] T004 Add `StatusType = Literal["accepted","working","pr_opened","blocked","error","unknown","busy","acknowledged","session_expired"]` to `src/coordinare/protocol.py`
-- [ ] T005 Add `ProtocolMessage(BaseModel)` with `action`, `session_id`, `payload` fields to `src/coordinare/protocol.py`
-- [ ] T006 Add `ProtocolResponse(BaseModel)` with `status`, `session_id`, `reason`, `questions`, `pr_url`, `pr_node_id`, `progress` fields to `src/coordinare/protocol.py`
-- [ ] T007 Add `generate_contracts(output_dir: Path) -> None` using `model_json_schema()` for both models to `src/coordinare/protocol.py`
-- [ ] T008 Create `src/coordinare/transport/base.py` with `TransportError(RuntimeError)` and `TransportTimeoutError(TransportError)` (carrying `timeout: int`)
-- [ ] T009 [P] Add `AgentTransport(Protocol)` with `async def send(self, message: ProtocolMessage, *, timeout_override: int | None = None) -> ProtocolResponse` to `src/coordinare/transport/base.py`
-- [ ] T010 [P] Update `src/coordinare/transport/__init__.py` to export `AgentTransport`, `TransportError`, `TransportTimeoutError`
-- [ ] T011 [P] Write `ProtocolMessage` and `ProtocolResponse` Pydantic validation unit tests in `tests/unit/protocol/test_protocol_models.py`
-- [ ] T011a [P] Write `generate_contracts()` unit tests (writes two `.json` files to given output dir, both are valid JSON, files use expected naming) in `tests/unit/protocol/test_protocol_models.py`
+- [x] T003 Create `src/coordinare/protocol.py` with `ActionType = Literal["dispatch", "status", "relay_feedback", "health"]`
+- [x] T004 Add `StatusType = Literal["accepted","working","pr_opened","blocked","error","unknown","busy","acknowledged","session_expired"]` to `src/coordinare/protocol.py`
+- [x] T005 Add `ProtocolMessage(BaseModel)` with `action`, `session_id`, `payload` fields to `src/coordinare/protocol.py`
+- [x] T006 Add `ProtocolResponse(BaseModel)` with `status`, `session_id`, `reason`, `questions`, `pr_url`, `pr_node_id`, `progress` fields to `src/coordinare/protocol.py`
+- [x] T007 Add `generate_contracts(output_dir: Path) -> None` using `model_json_schema()` for both models to `src/coordinare/protocol.py`
+- [x] T008 Create `src/coordinare/transport/base.py` with `TransportError(RuntimeError)` and `TransportTimeoutError(TransportError)` (carrying `timeout: int`)
+- [x] T009 [P] Add `AgentTransport(Protocol)` with `async def send(self, message: ProtocolMessage, *, timeout_override: int | None = None) -> ProtocolResponse` to `src/coordinare/transport/base.py`
+- [x] T010 [P] Update `src/coordinare/transport/__init__.py` to export `AgentTransport`, `TransportError`, `TransportTimeoutError`
+- [x] T011 [P] Write `ProtocolMessage` and `ProtocolResponse` Pydantic validation unit tests in `tests/unit/protocol/test_protocol_models.py`
+- [x] T011a [P] Write `generate_contracts()` unit tests (writes two `.json` files to given output dir, both are valid JSON, files use expected naming) in `tests/unit/protocol/test_protocol_models.py`
 
 **Checkpoint**: Protocol models and transport interface defined — transport implementations can now begin
 
@@ -47,12 +47,12 @@
 
 **Independent Test**: Set `agent_transport: ssh` in config, run coordinare, confirm structured `transport_not_implemented` log event and exit code 1 (no traceback).
 
-- [ ] T012 [P] [US4] Create `SshTransport` stub in `src/coordinare/transport/ssh_transport.py` — `__init__` raises `NotImplementedError` with actionable message
-- [ ] T013 [P] [US4] Create `KubernetesTransport` stub in `src/coordinare/transport/kubernetes_transport.py` — `__init__` raises `NotImplementedError` with actionable message
-- [ ] T014 [US4] Add `agent_transport: Literal["subprocess","ssh","kubernetes"]`, `agent_executable: str`, `transport_timeout_seconds: int` (ge=1, le=300, default=30) to `src/coordinare/config.py`
-- [ ] T015 [US4] Make `agent_host`, `agent_user`, `agent_command` optional (`str | None = None`) and remove `{card_context}` validator in `src/coordinare/config.py`
-- [ ] T016 [US4] Add `_build_transport(config: ProjectConfiguration) -> AgentTransport` factory with `match config.agent_transport` in `src/coordinare/__main__.py`
-- [ ] T017 [US4] Wrap `_build_transport` call in startup with `try/except NotImplementedError` → `logger.error("transport_not_implemented", ...)` + `sys.exit(1)` in `src/coordinare/__main__.py`
+- [x] T012 [P] [US4] Create `SshTransport` stub in `src/coordinare/transport/ssh_transport.py` — `__init__` raises `NotImplementedError` with actionable message
+- [x] T013 [P] [US4] Create `KubernetesTransport` stub in `src/coordinare/transport/kubernetes_transport.py` — `__init__` raises `NotImplementedError` with actionable message
+- [x] T014 [US4] Add `agent_transport: Literal["subprocess","ssh","kubernetes"]`, `agent_executable: str`, `transport_timeout_seconds: int` (ge=1, le=300, default=30) to `src/coordinare/config.py`
+- [x] T015 [US4] Make `agent_host`, `agent_user`, `agent_command` optional (`str | None = None`) and remove `{card_context}` validator in `src/coordinare/config.py`
+- [x] T016 [US4] Add `_build_transport(config: ProjectConfiguration) -> AgentTransport` factory with `match config.agent_transport` in `src/coordinare/__main__.py`
+- [x] T017 [US4] Wrap `_build_transport` call in startup with `try/except NotImplementedError` → `logger.error("transport_not_implemented", ...)` + `sys.exit(1)` in `src/coordinare/__main__.py`
 
 **Checkpoint**: Transport selection is pluggable; SSH and Kubernetes stubs produce structured startup errors
 
@@ -64,16 +64,16 @@
 
 **Independent Test**: With a mock agent subprocess that echoes `{"status":"accepted","session_id":"s1"}`, call `AgentService.dispatch_card(...)` and assert response status is `"accepted"`.
 
-- [ ] T018 [US1] Create `SubprocessTransport.__init__(self, executable: str, timeout: int)` in `src/coordinare/transport/subprocess_transport.py`
-- [ ] T019 [US1] Implement `SubprocessTransport.send()` body: `asyncio.create_subprocess_exec(executable, stdin=PIPE, stdout=PIPE, stderr=PIPE)` then `proc.communicate(input=msg_bytes)` wrapped in `asyncio.wait_for` in `src/coordinare/transport/subprocess_transport.py`
-- [ ] T020 [US1] Add timeout branch: on `asyncio.TimeoutError` call `proc.kill()` + `await proc.wait()` then raise `TransportTimeoutError(timeout=effective_timeout)` in `src/coordinare/transport/subprocess_transport.py`
-- [ ] T021 [US1] Add error branches: non-zero `returncode` → `TransportError`; empty stdout → `TransportError`; `ValidationError` from `ProtocolResponse.model_validate_json` → `TransportError` in `src/coordinare/transport/subprocess_transport.py`
-- [ ] T022 [US1] Add `stderr` at DEBUG level and `duration_ms` log on every `send()` call in `src/coordinare/transport/subprocess_transport.py`
-- [ ] T023 [US1] Create `AgentService.__init__(self, transport: AgentTransport)` and `dispatch_card(...)` method in `src/coordinare/services/agent_service.py` — payload MUST include all FR-010 required fields: `title`, `description`, `acceptance_criteria`, `card_id`, `column_name`; catches `TransportError` → `{"status": "error"}`
-- [ ] T024 [US1] Add `check_health()` to `AgentService` sending health `ProtocolMessage` with `timeout_override=10`, catching errors → `{"status": "unknown"}` in `src/coordinare/services/agent_service.py`
-- [ ] T025 [US1] Wire `AgentService(transport)` construction after `_build_transport` in `src/coordinare/__main__.py`
-- [ ] T026 [P] [US1] Write `SubprocessTransport` unit tests (happy path, timeout kill+wait, non-zero exit, empty stdout, malformed JSON) in `tests/unit/transport/test_subprocess_transport.py`
-- [ ] T027 [P] [US1] Write `AgentService.dispatch_card()` and `check_health()` unit tests with mock transport in `tests/unit/services/test_agent_service.py` — assert that the `ProtocolMessage.payload` sent by `dispatch_card()` contains all five FR-010 fields: `title`, `description`, `acceptance_criteria`, `card_id`, `column_name`
+- [x] T018 [US1] Create `SubprocessTransport.__init__(self, executable: str, timeout: int)` in `src/coordinare/transport/subprocess_transport.py`
+- [x] T019 [US1] Implement `SubprocessTransport.send()` body: `asyncio.create_subprocess_exec(executable, stdin=PIPE, stdout=PIPE, stderr=PIPE)` then `proc.communicate(input=msg_bytes)` wrapped in `asyncio.wait_for` in `src/coordinare/transport/subprocess_transport.py`
+- [x] T020 [US1] Add timeout branch: on `asyncio.TimeoutError` call `proc.kill()` + `await proc.wait()` then raise `TransportTimeoutError(timeout=effective_timeout)` in `src/coordinare/transport/subprocess_transport.py`
+- [x] T021 [US1] Add error branches: non-zero `returncode` → `TransportError`; empty stdout → `TransportError`; `ValidationError` from `ProtocolResponse.model_validate_json` → `TransportError` in `src/coordinare/transport/subprocess_transport.py`
+- [x] T022 [US1] Add `stderr` at DEBUG level and `duration_ms` log on every `send()` call in `src/coordinare/transport/subprocess_transport.py`
+- [x] T023 [US1] Create `AgentService.__init__(self, transport: AgentTransport)` and `dispatch_card(...)` method in `src/coordinare/services/agent_service.py` — payload MUST include all FR-010 required fields: `title`, `description`, `acceptance_criteria`, `card_id`, `column_name`; catches `TransportError` → `{"status": "error"}`
+- [x] T024 [US1] Add `check_health()` to `AgentService` sending health `ProtocolMessage` with `timeout_override=10`, catching errors → `{"status": "unknown"}` in `src/coordinare/services/agent_service.py`
+- [x] T025 [US1] Wire `AgentService(transport)` construction after `_build_transport` in `src/coordinare/__main__.py`
+- [x] T026 [P] [US1] Write `SubprocessTransport` unit tests (happy path, timeout kill+wait, non-zero exit, empty stdout, malformed JSON) in `tests/unit/transport/test_subprocess_transport.py`
+- [x] T027 [P] [US1] Write `AgentService.dispatch_card()` and `check_health()` unit tests with mock transport in `tests/unit/services/test_agent_service.py` — assert that the `ProtocolMessage.payload` sent by `dispatch_card()` contains all five FR-010 fields: `title`, `description`, `acceptance_criteria`, `card_id`, `column_name`
 
 **Checkpoint**: Full dispatch path works end-to-end; US1 independently testable
 
@@ -85,11 +85,11 @@
 
 **Independent Test**: With a mock transport returning `{"status":"working","session_id":"s1"}`, call `AgentService.check_status("s1")` and assert `"working"` is returned.
 
-- [ ] T028 [US2] Rename `check_status(self, card_id: str)` → `check_status(self, session_id: str)` in `AgentServiceProtocol` in `src/coordinare/graph/state.py`
-- [ ] T029 [US2] Add `check_status(session_id: str)` to `AgentService`, catching all transport errors → `{"status": "unknown"}` in `src/coordinare/services/agent_service.py`
-- [ ] T030 [US2] Update `monitor_agent.py` to read `session_id` from `state.get("agent_dispatch", {}).get("session_id", "")` and call `agent.check_status(session_id)` in `src/coordinare/graph/nodes/monitor_agent.py`
-- [ ] T031 [US2] Add `check_status()` unit tests (all transport error branches → unknown) to `tests/unit/services/test_agent_service.py`
-- [ ] T032 [US2] Update existing `test_monitor_agent.py` for renamed `check_status(session_id)` signature in `tests/unit/graph/test_monitor_agent.py`
+- [x] T028 [US2] Rename `check_status(self, card_id: str)` → `check_status(self, session_id: str)` in `AgentServiceProtocol` in `src/coordinare/graph/state.py`
+- [x] T029 [US2] Add `check_status(session_id: str)` to `AgentService`, catching all transport errors → `{"status": "unknown"}` in `src/coordinare/services/agent_service.py`
+- [x] T030 [US2] Update `monitor_agent.py` to read `session_id` from `state.get("agent_dispatch", {}).get("session_id", "")` and call `agent.check_status(session_id)` in `src/coordinare/graph/nodes/monitor_agent.py`
+- [x] T031 [US2] Add `check_status()` unit tests (all transport error branches → unknown) to `tests/unit/services/test_agent_service.py`
+- [x] T032 [US2] Update existing `test_monitor_agent.py` for renamed `check_status(session_id)` signature in `tests/unit/graph/test_monitor_agent.py`
 
 **Checkpoint**: Status polling works; `session_id` flows correctly from state → service → transport
 
@@ -101,8 +101,8 @@
 
 **Independent Test**: With a mock transport returning `{"status":"acknowledged","session_id":"s1"}`, call `AgentService.relay_feedback(...)` and assert `"acknowledged"` is returned.
 
-- [ ] T033 [US3] Add `relay_feedback(session_id: str, payload: dict)` to `AgentService` in `src/coordinare/services/agent_service.py` — payload MUST conform to FR-012 structure: `pr_url`, `comments` (ordered list of `{reviewer, body, file, line}` dicts); sends `relay_feedback` `ProtocolMessage`, catches `TransportError` → `{"status": "error"}`
-- [ ] T034 [US3] Add `relay_feedback()` unit tests (success + transport error path) to `tests/unit/services/test_agent_service.py`
+- [x] T033 [US3] Add `relay_feedback(session_id: str, payload: dict)` to `AgentService` in `src/coordinare/services/agent_service.py` — payload MUST conform to FR-012 structure: `pr_url`, `comments` (ordered list of `{reviewer, body, file, line}` dicts); sends `relay_feedback` `ProtocolMessage`, catches `TransportError` → `{"status": "error"}`
+- [x] T034 [US3] Add `relay_feedback()` unit tests (success + transport error path) to `tests/unit/services/test_agent_service.py`
 
 **Checkpoint**: Feedback relay path complete; all four `AgentService` operations covered
 
@@ -114,16 +114,16 @@
 
 **Independent Test**: Run `python tests/fixtures/mock_agent.py` with `MOCK_AGENT_SCENARIO=happy_path`, pipe a dispatch `ProtocolMessage`, assert stdout is valid `ProtocolResponse` JSON with `status: "accepted"`.
 
-- [ ] T035 [US5] Create `tests/fixtures/mock_agent.py` reading full stdin as JSON, validating with `ProtocolMessage.model_validate_json()`, selecting scenario from `MOCK_AGENT_SCENARIO` env var
-- [ ] T036 [US5] Implement `happy_path` scenario with call-count state file (accepted → working → pr_opened progression) in `tests/fixtures/mock_agent.py`
-- [ ] T037 [US5] Implement `blocked`, `error`, `busy`, `session_expired` scenarios in `tests/fixtures/mock_agent.py`
-- [ ] T038 [US5] Add call-count tracking via temp file in `MOCK_AGENT_STATE_DIR` (default `/tmp/mock_agent_{scenario}/`) in `tests/fixtures/mock_agent.py`
-- [ ] T039 [P] [US5] Write JSON Schema contract tests validating both `specs/004-agent-protocol/contracts/*.schema.json` files against live Pydantic output in `tests/contract/test_agent_protocol.py`
-- [ ] T040 [P] [US5] Add contract test asserting `generate_contracts()` output matches checked-in schema files in `tests/contract/test_agent_protocol.py`
-- [ ] T041 [US5] Write integration test for full `dispatch → status(working) → status(pr_opened)` cycle with `happy_path` mock agent in `tests/integration/test_agent_protocol_flow.py`
-- [ ] T042 [US5] Add integration tests for error scenarios: malformed response, timeout, non-zero exit, unknown session in `tests/integration/test_agent_protocol_flow.py`
-- [ ] T043 [US5] Add integration test asserting all 9 `StatusType` values exercised across scenarios in `tests/integration/test_agent_protocol_flow.py`
-- [ ] T044 [US5] Add integration test asserting full `happy_path` cycle completes within 60s wall time in `tests/integration/test_agent_protocol_flow.py`
+- [x] T035 [US5] Create `tests/fixtures/mock_agent.py` reading full stdin as JSON, validating with `ProtocolMessage.model_validate_json()`, selecting scenario from `MOCK_AGENT_SCENARIO` env var
+- [x] T036 [US5] Implement `happy_path` scenario with call-count state file (accepted → working → pr_opened progression) in `tests/fixtures/mock_agent.py`
+- [x] T037 [US5] Implement `blocked`, `error`, `busy`, `session_expired` scenarios in `tests/fixtures/mock_agent.py`
+- [x] T038 [US5] Add call-count tracking via temp file in `MOCK_AGENT_STATE_DIR` (default `/tmp/mock_agent_{scenario}/`) in `tests/fixtures/mock_agent.py`
+- [x] T039 [P] [US5] Write JSON Schema contract tests validating both `specs/004-agent-protocol/contracts/*.schema.json` files against live Pydantic output in `tests/contract/test_agent_protocol.py`
+- [x] T040 [P] [US5] Add contract test asserting `generate_contracts()` output matches checked-in schema files in `tests/contract/test_agent_protocol.py`
+- [x] T041 [US5] Write integration test for full `dispatch → status(working) → status(pr_opened)` cycle with `happy_path` mock agent in `tests/integration/test_agent_protocol_flow.py`
+- [x] T042 [US5] Add integration tests for error scenarios: malformed response, timeout, non-zero exit, unknown session in `tests/integration/test_agent_protocol_flow.py`
+- [x] T043 [US5] Add integration test asserting all 9 `StatusType` values exercised across scenarios in `tests/integration/test_agent_protocol_flow.py`
+- [x] T044 [US5] Add integration test asserting full `happy_path` cycle completes within 60s wall time in `tests/integration/test_agent_protocol_flow.py`
 
 **Checkpoint**: All integration tests pass with mock agent; no containers or network required (SC-004)
 
@@ -133,10 +133,10 @@
 
 **Purpose**: Remove dead code, validate observability, confirm quickstart
 
-- [ ] T045 [P] Delete `src/coordinare/services/agent_ssh.py` (superseded by `SubprocessTransport` + `AgentService`; dead code per Constitution Principle I — git history preserves it)
-- [ ] T045a [P] Remove `asyncssh` from `pyproject.toml` (no longer imported after T045 deletion); confirm no other `src/` files import it
-- [ ] T046 [P] Confirm all `send()` calls emit `duration_ms` log and that health calls use `timeout_override=10` via log inspection in integration test run
-- [ ] T047 Run quickstart.md validation: configure `agent_transport: subprocess`, launch coordinare with mock agent as `agent_executable`, observe `transport_not_implemented` for ssh variant
+- [x] T045 [P] Delete `src/coordinare/services/agent_ssh.py` (superseded by `SubprocessTransport` + `AgentService`; dead code per Constitution Principle I — git history preserves it)
+- [x] T045a [P] Remove `asyncssh` from `pyproject.toml` (no longer imported after T045 deletion); confirm no other `src/` files import it
+- [x] T046 [P] Confirm all `send()` calls emit `duration_ms` log and that health calls use `timeout_override=10` via log inspection in integration test run
+- [x] T047 Run quickstart.md validation: configure `agent_transport: subprocess`, launch coordinare with mock agent as `agent_executable`, observe `transport_not_implemented` for ssh variant
 
 ---
 

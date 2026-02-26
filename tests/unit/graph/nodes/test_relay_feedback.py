@@ -7,20 +7,29 @@ from coordinare.graph.state import initial_state
 
 
 class _Agent:
+    def __init__(self):
+        self.last_payload = None
+
     async def relay_feedback(self, review_payload):
-        assert "reviews" in review_payload
+        self.last_payload = review_payload
         return {"status": "acknowledged"}
 
 
 @pytest.mark.asyncio
 async def test_relay_feedback_transitions_to_monitoring_agent() -> None:
+    agent = _Agent()
     state = initial_state()
-    state["agent_service"] = _Agent()
+    state["agent_service"] = agent
     state["pending_reviews"] = [{"id": "RVW_1"}]
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["current_card"] = {"pr_url": "https://github.com/org/repo/pull/1"}
 
     result = await relay_feedback(state)
 
     assert result["phase"] == "monitoring_agent"
+    assert agent.last_payload["session_id"] == "s1"
+    assert agent.last_payload["pr_url"] == "https://github.com/org/repo/pull/1"
+    assert agent.last_payload["reviews"] == [{"id": "RVW_1"}]
 
 
 @pytest.mark.asyncio

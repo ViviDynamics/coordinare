@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import Field, SecretStr, field_validator
@@ -18,11 +18,15 @@ class ProjectConfiguration(BaseSettings):
     github_project_number: int
     github_token: SecretStr
 
-    agent_host: str
+    agent_transport: Literal["subprocess", "ssh", "kubernetes"] = "subprocess"
+    agent_executable: str = ""
+    transport_timeout_seconds: int = Field(default=30, ge=1, le=300)
+
+    agent_host: str = ""
     agent_port: int = 22
-    agent_user: str
+    agent_user: str = ""
     agent_key_path: Path = Path("~/.ssh/id_ed25519")
-    agent_command: str
+    agent_command: str | None = None
 
     human_reviewers: list[str]
 
@@ -104,10 +108,3 @@ class ProjectConfiguration(BaseSettings):
             raise ValueError(msg)
         return value
 
-    @field_validator("agent_command")
-    @classmethod
-    def _validate_agent_command(cls, value: str) -> str:
-        if "{card_context}" not in value:
-            msg = "agent_command must contain the {card_context} placeholder"
-            raise ValueError(msg)
-        return value

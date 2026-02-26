@@ -144,7 +144,7 @@ def test_health_response_required_fields_present(tmp_path: Path) -> None:
     # Services structure
     services = data["services"]
     assert "github" in services
-    assert "agent_ssh" in services
+    assert "agent_transport" in services
     assert "smtp" in services
     assert "slack" in services
 

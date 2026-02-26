@@ -7,8 +7,8 @@ from coordinare.graph.state import initial_state
 
 
 class _Agent:
-    async def check_status(self, card_id: str):
-        _ = card_id
+    async def check_status(self, session_id: str):
+        _ = session_id
         return {"status": "blocked", "questions": ["Need answer"]}
 
 
@@ -17,6 +17,7 @@ async def test_monitor_agent_marks_blocked_with_questions() -> None:
     state = initial_state()
     state["agent_service"] = _Agent()
     state["current_card"] = {"id": "ITEM_1"}
+    state["agent_dispatch"] = {"session_id": "s1"}
 
     result = await monitor_agent(state)
 
@@ -45,7 +46,7 @@ async def test_monitor_agent_idle_when_no_card() -> None:
 
 
 class _AgentPrOpened:
-    async def check_status(self, card_id: str):
+    async def check_status(self, session_id: str):
         return {
             "status": "pr_opened",
             "pr_url": "https://github.com/org/repo/pull/1",
@@ -58,6 +59,7 @@ async def test_monitor_agent_transitions_to_monitoring_pr_on_pr_opened() -> None
     state = initial_state()
     state["agent_service"] = _AgentPrOpened()
     state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
 
     result = await monitor_agent(state)
 
@@ -69,7 +71,7 @@ async def test_monitor_agent_transitions_to_monitoring_pr_on_pr_opened() -> None
 
 
 class _AgentWorking:
-    async def check_status(self, card_id: str):
+    async def check_status(self, session_id: str):
         return {"status": "working"}
 
 
@@ -78,6 +80,7 @@ async def test_monitor_agent_stays_monitoring_when_working() -> None:
     state = initial_state()
     state["agent_service"] = _AgentWorking()
     state["current_card"] = {"id": "ITEM_1"}
+    state["agent_dispatch"] = {"session_id": "s1"}
 
     result = await monitor_agent(state)
 

@@ -221,6 +221,7 @@ Thumbs.db
 
 # Project env variants
 .env*
+!.env.example
 config.yaml
 config.local.yaml
 

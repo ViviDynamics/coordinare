@@ -66,7 +66,7 @@ def create_health_app(daemon: CoordinareDaemon) -> FastAPI:
                     "status": github_status,
                     "last_poll_at": last_poll_at,
                 },
-                "agent_ssh": {"status": passive_service_status},
+                "agent_transport": {"status": passive_service_status},
                 "smtp": {"status": passive_service_status},
                 "slack": {"status": passive_service_status},
             },
