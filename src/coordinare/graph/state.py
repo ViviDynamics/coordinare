@@ -51,6 +51,7 @@ class CoordinareState(TypedDict, total=False):
     open_questions: list[str]
     agent_dispatch: dict[str, Any]
     commit_summary: str | None
+    agent_health_status: str | None
     last_blocked_notified_at: datetime | None
 
 

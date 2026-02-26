@@ -20,6 +20,21 @@ class _GitHub:
         assert status == "DONE"
 
 
+class _GitHubWithMergeCommit:
+    async def check_mergeability(self, pr_id: str):
+        return {"mergeable": True}
+
+    async def squash_merge(self, pr_id: str):
+        return {
+            "merged": True,
+            "id": "PR_1",
+            "merge_commit": {"oid": "abc1234def5678", "messageHeadline": "Fix bug (#42)"},
+        }
+
+    async def move_card(self, item_id: str, status: str) -> None:
+        pass
+
+
 @pytest.mark.asyncio
 async def test_merge_pr_moves_card_to_done() -> None:
     state = initial_state()
@@ -30,3 +45,26 @@ async def test_merge_pr_moves_card_to_done() -> None:
 
     assert result["phase"] == "idle"
     assert result["current_card"]["status"] == "DONE"
+
+
+@pytest.mark.asyncio
+async def test_merge_pr_populates_commit_summary() -> None:
+    state = initial_state()
+    state["github_service"] = _GitHubWithMergeCommit()
+    state["current_card"] = {"id": "ITEM_1", "pr_node_id": "PR_1", "status": "IN_REVIEW"}
+
+    result = await merge_pr(state)
+
+    assert result["commit_summary"] == "abc1234 Fix bug (#42)"
+    assert result["current_card"]["status"] == "DONE"
+
+
+@pytest.mark.asyncio
+async def test_merge_pr_commit_summary_none_when_no_merge_commit() -> None:
+    state = initial_state()
+    state["github_service"] = _GitHub()
+    state["current_card"] = {"id": "ITEM_1", "pr_node_id": "PR_1", "status": "IN_REVIEW"}
+
+    result = await merge_pr(state)
+
+    assert result.get("commit_summary") is None

@@ -20,6 +20,8 @@ lib/
 lib64/
 !src/coordinare/lib/
 !src/coordinare/lib/**
+!tests/unit/lib/
+!tests/unit/lib/**
 parts/
 sdist/
 var/

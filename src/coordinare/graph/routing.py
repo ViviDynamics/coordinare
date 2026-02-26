@@ -9,6 +9,8 @@ def route_from_board_check(state: dict[str, object]) -> str:
         return "monitor_pr"
     if phase == "monitoring_agent":
         return "monitor_agent"
+    if phase == "blocked":
+        return "blocked"
     return "idle"
 
 

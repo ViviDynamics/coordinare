@@ -11,6 +11,7 @@ def test_route_from_board_check_paths() -> None:
     assert route_from_board_check({"phase": "dispatching"}) == "dispatch"
     assert route_from_board_check({"phase": "monitoring_pr"}) == "monitor_pr"
     assert route_from_board_check({"phase": "monitoring_agent"}) == "monitor_agent"
+    assert route_from_board_check({"phase": "blocked"}) == "blocked"
     assert route_from_board_check({}) == "idle"
 
 

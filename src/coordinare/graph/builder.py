@@ -74,6 +74,7 @@ class CoordinareGraphBuilder:
                 "dispatch": "assess_card",
                 "monitor_pr": "monitor_pr",
                 "monitor_agent": "monitor_agent",
+                "blocked": "handle_blocked",
                 "idle": END,
             },
         )

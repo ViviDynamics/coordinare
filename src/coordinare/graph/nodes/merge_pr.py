@@ -20,7 +20,15 @@ async def merge_pr(state: CoordinareState) -> CoordinareState:
         state["open_questions"] = ["PR has merge conflicts requiring human intervention."]
         return state
 
-    await github.squash_merge(pr_node_id)
+    merge_result = await github.squash_merge(pr_node_id)
+    merge_commit = merge_result.get("merge_commit")
+    if isinstance(merge_commit, dict):
+        oid = str(merge_commit.get("oid", ""))
+        headline = str(merge_commit.get("messageHeadline", ""))
+        state["commit_summary"] = f"{oid[:7]} {headline}".strip() if oid else (headline or None)
+    else:
+        state["commit_summary"] = None
+
     await github.move_card(str(card.get("id", "")), "DONE")
     card["previous_status"] = card.get("status", "IN_REVIEW")
     card["status"] = "DONE"

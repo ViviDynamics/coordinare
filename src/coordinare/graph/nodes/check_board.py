@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
+
+from coordinare.lib.acceptance_criteria import parse_acceptance_criteria
 
 if TYPE_CHECKING:
     from coordinare.graph.state import CoordinareState
@@ -30,19 +32,76 @@ async def check_board(state: CoordinareState) -> CoordinareState:
         state["phase"] = "monitoring_agent"
         return state
     if blocked:
-        state["phase"] = "blocked"
+        item = blocked[0]
+        titles = board.get("titles", {})
+        descriptions = board.get("descriptions", {})
+        issue_numbers = board.get("issue_numbers", {})
+        description = str(descriptions.get(item, ""))
+        state["current_card"] = {
+            "id": item,
+            "issue_id": item,
+            "issue_number": int(issue_numbers.get(item, 0)),
+            "title": str(titles.get(item, "")),
+            "description": description,
+            "acceptance_criteria": parse_acceptance_criteria(description),
+            "status": "BLOCKED",
+            "previous_status": "BLOCKED",
+        }
+
+        last_notified = state.get("last_blocked_notified_at")
+        if last_notified is not None and isinstance(last_notified, datetime):
+            details = await github.get_issue_details(item)
+            comments_node = details.get("comments")
+            comments = (
+                comments_node.get("nodes", [])
+                if isinstance(comments_node, dict)
+                else []
+            )
+            for comment in comments:
+                if not isinstance(comment, dict):
+                    continue
+                created_raw = comment.get("createdAt", "")
+                if not isinstance(created_raw, str) or not created_raw:
+                    continue
+                try:
+                    created_at = datetime.fromisoformat(
+                        created_raw.replace("Z", "+00:00")
+                    )
+                    if created_at > last_notified:
+                        await github.move_card(item, "IN_PROGRESS")
+                        state["current_card"]["previous_status"] = "BLOCKED"
+                        state["current_card"]["status"] = "IN_PROGRESS"
+                        state["phase"] = "monitoring_agent"
+                        state["last_blocked_notified_at"] = None
+                        return state
+                except (ValueError, TypeError):
+                    continue
+
+        raw_hours = state.get("blocked_reminder_hours", 24)
+        hours = raw_hours if isinstance(raw_hours, int) else 24
+        now = datetime.now(UTC)
+        if last_notified is None or (
+            isinstance(last_notified, datetime)
+            and now - last_notified >= timedelta(hours=hours)
+        ):
+            state["phase"] = "blocked"
+            return state
+
+        state["phase"] = "idle"
         return state
     if todo:
         item = todo[0]
         titles = board.get("titles", {})
         descriptions = board.get("descriptions", {})
         issue_numbers = board.get("issue_numbers", {})
+        description = str(descriptions.get(item, ""))
         state["current_card"] = {
             "id": item,
             "issue_id": item,
             "issue_number": int(issue_numbers.get(item, 0)),
             "title": str(titles.get(item, "")),
-            "description": str(descriptions.get(item, "")),
+            "description": description,
+            "acceptance_criteria": parse_acceptance_criteria(description),
             "status": "TODO",
             "previous_status": "TODO",
         }
