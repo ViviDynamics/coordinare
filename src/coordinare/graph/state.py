@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any, Literal, Protocol, TypedDict
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TypedDict
+
+if TYPE_CHECKING:
+    from coordinare.models.notification import NotificationEvent
 
 
 class GitHubServiceProtocol(Protocol):
@@ -26,7 +29,7 @@ class ClaudeServiceProtocol(Protocol):
 
 
 class NotificationServiceProtocol(Protocol):
-    async def send_notification(self, *args: Any, **kwargs: Any) -> None: ...
+    async def dispatch(self, event: NotificationEvent) -> None: ...
 
 
 class CoordinareState(TypedDict, total=False):
@@ -41,11 +44,9 @@ class CoordinareState(TypedDict, total=False):
     github_service: GitHubServiceProtocol
     agent_service: AgentServiceProtocol
     claude_service: ClaudeServiceProtocol
-    email_service: NotificationServiceProtocol
-    slack_service: NotificationServiceProtocol
+    notification_service: NotificationServiceProtocol
 
     human_reviewers: list[str]
-    notification_email: str
     blocked_reminder_hours: int
 
     open_questions: list[str]

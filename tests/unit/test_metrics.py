@@ -3,13 +3,18 @@ from __future__ import annotations
 from coordinare.metrics import CoordinareMetrics
 
 
-def test_observe_notification_increments_counter() -> None:
+def test_notifications_dispatched_counter() -> None:
     metrics = CoordinareMetrics()
-    metrics.observe_notification("slack", "success")
-    metrics.observe_notification("email", "failure")
+    metrics.notifications_dispatched_total.labels(event_type="card_transition", channel="slack-ops").inc()
+    assert metrics.notifications_dispatched_total.labels(
+        event_type="card_transition", channel="slack-ops"
+    )._value.get() == 1.0
 
-    assert metrics.notifications_total.labels(channel="slack", status="success")._value.get() == 1.0
-    assert metrics.notifications_total.labels(channel="email", status="failure")._value.get() == 1.0
+
+def test_notifications_failed_counter() -> None:
+    metrics = CoordinareMetrics()
+    metrics.notifications_failed_total.labels(channel="slack-ops").inc()
+    assert metrics.notifications_failed_total.labels(channel="slack-ops")._value.get() == 1.0
 
 
 def test_observe_error_increments_counter() -> None:

@@ -4,30 +4,13 @@ import pytest
 
 from coordinare.graph.nodes.notify import notify
 from coordinare.graph.state import initial_state
-
-
-class _Email:
-    def __init__(self):
-        self.sent = 0
-
-    async def send_notification(self, recipient, notification):
-        _ = (recipient, notification)
-        self.sent += 1
-
-
-class _Slack:
-    def __init__(self):
-        self.sent = 0
-
-    async def send_notification(self, notification):
-        _ = notification
-        self.sent += 1
+from coordinare.models.notification import EventType
+from tests.utils.fake_notification import FakeNotificationService
 
 
 @pytest.mark.asyncio
-async def test_notification_pipeline_sends_both_channels() -> None:
-    email = _Email()
-    slack = _Slack()
+async def test_notification_pipeline_dispatches_event() -> None:
+    fake = FakeNotificationService()
     state = initial_state()
     state.update(
         {
@@ -37,22 +20,20 @@ async def test_notification_pipeline_sends_both_channels() -> None:
                 "previous_status": "TODO",
                 "description": "Task",
             },
-            "email_service": email,
-            "slack_service": slack,
-            "notification_email": "team@example.com",
+            "notification_service": fake,
+            "phase": "dispatching",
         }
     )
 
     await notify(state)
 
-    assert email.sent == 1
-    assert slack.sent == 1
+    assert len(fake.dispatched) == 1
+    assert fake.dispatched[0].event_type == EventType.card_dispatched
 
 
 @pytest.mark.asyncio
 async def test_notification_latency_target_smoke() -> None:
-    email = _Email()
-    slack = _Slack()
+    fake = FakeNotificationService()
     state = initial_state()
     state.update(
         {
@@ -62,12 +43,11 @@ async def test_notification_latency_target_smoke() -> None:
                 "previous_status": "TODO",
                 "description": "Task",
             },
-            "email_service": email,
-            "slack_service": slack,
-            "notification_email": "team@example.com",
+            "notification_service": fake,
+            "phase": "monitoring_agent",
         }
     )
 
     await notify(state)
 
-    assert email.sent == 1 and slack.sent == 1
+    assert len(fake.dispatched) == 1

@@ -16,12 +16,12 @@ from coordinare.daemon import CoordinareDaemon, RuntimeExecutionError
 from coordinare.graph.builder import CoordinareGraphBuilder
 from coordinare.health import create_health_app
 from coordinare.metrics import METRICS
+from coordinare.models.notification import EventType, NotificationEvent, NotificationSeverity
 from coordinare.resilience import CircuitBreaker, ResilientAgentService, RetryConfig
 from coordinare.services.agent_service import AgentService
 from coordinare.services.claude import ClaudeService
-from coordinare.services.email import EmailService
 from coordinare.services.github import GitHubService
-from coordinare.services.slack import SlackService
+from coordinare.services.notification import NotificationService, build_notification_service
 from coordinare.state_store import StateStore
 from coordinare.transport.kubernetes_transport import KubernetesTransport
 from coordinare.transport.ssh_transport import SshTransport
@@ -29,7 +29,12 @@ from coordinare.transport.subprocess_transport import SubprocessTransport
 
 logger = structlog.get_logger(__name__)
 
+# Background tasks set — keeps strong references so tasks aren't GC'd before completion.
+_background_tasks: set[asyncio.Task[object]] = set()
+
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from fastapi import FastAPI
 
     from coordinare.graph.state import CoordinareState
@@ -76,6 +81,35 @@ def _circuit_breaker_from(name: str, cfg: ServiceCircuitConfig) -> CircuitBreake
         recovery_window=cfg.recovery_window_seconds,
         observation_window=cfg.observation_window_seconds,
     )
+
+
+def _make_trip_callback(
+    notification_service: NotificationService,
+) -> Callable[[str, str], None]:
+    def callback(service_name: str, reason: str) -> None:
+        event = NotificationEvent(
+            event_type=EventType.circuit_breaker_trip,
+            severity=NotificationSeverity.critical,
+            payload={
+                "event_type": EventType.circuit_breaker_trip.value,
+                "severity": NotificationSeverity.critical.value,
+                "source": "resilience",
+                "summary": f"Circuit breaker OPEN: {service_name} ({reason})",
+                "service_name": service_name,
+                "reason": reason,
+            },
+            source="resilience",
+            dedup_key=f"circuit_breaker_trip:{service_name}",
+        )
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return  # No event loop running — skip dispatch
+        task = loop.create_task(notification_service.dispatch(event))
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
+
+    return callback
 
 
 def _build_circuit_breakers(config: ProjectConfiguration) -> dict[str, CircuitBreaker]:
@@ -134,6 +168,11 @@ async def _bootstrap_services(
         circuit_breaker=circuit_breakers["agent"],
     )
 
+    notification_service = build_notification_service(config.notifications, METRICS)
+    trip_callback = _make_trip_callback(notification_service)
+    for cb in circuit_breakers.values():
+        cb.on_open_callback = trip_callback
+
     service_state: CoordinareState = {
         "github_service": github,
         "agent_service": resilient_agent,
@@ -142,23 +181,8 @@ async def _bootstrap_services(
             circuit_breaker=circuit_breakers["anthropic"],
             retry_kwargs=_retry_config_from(r.anthropic_retry).to_stamina_kwargs(),
         ),
-        "email_service": EmailService(
-            host=config.smtp_host,
-            port=config.smtp_port,
-            username=config.smtp_username,
-            password=config.smtp_password.get_secret_value() if config.smtp_password else None,
-            sender=config.notification_email,
-            circuit_breaker=circuit_breakers["smtp"],
-            retry_kwargs=_retry_config_from(r.smtp_retry).to_stamina_kwargs(),
-        ),
-        "slack_service": SlackService(
-            webhook_url=config.slack_webhook_url.get_secret_value(),
-            channel=config.slack_channel,
-            circuit_breaker=circuit_breakers["slack"],
-            retry_kwargs=_retry_config_from(r.slack_retry).to_stamina_kwargs(),
-        ),
+        "notification_service": notification_service,
         "human_reviewers": config.human_reviewers,
-        "notification_email": config.notification_email,
         "blocked_reminder_hours": config.blocked_reminder_hours,
     }
     return service_state
@@ -214,6 +238,7 @@ async def _run(config: ProjectConfiguration) -> None:
         heartbeat_interval_seconds=effective_heartbeat,
         max_cycles=config.max_cycles,
         state_store=state_store,
+        idle_threshold_seconds=config.notifications.prolonged_idle_threshold_seconds,
     )
 
     daemon.state.update(await _bootstrap_services(config, circuit_breakers))

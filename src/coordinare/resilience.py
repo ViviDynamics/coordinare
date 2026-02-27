@@ -7,6 +7,7 @@ Provides:
 """
 from __future__ import annotations
 
+import contextlib
 import time
 from collections import deque
 from contextlib import asynccontextmanager
@@ -19,7 +20,7 @@ import stamina
 import structlog
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
+    from collections.abc import AsyncGenerator, Callable
 
     from coordinare.graph.state import AgentServiceProtocol
 
@@ -58,6 +59,8 @@ class CircuitBreaker:
     recovery_window: float
     observation_window: float
 
+    on_open_callback: Callable[[str, str], None] | None = None
+
     _state: CircuitState = field(default=CircuitState.CLOSED, init=False)
     _failure_times: deque[float] = field(default_factory=deque, init=False)
     _opened_at: float | None = field(default=None, init=False)
@@ -94,6 +97,10 @@ class CircuitBreaker:
             METRICS.circuit_breaker_state.labels(
                 service=self.service_name, state=s.value
             ).set(1.0 if s == new_state else 0.0)
+
+        if new_state == CircuitState.OPEN and self.on_open_callback is not None:
+            with contextlib.suppress(Exception):
+                self.on_open_callback(self.service_name, reason)
 
     def allow_request(self) -> bool:
         if self._state == CircuitState.CLOSED:

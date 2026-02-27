@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Literal
-
 from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram, generate_latest
 
 
@@ -20,10 +18,28 @@ class CoordinareMetrics:
             registry=self.registry,
             buckets=(300, 600, 1800, 3600),
         )
-        self.notifications_total = Counter(
-            "coordinare_notifications_total",
-            "Notifications sent by channel and status",
-            labelnames=("channel", "status"),
+        self.notifications_dispatched_total = Counter(
+            "coordinare_notifications_dispatched_total",
+            "Notifications successfully delivered",
+            labelnames=("event_type", "channel"),
+            registry=self.registry,
+        )
+        self.notifications_failed_total = Counter(
+            "coordinare_notifications_failed_total",
+            "Notifications that failed after all retries",
+            labelnames=("channel",),
+            registry=self.registry,
+        )
+        self.notifications_rate_limited_total = Counter(
+            "coordinare_notifications_rate_limited_total",
+            "Notifications dropped due to rate limiting",
+            labelnames=("channel",),
+            registry=self.registry,
+        )
+        self.notifications_deduplicated_total = Counter(
+            "coordinare_notifications_deduplicated_total",
+            "Notifications suppressed by deduplication",
+            labelnames=("channel",),
             registry=self.registry,
         )
         self.agent_dispatch_seconds = Histogram(
@@ -84,9 +100,6 @@ class CoordinareMetrics:
             labelnames=("service", "action", "outcome"),
             registry=self.registry,
         )
-
-    def observe_notification(self, channel: str, status: Literal["success", "failure"]) -> None:
-        self.notifications_total.labels(channel=channel, status=status).inc()
 
     def observe_error(self, category: str) -> None:
         self.errors_total.labels(category=category).inc()

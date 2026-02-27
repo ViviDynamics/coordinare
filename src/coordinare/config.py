@@ -1,11 +1,107 @@
 from __future__ import annotations
 
+import string
 from pathlib import Path
 from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
+
+from coordinare.models.notification import ChannelType, EventType
+
+# ---------------------------------------------------------------------------
+# 006 — Notification & Alerting config models
+# ---------------------------------------------------------------------------
+
+
+class ChannelConfig(BaseModel):
+    name: str
+    type: ChannelType
+
+    # Slack-specific
+    webhook_url: SecretStr | None = None
+
+    # Email-specific
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_username: str | None = None
+    smtp_password: SecretStr | None = None
+    smtp_sender: str = "coordinare@vividynamics.com"
+    smtp_recipient: str | None = None
+
+    # Rate limiting
+    rate_limit: int = Field(default=0, ge=0)
+    rate_window_seconds: int = Field(default=60, ge=1)
+
+    # Deduplication
+    dedup_window_seconds: int = Field(default=600, ge=0)
+
+    # Retry
+    retry_count: int = Field(default=5, ge=1)
+    retry_delay_seconds: float = Field(default=2.0, ge=0.0)
+
+    # Message template
+    message_template: str = "{event_type}: {source}"
+    subject_template: str | None = None
+
+    @field_validator("message_template", "subject_template", mode="before")
+    @classmethod
+    def _validate_template_syntax(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        try:
+            list(string.Formatter().parse(v))
+        except (ValueError, KeyError) as exc:
+            msg = f"Invalid template syntax: {exc}"
+            raise ValueError(msg) from exc
+        return v
+
+    @model_validator(mode="after")
+    def _validate_type_fields(self) -> ChannelConfig:
+        if self.type == ChannelType.slack and not self.webhook_url:
+            msg = "webhook_url required for slack channels"
+            raise ValueError(msg)
+        if self.type == ChannelType.email and (not self.smtp_host or not self.smtp_recipient):
+            msg = "smtp_host and smtp_recipient required for email channels"
+            raise ValueError(msg)
+        return self
+
+
+class RoutingEntry(BaseModel):
+    event_type: EventType
+    channels: list[str]
+    enabled: bool = True
+
+
+class NotificationsConfig(BaseModel):
+    channels: list[ChannelConfig] = Field(default_factory=list)
+    routing: list[RoutingEntry] = Field(default_factory=list)
+    history_max_age_hours: int = Field(default=24, ge=1)
+    prolonged_idle_threshold_seconds: int = Field(default=1800, ge=60)
+
+    @model_validator(mode="after")
+    def _validate_unique_channel_names(self) -> NotificationsConfig:
+        names = [c.name for c in self.channels]
+        if len(names) != len(set(names)):
+            msg = "Channel names must be unique"
+            raise ValueError(msg)
+        return self
+
+    @model_validator(mode="after")
+    def _validate_routing_references(self) -> NotificationsConfig:
+        channel_names = {c.name for c in self.channels}
+        for entry in self.routing:
+            for ch in entry.channels:
+                if ch not in channel_names:
+                    msg = f"Routing entry references unknown channel '{ch}'"
+                    raise ValueError(msg)
+        return self
+
+
+# ---------------------------------------------------------------------------
+# 005 — Resilience config models
+# ---------------------------------------------------------------------------
 
 
 class ServiceRetryConfig(BaseModel):
@@ -96,15 +192,6 @@ class ProjectConfiguration(BaseSettings):
 
     human_reviewers: list[str]
 
-    notification_email: str = "coordinare@vividynamics.com"
-    smtp_host: str
-    smtp_port: int = 587
-    smtp_username: str | None = None
-    smtp_password: SecretStr | None = None
-
-    slack_webhook_url: SecretStr
-    slack_channel: str
-
     poll_interval_seconds: int = Field(default=30, ge=10, le=300)
     blocked_reminder_hours: int = 24
     health_check_port: int = 8080
@@ -114,6 +201,7 @@ class ProjectConfiguration(BaseSettings):
     max_cycles: int | None = Field(default=None, ge=1)
     state_file_path: Path = Field(default=Path("./coordinare.state.json"))
     resilience: ResilienceConfig = Field(default_factory=ResilienceConfig)
+    notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
 
     @classmethod
     def settings_customise_sources(
@@ -177,18 +265,4 @@ class ProjectConfiguration(BaseSettings):
             raise ValueError(msg)
         return value
 
-    @field_validator("slack_webhook_url")
-    @classmethod
-    def _validate_slack_webhook_url(cls, value: SecretStr) -> SecretStr:
-        webhook = value.get_secret_value().strip()
-        if not webhook:
-            msg = "slack_webhook_url must be non-empty"
-            raise ValueError(msg)
-        if webhook.startswith("${") and webhook.endswith("}"):
-            msg = (
-                "slack_webhook_url must be a real webhook value; unresolved placeholder detected. "
-                "Set COORDINARE_SLACK_WEBHOOK_URL or update config.yaml."
-            )
-            raise ValueError(msg)
-        return value
 

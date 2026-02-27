@@ -1,33 +1,106 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 
-from pydantic import BaseModel, Field
+# ---------------------------------------------------------------------------
+# 006 — Enums
+# ---------------------------------------------------------------------------
 
-from coordinare.models.card import CardStatus  # noqa: TC001
+
+class EventType(StrEnum):
+    card_transition = "card_transition"
+    card_dispatched = "card_dispatched"
+    card_blocked = "card_blocked"
+    card_merged = "card_merged"
+    advocate_escalation = "advocate_escalation"
+    daemon_restart = "daemon_restart"
+    circuit_breaker_trip = "circuit_breaker_trip"
+    prolonged_idle = "prolonged_idle"
 
 
-class Notification(BaseModel):
-    card_title: str
-    card_status: CardStatus
-    previous_status: CardStatus
-    task_description: str
-    open_questions: list[str] = Field(default_factory=list)
-    commit_summary: str | None = None
-    pr_url: str | None = None
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
+class NotificationSeverity(StrEnum):
+    info = "info"
+    warning = "warning"
+    critical = "critical"
 
-    def as_text(self) -> str:
-        lines = [
-            f"Card: {self.card_title}",
-            f"Transition: {self.previous_status} -> {self.card_status}",
-            f"Task: {self.task_description}",
-        ]
-        if self.open_questions:
-            lines.append("Open Questions:")
-            lines.extend([f"- {q}" for q in self.open_questions])
-        if self.commit_summary:
-            lines.append(f"Commit Summary: {self.commit_summary}")
-        if self.pr_url:
-            lines.append(f"PR: {self.pr_url}")
-        return "\n".join(lines)
+
+class NotificationStatus(StrEnum):
+    delivered = "delivered"
+    failed = "failed"
+    rate_limited = "rate_limited"
+    deduplicated = "deduplicated"
+    unrouted = "unrouted"
+
+
+class ChannelType(StrEnum):
+    slack = "slack"
+    email = "email"
+
+
+# ---------------------------------------------------------------------------
+# 006 — Core entities
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class NotificationEvent:
+    event_type: EventType
+    severity: NotificationSeverity
+    payload: dict[str, str]
+    source: str
+    dedup_key: str | None = None
+
+
+@dataclass
+class NotificationAttempt:
+    attempt_id: str
+    event_type: EventType
+    channel_name: str
+    status: NotificationStatus
+    timestamp: datetime
+    elapsed_ms: float
+    dedup_key: str | None = None
+    retries_attempted: int = 0
+    error_message: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# 006 — NotificationHistory (in-memory, time-bounded)
+# ---------------------------------------------------------------------------
+
+
+class NotificationHistory:
+    def __init__(self, max_age_hours: int = 24) -> None:
+        self._records: list[NotificationAttempt] = []
+        self._max_age_seconds: float = max_age_hours * 3600
+
+    def append(self, attempt: NotificationAttempt) -> None:
+        self._evict()
+        self._records.append(attempt)
+
+    def query(
+        self,
+        *,
+        event_type: EventType | None = None,
+        channel_name: str | None = None,
+        status: NotificationStatus | None = None,
+        since: datetime | None = None,
+    ) -> list[NotificationAttempt]:
+        self._evict()
+        result = self._records[:]
+        if event_type is not None:
+            result = [r for r in result if r.event_type == event_type]
+        if channel_name is not None:
+            result = [r for r in result if r.channel_name == channel_name]
+        if status is not None:
+            result = [r for r in result if r.status == status]
+        if since is not None:
+            result = [r for r in result if r.timestamp >= since]
+        return list(reversed(result))
+
+    def _evict(self) -> None:
+        cutoff = datetime.now(UTC) - timedelta(seconds=self._max_age_seconds)
+        while self._records and self._records[0].timestamp < cutoff:
+            self._records.pop(0)

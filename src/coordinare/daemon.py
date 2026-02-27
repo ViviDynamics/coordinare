@@ -38,6 +38,7 @@ class CoordinareDaemon:
         max_cycles: int | None = None,
         sleep_func: Any = asyncio.sleep,
         state_store: StateStore | None = None,
+        idle_threshold_seconds: int = 1800,
     ) -> None:
         self._graph = graph
         self._run_mode = run_mode
@@ -51,6 +52,7 @@ class CoordinareDaemon:
         self._cycle_active = False
         self._stop_during_cycle = False
         self._state_store = state_store
+        self._idle_threshold_seconds = idle_threshold_seconds
 
     @property
     def running(self) -> bool:
@@ -227,6 +229,36 @@ class CoordinareDaemon:
             )
         )
 
+        # T018: Dispatch daemon_restart notification
+        notification_service = self._state.get("notification_service")
+        if notification_service is not None:
+            from coordinare.models.notification import (
+                EventType,
+                NotificationEvent,
+                NotificationSeverity,
+            )
+
+            try:
+                await notification_service.dispatch(
+                    NotificationEvent(
+                        event_type=EventType.daemon_restart,
+                        severity=NotificationSeverity.info,
+                        source="daemon",
+                        payload={
+                            "event_type": "daemon_restart",
+                            "severity": "info",
+                            "source": "daemon",
+                            "run_mode": self._run_mode,
+                            "summary": "Coordinare daemon started",
+                        },
+                    )
+                )
+            except Exception as exc:
+                logger.warning("daemon_restart_notification_failed", error=str(exc))
+
+        # T019: Track prolonged idle
+        last_activity_at = monotonic()
+
         failure: RuntimeExecutionError | None = None
         while self._running and not self._stop_event.is_set():
             try:
@@ -257,6 +289,38 @@ class CoordinareDaemon:
                     # T021: Persist snapshot on every phase transition
                     if self._state_store is not None:
                         await self._state_store.save(self._build_snapshot())
+
+                # T019: Prolonged idle detection
+                current_phase = self._state.get("phase")
+                if current_phase != "idle":
+                    last_activity_at = monotonic()
+                elif notification_service is not None:
+                    idle_seconds = monotonic() - last_activity_at
+                    if idle_seconds >= self._idle_threshold_seconds:
+                        from coordinare.models.notification import (
+                            EventType,
+                            NotificationEvent,
+                            NotificationSeverity,
+                        )
+
+                        try:
+                            await notification_service.dispatch(
+                                NotificationEvent(
+                                    event_type=EventType.prolonged_idle,
+                                    severity=NotificationSeverity.warning,
+                                    source="daemon",
+                                    payload={
+                                        "event_type": "prolonged_idle",
+                                        "severity": "warning",
+                                        "source": "daemon",
+                                        "idle_seconds": str(int(idle_seconds)),
+                                        "summary": f"Coordinare idle for {int(idle_seconds)}s",
+                                    },
+                                    dedup_key="prolonged_idle",
+                                )
+                            )
+                        except Exception as exc:
+                            logger.warning("prolonged_idle_notification_failed", error=str(exc))
 
                 now = monotonic()
                 if now - last_heartbeat >= self._heartbeat_interval_seconds:

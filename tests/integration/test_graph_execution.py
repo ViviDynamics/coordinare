@@ -4,6 +4,7 @@ import pytest
 
 from coordinare.graph.builder import CoordinareGraphBuilder
 from coordinare.graph.state import initial_state
+from tests.utils.fake_notification import FakeNotificationService
 
 
 class _GitHub:
@@ -62,16 +63,6 @@ class _Agent:
         return {"status": "working"}
 
 
-class _Email:
-    async def send_notification(self, recipient, notification):
-        _ = (recipient, notification)
-
-
-class _Slack:
-    async def send_notification(self, notification):
-        _ = notification
-
-
 @pytest.mark.asyncio
 async def test_dispatch_loop_integration() -> None:
     state = initial_state()
@@ -80,9 +71,7 @@ async def test_dispatch_loop_integration() -> None:
             "github_service": _GitHub(),
             "claude_service": _Claude(),
             "agent_service": _Agent(),
-            "email_service": _Email(),
-            "slack_service": _Slack(),
-            "notification_email": "team@example.com",
+            "notification_service": FakeNotificationService(),
             "human_reviewers": ["alice"],
             "blocked_reminder_hours": 24,
         }

@@ -17,10 +17,6 @@ def _write_config(tmp_path, github_token: str = "token-from-file"):
                 f'github_token: "{github_token}"',
                 'agent_executable: "/usr/local/bin/agent"',
                 'human_reviewers: ["alice"]',
-                'notification_email: "team@example.com"',
-                'smtp_host: "smtp.example.com"',
-                'slack_webhook_url: "https://hooks.slack.com/services/T/B/C"',
-                'slack_channel: "#eng"',
             ]
         )
     )
@@ -48,9 +44,6 @@ def test_poll_interval_bounds(value: int) -> None:
             github_project_number=1,
             github_token="tok",
             human_reviewers=["alice"],
-            smtp_host="smtp",
-            slack_webhook_url="https://hooks.slack.com/services/T/B/C",
-            slack_channel="#eng",
             poll_interval_seconds=value,
         )
 
@@ -63,9 +56,6 @@ def test_requires_human_reviewer() -> None:
             github_project_number=1,
             github_token="tok",
             human_reviewers=[],
-            smtp_host="smtp",
-            slack_webhook_url="https://hooks.slack.com/services/T/B/C",
-            slack_channel="#eng",
         )
 
 
@@ -77,11 +67,7 @@ def test_requires_non_empty_token() -> None:
             github_project_number=1,
             github_token="   ",
             human_reviewers=["alice"],
-            smtp_host="smtp",
-            slack_webhook_url="https://hooks.slack.com/services/T/B/C",
-            slack_channel="#eng",
         )
-
 
 
 def test_rejects_unresolved_github_token_placeholder() -> None:
@@ -92,37 +78,6 @@ def test_rejects_unresolved_github_token_placeholder() -> None:
             github_project_number=1,
             github_token="${COORDINARE_GITHUB_TOKEN}",
             human_reviewers=["alice"],
-            smtp_host="smtp",
-            slack_webhook_url="https://hooks.slack.com/services/T/B/C",
-            slack_channel="#eng",
-        )
-
-
-def test_rejects_unresolved_slack_webhook_placeholder() -> None:
-    with pytest.raises(ValidationError, match="unresolved placeholder"):
-        ProjectConfiguration(
-            project_name="Demo",
-            github_org="acme",
-            github_project_number=1,
-            github_token="tok",
-            human_reviewers=["alice"],
-            smtp_host="smtp",
-            slack_webhook_url="${COORDINARE_SLACK_WEBHOOK_URL}",
-            slack_channel="#eng",
-        )
-
-
-def test_rejects_empty_slack_webhook_url() -> None:
-    with pytest.raises(ValidationError, match="non-empty"):
-        ProjectConfiguration(
-            project_name="Demo",
-            github_org="acme",
-            github_project_number=1,
-            github_token="tok",
-            human_reviewers=["alice"],
-            smtp_host="smtp",
-            slack_webhook_url="   ",
-            slack_channel="#eng",
         )
 
 
@@ -149,9 +104,6 @@ def test_backoff_cap_rejects_wait_max_exceeding_poll_interval() -> None:
             github_project_number=1,
             github_token="tok",
             human_reviewers=["alice"],
-            smtp_host="smtp",
-            slack_webhook_url="https://hooks.slack.com/services/T/B/C",
-            slack_channel="#eng",
             poll_interval_seconds=10,
             resilience=ResilienceConfig(
                 github_retry=ServiceRetryConfig(
@@ -170,9 +122,6 @@ def test_backoff_cap_accepts_valid_config() -> None:
         github_project_number=1,
         github_token="tok",
         human_reviewers=["alice"],
-        smtp_host="smtp",
-        slack_webhook_url="https://hooks.slack.com/services/T/B/C",
-        slack_channel="#eng",
         poll_interval_seconds=30,
     )
     assert config.resilience.github_retry.wait_max_seconds <= config.poll_interval_seconds
