@@ -2,9 +2,17 @@ from __future__ import annotations
 
 from typing import Any
 
+import aiohttp
 import pytest
 
-from coordinare.services.github import FIND_PROJECT_QUERY, GET_PROJECT_FIELDS_QUERY, GitHubService
+from coordinare.services.github import (
+    FIND_PROJECT_QUERY,
+    GET_PROJECT_FIELDS_QUERY,
+    GitHubService,
+    PermanentGitHubError,
+    RateLimitedGitHubError,
+    TransientGitHubError,
+)
 
 
 class _FakeClient:
@@ -59,7 +67,7 @@ async def test_execute_rejects_non_object_response() -> None:
     client = _FakeClient(["bad-response"], async_mode=False)
     service = _TestGitHubService(client)
 
-    with pytest.raises(ValueError, match="JSON object"):
+    with pytest.raises(PermanentGitHubError, match="JSON object"):
         await service._execute("query X { __typename }", {"x": 1})
 
 
@@ -96,6 +104,80 @@ async def test_initialize_populates_project_and_field_cache() -> None:
     assert service.field_cache["status_field_id"] == "FLD_1"
     assert service.field_cache["status_option_ids"]["todo"] == "OPT_1"
     assert service.field_cache["status_option_ids"]["in progress"] == "OPT_2"
+
+
+class _RateLimitClient:
+    """Fake client that raises aiohttp.ClientResponseError with 429."""
+
+    def __init__(self, retry_after: str = "5") -> None:
+        self._retry_after = retry_after
+
+    def execute(self, query: object, variable_values: dict[str, Any]) -> Any:
+        return self._execute_async(query, variable_values)
+
+    async def _execute_async(self, query: object, variable_values: dict[str, Any]) -> Any:
+        headers = {"Retry-After": self._retry_after}
+        raise aiohttp.ClientResponseError(
+            request_info=aiohttp.RequestInfo(
+                url="https://api.github.com/graphql",
+                method="POST",
+                headers={},
+                real_url="https://api.github.com/graphql",
+            ),
+            history=(),
+            status=429,
+            headers=headers,
+        )
+
+
+class _ServerErrorClient:
+    """Fake client that raises aiohttp.ClientResponseError with 500."""
+
+    def execute(self, query: object, variable_values: dict[str, Any]) -> Any:
+        return self._execute_async(query, variable_values)
+
+    async def _execute_async(self, query: object, variable_values: dict[str, Any]) -> Any:
+        raise aiohttp.ClientResponseError(
+            request_info=aiohttp.RequestInfo(
+                url="https://api.github.com/graphql",
+                method="POST",
+                headers={},
+                real_url="https://api.github.com/graphql",
+            ),
+            history=(),
+            status=500,
+        )
+
+
+@pytest.mark.asyncio
+async def test_execute_429_raises_rate_limited_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """FR-005: HTTP 429 with Retry-After header -> RateLimitedGitHubError."""
+    # Patch asyncio.sleep to avoid real delay
+    slept: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    monkeypatch.setattr("coordinare.services.github.asyncio.sleep", fake_sleep)
+
+    service = GitHubService(token="tok", org="acme", project_number=1)
+    service._client = _RateLimitClient(retry_after="5")
+
+    with pytest.raises(RateLimitedGitHubError) as exc_info:
+        await service._execute("query { __typename }", {})
+
+    assert exc_info.value.retry_after == 5.0
+    assert slept == [5.0]
+
+
+@pytest.mark.asyncio
+async def test_execute_500_raises_transient_error() -> None:
+    """HTTP 500 -> TransientGitHubError (not PermanentGitHubError)."""
+    service = GitHubService(token="tok", org="acme", project_number=1)
+    service._client = _ServerErrorClient()
+
+    with pytest.raises(TransientGitHubError):
+        await service._execute("query { __typename }", {})
 
 
 def test_query_constants_include_expected_operation_names() -> None:

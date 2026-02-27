@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from unittest.mock import MagicMock, patch
+
 import pytest
 
 from coordinare.daemon import CoordinareDaemon, RuntimeExecutionError
+from coordinare.resilience import CircuitOpenError
 
 
 class _SuccessfulGraph:
@@ -157,3 +160,43 @@ async def test_daemon_shutdown_reports_cycle_not_interrupted_on_clean_stop() -> 
     shutdown_events = [e for e in emitted_events if e.get("category") == "shutdown"]
     assert shutdown_events, "Expected a shutdown event"
     assert shutdown_events[0].get("cycle_interrupted") is False
+
+
+class _CircuitOpenGraph:
+    """Graph that raises CircuitOpenError once, then succeeds (to allow stop)."""
+
+    def __init__(self) -> None:
+        self._call_count = 0
+
+    async def ainvoke(self, state):
+        self._call_count += 1
+        if self._call_count == 1:
+            raise CircuitOpenError("github")
+        updated = dict(state)
+        updated["phase"] = "idle"
+        return updated
+
+
+@pytest.mark.asyncio
+async def test_daemon_increments_circuit_open_metric() -> None:
+    """FR-014: CircuitOpenError in poll loop increments service_calls_total."""
+    mock_counter = MagicMock()
+    mock_counter.labels.return_value = mock_counter
+    mock_metrics = MagicMock()
+    mock_metrics.service_calls_total = mock_counter
+
+    daemon = CoordinareDaemon(
+        _CircuitOpenGraph(),
+        poll_interval_seconds=1,
+        heartbeat_interval_seconds=1,
+        max_cycles=2,
+        sleep_func=_no_sleep,
+    )
+
+    with patch("coordinare.metrics.METRICS", mock_metrics):
+        await daemon.start()
+
+    mock_counter.labels.assert_any_call(
+        service="github", action="call_blocked", outcome="circuit_open",
+    )
+    mock_counter.inc.assert_called()

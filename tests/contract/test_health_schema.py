@@ -1,18 +1,20 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import pytest
-
-if TYPE_CHECKING:
-    from pathlib import Path
 from fastapi.testclient import TestClient
+from jsonschema import validate
 
 from coordinare.daemon import CoordinareDaemon
 from coordinare.health import create_health_app
 from coordinare.metrics import CoordinareMetrics
+from coordinare.resilience import CircuitBreaker, CircuitState
 from coordinare.state_store import StateStore, WorkflowSnapshot
+
+_SCHEMA_PATH = Path(__file__).resolve().parents[2] / "specs" / "005-resilience" / "contracts" / "health-response.schema.json"
 
 
 class _Graph:
@@ -29,11 +31,25 @@ def _make_snapshot(**overrides) -> WorkflowSnapshot:
     return WorkflowSnapshot(**defaults)
 
 
+def _make_circuit_breakers() -> dict[str, CircuitBreaker]:
+    """Create a default set of closed circuit breakers for testing."""
+    services = ["github", "slack", "smtp", "anthropic", "agent"]
+    return {
+        name: CircuitBreaker(
+            service_name=name,
+            failure_threshold=3,
+            recovery_window=120.0,
+            observation_window=300.0,
+        )
+        for name in services
+    }
+
+
 # --- T024: Contract test — phase and snapshot_at present in response ---
 
 
 def test_health_response_contains_phase_and_snapshot_at() -> None:
-    """GET /health response contains phase (string or null) and snapshot_at (ISO 8601 or null)."""
+    """GET /health response contains phase (string) and snapshot_at (ISO 8601 or null)."""
     daemon = CoordinareDaemon(_Graph(), max_cycles=1)
     client = TestClient(create_health_app(daemon))
     response = client.get("/health")
@@ -41,8 +57,8 @@ def test_health_response_contains_phase_and_snapshot_at() -> None:
     data = response.json()
     assert "phase" in data
     assert "snapshot_at" in data
-    # When no state_store, both should be None
-    assert data["phase"] is None
+    # When no state_store, phase defaults to "idle", snapshot_at is None
+    assert data["phase"] == "idle"
     assert data["snapshot_at"] is None
 
 
@@ -98,8 +114,6 @@ async def test_health_reflects_last_snapshot_before_first_poll(tmp_path: Path) -
     )
     await store.save(snapshot)
 
-    # Create daemon with state_store — load will be called in start()
-    # But for this test we just set last_snapshot directly (simulating post-load)
     daemon = CoordinareDaemon(_Graph(), max_cycles=1, state_store=store)
     client = TestClient(create_health_app(daemon))
 
@@ -110,91 +124,104 @@ async def test_health_reflects_last_snapshot_before_first_poll(tmp_path: Path) -
     assert data["snapshot_at"] is not None
 
 
-def test_health_null_phase_when_no_snapshot() -> None:
-    """With no snapshot, phase and snapshot_at are null."""
+def test_health_default_phase_when_no_snapshot() -> None:
+    """With no snapshot, phase defaults to 'idle' and snapshot_at is null."""
     daemon = CoordinareDaemon(_Graph(), max_cycles=1)
     client = TestClient(create_health_app(daemon))
 
     response = client.get("/health")
     data = response.json()
 
-    assert data["phase"] is None
+    assert data["phase"] == "idle"
     assert data["snapshot_at"] is None
 
 
 def test_health_response_required_fields_present(tmp_path: Path) -> None:
-    """Response contains all required fields from the health-response schema."""
+    """Response contains all required fields from the health-response v3 schema."""
     metrics = CoordinareMetrics()
     store = StateStore(path=tmp_path / "state.json", metrics=metrics)
     store.last_snapshot = _make_snapshot(phase="idle")
+    cbs = _make_circuit_breakers()
 
     daemon = CoordinareDaemon(_Graph(), max_cycles=1, state_store=store)
-    client = TestClient(create_health_app(daemon))
+    client = TestClient(create_health_app(daemon, circuit_breakers=cbs))
     response = client.get("/health")
 
     data = response.json()
-    # Required fields per schema
+    # Required fields per v3 schema
     assert "status" in data
-    assert "uptime_seconds" in data
-    assert "services" in data
-    assert "timestamp" in data
-    # New v2 fields
     assert "phase" in data
     assert "snapshot_at" in data
-    # Services structure
-    services = data["services"]
-    assert "github" in services
-    assert "agent_transport" in services
-    assert "smtp" in services
-    assert "slack" in services
+    assert "circuit_breakers" in data
+    assert "uptime_seconds" in data
+    # Circuit breakers structure
+    cb_data = data["circuit_breakers"]
+    for svc in ("github", "slack", "smtp", "anthropic", "agent"):
+        assert svc in cb_data
+        assert cb_data[svc]["state"] == "closed"
+        assert cb_data[svc]["opened_at"] is None
+        assert cb_data[svc]["failure_count"] == 0
 
 
-# --- Coverage: card_payload, github_status, ready, metrics ---
+# --- Coverage: status derivation, ready, metrics ---
 
 
-def test_health_response_includes_current_card_when_present() -> None:
-    """current_card field populated when daemon has an active card."""
+def test_health_status_ok_when_all_circuits_closed() -> None:
+    """status is 'ok' when daemon running and all circuits closed."""
     daemon = CoordinareDaemon(_Graph(), max_cycles=1)
     daemon._running = True
-    daemon.state["current_card"] = {
-        "id": "ITEM_1",
-        "issue_number": 42,
-        "title": "Test Card",
-        "status": "IN_PROGRESS",
-    }
-    daemon.state["last_poll_at"] = datetime.now(UTC)
-    client = TestClient(create_health_app(daemon))
+    cbs = _make_circuit_breakers()
+    client = TestClient(create_health_app(daemon, circuit_breakers=cbs))
     response = client.get("/health")
 
     data = response.json()
-    assert data["current_card"] is not None
-    assert data["current_card"]["id"] == "ITEM_1"
-    assert data["current_card"]["title"] == "Test Card"
-    assert data["services"]["github"]["status"] == "connected"
+    assert data["status"] == "ok"
 
 
-def test_health_github_degraded_when_poll_stale() -> None:
-    """GitHub status is 'degraded' when last_poll_at is older than 60s."""
+def test_health_status_degraded_when_core_circuit_open() -> None:
+    """status is 'degraded' when a core circuit (github) is open."""
     daemon = CoordinareDaemon(_Graph(), max_cycles=1)
     daemon._running = True
-    daemon.state["last_poll_at"] = datetime(2020, 1, 1, tzinfo=UTC)
-    client = TestClient(create_health_app(daemon))
+    cbs = _make_circuit_breakers()
+    # Force github circuit open
+    for _ in range(3):
+        cbs["github"].record_failure()
+    assert cbs["github"].state == CircuitState.OPEN
+
+    client = TestClient(create_health_app(daemon, circuit_breakers=cbs))
     response = client.get("/health")
 
     data = response.json()
-    assert data["services"]["github"]["status"] == "degraded"
+    assert data["status"] == "degraded"
+    assert data["circuit_breakers"]["github"]["state"] == "open"
 
 
-def test_health_github_unknown_when_no_poll() -> None:
-    """GitHub status is 'unknown' when daemon is running but no poll_at."""
+def test_health_status_ok_when_only_notification_circuit_open() -> None:
+    """status stays 'ok' when only notification circuits (slack/smtp) are open."""
     daemon = CoordinareDaemon(_Graph(), max_cycles=1)
     daemon._running = True
-    daemon.state["last_poll_at"] = None
-    client = TestClient(create_health_app(daemon))
+    cbs = _make_circuit_breakers()
+    # Force slack circuit open
+    for _ in range(3):
+        cbs["slack"].record_failure()
+    assert cbs["slack"].state == CircuitState.OPEN
+
+    client = TestClient(create_health_app(daemon, circuit_breakers=cbs))
     response = client.get("/health")
 
     data = response.json()
-    assert data["services"]["github"]["status"] == "unknown"
+    assert data["status"] == "ok"
+
+
+def test_health_status_unhealthy_when_not_running() -> None:
+    """status is 'unhealthy' when daemon is not running."""
+    daemon = CoordinareDaemon(_Graph(), max_cycles=1)
+    # daemon._running defaults to False
+    client = TestClient(create_health_app(daemon, circuit_breakers=_make_circuit_breakers()))
+    response = client.get("/health")
+
+    assert response.status_code == 503
+    assert response.json()["status"] == "unhealthy"
 
 
 def test_ready_endpoint_returns_503_when_not_running() -> None:
@@ -223,3 +250,113 @@ def test_ready_endpoint_returns_200_when_running() -> None:
 
     assert response.status_code == 200
     assert response.json()["ready"] is True
+
+
+# --- T026a: Additional status derivation tests ---
+
+
+def test_health_status_degraded_when_anthropic_circuit_open() -> None:
+    """status is 'degraded' when anthropic circuit is open."""
+    daemon = CoordinareDaemon(_Graph(), max_cycles=1)
+    daemon._running = True
+    cbs = _make_circuit_breakers()
+    for _ in range(3):
+        cbs["anthropic"].record_failure()
+    assert cbs["anthropic"].state == CircuitState.OPEN
+
+    client = TestClient(create_health_app(daemon, circuit_breakers=cbs))
+    data = client.get("/health").json()
+
+    assert data["status"] == "degraded"
+    assert data["circuit_breakers"]["anthropic"]["state"] == "open"
+
+
+def test_health_status_degraded_when_agent_circuit_open() -> None:
+    """status is 'degraded' when agent circuit is open."""
+    daemon = CoordinareDaemon(_Graph(), max_cycles=1)
+    daemon._running = True
+    cbs = _make_circuit_breakers()
+    for _ in range(3):
+        cbs["agent"].record_failure()
+    assert cbs["agent"].state == CircuitState.OPEN
+
+    client = TestClient(create_health_app(daemon, circuit_breakers=cbs))
+    data = client.get("/health").json()
+
+    assert data["status"] == "degraded"
+    assert data["circuit_breakers"]["agent"]["state"] == "open"
+
+
+def test_health_status_degraded_when_all_circuits_open() -> None:
+    """status is 'degraded' (not 'unhealthy') when all circuits open but daemon running."""
+    daemon = CoordinareDaemon(_Graph(), max_cycles=1)
+    daemon._running = True
+    cbs = _make_circuit_breakers()
+    for name in cbs:
+        for _ in range(3):
+            cbs[name].record_failure()
+        assert cbs[name].state == CircuitState.OPEN
+
+    client = TestClient(create_health_app(daemon, circuit_breakers=cbs))
+    data = client.get("/health").json()
+
+    assert data["status"] == "degraded"
+
+
+def test_health_status_ok_when_only_smtp_circuit_open() -> None:
+    """status stays 'ok' when only SMTP circuit is open (non-core)."""
+    daemon = CoordinareDaemon(_Graph(), max_cycles=1)
+    daemon._running = True
+    cbs = _make_circuit_breakers()
+    for _ in range(3):
+        cbs["smtp"].record_failure()
+    assert cbs["smtp"].state == CircuitState.OPEN
+
+    client = TestClient(create_health_app(daemon, circuit_breakers=cbs))
+    data = client.get("/health").json()
+
+    assert data["status"] == "ok"
+
+
+# --- T029: Contract test — JSON Schema validation ---
+
+
+def _load_schema() -> dict:
+    with open(_SCHEMA_PATH) as f:
+        return json.load(f)
+
+
+def test_health_ok_response_validates_against_schema(tmp_path: Path) -> None:
+    """Health response with all circuits closed validates against health-response.schema.json."""
+    metrics = CoordinareMetrics()
+    store = StateStore(path=tmp_path / "state.json", metrics=metrics)
+    store.last_snapshot = _make_snapshot(phase="idle")
+
+    daemon = CoordinareDaemon(_Graph(), max_cycles=1, state_store=store)
+    daemon._running = True
+    cbs = _make_circuit_breakers()
+    client = TestClient(create_health_app(daemon, circuit_breakers=cbs))
+    data = client.get("/health").json()
+
+    schema = _load_schema()
+    validate(instance=data, schema=schema)
+
+
+def test_health_degraded_response_validates_against_schema(tmp_path: Path) -> None:
+    """Health response with core circuit open validates against health-response.schema.json."""
+    metrics = CoordinareMetrics()
+    store = StateStore(path=tmp_path / "state.json", metrics=metrics)
+    store.last_snapshot = _make_snapshot(phase="monitoring_agent")
+
+    daemon = CoordinareDaemon(_Graph(), max_cycles=1, state_store=store)
+    daemon._running = True
+    cbs = _make_circuit_breakers()
+    for _ in range(3):
+        cbs["github"].record_failure()
+
+    client = TestClient(create_health_app(daemon, circuit_breakers=cbs))
+    data = client.get("/health").json()
+
+    schema = _load_schema()
+    validate(instance=data, schema=schema)
+    assert data["status"] == "degraded"

@@ -4,8 +4,16 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
 import pytest
+import stamina
 
 from coordinare.models.card import Card, CardStatus
+
+
+@pytest.fixture(autouse=True)
+def _disable_stamina_retries():
+    stamina.set_active(False)
+    yield
+    stamina.set_active(True)
 
 
 @pytest.fixture

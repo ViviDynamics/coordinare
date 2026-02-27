@@ -2,8 +2,15 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import structlog
+
+from coordinare.services.github import PermanentGitHubError
+from coordinare.transport.base import TransportError
+
 if TYPE_CHECKING:
     from coordinare.graph.state import CoordinareState
+
+logger = structlog.get_logger(__name__)
 
 
 async def dispatch_card(state: CoordinareState) -> CoordinareState:
@@ -30,8 +37,23 @@ async def dispatch_card(state: CoordinareState) -> CoordinareState:
         return state
 
     card_id = str(card.get("id", ""))
-    await github.move_card(card_id, "IN_PROGRESS")
-    result = await agent.dispatch_card(card)
+    try:
+        await github.move_card(card_id, "IN_PROGRESS")
+        result = await agent.dispatch_card(card)
+    except (TransportError, PermanentGitHubError) as exc:
+        logger.error(
+            "permanent_service_failure.card_blocked",
+            card_id=card_id,
+            error=str(exc),
+        )
+        try:
+            await github.move_card(card_id, "BLOCKED")
+        except Exception:
+            logger.warning("move_card_to_blocked_failed", card_id=card_id)
+        state["phase"] = "blocked"
+        state["open_questions"] = [f"Permanent service failure: {exc}"]
+        return state
+
     state["agent_dispatch"] = result
     card["previous_status"] = card.get("status", "TODO")
     card["status"] = "IN_PROGRESS"

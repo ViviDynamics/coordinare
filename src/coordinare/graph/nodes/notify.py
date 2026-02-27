@@ -1,12 +1,15 @@
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING
+
+import structlog
 
 if TYPE_CHECKING:
     from coordinare.graph.state import CoordinareState
 from coordinare.models.card import CardStatus
 from coordinare.models.notification import Notification
+
+logger = structlog.get_logger(__name__)
 
 
 def _coerce_status(raw: object, *, fallback: CardStatus) -> CardStatus:
@@ -40,9 +43,13 @@ async def notify(state: CoordinareState) -> CoordinareState:
         pr_url=str(card.get("pr_url")) if card.get("pr_url") else None,
     )
 
-    await asyncio.gather(
-        email_service.send_notification(state.get("notification_email", "coordinare@vividynamics.com"), notification),
-        slack_service.send_notification(notification),
-        return_exceptions=True,
-    )
+    for coro, channel in [
+        (email_service.send_notification(state.get("notification_email", "coordinare@vividynamics.com"), notification), "email"),
+        (slack_service.send_notification(notification), "slack"),
+    ]:
+        try:
+            await coro
+        except Exception as exc:
+            logger.warning("notification.delivery_failed", channel=channel, error=str(exc))
+
     return state

@@ -11,11 +11,12 @@ import structlog
 import uvicorn
 
 from coordinare import configure_logging
-from coordinare.config import ProjectConfiguration
+from coordinare.config import ProjectConfiguration, ServiceCircuitConfig, ServiceRetryConfig
 from coordinare.daemon import CoordinareDaemon, RuntimeExecutionError
 from coordinare.graph.builder import CoordinareGraphBuilder
 from coordinare.health import create_health_app
 from coordinare.metrics import METRICS
+from coordinare.resilience import CircuitBreaker, ResilientAgentService, RetryConfig
 from coordinare.services.agent_service import AgentService
 from coordinare.services.claude import ClaudeService
 from coordinare.services.email import EmailService
@@ -52,8 +53,40 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _create_health_app(daemon: CoordinareDaemon) -> FastAPI:
-    return create_health_app(daemon)
+def _create_health_app(
+    daemon: CoordinareDaemon,
+    circuit_breakers: dict[str, CircuitBreaker] | None = None,
+) -> FastAPI:
+    return create_health_app(daemon, circuit_breakers=circuit_breakers or {})
+
+
+def _retry_config_from(src: ServiceRetryConfig) -> RetryConfig:
+    return RetryConfig(
+        attempts=src.attempts,
+        wait_initial=src.wait_initial_seconds,
+        wait_max=src.wait_max_seconds,
+        wait_jitter=src.wait_jitter_seconds,
+    )
+
+
+def _circuit_breaker_from(name: str, cfg: ServiceCircuitConfig) -> CircuitBreaker:
+    return CircuitBreaker(
+        service_name=name,
+        failure_threshold=cfg.failure_threshold,
+        recovery_window=cfg.recovery_window_seconds,
+        observation_window=cfg.observation_window_seconds,
+    )
+
+
+def _build_circuit_breakers(config: ProjectConfiguration) -> dict[str, CircuitBreaker]:
+    r = config.resilience
+    return {
+        "github": _circuit_breaker_from("github", r.github_circuit),
+        "slack": _circuit_breaker_from("slack", r.slack_circuit),
+        "smtp": _circuit_breaker_from("smtp", r.smtp_circuit),
+        "anthropic": _circuit_breaker_from("anthropic", r.anthropic_circuit),
+        "agent": _circuit_breaker_from("agent", r.agent_circuit),
+    }
 
 
 def _build_transport(config: ProjectConfiguration) -> AgentTransport:
@@ -69,11 +102,18 @@ def _build_transport(config: ProjectConfiguration) -> AgentTransport:
             raise ValueError(msg)
 
 
-async def _bootstrap_services(config: ProjectConfiguration) -> CoordinareState:
+async def _bootstrap_services(
+    config: ProjectConfiguration,
+    circuit_breakers: dict[str, CircuitBreaker],
+) -> CoordinareState:
+    r = config.resilience
+
     github = GitHubService(
         token=config.github_token.get_secret_value(),
         org=config.github_org,
         project_number=config.github_project_number,
+        circuit_breaker=circuit_breakers["github"],
+        retry_kwargs=_retry_config_from(r.github_retry).to_stamina_kwargs(),
     )
     await github.initialize()
 
@@ -87,20 +127,35 @@ async def _bootstrap_services(config: ProjectConfiguration) -> CoordinareState:
         )
         sys.exit(1)
 
+    agent_service = AgentService(transport)
+    resilient_agent = ResilientAgentService(
+        inner=agent_service,
+        retry_config=_retry_config_from(r.agent_retry),
+        circuit_breaker=circuit_breakers["agent"],
+    )
+
     service_state: CoordinareState = {
         "github_service": github,
-        "agent_service": AgentService(transport),
-        "claude_service": ClaudeService(api_key=os.getenv("ANTHROPIC_API_KEY")),
+        "agent_service": resilient_agent,
+        "claude_service": ClaudeService(
+            api_key=os.getenv("ANTHROPIC_API_KEY"),
+            circuit_breaker=circuit_breakers["anthropic"],
+            retry_kwargs=_retry_config_from(r.anthropic_retry).to_stamina_kwargs(),
+        ),
         "email_service": EmailService(
             host=config.smtp_host,
             port=config.smtp_port,
             username=config.smtp_username,
             password=config.smtp_password.get_secret_value() if config.smtp_password else None,
             sender=config.notification_email,
+            circuit_breaker=circuit_breakers["smtp"],
+            retry_kwargs=_retry_config_from(r.smtp_retry).to_stamina_kwargs(),
         ),
         "slack_service": SlackService(
             webhook_url=config.slack_webhook_url.get_secret_value(),
             channel=config.slack_channel,
+            circuit_breaker=circuit_breakers["slack"],
+            retry_kwargs=_retry_config_from(r.slack_retry).to_stamina_kwargs(),
         ),
         "human_reviewers": config.human_reviewers,
         "notification_email": config.notification_email,
@@ -112,6 +167,24 @@ async def _bootstrap_services(config: ProjectConfiguration) -> CoordinareState:
 async def _run(config: ProjectConfiguration) -> None:
     run_mode = os.getenv("COORDINARE_RUN_MODE", "shell").strip().lower() or "shell"
     graph = CoordinareGraphBuilder().build()
+
+    # Build circuit breakers and register stamina retry counter hook
+    circuit_breakers = _build_circuit_breakers(config)
+    import stamina
+
+    def _on_retry(details: stamina.instrumentation.RetryDetails) -> None:
+        METRICS.service_retries_total.labels(service=details.name, action="retry").inc()
+        logger.warning(
+            "service.retry_attempt",
+            service=details.name,
+            attempt=details.retry_num,
+            error_type=type(details.caused_by).__name__,
+            error=str(details.caused_by),
+            wait_seconds=details.wait_for,
+            waited_so_far=details.waited_so_far,
+        )
+
+    stamina.instrumentation.set_on_retry_hooks([_on_retry])
     # SC-005: heartbeat must not exceed 30s; cap here enforces the spec constraint
     # regardless of what config.heartbeat_interval_seconds is set to.
     effective_heartbeat = min(config.heartbeat_interval_seconds, 30)
@@ -143,9 +216,9 @@ async def _run(config: ProjectConfiguration) -> None:
         state_store=state_store,
     )
 
-    daemon.state.update(await _bootstrap_services(config))
+    daemon.state.update(await _bootstrap_services(config, circuit_breakers))
 
-    app = _create_health_app(daemon)
+    app = _create_health_app(daemon, circuit_breakers=circuit_breakers)
     server = uvicorn.Server(
         uvicorn.Config(app, host="0.0.0.0", port=config.health_check_port, log_level="warning")
     )

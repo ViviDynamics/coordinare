@@ -3,10 +3,14 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
+import structlog
+
 from coordinare.lib.acceptance_criteria import parse_acceptance_criteria
 
 if TYPE_CHECKING:
     from coordinare.graph.state import CoordinareState
+
+logger = structlog.get_logger(__name__)
 
 
 async def check_board(state: CoordinareState) -> CoordinareState:
@@ -15,7 +19,12 @@ async def check_board(state: CoordinareState) -> CoordinareState:
         state["phase"] = "idle"
         return state
 
-    board = await github.poll_board()
+    try:
+        board = await github.poll_board()
+    except Exception as exc:
+        logger.error("check_board.poll_failed", error=str(exc))
+        state["phase"] = "idle"
+        return state
     snapshot = board.get("snapshot")
     state["board_snapshot"] = snapshot if isinstance(snapshot, dict) else {}
     state["last_poll_at"] = datetime.now(UTC)

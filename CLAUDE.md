@@ -3,6 +3,8 @@
 Auto-generated from all feature plans. Last updated: 2026-02-16
 
 ## Active Technologies
+- Python 3.12+ + `stamina>=24.2.0` (NEW — add to pyproject.toml), `tenacity` (already installed via langgraph), `prometheus-client>=0.21`, `structlog>=24.1`, `pydantic>=2.9`, `pydantic-settings>=2.6` (005-resilience)
+- N/A — circuit breaker state is in-memory, resets on restart (per spec assumption) (005-resilience)
 - Python 3.12+ + `httpx` (Slack webhook delivery — already present, not `slack-sdk`), `aiosmtplib` (email delivery — already present), `pydantic` + `pydantic-settings` (config model), `structlog` (structured logging), `prometheus-client` (metrics) — all existing; **no new dependencies required** (006-notification-alerting)
 - In-memory only (`NotificationHistory` as a plain list on `NotificationService`; lazy time-based eviction). No DB. (006-notification-alerting)
 - Python 3.12+ + `pydantic-settings` (existing), `pydantic` v2 (existing), `structlog` (existing), `argparse` (stdlib — existing) (008-config-management)
@@ -27,6 +29,7 @@ cd src [ONLY COMMANDS FOR ACTIVE TECHNOLOGIES][ONLY COMMANDS FOR ACTIVE TECHNOLO
 Python 3.12+: Follow standard conventions
 
 ## Recent Changes
+- 005-resilience: Added Python 3.12+ + `stamina>=24.2.0` (NEW — add to pyproject.toml), `tenacity` (already installed via langgraph), `prometheus-client>=0.21`, `structlog>=24.1`, `pydantic>=2.9`, `pydantic-settings>=2.6`
 - 004-agent-protocol: Replaced `AgentSSHService` with pluggable transport architecture (`SubprocessTransport` + `AgentService`); removed `asyncssh` dependency; added `src/coordinare/protocol.py`, `src/coordinare/transport/`, `src/coordinare/services/agent_service.py`; `check_status(card_id)` renamed to `check_status(session_id)`; config fields: `agent_transport`, `agent_executable`, `transport_timeout_seconds`
 - 009-metrics-observability: No new dependencies — extends existing structlog (contextvars), prometheus-client (new metric families), fastapi (new /live route), pydantic-settings (two new config fields); adds docs/dashboards/ and docs/runbooks/ directories
 - 008-config-management: Added Python 3.12+ + `pydantic-settings` (existing), `pydantic` v2 (existing), `structlog` (existing), `argparse` (stdlib — existing)

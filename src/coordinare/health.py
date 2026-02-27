@@ -1,76 +1,68 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from time import monotonic
 from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, Response, status
 
 from coordinare.metrics import METRICS
+from coordinare.resilience import CircuitBreaker, CircuitState
 
 if TYPE_CHECKING:
     from coordinare.daemon import CoordinareDaemon
 
+# Core service circuits — if any of these are open, status is "degraded"
+_CORE_CIRCUITS = {"github", "anthropic", "agent"}
 
-def create_health_app(daemon: CoordinareDaemon) -> FastAPI:
+
+def create_health_app(
+    daemon: CoordinareDaemon,
+    *,
+    circuit_breakers: dict[str, CircuitBreaker] | None = None,
+) -> FastAPI:
     app = FastAPI(title="coordinare-health")
+    cbs = circuit_breakers or {}
+    _start_time = monotonic()
 
     @app.get("/health")
     async def health(response: Response) -> dict[str, Any]:
         daemon_running = daemon.running
-        core_connected = daemon_running
-        health_status = "healthy" if daemon_running else "unhealthy"
 
-        if not core_connected:
-            response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-
-        state = daemon.state
-        current_card = state.get("current_card")
-        card_payload: dict[str, Any] | None = None
-        if isinstance(current_card, dict):
-            card_payload = {
-                "id": current_card.get("id"),
-                "issue_number": current_card.get("issue_number"),
-                "title": current_card.get("title"),
-                "status": current_card.get("status"),
+        # Build circuit breaker status dict
+        cb_status: dict[str, dict[str, Any]] = {}
+        any_core_open = False
+        for name, cb in cbs.items():
+            opened_at_iso = cb.opened_at.isoformat() if cb.opened_at else None
+            cb_status[name] = {
+                "state": cb.state.value,
+                "opened_at": opened_at_iso,
+                "failure_count": len(cb._failure_times),
             }
+            if name in _CORE_CIRCUITS and cb.state != CircuitState.CLOSED:
+                any_core_open = True
 
-        # Infer GitHub connectivity from last_poll_at recency (within 2 poll cycles = 60s).
-        # Other services have no observable connectivity signal; report "unknown" while
-        # the daemon is running rather than falsely claiming "connected".
-        last_poll_at = state.get("last_poll_at")
+        # Derive status from daemon state and circuit breakers
         if not daemon_running:
-            github_status = "disconnected"
-        elif isinstance(last_poll_at, datetime):
-            age_seconds = (datetime.now(UTC) - last_poll_at).total_seconds()
-            github_status = "connected" if age_seconds < 60 else "degraded"
+            health_status = "unhealthy"
+            response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        elif any_core_open:
+            health_status = "degraded"
         else:
-            github_status = "unknown"
+            health_status = "ok"
 
-        passive_service_status = "unknown" if daemon_running else "disconnected"
-
-        # T027: Expose persisted state phase and snapshot_at from StateStore
+        # Expose persisted state phase and snapshot_at from StateStore
         snapshot = None
         if daemon.state_store is not None:
             snapshot = daemon.state_store.last_snapshot
-        phase = snapshot.phase if snapshot else None
+        phase = snapshot.phase if snapshot else "idle"
         snapshot_at = snapshot.snapshot_at.isoformat() if snapshot else None
 
         return {
             "status": health_status,
             "phase": phase,
             "snapshot_at": snapshot_at,
-            "uptime_seconds": 0,
-            "current_card": card_payload,
-            "services": {
-                "github": {
-                    "status": github_status,
-                    "last_poll_at": last_poll_at,
-                },
-                "agent_transport": {"status": passive_service_status},
-                "smtp": {"status": passive_service_status},
-                "slack": {"status": passive_service_status},
-            },
-            "timestamp": datetime.now(UTC),
+            "circuit_breakers": cb_status,
+            "uptime_seconds": round(monotonic() - _start_time, 1),
         }
 
     @app.get("/ready")

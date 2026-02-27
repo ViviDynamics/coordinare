@@ -10,6 +10,7 @@ import structlog
 
 from coordinare.graph.state import CoordinareState, initial_state
 from coordinare.lib.runtime_events import build_runtime_event
+from coordinare.resilience import CircuitOpenError
 from coordinare.state_store import StateLoadError, WorkflowPhase, WorkflowSnapshot
 
 if TYPE_CHECKING:
@@ -275,6 +276,19 @@ class CoordinareDaemon:
                 await self._sleep(self._poll_interval_seconds)
             except asyncio.CancelledError:
                 raise
+            except CircuitOpenError as exc:
+                self._cycle_active = False
+                from coordinare.metrics import METRICS
+
+                METRICS.service_calls_total.labels(
+                    service=exc.service_name, action="call_blocked", outcome="circuit_open",
+                ).inc()
+                logger.warning(
+                    "circuit_open.call_skipped",
+                    service=exc.service_name,
+                )
+                # Do NOT set self._running = False — continue the poll loop
+                await self._sleep(self._poll_interval_seconds)
             except Exception as exc:
                 self._cycle_active = False
                 self._state["error_count"] = self._state.get("error_count", 0) + 1

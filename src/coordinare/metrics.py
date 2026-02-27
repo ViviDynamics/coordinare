@@ -65,6 +65,26 @@ class CoordinareMetrics:
             registry=self.registry,
         )
 
+        # Resilience metrics (spec 005)
+        self.circuit_breaker_state = Gauge(
+            "coordinare_circuit_breaker_state",
+            "Current circuit breaker state per service (1=active, 0=inactive)",
+            labelnames=("service", "state"),
+            registry=self.registry,
+        )
+        self.service_retries_total = Counter(
+            "coordinare_service_retries_total",
+            "Total retry attempts per service and action",
+            labelnames=("service", "action"),
+            registry=self.registry,
+        )
+        self.service_calls_total = Counter(
+            "coordinare_service_calls_total",
+            "Total service call outcomes",
+            labelnames=("service", "action", "outcome"),
+            registry=self.registry,
+        )
+
     def observe_notification(self, channel: str, status: Literal["success", "failure"]) -> None:
         self.notifications_total.labels(channel=channel, status=status).inc()
 

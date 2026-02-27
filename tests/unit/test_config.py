@@ -138,6 +138,46 @@ def test_state_file_path_env_var_override(monkeypatch: pytest.MonkeyPatch, tmp_p
     assert config.state_file_path == Path("/tmp/custom.json")
 
 
+def test_backoff_cap_rejects_wait_max_exceeding_poll_interval() -> None:
+    """FR-003: wait_max_seconds must not exceed poll_interval_seconds."""
+    from coordinare.config import ResilienceConfig, ServiceRetryConfig
+
+    with pytest.raises(ValidationError, match="wait_max_seconds"):
+        ProjectConfiguration(
+            project_name="Demo",
+            github_org="acme",
+            github_project_number=1,
+            github_token="tok",
+            human_reviewers=["alice"],
+            smtp_host="smtp",
+            slack_webhook_url="https://hooks.slack.com/services/T/B/C",
+            slack_channel="#eng",
+            poll_interval_seconds=10,
+            resilience=ResilienceConfig(
+                github_retry=ServiceRetryConfig(
+                    attempts=3, wait_initial_seconds=1.0,
+                    wait_max_seconds=60.0, wait_jitter_seconds=1.0,
+                ),
+            ),
+        )
+
+
+def test_backoff_cap_accepts_valid_config() -> None:
+    """FR-003: wait_max_seconds <= poll_interval_seconds passes validation."""
+    config = ProjectConfiguration(
+        project_name="Demo",
+        github_org="acme",
+        github_project_number=1,
+        github_token="tok",
+        human_reviewers=["alice"],
+        smtp_host="smtp",
+        slack_webhook_url="https://hooks.slack.com/services/T/B/C",
+        slack_channel="#eng",
+        poll_interval_seconds=30,
+    )
+    assert config.resilience.github_retry.wait_max_seconds <= config.poll_interval_seconds
+
+
 def test_state_file_path_default(tmp_path) -> None:
     """Default state_file_path is ./coordinare.state.json."""
     from pathlib import Path

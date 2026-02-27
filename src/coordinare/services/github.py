@@ -1,10 +1,32 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
-from typing import Any
+from typing import Any, ClassVar
 
+import aiohttp
+import stamina
 from gql import Client, gql
 from gql.transport.aiohttp import AIOHTTPTransport
+
+# ---------------------------------------------------------------------------
+# Exception taxonomy (T008)
+# ---------------------------------------------------------------------------
+
+
+class GitHubError(RuntimeError): ...
+
+
+class TransientGitHubError(GitHubError): ...
+
+
+class PermanentGitHubError(GitHubError): ...
+
+
+class RateLimitedGitHubError(TransientGitHubError):
+    def __init__(self, retry_after: float, message: str = "") -> None:
+        super().__init__(message or f"rate-limited; Retry-After={retry_after}s")
+        self.retry_after = retry_after
 
 FIND_PROJECT_QUERY = """
 query FindProject($org: String!, $number: Int!) {
@@ -185,17 +207,29 @@ mutation AddComment($subjectId: ID!, $body: String!) {
 class GitHubService:
     """Async GitHub GraphQL service with field and option caching."""
 
+    _DEFAULT_RETRY_KWARGS: ClassVar[dict[str, Any]] = {
+        "attempts": 1,
+        "wait_initial": 0.1,
+        "wait_max": 30.0,
+        "wait_jitter": 0.0,
+        "wait_exp_base": 2.0,
+    }
+
     def __init__(
         self,
         token: str,
         org: str,
         project_number: int,
         endpoint: str = "https://api.github.com/graphql",
+        circuit_breaker: Any = None,
+        retry_kwargs: dict[str, Any] | None = None,
     ) -> None:
         self._token = token
         self._org = org
         self._project_number = project_number
         self._endpoint = endpoint
+        self._circuit_breaker = circuit_breaker
+        self._retry_kwargs = retry_kwargs if retry_kwargs is not None else dict(self._DEFAULT_RETRY_KWARGS)
 
         self._client: Client | None = None
         self.project_id: str | None = None
@@ -213,21 +247,64 @@ class GitHubService:
         if self._client is None:
             self._client = self._build_client()
         document = gql(query)
-        if hasattr(self._client, "execute_async"):
-            result = await self._client.execute_async(document, variable_values=variables)
-        else:
-            result_or_awaitable = self._client.execute(document, variable_values=variables)
-            if inspect.isawaitable(result_or_awaitable):
-                result = await result_or_awaitable
+        try:
+            if hasattr(self._client, "execute_async"):
+                result = await self._client.execute_async(document, variable_values=variables)
             else:
-                result = result_or_awaitable
+                result_or_awaitable = self._client.execute(document, variable_values=variables)
+                if inspect.isawaitable(result_or_awaitable):
+                    result = await result_or_awaitable
+                else:
+                    result = result_or_awaitable
+        except aiohttp.ClientResponseError as exc:
+            if exc.status == 429:
+                raw = exc.headers.get("Retry-After", "60") if exc.headers else "60"
+                try:
+                    retry_after = float(raw)
+                except (ValueError, TypeError):
+                    retry_after = 60.0
+                await asyncio.sleep(retry_after)
+                raise RateLimitedGitHubError(retry_after=retry_after) from exc
+            if exc.status >= 500:
+                raise TransientGitHubError(str(exc)) from exc
+            raise PermanentGitHubError(str(exc)) from exc
+        except (TimeoutError, aiohttp.ClientError, OSError) as exc:
+            raise TransientGitHubError(str(exc)) from exc
+        except ValueError as exc:
+            raise PermanentGitHubError(str(exc)) from exc
         if not isinstance(result, dict):
             msg = "GitHub GraphQL response must be a JSON object"
-            raise ValueError(msg)
+            raise PermanentGitHubError(msg)
         return result
 
+    async def _retried_execute(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
+        @stamina.retry(on=TransientGitHubError, **self._retry_kwargs)
+        async def _inner() -> dict[str, Any]:
+            return await self._execute(query, variables)
+
+        return await _inner()
+
+    async def _guarded_execute(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
+        from coordinare.metrics import METRICS
+
+        try:
+            if self._circuit_breaker is not None:
+                async with self._circuit_breaker.guard():
+                    result = await self._retried_execute(query, variables)
+            else:
+                result = await self._retried_execute(query, variables)
+            METRICS.service_calls_total.labels(
+                service="github", action="execute", outcome="success",
+            ).inc()
+            return result
+        except Exception:
+            METRICS.service_calls_total.labels(
+                service="github", action="execute", outcome="failure",
+            ).inc()
+            raise
+
     async def initialize(self) -> None:
-        project_result = await self._execute(
+        project_result = await self._guarded_execute(
             FIND_PROJECT_QUERY,
             {"org": self._org, "number": self._project_number},
         )
@@ -239,7 +316,7 @@ class GitHubService:
         self.project_id = str(project["id"])
         self.project_title = str(project.get("title", ""))
 
-        fields_result = await self._execute(
+        fields_result = await self._guarded_execute(
             GET_PROJECT_FIELDS_QUERY,
             {"projectId": self.project_id},
         )
@@ -283,7 +360,7 @@ class GitHubService:
 
     async def poll_board(self) -> dict[str, Any]:
         self._ensure_initialized()
-        result = await self._execute(POLL_BOARD_QUERY, {"projectId": self.project_id})
+        result = await self._guarded_execute(POLL_BOARD_QUERY, {"projectId": self.project_id})
         items = result.get("node", {}).get("items", {}).get("nodes", [])
         if not isinstance(items, list):
             return {"snapshot": {}}
@@ -341,7 +418,7 @@ class GitHubService:
         }
 
     async def get_issue_details(self, issue_id: str) -> dict[str, Any]:
-        result = await self._execute(GET_ISSUE_DETAILS_QUERY, {"issueId": issue_id})
+        result = await self._guarded_execute(GET_ISSUE_DETAILS_QUERY, {"issueId": issue_id})
         issue = result.get("node")
         if isinstance(issue, dict):
             return issue
@@ -373,7 +450,7 @@ class GitHubService:
             msg = f"Unknown status option for {status}"
             raise ValueError(msg)
 
-        await self._execute(
+        await self._guarded_execute(
             MOVE_CARD_MUTATION,
             {
                 "projectId": self.project_id,
@@ -384,7 +461,7 @@ class GitHubService:
         )
 
     async def get_pr_reviews(self, pr_id: str) -> list[dict[str, Any]]:
-        result = await self._execute(GET_PR_REVIEWS_QUERY, {"prId": pr_id})
+        result = await self._guarded_execute(GET_PR_REVIEWS_QUERY, {"prId": pr_id})
         nodes = result.get("node", {}).get("reviews", {}).get("nodes", [])
         if not isinstance(nodes, list):
             return []
@@ -406,7 +483,7 @@ class GitHubService:
         return parsed
 
     async def check_mergeability(self, pr_id: str) -> dict[str, Any]:
-        result = await self._execute(CHECK_MERGEABILITY_QUERY, {"prId": pr_id})
+        result = await self._guarded_execute(CHECK_MERGEABILITY_QUERY, {"prId": pr_id})
         node = result.get("node", {})
         if not isinstance(node, dict):
             return {"mergeable": False, "reason": "missing_pr"}
@@ -421,7 +498,7 @@ class GitHubService:
         }
 
     async def squash_merge(self, pr_id: str) -> dict[str, Any]:
-        result = await self._execute(SQUASH_MERGE_MUTATION, {"pullRequestId": pr_id})
+        result = await self._guarded_execute(SQUASH_MERGE_MUTATION, {"pullRequestId": pr_id})
         node = result.get("mergePullRequest", {}).get("pullRequest", {})
         if not isinstance(node, dict):
             return {"merged": False}
@@ -432,7 +509,7 @@ class GitHubService:
         }
 
     async def add_comment(self, subject_id: str, body: str) -> dict[str, Any]:
-        result = await self._execute(ADD_COMMENT_MUTATION, {"subjectId": subject_id, "body": body})
+        result = await self._guarded_execute(ADD_COMMENT_MUTATION, {"subjectId": subject_id, "body": body})
         node = result.get("addComment", {}).get("commentEdge", {}).get("node", {})
         if isinstance(node, dict):
             return node
