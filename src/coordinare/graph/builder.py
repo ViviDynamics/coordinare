@@ -4,6 +4,7 @@ from typing import Any, cast
 
 from langgraph.graph import END, START, StateGraph
 
+from coordinare.graph.nodes.advocate import advocate_scan
 from coordinare.graph.nodes.assess_card import assess_card
 from coordinare.graph.nodes.check_board import check_board
 from coordinare.graph.nodes.dispatch_card import dispatch_card
@@ -26,6 +27,7 @@ async def _placeholder_node(state: CoordinareState) -> CoordinareState:
 
 
 _DEFAULT_NODES: dict[str, Any] = {
+    "advocate_scan": advocate_scan,
     "check_board": check_board,
     "assess_card": assess_card,
     "dispatch_card": dispatch_card,
@@ -55,6 +57,7 @@ class CoordinareGraphBuilder:
     def build(self) -> Any:
         graph = StateGraph(CoordinareState)
 
+        graph.add_node("advocate_scan", cast("Any", self._node("advocate_scan")))
         graph.add_node("check_board", cast("Any", self._node("check_board")))
         graph.add_node("assess_card", cast("Any", self._node("assess_card")))
         graph.add_node("dispatch_card", cast("Any", self._node("dispatch_card")))
@@ -65,7 +68,8 @@ class CoordinareGraphBuilder:
         graph.add_node("handle_blocked", cast("Any", self._node("handle_blocked")))
         graph.add_node("notify", cast("Any", self._node("notify")))
 
-        graph.add_edge(START, "check_board")
+        graph.add_edge(START, "advocate_scan")
+        graph.add_edge("advocate_scan", "check_board")
 
         graph.add_conditional_edges(
             "check_board",

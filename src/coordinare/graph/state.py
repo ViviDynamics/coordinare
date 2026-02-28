@@ -32,6 +32,12 @@ class NotificationServiceProtocol(Protocol):
     async def dispatch(self, event: NotificationEvent) -> None: ...
 
 
+class AdvocateServiceProtocol(Protocol):
+    async def scan_and_respond(self, processed_ids: set[str]) -> set[str]:
+        """Scan open issues, process unhandled ones, return updated processed_ids set."""
+        ...
+
+
 class CoordinareState(TypedDict, total=False):
     current_card: dict[str, Any] | None
     board_snapshot: dict[str, list[str]]
@@ -45,6 +51,10 @@ class CoordinareState(TypedDict, total=False):
     agent_service: AgentServiceProtocol
     claude_service: ClaudeServiceProtocol
     notification_service: NotificationServiceProtocol
+    advocate_service: AdvocateServiceProtocol | None
+    advocate_history: set[str]
+    advocate_handled_label: str
+    advocate_escalation_label: str
 
     human_reviewers: list[str]
     blocked_reminder_hours: int
@@ -66,4 +76,7 @@ def initial_state() -> CoordinareState:
         "error_count": 0,
         "github_field_cache": {},
         "open_questions": [],
+        "advocate_history": set(),
+        "advocate_handled_label": "",
+        "advocate_escalation_label": "",
     }

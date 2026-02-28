@@ -21,8 +21,8 @@
 
 **Purpose**: Create new module placeholders and extend test scaffolding
 
-- [ ] T001 Create new source files with empty module stubs: `src/coordinare/models/advocate.py`, `src/coordinare/services/advocate.py`, `src/coordinare/services/scoring.py`, `src/coordinare/graph/nodes/advocate.py`
-- [ ] T002 [P] Create new test file stubs: `tests/unit/services/test_scoring.py`, `tests/unit/graph/nodes/test_advocate.py`, `tests/unit/models/test_advocate_models.py`, `tests/integration/test_advocate_scan.py`, `tests/contract/test_github_advocate_queries.py`
+- [X] T001 Create new source files with empty module stubs: `src/coordinare/models/advocate.py`, `src/coordinare/services/advocate.py`, `src/coordinare/services/scoring.py`, `src/coordinare/graph/nodes/advocate.py`
+- [X] T002 [P] Create new test file stubs: `tests/unit/services/test_scoring.py`, `tests/unit/graph/nodes/test_advocate.py`, `tests/unit/models/test_advocate_models.py`, `tests/integration/test_advocate_scan.py`, `tests/contract/test_github_advocate_queries.py`
 
 ---
 
@@ -32,14 +32,14 @@
 
 **⚠️ CRITICAL**: No user story work can begin until this phase is complete
 
-- [ ] T003 [P] Add advocate model enums (IssueType, AdvocateAction, EscalationReason) and all entity dataclasses (IssueClassification, AdvocateResponse, EscalationRecord, DocumentationSource, ScoringProvider, ConsensusScore) to `src/coordinare/models/advocate.py` per `specs/007-customer-advocate-agent/data-model.md`
-- [ ] T004 [P] Add `AdvocateConfig` Pydantic model (all fields per data-model.md Config section, including `github_repo: str`) and `advocate: AdvocateConfig = Field(default_factory=AdvocateConfig)` to `ProjectConfiguration` in `src/coordinare/config.py`; add validator: when `enabled=True`, `github_repo` must be non-empty
-- [ ] T005 Add `AdvocateServiceProtocol` (with `async def scan_and_respond(processed_ids: set[str]) -> set[str]` method) and extend `CoordinareState` with `advocate_service: AdvocateServiceProtocol | None` and `advocate_history: set[str]` fields in `src/coordinare/graph/state.py`; update `initial_state()` to initialise `advocate_history` as empty set
-- [ ] T006 Add six new methods to `GitHubService` in `src/coordinare/services/github.py`: `get_repository_id(owner, repo)`, `get_label_ids(owner, repo)`, `ensure_labels_exist(owner, repo, handled_label, escalation_label)`, `add_labels(issue_id, label_ids)`, `list_open_issues(owner, repo, first=20)`, `get_file_content(owner, repo, path, ref)` — with corresponding GraphQL strings per `specs/007-customer-advocate-agent/contracts/github-graphql-advocate.md`
-- [ ] T007 Add `advocate_scan` placeholder node to `_DEFAULT_NODES` dict, register it in `CoordinareGraphBuilder.build()`, and reroute graph entry: `START → advocate_scan → check_board` (replacing direct `START → check_board` edge) in `src/coordinare/graph/builder.py`
-- [ ] T008 [P] Add three advocate Prometheus metrics to `src/coordinare/metrics.py`: `coordinare_advocate_issues_processed_total` (Counter, label: `action`), `coordinare_advocate_issues_escalated_total` (Counter, label: `reason`), `coordinare_advocate_scan_duration_seconds` (Histogram) per `specs/007-customer-advocate-agent/quickstart.md` observability table
-- [ ] T009 Update `src/coordinare/daemon.py` to: (a) instantiate `AdvocateService` and inject into initial state as `advocate_service` when `config.advocate.enabled`, (b) call `github_service.ensure_labels_exist()` during startup when advocate is enabled, (c) pass `None` for `advocate_service` and skip label setup when disabled
-- [ ] T010 [P] Extend `route_from_board_check` in `src/coordinare/graph/routing.py` to exclude issues whose GitHub labels include `config.advocate.handled_label` or `config.advocate.escalation_label` from the `TODO` pool (satisfying FR-001a); add unit test to `tests/unit/test_routing.py` asserting that an issue carrying either label is not returned as a board dispatch candidate
+- [X] T003 [P] Add advocate model enums (IssueType, AdvocateAction, EscalationReason) and all entity dataclasses (IssueClassification, AdvocateResponse, EscalationRecord, DocumentationSource, ScoringProvider, ConsensusScore) to `src/coordinare/models/advocate.py` per `specs/007-customer-advocate-agent/data-model.md`
+- [X] T004 [P] Add `AdvocateConfig` Pydantic model (all fields per data-model.md Config section, including `github_repo: str` and `doc_branch: str = "HEAD"`) and `advocate: AdvocateConfig = Field(default_factory=AdvocateConfig)` to `ProjectConfiguration` in `src/coordinare/config.py`; add validator: when `enabled=True`, `github_repo` must be non-empty; `doc_branch` is the git ref used when fetching documentation files (defaults to `"HEAD"` for the repo's default branch)
+- [X] T005 Add `AdvocateServiceProtocol` (with `async def scan_and_respond(processed_ids: set[str]) -> set[str]` method) and extend `CoordinareState` with `advocate_service: AdvocateServiceProtocol | None` and `advocate_history: set[str]` fields in `src/coordinare/graph/state.py`; update `initial_state()` to initialise `advocate_history` as empty set
+- [X] T006 Add six new methods to `GitHubService` in `src/coordinare/services/github.py`: `get_repository_id(owner, repo)`, `get_label_ids(owner, repo)`, `ensure_labels_exist(owner, repo, handled_label, escalation_label)`, `add_labels(issue_id, label_ids)`, `list_open_issues(owner, repo, first=20)`, `get_file_content(owner, repo, path, ref)` — with corresponding GraphQL strings per `specs/007-customer-advocate-agent/contracts/github-graphql-advocate.md`
+- [X] T007 Add `advocate_scan` placeholder node to `_DEFAULT_NODES` dict, register it in `CoordinareGraphBuilder.build()`, and reroute graph entry: `START → advocate_scan → check_board` (replacing direct `START → check_board` edge) in `src/coordinare/graph/builder.py`
+- [X] T008 [P] Add three advocate Prometheus metrics to `src/coordinare/metrics.py`: `coordinare_advocate_issues_processed_total` (Counter, label: `action`; incremented for ALL actions including `action="escalated"` inside `_do_escalate` so dashboards can sum across all action types), `coordinare_advocate_issues_escalated_total` (Counter, label: `reason`; incremented alongside processed_total on each escalation for reason-level breakdown), `coordinare_advocate_scan_duration_seconds` (Histogram) per `specs/007-customer-advocate-agent/quickstart.md` observability table
+- [X] T009 Add advocate bootstrap to `src/coordinare/__main__.py` (in `_bootstrap_services`): (a) instantiate `AdvocateService` and inject into initial state as `advocate_service` when `config.advocate.enabled`, (b) call `github_service.ensure_labels_exist()` during startup when advocate is enabled, (c) pass `None` for `advocate_service` and skip label setup when disabled (note: bootstrap lives in `__main__.py`, not `daemon.py`)
+- [X] T010 [P] Exclude issues whose GitHub labels include `config.advocate.handled_label` or `config.advocate.escalation_label` from the `TODO` pool (satisfying FR-001a); implemented by filtering `item_labels` in `src/coordinare/graph/nodes/check_board.py` (note: `route_from_board_check` in `routing.py` only reads `state["phase"]` so cannot filter here; label data added to `poll_board()` return and consumed in `check_board.py`); unit tests in `tests/unit/test_routing.py`
 
 **Checkpoint**: Foundation ready — user story implementation can begin
 
@@ -55,16 +55,16 @@
 
 > **Write these first — verify they FAIL before implementation**
 
-- [ ] T011 [P] [US1] Write unit tests for `ClaudeScorer` in `tests/unit/services/test_scoring.py`: (a) valid JSON response → correct classification + confidence returned, (b) JSON parse failure → `ScoringResult` with `confidence=0.0` and `reasoning="parse_error"`, (c) API exception → `ScoringResult` with `confidence=0.0` and `reasoning="api_error"`, (d) confidence clamped to `[0.0, 1.0]` if model returns out-of-range value
-- [ ] T012 [P] [US1] Write unit tests for advocate node question/confusion path in `tests/unit/graph/nodes/test_advocate.py`: (a) new question issue → label applied first, then reply posted; (b) posted comment contains `config.disclosure_template` text (FR-014); (c) duplicate issue already in `processed_ids` → skipped, no comment; (d) issue already carrying `advocate-handled` label → skipped; (e) `advocate_service=None` → node returns state unchanged
+- [X] T011 [P] [US1] Write unit tests for `ClaudeScorer` in `tests/unit/services/test_scoring.py`: (a) valid JSON response → correct classification + confidence returned, (b) JSON parse failure → `ScoringResult` with `confidence=0.0` and `reasoning="parse_error"`, (c) API exception → `ScoringResult` with `confidence=0.0` and `reasoning="api_error"`, (d) confidence clamped to `[0.0, 1.0]` if model returns out-of-range value
+- [X] T012 [P] [US1] Write unit tests for advocate node question/confusion path in `tests/unit/graph/nodes/test_advocate.py`: (a) new question issue → label applied first, then reply posted; (b) posted comment contains `config.disclosure_template` text (FR-014); (c) duplicate issue already in `processed_ids` → skipped, no comment; (d) issue already carrying `advocate-handled` label → skipped; (e) `advocate_service=None` → node returns state unchanged
 
 ### Implementation for User Story 1
 
-- [ ] T013 [US1] Implement `ScoringResult` dataclass and `ScoringProviderProtocol` in `src/coordinare/services/scoring.py` per `specs/007-customer-advocate-agent/contracts/scoring-provider.md`
-- [ ] T014 [US1] Implement `ClaudeScorer` in `src/coordinare/services/scoring.py`: V1 single Claude API call (classify + score + response_text), structured JSON prompt per `contracts/scoring-provider.md`, JSON parse failure and API errors return `ScoringResult(confidence=0.0)` without raising (depends on T013)
-- [ ] T015 [US1] Implement `AdvocateService` class in `src/coordinare/services/advocate.py` with: `__init__` (inject GitHubService, notification services, config, scorers list), `scan_and_respond(processed_ids)` for question/confusion path — call `list_open_issues`, filter labeled/processed, process up to 20 issues using `asyncio.gather` with `asyncio.Semaphore(5)` per `specs/007-customer-advocate-agent/research.md` R9; per-issue: apply `advocate-handled` label first, call ClaudeScorer, post reply with citation + disclosure appended, add to processed_ids; wrap GitHub API calls in try/except — on failure log structured error and continue to next issue (depends on T005, T006, T014)
-- [ ] T016 [US1] Implement `advocate_scan` LangGraph node function in `src/coordinare/graph/nodes/advocate.py`: check `state["advocate_service"]` is not None (return state unchanged if disabled), call `await advocate_service.scan_and_respond(state["advocate_history"])`, update `state["advocate_history"]` with returned set, emit `advocate_scan_complete` structured log (depends on T005, T015)
-- [ ] T017 [US1] Integration test for full question→auto-reply cycle in `tests/integration/test_advocate_scan.py`: mocked `GitHubService` and `ClaudeService`; verify: issue fetched → label applied before comment → comment text contains citation and disclosure → `processed_ids` updated; second cycle on same issue → no duplicate comment
+- [X] T013 [US1] Implement `ScoringResult` dataclass and `ScoringProviderProtocol` in `src/coordinare/services/scoring.py` per `specs/007-customer-advocate-agent/contracts/scoring-provider.md`
+- [X] T014 [US1] Implement `ClaudeScorer` in `src/coordinare/services/scoring.py`: V1 single Claude API call (classify + score + response_text), structured JSON prompt per `contracts/scoring-provider.md`, JSON parse failure and API errors return `ScoringResult(confidence=0.0)` without raising (depends on T013)
+- [X] T015 [US1] Implement `AdvocateService` class in `src/coordinare/services/advocate.py` with: `__init__` (inject GitHubService, notification services, config, scorers list), `scan_and_respond(processed_ids)` for question/confusion path — call `list_open_issues`, filter labeled/processed, process up to 20 issues using `asyncio.gather` with `asyncio.Semaphore(5)` per `specs/007-customer-advocate-agent/research.md` R9; per-issue: apply `advocate-handled` label first, call ClaudeScorer, post reply with citation + disclosure appended, add to processed_ids; wrap GitHub API calls in try/except — on failure log structured error and continue to next issue (depends on T005, T006, T014)
+- [X] T016 [US1] Implement `advocate_scan` LangGraph node function in `src/coordinare/graph/nodes/advocate.py`: check `state["advocate_service"]` is not None (return state unchanged if disabled), call `await advocate_service.scan_and_respond(state["advocate_history"])`, update `state["advocate_history"]` with returned set, emit `advocate_scan_complete` structured log (depends on T005, T015)
+- [X] T017 [US1] Integration test for full question→auto-reply cycle in `tests/integration/test_advocate_scan.py`: mocked `GitHubService` and `ClaudeService`; verify: issue fetched → label applied before comment → comment text contains citation and disclosure → `processed_ids` updated; second cycle on same issue → no duplicate comment
 
 **Checkpoint**: US1 fully functional and independently testable
 
@@ -80,13 +80,13 @@
 
 > **Write these first — verify they FAIL before implementation**
 
-- [ ] T018 [P] [US2] Write unit tests for all three escalation triggers in `tests/unit/graph/nodes/test_advocate.py`: (a) sensitive keyword in issue title/body → escalation short-circuits before Claude call, `needs-human` label applied, holding comment posted, no AI answer; (b) `complaint` classification → escalation regardless of confidence score; (c) confidence below threshold → escalates question/confusion; (d) `EscalationRecord` logged with correct `reason` for each trigger
+- [X] T018 [P] [US2] Write unit tests for all three escalation triggers in `tests/unit/graph/nodes/test_advocate.py`: (a) sensitive keyword in issue title/body → escalation short-circuits before Claude call, `needs-human` label applied, holding comment posted, no AI answer; (b) `complaint` classification → escalation regardless of confidence score; (c) confidence below threshold → escalates question/confusion; (d) `EscalationRecord` logged with correct `reason` for each trigger
 
 ### Implementation for User Story 2
 
-- [ ] T019 [US2] Add sensitive keyword matching to `AdvocateService.scan_and_respond()` in `src/coordinare/services/advocate.py`: case-insensitive substring match of `config.sensitive_keywords` against issue title + body, evaluated before the Claude API call; on match: apply `escalation_label` first, post holding comment, dispatch Slack/email notification, record `EscalationRecord(reason=sensitive_keyword)`
-- [ ] T020 [US2] Add complaint-classification and low-confidence escalation paths to `AdvocateService.scan_and_respond()` in `src/coordinare/services/advocate.py`; reuse same escalation action (label + holding comment + notify) for all three trigger types; record `EscalationRecord` with correct `reason` (`complaint` or `low_confidence`)
-- [ ] T021 [US2] Integration test for escalation cycle in `tests/integration/test_advocate_scan.py`: (a) sensitive keyword issue → `needs-human` label + holding comment + notification sent + no AI answer; (b) low-confidence mock → same outcome; (c) notification payload contains issue URL and escalation reason
+- [X] T019 [US2] Add sensitive keyword matching to `AdvocateService.scan_and_respond()` in `src/coordinare/services/advocate.py`: case-insensitive substring match of `config.sensitive_keywords` against issue title + body, evaluated before the Claude API call; on match: apply `escalation_label` first, post holding comment, dispatch Slack/email notification, record `EscalationRecord(reason=sensitive_keyword)`
+- [X] T020 [US2] Add complaint-classification and low-confidence escalation paths to `AdvocateService.scan_and_respond()` in `src/coordinare/services/advocate.py`; reuse same escalation action (label + holding comment + notify) for all three trigger types; record `EscalationRecord` with correct `reason` (`complaint` or `low_confidence`)
+- [X] T021 [US2] Integration test for escalation cycle in `tests/integration/test_advocate_scan.py`: (a) sensitive keyword issue → `needs-human` label + holding comment + notification sent + no AI answer; (b) low-confidence mock → same outcome; (c) notification payload contains issue URL and escalation reason
 
 **Checkpoint**: US1 + US2 both independently testable
 
@@ -102,12 +102,12 @@
 
 > **Write these first — verify they FAIL before implementation**
 
-- [ ] T022 [P] [US3] Write unit tests for doc loading in `tests/unit/graph/nodes/test_advocate.py`: (a) reachable doc → text content passed to scorer; (b) `get_file_content` returns null → `DocumentationSource.reachable=False`; (c) all sources unreachable → every question/confusion issue in cycle escalates with `no_documentation_configured`; (d) scorer returns `response_text=None` (topic not covered) → escalates with `no_documentation_match`
+- [X] T022 [P] [US3] Write unit tests for doc loading in `tests/unit/graph/nodes/test_advocate.py`: (a) reachable doc → text content passed to scorer; (b) `get_file_content` returns null → `DocumentationSource.reachable=False`; (c) all sources unreachable → every question/confusion issue in cycle escalates with `no_documentation_configured`; (d) scorer returns `response_text=None` (topic not covered) → escalates with `no_documentation_match`
 
 ### Implementation for User Story 3
 
-- [ ] T023 [US3] Implement `_load_documentation_sources()` in `src/coordinare/services/advocate.py`: call `GitHubService.get_file_content()` for each path in `config.doc_sources`, build list of `DocumentationSource` objects; emit `advocate_doc_fetch_warning` structured log for each unreachable file (depends on T006)
-- [ ] T024 [US3] Integrate doc loading into `AdvocateService.scan_and_respond()` in `src/coordinare/services/advocate.py`: call `_load_documentation_sources()` before processing issues; if all sources unreachable → escalate all question/confusion issues with `no_documentation_configured`; pass concatenated reachable doc content to `ClaudeScorer.score()`; if scorer returns `response_text=None` → escalate with `no_documentation_match` (depends on T023)
+- [X] T023 [US3] Implement `_load_documentation_sources()` in `src/coordinare/services/advocate.py`: call `GitHubService.get_file_content()` for each path in `config.doc_sources`, build list of `DocumentationSource` objects; emit `advocate_doc_fetch_warning` structured log for each unreachable file (depends on T006)
+- [X] T024 [US3] Integrate doc loading into `AdvocateService.scan_and_respond()` in `src/coordinare/services/advocate.py`: call `_load_documentation_sources()` before processing issues; if all sources unreachable → escalate all question/confusion issues with `no_documentation_configured`; pass concatenated reachable doc content to `ClaudeScorer.score()`; if scorer returns `response_text=None` → escalate with `no_documentation_match` (depends on T023)
 
 **Checkpoint**: US1 + US2 + US3 all independently testable; answers are always doc-grounded
 
@@ -123,13 +123,13 @@
 
 > **Write these first — verify they FAIL before implementation**
 
-- [ ] T025 [P] [US4] Write unit tests for triage paths in `tests/unit/graph/nodes/test_advocate.py`: (a) `feature_request` → `advocate-handled` label applied first, then acknowledgement template posted, `AdvocateResponse(action=acknowledged)` recorded; (b) `bug_report` → `advocate-handled` label applied, no comment posted, `AdvocateResponse(action=triaged)` recorded; (c) `off_topic` → `advocate-handled` label applied, redirect template posted with `support_channel_url` substituted, `AdvocateResponse(action=redirected)` recorded
+- [X] T025 [P] [US4] Write unit tests for triage paths in `tests/unit/graph/nodes/test_advocate.py`: (a) `feature_request` → `advocate-handled` label applied first, then acknowledgement template posted, `AdvocateResponse(action=acknowledged)` recorded; (b) `bug_report` → `advocate-handled` label applied, no comment posted, `AdvocateResponse(action=triaged)` recorded; (c) `off_topic` → `advocate-handled` label applied, redirect template posted with `support_channel_url` substituted, `AdvocateResponse(action=redirected)` recorded
 
 ### Implementation for User Story 4
 
-- [ ] T026 [US4] Add `feature_request` acknowledgement path to `AdvocateService.scan_and_respond()` in `src/coordinare/services/advocate.py`: apply `handled_label` first, post `config.acknowledgement_template`, record `AdvocateResponse(action=acknowledged)`
-- [ ] T027 [US4] Add `bug_report` triage path to `AdvocateService.scan_and_respond()` in `src/coordinare/services/advocate.py`: apply `handled_label` only, post NO comment, record `AdvocateResponse(action=triaged)`; note: `advocate-handled` label ensures FR-001 dedup works; board workflow still processes the issue via project board column (not label-based)
-- [ ] T028 [US4] Add `off_topic` redirect path to `AdvocateService.scan_and_respond()` in `src/coordinare/services/advocate.py`: apply `handled_label` first, post `config.redirect_template` with `{support_channel_url}` substituted, record `AdvocateResponse(action=redirected)`
+- [X] T026 [US4] Add `feature_request` acknowledgement path to `AdvocateService.scan_and_respond()` in `src/coordinare/services/advocate.py`: apply `handled_label` first, post `config.acknowledgement_template`, record `AdvocateResponse(action=acknowledged)`
+- [X] T027 [US4] Add `bug_report` triage path to `AdvocateService.scan_and_respond()` in `src/coordinare/services/advocate.py`: apply `handled_label` only, post NO comment, record `AdvocateResponse(action=triaged)`; note: `advocate-handled` label ensures FR-001 dedup works; board workflow still processes the issue via project board column (not label-based)
+- [X] T028 [US4] Add `off_topic` redirect path to `AdvocateService.scan_and_respond()` in `src/coordinare/services/advocate.py`: apply `handled_label` first, post `config.redirect_template` with `{support_channel_url}` substituted, record `AdvocateResponse(action=redirected)`
 
 **Checkpoint**: All four user stories independently functional
 
@@ -139,11 +139,23 @@
 
 **Purpose**: Contract tests, model validation, structured logging, lint gate
 
-- [ ] T029 [P] Add contract tests for all six GitHub advocate GraphQL queries/mutations in `tests/contract/test_github_advocate_queries.py` per `specs/007-customer-advocate-agent/contracts/github-graphql-advocate.md`: validate query strings parse via `gql()` without error; validate expected response field structure for each query
-- [ ] T030 [P] Add unit tests for `AdvocateConfig` validation in `tests/unit/test_config.py`: `enabled=True` with empty `github_repo` → raises `ValueError`; `confidence_threshold` outside `(0.0, 1.0]` → raises; default `sensitive_keywords` list matches FR-007 enumeration
-- [ ] T031 [P] Add unit tests for advocate model field validation in `tests/unit/models/test_advocate_models.py`: `confidence_score` outside `[0.0, 1.0]` raises; `IssueType` with invalid string raises; `ConsensusScore.final_score` equals mean of `provider_scores`
-- [ ] T032 Add structured `structlog` logging to all advocate events in `src/coordinare/services/advocate.py` and `src/coordinare/graph/nodes/advocate.py`: `advocate_scan_start` (cycle_id, open_issues_fetched, unprocessed_count), `advocate_issue_processed` (issue_id, issue_number, classification, action, confidence, **provider_scores**, elapsed_ms — satisfying FR-005 log requirement), `advocate_issue_escalated` (issue_id, issue_number, reason, notified_channel), `advocate_scan_complete` (cycle_id, issues_processed, elapsed_ms), `advocate_doc_fetch_warning` (file_path, ref, error)
-- [ ] T033 Verify `ruff check src/ tests/` and `mypy src/` pass with zero errors for all new and modified advocate files; fix any lint or type errors
+- [X] T029 [P] Add contract tests for all six GitHub advocate GraphQL queries/mutations in `tests/contract/test_github_advocate_queries.py` per `specs/007-customer-advocate-agent/contracts/github-graphql-advocate.md`: validate query strings parse via `gql()` without error; validate expected response field structure for each query
+- [X] T030 [P] Add unit tests for `AdvocateConfig` validation in `tests/unit/test_config.py`: `enabled=True` with empty `github_repo` → raises `ValueError`; `confidence_threshold` outside `(0.0, 1.0]` → raises; default `sensitive_keywords` list matches FR-007 enumeration
+- [X] T031 [P] Add unit tests for advocate model field validation in `tests/unit/models/test_advocate_models.py`: `confidence_score` outside `[0.0, 1.0]` raises; `IssueType` with invalid string raises; `ConsensusScore.final_score` equals mean of `provider_scores`
+- [X] T032 Add structured `structlog` logging to all advocate events in `src/coordinare/services/advocate.py` and `src/coordinare/graph/nodes/advocate.py`: `advocate_scan_start` (cycle_id, open_issues_fetched, unprocessed_count), `advocate_issue_processed` (issue_id, issue_number, classification, action, confidence, **provider_scores**, elapsed_ms — satisfying FR-005 log requirement), `advocate_issue_escalated` (issue_id, issue_number, reason, notified_channel), `advocate_scan_complete` (cycle_id, issues_processed, elapsed_ms), `advocate_doc_fetch_warning` (file_path, ref, error)
+- [X] T033 Verify `ruff check src/ tests/` and `mypy src/` pass with zero errors for all new and modified advocate files; fix any lint or type errors
+
+---
+
+## Phase 8: Post-Analyze Remediations (speckit.analyze findings)
+
+**Purpose**: Address gaps identified by speckit.analyze after initial implementation; all tasks below are complete.
+
+- [X] T034 Add `doc_branch: str = "HEAD"` to `AdvocateConfig` in `src/coordinare/config.py`; wire into `_load_documentation_sources()` replacing hardcoded `"main"` ref; update `get_file_content()` default ref from `"main"` to `"HEAD"` in `src/coordinare/services/github.py`; add tests `test_advocate_doc_branch_defaults_to_head` and `test_advocate_doc_branch_configurable` in `tests/unit/test_config.py` (resolves spec gap U1)
+- [X] T035 Add SC-006 performance throughput test in `tests/perf/test_advocate_throughput.py`: mock 20 issues with instant-returning scorers, assert total elapsed < 10s; satisfies Constitution Principle IV automated benchmark requirement (resolves spec gap C1)
+- [X] T036 Fix `compute_consensus` in `src/coordinare/services/scoring.py` to exclude providers that returned a failed result (classification=None) from score aggregation — use `successful` list instead of `valid` so parse/api errors don't suppress the mean; add `TypeError` to the parse-error exception handler so malformed-but-valid-JSON fields (e.g. null confidence) are caught correctly
+- [X] T037 Add 7 unit tests covering previously uncovered paths: `advocate_scan` node happy path and exception path; `list_open_issues` failure; per-issue exception skips issue but continues others; all-scorers-failed escalation; `add_labels` GitHub failure; `add_comment` GitHub failure — raises coverage from 89% to 90.1%; update `pyproject.toml` `fail_under` from 80 → 90
+- [X] T038 Address all Copilot PR review comments: `provider_scores` field added to all `advocate_issue_processed` structured log events (FR-005); `METRICS.advocate_issues_processed_total.labels(action="escalated").inc()` added to `_do_escalate`; correct doc comment in `config.py` to reference GitHub GraphQL API; align `get_file_content` default ref with `doc_branch` default
 
 ---
 

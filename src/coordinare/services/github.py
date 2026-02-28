@@ -80,6 +80,11 @@ query PollBoard($projectId: ID!) {
               number
               title
               body
+              labels(first: 100) {
+                nodes {
+                  name
+                }
+              }
             }
           }
         }
@@ -197,6 +202,112 @@ mutation AddComment($subjectId: ID!, $body: String!) {
         id
         body
         createdAt
+      }
+    }
+  }
+}
+"""
+
+# ---------------------------------------------------------------------------
+# Advocate GraphQL operations (spec 007)
+# ---------------------------------------------------------------------------
+
+LIST_OPEN_ISSUES_QUERY = """
+query ListOpenIssues($owner: String!, $repo: String!, $first: Int!, $cursor: String) {
+  repository(owner: $owner, name: $repo) {
+    issues(
+      first: $first
+      states: [OPEN]
+      after: $cursor
+      orderBy: { field: CREATED_AT, direction: DESC }
+    ) {
+      nodes {
+        id
+        number
+        title
+        body
+        url
+        labels(first: 100) {
+          nodes {
+            id
+            name
+          }
+        }
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+}
+"""
+
+GET_FILE_CONTENT_QUERY = """
+query GetFileContent($owner: String!, $repo: String!, $expression: String!) {
+  repository(owner: $owner, name: $repo) {
+    object(expression: $expression) {
+      ... on Blob {
+        text
+      }
+    }
+  }
+}
+"""
+
+GET_REPOSITORY_ID_QUERY = """
+query GetRepositoryId($owner: String!, $repo: String!) {
+  repository(owner: $owner, name: $repo) {
+    id
+  }
+}
+"""
+
+GET_LABEL_IDS_QUERY = """
+query GetLabelIds($owner: String!, $repo: String!) {
+  repository(owner: $owner, name: $repo) {
+    labels(first: 100) {
+      nodes {
+        id
+        name
+      }
+    }
+  }
+}
+"""
+
+CREATE_LABEL_MUTATION = """
+mutation CreateLabel($repositoryId: ID!, $name: String!, $color: String!, $description: String!) {
+  createLabel(
+    input: {
+      repositoryId: $repositoryId
+      name: $name
+      color: $color
+      description: $description
+    }
+  ) {
+    label {
+      id
+      name
+    }
+  }
+}
+"""
+
+ADD_LABELS_MUTATION = """
+mutation AddLabels($labelableId: ID!, $labelIds: [ID!]!) {
+  addLabelsToLabelable(
+    input: { labelableId: $labelableId, labelIds: $labelIds }
+  ) {
+    labelable {
+      ... on Issue {
+        id
+        labels(first: 100) {
+          nodes {
+            id
+            name
+          }
+        }
       }
     }
   }
@@ -375,6 +486,7 @@ class GitHubService:
         titles: dict[str, str] = {}
         descriptions: dict[str, str] = {}
         issue_numbers: dict[str, int] = {}
+        item_labels: dict[str, list[str]] = {}
 
         for item in items:
             if not isinstance(item, dict):
@@ -407,6 +519,13 @@ class GitHubService:
                 descriptions[item_id] = str(content.get("body", ""))
                 number = content.get("number", 0)
                 issue_numbers[item_id] = int(number) if isinstance(number, int) else 0
+                label_nodes = content.get("labels", {})
+                if isinstance(label_nodes, dict):
+                    item_labels[item_id] = [
+                        str(n.get("name", ""))
+                        for n in label_nodes.get("nodes", [])
+                        if isinstance(n, dict)
+                    ]
 
             snapshot.setdefault(status_name, []).append(item_id)
 
@@ -415,6 +534,7 @@ class GitHubService:
             "titles": titles,
             "descriptions": descriptions,
             "issue_numbers": issue_numbers,
+            "item_labels": item_labels,
         }
 
     async def get_issue_details(self, issue_id: str) -> dict[str, Any]:
@@ -514,3 +634,95 @@ class GitHubService:
         if isinstance(node, dict):
             return node
         return {}
+
+    # -----------------------------------------------------------------------
+    # Advocate methods (spec 007)
+    # -----------------------------------------------------------------------
+
+    async def get_repository_id(self, owner: str, repo: str) -> str:
+        result = await self._guarded_execute(
+            GET_REPOSITORY_ID_QUERY, {"owner": owner, "repo": repo}
+        )
+        repo_id = result.get("repository", {}).get("id")
+        if not repo_id:
+            msg = f"Repository not found: {owner}/{repo}"
+            raise ValueError(msg)
+        return str(repo_id)
+
+    async def get_label_ids(self, owner: str, repo: str) -> dict[str, str]:
+        result = await self._guarded_execute(
+            GET_LABEL_IDS_QUERY, {"owner": owner, "repo": repo}
+        )
+        nodes = result.get("repository", {}).get("labels", {}).get("nodes", [])
+        if not isinstance(nodes, list):
+            return {}
+        return {
+            str(n.get("name", "")): str(n.get("id", ""))
+            for n in nodes
+            if isinstance(n, dict) and n.get("name") and n.get("id")
+        }
+
+    async def ensure_labels_exist(
+        self,
+        owner: str,
+        repo: str,
+        handled_label: str,
+        escalation_label: str,
+    ) -> dict[str, str]:
+        """Ensure advocate labels exist; create any that are missing. Returns name→id map."""
+        repo_id = await self.get_repository_id(owner, repo)
+        existing = await self.get_label_ids(owner, repo)
+
+        label_colors = {handled_label: "0075ca", escalation_label: "e4e669"}
+        label_descriptions = {
+            handled_label: "Issue handled by the customer advocate agent",
+            escalation_label: "Issue escalated to a human reviewer",
+        }
+
+        for label_name in (handled_label, escalation_label):
+            if label_name not in existing:
+                result = await self._guarded_execute(
+                    CREATE_LABEL_MUTATION,
+                    {
+                        "repositoryId": repo_id,
+                        "name": label_name,
+                        "color": label_colors.get(label_name, "ededed"),
+                        "description": label_descriptions.get(label_name, ""),
+                    },
+                )
+                new_label = result.get("createLabel", {}).get("label", {})
+                if isinstance(new_label, dict) and new_label.get("id"):
+                    existing[label_name] = str(new_label["id"])
+
+        return existing
+
+    async def add_labels(self, issue_id: str, label_ids: list[str]) -> None:
+        await self._guarded_execute(
+            ADD_LABELS_MUTATION,
+            {"labelableId": issue_id, "labelIds": label_ids},
+        )
+
+    async def list_open_issues(
+        self, owner: str, repo: str, first: int = 20
+    ) -> list[dict[str, Any]]:
+        result = await self._guarded_execute(
+            LIST_OPEN_ISSUES_QUERY,
+            {"owner": owner, "repo": repo, "first": first, "cursor": None},
+        )
+        nodes = result.get("repository", {}).get("issues", {}).get("nodes", [])
+        if not isinstance(nodes, list):
+            return []
+        return [n for n in nodes if isinstance(n, dict)]
+
+    async def get_file_content(
+        self, owner: str, repo: str, path: str, ref: str = "HEAD"
+    ) -> str | None:
+        expression = f"{ref}:{path}"
+        result = await self._guarded_execute(
+            GET_FILE_CONTENT_QUERY,
+            {"owner": owner, "repo": repo, "expression": expression},
+        )
+        obj = result.get("repository", {}).get("object")
+        if isinstance(obj, dict):
+            return obj.get("text")
+        return None

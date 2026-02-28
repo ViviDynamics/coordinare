@@ -99,23 +99,43 @@ async def check_board(state: CoordinareState) -> CoordinareState:
         state["phase"] = "idle"
         return state
     if todo:
-        item = todo[0]
-        titles = board.get("titles", {})
-        descriptions = board.get("descriptions", {})
-        issue_numbers = board.get("issue_numbers", {})
-        description = str(descriptions.get(item, ""))
-        state["current_card"] = {
-            "id": item,
-            "issue_id": item,
-            "issue_number": int(issue_numbers.get(item, 0)),
-            "title": str(titles.get(item, "")),
-            "description": description,
-            "acceptance_criteria": parse_acceptance_criteria(description),
-            "status": "TODO",
-            "previous_status": "TODO",
-        }
-        state["phase"] = "dispatching"
-        return state
+        # Filter out items carrying advocate labels (FR-001a)
+        advocate_labels = set()
+        handled = state.get("advocate_handled_label", "")
+        escalation = state.get("advocate_escalation_label", "")
+        if handled:
+            advocate_labels.add(str(handled))
+        if escalation:
+            advocate_labels.add(str(escalation))
+
+        item_labels = board.get("item_labels", {})
+        eligible_todo = [
+            item_id for item_id in todo
+            if not (set(item_labels.get(item_id, [])) & advocate_labels)
+        ]
+
+        if eligible_todo:
+            item = eligible_todo[0]
+            titles = board.get("titles", {})
+            descriptions = board.get("descriptions", {})
+            issue_numbers = board.get("issue_numbers", {})
+            description = str(descriptions.get(item, ""))
+            state["current_card"] = {
+                "id": item,
+                "issue_id": item,
+                "issue_number": int(issue_numbers.get(item, 0)),
+                "title": str(titles.get(item, "")),
+                "description": description,
+                "acceptance_criteria": parse_acceptance_criteria(description),
+                "status": "TODO",
+                "previous_status": "TODO",
+            }
+            state["phase"] = "dispatching"
+            return state
+
+        # All TODO items are filtered by advocate labels — clear any stale current_card
+        # so persisted snapshots don't carry forward a card that's no longer eligible.
+        state["current_card"] = None
 
     state["phase"] = "idle"
     return state

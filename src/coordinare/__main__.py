@@ -18,6 +18,7 @@ from coordinare.health import create_health_app
 from coordinare.metrics import METRICS
 from coordinare.models.notification import EventType, NotificationEvent, NotificationSeverity
 from coordinare.resilience import CircuitBreaker, ResilientAgentService, RetryConfig
+from coordinare.services.advocate import AdvocateService
 from coordinare.services.agent_service import AgentService
 from coordinare.services.claude import ClaudeService
 from coordinare.services.github import GitHubService
@@ -173,18 +174,54 @@ async def _bootstrap_services(
     for cb in circuit_breakers.values():
         cb.on_open_callback = trip_callback
 
+    claude_service = ClaudeService(
+        api_key=os.getenv("ANTHROPIC_API_KEY"),
+        circuit_breaker=circuit_breakers["anthropic"],
+        retry_kwargs=_retry_config_from(r.anthropic_retry).to_stamina_kwargs(),
+    )
+
     service_state: CoordinareState = {
         "github_service": github,
         "agent_service": resilient_agent,
-        "claude_service": ClaudeService(
-            api_key=os.getenv("ANTHROPIC_API_KEY"),
-            circuit_breaker=circuit_breakers["anthropic"],
-            retry_kwargs=_retry_config_from(r.anthropic_retry).to_stamina_kwargs(),
-        ),
+        "claude_service": claude_service,
         "notification_service": notification_service,
         "human_reviewers": config.human_reviewers,
         "blocked_reminder_hours": config.blocked_reminder_hours,
     }
+
+    if config.advocate.enabled:
+        try:
+            label_ids = await github.ensure_labels_exist(
+                config.github_org,
+                config.advocate.github_repo,
+                config.advocate.handled_label,
+                config.advocate.escalation_label,
+            )
+        except Exception as exc:
+            logger.warning("advocate_label_setup_failed", error=str(exc))
+            label_ids = {}
+
+        from coordinare.services.scoring import ClaudeScorer
+
+        # V1: scoring_models config is reserved for future multi-provider support
+        # (OpenAI, GitHub Copilot). Until additional ScoringProviderProtocol
+        # implementations exist, ClaudeScorer is always the sole provider.
+        # Adding a new provider in V2 requires registering it here; the
+        # advocate_scan node itself requires no changes (FR-005).
+        advocate_service = AdvocateService(
+            github=github,
+            notification_service=notification_service,
+            config=config.advocate,
+            github_org=config.github_org,
+            label_ids=label_ids,
+            scorers=[ClaudeScorer(claude_service)],
+        )
+        service_state["advocate_service"] = advocate_service
+        service_state["advocate_handled_label"] = config.advocate.handled_label
+        service_state["advocate_escalation_label"] = config.advocate.escalation_label
+    else:
+        service_state["advocate_service"] = None
+
     return service_state
 
 

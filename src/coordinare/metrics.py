@@ -81,6 +81,26 @@ class CoordinareMetrics:
             registry=self.registry,
         )
 
+        # Advocate metrics (spec 007)
+        self.advocate_issues_processed_total = Counter(
+            "coordinare_advocate_issues_processed_total",
+            "Advocate issues processed by action taken",
+            labelnames=("action",),
+            registry=self.registry,
+        )
+        self.advocate_issues_escalated_total = Counter(
+            "coordinare_advocate_issues_escalated_total",
+            "Advocate issues escalated to human by reason",
+            labelnames=("reason",),
+            registry=self.registry,
+        )
+        self.advocate_scan_duration_seconds = Histogram(
+            "coordinare_advocate_scan_duration_seconds",
+            "Time to complete one advocate scan cycle",
+            registry=self.registry,
+            buckets=(1, 5, 10, 30, 60),
+        )
+
         # Resilience metrics (spec 005)
         self.circuit_breaker_state = Gauge(
             "coordinare_circuit_breaker_state",

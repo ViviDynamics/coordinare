@@ -100,6 +100,56 @@ class NotificationsConfig(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# 007 — Customer advocate config model
+# ---------------------------------------------------------------------------
+
+_DEFAULT_SENSITIVE_KEYWORDS = [
+    "billing", "payment", "legal", "security", "breach",
+    "abuse", "harassment", "lawsuit", "GDPR", "refund",
+]
+
+
+class AdvocateConfig(BaseModel):
+    enabled: bool = False
+    confidence_threshold: float = Field(default=0.70, gt=0.0, le=1.0)
+    sensitive_keywords: list[str] = Field(default_factory=lambda: list(_DEFAULT_SENSITIVE_KEYWORDS))
+    doc_sources: list[str] = Field(default_factory=lambda: ["README.md"])
+    # Branch ref used when fetching documentation files via the GitHub GraphQL API
+    # (repository.object(expression: "<ref>:<path>")). Defaults to "HEAD" (the
+    # repository's default branch). Override if docs live on a dedicated branch
+    # (e.g. "docs", "stable").
+    doc_branch: str = "HEAD"
+    scoring_models: list[str] = Field(default_factory=lambda: ["claude"])
+    handled_label: str = "advocate-handled"
+    escalation_label: str = "needs-human"
+    holding_comment_template: str = (
+        "Thanks for reaching out — a team member will follow up shortly."
+    )
+    acknowledgement_template: str = (
+        "Thanks for the feature request! We've noted it for our roadmap."
+    )
+    redirect_template: str = (
+        "This doesn't seem related to the project. "
+        "For support, please visit {support_channel_url}."
+    )
+    # Used only in GitHub comment bodies (via _post_comment), never emitted
+    # directly into structured log fields, so the emoji is safe here.
+    disclosure_template: str = (
+        "\U0001f916 This response was generated automatically — "
+        "please verify before acting on it."
+    )
+    support_channel_url: str = ""
+    github_repo: str = ""
+
+    @model_validator(mode="after")
+    def _validate_github_repo_when_enabled(self) -> AdvocateConfig:
+        if self.enabled and not self.github_repo.strip():
+            msg = "advocate.github_repo must be non-empty when advocate.enabled is True"
+            raise ValueError(msg)
+        return self
+
+
+# ---------------------------------------------------------------------------
 # 005 — Resilience config models
 # ---------------------------------------------------------------------------
 
@@ -202,6 +252,7 @@ class ProjectConfiguration(BaseSettings):
     state_file_path: Path = Field(default=Path("./coordinare.state.json"))
     resilience: ResilienceConfig = Field(default_factory=ResilienceConfig)
     notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
+    advocate: AdvocateConfig = Field(default_factory=AdvocateConfig)
 
     @classmethod
     def settings_customise_sources(

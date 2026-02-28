@@ -133,3 +133,73 @@ def test_state_file_path_default(tmp_path) -> None:
 
     config = ProjectConfiguration.from_yaml(_write_config(tmp_path))
     assert config.state_file_path == Path("./coordinare.state.json")
+
+
+# --- T030: AdvocateConfig validation ---
+
+
+def test_advocate_enabled_with_empty_github_repo_raises() -> None:
+    """enabled=True with empty github_repo → raises ValueError (T030)."""
+    from coordinare.config import AdvocateConfig
+
+    with pytest.raises(ValidationError):
+        AdvocateConfig(enabled=True, github_repo="")
+
+
+def test_advocate_confidence_threshold_zero_raises() -> None:
+    """confidence_threshold must be > 0.0 (T030)."""
+    from coordinare.config import AdvocateConfig
+
+    with pytest.raises(ValidationError):
+        AdvocateConfig(confidence_threshold=0.0, github_repo="repo")
+
+
+def test_advocate_confidence_threshold_above_one_raises() -> None:
+    """confidence_threshold must be <= 1.0 (T030)."""
+    from coordinare.config import AdvocateConfig
+
+    with pytest.raises(ValidationError):
+        AdvocateConfig(confidence_threshold=1.1, github_repo="repo")
+
+
+def test_advocate_default_sensitive_keywords_match_spec() -> None:
+    """Default sensitive_keywords list contains FR-007 entries (T030)."""
+    from coordinare.config import AdvocateConfig
+
+    config = AdvocateConfig()
+    keywords = [k.lower() for k in config.sensitive_keywords]
+    for expected in ["billing", "payment", "legal", "security", "gdpr", "refund"]:
+        assert expected in keywords, f"missing FR-007 keyword: {expected}"
+
+
+def test_advocate_disabled_by_default() -> None:
+    """Advocate is disabled by default."""
+    from coordinare.config import AdvocateConfig
+
+    config = AdvocateConfig()
+    assert config.enabled is False
+
+
+def test_advocate_enabled_with_valid_repo() -> None:
+    """enabled=True with non-empty github_repo passes validation."""
+    from coordinare.config import AdvocateConfig
+
+    config = AdvocateConfig(enabled=True, github_repo="coordinare")
+    assert config.enabled is True
+    assert config.github_repo == "coordinare"
+
+
+def test_advocate_doc_branch_defaults_to_head() -> None:
+    """doc_branch defaults to 'HEAD' (repo default branch)."""
+    from coordinare.config import AdvocateConfig
+
+    config = AdvocateConfig()
+    assert config.doc_branch == "HEAD"
+
+
+def test_advocate_doc_branch_configurable() -> None:
+    """doc_branch can be overridden to any ref string."""
+    from coordinare.config import AdvocateConfig
+
+    config = AdvocateConfig(doc_branch="stable")
+    assert config.doc_branch == "stable"
