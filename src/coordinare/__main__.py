@@ -12,6 +12,7 @@ import uvicorn
 
 from coordinare import configure_logging
 from coordinare.config import ProjectConfiguration, ServiceCircuitConfig, ServiceRetryConfig
+from coordinare.config_validation import _load_raw_yaml, validate_config
 from coordinare.daemon import CoordinareDaemon, RuntimeExecutionError
 from coordinare.graph.builder import CoordinareGraphBuilder
 from coordinare.health import create_health_app
@@ -44,7 +45,13 @@ if TYPE_CHECKING:
 
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the coordinare daemon")
-    parser.add_argument("--config", type=Path, default=Path("config.yaml"), help="Path to config file")
+    # Daemon flags (top-level)
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help="Path to config file (overrides discovery order)",
+    )
     parser.add_argument(
         "--log-level",
         choices=["debug", "info", "warning", "error"],
@@ -56,7 +63,124 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Emit JSON structured logs instead of human-readable logs",
     )
+    # Subcommands: `coordinare config validate [--config PATH] [--strict]`
+    subparsers = parser.add_subparsers(dest="command")
+    config_parser = subparsers.add_parser("config", help="Config management subcommands")
+    config_subparsers = config_parser.add_subparsers(dest="config_action")
+    validate_parser = config_subparsers.add_parser(
+        "validate",
+        help="Validate config against the current schema without starting the daemon",
+    )
+    validate_parser.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        dest="config",
+        help="Explicit path to config file",
+    )
+    validate_parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Treat deprecated fields as errors (exit 1)",
+    )
+    # Ensure attributes always exist on the namespace regardless of which path is taken
+    parser.set_defaults(command=None, config_action=None, strict=False)
     return parser
+
+
+def _searched_paths_lines(explicit_path: Path | None) -> list[str]:
+    """Build the 4-path search order display for the 'no config file found' output."""
+    lines = []
+    if explicit_path is not None:
+        lines.append(f"  1. {explicit_path} — not found (or not a file)")
+    else:
+        lines.append("  1. (--config flag not provided)")
+
+    env_path_str = os.environ.get("COORDINARE_CONFIG_PATH")
+    if env_path_str:
+        lines.append(f"  2. $COORDINARE_CONFIG_PATH={env_path_str} — not found (or not a file)")
+    else:
+        lines.append("  2. (COORDINARE_CONFIG_PATH not set)")
+
+    lines.append("  3. ./config.yaml — not found")
+    lines.append("  4. ~/.coordinare/config.yaml — not found")
+    return lines
+
+
+def _cmd_config_validate(args: argparse.Namespace) -> None:
+    """Handle `coordinare config validate` subcommand. Always calls sys.exit."""
+    explicit_path: Path | None = getattr(args, "config", None)
+    strict: bool = getattr(args, "strict", False)
+
+    result = validate_config(explicit_path)
+
+    if result.passed:
+        if result.config_file_path is not None:
+            print(f"✓ Config valid — loaded from {result.config_file_path}")
+        else:
+            print("✓ Config valid — no config file (all required fields supplied via environment variables)")
+
+        env_count = result.env_var_fields_count
+        if result.config_file_path is not None:
+            print(
+                f"  Fields resolved: {env_count} from environment variables, "
+                "remaining from file or default values"
+            )
+        else:
+            print(f"  Fields resolved: {env_count} from environment variables")
+
+        if result.warnings:
+            header = "DEPRECATION ERRORS" if strict else "DEPRECATION WARNINGS (use --strict to treat as errors)"
+            print(f"\n{header}:")
+            for w in result.warnings:
+                print(f"  [DEPRECATED] {w.field_name}")
+                print(f"    Removed in: {w.removed_in}")
+                print(f"    Replace with: {w.replacement_path}")
+                print(f"    Migration: {w.migration_hint}")
+
+        sys.exit(1 if (strict and result.warnings) else 0)
+
+    # Validation failed
+    if result.config_file_path is not None:
+        print(f"✗ Config validation failed — loaded from {result.config_file_path}")
+    else:
+        # Check whether this is an explicit-path error or a "no file found" case
+        config_file_error = next(
+            (e for e in result.errors if e.field_path == "config_file"), None
+        )
+        if config_file_error:
+            print(f"✗ Config validation failed — {config_file_error.fix_hint}")
+        else:
+            print("✗ Config validation failed — no config file found")
+            print("\nSearched paths:")
+            for line in _searched_paths_lines(explicit_path):
+                print(line)
+            print(
+                "\nFix: Create a config file at one of the above paths, or supply "
+                "all required fields via COORDINARE_* environment variables."
+            )
+
+    # Print non-config-file errors
+    non_file_errors = [e for e in result.errors if e.field_path != "config_file"]
+    if non_file_errors:
+        print("\nERRORS:")
+        for e in non_file_errors:
+            label = e.error_type.value.upper()
+            print(f"  [{label}] {e.field_path}")
+            if e.source and e.source.startswith("env_var:"):
+                print(f"    Source: {e.source}")
+            print(f"    {e.fix_hint}")
+
+    if result.warnings:
+        header = "DEPRECATION ERRORS" if strict else "DEPRECATION WARNINGS (use --strict to treat as errors)"
+        print(f"\n{header}:")
+        for w in result.warnings:
+            print(f"  [DEPRECATED] {w.field_name}")
+            print(f"    Removed in: {w.removed_in}")
+            print(f"    Replace with: {w.replacement_path}")
+            print(f"    Migration: {w.migration_hint}")
+
+    sys.exit(1)
 
 
 def _create_health_app(
@@ -300,8 +424,39 @@ async def _run(config: ProjectConfiguration) -> None:
 
 def main() -> None:
     args = _build_arg_parser().parse_args()
+
+    # Dispatch config subcommand before any daemon startup
+    if getattr(args, "command", None) == "config" and getattr(args, "config_action", None) == "validate":
+        _cmd_config_validate(args)
+        return  # _cmd_config_validate always calls sys.exit; this is belt-and-suspenders
+
+    # --- Daemon startup path ---
+    # Step 1: Validate config (discover + parse + env var merge) in one pass
+    result = validate_config(getattr(args, "config", None))
+    if not result.passed:
+        configure_logging(
+            log_level=args.log_level or "error",
+            structured=getattr(args, "structured_output", False),
+        )
+        for err in result.errors:
+            logger.error(
+                "config_validation_error",
+                field=err.field_path,
+                error_type=err.error_type.value,
+                hint=err.fix_hint,
+                failing_step="configuration_load",
+                failure_phase="startup",
+            )
+        raise SystemExit(2)
+
+    # Step 2: Re-instantiate ProjectConfiguration from resolved path
+    # (validate_config already verified this succeeds; re-instantiate to get the typed object)
     try:
-        config = ProjectConfiguration.from_yaml(args.config)
+        if result.config_file_path is not None:
+            raw = _load_raw_yaml(result.config_file_path)
+            config = ProjectConfiguration(**raw)
+        else:
+            config = ProjectConfiguration()
     except Exception as exc:
         configure_logging(log_level=args.log_level or "error", structured=False)
         logger.error(
@@ -315,6 +470,23 @@ def main() -> None:
     resolved_output_mode = "structured" if args.structured_output else config.output_mode
     resolved_log_level = args.log_level or config.log_level
     configure_logging(log_level=resolved_log_level, structured=resolved_output_mode == "structured")
+
+    # Step 3: Log deprecation warnings at startup (non-strict; daemon always warns)
+    for warning in result.warnings:
+        logger.warning(
+            "config_deprecated_field",
+            field=warning.field_name,
+            removed_in=warning.removed_in,
+            replacement=warning.replacement_path,
+        )
+
+    # Step 4: SC-006 structured startup log entry (T024)
+    logger.info(
+        "config_loaded",
+        config_file=str(result.config_file_path) if result.config_file_path else "none",
+        env_var_fields_count=result.env_var_fields_count,
+        deprecated_fields_detected=bool(result.warnings),
+    )
 
     try:
         asyncio.run(_run(config))

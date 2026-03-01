@@ -223,7 +223,7 @@ class ResilienceConfig(BaseModel):
 class ProjectConfiguration(BaseSettings):
     """Application configuration loaded from YAML and COORDINARE_* env vars."""
 
-    model_config = SettingsConfigDict(env_prefix="COORDINARE_", extra="ignore")
+    model_config = SettingsConfigDict(env_prefix="COORDINARE_", extra="ignore", env_ignore_empty=True)
 
     project_name: str
     github_org: str

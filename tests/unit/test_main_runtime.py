@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 import coordinare.__main__ as app_main
+from coordinare.config_validation import ConfigValidationResult
 from coordinare.daemon import RuntimeExecutionError
 
 
@@ -20,16 +21,20 @@ def test_create_health_app_exposes_routes() -> None:
 
 
 def test_main_exits_2_on_startup_config_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Config validation failure → SystemExit(2) without starting the daemon."""
     monkeypatch.setattr(app_main, "configure_logging", lambda *args, **kwargs: None)
 
-    def _raise(_cls, _path: Path):
-        raise ValueError("bad config")
+    # Simulate validate_config returning a failed result
+    failed_result = ConfigValidationResult(passed=False)
+    monkeypatch.setattr(app_main, "validate_config", lambda *a, **kw: failed_result)
 
-    monkeypatch.setattr(app_main.ProjectConfiguration, "from_yaml", classmethod(_raise))
     monkeypatch.setattr(
         app_main.argparse.ArgumentParser,
         "parse_args",
-        lambda _self: SimpleNamespace(config=Path("x"), log_level=None, structured_output=False),
+        lambda _self: SimpleNamespace(
+            config=Path("x"), log_level=None, structured_output=False,
+            command=None, config_action=None, strict=False,
+        ),
     )
 
     with pytest.raises(SystemExit) as exc_info:
@@ -39,13 +44,24 @@ def test_main_exits_2_on_startup_config_failure(monkeypatch: pytest.MonkeyPatch)
 
 
 def test_main_exits_1_on_runtime_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """RuntimeExecutionError during daemon run → SystemExit(1)."""
     config = SimpleNamespace(output_mode="human", log_level="info")
-    monkeypatch.setattr(app_main.ProjectConfiguration, "from_yaml", classmethod(lambda _cls, _path: config))
+
+    # Simulate validate_config returning a passing result (env-vars-only, no file)
+    passing_result = ConfigValidationResult(passed=True, config_file_path=None, warnings=[])
+    monkeypatch.setattr(app_main, "validate_config", lambda *a, **kw: passing_result)
+
+    # Mock ProjectConfiguration() constructor (env-vars-only path)
+    monkeypatch.setattr(app_main, "ProjectConfiguration", lambda **kw: config)
+
     monkeypatch.setattr(app_main, "configure_logging", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         app_main.argparse.ArgumentParser,
         "parse_args",
-        lambda _self: SimpleNamespace(config=Path("x"), log_level=None, structured_output=False),
+        lambda _self: SimpleNamespace(
+            config=None, log_level=None, structured_output=False,
+            command=None, config_action=None, strict=False,
+        ),
     )
 
     def _raise_runtime(coro):

@@ -1,13 +1,42 @@
+# =============================================================================
+# Coordinare Configuration Example
+# =============================================================================
+#
+# Config Discovery (4-path search order, first match wins):
+#   1. --config <path>              CLI flag (highest priority)
+#   2. COORDINARE_CONFIG_PATH        Environment variable pointing to a file
+#   3. ./config.yaml                Current working directory
+#   4. ~/.coordinare/config.yaml     User home directory
+#
+# Environment Variable Overrides:
+#   Any scalar field can be omitted from this file and supplied as an
+#   environment variable instead: COORDINARE_<FIELD_NAME> (uppercase).
+#   Examples:
+#     COORDINARE_GITHUB_TOKEN=ghp_...
+#     COORDINARE_POLL_INTERVAL_SECONDS=60
+#     COORDINARE_LOG_LEVEL=debug
+#
+#   Note: List/nested fields (e.g. notifications.channels) must be defined
+#   in the config file; they cannot be supplied via environment variables.
+#
+#   Coordinare starts successfully with NO config file if all required fields
+#   are supplied via COORDINARE_* environment variables (useful for CI/CD).
+#
+# Required fields: project_name, github_org, github_project_number,
+#                  github_token, human_reviewers
+# =============================================================================
+
 project_name: "Coordinare"
 github_org: "your-org"
 github_project_number: 1
+
+# github_token: use COORDINARE_GITHUB_TOKEN env var to avoid storing secrets
 github_token: "${COORDINARE_GITHUB_TOKEN}"
 
-agent_host: "agent.example.com"
-agent_port: 22
-agent_user: "coordinare"
-agent_key_path: "~/.ssh/id_ed25519"
-agent_command: "agent run --card-context {card_context}"
+# Agent transport: "subprocess" (default), "ssh", or "kubernetes"
+agent_transport: "subprocess"
+agent_executable: "/usr/local/bin/agent"
+# transport_timeout_seconds: 30  # default
 
 human_reviewers:
   - "reviewer-login"
@@ -15,11 +44,8 @@ human_reviewers:
 poll_interval_seconds: 30
 heartbeat_interval_seconds: 30
 health_check_port: 8080
-output_mode: "human"
+output_mode: "human"   # "human" or "structured" (JSON)
 log_level: "info"
-# Compose mapping:
-# - COORDINARE_LOG_LEVEL overrides log_level
-# - COORDINARE_OUTPUT_MODE overrides output_mode
 
 notifications:
   history_max_age_hours: 24

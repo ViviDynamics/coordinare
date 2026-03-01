@@ -203,3 +203,41 @@ def test_advocate_doc_branch_configurable() -> None:
 
     config = AdvocateConfig(doc_branch="stable")
     assert config.doc_branch == "stable"
+
+
+# --- T025: SC-006 structured startup log ---
+
+
+def test_daemon_startup_emits_config_loaded_log(tmp_path) -> None:
+    """SC-006: config_loaded structured log emitted at daemon startup with required fields (T025)."""
+    from unittest.mock import patch
+
+    import structlog.testing
+
+    from coordinare.__main__ import main
+
+    config_file = _write_config(tmp_path)
+
+    async def _noop_run(config):
+        pass
+
+    with (
+        patch("sys.argv", ["coordinare", "--config", str(config_file)]),
+        patch("coordinare.__main__._run", new=_noop_run),
+        patch("coordinare.__main__.configure_logging"),
+        structlog.testing.capture_logs() as cap_logs,
+    ):
+        main()
+
+    config_loaded = [e for e in cap_logs if e.get("event") == "config_loaded"]
+    assert config_loaded, (
+        f"config_loaded event not found; captured events: {[e.get('event') for e in cap_logs]}"
+    )
+    event = config_loaded[0]
+    assert isinstance(event["config_file"], str) and event["config_file"], (
+        "config_file must be a non-empty string"
+    )
+    assert isinstance(event["env_var_fields_count"], int), "env_var_fields_count must be an int"
+    assert isinstance(event["deprecated_fields_detected"], bool), (
+        "deprecated_fields_detected must be a bool"
+    )
