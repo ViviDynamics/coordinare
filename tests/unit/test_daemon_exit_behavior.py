@@ -193,7 +193,7 @@ async def test_daemon_increments_circuit_open_metric() -> None:
         sleep_func=_no_sleep,
     )
 
-    with patch("coordinare.metrics.METRICS", mock_metrics):
+    with patch("coordinare.daemon.METRICS", mock_metrics):
         await daemon.start()
 
     mock_counter.labels.assert_any_call(

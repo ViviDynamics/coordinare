@@ -250,6 +250,8 @@ class ProjectConfiguration(BaseSettings):
     heartbeat_interval_seconds: int = Field(default=30, ge=5, le=300)
     max_cycles: int | None = Field(default=None, ge=1)
     state_file_path: Path = Field(default=Path("./coordinare.state.json"))
+    health_check_timeout_seconds: int = Field(default=2, ge=1, le=30)
+    optional_subsystems: list[str] = Field(default_factory=list)
     resilience: ResilienceConfig = Field(default_factory=ResilienceConfig)
     notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
     advocate: AdvocateConfig = Field(default_factory=AdvocateConfig)

@@ -49,14 +49,13 @@ optional_subsystems:               # these won't block readiness
   - agent_ssh
 ```
 
-### Import the Grafana dashboard
+### Import the Grafana dashboard (SC-005: ≤ 3 steps, < 5 minutes)
 
-1. Open Grafana → Dashboards → Import
-2. Upload `docs/dashboards/coordinare.json`
-3. Select your Prometheus data source
-4. Click Import
+1. Open Grafana → Dashboards → Import and upload `docs/dashboards/coordinare.json`
+2. Select your Prometheus data source from the dropdown
+3. Click **Import**
 
-All panels display immediately. No further configuration required.
+All panels display immediately with zero or live data. No further configuration required.
 
 ---
 

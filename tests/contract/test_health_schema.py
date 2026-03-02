@@ -225,12 +225,19 @@ def test_health_status_unhealthy_when_not_running() -> None:
 
 
 def test_ready_endpoint_returns_503_when_not_running() -> None:
+    """Required subsystem degraded → 503."""
+    from coordinare.observability import HealthRegistry, HealthStatus
+
+    registry = HealthRegistry()
+    registry.register("github", required=True)
+    registry.update("github", HealthStatus.degraded, details="test")
+
     daemon = CoordinareDaemon(_Graph(), max_cycles=1)
-    client = TestClient(create_health_app(daemon))
+    client = TestClient(create_health_app(daemon, health_registry=registry))
     response = client.get("/ready")
 
     assert response.status_code == 503
-    assert response.json()["ready"] is False
+    assert response.json()["status"] == "degraded"
 
 
 def test_metrics_endpoint_returns_text() -> None:
@@ -243,13 +250,19 @@ def test_metrics_endpoint_returns_text() -> None:
 
 
 def test_ready_endpoint_returns_200_when_running() -> None:
+    """All required subsystems healthy → 200 with status='ready'."""
+    from coordinare.observability import HealthRegistry, HealthStatus
+
+    registry = HealthRegistry()
+    registry.register("github", required=True)
+    registry.update("github", HealthStatus.healthy)
+
     daemon = CoordinareDaemon(_Graph(), max_cycles=1)
-    daemon._running = True
-    client = TestClient(create_health_app(daemon))
+    client = TestClient(create_health_app(daemon, health_registry=registry))
     response = client.get("/ready")
 
     assert response.status_code == 200
-    assert response.json()["ready"] is True
+    assert response.json()["status"] == "ready"
 
 
 # --- T026a: Additional status derivation tests ---

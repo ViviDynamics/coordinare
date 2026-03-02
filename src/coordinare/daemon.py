@@ -3,13 +3,16 @@ from __future__ import annotations
 import asyncio
 import signal
 from datetime import UTC, datetime
-from time import monotonic
+from time import monotonic, perf_counter
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 import structlog
 
 from coordinare.graph.state import CoordinareState, initial_state
 from coordinare.lib.runtime_events import build_runtime_event
+from coordinare.metrics import METRICS
+from coordinare.observability import HEALTH, HealthStatus, bind_cycle_id, clear_cycle_id
 from coordinare.resilience import CircuitOpenError
 from coordinare.state_store import StateLoadError, WorkflowPhase, WorkflowSnapshot
 
@@ -17,6 +20,27 @@ if TYPE_CHECKING:
     from coordinare.state_store import StateStore
 
 logger = structlog.get_logger(__name__)
+
+# Maps (previous_phase, current_phase) tuples to canonical metric transition labels.
+# Transitions not listed here are not recorded (e.g. recovery→idle, relay_feedback→*).
+_PHASE_TRANSITION_METRIC: dict[tuple[str, str], str] = {
+    ("idle", "dispatching"): "idle_to_dispatch",
+    ("dispatching", "monitoring_agent"): "dispatch_to_monitor",
+    ("dispatching", "monitoring_pr"): "dispatch_to_monitor",
+    ("monitoring_agent", "merging"): "monitor_to_merge",
+    ("monitoring_pr", "merging"): "monitor_to_merge",
+    ("monitoring_agent", "blocked"): "monitor_to_blocked",
+    ("monitoring_pr", "blocked"): "monitor_to_blocked",
+    ("blocked", "idle"): "blocked_to_idle",
+}
+
+# Maps circuit-breaker service names to the HEALTH subsystem they represent.
+# Services not listed here are not registered as health probes and are skipped.
+_CIRCUIT_TO_HEALTH_SUBSYSTEM: dict[str, str] = {
+    "github": "github",
+    "agent": "agent_ssh",
+    "agent_ssh": "agent_ssh",
+}
 
 
 class RuntimeExecutionError(RuntimeError):
@@ -263,7 +287,21 @@ class CoordinareDaemon:
         while self._running and not self._stop_event.is_set():
             try:
                 self._cycle_active = True
+                # US2: bind a unique cycle_id for log correlation
+                cycle_id = str(uuid4())
+                bind_cycle_id(cycle_id)
+                _cycle_t0 = perf_counter()
+
                 self._state = await self._graph.ainvoke(self._state)
+
+                # US1: record cycle metrics
+                _cycle_elapsed = perf_counter() - _cycle_t0
+                METRICS.cycles_completed_total.inc()
+                METRICS.cycle_duration_seconds.observe(_cycle_elapsed)
+                # US3: mark external service subsystems healthy after a successful poll cycle
+                HEALTH.update("github", HealthStatus.healthy)
+                HEALTH.update("agent_ssh", HealthStatus.healthy)
+
                 self._cycle_active = False
                 cycle_count += 1
                 self._state["error_count"] = 0
@@ -285,6 +323,15 @@ class CoordinareDaemon:
                             current_phase=current_phase,
                         )
                     )
+                    # US1: record phase transition metric before updating previous_phase;
+                    # only canonical transitions defined in _PHASE_TRANSITION_METRIC are recorded.
+                    _transition_label = _PHASE_TRANSITION_METRIC.get(
+                        (str(previous_phase), str(current_phase))
+                    )
+                    if _transition_label is not None:
+                        METRICS.card_state_transitions_total.labels(
+                            transition_type=_transition_label,
+                        ).inc()
                     previous_phase = current_phase
                     # T021: Persist snapshot on every phase transition
                     if self._state_store is not None:
@@ -336,14 +383,14 @@ class CoordinareDaemon:
 
                 if self._max_cycles is not None and cycle_count >= self._max_cycles:
                     self.stop()
+                    clear_cycle_id()
                     break
                 await self._sleep(self._poll_interval_seconds)
             except asyncio.CancelledError:
+                clear_cycle_id()
                 raise
             except CircuitOpenError as exc:
                 self._cycle_active = False
-                from coordinare.metrics import METRICS
-
                 METRICS.service_calls_total.labels(
                     service=exc.service_name, action="call_blocked", outcome="circuit_open",
                 ).inc()
@@ -351,7 +398,17 @@ class CoordinareDaemon:
                     "circuit_open.call_skipped",
                     service=exc.service_name,
                 )
+                # Mark the isolated service degraded so /ready reflects the circuit state.
+                # Use the mapping to translate circuit service names to health subsystem names.
+                _health_subsystem = _CIRCUIT_TO_HEALTH_SUBSYSTEM.get(exc.service_name)
+                if _health_subsystem is not None:
+                    HEALTH.update(
+                        _health_subsystem,
+                        HealthStatus.degraded,
+                        details=f"circuit open: {exc.service_name}",
+                    )
                 # Do NOT set self._running = False — continue the poll loop
+                clear_cycle_id()
                 await self._sleep(self._poll_interval_seconds)
             except Exception as exc:
                 self._cycle_active = False
@@ -377,6 +434,10 @@ class CoordinareDaemon:
                 )
                 failure = RuntimeExecutionError(phase="runtime", step="cycle_execution", cause=exc)
                 self._running = False
+                clear_cycle_id()
+            else:
+                # Happy-path cycle end — clear cycle_id before inter-cycle sleep
+                clear_cycle_id()
 
         self._emit(
             **build_runtime_event(

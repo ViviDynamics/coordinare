@@ -189,7 +189,7 @@ async def test_metrics_incremented_on_dispatch() -> None:
     await svc.dispatch(_make_event())
 
     dispatched_value = metrics.notifications_dispatched_total.labels(
-        event_type="card_transition", channel="slack-ops"
+        event_type="card_transition", channel_name="slack-ops"
     )._value.get()
     assert dispatched_value == 1.0
 

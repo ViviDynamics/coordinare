@@ -1,0 +1,244 @@
+{
+  "__inputs": [
+    {
+      "name": "DS_PROMETHEUS",
+      "label": "Prometheus",
+      "description": "Prometheus data source for coordinare metrics",
+      "type": "datasource",
+      "pluginId": "prometheus",
+      "pluginName": "Prometheus"
+    }
+  ],
+  "__requires": [
+    {
+      "type": "grafana",
+      "id": "grafana",
+      "name": "Grafana",
+      "version": "10.0.0"
+    },
+    {
+      "type": "datasource",
+      "id": "prometheus",
+      "name": "Prometheus",
+      "version": "1.0.0"
+    }
+  ],
+  "title": "Coordinare Daemon",
+  "uid": "coordinare-daemon-v1",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Cycles Completed",
+      "type": "stat",
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "expr": "increase(coordinare_cycles_completed_total[1h])",
+          "legendFormat": "cycles / hour",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(coordinare_errors_total[5m])) / (sum(rate(coordinare_cycles_completed_total[5m])) + 0.001)",
+          "legendFormat": "error rate",
+          "refId": "B"
+        }
+      ],
+      "alert": {
+        "name": "CoordinareHighCycleFailureRate",
+        "message": "Coordinare cycle failure rate exceeds 10% over 5 minutes",
+        "conditions": [
+          {
+            "type": "query",
+            "query": { "params": ["B", "5m", "now"] },
+            "reducer": { "type": "avg", "params": [] },
+            "evaluator": { "type": "gt", "params": [0.1] }
+          }
+        ],
+        "annotations": {
+          "summary": "High cycle failure rate detected",
+          "runbookURL": "docs/runbooks/CoordinareHighCycleFailureRate.md"
+        }
+      }
+    },
+    {
+      "id": 2,
+      "title": "Cards Processed by Status",
+      "type": "timeseries",
+      "gridPos": { "x": 6, "y": 0, "w": 10, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(coordinare_cards_processed_total[5m])",
+          "legendFormat": "{{ card_status }}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Card State Transitions",
+      "type": "timeseries",
+      "gridPos": { "x": 16, "y": 0, "w": 8, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(coordinare_card_state_transitions_total[5m])",
+          "legendFormat": "{{ transition_type }}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Cycle Duration (p50 / p95 / p99)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.50, rate(coordinare_cycle_duration_seconds_bucket[5m]))",
+          "legendFormat": "p50"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, rate(coordinare_cycle_duration_seconds_bucket[5m]))",
+          "legendFormat": "p95"
+        },
+        {
+          "refId": "C",
+          "expr": "histogram_quantile(0.99, rate(coordinare_cycle_duration_seconds_bucket[5m]))",
+          "legendFormat": "p99"
+        }
+      ],
+      "alert": {
+        "name": "CoordinareLongCycleDuration",
+        "message": "Coordinare p95 cycle duration exceeds 30s over 10 minutes",
+        "conditions": [
+          {
+            "type": "query",
+            "query": { "params": ["B", "10m", "now"] },
+            "reducer": { "type": "avg", "params": [] },
+            "evaluator": { "type": "gt", "params": [30] }
+          }
+        ],
+        "annotations": {
+          "summary": "Long cycle duration detected",
+          "runbookURL": "docs/runbooks/CoordinareLongCycleDuration.md"
+        }
+      }
+    },
+    {
+      "id": 5,
+      "title": "Notifications Dispatched / Failed",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(coordinare_notifications_dispatched_total[5m])",
+          "legendFormat": "dispatched {{ channel_name }}"
+        },
+        {
+          "refId": "B",
+          "expr": "rate(coordinare_notifications_failed_total[5m])",
+          "legendFormat": "failed {{ channel_name }}"
+        }
+      ],
+      "alert": {
+        "name": "CoordinareNotificationFailures",
+        "message": "Coordinare notification failures detected",
+        "conditions": [
+          {
+            "type": "query",
+            "query": { "params": ["B", "5m", "now"] },
+            "reducer": { "type": "sum", "params": [] },
+            "evaluator": { "type": "gt", "params": [0] }
+          }
+        ],
+        "annotations": {
+          "summary": "Notification delivery failures",
+          "runbookURL": "docs/runbooks/CoordinareNotificationFailures.md"
+        }
+      }
+    },
+    {
+      "id": 6,
+      "title": "Circuit Breaker State",
+      "type": "stat",
+      "gridPos": { "x": 0, "y": 16, "w": 8, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "coordinare_circuit_breaker_state",
+          "legendFormat": "{{ service_name }}"
+        }
+      ],
+      "alert": {
+        "name": "CoordinareCircuitBreakerOpen",
+        "message": "Coordinare circuit breaker is open for a service",
+        "conditions": [
+          {
+            "type": "query",
+            "query": { "params": ["A", "5m", "now"] },
+            "reducer": { "type": "max", "params": [] },
+            "evaluator": { "type": "gt", "params": [0] }
+          }
+        ],
+        "annotations": {
+          "summary": "Circuit breaker open",
+          "runbookURL": "docs/runbooks/CoordinareCircuitBreakerOpen.md"
+        }
+      }
+    },
+    {
+      "id": 7,
+      "title": "Config Load Duration",
+      "type": "stat",
+      "gridPos": { "x": 8, "y": 16, "w": 8, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.99, coordinare_config_load_duration_seconds_bucket)",
+          "legendFormat": "p99 config load"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Build Info",
+      "type": "stat",
+      "gridPos": { "x": 16, "y": 16, "w": 8, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "coordinare_build_info",
+          "legendFormat": "v{{ version }} (py{{ python_version }})"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Daemon Up",
+      "type": "stat",
+      "gridPos": { "x": 0, "y": 20, "w": 4, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "coordinare_daemon_up",
+          "legendFormat": "daemon"
+        }
+      ]
+    }
+  ]
+}

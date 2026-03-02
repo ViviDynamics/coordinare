@@ -93,10 +93,17 @@ class CircuitBreaker:
         # Update Prometheus gauge — import here to avoid circular imports
         from coordinare.metrics import METRICS
 
-        for s in CircuitState:
-            METRICS.circuit_breaker_state.labels(
-                service=self.service_name, state=s.value
-            ).set(1.0 if s == new_state else 0.0)
+        # Map CircuitState → numeric value: CLOSED=0, HALF_OPEN=1, OPEN=2
+        _state_numeric = {
+            CircuitState.CLOSED: 0.0,
+            CircuitState.HALF_OPEN: 1.0,
+            CircuitState.OPEN: 2.0,
+        }
+        METRICS.circuit_breaker_state.labels(service_name=self.service_name).set(
+            _state_numeric.get(new_state, 0.0)
+        )
+        if new_state == CircuitState.OPEN:
+            METRICS.circuit_breaker_trips_total.labels(service_name=self.service_name).inc()
 
         if new_state == CircuitState.OPEN and self.on_open_callback is not None:
             with contextlib.suppress(Exception):

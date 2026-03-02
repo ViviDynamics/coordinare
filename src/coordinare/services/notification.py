@@ -208,13 +208,13 @@ class NotificationService:
         # Deduplication check
         if event.dedup_key and self._dedup_windows[channel_name].is_duplicate(event.dedup_key):
             self._record(event, channel_name, NotificationStatus.deduplicated, start)
-            self._metrics.notifications_deduplicated_total.labels(channel=channel_name).inc()
+            self._metrics.notifications_deduplicated_total.labels(channel_name=channel_name).inc()
             return
 
         # Rate limit check
         if not self._rate_limiters[channel_name].is_allowed():
             self._record(event, channel_name, NotificationStatus.rate_limited, start)
-            self._metrics.notifications_rate_limited_total.labels(channel=channel_name).inc()
+            self._metrics.notifications_rate_limited_total.labels(channel_name=channel_name).inc()
             return
 
         # Retry loop
@@ -231,7 +231,7 @@ class NotificationService:
                 if event.dedup_key:
                     self._dedup_windows[channel_name].record(event.dedup_key)
                 self._metrics.notifications_dispatched_total.labels(
-                    event_type=event.event_type.value, channel=channel_name,
+                    event_type=event.event_type.value, channel_name=channel_name,
                 ).inc()
                 return
             except Exception as exc:
@@ -244,7 +244,7 @@ class NotificationService:
             retries_attempted=cfg.retry_count,
             error_message=last_error,
         )
-        self._metrics.notifications_failed_total.labels(channel=channel_name).inc()
+        self._metrics.notifications_failed_total.labels(channel_name=channel_name).inc()
         logger.error(
             "notification_delivery_failed",
             channel=channel_name,

@@ -47,6 +47,7 @@ packages = ["src/coordinare"]
 target-version = "py312"
 line-length = 100
 src = ["src", "tests"]
+exclude = [".codex", ".claude", "specs"]
 
 [tool.ruff.lint]
 select = [

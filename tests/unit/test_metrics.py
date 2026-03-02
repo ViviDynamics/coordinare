@@ -5,16 +5,16 @@ from coordinare.metrics import CoordinareMetrics
 
 def test_notifications_dispatched_counter() -> None:
     metrics = CoordinareMetrics()
-    metrics.notifications_dispatched_total.labels(event_type="card_transition", channel="slack-ops").inc()
+    metrics.notifications_dispatched_total.labels(event_type="card_transition", channel_name="slack-ops").inc()
     assert metrics.notifications_dispatched_total.labels(
-        event_type="card_transition", channel="slack-ops"
+        event_type="card_transition", channel_name="slack-ops"
     )._value.get() == 1.0
 
 
 def test_notifications_failed_counter() -> None:
     metrics = CoordinareMetrics()
-    metrics.notifications_failed_total.labels(channel="slack-ops").inc()
-    assert metrics.notifications_failed_total.labels(channel="slack-ops")._value.get() == 1.0
+    metrics.notifications_failed_total.labels(channel_name="slack-ops").inc()
+    assert metrics.notifications_failed_total.labels(channel_name="slack-ops")._value.get() == 1.0
 
 
 def test_observe_error_increments_counter() -> None:

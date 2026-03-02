@@ -3,8 +3,11 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import platform
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
+from time import perf_counter
 from typing import TYPE_CHECKING
 
 import structlog
@@ -16,8 +19,9 @@ from coordinare.config_validation import _load_raw_yaml, validate_config
 from coordinare.daemon import CoordinareDaemon, RuntimeExecutionError
 from coordinare.graph.builder import CoordinareGraphBuilder
 from coordinare.health import create_health_app
-from coordinare.metrics import METRICS
+from coordinare.metrics import METRICS, _coordinare_version
 from coordinare.models.notification import EventType, NotificationEvent, NotificationSeverity
+from coordinare.observability import HEALTH
 from coordinare.resilience import CircuitBreaker, ResilientAgentService, RetryConfig
 from coordinare.services.advocate import AdvocateService
 from coordinare.services.agent_service import AgentService
@@ -413,11 +417,11 @@ async def _run(config: ProjectConfiguration) -> None:
     server_task = asyncio.create_task(server.serve())
 
     try:
-        METRICS.up.set(1)
+        METRICS.daemon_up.set(1)
         logger.info("startup_mode_selected", run_mode=run_mode)
         await daemon_task
     finally:
-        METRICS.up.set(0)
+        METRICS.daemon_up.set(0)
         server.should_exit = True
         await server_task
 
@@ -432,6 +436,7 @@ def main() -> None:
 
     # --- Daemon startup path ---
     # Step 1: Validate config (discover + parse + env var merge) in one pass
+    _config_t0 = perf_counter()
     result = validate_config(getattr(args, "config", None))
     if not result.passed:
         configure_logging(
@@ -481,12 +486,36 @@ def main() -> None:
         )
 
     # Step 4: SC-006 structured startup log entry (T024)
+    _config_elapsed = perf_counter() - _config_t0
+    METRICS.config_load_duration_seconds.observe(_config_elapsed)
     logger.info(
         "config_loaded",
         config_file=str(result.config_file_path) if result.config_file_path else "none",
         env_var_fields_count=result.env_var_fields_count,
         deprecated_fields_detected=bool(result.warnings),
     )
+
+    # Step 5: Record build info (static metadata; set once at startup)
+    _started_at = datetime.now(UTC).isoformat()
+    METRICS.build_info.info({
+        "version": _coordinare_version(),
+        "python_version": platform.python_version(),
+        "started_at": _started_at,
+    })
+
+    # Step 6: Initialize HEALTH registry with configured subsystems
+    from coordinare.observability import HealthStatus as _HealthStatus
+
+    HEALTH.configure(timeout_seconds=config.health_check_timeout_seconds)
+    # github, agent_ssh, config: required unless opted out — daemon actively updates these probes
+    for _subsystem in ("github", "agent_ssh", "config"):
+        _required = _subsystem not in config.optional_subsystems
+        HEALTH.register(_subsystem, required=_required)
+    # notifications: daemon does not call HEALTH.update for this subsystem;
+    # registering as required=False ensures it never blocks readiness.
+    HEALTH.register("notifications", required=False)
+    # config subsystem is healthy once we reach this point
+    HEALTH.update("config", _HealthStatus.healthy)
 
     try:
         asyncio.run(_run(config))
