@@ -29,6 +29,28 @@ def test_loads_yaml_config(tmp_path) -> None:
     assert config.poll_interval_seconds == 30
 
 
+def test_dashboard_port_default(tmp_path) -> None:
+    config = ProjectConfiguration.from_yaml(_write_config(tmp_path))
+    assert config.dashboard_port == 8090
+
+
+def test_dashboard_host_default(tmp_path) -> None:
+    config = ProjectConfiguration.from_yaml(_write_config(tmp_path))
+    assert config.dashboard_host == "127.0.0.1"
+
+
+def test_dashboard_port_env_override(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    monkeypatch.setenv("COORDINARE_DASHBOARD_PORT", "9000")
+    config = ProjectConfiguration.from_yaml(_write_config(tmp_path))
+    assert config.dashboard_port == 9000
+
+
+def test_dashboard_host_env_override(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    monkeypatch.setenv("COORDINARE_DASHBOARD_HOST", "0.0.0.0")
+    config = ProjectConfiguration.from_yaml(_write_config(tmp_path))
+    assert config.dashboard_host == "0.0.0.0"
+
+
 def test_env_var_overrides_yaml(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.setenv("COORDINARE_GITHUB_TOKEN", "token-from-env")
     config = ProjectConfiguration.from_yaml(_write_config(tmp_path, github_token="token-from-file"))

@@ -79,6 +79,30 @@ jobs:
       - name: Run coverage
         run: uv run --extra dev pytest --cov=coordinare --cov-report=term-missing --cov-fail-under=90
 
+  e2e:
+    name: E2E Browser Tests
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    runs-on:
+      - self-hosted
+      - linux
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install Playwright browsers
+        run: uv run --extra dev playwright install --with-deps chromium firefox
+
+      - name: Run E2E tests
+        run: uv run --extra dev pytest tests/e2e/ --override-ini="addopts=" --browser chromium --browser firefox -v
+
   build-success:
     name: Build Success
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
@@ -89,6 +113,7 @@ jobs:
       - lint
       - test
       - coverage
+      - e2e
     steps:
       - name: Mark build successful
-        run: echo "Lint, tests, and coverage passed. Build successful."
+        run: echo "Lint, tests, coverage, and E2E browser tests passed. Build successful."

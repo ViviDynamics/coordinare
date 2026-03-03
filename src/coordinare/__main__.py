@@ -17,6 +17,7 @@ from coordinare import configure_logging
 from coordinare.config import ProjectConfiguration, ServiceCircuitConfig, ServiceRetryConfig
 from coordinare.config_validation import _load_raw_yaml, validate_config
 from coordinare.daemon import CoordinareDaemon, RuntimeExecutionError
+from coordinare.dashboard import DashboardStore, check_port_available, create_dashboard_app
 from coordinare.graph.builder import CoordinareGraphBuilder
 from coordinare.health import create_health_app
 from coordinare.metrics import METRICS, _coordinare_version
@@ -396,6 +397,11 @@ async def _run(config: ProjectConfiguration) -> None:
         )
         raise SystemExit(1) from exc
 
+    # Dashboard: check port availability before starting servers (FR-001)
+    check_port_available(config.dashboard_host, config.dashboard_port)
+
+    dashboard_store = DashboardStore()
+
     daemon = CoordinareDaemon(
         graph,
         run_mode=run_mode,
@@ -404,6 +410,7 @@ async def _run(config: ProjectConfiguration) -> None:
         max_cycles=config.max_cycles,
         state_store=state_store,
         idle_threshold_seconds=config.notifications.prolonged_idle_threshold_seconds,
+        dashboard_store=dashboard_store,
     )
 
     daemon.state.update(await _bootstrap_services(config, circuit_breakers))
@@ -413,8 +420,24 @@ async def _run(config: ProjectConfiguration) -> None:
         uvicorn.Config(app, host="0.0.0.0", port=config.health_check_port, log_level="warning")
     )
 
+    dashboard_app = create_dashboard_app(dashboard_store, daemon, METRICS, HEALTH)
+    dashboard_server = uvicorn.Server(
+        uvicorn.Config(
+            dashboard_app,
+            host=config.dashboard_host,
+            port=config.dashboard_port,
+            log_level="warning",
+        )
+    )
+
     daemon_task = asyncio.create_task(daemon.start())
     server_task = asyncio.create_task(server.serve())
+    dashboard_task = asyncio.create_task(dashboard_server.serve())
+    logger.info(
+        "dashboard_started",
+        host=config.dashboard_host,
+        port=config.dashboard_port,
+    )
 
     try:
         METRICS.daemon_up.set(1)
@@ -423,7 +446,9 @@ async def _run(config: ProjectConfiguration) -> None:
     finally:
         METRICS.daemon_up.set(0)
         server.should_exit = True
+        dashboard_server.should_exit = True
         await server_task
+        await dashboard_task
 
 
 def main() -> None:

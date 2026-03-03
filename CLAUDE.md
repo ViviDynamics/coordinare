@@ -11,6 +11,8 @@ Auto-generated from all feature plans. Last updated: 2026-02-16
 - N/A (config is loaded from YAML file or env vars; no persistence) (008-config-management)
 - Python 3.12+ + `structlog` (contextvars), `prometheus-client` (metrics), `fastapi` (health server), `pydantic-settings` (config extensions) — all existing; no new dependencies (009-metrics-observability)
 - N/A (metrics held in prometheus-client registry; health state held in-memory `HealthRegistry`; no persistence) (009-metrics-observability)
+- Python 3.12+ + FastAPI + Starlette (already in `pyproject.toml`) — `StreamingResponse`, `HTMLResponse`, middleware; `asyncio`, `json`, `collections.deque`, `datetime`, `uuid` (stdlib); `structlog` (already present) (010-web-dashboard)
+- In-memory only (`collections.deque(maxlen=20)` for cycle history; resets on daemon restart) (010-web-dashboard)
 
 - Python 3.12+ + LangGraph (>=0.2), anthropic (>=0.40), gql[aiohttp], FastAPI, structlog, slack-sdk, aiosmtplib, prometheus-client, pydantic-settings (001-board-orchestrator)
 - Python 3.12+ + Pydantic v2 (existing), `asyncio.create_subprocess_exec` (stdlib), `structlog` (existing); `asyncssh` removed — replaced by pluggable transport architecture (004-agent-protocol)
@@ -31,9 +33,9 @@ cd src [ONLY COMMANDS FOR ACTIVE TECHNOLOGIES][ONLY COMMANDS FOR ACTIVE TECHNOLO
 Python 3.12+: Follow standard conventions
 
 ## Recent Changes
+- 010-web-dashboard: Added Python 3.12+ + FastAPI + Starlette (already in `pyproject.toml`) — `StreamingResponse`, `HTMLResponse`, middleware; `asyncio`, `json`, `collections.deque`, `datetime`, `uuid` (stdlib); `structlog` (already present)
 - 009-metrics-observability: Added Python 3.12+ + `structlog` (contextvars), `prometheus-client` (metrics), `fastapi` (health server), `pydantic-settings` (config extensions) — all existing; no new dependencies
 - 005-resilience: Added Python 3.12+ + `stamina>=24.2.0` (NEW — add to pyproject.toml), `tenacity` (already installed via langgraph), `prometheus-client>=0.21`, `structlog>=24.1`, `pydantic>=2.9`, `pydantic-settings>=2.6`
-- 004-agent-protocol: Replaced `AgentSSHService` with pluggable transport architecture (`SubprocessTransport` + `AgentService`); removed `asyncssh` dependency; added `src/coordinare/protocol.py`, `src/coordinare/transport/`, `src/coordinare/services/agent_service.py`; `check_status(card_id)` renamed to `check_status(session_id)`; config fields: `agent_transport`, `agent_executable`, `transport_timeout_seconds`
 
 
 <!-- MANUAL ADDITIONS START -->

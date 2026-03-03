@@ -17,6 +17,7 @@ from coordinare.resilience import CircuitOpenError
 from coordinare.state_store import StateLoadError, WorkflowPhase, WorkflowSnapshot
 
 if TYPE_CHECKING:
+    from coordinare.dashboard import DashboardStore
     from coordinare.state_store import StateStore
 
 logger = structlog.get_logger(__name__)
@@ -63,6 +64,7 @@ class CoordinareDaemon:
         sleep_func: Any = asyncio.sleep,
         state_store: StateStore | None = None,
         idle_threshold_seconds: int = 1800,
+        dashboard_store: DashboardStore | None = None,
     ) -> None:
         self._graph = graph
         self._run_mode = run_mode
@@ -77,6 +79,7 @@ class CoordinareDaemon:
         self._stop_during_cycle = False
         self._state_store = state_store
         self._idle_threshold_seconds = idle_threshold_seconds
+        self._dashboard_store = dashboard_store
 
     @property
     def running(self) -> bool:
@@ -305,6 +308,17 @@ class CoordinareDaemon:
                 self._cycle_active = False
                 cycle_count += 1
                 self._state["error_count"] = 0
+
+                # Dashboard: record cycle and broadcast updated snapshot to all open tabs
+                if self._dashboard_store is not None:
+                    _current_phase = str(self._state.get("phase", "idle"))
+                    self._dashboard_store.record_cycle(
+                        duration_seconds=_cycle_elapsed,
+                        phase=_current_phase,
+                        outcome="success",
+                    )
+                    _snapshot = self._dashboard_store.build_snapshot(self, METRICS, HEALTH)
+                    self._dashboard_store.broadcaster.broadcast(_snapshot)
                 self._emit(
                     **build_runtime_event(
                         category="activity",
@@ -433,6 +447,16 @@ class CoordinareDaemon:
                     )
                 )
                 failure = RuntimeExecutionError(phase="runtime", step="cycle_execution", cause=exc)
+                # Dashboard: record error cycle and broadcast
+                if self._dashboard_store is not None:
+                    _err_phase = str(self._state.get("phase", "recovery"))
+                    self._dashboard_store.record_cycle(
+                        duration_seconds=perf_counter() - _cycle_t0,
+                        phase=_err_phase,
+                        outcome="error",
+                    )
+                    _err_snapshot = self._dashboard_store.build_snapshot(self, METRICS, HEALTH)
+                    self._dashboard_store.broadcaster.broadcast(_err_snapshot)
                 self._running = False
                 clear_cycle_id()
             else:

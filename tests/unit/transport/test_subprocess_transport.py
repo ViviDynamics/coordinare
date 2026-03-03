@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -28,16 +30,37 @@ def _make_process(
     return proc
 
 
+@asynccontextmanager
+async def _patch_asyncio(
+    proc: MagicMock,
+    *,
+    raise_timeout: bool = False,
+) -> AsyncGenerator[MagicMock, None]:
+    """Patch the asyncio module inside SubprocessTransport.
+
+    Uses a real async wait_for stub that actually awaits (or closes) the
+    coroutine argument so Python's GC never sees un-awaited coroutines.
+    """
+
+    async def _fake_wait_for(coro, timeout=None):  # type: ignore[no-untyped-def]
+        if raise_timeout:
+            coro.close()  # prevent "coroutine was never awaited" warning
+            raise TimeoutError
+        return await coro
+
+    with patch("coordinare.transport.subprocess_transport.asyncio") as mock_asyncio:
+        mock_asyncio.create_subprocess_exec = AsyncMock(return_value=proc)
+        mock_asyncio.wait_for = _fake_wait_for
+        mock_asyncio.subprocess = asyncio.subprocess
+        yield mock_asyncio
+
+
 @pytest.mark.asyncio
 async def test_happy_path_returns_protocol_response() -> None:
     transport = SubprocessTransport("/usr/bin/agent", timeout=30)
     proc = _make_process()
 
-    with patch("coordinare.transport.subprocess_transport.asyncio") as mock_asyncio:
-        mock_asyncio.create_subprocess_exec = AsyncMock(return_value=proc)
-        mock_asyncio.wait_for = AsyncMock(return_value=(proc.communicate.return_value))
-        mock_asyncio.subprocess = asyncio.subprocess
-
+    async with _patch_asyncio(proc):
         response = await transport.send(_make_msg())
 
     assert response.status == "accepted"
@@ -49,11 +72,7 @@ async def test_timeout_kills_process_and_raises() -> None:
     transport = SubprocessTransport("/usr/bin/agent", timeout=5)
     proc = _make_process()
 
-    with patch("coordinare.transport.subprocess_transport.asyncio") as mock_asyncio:
-        mock_asyncio.create_subprocess_exec = AsyncMock(return_value=proc)
-        mock_asyncio.wait_for = AsyncMock(side_effect=TimeoutError())
-        mock_asyncio.subprocess = asyncio.subprocess
-
+    async with _patch_asyncio(proc, raise_timeout=True):
         with pytest.raises(TransportTimeoutError) as exc_info:
             await transport.send(_make_msg())
 
@@ -67,11 +86,7 @@ async def test_timeout_override_used() -> None:
     transport = SubprocessTransport("/usr/bin/agent", timeout=30)
     proc = _make_process()
 
-    with patch("coordinare.transport.subprocess_transport.asyncio") as mock_asyncio:
-        mock_asyncio.create_subprocess_exec = AsyncMock(return_value=proc)
-        mock_asyncio.wait_for = AsyncMock(side_effect=TimeoutError())
-        mock_asyncio.subprocess = asyncio.subprocess
-
+    async with _patch_asyncio(proc, raise_timeout=True):
         with pytest.raises(TransportTimeoutError) as exc_info:
             await transport.send(_make_msg(), timeout_override=10)
 
@@ -83,11 +98,7 @@ async def test_non_zero_exit_raises_transport_error() -> None:
     transport = SubprocessTransport("/usr/bin/agent", timeout=30)
     proc = _make_process(returncode=1)
 
-    with patch("coordinare.transport.subprocess_transport.asyncio") as mock_asyncio:
-        mock_asyncio.create_subprocess_exec = AsyncMock(return_value=proc)
-        mock_asyncio.wait_for = AsyncMock(return_value=(proc.communicate.return_value))
-        mock_asyncio.subprocess = asyncio.subprocess
-
+    async with _patch_asyncio(proc):
         with pytest.raises(TransportError, match="exited with code 1"):
             await transport.send(_make_msg())
 
@@ -97,11 +108,7 @@ async def test_empty_stdout_raises_transport_error() -> None:
     transport = SubprocessTransport("/usr/bin/agent", timeout=30)
     proc = _make_process(stdout=b"")
 
-    with patch("coordinare.transport.subprocess_transport.asyncio") as mock_asyncio:
-        mock_asyncio.create_subprocess_exec = AsyncMock(return_value=proc)
-        mock_asyncio.wait_for = AsyncMock(return_value=(proc.communicate.return_value))
-        mock_asyncio.subprocess = asyncio.subprocess
-
+    async with _patch_asyncio(proc):
         with pytest.raises(TransportError, match="no output"):
             await transport.send(_make_msg())
 
@@ -111,11 +118,7 @@ async def test_malformed_json_raises_transport_error() -> None:
     transport = SubprocessTransport("/usr/bin/agent", timeout=30)
     proc = _make_process(stdout=b"not valid json")
 
-    with patch("coordinare.transport.subprocess_transport.asyncio") as mock_asyncio:
-        mock_asyncio.create_subprocess_exec = AsyncMock(return_value=proc)
-        mock_asyncio.wait_for = AsyncMock(return_value=(proc.communicate.return_value))
-        mock_asyncio.subprocess = asyncio.subprocess
-
+    async with _patch_asyncio(proc):
         with pytest.raises(TransportError, match="Invalid agent response"):
             await transport.send(_make_msg())
 
@@ -126,11 +129,7 @@ async def test_invalid_status_in_response_raises_transport_error() -> None:
     bad_json = json.dumps({"status": "not_a_real_status"}).encode()
     proc = _make_process(stdout=bad_json)
 
-    with patch("coordinare.transport.subprocess_transport.asyncio") as mock_asyncio:
-        mock_asyncio.create_subprocess_exec = AsyncMock(return_value=proc)
-        mock_asyncio.wait_for = AsyncMock(return_value=(proc.communicate.return_value))
-        mock_asyncio.subprocess = asyncio.subprocess
-
+    async with _patch_asyncio(proc):
         with pytest.raises(TransportError, match="Invalid agent response"):
             await transport.send(_make_msg())
 
@@ -150,15 +149,11 @@ async def test_os_error_on_exec_raises_transport_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_stderr_logged_at_debug(caplog) -> None:
+async def test_stderr_logged_at_debug(caplog: pytest.LogCaptureFixture) -> None:
     transport = SubprocessTransport("/usr/bin/agent", timeout=30)
     proc = _make_process(stderr=b"some debug info")
 
-    with patch("coordinare.transport.subprocess_transport.asyncio") as mock_asyncio:
-        mock_asyncio.create_subprocess_exec = AsyncMock(return_value=proc)
-        mock_asyncio.wait_for = AsyncMock(return_value=(proc.communicate.return_value))
-        mock_asyncio.subprocess = asyncio.subprocess
-
+    async with _patch_asyncio(proc):
         response = await transport.send(_make_msg())
 
     assert response.status == "accepted"
