@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from coordinare.graph.nodes.monitor_agent import monitor_agent
@@ -47,6 +49,13 @@ class _AgentPermanentGitHubError:
         raise PermanentGitHubError("Token revoked")
 
 
+class _AgentUnexpectedError:
+    """Raises an unexpected RuntimeError from check_status (not a known transport error)."""
+
+    async def check_status(self, session_id: str) -> dict:
+        raise RuntimeError("unexpected internal error")
+
+
 class _GitHubMoveCardFails:
     """move_card always raises so we can verify the node handles it gracefully."""
 
@@ -56,6 +65,16 @@ class _GitHubMoveCardFails:
     async def move_card(self, item_id: str, status: str) -> None:
         self.move_calls.append((item_id, status))
         raise RuntimeError("GitHub API unavailable")
+
+
+class _WorkspaceManager:
+    """Stub WorkspaceManager that records teardown calls."""
+
+    def __init__(self) -> None:
+        self.teardown_calls: list[Path] = []
+
+    async def teardown(self, path: Path) -> None:
+        self.teardown_calls.append(path)
 
 
 # ---------------------------------------------------------------------------
@@ -226,3 +245,142 @@ async def test_monitor_agent_idle_when_no_card() -> None:
     result = await monitor_agent(state)
 
     assert result["phase"] == "idle"
+
+
+# ---------------------------------------------------------------------------
+# 6. Workspace teardown tests (T018)
+# ---------------------------------------------------------------------------
+
+_FAKE_WS = Path("/tmp/fake-ws")
+
+
+@pytest.mark.asyncio
+async def test_monitor_agent_teardown_called_on_pr_opened() -> None:
+    """workspace teardown is called and workspace_path cleared when PR opens."""
+    wm = _WorkspaceManager()
+    state = initial_state()
+    state["agent_service"] = _Agent({
+        "status": "pr_opened",
+        "pr_url": "https://github.com/org/repo/pull/1",
+        "pr_node_id": "NODE_1",
+    })
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["workspace_manager"] = wm
+    state["workspace_path"] = _FAKE_WS
+
+    result = await monitor_agent(state)
+
+    assert result["phase"] == "monitoring_pr"
+    assert wm.teardown_calls == [_FAKE_WS]
+    assert result["workspace_path"] is None
+    assert result["workspace_branch"] is None
+
+
+@pytest.mark.asyncio
+async def test_monitor_agent_teardown_called_on_error() -> None:
+    """workspace teardown is called when agent reports error."""
+    wm = _WorkspaceManager()
+    state = initial_state()
+    state["agent_service"] = _Agent({"status": "error", "questions": ["crash"]})
+    state["current_card"] = {"id": "ITEM_1"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["workspace_manager"] = wm
+    state["workspace_path"] = _FAKE_WS
+
+    result = await monitor_agent(state)
+
+    assert result["phase"] == "blocked"
+    assert wm.teardown_calls == [_FAKE_WS]
+    assert result["workspace_path"] is None
+
+
+@pytest.mark.asyncio
+async def test_monitor_agent_teardown_called_on_blocked() -> None:
+    """workspace teardown is called when agent reports blocked."""
+    wm = _WorkspaceManager()
+    state = initial_state()
+    state["agent_service"] = _Agent({"status": "blocked", "questions": ["q1"]})
+    state["current_card"] = {"id": "ITEM_1"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["workspace_manager"] = wm
+    state["workspace_path"] = _FAKE_WS
+
+    result = await monitor_agent(state)
+
+    assert result["phase"] == "blocked"
+    assert wm.teardown_calls == [_FAKE_WS]
+    assert result["workspace_path"] is None
+
+
+@pytest.mark.asyncio
+async def test_monitor_agent_teardown_called_on_session_expired() -> None:
+    """workspace teardown is called when session expires."""
+    wm = _WorkspaceManager()
+    state = initial_state()
+    state["agent_service"] = _Agent({"status": "session_expired"})
+    state["current_card"] = {"id": "ITEM_1"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["workspace_manager"] = wm
+    state["workspace_path"] = _FAKE_WS
+
+    result = await monitor_agent(state)
+
+    assert result["phase"] == "blocked"
+    assert wm.teardown_calls == [_FAKE_WS]
+    assert result["workspace_path"] is None
+
+
+@pytest.mark.asyncio
+async def test_monitor_agent_teardown_called_on_transport_error() -> None:
+    """workspace teardown is called even on TransportError (terminal state)."""
+    wm = _WorkspaceManager()
+    state = initial_state()
+    state["agent_service"] = _AgentTransportError()
+    state["current_card"] = {"id": "ITEM_1"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["workspace_manager"] = wm
+    state["workspace_path"] = _FAKE_WS
+
+    result = await monitor_agent(state)
+
+    assert result["phase"] == "blocked"
+    assert wm.teardown_calls == [_FAKE_WS]
+    assert result["workspace_path"] is None
+
+
+@pytest.mark.asyncio
+async def test_monitor_agent_no_teardown_when_still_working() -> None:
+    """No teardown when agent is still working (non-terminal state)."""
+    wm = _WorkspaceManager()
+    state = initial_state()
+    state["agent_service"] = _Agent({"status": "working"})
+    state["current_card"] = {"id": "ITEM_1"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["workspace_manager"] = wm
+    state["workspace_path"] = _FAKE_WS
+
+    result = await monitor_agent(state)
+
+    assert result["phase"] == "monitoring_agent"
+    assert wm.teardown_calls == []
+    # workspace_path remains set while agent is still working
+    assert result["workspace_path"] == _FAKE_WS
+
+
+@pytest.mark.asyncio
+async def test_monitor_agent_teardown_called_on_unexpected_exception() -> None:
+    """Workspace teardown fires via finally even when an unexpected exception propagates."""
+    wm = _WorkspaceManager()
+    state = initial_state()
+    state["agent_service"] = _AgentUnexpectedError()
+    state["current_card"] = {"id": "ITEM_1"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["workspace_manager"] = wm
+    state["workspace_path"] = _FAKE_WS
+
+    with pytest.raises(RuntimeError, match="unexpected internal error"):
+        await monitor_agent(state)
+
+    assert wm.teardown_calls == [_FAKE_WS]
+    assert state["workspace_path"] is None

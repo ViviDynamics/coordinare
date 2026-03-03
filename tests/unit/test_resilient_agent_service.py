@@ -12,6 +12,7 @@ re-enable stamina for the duration of the test.
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -25,6 +26,7 @@ from coordinare.resilience import (
     RetryConfig,
 )
 from coordinare.transport.base import TransportError, TransportTimeoutError
+from coordinare.workspace import WorkspaceInfo
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -282,3 +284,44 @@ async def test_dispatch_card_records_failure_on_circuit_breaker() -> None:
         with pytest.raises(TransportError):
             await svc.dispatch_card({"card": "data"})
         spy.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# workspace_info forwarding (T025)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dispatch_card_forwards_workspace_info_to_inner() -> None:
+    """ResilientAgentService forwards workspace_info kwarg to the inner service."""
+
+    inner = _InnerAgent()
+    cb = _make_cb()
+    retry_cfg = _make_retry()
+    svc = ResilientAgentService(inner, retry_cfg, cb)
+
+    ws_info = WorkspaceInfo(
+        path=Path("/tmp/ws/repo"),
+        branch="coordinare/CARD_1/feature",
+        repo_url="https://github.com/acme/repo.git",
+    )
+
+    await svc.dispatch_card({"card": "data"}, workspace_info=ws_info)
+
+    inner.dispatch_card.assert_awaited_once_with(
+        {"card": "data"}, workspace_info=ws_info
+    )
+
+
+@pytest.mark.asyncio
+async def test_dispatch_card_forwards_none_workspace_info() -> None:
+    """workspace_info=None (default) is forwarded correctly to the inner service."""
+
+    inner = _InnerAgent()
+    cb = _make_cb()
+    retry_cfg = _make_retry()
+    svc = ResilientAgentService(inner, retry_cfg, cb)
+
+    await svc.dispatch_card({"card": "data"})
+
+    inner.dispatch_card.assert_awaited_once_with({"card": "data"}, workspace_info=None)

@@ -258,6 +258,16 @@ class ProjectConfiguration(BaseSettings):
     notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
     advocate: AdvocateConfig = Field(default_factory=AdvocateConfig)
 
+    # 011 — Agent Workspace Management
+    # COORDINARE_WORKSPACE_ROOT: optional path to a persistent directory (e.g. a PVC
+    # mount) under which all workspace containers are created. When unset, falls back
+    # to the system temporary directory (tempfile.gettempdir()).
+    workspace_root: Path | None = Field(default=None)
+    # COORDINARE_PERFORMER_IMAGE: container image for Kubernetes Jobs (e.g.
+    # "ghcr.io/vividynamics/coordinare-performer:latest"). Only read when
+    # agent_transport == "kubernetes"; ignored for subprocess and SSH transports.
+    performer_image: str = Field(default="")
+
     @classmethod
     def settings_customise_sources(
         cls,

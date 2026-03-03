@@ -47,8 +47,8 @@ class _Claude:
 
 
 class _Agent:
-    async def dispatch_card(self, card_context):
-        _ = card_context
+    async def dispatch_card(self, card_context, workspace_info=None):
+        _ = (card_context, workspace_info)
         return {"status": "accepted", "session_id": "s1"}
 
     async def check_health(self):

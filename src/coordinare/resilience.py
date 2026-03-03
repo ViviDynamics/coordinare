@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable
 
     from coordinare.graph.state import AgentServiceProtocol
+    from coordinare.workspace import WorkspaceInfo
 
 logger = structlog.get_logger(__name__)
 
@@ -211,7 +212,11 @@ class ResilientAgentService:
         self._retry_config = retry_config
         self._circuit_breaker = circuit_breaker
 
-    async def dispatch_card(self, card_context: dict[str, Any]) -> dict[str, Any]:
+    async def dispatch_card(
+        self,
+        card_context: dict[str, Any],
+        workspace_info: WorkspaceInfo | None = None,
+    ) -> dict[str, Any]:
         from coordinare.metrics import METRICS
         from coordinare.transport.base import TransportTimeoutError
 
@@ -222,7 +227,7 @@ class ResilientAgentService:
 
         @retry
         async def _retried() -> dict[str, Any]:
-            return await self._inner.dispatch_card(card_context)
+            return await self._inner.dispatch_card(card_context, workspace_info=workspace_info)
 
         try:
             async with self._circuit_breaker.guard():

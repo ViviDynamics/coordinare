@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
 from coordinare.protocol import ProtocolMessage, ProtocolResponse
 from coordinare.transport.base import TransportError
+
+if TYPE_CHECKING:
+    from coordinare.workspace import WorkspaceInfo
 
 logger = structlog.get_logger(__name__)
 
@@ -14,16 +17,26 @@ class AgentService:
     def __init__(self, transport: Any) -> None:
         self._transport = transport
 
-    async def dispatch_card(self, card_context: dict[str, Any]) -> dict[str, Any]:
+    async def dispatch_card(
+        self,
+        card_context: dict[str, Any],
+        workspace_info: WorkspaceInfo | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "title": card_context.get("title", ""),
+            "description": card_context.get("description", ""),
+            "acceptance_criteria": card_context.get("acceptance_criteria", []),
+            "board_card_id": str(card_context.get("id", "")),
+            "column": card_context.get("status", ""),
+        }
+        if workspace_info is not None:
+            payload["repo_url"] = workspace_info.repo_url
+            payload["branch"] = workspace_info.branch
+            if workspace_info.path is not None:
+                payload["workspace_path"] = str(workspace_info.path)
         message = ProtocolMessage(
             action="dispatch",
-            payload={
-                "title": card_context.get("title", ""),
-                "description": card_context.get("description", ""),
-                "acceptance_criteria": card_context.get("acceptance_criteria", []),
-                "board_card_id": str(card_context.get("id", "")),
-                "column": card_context.get("status", ""),
-            },
+            payload=payload,
         )
         try:
             response: ProtocolResponse = await self._transport.send(message)

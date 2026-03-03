@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path  # noqa: TC003 — needed at runtime for LangGraph get_type_hints()
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypedDict
 
 if TYPE_CHECKING:
     from coordinare.models.notification import NotificationEvent
+    from coordinare.workspace import WorkspaceInfo
 
 
 class GitHubServiceProtocol(Protocol):
@@ -17,8 +19,17 @@ class GitHubServiceProtocol(Protocol):
     async def add_comment(self, subject_id: str, body: str) -> dict[str, Any]: ...
 
 
+class WorkspaceManagerProtocol(Protocol):
+    async def prepare(self, card: dict[str, Any]) -> WorkspaceInfo: ...
+    async def teardown(self, path: Path) -> None: ...
+
+
 class AgentServiceProtocol(Protocol):
-    async def dispatch_card(self, card_context: dict[str, Any]) -> dict[str, Any]: ...
+    async def dispatch_card(
+        self,
+        card_context: dict[str, Any],
+        workspace_info: WorkspaceInfo | None = None,
+    ) -> dict[str, Any]: ...
     async def check_health(self) -> dict[str, Any]: ...
     async def relay_feedback(self, review_payload: dict[str, Any]) -> dict[str, Any]: ...
     async def check_status(self, session_id: str) -> dict[str, Any]: ...
@@ -56,6 +67,10 @@ class CoordinareState(TypedDict, total=False):
     advocate_handled_label: str
     advocate_escalation_label: str
 
+    workspace_manager: WorkspaceManagerProtocol | None
+    workspace_path: Path | None
+    workspace_branch: str | None
+
     human_reviewers: list[str]
     blocked_reminder_hours: int
 
@@ -79,4 +94,7 @@ def initial_state() -> CoordinareState:
         "advocate_history": set(),
         "advocate_handled_label": "",
         "advocate_escalation_label": "",
+        "workspace_manager": None,
+        "workspace_path": None,
+        "workspace_branch": None,
     }

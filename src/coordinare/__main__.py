@@ -33,6 +33,7 @@ from coordinare.state_store import StateStore
 from coordinare.transport.kubernetes_transport import KubernetesTransport
 from coordinare.transport.ssh_transport import SshTransport
 from coordinare.transport.subprocess_transport import SubprocessTransport
+from coordinare.workspace import WorkspaceManager
 
 logger = structlog.get_logger(__name__)
 
@@ -309,6 +310,8 @@ async def _bootstrap_services(
         retry_kwargs=_retry_config_from(r.anthropic_retry).to_stamina_kwargs(),
     )
 
+    workspace_manager = WorkspaceManager(config)
+
     service_state: CoordinareState = {
         "github_service": github,
         "agent_service": resilient_agent,
@@ -316,6 +319,7 @@ async def _bootstrap_services(
         "notification_service": notification_service,
         "human_reviewers": config.human_reviewers,
         "blocked_reminder_hours": config.blocked_reminder_hours,
+        "workspace_manager": workspace_manager,
     }
 
     if config.advocate.enabled:
