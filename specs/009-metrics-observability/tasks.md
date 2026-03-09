@@ -117,7 +117,7 @@ description: "Task list for Metrics & Observability feature implementation"
 **Purpose**: Final cleanup and integration validation across all user stories.
 
 - [X] T028 [P] Add SC-007 performance benchmark to tests/unit/test_metrics_coverage.py: `test_metric_collection_overhead_under_10ms` — measure the wall-clock cost of calling `.inc()`, `.observe()`, and `.set()` for all new metrics in a single cycle's worth of operations using `time.perf_counter()`; assert total overhead ≤ 10ms (satisfies SC-007 and Constitution Principle IV)
-- [X] T029 [P] Update docs/quickstart.md to add a dashboard import walkthrough section: document the exact 3-step import procedure (upload coordinare.json → select data source → click Import) so SC-005 (import in < 5 minutes with ≤ 3 steps) is verifiably satisfied
+- [X] T029 [P] Add dashboard import walkthrough to `specs/009-metrics-observability/quickstart.md`: document the exact 3-step import procedure (upload coordinare.json → select data source → click Import) so SC-005 (import in < 5 minutes with ≤ 3 steps) is verifiably satisfied (note: originally targeted `docs/quickstart.md` but content lives in the spec quickstart; no top-level docs/ file exists)
 - [X] T030 [P] Update CLAUDE.md (project agent context) via `.specify/scripts/bash/update-agent-context.sh claude` to reflect 009 tech additions
 - [X] T031 Run full test suite (pytest tests/unit/) and confirm all existing tests pass alongside new tests; fix any regressions from daemon.py or health.py modifications
 - [X] T032 [P] Verify ruff linting passes on all new and modified files (observability.py, metrics.py, health.py, daemon.py, config.py, __main__.py)

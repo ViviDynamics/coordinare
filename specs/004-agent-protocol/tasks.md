@@ -69,11 +69,11 @@
 - [x] T020 [US1] Add timeout branch: on `asyncio.TimeoutError` call `proc.kill()` + `await proc.wait()` then raise `TransportTimeoutError(timeout=effective_timeout)` in `src/coordinare/transport/subprocess_transport.py`
 - [x] T021 [US1] Add error branches: non-zero `returncode` → `TransportError`; empty stdout → `TransportError`; `ValidationError` from `ProtocolResponse.model_validate_json` → `TransportError` in `src/coordinare/transport/subprocess_transport.py`
 - [x] T022 [US1] Add `stderr` at DEBUG level and `duration_ms` log on every `send()` call in `src/coordinare/transport/subprocess_transport.py`
-- [x] T023 [US1] Create `AgentService.__init__(self, transport: AgentTransport)` and `dispatch_card(...)` method in `src/coordinare/services/agent_service.py` — payload MUST include all FR-010 required fields: `title`, `description`, `acceptance_criteria`, `card_id`, `column_name`; catches `TransportError` → `{"status": "error"}`
+- [x] T023 [US1] Create `AgentService.__init__(self, transport: AgentTransport)` and `dispatch_card(...)` method in `src/coordinare/services/agent_service.py` — payload MUST include all FR-010 required fields: `title`, `description`, `acceptance_criteria`, `board_card_id`, `column`; catches `TransportError` → `{"status": "error"}`
 - [x] T024 [US1] Add `check_health()` to `AgentService` sending health `ProtocolMessage` with `timeout_override=10`, catching errors → `{"status": "unknown"}` in `src/coordinare/services/agent_service.py`
 - [x] T025 [US1] Wire `AgentService(transport)` construction after `_build_transport` in `src/coordinare/__main__.py`
 - [x] T026 [P] [US1] Write `SubprocessTransport` unit tests (happy path, timeout kill+wait, non-zero exit, empty stdout, malformed JSON) in `tests/unit/transport/test_subprocess_transport.py`
-- [x] T027 [P] [US1] Write `AgentService.dispatch_card()` and `check_health()` unit tests with mock transport in `tests/unit/services/test_agent_service.py` — assert that the `ProtocolMessage.payload` sent by `dispatch_card()` contains all five FR-010 fields: `title`, `description`, `acceptance_criteria`, `card_id`, `column_name`
+- [x] T027 [P] [US1] Write `AgentService.dispatch_card()` and `check_health()` unit tests with mock transport in `tests/unit/services/test_agent_service.py` — assert that the `ProtocolMessage.payload` sent by `dispatch_card()` contains all five FR-010 fields: `title`, `description`, `acceptance_criteria`, `board_card_id`, `column`
 
 **Checkpoint**: Full dispatch path works end-to-end; US1 independently testable
 
