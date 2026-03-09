@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "performer-response",
+  "title": "PerformerResponse",
+  "description": "Outbound wire protocol response from the performer. Extends coordinare.protocol.ProtocolResponse with an optional 'metrics' field. The coordinare ignores the metrics field (pydantic drops unknown fields on deserialization) until it adopts the field in a future update.",
+  "type": "object",
+  "required": ["status"],
+  "additionalProperties": false,
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "accepted",
+        "working",
+        "pr_opened",
+        "blocked",
+        "error",
+        "unknown",
+        "busy",
+        "acknowledged",
+        "session_expired",
+        "healthy",
+        "unhealthy"
+      ],
+      "description": "Current state of the session or health of the performer."
+    },
+    "session_id": {
+      "type": "string",
+      "default": "",
+      "description": "Echoed back from the request. Set to the generated UUID on 'accepted'."
+    },
+    "reason": {
+      "type": ["string", "null"],
+      "default": null,
+      "description": "Human-readable error description. Present when status is 'error' or 'unhealthy'."
+    },
+    "questions": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": [],
+      "description": "Questions the AI backend needs answered. Present when status is 'blocked'."
+    },
+    "pr_url": {
+      "type": ["string", "null"],
+      "default": null,
+      "description": "GitHub pull request HTML URL. Present when status is 'pr_opened'."
+    },
+    "pr_node_id": {
+      "type": ["string", "null"],
+      "default": null,
+      "description": "GitHub GraphQL global node ID for the pull request. Present when status is 'pr_opened'."
+    },
+    "progress": {
+      "type": ["string", "null"],
+      "default": null,
+      "description": "Optional human-readable progress note. Present when status is 'working'."
+    },
+    "metrics": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "description": "Best-effort runtime telemetry. All fields are individually omittable.",
+          "additionalProperties": false,
+          "properties": {
+            "pid": {
+              "type": "integer",
+              "description": "Performer process PID."
+            },
+            "child_pids": {
+              "type": "array",
+              "items": { "type": "integer" },
+              "description": "Active child process IDs (backend subprocess and any grandchildren)."
+            },
+            "memory_bytes": {
+              "type": ["integer", "null"],
+              "description": "Current RSS of the entire process tree in bytes."
+            },
+            "cpu_percent": {
+              "type": ["number", "null"],
+              "description": "Current CPU utilisation of the process tree as a percentage."
+            },
+            "tokens_processed": {
+              "type": ["integer", "null"],
+              "description": "Token count reported by the AI backend. Null if the backend does not expose this."
+            }
+          }
+        }
+      ],
+      "default": null,
+      "description": "Runtime telemetry for the active performance. Omitted from non-status responses."
+    }
+  },
+  "examples": [
+    {
+      "status": "accepted",
+      "session_id": "550e8400-e29b-41d4-a716-446655440000"
+    },
+    {
+      "status": "working",
+      "session_id": "550e8400-e29b-41d4-a716-446655440000",
+      "progress": "Analysing authentication module",
+      "metrics": {
+        "pid": 42,
+        "child_pids": [43, 44],
+        "memory_bytes": 154140672,
+        "cpu_percent": 38.5,
+        "tokens_processed": null
+      }
+    },
+    {
+      "status": "blocked",
+      "session_id": "550e8400-e29b-41d4-a716-446655440000",
+      "questions": ["Should 2FA use TOTP or SMS OTP?"]
+    },
+    {
+      "status": "pr_opened",
+      "session_id": "550e8400-e29b-41d4-a716-446655440000",
+      "pr_url": "https://github.com/org/repo/pull/42",
+      "pr_node_id": "PR_kwDOABcD12345"
+    },
+    {
+      "status": "error",
+      "session_id": "550e8400-e29b-41d4-a716-446655440000",
+      "reason": "backend timed out after 1800s"
+    },
+    {
+      "status": "session_expired",
+      "session_id": "nonexistent-id",
+      "reason": "No active performance with that session ID"
+    },
+    {
+      "status": "healthy"
+    },
+    {
+      "status": "unhealthy",
+      "reason": "AGENT_BACKEND=foobar is not a supported backend"
+    }
+  ]
+}

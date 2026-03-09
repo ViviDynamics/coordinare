@@ -103,6 +103,58 @@ jobs:
       - name: Run E2E tests
         run: uv run --extra dev pytest tests/e2e/ --override-ini="addopts=" --browser chromium --browser firefox -v
 
+  performer:
+    name: Performer Tests
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    runs-on:
+      - self-hosted
+      - linux
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install coordinare and performer packages
+        run: |
+          uv venv
+          uv pip install -e "."
+          uv pip install -e "agent/performer[dev]"
+
+      - name: Run performer tests
+        run: uv run pytest agent/performer/tests/ -q
+
+  docker:
+    name: Docker Images
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    runs-on:
+      - self-hosted
+      - linux
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build base image
+        run: docker build -t coordinare-performer:base -f agent/performer/Dockerfile agent/performer/
+
+      - name: Build full image
+        run: docker build -t coordinare-performer:full -f agent/performer/images/full/Dockerfile agent/performer/
+
+      - name: Verify image size gap (SC-007 — full must be ≥ 150 MB larger than base)
+        run: |
+          python3 - <<'EOF'
+          import subprocess, json
+          base = int(json.loads(subprocess.check_output(
+            ["docker", "inspect", "--format", "{{json .Size}}", "coordinare-performer:base"])))
+          full = int(json.loads(subprocess.check_output(
+            ["docker", "inspect", "--format", "{{json .Size}}", "coordinare-performer:full"])))
+          gap = full - base
+          print(f"base={base/1e6:.0f} MB  full={full/1e6:.0f} MB  gap={gap/1e6:.0f} MB")
+          assert gap >= 150_000_000, f"SC-007 FAIL: gap {gap/1e6:.0f} MB < 150 MB (Node.js LTS missing?)"
+          print("SC-007 PASS")
+          EOF
+
   build-success:
     name: Build Success
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
@@ -114,6 +166,8 @@ jobs:
       - test
       - coverage
       - e2e
+      - performer
+      - docker
     steps:
       - name: Mark build successful
-        run: echo "Lint, tests, coverage, and E2E browser tests passed. Build successful."
+        run: echo "Lint, tests, coverage, performer tests, E2E browser tests, and Docker image builds passed. Build successful."

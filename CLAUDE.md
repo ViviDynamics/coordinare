@@ -15,6 +15,8 @@ Auto-generated from all feature plans. Last updated: 2026-02-16
 - In-memory only (`collections.deque(maxlen=20)` for cycle history; resets on daemon restart) (010-web-dashboard)
 - Python 3.12+ + `asyncio` (stdlib), `unicodedata` (stdlib), `re` (stdlib), `tempfile` (stdlib), `shutil` (stdlib), `os` + `stat` (stdlib), `pathlib` (stdlib), `structlog` (existing), `pydantic` + `pydantic-settings` (existing) (011-agent-workspace)
 - Ephemeral temp directories under `workspace_root` (default: system temp dir) (011-agent-workspace)
+- Python 3.12+ + `pydantic>=2.9`, `httpx>=0.27`, `psutil>=5.9`, `structlog>=24.1` (new to performer package; all already in coordinare root) (012-performer)
+- None — all state is in-memory; temporary git workspace in OS temp dir (`tempfile.mkdtemp`) (012-performer)
 
 - Python 3.12+ + LangGraph (>=0.2), anthropic (>=0.40), gql[aiohttp], FastAPI, structlog, slack-sdk, aiosmtplib, prometheus-client, pydantic-settings (001-board-orchestrator)
 - Python 3.12+ + Pydantic v2 (existing), `asyncio.create_subprocess_exec` (stdlib), `structlog` (existing); `asyncssh` removed — replaced by pluggable transport architecture (004-agent-protocol)
@@ -35,6 +37,7 @@ cd src [ONLY COMMANDS FOR ACTIVE TECHNOLOGIES][ONLY COMMANDS FOR ACTIVE TECHNOLO
 Python 3.12+: Follow standard conventions
 
 ## Recent Changes
+- 012-performer: Added Python 3.12+ + `pydantic>=2.9`, `httpx>=0.27`, `psutil>=5.9`, `structlog>=24.1` (new to performer package; all already in coordinare root)
 - 011-agent-workspace: Added Python 3.12+ + `asyncio` (stdlib), `unicodedata` (stdlib), `re` (stdlib), `tempfile` (stdlib), `shutil` (stdlib), `os` + `stat` (stdlib), `pathlib` (stdlib), `structlog` (existing), `pydantic` + `pydantic-settings` (existing)
 - 010-web-dashboard: Added Python 3.12+ + FastAPI + Starlette (already in `pyproject.toml`) — `StreamingResponse`, `HTMLResponse`, middleware; `asyncio`, `json`, `collections.deque`, `datetime`, `uuid` (stdlib); `structlog` (already present)
 - 009-metrics-observability: Added Python 3.12+ + `structlog` (contextvars), `prometheus-client` (metrics), `fastapi` (health server), `pydantic-settings` (config extensions) — all existing; no new dependencies

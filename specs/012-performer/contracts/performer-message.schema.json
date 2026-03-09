@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "performer-message",
+  "title": "PerformerMessage",
+  "description": "Inbound wire protocol message sent to the performer. Must remain schema-compatible with coordinare.protocol.ProtocolMessage.",
+  "type": "object",
+  "required": ["action"],
+  "additionalProperties": false,
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": ["dispatch", "status", "relay_feedback", "health"],
+      "description": "The action the coordinare is requesting."
+    },
+    "session_id": {
+      "type": "string",
+      "default": "",
+      "description": "Session identifier. Required for 'status' and 'relay_feedback' actions. Empty string for 'dispatch' and 'health'."
+    },
+    "payload": {
+      "type": "object",
+      "description": "Action-specific data.",
+      "additionalProperties": true,
+      "default": {}
+    }
+  },
+  "examples": [
+    {
+      "action": "dispatch",
+      "session_id": "",
+      "payload": {
+        "title": "Fix authentication bug",
+        "description": "Users cannot log in when 2FA is enabled.",
+        "acceptance_criteria": ["Login works with 2FA enabled", "All existing tests pass"],
+        "repo_url": "https://github.com/org/repo",
+        "branch": "fix/auth-2fa",
+        "github_token": "ghp_xxxxxxxxxxxx"
+      }
+    },
+    {
+      "action": "status",
+      "session_id": "550e8400-e29b-41d4-a716-446655440000",
+      "payload": {}
+    },
+    {
+      "action": "relay_feedback",
+      "session_id": "550e8400-e29b-41d4-a716-446655440000",
+      "payload": {
+        "feedback": "The 2FA check should use TOTP, not SMS. Please update accordingly."
+      }
+    },
+    {
+      "action": "health",
+      "session_id": "",
+      "payload": {}
+    }
+  ]
+}

@@ -263,3 +263,33 @@ def test_daemon_startup_emits_config_loaded_log(tmp_path) -> None:
     assert isinstance(event["deprecated_fields_detected"], bool), (
         "deprecated_fields_detected must be a bool"
     )
+
+
+# --- T030: performer_image field (012-performer) ---
+
+
+def test_performer_image_default(tmp_path) -> None:
+    config = ProjectConfiguration.from_yaml(_write_config(tmp_path))
+    assert config.performer_image == "coordinare-performer:full"
+
+
+def test_performer_image_yaml_override(tmp_path) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "\n".join([
+            'project_name: "Demo"',
+            'github_org: "acme"',
+            "github_project_number: 12",
+            'github_token: "tok"',
+            'human_reviewers: ["alice"]',
+            'performer_image: "coordinare-performer:custom"',
+        ])
+    )
+    config = ProjectConfiguration.from_yaml(path)
+    assert config.performer_image == "coordinare-performer:custom"
+
+
+def test_performer_image_env_override(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    monkeypatch.setenv("COORDINARE_PERFORMER_IMAGE", "myregistry/performer:v2")
+    config = ProjectConfiguration.from_yaml(_write_config(tmp_path))
+    assert config.performer_image == "myregistry/performer:v2"

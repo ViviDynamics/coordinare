@@ -27,5 +27,5 @@ def event_level_for_category(category: RuntimeCategory) -> str:
         return "info"
     if category in {"heartbeat", "activity"}:
         return "debug"
-    return "info"
+    return "info"  # pragma: no cover
 

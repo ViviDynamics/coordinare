@@ -329,3 +329,46 @@ async def test_run_git_raises_on_timeout() -> None:
 
     with patch("asyncio.create_subprocess_exec", return_value=mock_proc), patch("asyncio.wait_for", side_effect=TimeoutError), pytest.raises(_GitCommandError, match="timed out"):
         await _run_git("status", timeout=0.001)
+
+
+@pytest.mark.asyncio
+async def test_run_git_succeeds_with_empty_stderr() -> None:
+    """_run_git returncode=0 with no stderr output succeeds silently."""
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+    mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+
+    with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+        await _run_git("status")  # should not raise
+
+
+@pytest.mark.asyncio
+async def test_run_git_succeeds_with_stderr_output() -> None:
+    """_run_git returncode=0 with non-empty stderr logs debug and does not raise."""
+    mock_proc = MagicMock()
+    mock_proc.returncode = 0
+    mock_proc.communicate = AsyncMock(return_value=(b"", b"warning: detached HEAD"))
+
+    with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+        await _run_git("status")  # should not raise
+
+
+@pytest.mark.asyncio
+async def test_run_git_raises_on_nonzero_returncode() -> None:
+    """_run_git raises _GitCommandError when the git process exits non-zero."""
+    mock_proc = MagicMock()
+    mock_proc.returncode = 128
+    mock_proc.communicate = AsyncMock(return_value=(b"", b"fatal: not a git repo"))
+
+    with patch("asyncio.create_subprocess_exec", return_value=mock_proc), pytest.raises(_GitCommandError, match="128"):
+        await _run_git("status")
+
+
+@pytest.mark.asyncio
+async def test_prepare_raises_when_mkdtemp_fails() -> None:
+    """OSError from tempfile.mkdtemp (container still None) raises WorkspaceSetupError."""
+    cfg = _make_config()
+    mgr = WorkspaceManager(cfg)
+
+    with patch("coordinare.workspace.tempfile.mkdtemp", side_effect=OSError("disk full")), pytest.raises(WorkspaceSetupError):
+        await mgr.prepare({"id": "CARD_X", "title": "Test"})

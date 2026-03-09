@@ -28,6 +28,7 @@ class TestSchemaContractValidation:
         expected = {
             "accepted", "working", "pr_opened", "blocked", "error",
             "unknown", "busy", "acknowledged", "session_expired",
+            "healthy", "unhealthy",
         }
         # status enum may be in the property directly or via $ref
         enum_values = set()

@@ -60,7 +60,7 @@ def make_branch_name(card_id: str, card_title: str) -> str:
     slug = slug.strip("-")
     if len(slug) > 50:
         slug = slug[:50].rstrip("-")
-    if slug.endswith(".lock"):
+    if slug.endswith(".lock"):  # pragma: no cover — dots become hyphens via regex; defensive guard
         slug = slug[: -len(".lock")].rstrip("-")
     if not slug:
         slug = "untitled"

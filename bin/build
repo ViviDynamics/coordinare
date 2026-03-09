@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+# bin/build — run the same checks as CI locally.
+#
+# Usage:
+#   bin/build           # lint + unit tests + coverage + performer tests
+#   bin/build --e2e     # also run Playwright browser tests
+#   bin/build --docker  # also build and verify Docker images
+#   bin/build --all     # everything (--e2e + --docker)
+#
+# Exit code is non-zero if any step fails.
+
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+# ---------------------------------------------------------------------------
+# Flags
+# ---------------------------------------------------------------------------
+RUN_E2E=0
+RUN_DOCKER=0
+
+for arg in "$@"; do
+  case "$arg" in
+    --e2e)    RUN_E2E=1 ;;
+    --docker) RUN_DOCKER=1 ;;
+    --all)    RUN_E2E=1; RUN_DOCKER=1 ;;
+    *)
+      echo "Unknown option: $arg"
+      echo "Usage: bin/build [--e2e] [--docker] [--all]"
+      exit 1
+      ;;
+  esac
+done
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+PASS="\033[0;32m✓\033[0m"
+FAIL="\033[0;31m✗\033[0m"
+STEP="\033[0;34m▶\033[0m"
+SKIP="\033[0;33m–\033[0m"
+
+step() { echo -e "\n$STEP $1"; }
+ok()   { echo -e "$PASS $1"; }
+skip() { echo -e "$SKIP $1 (skipped)"; }
+
+FAILED=()
+run() {
+  local label="$1"; shift
+  step "$label"
+  if "$@"; then
+    ok "$label"
+  else
+    echo -e "$FAIL $label"
+    FAILED+=("$label")
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Steps
+# ---------------------------------------------------------------------------
+
+run "Lint (ruff)" \
+  uv run --extra dev ruff check src tests
+
+run "Unit tests" \
+  uv run --extra dev pytest tests/unit/ tests/contract/ -q
+
+run "Coverage (≥ 90%)" \
+  uv run --extra dev pytest tests/unit/ tests/contract/ \
+    --cov=coordinare --cov-report=term-missing --cov-fail-under=90 -q
+
+step "Performer tests"
+uv venv -q
+uv pip install -e "." -q
+uv pip install -e "agent/performer[dev]" -q
+if uv run pytest agent/performer/tests/ -q; then
+  ok "Performer tests"
+else
+  echo -e "$FAIL Performer tests"
+  FAILED+=("Performer tests")
+fi
+
+if [[ $RUN_E2E -eq 1 ]]; then
+  run "Install Playwright browsers" \
+    uv run --extra dev playwright install --with-deps chromium firefox
+
+  run "E2E browser tests" \
+    uv run --extra dev pytest tests/e2e/ \
+      --override-ini="addopts=" --browser chromium --browser firefox -v
+else
+  skip "E2E browser tests (pass --e2e to enable)"
+fi
+
+if [[ $RUN_DOCKER -eq 1 ]]; then
+  run "Docker: build base image" \
+    docker build -t coordinare-performer:base \
+      -f agent/performer/Dockerfile agent/performer/
+
+  run "Docker: build full image" \
+    docker build -t coordinare-performer:full \
+      -f agent/performer/images/full/Dockerfile agent/performer/
+
+  step "Docker: verify image size gap (SC-007)"
+  python3 - <<'EOF'
+import subprocess, json
+base = int(json.loads(subprocess.check_output(
+  ["docker", "inspect", "--format", "{{json .Size}}", "coordinare-performer:base"])))
+full = int(json.loads(subprocess.check_output(
+  ["docker", "inspect", "--format", "{{json .Size}}", "coordinare-performer:full"])))
+gap = full - base
+print(f"  base={base/1e6:.0f} MB  full={full/1e6:.0f} MB  gap={gap/1e6:.0f} MB")
+assert gap >= 150_000_000, f"SC-007 FAIL: gap {gap/1e6:.0f} MB < 150 MB"
+print("  SC-007 PASS")
+EOF
+  if [[ $? -eq 0 ]]; then
+    ok "Docker: image size gap (SC-007)"
+  else
+    echo -e "$FAIL Docker: image size gap (SC-007)"
+    FAILED+=("Docker: image size gap (SC-007)")
+  fi
+else
+  skip "Docker image builds (pass --docker to enable)"
+fi
+
+# ---------------------------------------------------------------------------
+# Summary
+# ---------------------------------------------------------------------------
+echo ""
+if [[ ${#FAILED[@]} -eq 0 ]]; then
+  echo -e "\033[0;32m✓ All checks passed.\033[0m"
+  exit 0
+else
+  echo -e "\033[0;31m✗ Failed:\033[0m"
+  for f in "${FAILED[@]}"; do
+    echo "  - $f"
+  done
+  exit 1
+fi

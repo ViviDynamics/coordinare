@@ -239,6 +239,8 @@ class ProjectConfiguration(BaseSettings):
     agent_user: str = ""
     agent_key_path: Path = Path("~/.ssh/id_ed25519")
     agent_command: str | None = None
+    # Docker image used when agent_transport = "kubernetes" (or future Docker transport)
+    performer_image: str = "coordinare-performer:full"
 
     human_reviewers: list[str]
 
@@ -263,10 +265,6 @@ class ProjectConfiguration(BaseSettings):
     # mount) under which all workspace containers are created. When unset, falls back
     # to the system temporary directory (tempfile.gettempdir()).
     workspace_root: Path | None = Field(default=None)
-    # COORDINARE_PERFORMER_IMAGE: container image for Kubernetes Jobs (e.g.
-    # "ghcr.io/vividynamics/coordinare-performer:latest"). Only read when
-    # agent_transport == "kubernetes"; ignored for subprocess and SSH transports.
-    performer_image: str = Field(default="")
 
     @classmethod
     def settings_customise_sources(
