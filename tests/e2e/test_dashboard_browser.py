@@ -93,7 +93,7 @@ def test_idle_shows_no_active_card(page: Page, live_server_url: str) -> None:
     """Empty-state message must appear in the card section when no card is active."""
     page.goto(live_server_url)
     expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
-    expect(page.locator("#card-section")).to_contain_text("No active card")
+    expect(page.locator("#card-section")).to_contain_text("No cards in the TODO column")
 
 
 @pytest.mark.e2e

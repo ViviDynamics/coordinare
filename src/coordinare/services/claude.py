@@ -50,21 +50,49 @@ class ClaudeService:
         self._retry_kwargs = retry_kwargs if retry_kwargs is not None else dict(self._DEFAULT_RETRY_KWARGS)
 
     async def assess_card_sufficiency(self, card: dict[str, Any]) -> dict[str, Any]:
-        prompt = (
-            "Assess whether the card is sufficient for execution. "
-            "Return JSON with fields: sufficient (bool), questions (list[str]), rationale (str)."
-        )
+        clarifications: list[dict] = card.get("clarifications", []) if isinstance(card, dict) else []
+
+        if clarifications:
+            history_lines = []
+            for entry in clarifications:
+                qs = entry.get("questions") or []
+                ans = str(entry.get("answer", "")).strip()
+                if qs:
+                    history_lines.append("Questions asked:\n" + "\n".join(f"  - {q}" for q in qs))
+                if ans:
+                    history_lines.append(f"User answered:\n  {ans}")
+            history_text = "\n".join(history_lines)
+            prompt = (
+                "You are helping clarify a software feature before implementation.\n\n"
+                f"Card:\n{card}\n\n"
+                f"Clarification history:\n{history_text}\n\n"
+                "Based on the card and the conversation above, decide if there is now enough "
+                "information to implement this feature. If yes, set sufficient=true. "
+                "If information is still missing, generate 3-5 specific follow-up questions "
+                "targeting exactly what is still unclear — do not repeat questions already answered.\n\n"
+                'Return JSON: {"sufficient": bool, "questions": [str], "rationale": str}'
+            )
+        else:
+            prompt = (
+                "You are assessing whether a software feature card has enough information to implement.\n\n"
+                f"Card:\n{card}\n\n"
+                "Check for: clear requirements, defined scope, acceptance criteria, affected components, "
+                "edge cases, and any technical constraints.\n"
+                "If the card is missing critical information, generate 3-5 specific targeted questions "
+                "that will unblock implementation — be concrete, not generic.\n\n"
+                'Return JSON: {"sufficient": bool, "questions": [str], "rationale": str}'
+            )
 
         @stamina.retry(on=TransientAnthropicError, **self._retry_kwargs)
         async def _retried_create() -> Any:
             try:
                 return await self._client.messages.create(
                     model=self._model,
-                    max_tokens=300,
+                    max_tokens=500,
                     messages=[
                         {
                             "role": "user",
-                            "content": f"{prompt}\nCard:\n{card}",
+                            "content": prompt,
                         }
                     ],
                 )

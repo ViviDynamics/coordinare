@@ -18,6 +18,7 @@ class EventType(StrEnum):
     daemon_restart = "daemon_restart"
     circuit_breaker_trip = "circuit_breaker_trip"
     prolonged_idle = "prolonged_idle"
+    performer_error = "performer_error"
 
 
 class NotificationSeverity(StrEnum):

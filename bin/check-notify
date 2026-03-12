@@ -1,0 +1,168 @@
+#!/usr/bin/env -S uv run python3
+"""bin/check-notify — fire real test notifications through Slack and email.
+
+Loads config.yaml + .env, constructs the NotificationService exactly as the
+daemon does, and sends one test event per configured channel.
+
+Usage:
+    bin/check-notify [--config PATH] [--event EVENT_TYPE]
+
+Options:
+    --config PATH   Path to config.yaml  (default: ./config.yaml)
+    --event TYPE    Event type to send   (default: daemon_restart)
+                    Choices: daemon_restart, card_blocked, circuit_breaker_trip,
+                             prolonged_idle, pr_merged
+
+Examples:
+    bin/check-notify
+    bin/check-notify --event card_blocked
+    bin/check-notify --config config.local.yaml --event circuit_breaker_trip
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import os
+import sys
+from pathlib import Path
+
+# Allow running from repo root without installing
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+
+
+def _load_env(env_file: Path) -> None:
+    """Load KEY=VALUE pairs from .env into os.environ (no override)."""
+    if not env_file.exists():
+        return
+    for line in env_file.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+PASS = "\033[0;32m✓\033[0m"
+FAIL = "\033[0;31m✗\033[0m"
+INFO = "\033[0;34mℹ\033[0m"
+
+
+async def run(config_path: Path, event_type_str: str) -> int:
+    from coordinare.config import ProjectConfiguration
+    from coordinare.models.notification import ChannelType, EventType
+    from coordinare.services.notification import EmailChannelSender, SlackChannelSender
+
+    # Load config
+    try:
+        config = ProjectConfiguration.from_yaml(config_path)
+    except Exception as exc:
+        print(f"{FAIL} Failed to load config: {exc}")
+        return 1
+
+    if not config.notifications.channels:
+        print(f"{FAIL} No notification channels configured in config.yaml.")
+        print()
+        print("  Add a 'notifications:' block, e.g.:")
+        print()
+        print("    notifications:")
+        print("      channels:")
+        print("        - name: slack-ops")
+        print("          type: slack")
+        print("          webhook_url: \"${COORDINARE_SLACK_WEBHOOK_URL}\"")
+        print("        - name: email-team")
+        print("          type: email")
+        print("          smtp_host: smtp.example.com")
+        print("          smtp_recipient: you@example.com")
+        print("      routing:")
+        print("        - event_type: daemon_restart")
+        print("          channels: [slack-ops, email-team]")
+        return 1
+
+    # Validate event type
+    try:
+        EventType(event_type_str)
+    except ValueError:
+        valid = [e.value for e in EventType]
+        print(f"{FAIL} Unknown event type '{event_type_str}'. Choose from: {', '.join(valid)}")
+        return 1
+
+    message = f"[coordinare check-notify] Test notification — event: {event_type_str}"
+    subject = f"[Coordinare] Test notification: {event_type_str}"
+
+    channel_names = [c.name for c in config.notifications.channels]
+    print(f"\n{INFO} Sending test message to all configured channels")
+    print(f"{INFO} Channels: {', '.join(channel_names)}")
+    print(f"{INFO} Message:  {message}")
+    print()
+
+    errors: list[str] = []
+    for ch in config.notifications.channels:
+        print(f"  [{ch.type}] {ch.name}...", end=" ", flush=True)
+        try:
+            if ch.type == ChannelType.slack:
+                webhook = ch.webhook_url.get_secret_value() if ch.webhook_url else ""
+                if not webhook:
+                    raise ValueError("webhook_url is empty")
+                sender = SlackChannelSender(name=ch.name, webhook_url=webhook)
+                await sender.send(message)
+
+            elif ch.type == ChannelType.email:
+                if not ch.smtp_host or not ch.smtp_recipient:
+                    raise ValueError("smtp_host and smtp_recipient are required")
+                sender = EmailChannelSender(
+                    name=ch.name,
+                    smtp_host=ch.smtp_host,
+                    smtp_port=ch.smtp_port,
+                    smtp_username=ch.smtp_username,
+                    smtp_password=ch.smtp_password.get_secret_value() if ch.smtp_password else None,
+                    sender=ch.smtp_sender,
+                    recipient=ch.smtp_recipient,
+                )
+                await sender.send(message, subject=subject)
+
+            print(PASS)
+        except Exception as exc:
+            print(FAIL)
+            print(f"    {exc}")
+            errors.append(f"{ch.name}: {exc}")
+
+    print()
+    if errors:
+        print(f"{FAIL} {len(errors)} channel(s) failed:")
+        for e in errors:
+            print(f"  - {e}")
+        return 1
+
+    print(f"{PASS} All channels delivered successfully.")
+    return 0
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Send test notifications through configured channels.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
+    )
+    parser.add_argument(
+        "--config", type=Path, default=Path("config.yaml"),
+        help="Path to config.yaml (default: ./config.yaml)",
+    )
+    parser.add_argument(
+        "--event", default="daemon_restart",
+        dest="event_type",
+        help="Event type to send (default: daemon_restart)",
+    )
+    args = parser.parse_args()
+
+    # Load .env before importing coordinare (so COORDINARE_* vars are available)
+    _load_env(Path(".env"))
+    _load_env(Path(args.config).parent / ".env")
+
+    sys.exit(asyncio.run(run(args.config, args.event_type)))
+
+
+if __name__ == "__main__":
+    main()

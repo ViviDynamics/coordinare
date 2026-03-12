@@ -92,10 +92,10 @@ def _make_app(
 # ---------------------------------------------------------------------------
 
 
-def test_dashboard_html_under_15kb() -> None:
-    """T036: _DASHBOARD_HTML must not exceed the 15 KB size budget."""
+def test_dashboard_html_under_28kb() -> None:
+    """T036: _DASHBOARD_HTML must not exceed the 28 KB size budget (raised to accommodate Performers card)."""
     size = len(_DASHBOARD_HTML.encode())
-    assert size < 15 * 1024, f"_DASHBOARD_HTML is {size} bytes (limit: {15 * 1024})"
+    assert size < 28 * 1024, f"_DASHBOARD_HTML is {size} bytes (limit: {28 * 1024})"
 
 
 # ---------------------------------------------------------------------------

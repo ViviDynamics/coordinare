@@ -2,7 +2,7 @@ from __future__ import annotations
 
 
 def build_shell_command(config_path, *, structured: bool = False, log_level: str | None = None) -> list[str]:
-    command = ["scripts/run-coordinare.sh", "--config", str(config_path)]
+    command = ["bin/run-coordinare", "--config", str(config_path)]
     if log_level is not None:
         command.extend(["--log-level", log_level])
     if structured:

@@ -17,10 +17,14 @@ def get_backend(name: str) -> "BackendAdapter":
     Raises UnsupportedBackendError if *name* is not in SUPPORTED_BACKENDS.
     """
     # Import lazily to avoid circular imports at module load time.
+    from performer.backends.claude_code import ClaudeCodeBackend
+    from performer.backends.codex import CodexBackend
     from performer.backends.opencode import OpenCodeAdapter
 
     SUPPORTED_BACKENDS: dict[str, type[BackendAdapter]] = {
         "opencode": OpenCodeAdapter,
+        "claude_code": ClaudeCodeBackend,
+        "codex": CodexBackend,
     }
 
     cls = SUPPORTED_BACKENDS.get(name)

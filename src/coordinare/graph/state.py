@@ -39,6 +39,10 @@ class ClaudeServiceProtocol(Protocol):
     async def assess_card_sufficiency(self, card: dict[str, Any]) -> dict[str, Any]: ...
 
 
+class AssessmentBackendProtocol(Protocol):
+    async def assess(self, card: dict[str, Any]) -> dict[str, Any]: ...
+
+
 class NotificationServiceProtocol(Protocol):
     async def dispatch(self, event: NotificationEvent) -> None: ...
 
@@ -52,7 +56,7 @@ class AdvocateServiceProtocol(Protocol):
 class CoordinareState(TypedDict, total=False):
     current_card: dict[str, Any] | None
     board_snapshot: dict[str, list[str]]
-    phase: Literal["idle", "dispatching", "monitoring_agent", "monitoring_pr", "merging", "relay_feedback", "blocked", "recovery"]
+    phase: Literal["idle", "dispatching", "monitoring_agent", "monitoring_pr", "merging", "relay_feedback", "blocked", "recovery", "system_error"]
     pending_reviews: list[dict[str, Any]]
     last_poll_at: datetime | None
     error_count: int
@@ -61,6 +65,7 @@ class CoordinareState(TypedDict, total=False):
     github_service: GitHubServiceProtocol
     agent_service: AgentServiceProtocol
     claude_service: ClaudeServiceProtocol
+    assessment_backend: AssessmentBackendProtocol
     notification_service: NotificationServiceProtocol
     advocate_service: AdvocateServiceProtocol | None
     advocate_history: set[str]
@@ -75,7 +80,15 @@ class CoordinareState(TypedDict, total=False):
     blocked_reminder_hours: int
 
     open_questions: list[str]
+    card_clarifications: list[dict]  # [{"questions": [...], "answer": str}]
     agent_dispatch: dict[str, Any]
+    system_error_count: int
+    system_error_last_at: datetime | None
+    system_error_reason: str | None
+    system_error_notified: bool
+    agent_dispatch_at: datetime | None
+    performer_events: list[dict]
+    performer_metrics: dict | None
     commit_summary: str | None
     agent_health_status: str | None
     last_blocked_notified_at: datetime | None
@@ -91,6 +104,10 @@ def initial_state() -> CoordinareState:
         "error_count": 0,
         "github_field_cache": {},
         "open_questions": [],
+        "system_error_count": 0,
+        "system_error_notified": False,
+        "card_clarifications": [],
+        "performer_events": [],
         "advocate_history": set(),
         "advocate_handled_label": "",
         "advocate_escalation_label": "",

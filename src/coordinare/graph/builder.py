@@ -9,6 +9,7 @@ from coordinare.graph.nodes.assess_card import assess_card
 from coordinare.graph.nodes.check_board import check_board
 from coordinare.graph.nodes.dispatch_card import dispatch_card
 from coordinare.graph.nodes.handle_blocked import handle_blocked
+from coordinare.graph.nodes.handle_system_error import handle_system_error
 from coordinare.graph.nodes.merge_pr import merge_pr
 from coordinare.graph.nodes.monitor_agent import monitor_agent
 from coordinare.graph.nodes.monitor_pr import monitor_pr
@@ -16,8 +17,11 @@ from coordinare.graph.nodes.notify import notify
 from coordinare.graph.nodes.relay_feedback import relay_feedback
 from coordinare.graph.routing import (
     route_from_agent_status,
+    route_from_assess,
     route_from_board_check,
+    route_from_dispatch,
     route_from_review,
+    route_from_system_error,
 )
 from coordinare.graph.state import CoordinareState
 
@@ -36,6 +40,7 @@ _DEFAULT_NODES: dict[str, Any] = {
     "relay_feedback": relay_feedback,
     "merge_pr": merge_pr,
     "handle_blocked": handle_blocked,
+    "handle_system_error": handle_system_error,
     "notify": notify,
 }
 
@@ -66,6 +71,7 @@ class CoordinareGraphBuilder:
         graph.add_node("relay_feedback", cast("Any", self._node("relay_feedback")))
         graph.add_node("merge_pr", cast("Any", self._node("merge_pr")))
         graph.add_node("handle_blocked", cast("Any", self._node("handle_blocked")))
+        graph.add_node("handle_system_error", cast("Any", self._node("handle_system_error")))
         graph.add_node("notify", cast("Any", self._node("notify")))
 
         graph.add_edge(START, "advocate_scan")
@@ -79,12 +85,28 @@ class CoordinareGraphBuilder:
                 "monitor_pr": "monitor_pr",
                 "monitor_agent": "monitor_agent",
                 "blocked": "handle_blocked",
+                "handle_system_error": "handle_system_error",
                 "idle": END,
             },
         )
 
-        graph.add_edge("assess_card", "dispatch_card")
-        graph.add_edge("dispatch_card", "notify")
+        graph.add_conditional_edges(
+            "assess_card",
+            route_from_assess,
+            {
+                "dispatch": "dispatch_card",
+                "blocked": "handle_blocked",
+            },
+        )
+        graph.add_conditional_edges(
+            "dispatch_card",
+            route_from_dispatch,
+            {
+                "blocked": "handle_blocked",
+                "handle_system_error": "handle_system_error",
+                "notify": "notify",
+            },
+        )
         graph.add_edge("notify", END)
 
         graph.add_conditional_edges(
@@ -93,8 +115,15 @@ class CoordinareGraphBuilder:
             {
                 "review": "monitor_pr",
                 "blocked": "handle_blocked",
+                "handle_system_error": "handle_system_error",
                 "monitor": END,
             },
+        )
+
+        graph.add_conditional_edges(
+            "handle_system_error",
+            route_from_system_error,
+            {"dispatch": "dispatch_card", "idle": END},
         )
 
         graph.add_conditional_edges(

@@ -38,18 +38,27 @@ async def check_board(state: CoordinareState) -> CoordinareState:
         state["phase"] = "monitoring_pr"
         return state
     if in_progress:
+        if state.get("system_error_count", 0) > 0:
+            state["phase"] = "system_error"
+            return state
         state["phase"] = "monitoring_agent"
         return state
     if blocked:
+        if state.get("system_error_notified"):
+            state["phase"] = "idle"
+            return state
         item = blocked[0]
         titles = board.get("titles", {})
         descriptions = board.get("descriptions", {})
         issue_numbers = board.get("issue_numbers", {})
+        issue_urls = board.get("issue_urls", {})
+        content_node_ids = board.get("content_node_ids", {})
         description = str(descriptions.get(item, ""))
         state["current_card"] = {
             "id": item,
-            "issue_id": item,
+            "issue_id": str(content_node_ids.get(item, "")),
             "issue_number": int(issue_numbers.get(item, 0)),
+            "issue_url": str(issue_urls.get(item, "")),
             "title": str(titles.get(item, "")),
             "description": description,
             "acceptance_criteria": parse_acceptance_criteria(description),
@@ -58,8 +67,9 @@ async def check_board(state: CoordinareState) -> CoordinareState:
         }
 
         last_notified = state.get("last_blocked_notified_at")
+        issue_node_id = str(content_node_ids.get(item, ""))
         if last_notified is not None and isinstance(last_notified, datetime):
-            details = await github.get_issue_details(item)
+            details = await github.get_issue_details(issue_node_id or item)
             comments_node = details.get("comments")
             comments = (
                 comments_node.get("nodes", [])
@@ -77,10 +87,28 @@ async def check_board(state: CoordinareState) -> CoordinareState:
                         created_raw.replace("Z", "+00:00")
                     )
                     if created_at > last_notified:
+                        # Record the user's answer alongside the questions that
+                        # were asked, so assess_card can pass the full Q&A history
+                        # to Claude and avoid asking the same questions again.
+                        answer_body = str(comment.get("body", "")).strip()
+                        prior_questions = [
+                            str(q) for q in (state.get("open_questions") or [])
+                        ]
+                        clarification: dict = {
+                            "questions": prior_questions,
+                            "answer": answer_body,
+                        }
+                        existing = state.get("card_clarifications") or []
+                        state["card_clarifications"] = [*existing, clarification]
+                        state["open_questions"] = []
+                        state["agent_dispatch"] = {}
+
                         await github.move_card(item, "IN_PROGRESS")
                         state["current_card"]["previous_status"] = "BLOCKED"
                         state["current_card"]["status"] = "IN_PROGRESS"
-                        state["phase"] = "monitoring_agent"
+                        # Re-run assess_card with full Q&A history rather than
+                        # trying to check status on an already-terminated performer.
+                        state["phase"] = "dispatching"
                         state["last_blocked_notified_at"] = None
                         return state
                 except (ValueError, TypeError):
@@ -119,11 +147,21 @@ async def check_board(state: CoordinareState) -> CoordinareState:
             titles = board.get("titles", {})
             descriptions = board.get("descriptions", {})
             issue_numbers = board.get("issue_numbers", {})
+            issue_urls = board.get("issue_urls", {})
+            content_node_ids = board.get("content_node_ids", {})
             description = str(descriptions.get(item, ""))
+            # Only clear clarifications when picking up a genuinely fresh card.
+            # If this is the same card returning from a re-queue (after Q&A),
+            # preserve the accumulated Q&A history so assess_card can pass it
+            # to the performer and the assessment backend.
+            prev_card = state.get("current_card") or {}
+            if str(prev_card.get("id", "")) != item:
+                state["card_clarifications"] = []
             state["current_card"] = {
                 "id": item,
-                "issue_id": item,
+                "issue_id": str(content_node_ids.get(item, "")),
                 "issue_number": int(issue_numbers.get(item, 0)),
+                "issue_url": str(issue_urls.get(item, "")),
                 "title": str(titles.get(item, "")),
                 "description": description,
                 "acceptance_criteria": parse_acceptance_criteria(description),

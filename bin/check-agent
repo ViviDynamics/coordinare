@@ -1,0 +1,153 @@
+#!/usr/bin/env -S uv run python3
+"""bin/check-agent — test whether the configured agent transport is reachable.
+
+Usage:
+    bin/check-agent [--config PATH] [--env FILE]
+
+Sends a health-check message over the configured transport (subprocess, ssh,
+or kubernetes) and prints the result.  Exits 0 on success, 1 on failure.
+
+Examples:
+    bin/check-agent
+    bin/check-agent --config config.local.yaml
+    bin/check-agent --env .env.local
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import os
+import sys
+from pathlib import Path
+
+
+def _load_env(path: Path) -> None:
+    """Source a .env file into the current process environment."""
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        os.environ.setdefault(key.strip(), val.strip())
+
+
+async def _run(config_path: str) -> int:
+    # Late imports so the script can be invoked via plain Python without uv.
+    sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+
+    from coordinare.config import ProjectConfiguration
+    from coordinare.protocol import ProtocolMessage
+    from coordinare.transport.subprocess_transport import SubprocessTransport
+
+    try:
+        cfg = ProjectConfiguration.from_yaml(config_path)
+    except Exception as exc:
+        print(f"error: failed to load config: {exc}", file=sys.stderr)
+        return 1
+
+    transport_type = cfg.agent_transport
+    print(f"transport:  {transport_type}")
+
+    if transport_type == "subprocess":
+        executable = cfg.agent_executable or ""
+        timeout = cfg.transport_timeout_seconds
+        print(f"executable: {executable or '(not set)'}")
+        print(f"timeout:    {timeout}s")
+
+        if not executable:
+            print("\nfail: agent_executable is not configured in config.yaml")
+            return 1
+
+        # Quick existence check for subprocess transport
+        import shutil
+        resolved = shutil.which(executable)
+        if resolved:
+            print(f"found:      {resolved}")
+        else:
+            print(f"\nfail: '{executable}' not found on PATH")
+            return 1
+
+        transport = SubprocessTransport(executable, timeout)
+
+    elif transport_type == "ssh":
+        from coordinare.transport.ssh_transport import SshTransport
+        print(f"host:       {cfg.agent_host}:{cfg.agent_port}")
+        print(f"user:       {cfg.agent_user}")
+        transport = SshTransport()
+
+    elif transport_type == "kubernetes":
+        from coordinare.transport.kubernetes_transport import KubernetesTransport
+        print(f"image:      {cfg.performer_image}")
+        transport = KubernetesTransport()
+
+    else:
+        print(f"\nfail: unknown transport '{transport_type}'", file=sys.stderr)
+        return 1
+
+    print("\nSending health check...")
+    message = ProtocolMessage(action="health")
+    try:
+        response = await transport.send(message, timeout_override=10)
+    except Exception as exc:
+        print(f"\nfail: {exc}")
+        if transport_type == "subprocess":
+            print(
+                "\nhint: the agent_executable must be a performer that speaks the"
+                "\n      coordinare wire protocol (JSON on stdin → JSON on stdout)."
+                "\n      'opencode' or 'claude' alone will not respond to this probe."
+                "\n      Build and run the performer container:"
+                "\n        docker build -t coordinare-performer:base agent/performer/"
+                "\n      then set agent_executable in config.yaml to launch it."
+            )
+        return 1
+
+    status = response.status
+    print(f"\nstatus: {status}")
+    if response.reason:
+        print(f"reason: {response.reason}")
+
+    data = response.model_dump(exclude_none=True)
+    extras = {k: v for k, v in data.items() if k not in ("status", "reason", "session_id")}
+    if extras:
+        print(json.dumps(extras, indent=2))
+
+    if status == "healthy":
+        print("\nok: agent is reachable and healthy")
+        return 0
+    else:
+        print(f"\nwarn: agent responded but status is '{status}' (not 'healthy')")
+        return 0  # reachable, just not healthy — not a transport failure
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Test agent transport reachability")
+    parser.add_argument("--config", default="config.yaml", help="Path to config.yaml")
+    parser.add_argument("--env", metavar="FILE", help="Load environment variables from FILE")
+    args = parser.parse_args()
+
+    root = Path(__file__).parent.parent
+
+    # Resolve env file
+    env_file: Path | None = None
+    if args.env:
+        env_file = Path(args.env)
+    elif (root / ".env").exists():
+        env_file = root / ".env"
+
+    if env_file:
+        if not env_file.exists():
+            print(f"error: env file not found: {env_file}", file=sys.stderr)
+            sys.exit(1)
+        _load_env(env_file)
+        print(f"env:        {env_file}")
+
+    config_path = args.config if Path(args.config).is_absolute() else str(root / args.config)
+    print(f"config:     {config_path}")
+    print()
+
+    sys.exit(asyncio.run(_run(config_path)))
+
+
+if __name__ == "__main__":
+    main()

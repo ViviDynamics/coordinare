@@ -92,11 +92,14 @@ class WorkspaceInfo:
     ``path`` is ``None`` for the Kubernetes transport (performer self-clones).
     ``repo_url`` is the plain HTTPS URL without any embedded token — safe to
     include in dispatch payloads and logs.
+    ``github_token`` is the raw token value passed to the performer so it can
+    push branches and create PRs; never log this field.
     """
 
     path: Path | None
     branch: str
     repo_url: str
+    github_token: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -206,7 +209,7 @@ class WorkspaceManager:
         # For Kubernetes transport, the performer container handles its own workspace
         # setup via K8s Secrets — no local git ops, no token access needed here.
         if self._agent_transport == "kubernetes":
-            return WorkspaceInfo(path=None, branch=branch, repo_url=repo_url)
+            return WorkspaceInfo(path=None, branch=branch, repo_url=repo_url, github_token="")
 
         token = self._github_token.get_secret_value()
         clone_url = f"https://x-access-token:{token}@github.com/{org}/{project}.git"
@@ -264,7 +267,7 @@ class WorkspaceManager:
             branch=branch,
             repo_url=repo_url,
         )
-        return WorkspaceInfo(path=clone_dir, branch=branch, repo_url=repo_url)
+        return WorkspaceInfo(path=clone_dir, branch=branch, repo_url=repo_url, github_token=token)
 
     async def teardown(self, path: Path) -> None:
         """Remove the workspace directory.

@@ -237,3 +237,5 @@ config.local.yaml
 .codex/tmp/
 .codex/rules/default.rules
 .claude/worktrees
+tmp
+coordinare.state.json

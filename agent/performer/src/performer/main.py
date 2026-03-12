@@ -77,7 +77,11 @@ async def handle_dispatch(
         backend=backend,
     )
     log.info("dispatch accepted", session_id=session_id)
-    return PerformerResponse(status="accepted", session_id=session_id), perf
+    return PerformerResponse(
+        status="accepted",
+        session_id=session_id,
+        backend=settings.AGENT_BACKEND,
+    ), perf
 
 
 async def handle_status(
@@ -145,13 +149,15 @@ async def handle_status(
             reason=backend_status.error_reason,
         )
 
-    # working — attach metrics (pass already-fetched status to avoid second get_status() call)
+    # working — attach metrics and drain buffered events
     metrics = collect_metrics(perf.backend, backend_status)
+    events = [e.model_dump() for e in perf.backend.drain_events()]
     return PerformerResponse(
         status="working",
         session_id=perf.session_id,
         progress=backend_status.progress,
         metrics=metrics,
+        events=events,
     )
 
 
@@ -244,6 +250,10 @@ def collect_metrics(
 
 async def run_loop() -> None:
     """Main message loop — read JSON from stdin, write JSON to stdout."""
+    # stdout is reserved for the JSON wire protocol — all logs must go to stderr.
+    structlog.configure(
+        logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
+    )
     _init_metrics()
     settings = get_settings()
     perf: Performance | None = None

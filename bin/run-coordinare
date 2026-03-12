@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# bin/run-coordinare — start the coordinare daemon
+#
+# Usage:
+#   bin/run-coordinare [--env FILE] [coordinare options...]
+#
+# Options:
+#   --env FILE   Source FILE before starting (default: .env if it exists)
+#
+# Examples:
+#   bin/run-coordinare
+#   bin/run-coordinare --env .env.local
+#   bin/run-coordinare --env .env --config config.local.yaml
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# ---------------------------------------------------------------------------
+# Parse --env argument (must come before any coordinare args)
+# ---------------------------------------------------------------------------
+ENV_FILE=""
+if [[ "${1:-}" == "--env" ]]; then
+  ENV_FILE="${2:?--env requires a file path}"
+  shift 2
+elif [[ -f "${ROOT_DIR}/.env" ]]; then
+  ENV_FILE="${ROOT_DIR}/.env"
+fi
+
+if [[ -n "$ENV_FILE" ]]; then
+  if [[ ! -f "$ENV_FILE" ]]; then
+    echo "error: env file not found: $ENV_FILE" >&2
+    exit 1
+  fi
+  echo "Loaded env: $ENV_FILE"
+fi
+
+# ---------------------------------------------------------------------------
+# Launch
+# ---------------------------------------------------------------------------
+export PYTHONPATH="${ROOT_DIR}/src:${PYTHONPATH:-}"
+export COORDINARE_RUN_MODE="shell"
+
+if [[ $# -eq 0 ]]; then
+  set -- --config "${ROOT_DIR}/config.yaml"
+fi
+
+# Pass the env file directly to uv so the Python process receives all vars.
+# Shell-sourcing alone is not sufficient — uv run spawns a subprocess that
+# may not inherit all exported shell variables reliably.
+if [[ -n "$ENV_FILE" ]]; then
+  exec uv run --env-file "$ENV_FILE" python -m coordinare "$@"
+else
+  exec uv run python -m coordinare "$@"
+fi

@@ -140,14 +140,14 @@ async def test_monitor_agent_marks_blocked_with_questions() -> None:
 @pytest.mark.asyncio
 async def test_monitor_agent_marks_blocked_on_error_status() -> None:
     state = initial_state()
-    state["agent_service"] = _Agent({"status": "error", "questions": ["Crash dump"]})
+    state["agent_service"] = _Agent({"status": "error", "reason": "Crash dump"})
     state["current_card"] = {"id": "ITEM_1"}
     state["agent_dispatch"] = {"session_id": "s1"}
 
     result = await monitor_agent(state)
 
-    assert result["phase"] == "blocked"
-    assert result["open_questions"] == ["Crash dump"]
+    assert result["phase"] == "system_error"
+    assert result["system_error_reason"] == "Performer returned an error: Crash dump"
 
 
 # ---------------------------------------------------------------------------
@@ -282,7 +282,7 @@ async def test_monitor_agent_teardown_called_on_error() -> None:
     """workspace teardown is called when agent reports error."""
     wm = _WorkspaceManager()
     state = initial_state()
-    state["agent_service"] = _Agent({"status": "error", "questions": ["crash"]})
+    state["agent_service"] = _Agent({"status": "error", "reason": "crash"})
     state["current_card"] = {"id": "ITEM_1"}
     state["agent_dispatch"] = {"session_id": "s1"}
     state["workspace_manager"] = wm
@@ -290,7 +290,8 @@ async def test_monitor_agent_teardown_called_on_error() -> None:
 
     result = await monitor_agent(state)
 
-    assert result["phase"] == "blocked"
+    assert result["phase"] == "system_error"
+    assert result["system_error_reason"] == "Performer returned an error: crash"
     assert wm.teardown_calls == [_FAKE_WS]
     assert result["workspace_path"] is None
 
@@ -315,7 +316,7 @@ async def test_monitor_agent_teardown_called_on_blocked() -> None:
 
 @pytest.mark.asyncio
 async def test_monitor_agent_teardown_called_on_session_expired() -> None:
-    """workspace teardown is called when session expires."""
+    """workspace teardown is called when session expires; card is auto-requeued, not blocked."""
     wm = _WorkspaceManager()
     state = initial_state()
     state["agent_service"] = _Agent({"status": "session_expired"})
@@ -326,7 +327,10 @@ async def test_monitor_agent_teardown_called_on_session_expired() -> None:
 
     result = await monitor_agent(state)
 
-    assert result["phase"] == "blocked"
+    # session_expired is transient — auto-requeue without blocking the card
+    assert result["phase"] == "idle"
+    assert result["agent_dispatch"] == {}
+    assert result["open_questions"] == []
     assert wm.teardown_calls == [_FAKE_WS]
     assert result["workspace_path"] is None
 

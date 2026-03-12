@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_ignore_empty=True, extra="ignore")
 
     AGENT_BACKEND: str = "opencode"
+    # Supported values: "opencode" | "claude_code" | "codex" (stub)
     AGENT_TIMEOUT: int = 1800  # seconds — 30 minutes
 
 

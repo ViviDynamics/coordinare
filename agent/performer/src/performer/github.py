@@ -38,6 +38,26 @@ async def get_default_branch(owner: str, repo: str, token: str) -> str:
     return resp.json()["default_branch"]
 
 
+async def get_existing_pull_request(
+    owner: str,
+    repo: str,
+    branch: str,
+    token: str,
+) -> tuple[str, str]:
+    """Return ``(html_url, node_id)`` for an existing open PR on *branch*."""
+    url = f"{_GITHUB_API}/repos/{owner}/{repo}/pulls"
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.get(url, headers=headers, params={"head": f"{owner}:{branch}", "state": "open"})
+    if not resp.is_success:
+        raise GitHubAPIError(resp.status_code, resp.text)
+    prs = resp.json()
+    if not prs:
+        raise GitHubAPIError(404, f"No open PR found for branch {branch!r}")
+    data = prs[0]
+    return data["html_url"], data["node_id"]
+
+
 async def create_pull_request(
     owner: str,
     repo: str,
@@ -45,7 +65,11 @@ async def create_pull_request(
     branch: str,
     token: str,
 ) -> tuple[str, str]:
-    """Open a pull request and return ``(html_url, node_id)``."""
+    """Open a pull request and return ``(html_url, node_id)``.
+
+    If a PR already exists for *branch*, returns the existing PR's details
+    rather than raising an error.
+    """
     base = score.base_branch or await get_default_branch(owner, repo, token)
     url = f"{_GITHUB_API}/repos/{owner}/{repo}/pulls"
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
@@ -57,6 +81,13 @@ async def create_pull_request(
     }
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(url, json=body, headers=headers)
+    if resp.status_code == 422:
+        # PR already exists — fetch and return it instead of erroring.
+        error_data = resp.json()
+        errors = error_data.get("errors", [])
+        if any("already exists" in (e.get("message") or "") for e in errors):
+            log.info("pull request already exists, fetching existing PR", branch=branch)
+            return await get_existing_pull_request(owner, repo, branch, token)
     if not resp.is_success:
         raise GitHubAPIError(resp.status_code, resp.text)
     data = resp.json()

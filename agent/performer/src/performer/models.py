@@ -4,10 +4,32 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field, field_validator
+
+
+# ---------------------------------------------------------------------------
+# BackendEvent — normalised activity event emitted by any backend
+# ---------------------------------------------------------------------------
+
+
+class BackendEventType(str, Enum):
+    progress = "progress"  # general working update
+    tool_use = "tool_use"  # agent called a tool (file read/write, shell, etc.)
+    thinking = "thinking"  # internal reasoning (e.g. Claude extended thinking)
+    cost     = "cost"      # token / cost accounting
+    error    = "error"     # non-fatal error within the session
+    output   = "output"    # raw output line (fallback for unrecognised events)
+
+
+class BackendEvent(BaseModel):
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    type: BackendEventType
+    text: str               # human-readable one-line summary (≤ 200 chars)
+    detail: str = ""        # optional longer detail (file path, tool args, etc.)
 
 if TYPE_CHECKING:
     from performer.backends.base import BackendAdapter
@@ -27,6 +49,7 @@ class Score(BaseModel):
     title: str
     description: str = ""
     acceptance_criteria: list[str] = Field(default_factory=list)
+    clarifications: list[dict] = Field(default_factory=list)
     repo_url: str
     branch: str
     github_token: str
@@ -86,6 +109,7 @@ class Stand:
     path: Path
     branch: str
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    git_env: dict[str, str] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------

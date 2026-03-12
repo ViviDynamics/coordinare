@@ -80,11 +80,22 @@ query PollBoard($projectId: ID!) {
               number
               title
               body
+              url
               labels(first: 100) {
                 nodes {
                   name
                 }
               }
+            }
+            ... on PullRequest {
+              id
+              number
+              title
+              body
+            }
+            ... on DraftIssue {
+              title
+              body
             }
           }
         }
@@ -486,7 +497,11 @@ class GitHubService:
         titles: dict[str, str] = {}
         descriptions: dict[str, str] = {}
         issue_numbers: dict[str, int] = {}
+        issue_urls: dict[str, str] = {}
         item_labels: dict[str, list[str]] = {}
+        # Maps project item ID (PVTI_…) → underlying issue/PR node ID (I_… / PR_…)
+        # Required for API calls that target issues/PRs (addComment, addLabels, etc.)
+        content_node_ids: dict[str, str] = {}
 
         for item in items:
             if not isinstance(item, dict):
@@ -506,9 +521,9 @@ class GitHubService:
                         status_name = "TODO"
                     elif raw_name == "blocked":
                         status_name = "BLOCKED"
-                    elif raw_name == "in progress":
+                    elif raw_name in {"in progress", "in_progress"}:
                         status_name = "IN_PROGRESS"
-                    elif raw_name == "in review":
+                    elif raw_name in {"in review", "in_review"}:
                         status_name = "IN_REVIEW"
                     elif raw_name == "done":
                         status_name = "DONE"
@@ -519,6 +534,12 @@ class GitHubService:
                 descriptions[item_id] = str(content.get("body", ""))
                 number = content.get("number", 0)
                 issue_numbers[item_id] = int(number) if isinstance(number, int) else 0
+                content_node_id = str(content.get("id", "")).strip()
+                if content_node_id:
+                    content_node_ids[item_id] = content_node_id
+                issue_url = str(content.get("url", "")).strip()
+                if issue_url:
+                    issue_urls[item_id] = issue_url
                 label_nodes = content.get("labels", {})
                 if isinstance(label_nodes, dict):
                     item_labels[item_id] = [
@@ -534,7 +555,9 @@ class GitHubService:
             "titles": titles,
             "descriptions": descriptions,
             "issue_numbers": issue_numbers,
+            "issue_urls": issue_urls,
             "item_labels": item_labels,
+            "content_node_ids": content_node_ids,
         }
 
     async def get_issue_details(self, issue_id: str) -> dict[str, Any]:
@@ -555,8 +578,8 @@ class GitHubService:
         key_map = {
             "TODO": ["todo / backlog", "todo", "backlog"],
             "BLOCKED": ["blocked"],
-            "IN_PROGRESS": ["in progress"],
-            "IN_REVIEW": ["in review"],
+            "IN_PROGRESS": ["in_progress", "in progress"],
+            "IN_REVIEW": ["in_review", "in review"],
             "DONE": ["done"],
         }
         candidates = key_map.get(status, [status.lower()])
@@ -567,7 +590,12 @@ class GitHubService:
                 option_id = option
                 break
         if not option_id:
-            msg = f"Unknown status option for {status}"
+            available = list(status_option_ids.keys())
+            msg = (
+                f"Unknown status option for {status!r}. "
+                f"Tried: {candidates}. "
+                f"Available board options: {available}"
+            )
             raise ValueError(msg)
 
         await self._guarded_execute(

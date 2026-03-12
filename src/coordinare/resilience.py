@@ -242,6 +242,11 @@ class ResilientAgentService:
             ).inc()
             raise
 
+    def get_agent_logs(self) -> list[str]:
+        """Delegate to inner AgentService; falls back to [] if not supported."""
+        getter = getattr(self._inner, "get_agent_logs", None)
+        return getter() if callable(getter) else []
+
     async def check_health(self) -> dict[str, Any]:
         return await self._inner.check_health()
 

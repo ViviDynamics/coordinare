@@ -45,7 +45,12 @@ def test_main_exits_2_on_startup_config_failure(monkeypatch: pytest.MonkeyPatch)
 
 def test_main_exits_1_on_runtime_error(monkeypatch: pytest.MonkeyPatch) -> None:
     """RuntimeExecutionError during daemon run → SystemExit(1)."""
-    config = SimpleNamespace(output_mode="human", log_level="info", health_check_timeout_seconds=2, optional_subsystems=[])
+    config = SimpleNamespace(
+        output_mode="human", log_level="info",
+        health_check_timeout_seconds=2, poll_interval_seconds=30,
+        optional_subsystems=[],
+        notifications=SimpleNamespace(channels=[]),
+    )
 
     # Simulate validate_config returning a passing result (env-vars-only, no file)
     passing_result = ConfigValidationResult(passed=True, config_file_path=None, warnings=[])

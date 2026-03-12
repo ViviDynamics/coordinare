@@ -71,7 +71,7 @@ run "Coverage (≥ 90%)" \
     --cov=coordinare --cov-report=term-missing --cov-fail-under=90 -q
 
 step "Performer tests"
-uv venv -q
+uv venv --allow-existing -q
 uv pip install -e "." -q
 uv pip install -e "agent/performer[dev]" -q
 if uv run pytest agent/performer/tests/ -q; then

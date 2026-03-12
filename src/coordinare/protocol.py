@@ -39,6 +39,11 @@ class ProtocolResponse(BaseModel):
     pr_url: str | None = None
     pr_node_id: str | None = None
     progress: str | None = None
+    # Telemetry fields — populated by performer on "working" status responses.
+    # Must be kept in sync with performer.protocol.PerformerResponse.
+    backend: str | None = None  # AGENT_BACKEND name, returned on dispatch
+    events: list[dict] = Field(default_factory=list)  # serialised BackendEvent list
+    metrics: dict | None = None  # PerformerMetrics (pid, memory_bytes, cpu_percent, …)
 
 
 def generate_contracts(output_dir: Path) -> None:

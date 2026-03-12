@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import structlog
@@ -59,6 +60,17 @@ async def monitor_agent(state: CoordinareState) -> CoordinareState:
             state["open_questions"] = [f"Permanent service failure: {exc}"]
             return state
 
+        # Accumulate backend events (capped at 100 entries)
+        new_events = status.get("events")
+        if isinstance(new_events, list) and new_events:
+            existing = list(state.get("performer_events") or [])
+            state["performer_events"] = (existing + new_events)[-100:]
+
+        # Store latest performer metrics for dashboard visibility
+        new_metrics = status.get("metrics")
+        if isinstance(new_metrics, dict):
+            state["performer_metrics"] = new_metrics
+
         marker = status.get("status", "working")
         if marker == "pr_opened":
             card["pr_url"] = status.get("pr_url")
@@ -67,10 +79,46 @@ async def monitor_agent(state: CoordinareState) -> CoordinareState:
             card["status"] = "IN_REVIEW"
             state["current_card"] = card
             state["phase"] = "monitoring_pr"
-        elif marker in {"blocked", "error", "session_expired"}:
+            state["system_error_count"] = 0
+            state["system_error_last_at"] = None
+            state["system_error_notified"] = False
+            state["system_error_reason"] = None
+        elif marker == "session_expired":
+            # Transient system failure — auto-requeue to TODO without human intervention.
+            reason = str(status.get("reason", ""))
+            logger.warning(
+                "monitor_agent.session_expired_requeue",
+                card_id=card_id,
+                reason=reason,
+                msg="Session expired — moving card back to TODO for re-dispatch",
+            )
+            if github is not None:
+                try:
+                    await github.move_card(card_id, "TODO")
+                except Exception:
+                    logger.warning("move_card_to_todo_failed", card_id=card_id)
+            state["agent_dispatch"] = {}
+            state["agent_dispatch_at"] = None
+            state["open_questions"] = []
+            state["phase"] = "idle"
+        elif marker == "error":
+            reason = str(status.get("reason", ""))
+            state["system_error_count"] = state.get("system_error_count", 0) + 1
+            state["system_error_last_at"] = datetime.now(UTC)
+            state["system_error_reason"] = (
+                f"Performer returned an error: {reason}" if reason
+                else "Performer encountered an error."
+            )
+            state["phase"] = "system_error"
+            state["agent_dispatch"] = {}
+        elif marker == "blocked":
             state["phase"] = "blocked"
             questions = status.get("questions")
-            state["open_questions"] = [str(item) for item in questions] if isinstance(questions, list) else []
+            if isinstance(questions, list) and questions:
+                state["open_questions"] = [str(item) for item in questions]
+            else:
+                # blocked with no questions — assessment backend will generate them
+                state["open_questions"] = []
         else:
             _teardown_on_exit = False  # still working — workspace stays active
             state["phase"] = "monitoring_agent"

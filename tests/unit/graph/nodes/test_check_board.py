@@ -100,12 +100,20 @@ async def test_check_board_resumes_blocked_card_on_new_comment() -> None:
     state["github_service"] = github
     state["last_blocked_notified_at"] = datetime(2026, 2, 25, 10, 0, tzinfo=UTC)
 
+    state["open_questions"] = ["What routes need breadcrumbs?"]
     result = await check_board(state)
 
-    assert result["phase"] == "monitoring_agent"
+    # User comment should trigger re-assessment (dispatching) not agent monitoring
+    assert result["phase"] == "dispatching"
     assert result["current_card"]["status"] == "IN_PROGRESS"
     assert github.moved_to == "IN_PROGRESS"
     assert result["last_blocked_notified_at"] is None
+    # Clarification should be captured with the prior questions and comment body
+    assert len(result["card_clarifications"]) == 1
+    assert result["card_clarifications"][0]["answer"] == "Here is the answer"
+    assert result["card_clarifications"][0]["questions"] == ["What routes need breadcrumbs?"]
+    assert result["open_questions"] == []
+    assert result["agent_dispatch"] == {}
 
 
 @pytest.mark.asyncio

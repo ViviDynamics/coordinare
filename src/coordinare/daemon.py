@@ -39,8 +39,8 @@ _PHASE_TRANSITION_METRIC: dict[tuple[str, str], str] = {
 # Services not listed here are not registered as health probes and are skipped.
 _CIRCUIT_TO_HEALTH_SUBSYSTEM: dict[str, str] = {
     "github": "github",
-    "agent": "agent_ssh",
-    "agent_ssh": "agent_ssh",
+    "agent": "agent",
+    "agent_ssh": "agent",
 }
 
 
@@ -80,6 +80,7 @@ class CoordinareDaemon:
         self._state_store = state_store
         self._idle_threshold_seconds = idle_threshold_seconds
         self._dashboard_store = dashboard_store
+        self._main_task: asyncio.Task[None] | None = None
 
     @property
     def running(self) -> bool:
@@ -100,24 +101,33 @@ class CoordinareDaemon:
         dispatch_dict = dispatch if isinstance(dispatch, dict) else {}
         raw_questions = self._state.get("open_questions")
         questions = [str(q) for q in raw_questions] if isinstance(raw_questions, list) else []
+        raw_clarifications = self._state.get("card_clarifications")
+        clarifications = list(raw_clarifications) if isinstance(raw_clarifications, list) else []
+        last_notified = self._state.get("last_blocked_notified_at")
         return WorkflowSnapshot(
             snapshot_at=datetime.now(UTC),
             phase=self._state.get("phase", "idle"),
             active_card_id=str(card_dict.get("id", "")) or None if card_dict else None,
             active_card_title=str(card_dict.get("title", "")) or None if card_dict else None,
             active_card_column=str(card_dict.get("status", "")) or None if card_dict else None,
+            active_card_issue_id=str(card_dict.get("issue_id", "")) or None if card_dict else None,
             pr_url=str(card_dict.get("pr_url", "")) or None if card_dict else None,
             pr_node_id=str(card_dict.get("pr_node_id", "")) or None if card_dict else None,
             agent_session_id=str(dispatch_dict.get("session_id", "")) or None if dispatch_dict else None,
             open_questions=questions,
+            card_clarifications=clarifications,
+            last_blocked_notified_at=last_notified if isinstance(last_notified, datetime) else None,
         )
 
     def _restore_from_snapshot(self, snapshot: WorkflowSnapshot) -> None:
         self._state["phase"] = snapshot.phase
         self._state["open_questions"] = list(snapshot.open_questions)
+        self._state["card_clarifications"] = list(snapshot.card_clarifications)
+        self._state["last_blocked_notified_at"] = snapshot.last_blocked_notified_at
         if snapshot.active_card_id:
             self._state["current_card"] = {
                 "id": snapshot.active_card_id,
+                "issue_id": snapshot.active_card_issue_id or "",
                 "title": snapshot.active_card_title or "",
                 "status": snapshot.active_card_column or "",
                 "pr_url": snapshot.pr_url,
@@ -187,6 +197,17 @@ class CoordinareDaemon:
             self._stop_during_cycle = True
         self._running = False
         self._stop_event.set()
+        # Cancel the in-progress cycle only when stop() is called from outside
+        # start() — i.e. signal handlers or external code.  When called from
+        # within start() itself (max_cycles, mid-cycle graph callbacks) the
+        # existing break/stop-event logic handles the exit and we must not
+        # self-cancel, which would propagate CancelledError to the caller.
+        if (
+            self._main_task is not None
+            and not self._main_task.done()
+            and asyncio.current_task() != self._main_task
+        ):
+            self._main_task.cancel()
 
     def _install_signal_handlers(self) -> None:
         loop = asyncio.get_running_loop()
@@ -206,6 +227,7 @@ class CoordinareDaemon:
             logger.info("runtime_event", **event)
 
     async def start(self) -> None:
+        self._main_task = asyncio.current_task()
         self._running = True
         self._install_signal_handlers()
         last_heartbeat = monotonic()
@@ -303,7 +325,12 @@ class CoordinareDaemon:
                 METRICS.cycle_duration_seconds.observe(_cycle_elapsed)
                 # US3: mark external service subsystems healthy after a successful poll cycle
                 HEALTH.update("github", HealthStatus.healthy)
-                HEALTH.update("agent_ssh", HealthStatus.healthy)
+                HEALTH.update("agent", HealthStatus.healthy)
+                # config and notifications don't change mid-run; refresh timestamps
+                # so the stale-detection window doesn't expire between cycles.
+                HEALTH.update("config", HealthStatus.healthy)
+                if self._state.get("notification_service") is not None:
+                    HEALTH.update("notifications", HealthStatus.healthy)
 
                 self._cycle_active = False
                 cycle_count += 1
@@ -401,8 +428,9 @@ class CoordinareDaemon:
                     break
                 await self._sleep(self._poll_interval_seconds)
             except asyncio.CancelledError:
+                self._cycle_active = False
                 clear_cycle_id()
-                raise
+                break  # exit loop cleanly so shutdown log can emit
             except CircuitOpenError as exc:
                 self._cycle_active = False
                 METRICS.service_calls_total.labels(

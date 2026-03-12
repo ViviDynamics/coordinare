@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import structlog
@@ -29,7 +30,17 @@ async def dispatch_card(state: CoordinareState) -> CoordinareState:
         health_status = "unreachable"
 
     state["agent_health_status"] = health_status
-    if health_status in {"error", "unknown", "unreachable"}:
+    if health_status == "unknown":
+        # Performer is unreachable (not yet started or transport timeout).
+        # This is transient — stay idle and retry next cycle rather than
+        # blocking the card with an error that requires human attention.
+        logger.warning(
+            "dispatch_card.agent_unreachable",
+            health_status=health_status,
+        )
+        state["phase"] = "idle"
+        return state
+    if health_status in {"error", "unreachable"}:
         state["phase"] = "blocked"
         state["open_questions"] = [
             f"Agent health check failed (status: {health_status}). "
@@ -80,9 +91,25 @@ async def dispatch_card(state: CoordinareState) -> CoordinareState:
         state["open_questions"] = [f"Permanent service failure: {exc}"]
         return state
 
+    if result.get("status") == "error":
+        reason = str(result.get("reason", "Performer returned an error on dispatch."))
+        logger.error("dispatch_card.performer_error", card_id=card_id, reason=reason)
+        state["system_error_count"] = state.get("system_error_count", 0) + 1
+        state["system_error_last_at"] = datetime.now(UTC)
+        state["system_error_reason"] = f"Agent dispatch failed: {reason}"
+        state["phase"] = "system_error"
+        return state
+
     state["agent_dispatch"] = result
+    state["agent_dispatch_at"] = datetime.now(UTC)
+    state["performer_events"] = []
+    state["performer_metrics"] = None
     card["previous_status"] = card.get("status", "TODO")
     card["status"] = "IN_PROGRESS"
     state["current_card"] = card
     state["phase"] = "monitoring_agent"
+    state["system_error_count"] = 0
+    state["system_error_last_at"] = None
+    state["system_error_notified"] = False
+    state["system_error_reason"] = None
     return state

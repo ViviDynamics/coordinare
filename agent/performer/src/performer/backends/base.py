@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Literal, runtime_checkable
 from typing import Protocol
 
 if TYPE_CHECKING:
-    from performer.models import Score, Stand
+    from performer.models import BackendEvent, Score, Stand
 
 
 @dataclass
@@ -31,6 +31,10 @@ class BackendAdapter(Protocol):
 
     def get_status(self) -> BackendStatus:
         """Non-blocking: return current backend state."""
+        ...
+
+    def drain_events(self) -> list[BackendEvent]:
+        """Non-blocking: return all buffered events since last call and clear buffer."""
         ...
 
     async def relay_feedback(self, feedback: str) -> None:

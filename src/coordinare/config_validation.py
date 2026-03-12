@@ -150,7 +150,7 @@ def _load_raw_yaml(path: Path) -> dict:
     if not path.is_file():
         raise FileNotFoundError(f"Config file not found: {path}")
     try:
-        loaded = yaml.safe_load(path.read_text())
+        loaded = yaml.safe_load(os.path.expandvars(path.read_text()))
     except (yaml.YAMLError, OSError) as exc:
         raise OSError(f"Failed to read config file {path}: {exc}") from exc
     if not isinstance(loaded, dict):

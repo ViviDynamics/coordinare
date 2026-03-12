@@ -43,6 +43,26 @@ def _parse_owner_repo(repo_url: str) -> tuple[str, str]:
     return owner, repo
 
 
+def _git_credential_vars(token: str) -> dict[str, str]:
+    """Return ONLY the git-specific credential vars (no ``**os.environ``).
+
+    Used to populate ``Stand.git_env`` so that AI subprocess launchers can
+    merge these into the subprocess environment without inheriting unrelated
+    workspace env state from the helper itself.
+    """
+    encoded = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+    return {
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "http.extraHeader",
+        "GIT_CONFIG_VALUE_0": f"Authorization: Basic {encoded}",
+        "GIT_TRACE": "0",
+        "GIT_TRACE2": "0",
+        "GIT_TRACE_CURL": "0",
+        "GIT_CURL_VERBOSE": "0",
+    }
+
+
 def _git_credential_env(token: str) -> dict[str, str]:
     """Return env vars that pass *token* to git via http.extraHeader.
 
@@ -152,18 +172,26 @@ async def clone_repository(score: Score) -> Stand:
         raise WorkspaceSetupError(f"git checkout -b failed (exit {returncode}): {stderr}")
 
     log.info("cloned repository", owner=owner, repo=repo, branch=score.branch)
-    return Stand(path=stand_path, branch=score.branch)
+    stand = Stand(path=stand_path, branch=score.branch)
+    stand.git_env = _git_credential_vars(score.github_token)
+    return stand
 
 
 async def push_branch(stand: Stand, score: Score) -> None:
-    """Push *stand.branch* to the remote.
+    """Push *stand.branch* to the remote with ``--force``.
 
-    Raises BranchConflictError on a non-fast-forward / branch-exists conflict.
-    Raises WorkspaceSetupError on any other push failure.
+    Coordinare-managed branches (``coordinare/<id>/<slug>``) are exclusively
+    owned by the coordinare — no human ever pushes to them — so ``--force``
+    is safe and correct.  ``--force-with-lease`` does not work here because
+    we push directly to the URL (not a named remote), meaning git has no
+    remote-tracking ref to evaluate the lease against; if the branch already
+    exists on the remote git rejects the push with "(stale info)".
+
+    Raises WorkspaceSetupError on push failure.
     """
     owner, repo = _parse_owner_repo(score.repo_url)
     remote_url = f"https://github.com/{owner}/{repo}.git"
-    cmd = ["git", "-C", str(stand.path), "push", remote_url, f"HEAD:{stand.branch}"]
+    cmd = ["git", "-C", str(stand.path), "push", "--force", remote_url, f"HEAD:{stand.branch}"]
     env = _git_credential_env(score.github_token)
     try:
         returncode, err = await _run_git(cmd, cwd=None, env=env)

@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# bin/performer-logs — tail live stderr output from the active performer process
+#
+# The coordinare drains the performer subprocess's stderr continuously; this
+# script connects to the streaming /api/performer-logs endpoint and prints
+# each line as it arrives, like `tail -f`.
+#
+# Usage:
+#   bin/performer-logs
+#   bin/performer-logs --port 4041   # override dashboard port
+
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.."; pwd)"
+
+# Parse optional --port argument
+DASHBOARD_PORT=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --port) DASHBOARD_PORT="$2"; shift 2 ;;
+    *) echo "usage: bin/performer-logs [--port PORT]" >&2; exit 1 ;;
+  esac
+done
+
+# Resolve dashboard port from config.yaml if not overridden
+if [[ -z "${DASHBOARD_PORT}" ]]; then
+  DASHBOARD_PORT=$(python3 -c "
+import sys, pathlib
+try:
+    import yaml
+    cfg = yaml.safe_load(pathlib.Path('${ROOT_DIR}/config.yaml').read_text())
+    print(cfg.get('dashboard_port', 8090))
+except Exception:
+    print(8090)
+" 2>/dev/null || echo "8090")
+fi
+
+URL="http://127.0.0.1:${DASHBOARD_PORT}/api/performer-logs"
+
+echo "Streaming performer logs from ${URL}"
+echo "Press Ctrl+C to stop."
+echo "───────────────────────────────────────────────────────────────────"
+
+# curl -N disables buffering so lines appear immediately
+curl --no-buffer --silent --show-error --fail "${URL}" || {
+  echo ""
+  echo "Could not connect to dashboard at ${URL}"
+  echo "Is the coordinare running? Check: bin/start"
+  exit 1
+}

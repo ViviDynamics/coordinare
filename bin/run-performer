@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# bin/run-performer — run the coordinare performer agent locally (no Docker required)
+#
+# The performer receives JSON dispatch messages on stdin and writes JSON
+# responses to stdout, implementing the coordinare wire protocol.
+# It uses opencode (or another configured backend) to do the actual coding.
+#
+# Usage (standalone — for testing):
+#   bin/run-performer
+#   echo '{"action":"health","session_id":"","payload":{}}' | bin/run-performer
+#
+# Usage (as the agent_executable in config.yaml):
+#   agent_executable: "bin/run-performer"
+#   agent_transport: "subprocess"
+#
+# Environment variables (set in .env or export before running):
+#   AGENT_BACKEND   AI backend to use (default: opencode)
+#   AGENT_TIMEOUT   Max seconds per session (default: 1800)
+#   GITHUB_TOKEN    GitHub token for creating pull requests
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.."; pwd)"
+PERFORMER_DIR="${ROOT_DIR}/agent/performer"
+
+# Load .env if present (makes GITHUB_TOKEN etc. available to the performer)
+if [[ -f "${ROOT_DIR}/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "${ROOT_DIR}/.env"
+  set +a
+fi
+
+exec uv run \
+  --project "${PERFORMER_DIR}" \
+  python -m performer

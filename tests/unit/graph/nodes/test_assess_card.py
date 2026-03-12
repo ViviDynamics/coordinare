@@ -11,15 +11,15 @@ class _GitHub:
         return {"id": issue_id, "title": "Card"}
 
 
-class _Claude:
-    async def assess_card_sufficiency(self, card):
+class _Backend:
+    async def assess(self, card):
         _ = card
         return {"sufficient": False, "questions": ["Need context"]}
 
 
-class _FailingClaude:
-    async def assess_card_sufficiency(self, card):
-        msg = "Claude API unavailable"
+class _FailingBackend:
+    async def assess(self, card):
+        msg = "Backend unavailable"
         raise RuntimeError(msg)
 
 
@@ -29,7 +29,7 @@ async def test_assess_card_blocks_on_service_failure() -> None:
     state = initial_state()
     state["current_card"] = {"id": "CARD_1", "issue_id": "ISSUE_1"}
     state["github_service"] = _GitHub()
-    state["claude_service"] = _FailingClaude()
+    state["assessment_backend"] = _FailingBackend()
 
     result = await assess_card(state)
 
@@ -42,7 +42,7 @@ async def test_assess_card_sets_blocked_when_insufficient() -> None:
     state = initial_state()
     state["current_card"] = {"issue_id": "ISSUE_1"}
     state["github_service"] = _GitHub()
-    state["claude_service"] = _Claude()
+    state["assessment_backend"] = _Backend()
 
     result = await assess_card(state)
 

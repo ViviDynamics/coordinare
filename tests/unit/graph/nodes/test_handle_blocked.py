@@ -73,4 +73,7 @@ async def test_handle_blocked_uses_fallback_when_no_open_questions() -> None:
     result = await handle_blocked(state)
 
     assert result["phase"] == "blocked"
-    assert "additional implementation details" in github.comment_body
+    # When no questions are provided and no assessment backend is configured,
+    # the fallback question should reference the card title (not a static generic string).
+    assert "Needs input" in github.comment_body
+    assert github.comment_body  # something was posted

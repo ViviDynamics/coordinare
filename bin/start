@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# bin/start — start the coordinare (and its performer) in one command
+#
+# With subprocess transport (the default), coordinare spawns bin/run-performer
+# automatically for each work dispatch.  There is no separate performer
+# daemon to manage — performer processes are children of coordinare and are
+# cleaned up automatically when coordinare exits.
+#
+# Ctrl+C stops coordinare and all in-flight performer subprocesses.
+#
+# Usage:
+#   bin/start
+#   bin/start --env .env.local
+#   bin/start --env .env --config config.local.yaml
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.."; pwd)"
+
+# ---------------------------------------------------------------------------
+# Pre-flight: verify the performer is reachable before starting
+# ---------------------------------------------------------------------------
+echo "Checking performer..."
+if "${ROOT_DIR}/bin/check-agent" > /tmp/check-agent-out 2>&1; then
+  echo "  ok: performer is reachable"
+else
+  echo "  warn: performer health check failed — coordinare will still start"
+  echo "        but dispatching cards may not work until the performer is"
+  echo "        configured correctly. Run 'bin/check-agent' for details."
+  echo ""
+  cat /tmp/check-agent-out | grep -v '^env:\|^config:\|^transport:\|^executable:\|^timeout:\|^found:\|^Sending' || true
+  echo ""
+fi
+rm -f /tmp/check-agent-out
+
+# ---------------------------------------------------------------------------
+# Start coordinare (which manages performer subprocesses automatically)
+# ---------------------------------------------------------------------------
+echo "Starting coordinare..."
+exec "${ROOT_DIR}/bin/run-coordinare" "$@"

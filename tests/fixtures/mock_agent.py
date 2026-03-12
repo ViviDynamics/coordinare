@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Mock agent executable for integration testing.
 
-Reads a ProtocolMessage JSON from stdin, selects a scenario from
-MOCK_AGENT_SCENARIO env var, tracks call count via a state file in
-MOCK_AGENT_STATE_DIR, and writes a ProtocolResponse JSON to stdout.
+Reads ProtocolMessage JSON lines from stdin one at a time, selects a scenario
+from MOCK_AGENT_SCENARIO env var, tracks call count via a state file in
+MOCK_AGENT_STATE_DIR, and writes a ProtocolResponse JSON line to stdout.
+
+This uses a persistent line-by-line loop to match SubprocessTransport._exchange(),
+which writes one line and reads one line without closing stdin.
 
 Always exits 0 — transport error scenarios are tested via monkeypatching.
 """
@@ -101,43 +104,53 @@ def _unknown(session_id: str) -> dict:
     }
 
 
+def _write_response(response: dict) -> None:
+    json.dump(response, sys.stdout)
+    sys.stdout.write("\n")
+    sys.stdout.flush()
+
+
 def main() -> None:
     scenario = os.environ.get("MOCK_AGENT_SCENARIO", "happy_path")
-    raw_input = sys.stdin.read()
 
-    try:
-        validated = ProtocolMessage.model_validate_json(raw_input)
-        message = validated.model_dump()
-    except Exception:
-        json.dump({"status": "error", "reason": "Invalid ProtocolMessage input"}, sys.stdout)
-        return
+    for raw_line in sys.stdin:
+        raw_line = raw_line.strip()
+        if not raw_line:
+            continue
 
-    session_id = message.get("session_id", "")
-    action = message.get("action", "")
+        try:
+            validated = ProtocolMessage.model_validate_json(raw_line)
+            message = validated.model_dump()
+        except Exception:
+            _write_response({"status": "error", "reason": "Invalid ProtocolMessage input"})
+            continue
 
-    # Health always responds the same regardless of scenario
-    if action == "health":
-        json.dump({"status": "accepted", "session_id": ""}, sys.stdout)
-        return
+        session_id = message.get("session_id", "")
+        action = message.get("action", "")
 
-    state_dir = _get_state_dir(scenario)
-    call_count = _read_call_count(state_dir)
+        # Health always responds the same regardless of scenario
+        if action == "health":
+            _write_response({"status": "accepted", "session_id": ""})
+            continue
 
-    scenarios = {
-        "happy_path": lambda: _happy_path(call_count, session_id),
-        "blocked": lambda: _blocked(session_id),
-        "error": lambda: _error(session_id),
-        "busy": lambda: _busy(session_id),
-        "session_expired": lambda: _session_expired(session_id),
-        "acknowledged": lambda: _acknowledged(session_id),
-        "unknown": lambda: _unknown(session_id),
-    }
+        state_dir = _get_state_dir(scenario)
+        call_count = _read_call_count(state_dir)
 
-    handler = scenarios.get(scenario, lambda: _error(session_id))
-    response = handler()
+        scenarios = {
+            "happy_path": lambda cc=call_count, sid=session_id: _happy_path(cc, sid),
+            "blocked": lambda sid=session_id: _blocked(sid),
+            "error": lambda sid=session_id: _error(sid),
+            "busy": lambda sid=session_id: _busy(sid),
+            "session_expired": lambda sid=session_id: _session_expired(sid),
+            "acknowledged": lambda sid=session_id: _acknowledged(sid),
+            "unknown": lambda sid=session_id: _unknown(sid),
+        }
 
-    _write_call_count(state_dir, call_count + 1)
-    json.dump(response, sys.stdout)
+        handler = scenarios.get(scenario, lambda sid=session_id: _error(sid))
+        response = handler()
+
+        _write_call_count(state_dir, call_count + 1)
+        _write_response(response)
 
 
 if __name__ == "__main__":

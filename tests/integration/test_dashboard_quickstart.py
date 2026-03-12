@@ -462,7 +462,7 @@ def test_s6_port_conflict_exits_1_with_structured_log() -> None:
     )
     ev = conflict_events[0]
     assert ev["port"] == port
-    assert "error" in ev
+    assert ev.get("log_level") == "error"
 
 
 # ---------------------------------------------------------------------------

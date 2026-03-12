@@ -58,4 +58,6 @@ class PerformerResponse(BaseModel):
     pr_url: str | None = None
     pr_node_id: str | None = None
     progress: str | None = None
+    backend: str | None = None  # AGENT_BACKEND name returned on dispatch
     metrics: PerformerMetrics | None = None
+    events: list[dict] = Field(default_factory=list)  # serialised BackendEvent list

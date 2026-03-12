@@ -46,6 +46,9 @@ class WorkflowSnapshot(BaseModel):
     agent_session_id: str | None = None
 
     open_questions: list[str] = Field(default_factory=list)
+    card_clarifications: list[dict] = Field(default_factory=list)
+    active_card_issue_id: str | None = None
+    last_blocked_notified_at: datetime | None = None
 
 
 class StateLoadError(ValueError):

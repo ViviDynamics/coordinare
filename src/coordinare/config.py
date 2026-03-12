@@ -260,6 +260,12 @@ class ProjectConfiguration(BaseSettings):
     notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
     advocate: AdvocateConfig = Field(default_factory=AdvocateConfig)
 
+    # Card assessment backend — determines how assess_card evaluates card sufficiency.
+    # "anthropic_api": direct Anthropic SDK call (requires ANTHROPIC_API_KEY)
+    # "claude_cli":    subprocess `claude --print "..."` (uses local CLI auth)
+    # "none":          skip assessment, assume all cards are sufficient
+    assessment_backend: Literal["anthropic_api", "claude_cli", "opencode", "none"] = "anthropic_api"
+
     # 011 — Agent Workspace Management
     # COORDINARE_WORKSPACE_ROOT: optional path to a persistent directory (e.g. a PVC
     # mount) under which all workspace containers are created. When unset, falls back
@@ -280,10 +286,12 @@ class ProjectConfiguration(BaseSettings):
 
     @classmethod
     def from_yaml(cls, path: Path | str) -> ProjectConfiguration:
+        import os
         config_path = Path(path)
         raw: dict[str, Any] = {}
         if config_path.exists():
-            loaded = yaml.safe_load(config_path.read_text())
+            expanded = os.path.expandvars(config_path.read_text())
+            loaded = yaml.safe_load(expanded)
             if isinstance(loaded, dict):
                 raw = loaded
         return cls(**raw)

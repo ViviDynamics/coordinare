@@ -50,15 +50,12 @@ class TestProtocolContract:
             "ProtocolResponse to ensure wire-protocol compatibility."
         )
 
-    def test_performer_response_adds_metrics_field(self) -> None:
-        """PerformerResponse extends ProtocolResponse by adding a `metrics` field."""
+    def test_performer_response_has_metrics_field(self) -> None:
+        """PerformerResponse must include a `metrics` field for runtime telemetry."""
         performer_schema = PerformerResponse.model_json_schema()
         performer_props = set(performer_schema.get("properties", {}).keys())
         assert "metrics" in performer_props, (
-            "PerformerResponse must add a `metrics` field not present in ProtocolResponse"
-        )
-        assert "metrics" not in _COORDINARE_FIELDS, (
-            "`metrics` should NOT be in the base coordinare schema — it's a performer extension"
+            "PerformerResponse must include a `metrics` field for runtime telemetry"
         )
 
     def test_status_field_is_string_type(self) -> None:

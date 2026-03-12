@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -200,3 +201,66 @@ async def test_daemon_increments_circuit_open_metric() -> None:
         service="github", action="call_blocked", outcome="circuit_open",
     )
     mock_counter.inc.assert_called()
+
+
+class _SlowGraph:
+    """Graph that blocks indefinitely — simulates long-running notification retries."""
+
+    async def ainvoke(self, state):
+        await asyncio.sleep(9999)
+        return state
+
+
+@pytest.mark.asyncio
+async def test_stop_cancels_mid_cycle_immediately() -> None:
+    """Ctrl+C (stop()) must cancel an in-progress cycle task, not wait for it to finish."""
+    daemon = CoordinareDaemon(
+        _SlowGraph(),
+        poll_interval_seconds=1,
+        heartbeat_interval_seconds=1,
+        sleep_func=_no_sleep,
+    )
+
+    daemon_task = asyncio.create_task(daemon.start())
+    # Yield control so the daemon task starts and enters ainvoke
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    assert daemon._cycle_active is True  # mid-cycle
+
+    daemon.stop()
+
+    # Should complete almost instantly, not after 9999 seconds
+    await asyncio.wait_for(daemon_task, timeout=2.0)
+
+    assert daemon.running is False
+
+
+@pytest.mark.asyncio
+async def test_stop_emits_shutdown_log_after_cancellation() -> None:
+    """Shutdown event must still be emitted even when a cycle is cancelled mid-flight."""
+    emitted_events: list[dict] = []
+
+    daemon = CoordinareDaemon(
+        _SlowGraph(),
+        poll_interval_seconds=1,
+        heartbeat_interval_seconds=1,
+        sleep_func=_no_sleep,
+    )
+    original_emit = daemon._emit
+
+    def capturing_emit(**event):
+        emitted_events.append(event)
+        original_emit(**event)
+
+    daemon._emit = capturing_emit  # type: ignore[method-assign]
+
+    daemon_task = asyncio.create_task(daemon.start())
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    daemon.stop()
+    await asyncio.wait_for(daemon_task, timeout=2.0)
+
+    shutdown_events = [e for e in emitted_events if e.get("category") == "shutdown"]
+    assert shutdown_events, "Expected a shutdown event even after mid-cycle cancellation"

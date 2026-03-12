@@ -29,9 +29,24 @@ class AgentService:
             "board_card_id": str(card_context.get("id", "")),
             "column": card_context.get("status", ""),
         }
+        issue_url = card_context.get("issue_url", "")
+        if issue_url:
+            payload["issue_url"] = issue_url
+        issue_number = card_context.get("issue_number")
+        if issue_number:
+            payload["issue_number"] = issue_number
+        clarifications = card_context.get("clarifications")
+        if clarifications:
+            payload["clarifications"] = [
+                {"questions": c.get("questions", []), "answer": c.get("answer", "")}
+                for c in clarifications
+                if isinstance(c, dict)
+            ]
         if workspace_info is not None:
             payload["repo_url"] = workspace_info.repo_url
             payload["branch"] = workspace_info.branch
+            if workspace_info.github_token:
+                payload["github_token"] = workspace_info.github_token
             if workspace_info.path is not None:
                 payload["workspace_path"] = str(workspace_info.path)
         message = ProtocolMessage(
@@ -65,6 +80,17 @@ class AgentService:
         except TransportError as exc:
             logger.warning("check_status_transport_error", error=str(exc))
             return {"status": "unknown", "reason": str(exc)}
+
+    def get_agent_logs(self) -> list[str]:
+        """Return buffered stderr lines from the active performer process.
+
+        Falls back to an empty list when the transport does not support log
+        buffering (e.g. SSH or Kubernetes transports).
+        """
+        getter = getattr(self._transport, "agent_logs", None)
+        if getter is None:
+            return []
+        return list(getter) if not callable(getter) else getter()
 
     async def relay_feedback(self, review_payload: dict[str, Any]) -> dict[str, Any]:
         session_id = review_payload.get("session_id", "")

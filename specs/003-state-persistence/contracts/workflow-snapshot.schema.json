@@ -70,6 +70,34 @@
       },
       "description": "Open questions pending team answers. Non-empty only in blocked phase.",
       "default": []
+    },
+    "active_card_issue_id": {
+      "type": ["string", "null"],
+      "description": "GitHub issue node ID linked to the active card. Used to post comments during blocked phase.",
+      "default": null
+    },
+    "card_clarifications": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "questions": {
+            "type": "array",
+            "items": {"type": "string"}
+          },
+          "answer": {
+            "type": "string"
+          }
+        }
+      },
+      "description": "Accumulated Q&A history for the active card. Passed to the performer on dispatch.",
+      "default": []
+    },
+    "last_blocked_notified_at": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "UTC timestamp of the last blocked notification posted. Persisted so restarts do not re-post duplicate questions.",
+      "default": null
     }
   }
 }

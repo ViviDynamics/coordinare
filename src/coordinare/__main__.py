@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import os
 import platform
+import signal
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -310,12 +312,20 @@ async def _bootstrap_services(
         retry_kwargs=_retry_config_from(r.anthropic_retry).to_stamina_kwargs(),
     )
 
+    from coordinare.services.assessment import build_assessment_backend
+    assessment_backend = build_assessment_backend(
+        config,
+        circuit_breaker=circuit_breakers["anthropic"],
+        retry_kwargs=_retry_config_from(r.anthropic_retry).to_stamina_kwargs(),
+    )
+
     workspace_manager = WorkspaceManager(config)
 
     service_state: CoordinareState = {
         "github_service": github,
         "agent_service": resilient_agent,
         "claude_service": claude_service,
+        "assessment_backend": assessment_backend,
         "notification_service": notification_service,
         "human_reviewers": config.human_reviewers,
         "blocked_reminder_hours": config.blocked_reminder_hours,
@@ -401,8 +411,10 @@ async def _run(config: ProjectConfiguration) -> None:
         )
         raise SystemExit(1) from exc
 
-    # Dashboard: check port availability before starting servers (FR-001)
-    check_port_available(config.dashboard_host, config.dashboard_port)
+    # Probe both ports before starting any servers so a conflict produces a single
+    # clean error rather than uvicorn's full asyncio traceback.
+    check_port_available("0.0.0.0", config.health_check_port, label="health")
+    check_port_available(config.dashboard_host, config.dashboard_port, label="dashboard")
 
     dashboard_store = DashboardStore()
 
@@ -421,8 +433,16 @@ async def _run(config: ProjectConfiguration) -> None:
 
     app = _create_health_app(daemon, circuit_breakers=circuit_breakers)
     server = uvicorn.Server(
-        uvicorn.Config(app, host="0.0.0.0", port=config.health_check_port, log_level="warning")
+        uvicorn.Config(
+            app,
+            host="0.0.0.0",
+            port=config.health_check_port,
+            log_level="warning",
+            # Disable uvicorn's own signal handlers — we install a unified
+            # handler below so Ctrl+C cancels the daemon task immediately.
+        )
     )
+    server.install_signal_handlers = lambda: None  # type: ignore[method-assign]
 
     dashboard_app = create_dashboard_app(dashboard_store, daemon, METRICS, HEALTH)
     dashboard_server = uvicorn.Server(
@@ -431,8 +451,10 @@ async def _run(config: ProjectConfiguration) -> None:
             host=config.dashboard_host,
             port=config.dashboard_port,
             log_level="warning",
+            timeout_graceful_shutdown=3,  # max wait after SSE streams are signalled
         )
     )
+    dashboard_server.install_signal_handlers = lambda: None  # type: ignore[method-assign]
 
     daemon_task = asyncio.create_task(daemon.start())
     server_task = asyncio.create_task(server.serve())
@@ -443,6 +465,20 @@ async def _run(config: ProjectConfiguration) -> None:
         port=config.dashboard_port,
     )
 
+    # Unified signal handler: stop the daemon (which cancels its task) and
+    # signal both HTTP servers to exit.  Installed after tasks are created so
+    # it is never overwritten by uvicorn's own handler installation.
+    def _on_signal() -> None:
+        daemon.stop()
+        server.should_exit = True
+        dashboard_store.shutdown()  # wake SSE streams so they exit before uvicorn times out
+        dashboard_server.should_exit = True
+
+    loop = asyncio.get_running_loop()
+    for _sig in (signal.SIGINT, signal.SIGTERM):
+        with contextlib.suppress(NotImplementedError):
+            loop.add_signal_handler(_sig, _on_signal)
+
     try:
         METRICS.daemon_up.set(1)
         logger.info("startup_mode_selected", run_mode=run_mode)
@@ -450,6 +486,7 @@ async def _run(config: ProjectConfiguration) -> None:
     finally:
         METRICS.daemon_up.set(0)
         server.should_exit = True
+        dashboard_store.shutdown()
         dashboard_server.should_exit = True
         await server_task
         await dashboard_task
@@ -535,14 +572,19 @@ def main() -> None:
     # Step 6: Initialize HEALTH registry with configured subsystems
     from coordinare.observability import HealthStatus as _HealthStatus
 
-    HEALTH.configure(timeout_seconds=config.health_check_timeout_seconds)
-    # github, agent_ssh, config: required unless opted out — daemon actively updates these probes
-    for _subsystem in ("github", "agent_ssh", "config"):
+    # Stale-detection timeout must exceed the poll cycle duration so a healthy
+    # probe doesn't flip to "degraded" between normal cycles.
+    HEALTH.configure(timeout_seconds=config.poll_interval_seconds + 10)
+    # github, agent, config: required unless opted out — daemon actively updates these probes
+    for _subsystem in ("github", "agent", "config"):
         _required = _subsystem not in config.optional_subsystems
         HEALTH.register(_subsystem, required=_required)
-    # notifications: daemon does not call HEALTH.update for this subsystem;
-    # registering as required=False ensures it never blocks readiness.
+    # notifications: mark healthy at startup if channels are configured.
+    # The slack/smtp circuit breakers reflect delivery failures; this probe
+    # simply shows whether the notification system is configured.
     HEALTH.register("notifications", required=False)
+    if config.notifications.channels:
+        HEALTH.update("notifications", _HealthStatus.healthy)
     # config subsystem is healthy once we reach this point
     HEALTH.update("config", _HealthStatus.healthy)
 

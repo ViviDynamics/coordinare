@@ -207,7 +207,7 @@ class CoordinareMetrics:
             self.notifications_deduplicated_total.labels(channel_name=ch)
 
         # circuit breaker
-        for svc in ("github", "agent_ssh", "slack", "smtp"):
+        for svc in ("github", "agent", "slack", "smtp"):
             self.circuit_breaker_trips_total.labels(service_name=svc)
             self.circuit_breaker_state.labels(service_name=svc)
 
