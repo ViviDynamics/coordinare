@@ -45,7 +45,30 @@ async def monitor_agent(state: CoordinareState) -> CoordinareState:
     try:
         try:
             status = await agent.check_status(str(session_id))
-        except (TransportError, PermanentGitHubError) as exc:
+        except TransportError as exc:
+            # Network / transport failure — transient, route through retry logic.
+            logger.warning(
+                "monitor_agent.transport_error",
+                card_id=card_id,
+                exc_type=type(exc).__name__,
+            )
+            # If system_error_notified is True we're inheriting stale state from
+            # a previous card's exhausted retry cycle (that card was BLOCKED and
+            # can no longer appear in monitor_agent).  Reset so this card gets its
+            # full retry budget and operator notification fires if needed.
+            if state.get("system_error_notified"):
+                state["system_error_count"] = 0
+                state["system_error_notified"] = False
+            state["system_error_count"] = state.get("system_error_count", 0) + 1
+            state["system_error_last_at"] = datetime.now(UTC)
+            state["system_error_reason"] = (
+                f"Transport failure during status check: {type(exc).__name__}"
+            )
+            state["agent_dispatch"] = {}
+            state["agent_dispatch_at"] = None
+            state["phase"] = "system_error"
+            return state
+        except PermanentGitHubError as exc:
             logger.error(
                 "permanent_service_failure.card_blocked",
                 card_id=card_id,

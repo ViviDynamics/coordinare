@@ -6,6 +6,7 @@ import pytest
 
 from coordinare.graph.nodes.dispatch_card import dispatch_card
 from coordinare.graph.state import initial_state
+from coordinare.services.github import PermanentGitHubError
 from coordinare.transport.base import TransportError
 from coordinare.workspace import WorkspaceInfo, WorkspaceSetupError
 
@@ -56,6 +57,14 @@ class _AgentTransportError:
 
     async def dispatch_card(self, card_context, workspace_info=None):
         raise TransportError("Agent transport permanently failed")
+
+
+class _AgentPermanentError:
+    async def check_health(self):
+        return {"status": "healthy"}
+
+    async def dispatch_card(self, card_context, workspace_info=None):
+        raise PermanentGitHubError("Token revoked")
 
 
 class _WorkspaceManager:
@@ -122,7 +131,8 @@ async def test_dispatch_card_blocks_on_unhealthy_agent() -> None:
 
 
 @pytest.mark.asyncio
-async def test_dispatch_card_blocks_on_unreachable_agent() -> None:
+async def test_dispatch_card_stays_idle_on_unreachable_agent() -> None:
+    """Exception during health check (unreachable) → idle for retry, not blocked."""
     state = initial_state()
     state["current_card"] = {"id": "ITEM_1", "status": "TODO"}
     state["github_service"] = _GitHub()
@@ -131,13 +141,13 @@ async def test_dispatch_card_blocks_on_unreachable_agent() -> None:
 
     result = await dispatch_card(state)
 
-    assert result["phase"] == "blocked"
+    assert result["phase"] == "idle"
     assert result["agent_health_status"] == "unreachable"
 
 
 @pytest.mark.asyncio
-async def test_dispatch_card_blocks_on_transport_error() -> None:
-    """Permanent TransportError moves card to BLOCKED (T019a)."""
+async def test_dispatch_card_transport_error_routes_to_system_error() -> None:
+    """TransportError during dispatch → system_error phase for retry (not immediate BLOCKED)."""
     gh = _GitHub()
     state = initial_state()
     state["current_card"] = {"id": "ITEM_1", "status": "TODO"}
@@ -147,11 +157,12 @@ async def test_dispatch_card_blocks_on_transport_error() -> None:
 
     result = await dispatch_card(state)
 
-    assert result["phase"] == "blocked"
-    assert any("Permanent service failure" in q for q in result["open_questions"])
-    # Should have moved card to IN_PROGRESS first, then to BLOCKED on error
+    assert result["phase"] == "system_error"
+    assert result["system_error_count"] == 1
+    assert result["system_error_reason"] is not None
+    # Card was moved to IN_PROGRESS before the transport error; not moved to BLOCKED
     assert ("ITEM_1", "IN_PROGRESS") in gh.move_calls
-    assert ("ITEM_1", "BLOCKED") in gh.move_calls
+    assert ("ITEM_1", "BLOCKED") not in gh.move_calls
 
 
 # ---------------------------------------------------------------------------
@@ -202,6 +213,85 @@ async def test_dispatch_blocks_card_on_workspace_setup_error() -> None:
     assert result.get("workspace_path") is None
     assert any("git clone failed" in q for q in result["open_questions"])
     assert ("ITEM_1", "BLOCKED") in gh.move_calls
+
+
+@pytest.mark.asyncio
+async def test_dispatch_workspace_setup_error_move_card_fails_gracefully() -> None:
+    """If move_card itself fails during WorkspaceSetupError handling, phase is still 'blocked'."""
+    class _GitHubRaises:
+        async def move_card(self, item_id: str, status: str) -> None:
+            raise RuntimeError("GitHub API unavailable")
+
+    state = initial_state()
+    state["current_card"] = {"id": "ITEM_1", "status": "TODO"}
+    state["github_service"] = _GitHubRaises()
+    state["agent_service"] = _Agent()
+    state["workspace_manager"] = _WorkspaceManager(
+        raise_on_prepare=WorkspaceSetupError("disk full")
+    )
+
+    result = await dispatch_card(state)
+
+    assert result["phase"] == "blocked"
+    assert any("disk full" in q for q in result["open_questions"])
+
+
+@pytest.mark.asyncio
+async def test_dispatch_permanent_github_error_blocks_card() -> None:
+    """PermanentGitHubError during dispatch → card moved to BLOCKED immediately."""
+    gh = _GitHub()
+    state = initial_state()
+    state["current_card"] = {"id": "ITEM_1", "status": "TODO"}
+    state["github_service"] = gh
+    state["agent_service"] = _AgentPermanentError()
+    state["workspace_manager"] = _WorkspaceManager()
+
+    result = await dispatch_card(state)
+
+    assert result["phase"] == "blocked"
+    assert any("Token revoked" in q for q in result["open_questions"])
+    assert ("ITEM_1", "BLOCKED") in gh.move_calls
+
+
+@pytest.mark.asyncio
+async def test_dispatch_permanent_github_error_move_card_fails_gracefully() -> None:
+    """If move_card(BLOCKED) fails during PermanentGitHubError handling, phase is still 'blocked'."""
+    class _GitHubFailsOnBlocked:
+        async def move_card(self, item_id: str, status: str) -> None:
+            if status == "BLOCKED":
+                raise RuntimeError("GitHub API unavailable")
+
+    state = initial_state()
+    state["current_card"] = {"id": "ITEM_1", "status": "TODO"}
+    state["github_service"] = _GitHubFailsOnBlocked()
+    state["agent_service"] = _AgentPermanentError()
+    state["workspace_manager"] = _WorkspaceManager()
+
+    result = await dispatch_card(state)
+
+    assert result["phase"] == "blocked"
+    assert any("Token revoked" in q for q in result["open_questions"])
+
+
+@pytest.mark.asyncio
+async def test_dispatch_transport_error_tears_down_workspace() -> None:
+    """TransportError during dispatch tears down the prepared workspace and clears state fields."""
+    wm = _WorkspaceManager(workspace_path=Path("/tmp/fake-ws/repo"))
+    gh = _GitHub()
+    state = initial_state()
+    state["current_card"] = {"id": "ITEM_1", "status": "TODO"}
+    state["github_service"] = gh
+    state["agent_service"] = _AgentTransportError()
+    state["workspace_manager"] = wm
+
+    result = await dispatch_card(state)
+
+    assert result["phase"] == "system_error"
+    # Workspace was torn down
+    assert wm.teardown_calls == [Path("/tmp/fake-ws/repo")]
+    # State fields cleared so retries don't assume a live workspace
+    assert result["workspace_path"] is None
+    assert result["workspace_branch"] is None
 
 
 @pytest.mark.asyncio

@@ -1,9 +1,13 @@
 """Unit tests for ClaudeCodeBackend (--resume / session_id implementation)."""
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import psutil
+import pytest
 
 
 from performer.backends.claude_code import ClaudeCodeBackend, _build_task_prompt
@@ -500,6 +504,71 @@ class TestStop:
 
         mock_psutil_proc.kill.assert_called_once()
 
+    async def test_stop_psutil_child_no_such_process(self, tmp_path: Path) -> None:
+        """Child that raises NoSuchProcess during psutil fallback is skipped."""
+        proc = _fake_proc(pid=8888)
+        adapter = ClaudeCodeBackend()
+
+        with patch(
+            "performer.backends.claude_code.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=proc),
+        ):
+            await adapter.start(_stand(tmp_path), _score())
+
+        dying_child = MagicMock()
+        dying_child.kill = MagicMock(side_effect=psutil.NoSuchProcess(pid=8888))
+        mock_psutil_proc = MagicMock()
+        mock_psutil_proc.children.return_value = [dying_child]
+        mock_psutil_proc.kill = MagicMock()
+
+        with (
+            patch("performer.backends.claude_code.os.getpgid", side_effect=OSError("no pgid")),
+            patch("performer.backends.claude_code.psutil.Process", return_value=mock_psutil_proc),
+        ):
+            await adapter.stop()  # should not raise
+
+        dying_child.kill.assert_called_once()
+        mock_psutil_proc.kill.assert_called_once()
+
+    async def test_stop_psutil_parent_no_such_process(self, tmp_path: Path) -> None:
+        """Parent.kill() raising NoSuchProcess is handled gracefully."""
+        proc = _fake_proc(pid=9999)
+        adapter = ClaudeCodeBackend()
+
+        with patch(
+            "performer.backends.claude_code.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=proc),
+        ):
+            await adapter.start(_stand(tmp_path), _score())
+
+        mock_psutil_proc = MagicMock()
+        mock_psutil_proc.children.return_value = []
+        mock_psutil_proc.kill = MagicMock(side_effect=psutil.NoSuchProcess(pid=9999))
+
+        with (
+            patch("performer.backends.claude_code.os.getpgid", side_effect=OSError("nope")),
+            patch("performer.backends.claude_code.psutil.Process", return_value=mock_psutil_proc),
+        ):
+            await adapter.stop()  # should not raise
+
+    async def test_stop_wait_timeout(self, tmp_path: Path) -> None:
+        """asyncio.TimeoutError while waiting for proc.wait() is swallowed."""
+        proc = _fake_proc(pid=1234)
+        adapter = ClaudeCodeBackend()
+
+        with patch(
+            "performer.backends.claude_code.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=proc),
+        ):
+            await adapter.start(_stand(tmp_path), _score())
+
+        with (
+            patch("performer.backends.claude_code.os.getpgid", return_value=1234),
+            patch("performer.backends.claude_code.os.killpg"),
+            patch("performer.backends.claude_code.asyncio.wait_for", side_effect=asyncio.TimeoutError),
+        ):
+            await adapter.stop()  # should not raise
+
     async def test_stop_noop_when_no_proc(self) -> None:
         adapter = ClaudeCodeBackend()
         await adapter.stop()  # should not raise
@@ -516,6 +585,93 @@ class TestStop:
             await adapter.start(_stand(tmp_path), _score())
 
         await adapter.stop()  # should not attempt kill
+
+
+# ---------------------------------------------------------------------------
+# _event_reader_loop edge cases
+# ---------------------------------------------------------------------------
+
+class TestEventReaderLoopCancellation:
+    async def test_cancelled_error_is_reraised(self) -> None:
+        """CancelledError propagates out of the reader loop."""
+        adapter = ClaudeCodeBackend()
+        proc = MagicMock()
+
+        async def _raises_cancelled():
+            raise asyncio.CancelledError
+            yield  # pragma: no cover
+
+        proc.stdout = MagicMock()
+        proc.stdout.__aiter__ = lambda self: _raises_cancelled()
+        proc.returncode = 0
+        adapter._proc = proc
+
+        with pytest.raises(asyncio.CancelledError):
+            await adapter._event_reader_loop()
+
+    async def test_finally_waits_for_proc_when_returncode_none(self) -> None:
+        """Finally block calls proc.wait() when proc is still running at loop exit."""
+        adapter = ClaudeCodeBackend()
+        proc = MagicMock()
+        proc.returncode = None  # still running
+
+        async def _empty():
+            return
+            yield  # pragma: no cover
+
+        proc.stdout = MagicMock()
+        proc.stdout.__aiter__ = lambda self: _empty()
+
+        async def _set_returncode():
+            proc.returncode = 0
+
+        proc.wait = AsyncMock(side_effect=_set_returncode)
+        adapter._proc = proc
+
+        await adapter._event_reader_loop()
+
+        proc.wait.assert_awaited_once()
+        assert adapter.get_status().state == "done"
+
+    async def test_finally_nonzero_exit_sets_error(self) -> None:
+        """Finally block: proc exits non-zero → error state."""
+        adapter = ClaudeCodeBackend()
+        proc = MagicMock()
+        proc.returncode = None
+
+        async def _empty():
+            return
+            yield  # pragma: no cover
+
+        proc.stdout = MagicMock()
+        proc.stdout.__aiter__ = lambda self: _empty()
+
+        async def _set_returncode():
+            proc.returncode = 1
+
+        proc.wait = AsyncMock(side_effect=_set_returncode)
+        adapter._proc = proc
+
+        await adapter._event_reader_loop()
+
+        assert adapter.get_status().state == "error"
+        assert "1" in adapter.get_status().error_reason
+
+
+class TestHandleEventEdgeCases:
+    def test_unknown_block_type_in_assistant_is_noop(self) -> None:
+        adapter = ClaudeCodeBackend()
+        adapter._handle_event({
+            "type": "assistant",
+            "message": {"content": [{"type": "unknown_block_type", "data": "..."}]},
+        })
+        assert adapter.get_status().state == "working"
+        assert adapter.drain_events() == []
+
+    def test_result_unknown_subtype_is_noop(self) -> None:
+        adapter = ClaudeCodeBackend()
+        adapter._handle_event({"type": "result", "subtype": "unknown_subtype"})
+        assert adapter.get_status().state == "working"
 
 
 # ---------------------------------------------------------------------------

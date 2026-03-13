@@ -58,6 +58,57 @@ async def test_api_status_400_raises_permanent() -> None:
 
 
 @pytest.mark.asyncio
+async def test_assess_with_clarification_history_uses_history_prompt() -> None:
+    """When clarifications are present, the service builds a history-aware prompt."""
+    from types import SimpleNamespace
+
+    svc = _service()
+    create_mock = AsyncMock(return_value=SimpleNamespace(
+        content=[SimpleNamespace(text='{"sufficient": true, "questions": [], "rationale": "enough info"}')]
+    ))
+    svc._client = SimpleNamespace(
+        messages=type("M", (), {"create": create_mock})()
+    )
+
+    result = await svc.assess_card_sufficiency({
+        "title": "Add badge",
+        "clarifications": [{"questions": ["What CI?"], "answer": "GitHub Actions"}],
+    })
+
+    assert result["sufficient"] is True
+    assert result["rationale"] == "enough info"
+    # Verify the prompt sent to the API actually contains the clarification history
+    call_kwargs = create_mock.call_args[1]
+    prompt_text = call_kwargs["messages"][0]["content"]
+    assert "What CI?" in prompt_text
+    assert "GitHub Actions" in prompt_text
+
+
+@pytest.mark.asyncio
+async def test_assess_clarification_entry_with_no_questions_no_answer() -> None:
+    """Clarification entries with empty questions/answer fields don't crash history building."""
+    from types import SimpleNamespace
+
+    svc = _service()
+    response = SimpleNamespace(
+        content=[SimpleNamespace(text='{"sufficient": true, "questions": [], "rationale": "ok"}')]
+    )
+    svc._client = SimpleNamespace(
+        messages=type("M", (), {"create": AsyncMock(return_value=response)})()
+    )
+
+    result = await svc.assess_card_sufficiency({
+        "title": "T",
+        "clarifications": [
+            {"questions": [], "answer": ""},       # both empty — branches hit but skipped
+            {"questions": ["Scope?"], "answer": "All pages"},
+        ],
+    })
+
+    assert result["sufficient"] is True
+
+
+@pytest.mark.asyncio
 async def test_block_without_text_attr_returns_empty_fallback() -> None:
     """Content block lacking a .text attribute falls through to empty-response fallback."""
     svc = _service()

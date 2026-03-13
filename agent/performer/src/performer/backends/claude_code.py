@@ -242,7 +242,7 @@ class ClaudeCodeBackend:
                 self._emit(BackendEventType.error, str(reason)[:_MAX_TEXT])
                 self._status = BackendStatus(state="error", error_reason=str(reason))
 
-        elif event_type == "system":
+        elif event_type == "system":  # pragma: no cover
             pass  # init handled above; other system events are no-ops
 
 

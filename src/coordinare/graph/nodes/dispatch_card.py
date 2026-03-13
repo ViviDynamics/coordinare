@@ -30,17 +30,18 @@ async def dispatch_card(state: CoordinareState) -> CoordinareState:
         health_status = "unreachable"
 
     state["agent_health_status"] = health_status
-    if health_status == "unknown":
-        # Performer is unreachable (not yet started or transport timeout).
-        # This is transient — stay idle and retry next cycle rather than
-        # blocking the card with an error that requires human attention.
+    if health_status in {"unknown", "unreachable"}:
+        # Performer is unreachable (not yet started, transport timeout, or
+        # transient exception).  This is transient — stay idle and retry next
+        # cycle rather than blocking the card with an error that requires human
+        # attention.
         logger.warning(
             "dispatch_card.agent_unreachable",
             health_status=health_status,
         )
         state["phase"] = "idle"
         return state
-    if health_status in {"error", "unreachable"}:
+    if health_status == "error":
         state["phase"] = "blocked"
         state["open_questions"] = [
             f"Agent health check failed (status: {health_status}). "
@@ -77,7 +78,30 @@ async def dispatch_card(state: CoordinareState) -> CoordinareState:
     try:
         await github.move_card(card_id, "IN_PROGRESS")
         result = await agent.dispatch_card(card, workspace_info=workspace_info)
-    except (TransportError, PermanentGitHubError) as exc:
+    except TransportError as exc:
+        # Network / transport failure — transient, route through retry logic.
+        reason = f"Transport failure during dispatch: {type(exc).__name__}"
+        logger.warning("dispatch_card.transport_error", card_id=card_id, exc_type=type(exc).__name__)
+        state["system_error_count"] = state.get("system_error_count", 0) + 1
+        state["system_error_last_at"] = datetime.now(UTC)
+        state["system_error_reason"] = reason
+        state["phase"] = "system_error"
+        # Card was moved to IN_PROGRESS on GitHub before the transport error;
+        # keep in-memory state consistent so dashboards and check_board agree.
+        card["previous_status"] = card.get("status", "TODO")
+        card["status"] = "IN_PROGRESS"
+        state["current_card"] = card
+        # Tear down any workspace that was prepared before the error so retries
+        # don't leak temp directories on disk.
+        if workspace_manager is not None and workspace_info is not None:
+            try:
+                await workspace_manager.teardown(workspace_info.path)
+            except Exception:
+                logger.warning("workspace_teardown_failed.after_transport_error", card_id=card_id)
+        state["workspace_path"] = None
+        state["workspace_branch"] = None
+        return state
+    except PermanentGitHubError as exc:
         logger.error(
             "permanent_service_failure.card_blocked",
             card_id=card_id,

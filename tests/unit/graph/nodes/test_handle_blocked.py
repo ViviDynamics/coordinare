@@ -77,3 +77,122 @@ async def test_handle_blocked_uses_fallback_when_no_open_questions() -> None:
     # the fallback question should reference the card title (not a static generic string).
     assert "Needs input" in github.comment_body
     assert github.comment_body  # something was posted
+
+
+class _GitHubRequeue:
+    def __init__(self) -> None:
+        self.moved_to: list[str] = []
+
+    async def move_card(self, item_id: str, status: str) -> None:
+        self.moved_to.append(status)
+
+    async def add_comment(self, subject_id: str, body: str):
+        return {"id": "C1"}
+
+
+@pytest.mark.asyncio
+async def test_handle_blocked_requeues_when_no_questions_and_answered_rounds() -> None:
+    """No questions + prior answered rounds → re-queue card to TODO for dispatch."""
+    github = _GitHubRequeue()
+    state = initial_state()
+    state["github_service"] = github
+    state["current_card"] = {"id": "ITEM_1", "issue_id": "ISSUE_1", "title": "Add feature"}
+    state["open_questions"] = []
+    state["card_clarifications"] = [{"questions": ["What routes?"], "answer": "All of them"}]
+
+    result = await handle_blocked(state)
+
+    assert result["phase"] == "idle"
+    assert "TODO" in github.moved_to
+    assert result["last_blocked_notified_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_handle_blocked_assessment_failure_falls_back_to_title_questions() -> None:
+    """Assessment backend raising an exception → falls back to title-derived questions."""
+    class _FailingBackend:
+        async def assess(self, card):
+            raise RuntimeError("Anthropic API down")
+
+    github = _GitHubFallback()
+    state = initial_state()
+    state["github_service"] = github
+    state["current_card"] = {"id": "ITEM_1", "issue_id": "ISSUE_1", "title": "My Feature"}
+    state["open_questions"] = []
+    state["assessment_backend"] = _FailingBackend()
+
+    result = await handle_blocked(state)
+
+    assert result["phase"] == "blocked"
+    assert github.comment_body is not None
+    assert "Needs input" in github.comment_body
+
+
+@pytest.mark.asyncio
+async def test_handle_blocked_skips_comment_when_no_issue_id() -> None:
+    """Card with no issue_id → move card to BLOCKED but skip adding a GitHub comment."""
+    class _GitHubTracked:
+        def __init__(self) -> None:
+            self.moved_to: list[str] = []
+            self.comments_added: list[str] = []
+
+        async def move_card(self, item_id: str, status: str) -> None:
+            self.moved_to.append(status)
+
+        async def add_comment(self, subject_id: str, body: str):
+            self.comments_added.append(body)
+            return {"id": "C1"}
+
+    github = _GitHubTracked()
+    state = initial_state()
+    state["github_service"] = github
+    state["current_card"] = {"id": "ITEM_1", "issue_id": ""}  # no issue_id
+    state["open_questions"] = ["What routes should this affect?"]
+
+    result = await handle_blocked(state)
+
+    assert result["phase"] == "blocked"
+    assert "BLOCKED" in github.moved_to
+    assert github.comments_added == []  # no comment was posted
+
+
+@pytest.mark.asyncio
+async def test_handle_blocked_uses_assessment_questions_when_provided() -> None:
+    """Assessment backend returns questions → uses them directly (skips fallback)."""
+    class _AssessmentBackend:
+        async def assess(self, card):
+            return {"sufficient": False, "questions": ["Which routes?", "What data model?"], "rationale": "missing info"}
+
+    github = _GitHubFallback()
+    state = initial_state()
+    state["github_service"] = github
+    state["current_card"] = {"id": "ITEM_1", "issue_id": "ISSUE_1", "title": "My Feature"}
+    state["open_questions"] = []
+    state["assessment_backend"] = _AssessmentBackend()
+
+    result = await handle_blocked(state)
+
+    assert result["phase"] == "blocked"
+    assert "Which routes?" in github.comment_body
+    assert "What data model?" in github.comment_body
+
+
+@pytest.mark.asyncio
+async def test_handle_blocked_does_not_update_notification_time_if_recent() -> None:
+    """If last_blocked_notified_at is recent, it is NOT updated again."""
+    from datetime import UTC, datetime, timedelta
+
+    recent = datetime.now(UTC) - timedelta(hours=1)
+    github = _GitHubFallback()
+    state = initial_state()
+    state["github_service"] = github
+    state["current_card"] = {"id": "ITEM_1", "issue_id": "ISSUE_1"}
+    state["open_questions"] = ["Clarify scope"]
+    state["last_blocked_notified_at"] = recent
+    state["blocked_reminder_hours"] = 24
+
+    result = await handle_blocked(state)
+
+    assert result["phase"] == "blocked"
+    # Notification time should NOT have been advanced (it was recent)
+    assert result["last_blocked_notified_at"] == recent

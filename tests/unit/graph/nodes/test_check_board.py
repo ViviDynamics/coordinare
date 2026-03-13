@@ -253,3 +253,86 @@ async def test_check_board_blocked_with_bad_comment_data_sends_reminder() -> Non
     result = await check_board(state)
 
     assert result["phase"] == "blocked"
+
+
+# --- New system_error routing tests ---
+
+
+class _GitHubPollFails:
+    async def poll_board(self):
+        raise RuntimeError("GitHub API is down")
+
+
+@pytest.mark.asyncio
+async def test_check_board_idle_when_poll_board_raises() -> None:
+    """poll_board() exception → phase='idle' (don't crash the loop)."""
+    state = initial_state()
+    state["github_service"] = _GitHubPollFails()
+
+    result = await check_board(state)
+
+    assert result["phase"] == "idle"
+
+
+@pytest.mark.asyncio
+async def test_check_board_system_error_when_in_progress_with_error_count() -> None:
+    """in_progress card + system_error_count > 0 → phase='system_error' (retry path)."""
+    state = initial_state()
+    state["github_service"] = _GitHubInProgress()
+    state["system_error_count"] = 1
+
+    result = await check_board(state)
+
+    assert result["phase"] == "system_error"
+
+
+@pytest.mark.asyncio
+async def test_check_board_idle_when_blocked_and_system_error_notified() -> None:
+    """Blocked card where operator has already been notified → phase='idle' (no re-notify)."""
+    state = initial_state()
+    state["github_service"] = _GitHubBlockedNoNewComment()
+    state["system_error_notified"] = True
+
+    result = await check_board(state)
+
+    assert result["phase"] == "idle"
+
+
+class _GitHubBlockedOldComment:
+    """Blocked card with a comment that predates last_blocked_notified_at."""
+
+    async def poll_board(self):
+        return {
+            "snapshot": {"BLOCKED": ["ITEM_B"], "TODO": [], "IN_PROGRESS": [], "IN_REVIEW": []},
+            "titles": {"ITEM_B": "Blocked Card"},
+            "descriptions": {"ITEM_B": "Desc"},
+            "issue_numbers": {"ITEM_B": 2},
+        }
+
+    async def get_issue_details(self, issue_id: str):
+        return {
+            "comments": {
+                "nodes": [
+                    # Comment is OLDER than last_blocked_notified_at — should not trigger requeue
+                    {"body": "old comment", "createdAt": "2026-02-20T08:00:00Z"},
+                ]
+            }
+        }
+
+    async def move_card(self, item_id: str, status: str) -> None:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_check_board_blocked_old_comment_does_not_requeue() -> None:
+    """A comment that predates last_blocked_notified_at should not trigger re-dispatch."""
+    state = initial_state()
+    state["github_service"] = _GitHubBlockedOldComment()
+    # Notified AFTER the comment — so the comment is "old"
+    state["last_blocked_notified_at"] = datetime(2026, 2, 20, 10, 0, tzinfo=UTC)
+    state["blocked_reminder_hours"] = 24 * 365  # reminder not due yet
+
+    result = await check_board(state)
+
+    # Comment was old → no requeue; reminder not due → idle
+    assert result["phase"] == "idle"

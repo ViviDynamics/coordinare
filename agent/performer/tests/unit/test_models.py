@@ -66,6 +66,42 @@ class TestScore:
                 github_token="",
             )
 
+    def test_blank_branch_raises(self) -> None:
+        with pytest.raises(ValidationError, match="branch"):
+            Score(
+                title="T",
+                repo_url="https://github.com/org/repo",
+                branch="   ",
+                github_token="tok",
+            )
+
+    def test_empty_branch_raises(self) -> None:
+        with pytest.raises(ValidationError, match="branch"):
+            Score(
+                title="T",
+                repo_url="https://github.com/org/repo",
+                branch="",
+                github_token="tok",
+            )
+
+    def test_branch_with_space_raises(self) -> None:
+        with pytest.raises(ValidationError, match="branch"):
+            Score(
+                title="T",
+                repo_url="https://github.com/org/repo",
+                branch="feat ure",
+                github_token="tok",
+            )
+
+    def test_branch_with_dotdot_raises(self) -> None:
+        with pytest.raises(ValidationError, match="branch"):
+            Score(
+                title="T",
+                repo_url="https://github.com/org/repo",
+                branch="feat..x",
+                github_token="tok",
+            )
+
     def test_optional_fields_default(self) -> None:
         s = Score(
             title="T",

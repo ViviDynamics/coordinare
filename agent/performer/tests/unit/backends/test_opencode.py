@@ -436,6 +436,34 @@ class TestDrainLogs:
         adapter._proc = None
         await adapter._drain_logs()  # should not raise
 
+    async def test_drain_logs_cancelled_error_is_swallowed(self) -> None:
+        """CancelledError in the log drain is caught and swallowed (not re-raised)."""
+        proc = MagicMock()
+
+        async def _raises_cancelled():
+            raise asyncio.CancelledError
+            yield  # pragma: no cover
+
+        proc.stdout = MagicMock()
+        proc.stdout.__aiter__ = lambda self: _raises_cancelled()
+        adapter = OpenCodeAdapter()
+        adapter._proc = proc
+        await adapter._drain_logs()  # should not raise
+
+    async def test_drain_logs_exception_is_swallowed(self) -> None:
+        """General exception in the log drain is caught and swallowed."""
+        proc = MagicMock()
+
+        async def _raises_error():
+            raise RuntimeError("pipe broken")
+            yield  # pragma: no cover
+
+        proc.stdout = MagicMock()
+        proc.stdout.__aiter__ = lambda self: _raises_error()
+        adapter = OpenCodeAdapter()
+        adapter._proc = proc
+        await adapter._drain_logs()  # should not raise
+
 
 # ---------------------------------------------------------------------------
 # _event_reader_loop
@@ -684,3 +712,81 @@ class TestBuildTaskPrompt:
         prompt = _build_task_prompt(_score())
         assert "Commit your changes" in prompt
         assert "Do not push or open a pull request — this will be handled automatically" in prompt
+
+
+# ---------------------------------------------------------------------------
+# stop() — psutil NoSuchProcess paths
+# ---------------------------------------------------------------------------
+
+class TestOpenCodeAdapterStopPsutil:
+    async def test_stop_psutil_child_no_such_process(self) -> None:
+        """child.kill() raising NoSuchProcess is swallowed; parent.kill() still called."""
+        import psutil
+
+        proc = _fake_proc(pid=5678)
+        adapter = OpenCodeAdapter()
+        adapter._proc = proc
+
+        dying_child = MagicMock()
+        dying_child.kill = MagicMock(side_effect=psutil.NoSuchProcess(pid=5679))
+
+        mock_parent = MagicMock()
+        mock_parent.children.return_value = [dying_child]
+        mock_parent.kill = MagicMock()
+
+        with (
+            patch("performer.backends.opencode.os.getpgid", side_effect=OSError("no pgid")),
+            patch("performer.backends.opencode.psutil.Process", return_value=mock_parent),
+        ):
+            await adapter.stop()  # should not raise
+
+        mock_parent.kill.assert_called_once()
+
+    async def test_stop_psutil_parent_no_such_process(self) -> None:
+        """parent.kill() raising NoSuchProcess is swallowed."""
+        import psutil
+
+        proc = _fake_proc(pid=5678)
+        adapter = OpenCodeAdapter()
+        adapter._proc = proc
+
+        mock_parent = MagicMock()
+        mock_parent.children.return_value = []
+        mock_parent.kill = MagicMock(side_effect=psutil.NoSuchProcess(pid=5678))
+
+        with (
+            patch("performer.backends.opencode.os.getpgid", side_effect=OSError("no pgid")),
+            patch("performer.backends.opencode.psutil.Process", return_value=mock_parent),
+        ):
+            await adapter.stop()  # should not raise
+
+
+# ---------------------------------------------------------------------------
+# _event_reader_loop — empty data_str path
+# ---------------------------------------------------------------------------
+
+class TestEventReaderLoopEmptyData:
+    @respx.mock
+    async def test_event_reader_skips_empty_data_str(self, tmp_path: Path) -> None:
+        """SSE lines with 'data:' followed only by whitespace are skipped."""
+        port = 19910
+
+        sse_body = (
+            "data:   \n\n"   # empty after strip → skipped
+            "data: {\"type\": \"session.idle\", \"properties\": {}}\n\n"
+        ).encode()
+
+        respx.get(f"http://127.0.0.1:{port}/event").mock(
+            return_value=httpx.Response(200, content=sse_body)
+        )
+
+        adapter = OpenCodeAdapter()
+        adapter._port = port
+        adapter._session_id = "sess-empty"
+        adapter._client = httpx.AsyncClient(
+            base_url=f"http://127.0.0.1:{port}",
+            headers={"x-opencode-directory": str(tmp_path)},
+        )
+
+        await adapter._event_reader_loop()
+        assert adapter.get_status().state == "done"
