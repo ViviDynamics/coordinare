@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 from pydantic import ValidationError
 
-from performer.models import Performance, Score, Stand
+from performer.models import BackendEvent, BackendEventType, Performance, Score, Stand, _redact_secrets
 
 
 class TestScore:
@@ -162,3 +162,127 @@ class TestPerformance:
         assert perf.pr_node_id is None
         assert perf.open_questions == []
         assert perf.error_reason is None
+
+
+class TestRedactSecrets:
+    """T003 — unit tests for _redact_secrets()."""
+
+    def test_github_fine_grained_pat(self) -> None:
+        token = "github_pat_" + "A" * 82
+        result = _redact_secrets(f"token={token}")
+        assert "[REDACTED]" in result
+        assert token not in result
+
+    def test_github_classic_pat(self) -> None:
+        token = "ghp_" + "A" * 36
+        assert _redact_secrets(token) == "[REDACTED]"
+
+    def test_github_oauth_token(self) -> None:
+        token = "gho_" + "B" * 36
+        assert _redact_secrets(token) == "[REDACTED]"
+
+    def test_github_app_installation_token(self) -> None:
+        token = "ghs_" + "C" * 36
+        assert _redact_secrets(token) == "[REDACTED]"
+
+    def test_anthropic_api_key(self) -> None:
+        key = "sk-ant-" + "x" * 90
+        assert _redact_secrets(key) == "[REDACTED]"
+
+    def test_bearer_token(self) -> None:
+        header = "Bearer " + "a" * 20
+        assert _redact_secrets(header) == "[REDACTED]"
+
+    def test_aws_access_key(self) -> None:
+        key = "AKIA" + "A" * 16
+        assert _redact_secrets(key) == "[REDACTED]"
+
+    def test_non_matching_string_passes_through(self) -> None:
+        text = "Read file src/app/main.py"
+        assert _redact_secrets(text) == text
+
+    def test_empty_string(self) -> None:
+        assert _redact_secrets("") == ""
+
+    def test_idempotent(self) -> None:
+        token = "ghp_" + "Z" * 36
+        once = _redact_secrets(token)
+        twice = _redact_secrets(once)
+        assert once == twice == "[REDACTED]"
+
+    def test_already_redacted_not_double_processed(self) -> None:
+        assert _redact_secrets("[REDACTED]") == "[REDACTED]"
+
+    def test_multiple_secrets_in_same_string(self) -> None:
+        token1 = "ghp_" + "A" * 36
+        token2 = "AKIA" + "B" * 16
+        text = f"foo {token1} bar {token2} baz"
+        result = _redact_secrets(text)
+        assert token1 not in result
+        assert token2 not in result
+        assert result.count("[REDACTED]") == 2
+
+
+class TestBackendEventRedaction:
+    """T004 — unit tests for BackendEvent model_validator redaction."""
+
+    def _make_event(self, detail: str, text: str = "some text") -> BackendEvent:
+        return BackendEvent(type=BackendEventType.tool_use, text=text, detail=detail)
+
+    def test_classic_pat_in_detail_is_redacted(self) -> None:
+        token = "ghp_" + "A" * 36
+        event = self._make_event(detail=token)
+        assert event.detail == "[REDACTED]"
+
+    def test_github_fine_grained_pat_in_detail_is_redacted(self) -> None:
+        token = "github_pat_" + "B" * 82
+        event = self._make_event(detail=f"Authorization: {token}")
+        assert token not in event.detail
+        assert "[REDACTED]" in event.detail
+
+    def test_github_oauth_token_in_detail_is_redacted(self) -> None:
+        token = "gho_" + "C" * 36
+        event = self._make_event(detail=token)
+        assert event.detail == "[REDACTED]"
+
+    def test_github_app_token_in_detail_is_redacted(self) -> None:
+        token = "ghs_" + "D" * 36
+        event = self._make_event(detail=token)
+        assert event.detail == "[REDACTED]"
+
+    def test_anthropic_key_in_detail_is_redacted(self) -> None:
+        key = "sk-ant-" + "e" * 90
+        event = self._make_event(detail=key)
+        assert event.detail == "[REDACTED]"
+
+    def test_bearer_token_in_detail_is_redacted(self) -> None:
+        header = "Bearer " + "f" * 20
+        event = self._make_event(detail=header)
+        assert event.detail == "[REDACTED]"
+
+    def test_aws_key_in_detail_is_redacted(self) -> None:
+        key = "AKIA" + "G" * 16
+        event = self._make_event(detail=key)
+        assert event.detail == "[REDACTED]"
+
+    def test_text_field_is_not_redacted(self) -> None:
+        token = "ghp_" + "H" * 36
+        event = BackendEvent(
+            type=BackendEventType.progress,
+            text=token,
+            detail="normal detail",
+        )
+        assert event.text == token  # text is NOT redacted
+        assert event.detail == "normal detail"
+
+    def test_empty_detail_unchanged(self) -> None:
+        event = self._make_event(detail="")
+        assert event.detail == ""
+
+    def test_non_secret_detail_unchanged(self) -> None:
+        event = self._make_event(detail="Edit: src/app/main.py")
+        assert event.detail == "Edit: src/app/main.py"
+
+    def test_detail_defaults_to_empty_string(self) -> None:
+        event = BackendEvent(type=BackendEventType.progress, text="hello")
+        assert event.detail == ""

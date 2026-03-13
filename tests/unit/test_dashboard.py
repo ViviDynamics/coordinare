@@ -395,6 +395,94 @@ def test_broadcaster_concurrent_disconnect_safe() -> None:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# T005 — build_snapshot() performers-card path (US1 coverage)
+# ---------------------------------------------------------------------------
+
+
+def _make_mock_daemon_with_events(
+    phase: str = "monitoring_agent",
+    performer_events: list[dict] | None = None,
+) -> MagicMock:
+    daemon = MagicMock()
+    daemon.state = {
+        "phase": phase,
+        "error_count": 0,
+        "performer_events": performer_events or [],
+    }
+    daemon.state_store = MagicMock()
+    daemon.state_store.last_snapshot = None
+    return daemon
+
+
+def test_build_snapshot_includes_performer_events_key() -> None:
+    """build_snapshot() must always include performer_events in the output dict."""
+    store = DashboardStore()
+    daemon = _make_mock_daemon_with_events()
+    metrics = _make_mock_metrics()
+    health = _make_mock_health()
+    snap = store.build_snapshot(daemon, metrics, health)
+    assert "performer_events" in snap
+
+
+def test_build_snapshot_performer_events_empty_when_no_events() -> None:
+    store = DashboardStore()
+    daemon = _make_mock_daemon_with_events(performer_events=[])
+    metrics = _make_mock_metrics()
+    health = _make_mock_health()
+    snap = store.build_snapshot(daemon, metrics, health)
+    assert snap["performer_events"] == []
+
+
+def test_build_snapshot_performer_events_returned_when_present() -> None:
+    events = [
+        {"type": "tool_use", "text": "Read: src/app/main.py", "detail": ""},
+        {"type": "progress", "text": "Running tests", "detail": ""},
+    ]
+    store = DashboardStore()
+    daemon = _make_mock_daemon_with_events(performer_events=events)
+    metrics = _make_mock_metrics()
+    health = _make_mock_health()
+    snap = store.build_snapshot(daemon, metrics, health)
+    assert snap["performer_events"] == events
+    assert len(snap["performer_events"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# T006 — SSE /events endpoint includes performer_events (US1 coverage)
+# ---------------------------------------------------------------------------
+
+
+def test_sse_payload_includes_performer_events_when_state_has_events() -> None:
+    """The SSE stream's initial state_update must include performer_events."""
+    import json as _json
+
+    events = [{"type": "tool_use", "text": "Edit: app.py", "detail": ""}]
+
+    async def _collect() -> str:
+        store = DashboardStore()
+        daemon = _make_mock_daemon_with_events(performer_events=events)
+        metrics = _make_mock_metrics()
+        health = _make_mock_health()
+        gen = store.sse_stream(daemon, metrics, health)
+        try:
+            first_chunk = await gen.__anext__()
+        finally:
+            await gen.aclose()
+        return first_chunk
+
+    first_chunk = asyncio.run(_collect())
+    data_line = next(line for line in first_chunk.splitlines() if line.startswith("data:"))
+    payload = _json.loads(data_line[len("data:"):].strip())
+    assert "performer_events" in payload
+    assert payload["performer_events"] == events
+
+
+# ---------------------------------------------------------------------------
+# T032 — keepalive comment on timeout
+# ---------------------------------------------------------------------------
+
+
 def test_sse_generator_yields_keepalive_on_timeout() -> None:
     """When asyncio.wait_for times out, sse_stream() must yield a keepalive comment."""
 

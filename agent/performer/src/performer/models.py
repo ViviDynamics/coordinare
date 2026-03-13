@@ -8,12 +8,28 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 # ---------------------------------------------------------------------------
 # BackendEvent — normalised activity event emitted by any backend
 # ---------------------------------------------------------------------------
+
+_SECRET_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"github_pat_[A-Za-z0-9_]{82,}"),          # fine-grained PAT
+    re.compile(r"ghp_[A-Za-z0-9]{36}"),                    # classic PAT
+    re.compile(r"gho_[A-Za-z0-9]{36}"),                    # OAuth app token
+    re.compile(r"ghs_[A-Za-z0-9]{36}"),                    # App installation token
+    re.compile(r"sk-ant-[A-Za-z0-9\-_]{90,}"),             # Anthropic API key
+    re.compile(r"Bearer\s+[A-Za-z0-9\-._~+/]{20,}"),       # Bearer header value
+    re.compile(r"AKIA[0-9A-Z]{16}"),                        # AWS access key
+]
+
+
+def _redact_secrets(text: str) -> str:
+    for pattern in _SECRET_PATTERNS:
+        text = pattern.sub("[REDACTED]", text)
+    return text
 
 
 class BackendEventType(str, Enum):
@@ -30,6 +46,13 @@ class BackendEvent(BaseModel):
     type: BackendEventType
     text: str               # human-readable one-line summary (≤ 200 chars)
     detail: str = ""        # optional longer detail (file path, tool args, etc.)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _redact_sensitive_detail(cls, data: object) -> object:
+        if isinstance(data, dict) and "detail" in data:
+            data["detail"] = _redact_secrets(str(data["detail"]))
+        return data
 
 if TYPE_CHECKING:
     from performer.backends.base import BackendAdapter
