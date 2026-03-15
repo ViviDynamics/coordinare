@@ -112,6 +112,12 @@ def test_service_rejects_both_auth_and_token() -> None:
         GitHubService(org="acme", project_number=1, auth=auth, token="also-tok")
 
 
+def test_service_rejects_non_protocol_auth_object() -> None:
+    """auth= that does not satisfy GitHubAuth protocol must raise ValueError."""
+    with pytest.raises(ValueError, match="must satisfy the GitHubAuth protocol"):
+        GitHubService(org="acme", project_number=1, auth=object())
+
+
 def test_service_accepts_legacy_token_kwarg() -> None:
     svc = GitHubService(org="acme", project_number=1, token="legacy-tok")
     assert svc._auth is not None
