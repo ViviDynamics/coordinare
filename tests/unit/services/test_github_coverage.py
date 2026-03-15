@@ -41,12 +41,14 @@ class _AsyncFakeClient:
 def _svc(*responses: Any) -> GitHubService:
     svc = GitHubService(token="tok", org="acme", project_number=1)
     svc._client = _FakeClient(list(responses))
+    svc._last_token = "tok"
     return svc
 
 
 def _async_svc(*responses: Any) -> GitHubService:
     svc = GitHubService(token="tok", org="acme", project_number=1)
     svc._client = _AsyncFakeClient(list(responses))
+    svc._last_token = "tok"
     return svc
 
 
@@ -65,6 +67,7 @@ def _initialized_svc(*extra_responses: Any) -> GitHubService:
         },
     }
     svc._client = _FakeClient(list(extra_responses))
+    svc._last_token = "tok"
     return svc
 
 
@@ -76,7 +79,7 @@ def _initialized_svc(*extra_responses: Any) -> GitHubService:
 def test_build_client_returns_gql_client() -> None:
     """_build_client() produces a usable GQL Client object."""
     svc = GitHubService(token="tok", org="acme", project_number=1)
-    client = svc._build_client()
+    client = svc._build_client("tok")
     # Just verify it is a gql Client (duck-type: has execute / execute_async)
     assert hasattr(client, "execute") or hasattr(client, "execute_async")
 
@@ -130,6 +133,7 @@ async def test_execute_429_with_invalid_retry_after_defaults_to_60(
 
     svc = GitHubService(token="tok", org="acme", project_number=1)
     svc._client = _InvalidRetryClient()
+    svc._last_token = "tok"
 
     with pytest.raises(RateLimitedGitHubError) as exc_info:
         await svc._execute("query { __typename }", {})
@@ -165,6 +169,7 @@ async def test_execute_4xx_raises_permanent_error() -> None:
 
     svc = GitHubService(token="tok", org="acme", project_number=1)
     svc._client = _ClientError4xx()
+    svc._last_token = "tok"
 
     with pytest.raises(PermanentGitHubError):
         await svc._execute("query { __typename }", {})
@@ -188,6 +193,7 @@ async def test_execute_oserror_raises_transient() -> None:
 
     svc = GitHubService(token="tok", org="acme", project_number=1)
     svc._client = _OSErrorClient()
+    svc._last_token = "tok"
 
     with pytest.raises(TransientGitHubError):
         await svc._execute("query { __typename }", {})
@@ -211,6 +217,7 @@ async def test_execute_value_error_raises_permanent() -> None:
 
     svc = GitHubService(token="tok", org="acme", project_number=1)
     svc._client = _ValueErrorClient()
+    svc._last_token = "tok"
 
     with pytest.raises(PermanentGitHubError):
         await svc._execute("query { __typename }", {})

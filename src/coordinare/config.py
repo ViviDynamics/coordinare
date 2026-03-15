@@ -11,6 +11,30 @@ from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, Settings
 from coordinare.models.notification import ChannelType, EventType
 
 # ---------------------------------------------------------------------------
+# 015 — Webhook config model
+# ---------------------------------------------------------------------------
+
+
+class WebhookConfig(BaseModel):
+    enabled: bool = False
+    secret: SecretStr | None = None
+    path: str = "/webhook/github"
+
+    @field_validator("path", mode="before")
+    @classmethod
+    def _validate_path(cls, v: Any) -> str:
+        path_str = str(v).strip()
+        if not path_str:
+            msg = "webhooks.path must not be empty"
+            raise ValueError(msg)
+        if any(ch.isspace() for ch in path_str):
+            msg = "webhooks.path must not contain whitespace"
+            raise ValueError(msg)
+        if not path_str.startswith("/"):
+            path_str = "/" + path_str
+        return path_str
+
+# ---------------------------------------------------------------------------
 # 006 — Notification & Alerting config models
 # ---------------------------------------------------------------------------
 
@@ -228,7 +252,15 @@ class ProjectConfiguration(BaseSettings):
     project_name: str
     github_org: str
     github_project_number: int
-    github_token: SecretStr
+
+    # Auth mode — "pat" (default) or "app"
+    github_auth: Literal["pat", "app"] = "pat"
+    github_token: SecretStr | None = None
+
+    # GitHub App credentials (required when github_auth == "app")
+    github_app_id: int | None = None
+    github_private_key_path: Path | None = None
+    github_installation_id: int | None = None
 
     agent_transport: Literal["subprocess", "ssh", "kubernetes"] = "subprocess"
     agent_executable: str = ""
@@ -244,7 +276,8 @@ class ProjectConfiguration(BaseSettings):
 
     human_reviewers: list[str]
 
-    poll_interval_seconds: int = Field(default=30, ge=10, le=300)
+    poll_interval_seconds: int = Field(default=30, ge=0, le=3600)
+    webhooks: WebhookConfig = Field(default_factory=WebhookConfig)
     blocked_reminder_hours: int = 24
     health_check_port: int = 8080
     dashboard_port: int = Field(default=8090)
@@ -298,6 +331,8 @@ class ProjectConfiguration(BaseSettings):
 
     @model_validator(mode="after")
     def _validate_retry_backoff_caps(self) -> ProjectConfiguration:
+        if self.poll_interval_seconds == 0:
+            return self
         poll = float(self.poll_interval_seconds)
         retry_fields = (
             "github_retry", "slack_retry", "smtp_retry",
@@ -313,26 +348,47 @@ class ProjectConfiguration(BaseSettings):
                 raise ValueError(msg)
         return self
 
+    @model_validator(mode="after")
+    def _validate_auth_config(self) -> ProjectConfiguration:
+        if self.github_auth == "pat":
+            if not self.github_token or not self.github_token.get_secret_value().strip():
+                msg = "github.auth=pat requires github.token to be set"
+                raise ValueError(msg)
+            token = self.github_token.get_secret_value().strip()
+            if token.startswith("${") and token.endswith("}"):
+                msg = (
+                    "github_token must be a real token value; unresolved placeholder detected. "
+                    "Set COORDINARE_GITHUB_TOKEN or update config.yaml."
+                )
+                raise ValueError(msg)
+        elif self.github_auth == "app":
+            missing = []
+            if self.github_app_id is None:
+                missing.append("github_app_id")
+            if self.github_private_key_path is None:
+                missing.append("github_private_key_path")
+            if self.github_installation_id is None:
+                missing.append("github_installation_id")
+            if missing:
+                msg = (
+                    "github.auth=app requires github_app_id, github_private_key_path, "
+                    f"and github_installation_id (missing: {', '.join(missing)})"
+                )
+                raise ValueError(msg)
+        return self
+
+    @model_validator(mode="after")
+    def _validate_webhook_config(self) -> ProjectConfiguration:
+        if self.webhooks.enabled and (not self.webhooks.secret or not self.webhooks.secret.get_secret_value().strip()):
+            msg = "webhooks.secret is required when webhooks.enabled=true"
+            raise ValueError(msg)
+        return self
+
     @field_validator("human_reviewers")
     @classmethod
     def _validate_human_reviewers(cls, value: list[str]) -> list[str]:
         if not value:
             msg = "human_reviewers must contain at least one entry"
-            raise ValueError(msg)
-        return value
-
-    @field_validator("github_token")
-    @classmethod
-    def _validate_github_token(cls, value: SecretStr) -> SecretStr:
-        token = value.get_secret_value().strip()
-        if not token:
-            msg = "github_token must be non-empty"
-            raise ValueError(msg)
-        if token.startswith("${") and token.endswith("}"):
-            msg = (
-                "github_token must be a real token value; unresolved placeholder detected. "
-                "Set COORDINARE_GITHUB_TOKEN or update config.yaml."
-            )
             raise ValueError(msg)
         return value
 

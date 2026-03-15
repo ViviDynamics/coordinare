@@ -68,7 +68,8 @@ def test_missing_field_exits_one(
         _cmd_config_validate(_make_args(config=config_file))
     assert exc_info.value.code == 1
     out = capsys.readouterr().out
-    assert "github_token" in out
+    # Error now comes from model_validator (github.auth=pat requires github.token)
+    assert "github" in out.lower()
 
 
 def test_unknown_field_exits_one(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:

@@ -37,7 +37,7 @@ class _TestGitHubService(GitHubService):
         super().__init__(token="tok", org="acme", project_number=1)
         self._fake_client = client
 
-    def _build_client(self):
+    def _build_client(self, token: str = ""):
         return self._fake_client
 
 
@@ -162,6 +162,7 @@ async def test_execute_429_raises_rate_limited_error(monkeypatch: pytest.MonkeyP
 
     service = GitHubService(token="tok", org="acme", project_number=1)
     service._client = _RateLimitClient(retry_after="5")
+    service._last_token = "tok"  # prevent _execute from rebuilding the client
 
     with pytest.raises(RateLimitedGitHubError) as exc_info:
         await service._execute("query { __typename }", {})
@@ -175,6 +176,7 @@ async def test_execute_500_raises_transient_error() -> None:
     """HTTP 500 -> TransientGitHubError (not PermanentGitHubError)."""
     service = GitHubService(token="tok", org="acme", project_number=1)
     service._client = _ServerErrorClient()
+    service._last_token = "tok"  # prevent _execute from rebuilding the client
 
     with pytest.raises(TransientGitHubError):
         await service._execute("query { __typename }", {})

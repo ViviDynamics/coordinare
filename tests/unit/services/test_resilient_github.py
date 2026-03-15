@@ -87,7 +87,7 @@ class _TestGitHubService(GitHubService):
         )
         self._fake_client = client
 
-    def _build_client(self) -> _FakeClient:  # type: ignore[override]
+    def _build_client(self, token: str = "") -> _FakeClient:  # type: ignore[override]
         return self._fake_client
 
 

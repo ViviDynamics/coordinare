@@ -339,14 +339,33 @@ class GitHubService:
 
     def __init__(
         self,
-        token: str,
         org: str,
         project_number: int,
         endpoint: str = "https://api.github.com/graphql",
         circuit_breaker: Any = None,
         retry_kwargs: dict[str, Any] | None = None,
+        # Legacy positional arg — kept for backwards compat with callers
+        # that pass token= directly; prefer auth= for new callers.
+        token: str | None = None,
+        auth: Any = None,  # GitHubAuth — typed Any to avoid circular import at class body level
     ) -> None:
-        self._token = token
+        from coordinare.auth.pat import PatAuth
+        from coordinare.auth.protocol import GitHubAuth
+
+        if auth is not None and token is not None:
+            msg = "GitHubService accepts only one of auth= or token=, not both"
+            raise ValueError(msg)
+        if auth is not None:
+            if not isinstance(auth, GitHubAuth):
+                msg = f"auth= must satisfy the GitHubAuth protocol, got {type(auth)!r}"
+                raise ValueError(msg)
+            self._auth: GitHubAuth = auth
+        elif token is not None:
+            self._auth = PatAuth(token)
+        else:
+            msg = "GitHubService requires either auth= or token="
+            raise ValueError(msg)
+
         self._org = org
         self._project_number = project_number
         self._endpoint = endpoint
@@ -354,20 +373,26 @@ class GitHubService:
         self._retry_kwargs = retry_kwargs if retry_kwargs is not None else dict(self._DEFAULT_RETRY_KWARGS)
 
         self._client: Client | None = None
+        self._last_token: str | None = None
         self.project_id: str | None = None
         self.project_title: str | None = None
         self.field_cache: dict[str, Any] = {}
 
-    def _build_client(self) -> Client:
+    async def _current_token(self) -> str:
+        return await self._auth.get_token()
+
+    def _build_client(self, token: str) -> Client:
         transport = AIOHTTPTransport(
             url=self._endpoint,
-            headers={"Authorization": f"bearer {self._token}"},
+            headers={"Authorization": f"bearer {token}"},
         )
         return Client(transport=transport, fetch_schema_from_transport=False)
 
     async def _execute(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
-        if self._client is None:
-            self._client = self._build_client()
+        token = await self._current_token()
+        if self._client is None or token != self._last_token:
+            self._client = self._build_client(token)
+            self._last_token = token
         document = gql(query)
         try:
             if hasattr(self._client, "execute_async"):

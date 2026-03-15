@@ -57,7 +57,7 @@ def test_env_var_overrides_yaml(monkeypatch: pytest.MonkeyPatch, tmp_path) -> No
     assert config.github_token.get_secret_value() == "token-from-env"
 
 
-@pytest.mark.parametrize("value", [9, 301])
+@pytest.mark.parametrize("value", [-1, 3601])
 def test_poll_interval_bounds(value: int) -> None:
     with pytest.raises(ValidationError):
         ProjectConfiguration(

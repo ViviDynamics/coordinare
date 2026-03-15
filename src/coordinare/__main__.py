@@ -16,6 +16,7 @@ import structlog
 import uvicorn
 
 from coordinare import configure_logging
+from coordinare.auth import build_auth, validate_auth_config
 from coordinare.config import ProjectConfiguration, ServiceCircuitConfig, ServiceRetryConfig
 from coordinare.config_validation import _load_raw_yaml, validate_config
 from coordinare.daemon import CoordinareDaemon, RuntimeExecutionError
@@ -275,8 +276,9 @@ async def _bootstrap_services(
 ) -> CoordinareState:
     r = config.resilience
 
+    _auth = build_auth(config)
     github = GitHubService(
-        token=config.github_token.get_secret_value(),
+        auth=_auth,
         org=config.github_org,
         project_number=config.github_project_number,
         circuit_breaker=circuit_breakers["github"],
@@ -445,6 +447,16 @@ async def _run(config: ProjectConfiguration) -> None:
     server.install_signal_handlers = lambda: None  # type: ignore[method-assign]
 
     dashboard_app = create_dashboard_app(dashboard_store, daemon, METRICS, HEALTH)
+
+    if config.webhooks.enabled and config.webhooks.secret:
+        from coordinare.dashboard import register_webhook_route
+        register_webhook_route(
+            dashboard_app,
+            path=config.webhooks.path,
+            secret=config.webhooks.secret.get_secret_value(),
+            trigger=daemon._webhook_trigger,
+        )
+
     dashboard_server = uvicorn.Server(
         uvicorn.Config(
             dashboard_app,
@@ -560,6 +572,13 @@ def main() -> None:
         env_var_fields_count=result.env_var_fields_count,
         deprecated_fields_detected=bool(result.warnings),
     )
+
+    # Step 4b: Validate auth config (key file exists for App mode)
+    validate_auth_config(config)
+
+    # Step 4c: Warn when polling is disabled but no webhook trigger is configured
+    if config.poll_interval_seconds == 0 and not config.webhooks.enabled:
+        logger.warning("no_trigger_source_configured")
 
     # Step 5: Record build info (static metadata; set once at startup)
     _started_at = datetime.now(UTC).isoformat()

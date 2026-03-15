@@ -40,7 +40,7 @@ def _write_valid_config(tmp_path: Path, extra: str = "") -> Path:
 
 
 def test_missing_required_field_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Missing required field (github_token) → ConfigFieldError with error_type==missing."""
+    """Missing github_token in PAT mode → config validation fails with auth error."""
     monkeypatch.delenv("COORDINARE_GITHUB_TOKEN", raising=False)
     config_file = tmp_path / "config.yaml"
     config_file.write_text("\n".join([
@@ -52,9 +52,9 @@ def test_missing_required_field_error(tmp_path: Path, monkeypatch: pytest.Monkey
     ]))
     result = validate_config(config_file)
     assert not result.passed
-    missing = [e for e in result.errors if "github_token" in e.field_path]
-    assert missing, f"Expected missing github_token error, got: {result.errors}"
-    assert missing[0].error_type == ErrorType.missing
+    # github_token is now optional; the auth model_validator produces the error
+    auth_errors = [e for e in result.errors if "github" in e.fix_hint.lower()]
+    assert auth_errors, f"Expected auth config error, got: {result.errors}"
 
 
 def test_type_mismatch_error(tmp_path: Path) -> None:
@@ -75,7 +75,7 @@ def test_all_errors_collected_in_single_pass(tmp_path: Path, monkeypatch: pytest
     config_file.write_text("github_project_number: 12\nhuman_reviewers: [alice]")
     result = validate_config(config_file)
     assert not result.passed
-    assert len(result.errors) >= 3
+    assert len(result.errors) >= 2
 
 
 def test_valid_config_passes(tmp_path: Path) -> None:
@@ -134,8 +134,12 @@ def test_empty_string_env_var_treated_as_absent(
     ]))
     result = validate_config(config_file)
     assert not result.passed
-    token_errors = [e for e in result.errors if "github_token" in e.field_path]
-    assert token_errors, f"Expected error for github_token, got: {result.errors}"
+    # github_token is now optional; PAT mode with absent/empty token triggers auth model validator
+    token_errors = [
+        e for e in result.errors
+        if "github_token" in e.field_path or "github" in e.fix_hint.lower()
+    ]
+    assert token_errors, f"Expected error for github_token/auth config, got: {result.errors}"
 
 
 def test_env_var_fields_count_computed(

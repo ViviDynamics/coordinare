@@ -45,7 +45,7 @@ async def test_open_circuit_poll_cycle_within_budget() -> None:
     baseline_daemon = CoordinareDaemon(
         baseline_graph,
         max_cycles=num_cycles,
-        poll_interval_seconds=0,
+        poll_interval_seconds=1,
         sleep_func=_instant_sleep,
     )
 
@@ -59,7 +59,7 @@ async def test_open_circuit_poll_cycle_within_budget() -> None:
     open_daemon = CoordinareDaemon(
         open_graph,
         max_cycles=None,  # Don't use max_cycles since CB errors don't increment count
-        poll_interval_seconds=0,
+        poll_interval_seconds=1,
         sleep_func=_instant_sleep,
     )
     open_graph._daemon = open_daemon

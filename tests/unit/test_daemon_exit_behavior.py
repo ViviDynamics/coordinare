@@ -203,6 +203,69 @@ async def test_daemon_increments_circuit_open_metric() -> None:
     mock_counter.inc.assert_called()
 
 
+@pytest.mark.asyncio
+async def test_circuit_open_poll_zero_does_not_hang() -> None:
+    """poll=0 + CircuitOpenError must not block indefinitely.
+
+    Regression: before fix, _wait_for_next_cycle() in poll=0 mode blocked
+    on asyncio.wait({trigger, stop}) — neither fires when GitHub is down.
+    The CircuitOpenError handler now uses its own sleep-based backoff.
+    """
+    call_count = 0
+
+    class _CircuitThenSucceed:
+        async def ainvoke(self, state):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise CircuitOpenError("github")
+            updated = dict(state)
+            updated["phase"] = "idle"
+            return updated
+
+    # max_cycles=1: stops after the first *successful* cycle.
+    # Flow: CircuitOpenError → backoff (instant) → success (cycle_count=1 → stop)
+    daemon = CoordinareDaemon(
+        _CircuitThenSucceed(),
+        poll_interval_seconds=0,
+        max_cycles=1,
+        sleep_func=_no_sleep,
+    )
+    # Must complete without hanging (pytest-timeout will catch a hang)
+    await daemon.start()
+    assert call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_circuit_open_poll_zero_stop_unblocks_backoff() -> None:
+    """stop() must unblock the circuit-open backoff in poll=0 mode immediately."""
+
+    # Use a blocking sleep so the daemon is genuinely suspended in the backoff
+    # when stop() fires — if stop() doesn't unblock it the test will timeout.
+    unblock = asyncio.Event()
+
+    async def blocking_sleep(_seconds):
+        await unblock.wait()
+
+    class _AlwaysCircuitOpen:
+        async def ainvoke(self, state):
+            raise CircuitOpenError("github")
+
+    daemon = CoordinareDaemon(
+        _AlwaysCircuitOpen(),
+        poll_interval_seconds=0,
+        sleep_func=blocking_sleep,
+    )
+
+    daemon_task = asyncio.create_task(daemon.start())
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)  # let daemon enter the backoff wait
+
+    daemon.stop()
+    await asyncio.wait_for(daemon_task, timeout=2.0)
+    assert not daemon.running
+
+
 class _SlowGraph:
     """Graph that blocks indefinitely — simulates long-running notification retries."""
 

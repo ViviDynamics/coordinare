@@ -37,6 +37,11 @@ _PHASE_TRANSITION_METRIC: dict[tuple[str, str], str] = {
 
 # Maps circuit-breaker service names to the HEALTH subsystem they represent.
 # Services not listed here are not registered as health probes and are skipped.
+# When the circuit is open and poll=0 (webhook-only mode), the daemon cannot
+# rely on _wait_for_next_cycle() for recovery — no webhook will arrive if
+# GitHub is down. Use a fixed backoff so the circuit can probe-recover.
+_CIRCUIT_OPEN_BACKOFF_SECONDS: int = 60
+
 _CIRCUIT_TO_HEALTH_SUBSYSTEM: dict[str, str] = {
     "github": "github",
     "agent": "agent",
@@ -65,6 +70,7 @@ class CoordinareDaemon:
         state_store: StateStore | None = None,
         idle_threshold_seconds: int = 1800,
         dashboard_store: DashboardStore | None = None,
+        webhook_trigger: asyncio.Event | None = None,
     ) -> None:
         self._graph = graph
         self._run_mode = run_mode
@@ -74,6 +80,7 @@ class CoordinareDaemon:
         self._sleep = sleep_func
         self._running = False
         self._stop_event = asyncio.Event()
+        self._webhook_trigger: asyncio.Event = webhook_trigger or asyncio.Event()
         self._state: CoordinareState = initial_state()
         self._cycle_active = False
         self._stop_during_cycle = False
@@ -192,6 +199,37 @@ class CoordinareDaemon:
                 error=str(exc),
             )
 
+    async def _wait_for_next_cycle(self) -> None:
+        """Wait for the next polling cycle, honouring webhook triggers and poll=0 mode."""
+        poll = self._poll_interval_seconds
+        if poll > 0:
+            # Race the poll sleep against a webhook trigger so either can wake the loop.
+            # Using self._sleep makes this injectable/mockable in tests.
+            sleep_task = asyncio.ensure_future(self._sleep(poll))
+            trigger_task = asyncio.ensure_future(self._webhook_trigger.wait())
+            done, pending = await asyncio.wait(
+                {sleep_task, trigger_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+            # Only consume the trigger if it actually fired; a webhook arriving
+            # just as the sleep expires should not be silently discarded.
+            if trigger_task in done:
+                self._webhook_trigger.clear()
+        else:
+            # Polling disabled — block until a webhook trigger or stop event fires
+            trigger_task = asyncio.ensure_future(self._webhook_trigger.wait())
+            stop_task = asyncio.ensure_future(self._stop_event.wait())
+            done, pending = await asyncio.wait(
+                {trigger_task, stop_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+            if trigger_task in done:
+                self._webhook_trigger.clear()
+
     def stop(self) -> None:
         if self._cycle_active:
             self._stop_during_cycle = True
@@ -304,6 +342,9 @@ class CoordinareDaemon:
                 )
             except Exception as exc:
                 logger.warning("daemon_restart_notification_failed", error=str(exc))
+
+        if self._poll_interval_seconds == 0:
+            logger.info("polling_disabled")
 
         # T019: Track prolonged idle
         last_activity_at = monotonic()
@@ -426,7 +467,7 @@ class CoordinareDaemon:
                     self.stop()
                     clear_cycle_id()
                     break
-                await self._sleep(self._poll_interval_seconds)
+                await self._wait_for_next_cycle()
             except asyncio.CancelledError:
                 self._cycle_active = False
                 clear_cycle_id()
@@ -451,7 +492,28 @@ class CoordinareDaemon:
                     )
                 # Do NOT set self._running = False — continue the poll loop
                 clear_cycle_id()
-                await self._sleep(self._poll_interval_seconds)
+                # Use a dedicated backoff rather than _wait_for_next_cycle():
+                # in poll=0 (webhook-only) mode, _wait_for_next_cycle blocks
+                # until a webhook fires — but if GitHub is down the circuit is
+                # open AND no webhooks arrive, causing an indefinite hang.
+                # This backoff always makes forward progress and respects stop().
+                _backoff = (
+                    self._poll_interval_seconds
+                    if self._poll_interval_seconds > 0
+                    else _CIRCUIT_OPEN_BACKOFF_SECONDS
+                )
+                _sleep_t = asyncio.ensure_future(self._sleep(_backoff))
+                _stop_t = asyncio.ensure_future(self._stop_event.wait())
+                try:
+                    _cb_done, _cb_pending = await asyncio.wait(
+                        {_sleep_t, _stop_t}, return_when=asyncio.FIRST_COMPLETED
+                    )
+                    for _t in _cb_pending:
+                        _t.cancel()
+                except asyncio.CancelledError:
+                    _sleep_t.cancel()
+                    _stop_t.cancel()
+                    break  # treat external cancellation as stop signal
             except Exception as exc:
                 self._cycle_active = False
                 self._state["error_count"] = self._state.get("error_count", 0) + 1

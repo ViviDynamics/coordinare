@@ -21,7 +21,7 @@ class _TestGitHubService(GitHubService):
         super().__init__(token="tok", org="acme", project_number=1)
         self._responses = responses
 
-    def _build_client(self):
+    def _build_client(self, token: str = ""):
         return _FakeClient(self._responses)
 
 
