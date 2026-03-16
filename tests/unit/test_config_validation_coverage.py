@@ -1,7 +1,8 @@
-"""Tests for config_validation.py private helpers (coverage lines 151,154-157,169,171,185,205)."""
+"""Tests for config_validation.py private helpers (coverage lines 151,154-157,169,171,185,205,317-325)."""
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -11,6 +12,7 @@ from coordinare.config_validation import (
     _dotted_path,
     _load_raw_yaml,
     _map_pydantic_error_type,
+    validate_config,
 )
 
 # ---------------------------------------------------------------------------
@@ -121,3 +123,76 @@ def test_count_env_var_fields_counts_field_not_in_raw(
     config = ProjectConfiguration(**raw_without_poll)
     count = _count_env_var_fields(raw_without_poll, config)
     assert count >= 1
+
+
+# ---------------------------------------------------------------------------
+# validate_config — OSError path when loading YAML (lines 317-325)
+# ---------------------------------------------------------------------------
+
+
+def test_validate_config_returns_failure_on_os_error_loading_yaml(tmp_path: Path) -> None:
+    """When _load_raw_yaml raises OSError validate_config returns passed=False."""
+    # Create a real file so discovery succeeds and _load_raw_yaml is called
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text("project_name: test\n")
+
+    with patch(
+        "coordinare.config_validation._load_raw_yaml",
+        side_effect=OSError("disk read error"),
+    ):
+        result = validate_config(config_file)
+
+    assert result.passed is False
+    assert len(result.errors) >= 1
+    error = result.errors[0]
+    assert error.error_type == ErrorType.invalid_value
+    # The fix_hint should contain the OSError message
+    assert "disk read error" in error.fix_hint
+
+
+def test_validate_config_returns_failure_on_file_not_found(tmp_path: Path) -> None:
+    """FileNotFoundError during YAML load → ConfigValidationResult with passed=False (line 306)."""
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text("project_name: test\n")
+
+    with patch(
+        "coordinare.config_validation._load_raw_yaml",
+        side_effect=FileNotFoundError("no such file"),
+    ):
+        result = validate_config(config_file)
+
+    assert result.passed is False
+    assert len(result.errors) >= 1
+    assert result.errors[0].error_type == ErrorType.missing
+
+
+# ---------------------------------------------------------------------------
+# _count_env_var_fields — False branch at line 206 (raw value == resolved value)
+# ---------------------------------------------------------------------------
+
+
+def test_count_env_var_fields_no_increment_when_values_match(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Line 206->193: when the YAML raw value equals the resolved config value,
+    count is NOT incremented and the loop continues (False branch of line 206)."""
+
+    from coordinare.config import ProjectConfiguration
+
+    # Build a minimal valid config so from_yaml succeeds
+    config_yaml = tmp_path / "config.yaml"
+    config_yaml.write_text(
+        "project_name: Demo\n"
+        "github_org: acme\n"
+        "github_project_number: 1\n"
+        "github_token: tok\n"
+        "human_reviewers:\n"
+        "  - alice\n"
+    )
+    config = ProjectConfiguration.from_yaml(config_yaml)
+
+    # Set an env var whose value already matches the config (raw == resolved → no increment)
+    monkeypatch.setenv("COORDINARE_PROJECT_NAME", "Demo")
+
+    raw = {"project_name": "Demo"}
+    count = _count_env_var_fields(raw, config)
+    # project_name is in raw AND raw value "Demo" == resolved "Demo" → not counted
+    assert count == 0

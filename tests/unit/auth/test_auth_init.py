@@ -1,7 +1,6 @@
 """Unit tests for coordinare.auth — build_auth() and validate_auth_config() (015)."""
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -10,7 +9,6 @@ import pytest
 from coordinare.auth import build_auth, validate_auth_config
 from coordinare.auth.app import AppAuth
 from coordinare.auth.pat import PatAuth
-
 
 # ---------------------------------------------------------------------------
 # build_auth helpers

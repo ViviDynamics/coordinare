@@ -181,3 +181,19 @@ def test_metrics_returns_200_with_prometheus_format() -> None:
     resp = client.get("/metrics")
     assert resp.status_code == 200
     assert "text/plain" in resp.headers["content-type"]
+
+
+# ---------------------------------------------------------------------------
+# HealthRegistry.update() — unregistered probe → early return (line 116)
+# ---------------------------------------------------------------------------
+
+
+def test_health_registry_update_ignores_unregistered_probe() -> None:
+    """Line 116 of observability.py: update() silently returns for unknown probe names."""
+    from coordinare.observability import HealthStatus
+
+    registry = HealthRegistry(timeout_seconds=5)
+    # 'unknown-probe' is not registered → should not raise, state unchanged
+    registry.update("unknown-probe", HealthStatus.healthy)
+    snapshot = registry.snapshot()
+    assert all(p.subsystem_name != "unknown-probe" for p in snapshot.probes)

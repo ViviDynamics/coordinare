@@ -32,6 +32,8 @@ def _make_mock_daemon(
     daemon.state = {"phase": phase, "error_count": error_count}
     daemon.state_store = MagicMock()
     daemon.state_store.last_snapshot = snapshot
+    daemon._cycle_active = False
+    daemon.running = True
     return daemon
 
 
@@ -92,10 +94,10 @@ def _make_app(
 # ---------------------------------------------------------------------------
 
 
-def test_dashboard_html_under_28kb() -> None:
-    """T036: _DASHBOARD_HTML must not exceed the 28 KB size budget (raised to accommodate Performers card)."""
+def test_dashboard_html_under_32kb() -> None:
+    """T036: _DASHBOARD_HTML must not exceed the 32 KB size budget (raised to accommodate force-poll button, 016)."""
     size = len(_DASHBOARD_HTML.encode())
-    assert size < 28 * 1024, f"_DASHBOARD_HTML is {size} bytes (limit: {28 * 1024})"
+    assert size < 32 * 1024, f"_DASHBOARD_HTML is {size} bytes (limit: {32 * 1024})"
 
 
 # ---------------------------------------------------------------------------
@@ -412,6 +414,8 @@ def _make_mock_daemon_with_events(
     }
     daemon.state_store = MagicMock()
     daemon.state_store.last_snapshot = None
+    daemon._cycle_active = False
+    daemon.running = True
     return daemon
 
 
@@ -507,3 +511,234 @@ def test_sse_generator_yields_keepalive_on_timeout() -> None:
 
     keepalive = asyncio.run(_get_keepalive())
     assert keepalive == ": keepalive\n\n", repr(keepalive)
+
+
+# ---------------------------------------------------------------------------
+# Broadcaster.shutdown() — sends None sentinel to all subscriber queues
+# ---------------------------------------------------------------------------
+
+
+def test_broadcaster_shutdown_sends_none_sentinel() -> None:
+    async def _run() -> None:
+        b = SSEBroadcaster()
+        q = b.subscribe()
+        b.shutdown()
+        sentinel = await asyncio.wait_for(q.get(), timeout=1.0)
+        assert sentinel is None
+
+    asyncio.run(_run())
+
+
+def test_broadcaster_shutdown_sends_sentinel_to_all_queues() -> None:
+    async def _run() -> None:
+        b = SSEBroadcaster()
+        q1 = b.subscribe()
+        q2 = b.subscribe()
+        b.shutdown()
+        s1 = await asyncio.wait_for(q1.get(), timeout=1.0)
+        s2 = await asyncio.wait_for(q2.get(), timeout=1.0)
+        assert s1 is None
+        assert s2 is None
+
+    asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# DashboardStore.shutdown() — delegates to broadcaster
+# ---------------------------------------------------------------------------
+
+
+def test_store_shutdown_delegates_to_broadcaster() -> None:
+    store = DashboardStore()
+    store.broadcaster = MagicMock()
+    store.shutdown()
+    store.broadcaster.shutdown.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# sse_stream() None sentinel exits the generator cleanly
+# ---------------------------------------------------------------------------
+
+
+def test_sse_stream_exits_on_none_sentinel() -> None:
+    async def _run() -> list[str]:
+        store = DashboardStore()
+        daemon = _make_mock_daemon()
+        metrics = _make_mock_metrics()
+        health = _make_mock_health()
+        gen = store.sse_stream(daemon, metrics, health)
+        first = await gen.__anext__()  # initial state_update
+        # Put the shutdown sentinel into the queue while generator is suspended
+        store.broadcaster.shutdown()
+        chunks = [first]
+        try:
+            async for chunk in gen:
+                chunks.append(chunk)
+        finally:
+            await gen.aclose()
+        return chunks
+
+    chunks = asyncio.run(_run())
+    assert len(chunks) == 1
+    assert chunks[0].startswith("event: state_update")
+
+
+# ---------------------------------------------------------------------------
+# build_snapshot() exception fallback for metrics counter
+# ---------------------------------------------------------------------------
+
+
+def test_build_snapshot_cycles_exception_fallback() -> None:
+    store = DashboardStore()
+    daemon = _make_mock_daemon()
+    metrics = _make_mock_metrics()
+    metrics.cycles_completed_total._value.get.side_effect = Exception("prometheus broken")
+    health = _make_mock_health()
+    snap = store.build_snapshot(daemon, metrics, health)
+    assert snap["cycles_completed"] == 0
+
+
+# ---------------------------------------------------------------------------
+# build_snapshot() performer_logs from agent_service.get_agent_logs()
+# ---------------------------------------------------------------------------
+
+
+def test_build_snapshot_performer_logs_when_agent_active() -> None:
+    store = DashboardStore()
+    agent_service = MagicMock()
+    agent_service.get_agent_logs.return_value = ["line one", "line two"]
+    daemon = _make_mock_daemon()
+    daemon.state = {
+        "phase": "monitoring_agent",
+        "error_count": 0,
+        "agent_service": agent_service,
+    }
+    metrics = _make_mock_metrics()
+    health = _make_mock_health()
+    snap = store.build_snapshot(daemon, metrics, health)
+    assert snap["performer_logs"] == ["line one", "line two"]
+
+
+def test_build_snapshot_performer_logs_empty_when_no_agent() -> None:
+    store = DashboardStore()
+    daemon = _make_mock_daemon()
+    daemon.state = {"phase": "idle", "error_count": 0}
+    metrics = _make_mock_metrics()
+    health = _make_mock_health()
+    snap = store.build_snapshot(daemon, metrics, health)
+    assert snap["performer_logs"] == []
+
+
+# ---------------------------------------------------------------------------
+# GET /events endpoint — returns text/event-stream
+# ---------------------------------------------------------------------------
+
+
+def test_events_endpoint_returns_text_event_stream() -> None:
+    """GET /events must return text/event-stream with a state_update event.
+
+    Patches sse_stream to a finite generator so TestClient doesn't hang on
+    the 15-second asyncio.wait_for inside the real generator.
+    """
+
+    async def _finite_stream(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        yield "event: state_update\ndata: {}\n\n"
+
+    store = DashboardStore()
+    daemon = _make_mock_daemon()
+    metrics = _make_mock_metrics()
+    health = _make_mock_health()
+    app = create_dashboard_app(store, daemon, metrics, health)
+
+    with patch.object(store, "sse_stream", _finite_stream):
+        client = TestClient(app)
+        resp = client.get("/events")
+
+    assert resp.status_code == 200
+    assert "text/event-stream" in resp.headers["content-type"]
+    assert "event: state_update" in resp.text
+
+
+# ---------------------------------------------------------------------------
+# GET /api/performer-logs — streaming log endpoint
+# ---------------------------------------------------------------------------
+
+
+def test_performer_logs_endpoint_no_agent_service() -> None:
+    daemon = _make_mock_daemon()
+    daemon.state = {"phase": "idle", "error_count": 0}
+    client = _make_app(daemon=daemon)
+    resp = client.get("/api/performer-logs")
+    assert resp.status_code == 200
+    assert "no performer active" in resp.text
+
+
+def test_performer_logs_endpoint_streams_initial_logs() -> None:
+    """Patch asyncio.sleep to a no-op and make getter raise on the second call
+    so the infinite while-loop exits without hanging the test."""
+    from unittest.mock import AsyncMock
+
+    agent_service = MagicMock()
+    agent_service.get_agent_logs.side_effect = [["alpha", "beta"], RuntimeError("stop")]
+    daemon = _make_mock_daemon()
+    daemon.state = {
+        "phase": "monitoring_agent",
+        "error_count": 0,
+        "agent_service": agent_service,
+    }
+    store = DashboardStore()
+    app = create_dashboard_app(store, daemon, _make_mock_metrics(), _make_mock_health())
+    client = TestClient(app, raise_server_exceptions=False)
+    with patch("coordinare.dashboard.asyncio.sleep", AsyncMock()):
+        resp = client.get("/api/performer-logs")
+    assert resp.status_code == 200
+    assert "alpha" in resp.text
+    assert "beta" in resp.text
+
+
+# ---------------------------------------------------------------------------
+# sse_stream line 164: broadcast a real payload → in-loop yield fires
+# ---------------------------------------------------------------------------
+
+
+def test_sse_stream_yields_broadcasted_payload() -> None:
+    """Line 164: the in-loop yield fires when a real payload is broadcast."""
+
+    async def _run() -> str:
+        store = DashboardStore()
+        daemon = _make_mock_daemon()
+        metrics = _make_mock_metrics()
+        health = _make_mock_health()
+
+        gen = store.sse_stream(daemon, metrics, health)
+        # Consume the initial state_update (line 157)
+        await gen.__anext__()
+        # Now broadcast a real payload so the queue has a non-None item
+        store.broadcaster.broadcast({"phase": "dispatching"})
+        # This triggers line 164
+        event = await gen.__anext__()
+        await gen.aclose()
+        return event
+
+    event = asyncio.run(_run())
+    assert "dispatching" in event
+    assert event.startswith("event: state_update")
+
+
+# ---------------------------------------------------------------------------
+# build_snapshot line 213-214: metrics.build_info raises → started_at = None
+# ---------------------------------------------------------------------------
+
+
+def test_build_snapshot_started_at_falls_back_to_none_on_exception() -> None:
+    """Lines 213-214: if metrics.build_info raises, started_at is None."""
+    store = DashboardStore()
+    daemon = _make_mock_daemon()
+    health = _make_mock_health()
+
+    bad_metrics = MagicMock()
+    bad_metrics.cycles_completed_total._value.get.return_value = 0
+    bad_metrics.build_info.labels.side_effect = RuntimeError("metrics exploded")
+
+    snapshot = store.build_snapshot(daemon, bad_metrics, health)
+    assert snapshot.get("daemon_start_time") is None

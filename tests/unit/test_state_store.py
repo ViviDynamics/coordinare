@@ -267,6 +267,26 @@ def test_verify_writable_raises_on_read_only_dir(tmp_path: Path) -> None:
         os.chmod(read_only, 0o755)
 
 
+# --- load() OSError on read_bytes → StateLoadError ---
+
+
+@pytest.mark.asyncio
+async def test_load_oserror_on_read_bytes_raises_state_load_error(tmp_path: Path) -> None:
+    """StateStore.load() raises StateLoadError(reason='corrupt') when read_bytes() raises OSError."""
+
+    metrics = CoordinareMetrics()
+    path = tmp_path / "state.json"
+    # Create the file so that exists() returns True
+    path.write_bytes(b"{}")
+
+    store = StateStore(path=path, metrics=metrics)
+
+    with patch("pathlib.Path.read_bytes", side_effect=OSError("permission denied")), pytest.raises(StateLoadError) as exc_info:
+        await store.load()
+
+    assert exc_info.value.reason == "corrupt"
+
+
 # --- T039: performance benchmark ---
 
 

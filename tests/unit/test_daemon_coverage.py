@@ -338,3 +338,310 @@ async def test_start_handles_no_prior_snapshot() -> None:
 
     await daemon.start()
     state_store.load.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# daemon_restart_notification_failed (lines 343-344)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_daemon_restart_notification_failure_is_swallowed() -> None:
+    """When the daemon_restart notification raises, start() continues normally."""
+    graph = MagicMock()
+    graph.ainvoke = AsyncMock(return_value={})
+
+    daemon = CoordinareDaemon(
+        graph,
+        poll_interval_seconds=1,
+        heartbeat_interval_seconds=9999,
+        max_cycles=1,
+        sleep_func=_no_sleep,
+    )
+
+    failing_service = MagicMock()
+    failing_service.dispatch = AsyncMock(side_effect=RuntimeError("smtp down"))
+    daemon._state["notification_service"] = failing_service
+
+    # Must complete without raising despite the notification failure
+    await daemon.start()
+
+    failing_service.dispatch.assert_awaited()
+
+
+# ---------------------------------------------------------------------------
+# prolonged_idle_notification_failed (lines 451-452)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_prolonged_idle_notification_failure_is_swallowed() -> None:
+    """When the prolonged_idle notification raises, the daemon continues."""
+
+    class _IdleGraph:
+        async def ainvoke(self, state):
+            state["phase"] = "idle"
+            return state
+
+    daemon = CoordinareDaemon(
+        _IdleGraph(),
+        poll_interval_seconds=1,
+        heartbeat_interval_seconds=9999,
+        max_cycles=2,
+        sleep_func=_no_sleep,
+        idle_threshold_seconds=0,  # trigger immediately
+    )
+
+    # First dispatch (daemon_restart) succeeds; subsequent ones (prolonged_idle) fail
+    call_count = 0
+
+    async def _dispatch_side_effect(event):
+        nonlocal call_count
+        call_count += 1
+        from coordinare.models.notification import EventType
+        if event.event_type == EventType.prolonged_idle:
+            raise RuntimeError("notification backend unavailable")
+
+    failing_service = MagicMock()
+    failing_service.dispatch = AsyncMock(side_effect=_dispatch_side_effect)
+    daemon._state["notification_service"] = failing_service
+
+    # Must complete without propagating the idle-notification error
+    await daemon.start()
+
+    assert call_count >= 1
+
+
+# ---------------------------------------------------------------------------
+# Heartbeat emission (lines 456-464)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_emitted_when_interval_elapsed() -> None:
+    """Heartbeat is emitted when now - last_heartbeat >= heartbeat_interval_seconds."""
+
+    class _IdleGraph:
+        async def ainvoke(self, state):
+            state["phase"] = "idle"
+            return state
+
+    emitted_categories: list[str] = []
+
+    daemon = CoordinareDaemon(
+        _IdleGraph(),
+        poll_interval_seconds=1,
+        heartbeat_interval_seconds=0,  # always emit heartbeat
+        max_cycles=1,
+        sleep_func=_no_sleep,
+    )
+
+    original_emit = daemon._emit
+
+    def _capturing_emit(**event):
+        emitted_categories.append(event.get("category", ""))
+        original_emit(**event)
+
+    daemon._emit = _capturing_emit  # type: ignore[method-assign]
+
+    await daemon.start()
+
+    assert "heartbeat" in emitted_categories
+
+
+# ---------------------------------------------------------------------------
+# CircuitOpenError path in main loop (lines 487-494)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_circuit_open_error_does_not_stop_daemon() -> None:
+    """CircuitOpenError is caught and the loop continues; daemon exits after max_cycles.
+
+    CircuitOpenError does NOT count as a successful cycle, so max_cycles=1 means
+    ainvoke is called at least twice: once raising CircuitOpenError, once succeeding.
+    """
+    from coordinare.resilience import CircuitOpenError
+
+    call_count = 0
+
+    class _CircuitGraph:
+        async def ainvoke(self, state):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise CircuitOpenError("github")
+            state["phase"] = "idle"
+            return state
+
+    daemon = CoordinareDaemon(
+        _CircuitGraph(),
+        poll_interval_seconds=1,
+        heartbeat_interval_seconds=9999,
+        max_cycles=1,
+        sleep_func=_no_sleep,
+    )
+
+    # Must complete without raising — CircuitOpenError is handled internally
+    await daemon.start()
+
+    # First call raised CircuitOpenError (not a cycle); second call succeeded (1 cycle)
+    assert call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_circuit_open_error_for_unknown_service_skips_health_update() -> None:
+    """CircuitOpenError for a service not in _CIRCUIT_TO_HEALTH_SUBSYSTEM does not crash."""
+    from coordinare.resilience import CircuitOpenError
+
+    circuit_raised = False
+
+    class _CircuitGraph:
+        async def ainvoke(self, state):
+            nonlocal circuit_raised
+            if not circuit_raised:
+                circuit_raised = True
+                # "custom_service" is not in _CIRCUIT_TO_HEALTH_SUBSYSTEM so the
+                # health-update branch is skipped — exercises lines 486-492.
+                raise CircuitOpenError("custom_service")
+            state["phase"] = "idle"
+            return state
+
+    daemon = CoordinareDaemon(
+        _CircuitGraph(),
+        poll_interval_seconds=1,
+        heartbeat_interval_seconds=9999,
+        max_cycles=1,
+        sleep_func=_no_sleep,
+    )
+
+    # Must complete without raising
+    await daemon.start()
+
+    assert circuit_raised is True
+
+
+# ---------------------------------------------------------------------------
+# Phase transition metric (line 414): known transition fires card_state_transitions
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_known_phase_transition_increments_metric() -> None:
+    """Line 414: a canonical phase transition recorded in _PHASE_TRANSITION_METRIC increments the counter."""
+    from coordinare.metrics import METRICS
+
+    call_count = 0
+
+    class _TransitionGraph:
+        async def ainvoke(self, state):
+            nonlocal call_count
+            call_count += 1
+            # First call: transition from idle → dispatching (a known transition)
+            if call_count == 1:
+                state["phase"] = "dispatching"
+            return state
+
+    daemon = CoordinareDaemon(
+        _TransitionGraph(),
+        poll_interval_seconds=1,
+        heartbeat_interval_seconds=9999,
+        max_cycles=2,
+        sleep_func=_no_sleep,
+    )
+
+    before = METRICS.card_state_transitions_total.labels(
+        transition_type="idle_to_dispatch"
+    )._value.get()
+
+    await daemon.start()
+
+    after = METRICS.card_state_transitions_total.labels(
+        transition_type="idle_to_dispatch"
+    )._value.get()
+    assert after == before + 1.0
+
+
+# ---------------------------------------------------------------------------
+# Dashboard store error recording (lines 542-549): generic Exception in cycle
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dashboard_store_records_error_cycle_on_runtime_exception() -> None:
+    """Lines 542-549: when a generic Exception terminates the run loop, dashboard_store records error cycle."""
+    class _BoomGraph:
+        async def ainvoke(self, state):
+            raise RuntimeError("cycle exploded")
+
+    dashboard_store = MagicMock()
+    dashboard_store.build_snapshot.return_value = {}
+    dashboard_store.broadcaster = MagicMock()
+
+    daemon = CoordinareDaemon(
+        _BoomGraph(),
+        poll_interval_seconds=1,
+        heartbeat_interval_seconds=9999,
+        max_cycles=1,
+        sleep_func=_no_sleep,
+        dashboard_store=dashboard_store,
+    )
+
+    from coordinare.daemon import RuntimeExecutionError
+    with pytest.raises(RuntimeExecutionError):
+        await daemon.start()
+
+    dashboard_store.record_cycle.assert_called_once()
+    _, kwargs = dashboard_store.record_cycle.call_args
+    assert kwargs["outcome"] == "error"
+
+
+# ---------------------------------------------------------------------------
+# StateLoadError during startup (lines 298-306): handled gracefully
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dashboard_store_records_success_cycle() -> None:
+    """Lines 382-389: dashboard_store.record_cycle is called with outcome='success' after a good cycle."""
+    dashboard_store = MagicMock()
+    dashboard_store.build_snapshot.return_value = {}
+    dashboard_store.broadcaster = MagicMock()
+
+    daemon = _make_daemon(dashboard_store=dashboard_store)
+    await daemon.start()
+
+    dashboard_store.record_cycle.assert_called()
+    _, kwargs = dashboard_store.record_cycle.call_args_list[-1]
+    assert kwargs["outcome"] == "success"
+
+
+@pytest.mark.asyncio
+async def test_state_store_load_returns_snapshot_with_no_active_card() -> None:
+    """Lines 289->309: snapshot loaded with active_card_id=None → reconcile not called."""
+    state_store = MagicMock()
+    state_store.load = AsyncMock(return_value=_make_snapshot(phase="idle", active_card_id=None))
+    state_store.save = AsyncMock()
+    state_store.last_snapshot = None
+
+    daemon = _make_daemon(state_store=state_store)
+    await daemon.start()
+    # Phase restored from snapshot (idle), reconcile skipped since no active_card_id
+    assert not daemon._running
+
+
+@pytest.mark.asyncio
+async def test_state_load_error_during_startup_is_handled() -> None:
+    """Lines 298-306: StateLoadError from state_store.load() is caught and daemon continues."""
+    from coordinare.state_store import StateLoadError
+
+    state_store = MagicMock()
+    state_store.load = AsyncMock(side_effect=StateLoadError(reason="corrupt", detail="bad data"))
+    state_store.save = AsyncMock()
+    state_store.last_snapshot = None
+
+    daemon = _make_daemon(state_store=state_store)
+    # Should complete without raising despite StateLoadError
+    await daemon.start()
+
+    assert not daemon._running

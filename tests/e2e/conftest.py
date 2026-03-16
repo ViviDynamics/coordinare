@@ -31,6 +31,9 @@ def _mock_daemon(phase: str = "idle") -> Any:
     daemon.state = {"phase": phase, "error_count": 0}
     daemon.state_store = MagicMock()
     daemon.state_store.last_snapshot = None
+    daemon._cycle_active = False
+    daemon.running = True
+    daemon._webhook_trigger = asyncio.Event()
     return daemon
 
 

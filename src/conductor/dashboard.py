@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -259,6 +259,8 @@ class DashboardStore:
             "consecutive_error_count": error_count,
             "daemon_start_time": started_at,
             "cycle_history": list(self.history),
+            "cycle_active": daemon._cycle_active,
+            "daemon_running": daemon.running,
         }
 
 
@@ -314,6 +316,14 @@ td { padding: 4px 8px; border-bottom: 1px solid #21262d; }
 .metric-label { font-size: 11px; color: #8b949e; }
 .daemon-start { font-size: 13px; color: #8b949e; margin-top: 8px; }
 .daemon-start strong { color: #d29922; }
+.action-btn {
+  margin-top: 10px; padding: 5px 12px; font-size: 12px; font-weight: 600;
+  background: #21262d; color: #58a6ff; border: 1px solid #30363d;
+  border-radius: 6px; cursor: pointer;
+}
+.action-btn:hover:not(:disabled) { background: #30363d; }
+.action-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.action-msg { font-size: 11px; color: #8b949e; margin-top: 4px; min-height: 14px; }
 #disconnected-banner {
   display: none; position: fixed; top: 0; left: 0; right: 0;
   background: #4a1f1f; color: #f85149; text-align: center;
@@ -366,6 +376,9 @@ td { padding: 4px 8px; border-bottom: 1px solid #21262d; }
   <div id="phase" class="phase phase-idle">Idle</div>
   <div id="phase-desc" class="phase-desc"></div>
   <div id="session-age" class="session-age" style="display:none"></div>
+  <button id="force-poll-btn" class="action-btn" onclick="forcePoll()"
+    aria-label="Trigger immediate board poll">Check Board Now</button>
+  <div id="force-poll-msg" class="action-msg"></div>
 </div>
 
 <div class="card">
@@ -714,6 +727,15 @@ function renderState(s) {
       '</tbody></table>';
   }
 
+  // Force-poll button state (016-force-poll)
+  var fpBtn = document.getElementById('force-poll-btn');
+  var fpMsg = document.getElementById('force-poll-msg');
+  if (fpBtn) {
+    var shouldDisable = s.cycle_active || !s.daemon_running;
+    fpBtn.disabled = shouldDisable;
+    if (!shouldDisable) fpMsg.textContent = '';
+  }
+
   // Cycle history
   var histEl = document.getElementById('history-section');
   if (!s.cycle_history || s.cycle_history.length === 0) {
@@ -926,6 +948,24 @@ setInterval(function() {
   }
 }, 10000);
 
+async function forcePoll() {
+  var btn = document.getElementById('force-poll-btn');
+  var msg = document.getElementById('force-poll-msg');
+  btn.disabled = true;
+  msg.textContent = '';
+  try {
+    var res = await fetch('/api/force-poll', { method: 'POST' });
+    if (res.status === 409) {
+      msg.textContent = 'Cycle already running';
+      btn.disabled = false;
+    }
+    // 202: stay disabled until SSE delivers cycle_active=false
+  } catch(err) {
+    msg.textContent = 'Could not reach server';
+    btn.disabled = false;
+  }
+}
+
 var banner = document.getElementById('disconnected-banner');
 var es = new EventSource('events');
 es.addEventListener('state_update', function(e) {
@@ -934,7 +974,11 @@ es.addEventListener('state_update', function(e) {
     renderState(_lastState);
   } catch(err) { console.error('parse error', err); }
 });
-es.onerror = function() { banner.style.display = 'block'; };
+es.onerror = function() {
+  banner.style.display = 'block';
+  var fpBtn = document.getElementById('force-poll-btn');
+  if (fpBtn) fpBtn.disabled = true;
+};
 es.onopen = function() { banner.style.display = 'none'; };
 </script>
 </body>
@@ -1005,6 +1049,18 @@ def create_dashboard_app(
 
         return StreamingResponse(_generate(), media_type="text/plain")
 
+    @app.post("/api/force-poll")
+    async def force_poll() -> JSONResponse:
+        """Trigger an immediate board poll cycle (016-force-poll).
+
+        Returns 202 and fires the daemon's webhook_trigger when idle.
+        Returns 409 when a cycle is already in progress.
+        """
+        if daemon._cycle_active:
+            return JSONResponse({"status": "cycle_in_progress"}, status_code=409)
+        daemon._webhook_trigger.set()
+        return JSONResponse({"status": "accepted"}, status_code=202)
+
     @app.get("/events")
     async def sse_events() -> StreamingResponse:
         return StreamingResponse(
@@ -1056,7 +1112,6 @@ def register_webhook_route(
     Invalid/missing signatures return HTTP 401 and are structured-logged.
     """
     from fastapi import Response
-    from fastapi.responses import JSONResponse
 
     @app.post(path, include_in_schema=False)
     async def _webhook_handler(request: Request) -> Response:

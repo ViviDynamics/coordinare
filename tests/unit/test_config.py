@@ -293,3 +293,142 @@ def test_performer_image_env_override(monkeypatch: pytest.MonkeyPatch, tmp_path)
     monkeypatch.setenv("COORDINARE_PERFORMER_IMAGE", "myregistry/performer:v2")
     config = ProjectConfiguration.from_yaml(_write_config(tmp_path))
     assert config.performer_image == "myregistry/performer:v2"
+
+
+def test_app_auth_with_all_required_fields_passes_validation(tmp_path) -> None:
+    """config.py line 364->378: github_auth='app' with all required fields passes (returns self)."""
+
+    key_file = tmp_path / "key.pem"
+    key_file.write_text("-----BEGIN RSA PRIVATE KEY-----\n")
+
+    config = ProjectConfiguration(
+        project_name="Demo",
+        github_org="acme",
+        github_project_number=1,
+        github_auth="app",
+        github_app_id=12345,
+        github_private_key_path=key_file,
+        github_installation_id=67890,
+        human_reviewers=["alice"],
+    )
+    assert config.github_auth == "app"
+    assert config.github_app_id == 12345
+
+
+def test_app_auth_with_missing_fields_raises_validation_error() -> None:
+    """config.py line 364->378: github_auth='app' with missing fields raises ValueError."""
+    import pytest
+
+    with pytest.raises(Exception, match="github_app_id"):
+        ProjectConfiguration(
+            project_name="Demo",
+            github_org="acme",
+            github_project_number=1,
+            github_auth="app",
+            # github_app_id missing → should raise
+            human_reviewers=["alice"],
+        )
+
+
+def test_channel_config_subject_template_none_passes_validation() -> None:
+    """config.py line 76: _validate_template_syntax returns v when v is None."""
+    from pydantic import SecretStr
+
+    from coordinare.config import ChannelConfig
+    from coordinare.models.notification import ChannelType
+
+    cfg = ChannelConfig(
+        name="slack-alerts",
+        type=ChannelType.slack,
+        webhook_url=SecretStr("https://hooks.slack.com/T1"),
+        subject_template=None,
+    )
+    assert cfg.subject_template is None
+
+
+def test_backoff_cap_skipped_when_poll_interval_is_zero() -> None:
+    """_validate_retry_backoff_caps returns early when poll_interval_seconds=0,
+    so a very large wait_max_seconds does NOT raise a ValidationError."""
+    from coordinare.config import ResilienceConfig, ServiceRetryConfig
+
+    # poll_interval_seconds=0 disables the cap check entirely; even a massive
+    # wait_max_seconds value should be accepted without error.
+    config = ProjectConfiguration(
+        project_name="Demo",
+        github_org="acme",
+        github_project_number=1,
+        github_token="tok",
+        human_reviewers=["alice"],
+        poll_interval_seconds=0,
+        resilience=ResilienceConfig(
+            github_retry=ServiceRetryConfig(
+                attempts=3,
+                wait_initial_seconds=1.0,
+                wait_max_seconds=300.0,
+                wait_jitter_seconds=1.0,
+            ),
+        ),
+    )
+    assert config.poll_interval_seconds == 0
+
+
+# ---------------------------------------------------------------------------
+# WebhooksConfig — whitespace in path (line 33->35)
+# ---------------------------------------------------------------------------
+
+
+def test_webhook_path_with_whitespace_raises() -> None:
+    """Line 30->32: path containing whitespace raises ValueError."""
+    import pytest
+
+    from coordinare.config import WebhookConfig
+
+    with pytest.raises(ValueError, match="whitespace"):
+        WebhookConfig(path="/web hooks")
+
+
+def test_webhook_path_without_leading_slash_gets_prepended() -> None:
+    """Line 33->34: path without leading slash → slash is prepended."""
+    from coordinare.config import WebhookConfig
+
+    cfg = WebhookConfig(path="webhook/github")
+    assert cfg.path == "/webhook/github"
+
+
+def test_webhook_path_with_leading_slash_unchanged() -> None:
+    """Line 33->35 (False branch): path already starts with '/' → no prepend."""
+    from coordinare.config import WebhookConfig
+
+    cfg = WebhookConfig(path="/my-webhook")
+    assert cfg.path == "/my-webhook"
+
+
+# ---------------------------------------------------------------------------
+# ProjectConfiguration.from_yaml — non-existent file (line 325->330)
+# and YAML that loads as non-dict (line 328->330)
+# ---------------------------------------------------------------------------
+
+
+def test_from_yaml_with_nonexistent_file_uses_defaults(tmp_path, monkeypatch) -> None:
+    """Line 325->330: config_path.exists() is False → raw stays {} → env/defaults used."""
+    monkeypatch.setenv("COORDINARE_PROJECT_NAME", "Demo")
+    monkeypatch.setenv("COORDINARE_GITHUB_ORG", "acme")
+    monkeypatch.setenv("COORDINARE_GITHUB_PROJECT_NUMBER", "1")
+    monkeypatch.setenv("COORDINARE_GITHUB_TOKEN", "tok")
+    monkeypatch.setenv("COORDINARE_HUMAN_REVIEWERS", '["alice"]')
+    path = tmp_path / "does_not_exist.yaml"
+    config = ProjectConfiguration.from_yaml(path)
+    assert config is not None
+
+
+def test_from_yaml_with_non_dict_yaml_uses_defaults(tmp_path, monkeypatch) -> None:
+    """Line 328->330: loaded YAML is not a dict (e.g. a list) → raw stays {} → env used."""
+    monkeypatch.setenv("COORDINARE_PROJECT_NAME", "Demo")
+    monkeypatch.setenv("COORDINARE_GITHUB_ORG", "acme")
+    monkeypatch.setenv("COORDINARE_GITHUB_PROJECT_NUMBER", "1")
+    monkeypatch.setenv("COORDINARE_GITHUB_TOKEN", "tok")
+    monkeypatch.setenv("COORDINARE_HUMAN_REVIEWERS", '["alice"]')
+    path = tmp_path / "list.yaml"
+    path.write_text("- item1\n- item2\n")
+    config = ProjectConfiguration.from_yaml(path)
+    assert config is not None

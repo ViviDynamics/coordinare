@@ -39,6 +39,8 @@ def _full_snapshot(**overrides: Any) -> dict:
         "consecutive_error_count": 0,
         "daemon_start_time": "2026-03-02T09:30:00+00:00",
         "cycle_history": [],
+        "cycle_active": False,
+        "daemon_running": True,
     }
     base.update(overrides)
     return base
@@ -72,6 +74,8 @@ def test_all_section_ids_present(page: Page, live_server_url: str) -> None:
         "subsystems-section",
         "history-section",
         "disconnected-banner",
+        "force-poll-btn",
+        "force-poll-msg",
     ):
         expect(page.locator(f"#{element_id}")).to_have_count(1)
 
@@ -252,3 +256,114 @@ def test_metrics_bar_updates(
 
     expect(page.locator("#cycles-completed")).to_have_text("42", timeout=_WAIT_LIVE)
     expect(page.locator("#error-count")).to_have_text("2", timeout=_WAIT_LIVE)
+
+
+# ---------------------------------------------------------------------------
+# 016: Check Board Now button (force-poll)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.e2e
+def test_force_poll_button_present(page: Page, live_server_url: str) -> None:
+    """Button with id force-poll-btn must be visible in the rendered page."""
+    page.goto(live_server_url)
+    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#force-poll-btn")).to_be_visible()
+
+
+@pytest.mark.e2e
+def test_force_poll_button_enabled_when_idle(
+    page: Page, live_server_url: str, store: DashboardStore
+) -> None:
+    """Button must be enabled after SSE delivers cycle_active=False, daemon_running=True."""
+    page.goto(live_server_url)
+    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+
+    store.broadcaster.broadcast(_full_snapshot(cycle_active=False, daemon_running=True))
+
+    expect(page.locator("#force-poll-btn")).to_be_enabled(timeout=_WAIT_LIVE)
+
+
+@pytest.mark.e2e
+def test_force_poll_button_disabled_when_cycle_active(
+    page: Page, live_server_url: str, store: DashboardStore
+) -> None:
+    """Button must be disabled after SSE delivers cycle_active=True."""
+    page.goto(live_server_url)
+    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+
+    store.broadcaster.broadcast(_full_snapshot(cycle_active=True, daemon_running=True))
+
+    expect(page.locator("#force-poll-btn")).to_be_disabled(timeout=_WAIT_LIVE)
+
+
+@pytest.mark.e2e
+def test_force_poll_button_disabled_when_daemon_stopped(
+    page: Page, live_server_url: str, store: DashboardStore
+) -> None:
+    """Button must be disabled when daemon_running=False even if cycle is not active."""
+    page.goto(live_server_url)
+    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+
+    store.broadcaster.broadcast(_full_snapshot(cycle_active=False, daemon_running=False))
+
+    expect(page.locator("#force-poll-btn")).to_be_disabled(timeout=_WAIT_LIVE)
+
+
+@pytest.mark.e2e
+def test_force_poll_button_re_enables_after_cycle(
+    page: Page, live_server_url: str, store: DashboardStore
+) -> None:
+    """Button must re-enable once cycle_active returns to False."""
+    page.goto(live_server_url)
+    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+
+    store.broadcaster.broadcast(_full_snapshot(cycle_active=True, daemon_running=True))
+    expect(page.locator("#force-poll-btn")).to_be_disabled(timeout=_WAIT_LIVE)
+
+    store.broadcaster.broadcast(_full_snapshot(cycle_active=False, daemon_running=True))
+    expect(page.locator("#force-poll-btn")).to_be_enabled(timeout=_WAIT_LIVE)
+
+
+@pytest.mark.e2e
+def test_force_poll_click_fires_post_request(page: Page, live_server_url: str) -> None:
+    """Clicking the button must fire a POST to /api/force-poll."""
+    page.goto(live_server_url)
+    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    expect(page.locator("#force-poll-btn")).to_be_enabled(timeout=_WAIT_LIVE)
+
+    with page.expect_request("**/api/force-poll") as req_info:
+        page.locator("#force-poll-btn").click()
+
+    assert req_info.value.method == "POST"
+
+
+@pytest.mark.e2e
+def test_force_poll_409_shows_cycle_already_running(page: Page, live_server_url: str) -> None:
+    """A 409 from /api/force-poll must show 'Cycle already running' in the message span."""
+    page.route(
+        "**/api/force-poll",
+        lambda route: route.fulfill(
+            status=409,
+            content_type="application/json",
+            body='{"status":"cycle_in_progress"}',
+        ),
+    )
+    page.goto(live_server_url)
+    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+
+    page.locator("#force-poll-btn").click()
+
+    expect(page.locator("#force-poll-msg")).to_have_text("Cycle already running", timeout=2000)
+    expect(page.locator("#force-poll-btn")).to_be_enabled(timeout=2000)
+
+
+@pytest.mark.e2e
+def test_force_poll_button_disabled_when_sse_disconnected(
+    page: Page, live_server_url: str
+) -> None:
+    """Button must be disabled when the SSE connection fails (onerror fires)."""
+    page.route("**/events", lambda route: route.abort())
+    page.goto(live_server_url)
+    expect(page.locator("#force-poll-btn")).to_be_disabled(timeout=3000)
+    expect(page.locator("#disconnected-banner")).to_be_visible(timeout=3000)

@@ -42,6 +42,8 @@ def _make_mock_daemon(
     daemon.state = {"phase": phase, "error_count": error_count}
     daemon.state_store = MagicMock()
     daemon.state_store.last_snapshot = snapshot
+    daemon._cycle_active = False
+    daemon.running = True
     return daemon
 
 

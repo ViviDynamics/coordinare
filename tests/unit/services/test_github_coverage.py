@@ -626,3 +626,23 @@ async def test_get_file_content_returns_none_when_missing() -> None:
     svc = _initialized_svc({"repository": {"object": None}})
     result = await svc.get_file_content("acme", "repo", "missing.md")
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_poll_board_populates_issue_url_when_present() -> None:
+    """Line 567: issue_urls[item_id] is set when content.url is non-empty."""
+    item = {
+        "id": "ITEM_U",
+        "fieldValues": {"nodes": [{"name": "Todo"}]},
+        "content": {
+            "title": "Card with URL",
+            "body": "",
+            "number": 7,
+            "id": "ISSUE_NODE_1",
+            "url": "https://github.com/acme/repo/issues/7",
+            "labels": {"nodes": []},
+        },
+    }
+    svc = _initialized_svc(_poll_response([item]))
+    result = await svc.poll_board()
+    assert result.get("issue_urls", {}).get("ITEM_U") == "https://github.com/acme/repo/issues/7"

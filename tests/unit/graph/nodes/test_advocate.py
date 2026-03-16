@@ -526,3 +526,181 @@ async def test_post_comment_github_failure_logs_and_continues() -> None:
 
     # Should not raise
     await service.scan_and_respond(set())
+
+
+# ---------------------------------------------------------------------------
+# Lines 137-144: doc fetch exception warning
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_doc_fetch_exception_logs_warning_and_continues() -> None:
+    """Lines 137-144: when get_file_content raises, warning is logged and source gets content=None."""
+    scorer_result = ScoringResult(
+        provider=ScoringProvider(provider_name="claude", score=0.85, reasoning=""),
+        classification=IssueType.question,
+        response_text="Based on README: here is the answer.",
+        source_documents=["README.md"],
+    )
+    service, github = _make_advocate_service(
+        issues=[_make_issue()],
+        scorer_result=scorer_result,
+    )
+    # get_file_content raises — triggers lines 137-144
+    github.get_file_content = AsyncMock(side_effect=RuntimeError("network error"))
+
+    # Should not raise
+    await service.scan_and_respond(set())
+
+
+# ---------------------------------------------------------------------------
+# Line 265: low confidence → escalate with EscalationReason.low_confidence
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_low_confidence_question_escalates() -> None:
+    """Line 265: confidence below threshold → _do_escalate with low_confidence reason."""
+    # confidence=0.5 is below the default threshold of 0.70
+    scorer_result = ScoringResult(
+        provider=ScoringProvider(provider_name="claude", score=0.5, reasoning=""),
+        classification=IssueType.question,
+        response_text="Some answer",
+        source_documents=["README.md"],
+    )
+    service, github = _make_advocate_service(
+        issues=[_make_issue()],
+        scorer_result=scorer_result,
+    )
+
+    await service.scan_and_respond(set())
+
+    # Escalation → holding comment posted and escalation label applied
+    github.add_comment.assert_called()
+
+
+# ---------------------------------------------------------------------------
+# Line 344->exit: label_id is empty → skip add_labels call
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_apply_label_skips_github_when_label_id_is_empty() -> None:
+    """Line 344->exit: empty label_id → add_labels NOT called."""
+    scorer_result = ScoringResult(
+        provider=ScoringProvider(provider_name="claude", score=0.85, reasoning=""),
+        classification=IssueType.question,
+        response_text="Based on README: answer.",
+        source_documents=["README.md"],
+    )
+    # Provide label_ids with empty string values → label_id is falsy
+    service, github = _make_advocate_service(
+        issues=[_make_issue()],
+        scorer_result=scorer_result,
+        label_ids={"advocate-handled": "", "needs-human": ""},
+    )
+
+    await service.scan_and_respond(set())
+
+    # add_labels must NOT be called when label_id is empty
+    github.add_labels.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Lines 372-398: notification_service dispatched during escalation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_escalation_dispatches_notification_when_service_set() -> None:
+    """Lines 372-398: notification_service.dispatch is called during _do_escalate."""
+    from coordinare.config import AdvocateConfig
+    from coordinare.services.advocate import AdvocateService
+
+    github = AsyncMock()
+    github.list_open_issues = AsyncMock(return_value=[_make_issue()])
+    github.get_file_content = AsyncMock(return_value="# Docs\nSome content.")
+    github.add_labels = AsyncMock()
+    github.add_comment = AsyncMock()
+
+    notification_service = AsyncMock()
+    notification_service.dispatch = AsyncMock()
+
+    scorer_result = ScoringResult(
+        provider=ScoringProvider(provider_name="claude", score=0.5, reasoning=""),
+        classification=IssueType.question,
+        response_text="Some answer",
+        source_documents=[],
+    )
+    mock_scorer = MagicMock()
+    mock_scorer.score = AsyncMock(return_value=scorer_result)
+
+    config = AdvocateConfig(
+        enabled=True,
+        github_repo="coordinare",
+        confidence_threshold=0.70,
+        doc_sources=["README.md"],
+    )
+    service = AdvocateService(
+        github=github,
+        notification_service=notification_service,
+        config=config,
+        github_org="ViviDynamics",
+        label_ids={"advocate-handled": "label-handled", "needs-human": "label-escalation"},
+        scorers=[mock_scorer],
+    )
+
+    await service.scan_and_respond(set())
+
+    # notification_service.dispatch must be called (covers lines 372-398)
+    notification_service.dispatch.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Lines 397-398: notification dispatch exception is caught and logged
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_escalation_notification_exception_is_caught() -> None:
+    """Lines 397-398: if notification_service.dispatch raises, the exception is
+    caught and logged — _do_escalate does not propagate it."""
+    from coordinare.config import AdvocateConfig
+    from coordinare.services.advocate import AdvocateService
+
+    github = AsyncMock()
+    github.list_open_issues = AsyncMock(return_value=[_make_issue()])
+    github.get_file_content = AsyncMock(return_value="# Docs\nContent.")
+    github.add_labels = AsyncMock()
+    github.add_comment = AsyncMock()
+
+    notification_service = AsyncMock()
+    notification_service.dispatch = AsyncMock(side_effect=RuntimeError("dispatch failed"))
+
+    scorer_result = ScoringResult(
+        provider=ScoringProvider(provider_name="claude", score=0.5, reasoning=""),
+        classification=IssueType.question,
+        response_text="Some answer",
+        source_documents=[],
+    )
+    mock_scorer = MagicMock()
+    mock_scorer.score = AsyncMock(return_value=scorer_result)
+
+    config = AdvocateConfig(
+        enabled=True,
+        github_repo="coordinare",
+        confidence_threshold=0.70,
+        doc_sources=["README.md"],
+    )
+    service = AdvocateService(
+        github=github,
+        notification_service=notification_service,
+        config=config,
+        github_org="ViviDynamics",
+        label_ids={"advocate-handled": "label-handled", "needs-human": "label-escalation"},
+        scorers=[mock_scorer],
+    )
+
+    # Must NOT raise even though dispatch fails
+    await service.scan_and_respond(set())
+    notification_service.dispatch.assert_called_once()

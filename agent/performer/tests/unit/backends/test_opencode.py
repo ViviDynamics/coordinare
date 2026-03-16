@@ -387,10 +387,14 @@ class TestOpenCodeAdapterStopAdditional:
         adapter = OpenCodeAdapter()
         adapter._proc = proc
 
+        async def _timeout_wait_for(coro, **kwargs: object) -> None:
+            coro.close()
+            raise asyncio.TimeoutError()
+
         with (
             patch("performer.backends.opencode.os.getpgid", return_value=proc.pid),
             patch("performer.backends.opencode.os.killpg"),
-            patch("performer.backends.opencode.asyncio.wait_for", side_effect=asyncio.TimeoutError),
+            patch("performer.backends.opencode.asyncio.wait_for", new=_timeout_wait_for),
         ):
             await adapter.stop()  # should not raise
 

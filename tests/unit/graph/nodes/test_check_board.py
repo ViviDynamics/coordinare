@@ -336,3 +336,32 @@ async def test_check_board_blocked_old_comment_does_not_requeue() -> None:
 
     # Comment was old → no requeue; reminder not due → idle
     assert result["phase"] == "idle"
+
+
+# ---------------------------------------------------------------------------
+# Line 158->160: same card id — clarifications NOT cleared
+# ---------------------------------------------------------------------------
+
+
+class _GitHubSameCard:
+    async def poll_board(self):
+        return {
+            "snapshot": {"TODO": ["ITEM_1"], "IN_PROGRESS": [], "IN_REVIEW": []},
+            "titles": {"ITEM_1": "Card"},
+            "descriptions": {"ITEM_1": "Desc"},
+            "issue_numbers": {"ITEM_1": 1},
+        }
+
+
+@pytest.mark.asyncio
+async def test_check_board_preserves_clarifications_for_same_card() -> None:
+    """Line 158->160: when the board picks the same card as current_card, clarifications are NOT cleared."""
+    state = initial_state()
+    state["github_service"] = _GitHubSameCard()
+    state["current_card"] = {"id": "ITEM_1", "title": "Card", "status": "TODO"}
+    state["card_clarifications"] = [{"question": "Q?", "answer": "A"}]
+
+    result = await check_board(state)
+
+    # Clarifications must be preserved (same card returned from re-queue)
+    assert result.get("card_clarifications") == [{"question": "Q?", "answer": "A"}]

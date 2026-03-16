@@ -19,6 +19,8 @@ Auto-generated from all feature plans. Last updated: 2026-02-16
 - None — all state is in-memory; temporary git workspace in OS temp dir (`tempfile.mkdtemp`) (012-performer)
 - Python 3.12+ + PyJWT[crypto]>=2.8 (new), httpx (existing), FastAPI (existing), pydantic-settings (existing), structlog (existing) (015-github-app-auth)
 - N/A — token cached in-memory; resets on restart (015-github-app-auth)
+- Python 3.12+ + FastAPI + Starlette (existing), asyncio stdlib, vanilla JavaScript (inline in dashboard HTML) (016-force-poll)
+- N/A — trigger is ephemeral; no persistence required (016-force-poll)
 
 - Python 3.12+ + LangGraph (>=0.2), anthropic (>=0.40), gql[aiohttp], FastAPI, structlog, slack-sdk, aiosmtplib, prometheus-client, pydantic-settings (001-board-orchestrator)
 - Python 3.12+ + Pydantic v2 (existing), `asyncio.create_subprocess_exec` (stdlib), `structlog` (existing); `asyncssh` removed — replaced by pluggable transport architecture (004-agent-protocol)
@@ -39,9 +41,9 @@ cd src [ONLY COMMANDS FOR ACTIVE TECHNOLOGIES][ONLY COMMANDS FOR ACTIVE TECHNOLO
 Python 3.12+: Follow standard conventions
 
 ## Recent Changes
+- 016-force-poll: Added Python 3.12+ + FastAPI + Starlette (existing), asyncio stdlib, vanilla JavaScript (inline in dashboard HTML)
 - 015-github-app-auth: Added Python 3.12+ + PyJWT[crypto]>=2.8 (new), httpx (existing), FastAPI (existing), pydantic-settings (existing), structlog (existing)
 - 015-github-app-auth: Added Python 3.12+ + PyJWT[crypto]>=2.8 (new), httpx (existing), FastAPI (existing), pydantic-settings (existing), structlog (existing)
-- 012-performer: Added Python 3.12+ + `pydantic>=2.9`, `httpx>=0.27`, `psutil>=5.9`, `structlog>=24.1` (new to performer package; all already in coordinare root)
 
 
 <!-- MANUAL ADDITIONS START -->

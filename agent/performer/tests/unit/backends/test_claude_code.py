@@ -562,10 +562,14 @@ class TestStop:
         ):
             await adapter.start(_stand(tmp_path), _score())
 
+        async def _timeout_wait_for(coro, **kwargs: object) -> None:
+            coro.close()
+            raise asyncio.TimeoutError()
+
         with (
             patch("performer.backends.claude_code.os.getpgid", return_value=1234),
             patch("performer.backends.claude_code.os.killpg"),
-            patch("performer.backends.claude_code.asyncio.wait_for", side_effect=asyncio.TimeoutError),
+            patch("performer.backends.claude_code.asyncio.wait_for", new=_timeout_wait_for),
         ):
             await adapter.stop()  # should not raise
 
