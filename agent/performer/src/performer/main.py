@@ -15,7 +15,7 @@ from pydantic import ValidationError
 from performer.backends import UnsupportedBackendError, get_backend
 from performer.backends.base import BackendAdapter, BackendStatus
 from performer.config import Settings, get_settings
-from performer.github import GitHubAPIError, create_pull_request
+from performer.github import GitHubAPIError, create_pull_request, get_check_runs, summarise_check_runs
 from performer.models import Performance, Score, Stand
 from performer.protocol import PerformerMessage, PerformerMetrics, PerformerResponse
 from performer.workspace import (
@@ -23,6 +23,7 @@ from performer.workspace import (
     WorkspaceSetupError,
     cleanup_stand,
     clone_repository,
+    get_head_sha,
     push_branch,
 )
 
@@ -84,6 +85,111 @@ async def handle_dispatch(
     ), perf
 
 
+def _format_check_failures(failed_runs: list[dict]) -> str:  # type: ignore[type-arg]
+    """Format failed check run details for relay to the backend."""
+    parts = []
+    for run in failed_runs:
+        name = run.get("name", "unknown")
+        output = run.get("output") or {}
+        title = output.get("title") or ""
+        summary = output.get("summary") or ""
+        text = (output.get("text") or "")[:500]
+        part = f"### {name}"
+        if title:
+            part += f"\n{title}"
+        if summary:
+            part += f"\n{summary}"
+        if text:
+            part += f"\n{text}"
+        parts.append(part)
+    return "\n\n".join(parts)
+
+
+async def _poll_check_runs(perf: Performance, settings: Settings | None) -> PerformerResponse:
+    """Poll GitHub Check Runs for the PR head commit and route accordingly."""
+    if not perf.pr_head_sha:
+        perf.state = "error"
+        return PerformerResponse(
+            status="error",
+            session_id=perf.session_id,
+            reason="PR head SHA not set; cannot poll check runs",
+        )
+
+    owner, repo = perf.score.owner_repo
+    try:
+        check_runs = await get_check_runs(
+            owner, repo, perf.pr_head_sha, perf.score.effective_github_token
+        )
+    except GitHubAPIError as exc:
+        if 400 <= exc.status_code < 500 and exc.status_code != 429:
+            # Deterministic client error (bad/empty token, bad ref) — fail fast.
+            # 429 (rate limit) is excluded: it is transient and falls through to retry.
+            perf.state = "error"
+            return PerformerResponse(
+                status="error",
+                session_id=perf.session_id,
+                reason=f"check-run poll failed: {exc}",
+            )
+        log.warning("check_runs_api_error", session_id=perf.session_id, status_code=exc.status_code)
+        return PerformerResponse(
+            status="working",
+            session_id=perf.session_id,
+            progress="Waiting for CI checks (API error, retrying)...",
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        log.warning("check_runs_api_error", session_id=perf.session_id)
+        return PerformerResponse(
+            status="working",
+            session_id=perf.session_id,
+            progress="Waiting for CI checks (API error, retrying)...",
+        )
+
+    verdict, failed = summarise_check_runs(check_runs)
+
+    if verdict == "pass":
+        perf.state = "pr_opened"
+        return PerformerResponse(
+            status="pr_opened",
+            session_id=perf.session_id,
+            pr_url=perf.pr_url,
+            pr_node_id=perf.pr_node_id,
+        )
+
+    if verdict == "pending":
+        return PerformerResponse(
+            status="working",
+            session_id=perf.session_id,
+            progress="CI checks in progress...",
+        )
+
+    # verdict == "fail"
+    max_attempts = settings.CHECK_MAX_ATTEMPTS if settings is not None else 3
+    if perf.check_attempt >= max_attempts:
+        names = ", ".join(r.get("name", "unknown") for r in failed)
+        questions = [f"CI checks failed after {perf.check_attempt} fix attempt(s): {names}"]
+        perf.state = "blocked"
+        perf.open_questions = questions
+        return PerformerResponse(
+            status="blocked",
+            session_id=perf.session_id,
+            questions=questions,
+        )
+
+    perf.check_attempt += 1
+    failure_msg = _format_check_failures(failed)
+    await perf.backend.relay_feedback(
+        f"CI checks failed. Fix the following:\n\n{failure_msg}"
+    )
+    perf.state = "working"
+    return PerformerResponse(
+        status="working",
+        session_id=perf.session_id,
+        progress=f"Fixing CI failures (attempt {perf.check_attempt})...",
+    )
+
+
 async def handle_status(
     msg: PerformerMessage,
     perf: Performance | None,
@@ -113,22 +219,37 @@ async def handle_status(
                 reason=f"session timed out after {elapsed:.0f}s",
             )
 
+    # Return a stable response for terminal/parked states without re-running
+    # backend logic.  Without this guard, a coordinare poll arriving after
+    # _poll_check_runs sets perf.state = "blocked" would fall through to
+    # backend.get_status(), see "done", and re-execute the push/PR-open path.
+    if perf.state == "blocked":
+        return PerformerResponse(
+            status="blocked",
+            session_id=perf.session_id,
+            questions=perf.open_questions,
+        )
+
+    # US5: if we've pushed and created the PR, poll check runs instead of the backend
+    if perf.state == "waiting_for_checks":
+        return await _poll_check_runs(perf, settings)
+
     backend_status: BackendStatus = perf.backend.get_status()
 
     if backend_status.state == "done":
         owner, repo = perf.score.owner_repo
         await push_branch(perf.stand, perf.score)
         pr_url, pr_node_id = await create_pull_request(
-            owner, repo, perf.score, perf.stand.branch, perf.score.github_token
+            owner, repo, perf.score, perf.stand.branch, perf.score.effective_github_token
         )
-        perf.state = "pr_opened"
         perf.pr_url = pr_url
         perf.pr_node_id = pr_node_id
+        perf.pr_head_sha = await get_head_sha(perf.stand)
+        perf.state = "waiting_for_checks"
         return PerformerResponse(
-            status="pr_opened",
+            status="working",
             session_id=perf.session_id,
-            pr_url=pr_url,
-            pr_node_id=pr_node_id,
+            progress="Waiting for CI checks...",
         )
 
     if backend_status.state == "blocked":

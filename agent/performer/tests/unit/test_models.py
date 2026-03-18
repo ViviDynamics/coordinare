@@ -48,23 +48,24 @@ class TestScore:
                 github_token="tok",
             )
 
-    def test_blank_github_token_raises(self) -> None:
-        with pytest.raises(ValidationError, match="github_token"):
-            Score(
-                title="T",
-                repo_url="https://github.com/org/repo",
-                branch="main",
-                github_token="   ",
-            )
+    def test_empty_github_token_allowed_for_kubernetes(self) -> None:
+        """Empty github_token is valid — Kubernetes transport injects auth via container secrets."""
+        s = Score(
+            title="T",
+            repo_url="https://github.com/org/repo",
+            branch="main",
+            github_token="",
+        )
+        assert s.github_token == ""
 
-    def test_empty_github_token_raises(self) -> None:
-        with pytest.raises(ValidationError, match="github_token"):
-            Score(
-                title="T",
-                repo_url="https://github.com/org/repo",
-                branch="main",
-                github_token="",
-            )
+    def test_blank_github_token_allowed_for_kubernetes(self) -> None:
+        s = Score(
+            title="T",
+            repo_url="https://github.com/org/repo",
+            branch="main",
+            github_token="   ",
+        )
+        assert s.github_token == "   "
 
     def test_blank_branch_raises(self) -> None:
         with pytest.raises(ValidationError, match="branch"):
@@ -101,6 +102,29 @@ class TestScore:
                 branch="feat..x",
                 github_token="tok",
             )
+
+    def test_effective_github_token_returns_payload_token_when_set(self) -> None:
+        s = Score(
+            title="T", repo_url="https://github.com/org/repo", branch="main",
+            github_token="ghp_from_payload",
+        )
+        assert s.effective_github_token == "ghp_from_payload"
+
+    def test_effective_github_token_falls_back_to_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("GITHUB_TOKEN", "ghp_from_env")
+        s = Score(title="T", repo_url="https://github.com/org/repo", branch="main", github_token="")
+        assert s.effective_github_token == "ghp_from_env"
+
+    def test_effective_github_token_empty_when_both_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        s = Score(title="T", repo_url="https://github.com/org/repo", branch="main", github_token="")
+        assert s.effective_github_token == ""
+
+    def test_effective_github_token_strips_whitespace_payload(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Whitespace-only payload token falls back to env (treated as missing)."""
+        monkeypatch.setenv("GITHUB_TOKEN", "ghp_from_env")
+        s = Score(title="T", repo_url="https://github.com/org/repo", branch="main", github_token="   ")
+        assert s.effective_github_token == "ghp_from_env"
 
     def test_optional_fields_default(self) -> None:
         s = Score(

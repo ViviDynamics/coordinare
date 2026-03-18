@@ -15,6 +15,7 @@ from performer.workspace import (
     _redact_auth_headers,
     cleanup_stand,
     clone_repository,
+    get_head_sha,
     push_branch,
 )
 
@@ -263,6 +264,43 @@ class TestPushBranch:
         with patch("performer.workspace.asyncio.create_subprocess_exec", side_effect=os_error):
             with pytest.raises(WorkspaceSetupError, match="insufficient disk space"):
                 await push_branch(stand, _score())
+
+
+class TestGetHeadSha:
+    async def test_returns_sha_on_success(self, tmp_path: Path) -> None:
+        stand = Stand(path=tmp_path, branch="feat/x")
+        proc = MagicMock()
+        proc.returncode = 0
+        proc.communicate = AsyncMock(return_value=(b"abc1234567890\n", b""))
+        with patch("performer.workspace.asyncio.create_subprocess_exec", return_value=proc):
+            sha = await get_head_sha(stand)
+        assert sha == "abc1234567890"
+
+    async def test_raises_on_nonzero_exit(self, tmp_path: Path) -> None:
+        stand = Stand(path=tmp_path, branch="feat/x")
+        proc = MagicMock()
+        proc.returncode = 128
+        proc.communicate = AsyncMock(return_value=(b"", b""))
+        with patch("performer.workspace.asyncio.create_subprocess_exec", return_value=proc):
+            with pytest.raises(WorkspaceSetupError, match="git rev-parse HEAD failed"):
+                await get_head_sha(stand)
+
+    async def test_raises_on_timeout_and_kills_proc(self, tmp_path: Path) -> None:
+        stand = Stand(path=tmp_path, branch="feat/x")
+
+        async def _hang() -> tuple[bytes, bytes]:
+            import asyncio as _asyncio
+            await _asyncio.sleep(9999)
+            return b"", b""
+
+        proc = MagicMock()
+        proc.kill = MagicMock()
+        proc.wait = AsyncMock()
+        proc.communicate = _hang
+        with patch("performer.workspace.asyncio.create_subprocess_exec", return_value=proc):
+            with pytest.raises(WorkspaceSetupError, match="timed out"):
+                await get_head_sha(stand)
+        proc.kill.assert_called_once()
 
 
 class TestCleanupStand:

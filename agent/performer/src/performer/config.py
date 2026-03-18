@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     AGENT_BACKEND: str = "opencode"
     # Supported values: "opencode" | "claude_code" | "codex" (stub)
     AGENT_TIMEOUT: int = 1800  # seconds — 30 minutes
+    CHECK_MAX_ATTEMPTS: int = 3  # max CI fix cycles before blocking the card
 
 
 @functools.lru_cache(maxsize=1)

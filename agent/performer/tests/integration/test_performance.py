@@ -51,6 +51,9 @@ def _github_mocks() -> None:
             },
         )
     )
+    respx.get("https://api.github.com/repos/org/repo/commits/abc123/check-runs").mock(
+        return_value=httpx.Response(200, json={"check_runs": []})
+    )
 
 
 def _make_patched_start(stand_override: Stand) -> object:
@@ -106,6 +109,7 @@ class TestFullPerformanceLoop:
         with (
             patch("performer.main.clone_repository", new=AsyncMock(side_effect=_mock_clone)),
             patch("performer.main.push_branch", new=AsyncMock(side_effect=_mock_push)),
+            patch("performer.main.get_head_sha", new=AsyncMock(return_value="abc123")),
             patch.object(OpenCodeAdapter, "start", _make_patched_start(mock_stand)),
         ):
             resp, perf = await handle_dispatch(msg, settings)
@@ -113,7 +117,8 @@ class TestFullPerformanceLoop:
             session_id = resp.session_id
             assert session_id
 
-            # Poll status until terminal state (max 20 iterations × 0.2s = 4s)
+            # Poll status until terminal state (max 20 iterations × 0.2s = 4s).
+            # Backend done → working (waiting_for_checks) → pr_opened after checks pass.
             final_resp = None
             for _ in range(20):
                 status_msg = PerformerMessage(action="status", session_id=session_id)
@@ -170,12 +175,21 @@ class TestFullPerformanceLoop:
         with (
             patch("performer.main.clone_repository", new=AsyncMock(side_effect=_mock_clone)),
             patch("performer.main.push_branch", new=AsyncMock(side_effect=_mock_push)),
-            patch.object(OpenCodeAdapter, "start", _make_patched_start(mock_stand)),
+            patch("performer.main.get_head_sha", new=AsyncMock(return_value="abc123")),
         ):
-            _, perf = await handle_dispatch(msg, settings)
-            await asyncio.sleep(0.5)
-            status_msg = PerformerMessage(action="status", session_id=perf.session_id)
-            final_resp = await handle_status(status_msg, perf)
+            respx.get("https://api.github.com/repos/org/repo/commits/abc123/check-runs").mock(
+                return_value=httpx.Response(200, json={"check_runs": []})
+            )
+            with patch.object(OpenCodeAdapter, "start", _make_patched_start(mock_stand)):
+                _, perf = await handle_dispatch(msg, settings)
+                await asyncio.sleep(0.5)
+                # First poll: backend done → push/PR → waiting_for_checks → working
+                status_msg = PerformerMessage(action="status", session_id=perf.session_id)
+                interim = await handle_status(status_msg, perf)
+                assert interim.status == "working"
+                assert perf.state == "waiting_for_checks"
+                # Second poll: checks pass (empty list) → pr_opened
+                final_resp = await handle_status(status_msg, perf)
 
         assert final_resp.status == "pr_opened"
         cleanup_stand(perf.stand)

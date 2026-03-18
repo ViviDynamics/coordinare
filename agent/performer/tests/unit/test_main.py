@@ -13,6 +13,7 @@ import pytest
 from performer.backends import UnsupportedBackendError
 from performer.backends.base import BackendStatus
 from performer.config import Settings, get_settings
+from performer.github import GitHubAPIError
 from performer.main import (
     collect_metrics,
     handle_dispatch,
@@ -148,7 +149,7 @@ class TestHandleStatus:
         assert "boom" in (resp.reason or "")
         assert resp.metrics is None
 
-    async def test_done_pushes_and_opens_pr(self) -> None:
+    async def test_done_pushes_and_transitions_to_waiting_for_checks(self) -> None:
         perf = _make_perf(session_id="sid")
         perf.backend.get_status.return_value = BackendStatus(state="done")
         with (
@@ -157,10 +158,13 @@ class TestHandleStatus:
                 "performer.main.create_pull_request",
                 new=AsyncMock(return_value=("https://github.com/org/repo/pull/1", "PR_n1")),
             ),
+            patch("performer.main.get_head_sha", new=AsyncMock(return_value="abc123")),
         ):
             resp = await handle_status(_msg("status", session_id="sid"), perf)
-        assert resp.status == "pr_opened"
-        assert resp.pr_url == "https://github.com/org/repo/pull/1"
+        assert resp.status == "working"
+        assert perf.state == "waiting_for_checks"
+        assert perf.pr_url == "https://github.com/org/repo/pull/1"
+        assert perf.pr_head_sha == "abc123"
 
     async def test_session_timeout_returns_error(self) -> None:
         """FR-015: if AGENT_TIMEOUT is exceeded, handle_status returns error and stops backend."""
@@ -258,10 +262,11 @@ class TestIsolation:
         with (
             patch("performer.main.push_branch", new=AsyncMock()),
             patch("performer.main.create_pull_request", new=AsyncMock(return_value=("u", "n"))),
+            patch("performer.main.get_head_sha", new=AsyncMock(return_value="sha1")),
             patch("performer.main.cleanup_stand") as mock_cleanup,
         ):
             resp = await handle_status(_msg("status", session_id="sid"), perf)
-            assert resp.status == "pr_opened"
+            assert resp.status == "working"  # now transitions through waiting_for_checks
             # Simulate finally cleanup
             t0 = time.monotonic()
             from performer.main import cleanup_stand as _cs
@@ -617,3 +622,173 @@ class TestRunLoop:
 
         # Watchdog should have called backend.stop() (cleanup also calls it, so ≥1)
         assert mock_backend.stop.called
+
+
+# ---------------------------------------------------------------------------
+# US5: CI check polling (T034-T039)
+# ---------------------------------------------------------------------------
+
+
+def _make_perf_waiting(session_id: str = "sid") -> Performance:
+    """Return a Performance already in waiting_for_checks state with PR info set."""
+    perf = _make_perf(session_id=session_id, state="waiting_for_checks")  # type: ignore[arg-type]
+    perf.pr_url = "https://github.com/org/repo/pull/1"
+    perf.pr_node_id = "PR_n1"
+    perf.pr_head_sha = "abc123"
+    perf.check_attempt = 0
+    return perf
+
+
+class TestCheckPolling:
+    async def test_backend_done_transitions_to_waiting_for_checks(self) -> None:
+        """When backend is done, performer pushes, opens PR, and returns working (not pr_opened)."""
+        perf = _make_perf(session_id="sid")
+        perf.backend.get_status.return_value = BackendStatus(state="done")
+        with (
+            patch("performer.main.push_branch", new=AsyncMock()),
+            patch("performer.main.create_pull_request",
+                  new=AsyncMock(return_value=("https://github.com/org/repo/pull/1", "PR_n1"))),
+            patch("performer.main.get_head_sha", new=AsyncMock(return_value="abc123")),
+        ):
+            resp = await handle_status(_msg("status", session_id="sid"), perf)
+        assert resp.status == "working"
+        assert perf.state == "waiting_for_checks"
+        assert perf.pr_head_sha == "abc123"
+
+    async def test_waiting_checks_all_pass_returns_pr_opened(self) -> None:
+        perf = _make_perf_waiting()
+        passing_runs = [{"name": "build", "status": "completed", "conclusion": "success"}]
+        with patch("performer.main.get_check_runs", new=AsyncMock(return_value=passing_runs)):
+            resp = await handle_status(_msg("status", session_id="sid"), perf)
+        assert resp.status == "pr_opened"
+        assert resp.pr_url == "https://github.com/org/repo/pull/1"
+        assert resp.pr_node_id == "PR_n1"
+        assert perf.state == "pr_opened"
+
+    async def test_waiting_checks_pending_returns_working(self) -> None:
+        perf = _make_perf_waiting()
+        pending_runs = [{"name": "build", "status": "in_progress", "conclusion": None}]
+        with patch("performer.main.get_check_runs", new=AsyncMock(return_value=pending_runs)):
+            resp = await handle_status(_msg("status", session_id="sid"), perf)
+        assert resp.status == "working"
+        assert perf.state == "waiting_for_checks"
+
+    async def test_waiting_checks_no_checks_returns_pr_opened(self) -> None:
+        """Empty check run list (no CI configured) immediately reports pr_opened."""
+        perf = _make_perf_waiting()
+        with patch("performer.main.get_check_runs", new=AsyncMock(return_value=[])):
+            resp = await handle_status(_msg("status", session_id="sid"), perf)
+        assert resp.status == "pr_opened"
+
+    async def test_waiting_checks_failure_relays_to_backend_and_increments_attempt(self) -> None:
+        perf = _make_perf_waiting()
+        failed_run = {
+            "name": "tests",
+            "status": "completed",
+            "conclusion": "failure",
+            "output": {"title": "3 failures", "summary": "Tests failed", "text": ""},
+        }
+        settings = Settings(AGENT_BACKEND="opencode", AGENT_TIMEOUT=1800, CHECK_MAX_ATTEMPTS=3)
+        with patch("performer.main.get_check_runs", new=AsyncMock(return_value=[failed_run])):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
+        assert resp.status == "working"
+        assert perf.state == "working"
+        assert perf.check_attempt == 1
+        perf.backend.relay_feedback.assert_called_once()
+        call_arg = perf.backend.relay_feedback.call_args[0][0]
+        assert "tests" in call_arg
+        assert "CI checks failed" in call_arg
+
+    async def test_waiting_checks_failure_at_max_attempts_returns_blocked(self) -> None:
+        perf = _make_perf_waiting()
+        perf.check_attempt = 3
+        failed_run = {
+            "name": "lint",
+            "status": "completed",
+            "conclusion": "failure",
+            "output": {},
+        }
+        settings = Settings(AGENT_BACKEND="opencode", AGENT_TIMEOUT=1800, CHECK_MAX_ATTEMPTS=3)
+        with patch("performer.main.get_check_runs", new=AsyncMock(return_value=[failed_run])):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
+        assert resp.status == "blocked"
+        assert perf.state == "blocked"
+        assert any("lint" in q for q in resp.questions)
+        assert any("3" in q for q in resp.questions)
+
+    async def test_waiting_checks_5xx_api_error_returns_working_retries(self) -> None:
+        """Transient 5xx errors are retried — performer stays in waiting_for_checks."""
+        perf = _make_perf_waiting()
+        perf.check_attempt = 1
+        with patch("performer.main.get_check_runs",
+                   new=AsyncMock(side_effect=GitHubAPIError(503, "Service unavailable"))):
+            resp = await handle_status(_msg("status", session_id="sid"), perf)
+        assert resp.status == "working"
+        assert perf.check_attempt == 1  # unchanged
+        assert perf.state == "waiting_for_checks"
+
+    async def test_waiting_checks_401_returns_error_immediately(self) -> None:
+        """Deterministic 4xx errors (bad/empty token) surface as error state, not looping."""
+        perf = _make_perf_waiting()
+        with patch("performer.main.get_check_runs",
+                   new=AsyncMock(side_effect=GitHubAPIError(401, "Bad credentials"))):
+            resp = await handle_status(_msg("status", session_id="sid"), perf)
+        assert resp.status == "error"
+        assert "401" in (resp.reason or "") or "Bad credentials" in (resp.reason or "")
+        assert perf.state == "error"
+
+    async def test_waiting_checks_429_rate_limit_returns_working_retries(self) -> None:
+        """429 rate-limit is transient — performer stays in waiting_for_checks and retries."""
+        perf = _make_perf_waiting()
+        with patch("performer.main.get_check_runs",
+                   new=AsyncMock(side_effect=GitHubAPIError(429, "Rate limit exceeded"))):
+            resp = await handle_status(_msg("status", session_id="sid"), perf)
+        assert resp.status == "working"
+        assert perf.state == "waiting_for_checks"
+
+    async def test_waiting_checks_missing_pr_head_sha_returns_error(self) -> None:
+        """If pr_head_sha is not set, poll_check_runs returns error immediately."""
+        perf = _make_perf(session_id="sid", state="waiting_for_checks")  # type: ignore[arg-type]
+        perf.pr_url = "https://github.com/org/repo/pull/1"
+        perf.pr_node_id = "PR_n1"
+        perf.pr_head_sha = None  # not set
+        resp = await handle_status(_msg("status", session_id="sid"), perf)
+        assert resp.status == "error"
+        assert perf.state == "error"
+
+    async def test_blocked_state_stable_on_repeated_poll(self) -> None:
+        """Repeated status polls after max-attempts blocked must NOT re-run push/PR-open.
+
+        After _poll_check_runs sets perf.state = 'blocked', the next coordinare
+        poll must return a stable 'blocked' response — not fall through to
+        backend.get_status() → done → push/create PR again.
+        """
+        perf = _make_perf_waiting()
+        perf.state = "blocked"  # type: ignore[assignment]
+        perf.open_questions = ["CI checks failed after 3 fix attempt(s): lint"]
+        mock_backend = MagicMock()
+        perf.backend = mock_backend
+
+        resp = await handle_status(_msg("status", session_id="sid"), perf)
+
+        assert resp.status == "blocked"
+        assert resp.questions == ["CI checks failed after 3 fix attempt(s): lint"]
+        # backend.get_status() must NOT have been called — no push/PR-open attempted
+        mock_backend.get_status.assert_not_called()
+
+    async def test_blocked_state_questions_persisted_on_perf(self) -> None:
+        """Max-attempts blocked path stores questions on perf.open_questions."""
+        perf = _make_perf_waiting()
+        perf.check_attempt = 3
+        failed_run = {
+            "name": "test-suite",
+            "status": "completed",
+            "conclusion": "failure",
+            "output": {},
+        }
+        settings = Settings(AGENT_BACKEND="opencode", AGENT_TIMEOUT=1800, CHECK_MAX_ATTEMPTS=3)
+        with patch("performer.main.get_check_runs", new=AsyncMock(return_value=[failed_run])):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
+        assert resp.status == "blocked"
+        assert perf.open_questions == resp.questions
+        assert any("test-suite" in q for q in perf.open_questions)

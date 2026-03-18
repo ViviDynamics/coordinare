@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -70,9 +71,83 @@ async def dispatch_card(state: CoordinareState) -> CoordinareState:
                     "move_card_to_blocked_failed",
                     card_id=str(card.get("id", "")),
                 )
+            state["workspace_path"] = None
+            state["workspace_branch"] = None
             state["phase"] = "blocked"
             state["open_questions"] = [str(exc)]
             return state
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            reason = (
+                f"Workspace setup failed unexpectedly ({type(exc).__name__}). "
+                "Check coordinare logs for details."
+            )
+            logger.error(
+                "workspace_setup_unexpected_error.card_blocked",
+                card_id=str(card.get("id", "")),
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            try:
+                await github.move_card(str(card.get("id", "")), "BLOCKED")
+            except Exception:
+                logger.warning(
+                    "move_card_to_blocked_failed",
+                    card_id=str(card.get("id", "")),
+                )
+            state["workspace_path"] = None
+            state["workspace_branch"] = None
+            state["phase"] = "blocked"
+            state["open_questions"] = [reason]
+            return state
+
+        # Validate required workspace fields before dispatching (FR-006).
+        # workspace_path and github_token are intentionally optional for Kubernetes
+        # transport: path=None (performer manages its own workspace via K8s Secrets)
+        # and github_token="" (auth is injected into the container separately via
+        # K8s Secrets).  When github_token="" the performer's GitHub API helpers will
+        # raise GitHubAPIError(401) immediately rather than silently looping, so the
+        # session will surface an error state quickly rather than running to watchdog.
+        # Require github_token only when path is not None (subprocess/local transport).
+        if workspace_info is not None:
+            required: list[tuple[str, str]] = [
+                ("repo_url", workspace_info.repo_url),
+                ("branch", workspace_info.branch),
+            ]
+            if workspace_info.path is not None:
+                required.append(("github_token", workspace_info.github_token))
+            missing = [field for field, value in required if not value]
+            if missing:
+                reason = (
+                    f"Workspace context incomplete — missing required fields: "
+                    f"{', '.join(missing)}"
+                )
+                logger.error(
+                    "dispatch_card.incomplete_workspace",
+                    card_id=str(card.get("id", "")),
+                    missing=missing,
+                )
+                try:
+                    await github.move_card(str(card.get("id", "")), "BLOCKED")
+                except Exception:
+                    logger.warning(
+                        "move_card_to_blocked_failed",
+                        card_id=str(card.get("id", "")),
+                    )
+                # Tear down the prepared workspace so temp dirs don't leak.
+                if workspace_info.path is not None:
+                    try:
+                        await workspace_manager.teardown(workspace_info.path)
+                    except Exception:
+                        logger.warning(
+                            "workspace_teardown_failed.after_incomplete_workspace",
+                            card_id=str(card.get("id", "")),
+                        )
+                state["workspace_path"] = None
+                state["workspace_branch"] = None
+                state["phase"] = "blocked"
+                state["open_questions"] = [reason]
+                return state
 
     card_id = str(card.get("id", ""))
     try:

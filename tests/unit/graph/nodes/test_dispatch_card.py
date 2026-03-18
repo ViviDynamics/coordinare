@@ -89,6 +89,7 @@ class _WorkspaceManager:
             path=self._path,
             branch="coordinare/ITEM_1/test-card",
             repo_url="https://github.com/acme/repo.git",
+            github_token="test-token",
         )
 
     async def teardown(self, path: Path) -> None:
@@ -308,3 +309,236 @@ async def test_dispatch_no_workspace_manager_still_dispatches() -> None:
 
     assert result["phase"] == "monitoring_agent"
     assert agent.last_workspace_info is None
+
+
+# ---------------------------------------------------------------------------
+# US4: workspace validation - T012-T015, T023
+# ---------------------------------------------------------------------------
+
+
+class _AgentNeverDispatched:
+    """Raises if dispatch_card is called — verifies performer is never started."""
+
+    async def check_health(self):
+        return {"status": "accepted"}
+
+    async def dispatch_card(self, card_context, workspace_info=None):
+        raise AssertionError("dispatch_card must not be called when workspace is invalid")
+
+
+class _WMRaisesRuntimeError:
+    async def prepare(self, card):
+        raise RuntimeError("Unexpected git internal error")
+
+    async def teardown(self, path):
+        pass
+
+
+class _WMEmptyToken:
+    async def prepare(self, card):
+        return WorkspaceInfo(
+            path=Path("/tmp/ws"),
+            branch="coordinare/ITEM_1/test",
+            repo_url="https://github.com/org/repo.git",
+            github_token="",
+        )
+
+    async def teardown(self, path):
+        pass
+
+
+class _WMEmptyRepoUrl:
+    async def prepare(self, card):
+        return WorkspaceInfo(
+            path=Path("/tmp/ws"),
+            branch="coordinare/ITEM_1/test",
+            repo_url="",
+            github_token="tok",
+        )
+
+    async def teardown(self, path):
+        pass
+
+
+class _WMComplete:
+    async def prepare(self, card):
+        return WorkspaceInfo(
+            path=Path("/tmp/ws"),
+            branch="coordinare/ITEM_1/test",
+            repo_url="https://github.com/org/repo.git",
+            github_token="tok",
+        )
+
+    async def teardown(self, path):
+        pass
+
+
+class _WMKubernetes:
+    """Simulates Kubernetes transport: path=None, github_token="" (auth via K8s Secrets)."""
+
+    async def prepare(self, card):
+        return WorkspaceInfo(
+            path=None,
+            branch="coordinare/ITEM_1/test",
+            repo_url="https://github.com/org/repo.git",
+            github_token="",
+        )
+
+    async def teardown(self, path):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_dispatch_card_workspace_exception_blocks_card() -> None:
+    """Unexpected exception from workspace prepare() → card blocked, performer not started."""
+    gh = _GitHub()
+    state = initial_state()
+    state["current_card"] = {"id": "ITEM_1", "status": "TODO"}
+    state["github_service"] = gh
+    state["agent_service"] = _AgentNeverDispatched()
+    state["workspace_manager"] = _WMRaisesRuntimeError()
+
+    result = await dispatch_card(state)
+
+    assert result["phase"] == "blocked"
+    assert ("ITEM_1", "BLOCKED") in gh.move_calls
+    assert result["open_questions"]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_card_workspace_empty_github_token_blocks_card() -> None:
+    """WorkspaceInfo with empty github_token → card blocked with reason mentioning github_token."""
+    gh = _GitHub()
+    state = initial_state()
+    state["current_card"] = {"id": "ITEM_1", "status": "TODO"}
+    state["github_service"] = gh
+    state["agent_service"] = _AgentNeverDispatched()
+    state["workspace_manager"] = _WMEmptyToken()
+
+    result = await dispatch_card(state)
+
+    assert result["phase"] == "blocked"
+    assert ("ITEM_1", "BLOCKED") in gh.move_calls
+    assert any("github_token" in q for q in result["open_questions"])
+
+
+@pytest.mark.asyncio
+async def test_dispatch_card_workspace_empty_repo_url_blocks_card() -> None:
+    """WorkspaceInfo with empty repo_url → card blocked."""
+    gh = _GitHub()
+    state = initial_state()
+    state["current_card"] = {"id": "ITEM_1", "status": "TODO"}
+    state["github_service"] = gh
+    state["agent_service"] = _AgentNeverDispatched()
+    state["workspace_manager"] = _WMEmptyRepoUrl()
+
+    result = await dispatch_card(state)
+
+    assert result["phase"] == "blocked"
+    assert ("ITEM_1", "BLOCKED") in gh.move_calls
+
+
+@pytest.mark.asyncio
+async def test_dispatch_card_workspace_complete_info_dispatches_normally() -> None:
+    """WorkspaceInfo with all required fields populated → dispatch proceeds normally."""
+    gh = _GitHub()
+    agent = _Agent()
+    state = initial_state()
+    state["current_card"] = {"id": "ITEM_1", "status": "TODO"}
+    state["github_service"] = gh
+    state["agent_service"] = agent
+    state["workspace_manager"] = _WMComplete()
+
+    result = await dispatch_card(state)
+
+    assert result["phase"] == "monitoring_agent"
+    assert agent.last_workspace_info is not None
+
+
+@pytest.mark.asyncio
+async def test_dispatch_card_workspace_manager_none_dispatches_without_workspace_context() -> None:
+    """workspace_manager=None → dispatch proceeds normally (SSH/Kubernetes handle own workspace)."""
+    agent = _Agent()
+    state = initial_state()
+    state["current_card"] = {"id": "ITEM_1", "status": "TODO"}
+    state["github_service"] = _GitHub()
+    state["agent_service"] = agent
+    state["workspace_manager"] = None
+
+    result = await dispatch_card(state)
+
+    assert result["phase"] == "monitoring_agent"
+    assert agent.last_workspace_info is None
+
+
+@pytest.mark.asyncio
+async def test_dispatch_card_kubernetes_empty_token_dispatches_normally() -> None:
+    """Kubernetes transport (path=None, github_token='') must NOT be blocked by completeness guard.
+
+    The Kubernetes performer container injects auth via K8s Secrets; the coordinare
+    workspace manager legitimately returns github_token='' for this transport.
+    """
+    agent = _Agent()
+    state = initial_state()
+    state["current_card"] = {"id": "ITEM_1", "status": "TODO"}
+    state["github_service"] = _GitHub()
+    state["agent_service"] = agent
+    state["workspace_manager"] = _WMKubernetes()
+
+    result = await dispatch_card(state)
+
+    assert result["phase"] == "monitoring_agent"
+    assert agent.last_workspace_info is not None
+    assert agent.last_workspace_info.path is None
+    assert agent.last_workspace_info.github_token == ""
+
+
+# ---------------------------------------------------------------------------
+# Copilot review fixes - workspace teardown on completeness failure
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dispatch_incomplete_workspace_tears_down_and_clears_state() -> None:
+    """When workspace fields are incomplete, the workspace is torn down and state is cleared."""
+    gh = _GitHub()
+    state = initial_state()
+    state["current_card"] = {"id": "ITEM_1", "status": "TODO"}
+    state["github_service"] = gh
+    state["agent_service"] = _AgentNeverDispatched()
+    state["workspace_manager"] = _WMEmptyToken()
+
+    result = await dispatch_card(state)
+
+    assert result["phase"] == "blocked"
+    assert result["workspace_path"] is None
+    assert result["workspace_branch"] is None
+
+
+@pytest.mark.asyncio
+async def test_dispatch_incomplete_workspace_teardown_failure_does_not_raise() -> None:
+    """If teardown raises during incomplete workspace handling, phase is still 'blocked'."""
+    class _WMEmptyTokenTeardownFails:
+        async def prepare(self, card):
+            from coordinare.workspace import WorkspaceInfo
+            return WorkspaceInfo(
+                path=Path("/tmp/ws"),
+                branch="coordinare/ITEM_1/test",
+                repo_url="https://github.com/org/repo.git",
+                github_token="",
+            )
+
+        async def teardown(self, path):
+            raise RuntimeError("Teardown disk error")
+
+    state = initial_state()
+    state["current_card"] = {"id": "ITEM_1", "status": "TODO"}
+    state["github_service"] = _GitHub()
+    state["agent_service"] = _AgentNeverDispatched()
+    state["workspace_manager"] = _WMEmptyTokenTeardownFails()
+
+    result = await dispatch_card(state)
+
+    assert result["phase"] == "blocked"
+    assert result["workspace_path"] is None
+    assert result["workspace_branch"] is None

@@ -308,3 +308,33 @@ async def test_save_completes_within_budget(tmp_path: Path) -> None:
     elapsed = time.monotonic() - start
 
     assert elapsed < 1.0, f"State write took {elapsed:.3f}s, exceeding 1.0s budget (SC-002)"
+
+
+# --- FR-007: card_clarifications and monitoring_pr phase survive save/load ---
+
+
+@pytest.mark.asyncio
+async def test_state_store_preserves_card_clarifications_and_monitoring_pr_phase(
+    tmp_path: Path,
+) -> None:
+    """WorkflowSnapshot with phase='monitoring_pr' and card_clarifications round-trips correctly."""
+    metrics = CoordinareMetrics()
+    store = StateStore(path=tmp_path / "state.json", metrics=metrics)
+    clarifications = [
+        {"questions": ["What API?", "Which region?"], "answer": ""},
+        {"questions": ["Deadline?"], "answer": "End of sprint"},
+    ]
+    snapshot = _make_snapshot(
+        phase="monitoring_pr",
+        active_card_id="PVT_RTRIP",
+        active_card_title="Round Trip Card",
+        active_card_column="In Review",
+        card_clarifications=clarifications,
+    )
+
+    await store.save(snapshot)
+    loaded = await store.load()
+
+    assert loaded is not None
+    assert loaded.phase == "monitoring_pr"
+    assert loaded.card_clarifications == clarifications

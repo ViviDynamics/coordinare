@@ -139,7 +139,7 @@ async def clone_repository(score: Score) -> Stand:
     stand_path = Path(tmpdir)
     owner, repo = _parse_owner_repo(score.repo_url)
     clone_url = f"https://github.com/{owner}/{repo}.git"
-    env = _git_credential_env(score.github_token)
+    env = _git_credential_env(score.effective_github_token)
 
     # Step 1: shallow-clone the default branch
     clone_cmd = ["git", "clone", "--depth=1", clone_url, str(stand_path)]
@@ -173,7 +173,7 @@ async def clone_repository(score: Score) -> Stand:
 
     log.info("cloned repository", owner=owner, repo=repo, branch=score.branch)
     stand = Stand(path=stand_path, branch=score.branch)
-    stand.git_env = _git_credential_vars(score.github_token)
+    stand.git_env = _git_credential_vars(score.effective_github_token)
     return stand
 
 
@@ -192,7 +192,7 @@ async def push_branch(stand: Stand, score: Score) -> None:
     owner, repo = _parse_owner_repo(score.repo_url)
     remote_url = f"https://github.com/{owner}/{repo}.git"
     cmd = ["git", "-C", str(stand.path), "push", "--force", remote_url, f"HEAD:{stand.branch}"]
-    env = _git_credential_env(score.github_token)
+    env = _git_credential_env(score.effective_github_token)
     try:
         returncode, err = await _run_git(cmd, cwd=None, env=env)
     except OSError as exc:
@@ -212,6 +212,31 @@ async def push_branch(stand: Stand, score: Score) -> None:
         raise WorkspaceSetupError(f"git push failed (exit {returncode}): {err}")
 
     log.info("pushed branch", branch=stand.branch, owner=owner, repo=repo)
+
+
+async def get_head_sha(stand: Stand) -> str:
+    """Return the current HEAD commit SHA for the stand's workspace.
+
+    Raises WorkspaceSetupError if the git command fails or times out.
+    The subprocess is always killed and reaped on timeout so it never leaks.
+    """
+    proc = await asyncio.create_subprocess_exec(
+        "git", "rev-parse", "HEAD",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+        cwd=str(stand.path),
+    )
+    try:
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10.0)
+    except TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise WorkspaceSetupError("git rev-parse HEAD timed out") from None
+    if proc.returncode != 0:
+        raise WorkspaceSetupError(
+            f"git rev-parse HEAD failed (exit {proc.returncode}) in {stand.path}"
+        )
+    return stdout.decode().strip()
 
 
 def cleanup_stand(stand: Stand) -> None:

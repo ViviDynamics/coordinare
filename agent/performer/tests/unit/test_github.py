@@ -5,7 +5,14 @@ import pytest
 import respx
 import httpx
 
-from performer.github import GitHubAPIError, create_pull_request, get_default_branch, get_existing_pull_request
+from performer.github import (
+    GitHubAPIError,
+    create_pull_request,
+    get_check_runs,
+    get_default_branch,
+    get_existing_pull_request,
+    summarise_check_runs,
+)
 from performer.models import Score
 
 
@@ -153,3 +160,142 @@ class TestGetExistingPullRequest:
         with pytest.raises(GitHubAPIError) as exc_info:
             await get_existing_pull_request("org", "repo", "feat/x", "tok")
         assert exc_info.value.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# US5: get_check_runs (T027-T028)
+# ---------------------------------------------------------------------------
+
+
+class TestRequireToken:
+    async def test_get_check_runs_empty_token_raises_401(self) -> None:
+        with pytest.raises(GitHubAPIError) as exc_info:
+            await get_check_runs("org", "repo", "abc123", "")
+        assert exc_info.value.status_code == 401
+
+    async def test_get_check_runs_whitespace_token_raises_401(self) -> None:
+        with pytest.raises(GitHubAPIError) as exc_info:
+            await get_check_runs("org", "repo", "abc123", "   ")
+        assert exc_info.value.status_code == 401
+
+    async def test_get_default_branch_empty_token_raises_401(self) -> None:
+        with pytest.raises(GitHubAPIError) as exc_info:
+            await get_default_branch("org", "repo", "")
+        assert exc_info.value.status_code == 401
+
+    @respx.mock
+    async def test_create_pull_request_empty_token_raises_401(self) -> None:
+        with pytest.raises(GitHubAPIError) as exc_info:
+            await create_pull_request("org", "repo", _score(), "feat/x", "")
+        assert exc_info.value.status_code == 401
+
+
+class TestGetCheckRuns:
+    @respx.mock
+    async def test_returns_check_runs_list(self) -> None:
+        check_runs = [
+            {"id": 1, "name": "build", "status": "completed", "conclusion": "success", "output": {}}
+        ]
+        respx.get("https://api.github.com/repos/org/repo/commits/abc123/check-runs").mock(
+            return_value=httpx.Response(200, json={"check_runs": check_runs})
+        )
+        result = await get_check_runs("org", "repo", "abc123", "tok")
+        assert result == check_runs
+
+    @respx.mock
+    async def test_raises_on_non_200(self) -> None:
+        respx.get("https://api.github.com/repos/org/repo/commits/abc123/check-runs").mock(
+            return_value=httpx.Response(403, json={"message": "Forbidden"})
+        )
+        with pytest.raises(GitHubAPIError) as exc_info:
+            await get_check_runs("org", "repo", "abc123", "tok")
+        assert exc_info.value.status_code == 403
+
+    @respx.mock
+    async def test_empty_check_runs_returns_empty_list(self) -> None:
+        respx.get("https://api.github.com/repos/org/repo/commits/sha/check-runs").mock(
+            return_value=httpx.Response(200, json={"check_runs": []})
+        )
+        result = await get_check_runs("org", "repo", "sha", "tok")
+        assert result == []
+
+
+# ---------------------------------------------------------------------------
+# US5: summarise_check_runs (T029-T033)
+# ---------------------------------------------------------------------------
+
+
+class TestSummariseCheckRuns:
+    def test_all_success_returns_pass(self) -> None:
+        runs = [
+            {"name": "build", "status": "completed", "conclusion": "success"},
+            {"name": "lint", "status": "completed", "conclusion": "neutral"},
+        ]
+        verdict, failed = summarise_check_runs(runs)
+        assert verdict == "pass"
+        assert failed == []
+
+    def test_skipped_counts_as_pass(self) -> None:
+        runs = [{"name": "optional", "status": "completed", "conclusion": "skipped"}]
+        verdict, failed = summarise_check_runs(runs)
+        assert verdict == "pass"
+
+    def test_any_failure_returns_fail(self) -> None:
+        runs = [
+            {"name": "build", "status": "completed", "conclusion": "success"},
+            {"name": "tests", "status": "completed", "conclusion": "failure"},
+        ]
+        verdict, failed = summarise_check_runs(runs)
+        assert verdict == "fail"
+        assert len(failed) == 1
+        assert failed[0]["name"] == "tests"
+
+    def test_in_progress_with_no_failures_returns_pending(self) -> None:
+        runs = [
+            {"name": "build", "status": "completed", "conclusion": "success"},
+            {"name": "deploy", "status": "in_progress", "conclusion": None},
+        ]
+        verdict, failed = summarise_check_runs(runs)
+        assert verdict == "pending"
+        assert failed == []
+
+    def test_empty_list_returns_pass(self) -> None:
+        verdict, failed = summarise_check_runs([])
+        assert verdict == "pass"
+        assert failed == []
+
+    def test_action_required_treated_as_failure(self) -> None:
+        runs = [{"name": "security", "status": "completed", "conclusion": "action_required"}]
+        verdict, failed = summarise_check_runs(runs)
+        assert verdict == "fail"
+        assert failed[0]["name"] == "security"
+
+    def test_timed_out_treated_as_failure(self) -> None:
+        runs = [{"name": "integration", "status": "completed", "conclusion": "timed_out"}]
+        verdict, _ = summarise_check_runs(runs)
+        assert verdict == "fail"
+
+    def test_cancelled_treated_as_failure(self) -> None:
+        runs = [{"name": "e2e", "status": "completed", "conclusion": "cancelled"}]
+        verdict, _ = summarise_check_runs(runs)
+        assert verdict == "fail"
+
+    def test_unknown_conclusion_treated_as_pending(self) -> None:
+        """Completed runs with unrecognised conclusions are treated as pending, not passing."""
+        runs = [
+            {"name": "build", "status": "completed", "conclusion": "unknown_future_value"},
+            {"name": "lint", "status": "completed", "conclusion": None},
+        ]
+        verdict, failed = summarise_check_runs(runs)
+        assert verdict == "pending"
+        assert failed == []
+
+    def test_failure_takes_precedence_over_pending(self) -> None:
+        """If both a failure and an in_progress run exist, verdict is fail not pending."""
+        runs = [
+            {"name": "tests", "status": "completed", "conclusion": "failure"},
+            {"name": "build", "status": "in_progress", "conclusion": None},
+        ]
+        verdict, failed = summarise_check_runs(runs)
+        assert verdict == "fail"
+        assert any(r["name"] == "tests" for r in failed)

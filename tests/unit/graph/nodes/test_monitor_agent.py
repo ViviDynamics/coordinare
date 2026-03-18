@@ -484,3 +484,264 @@ async def test_transport_error_resets_stale_system_error_state_from_previous_car
     # Stale dispatch metadata cleared
     assert result["agent_dispatch"] == {}
     assert result["agent_dispatch_at"] is None
+
+
+# ---------------------------------------------------------------------------
+# US1: pr_opened -> github.move_card("IN_REVIEW") called (T002-T005)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_monitor_agent_calls_move_card_in_review_on_pr_opened() -> None:
+    """move_card("IN_REVIEW") is called when pr_opened received with valid fields."""
+    gh = _GitHub()
+    state = initial_state()
+    state["agent_service"] = _Agent({
+        "status": "pr_opened",
+        "pr_url": "https://github.com/org/repo/pull/1",
+        "pr_node_id": "PR_NODE_1",
+    })
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["github_service"] = gh
+
+    result = await monitor_agent(state)
+
+    assert ("ITEM_1", "IN_REVIEW") in gh.move_calls
+    assert result["phase"] == "monitoring_pr"
+
+
+@pytest.mark.asyncio
+async def test_monitor_agent_pr_opened_missing_pr_url_does_not_move_card() -> None:
+    """pr_opened with pr_url=None must not move card; routes to system_error instead."""
+    gh = _GitHub()
+    state = initial_state()
+    state["agent_service"] = _Agent({
+        "status": "pr_opened",
+        "pr_url": None,
+        "pr_node_id": "PR_NODE_1",
+    })
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["github_service"] = gh
+
+    result = await monitor_agent(state)
+
+    assert ("ITEM_1", "IN_REVIEW") not in gh.move_calls
+    assert result["phase"] == "system_error"
+    assert result["current_card"]["status"] == "IN_PROGRESS"
+
+
+@pytest.mark.asyncio
+async def test_monitor_agent_pr_opened_missing_pr_node_id_does_not_move_card() -> None:
+    """pr_opened with pr_node_id=None must not move card; routes to system_error instead."""
+    gh = _GitHub()
+    state = initial_state()
+    state["agent_service"] = _Agent({
+        "status": "pr_opened",
+        "pr_url": "https://github.com/org/repo/pull/1",
+        "pr_node_id": None,
+    })
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["github_service"] = gh
+
+    result = await monitor_agent(state)
+
+    assert ("ITEM_1", "IN_REVIEW") not in gh.move_calls
+    assert result["phase"] == "system_error"
+
+
+@pytest.mark.asyncio
+async def test_monitor_agent_pr_opened_move_card_fails_gracefully() -> None:
+    """If move_card raises during pr_opened handling, phase is still 'monitoring_pr'."""
+    class _GitHubRaises:
+        def __init__(self) -> None:
+            self.move_calls: list[tuple[str, str]] = []
+
+        async def move_card(self, item_id: str, status: str) -> None:
+            self.move_calls.append((item_id, status))
+            raise RuntimeError("GitHub API unavailable")
+
+    gh = _GitHubRaises()
+    state = initial_state()
+    state["agent_service"] = _Agent({
+        "status": "pr_opened",
+        "pr_url": "https://github.com/org/repo/pull/2",
+        "pr_node_id": "PR_NODE_2",
+    })
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["github_service"] = gh
+
+    result = await monitor_agent(state)
+
+    assert result["phase"] == "monitoring_pr"
+    assert result["current_card"]["status"] == "IN_REVIEW"
+
+
+# ---------------------------------------------------------------------------
+# US2: session_expired with pr_node_id -> route to monitoring_pr (T008-T010)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_monitor_agent_session_expired_with_pr_routes_to_monitoring_pr() -> None:
+    """session_expired with pr_node_id set → transitions to monitoring_pr, not idle."""
+    gh = _GitHub()
+    state = initial_state()
+    state["agent_service"] = _Agent({"status": "session_expired"})
+    state["current_card"] = {"id": "ITEM_1", "pr_node_id": "PR_NODE_1"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["github_service"] = gh
+
+    result = await monitor_agent(state)
+
+    assert result["phase"] == "monitoring_pr"
+    assert ("ITEM_1", "TODO") not in gh.move_calls
+
+
+@pytest.mark.asyncio
+async def test_monitor_agent_session_expired_with_pr_clears_agent_dispatch() -> None:
+    """session_expired with pr_node_id set → agent_dispatch cleared to prevent relay_feedback
+    from contacting the dead performer and creating a monitoring_pr→session_expired loop."""
+    state = initial_state()
+    state["agent_service"] = _Agent({"status": "session_expired"})
+    state["current_card"] = {"id": "ITEM_1", "pr_node_id": "PR_NODE_1"}
+    state["agent_dispatch"] = {"session_id": "s-expired"}
+    state["agent_dispatch_at"] = "2026-01-01T00:00:00Z"
+
+    result = await monitor_agent(state)
+
+    assert result["phase"] == "monitoring_pr"
+    assert result["agent_dispatch"] == {}
+    assert result["agent_dispatch_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_monitor_agent_session_expired_without_pr_still_requeues_to_todo() -> None:
+    """session_expired without pr_node_id → existing requeue behaviour preserved."""
+    gh = _GitHub()
+    state = initial_state()
+    state["agent_service"] = _Agent({"status": "session_expired"})
+    state["current_card"] = {"id": "ITEM_1"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["github_service"] = gh
+
+    result = await monitor_agent(state)
+
+    assert result["phase"] == "idle"
+    assert ("ITEM_1", "TODO") in gh.move_calls
+
+
+# ---------------------------------------------------------------------------
+# US3: session_expired preserves open_questions in card_clarifications (T018-T021)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_monitor_agent_session_expired_saves_open_questions_to_clarifications() -> None:
+    """open_questions saved to card_clarifications with empty answer before clearing."""
+    state = initial_state()
+    state["agent_service"] = _Agent({"status": "session_expired"})
+    state["current_card"] = {"id": "ITEM_1"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["open_questions"] = ["What API?", "Which region?"]
+
+    result = await monitor_agent(state)
+
+    assert result["open_questions"] == []
+    clarifications = result["card_clarifications"]
+    assert len(clarifications) == 1
+    assert set(clarifications[0]["questions"]) == {"What API?", "Which region?"}
+    assert clarifications[0]["answer"] == ""
+
+
+@pytest.mark.asyncio
+async def test_monitor_agent_session_expired_appends_to_existing_clarifications() -> None:
+    """Existing card_clarifications entries are preserved; new entry is appended."""
+    state = initial_state()
+    state["agent_service"] = _Agent({"status": "session_expired"})
+    state["current_card"] = {"id": "ITEM_1"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["open_questions"] = ["New Q"]
+    state["card_clarifications"] = [{"questions": ["Old Q"], "answer": "Old A"}]
+
+    result = await monitor_agent(state)
+
+    assert len(result["card_clarifications"]) == 2
+    assert result["card_clarifications"][0]["questions"] == ["Old Q"]
+    assert result["card_clarifications"][1]["questions"] == ["New Q"]
+    assert result["card_clarifications"][1]["answer"] == ""
+
+
+@pytest.mark.asyncio
+async def test_monitor_agent_session_expired_no_questions_skips_clarification_save() -> None:
+    """When open_questions is empty, no entry is appended to card_clarifications."""
+    state = initial_state()
+    state["agent_service"] = _Agent({"status": "session_expired"})
+    state["current_card"] = {"id": "ITEM_1"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["open_questions"] = []
+    state["card_clarifications"] = []
+
+    result = await monitor_agent(state)
+
+    assert result["card_clarifications"] == []
+
+
+@pytest.mark.asyncio
+async def test_monitor_agent_session_expired_with_pr_and_open_questions_saves_before_routing() -> None:
+    """open_questions are saved to card_clarifications even when routing to monitoring_pr."""
+    state = initial_state()
+    state["agent_service"] = _Agent({"status": "session_expired"})
+    state["current_card"] = {"id": "ITEM_1", "pr_node_id": "PR_NODE_1"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["open_questions"] = ["Unanswered question?"]
+
+    result = await monitor_agent(state)
+
+    assert result["phase"] == "monitoring_pr"
+    assert result["open_questions"] == []
+    assert len(result["card_clarifications"]) == 1
+    assert result["card_clarifications"][0]["questions"] == ["Unanswered question?"]
+
+
+# ---------------------------------------------------------------------------
+# Copilot review fixes - stale system_error_notified reset on pr_opened error
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_monitor_agent_pr_opened_missing_fields_resets_stale_notified() -> None:
+    """Stale system_error_notified=True is cleared before incrementing on pr_opened error."""
+    state = initial_state()
+    state["agent_service"] = _Agent({"status": "pr_opened", "pr_url": None, "pr_node_id": None})
+    state["current_card"] = {"id": "ITEM_1"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    # Simulate stale state inherited from a previous card
+    state["system_error_notified"] = True
+    state["system_error_count"] = 5
+
+    result = await monitor_agent(state)
+
+    assert result["phase"] == "system_error"
+    # Count was reset to 0 then incremented once - so result is 1
+    assert result["system_error_count"] == 1
+    assert result["system_error_notified"] is False
+
+
+@pytest.mark.asyncio
+async def test_monitor_agent_pr_opened_missing_fields_no_stale_state_increments_normally() -> None:
+    """Without stale system_error_notified, count increments from current value."""
+    state = initial_state()
+    state["agent_service"] = _Agent({"status": "pr_opened", "pr_url": None, "pr_node_id": None})
+    state["current_card"] = {"id": "ITEM_1"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["system_error_notified"] = False
+    state["system_error_count"] = 2
+
+    result = await monitor_agent(state)
+
+    assert result["phase"] == "system_error"
+    assert result["system_error_count"] == 3

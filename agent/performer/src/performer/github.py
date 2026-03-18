@@ -1,5 +1,7 @@
-"""GitHub API client — PR creation and default branch detection."""
+"""GitHub API client — PR creation, default branch detection, and check-run polling."""
 from __future__ import annotations
+
+from typing import Literal
 
 import httpx
 import structlog
@@ -29,6 +31,7 @@ def _pr_body(score: Score) -> str:
 
 async def get_default_branch(owner: str, repo: str, token: str) -> str:
     """Return the repository's default branch name."""
+    _require_token(token, "get_default_branch")
     url = f"{_GITHUB_API}/repos/{owner}/{repo}"
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
     async with httpx.AsyncClient(timeout=30) as client:
@@ -45,6 +48,7 @@ async def get_existing_pull_request(
     token: str,
 ) -> tuple[str, str]:
     """Return ``(html_url, node_id)`` for an existing open PR on *branch*."""
+    _require_token(token, "get_existing_pull_request")
     url = f"{_GITHUB_API}/repos/{owner}/{repo}/pulls"
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
     async with httpx.AsyncClient(timeout=30) as client:
@@ -56,6 +60,61 @@ async def get_existing_pull_request(
         raise GitHubAPIError(404, f"No open PR found for branch {branch!r}")
     data = prs[0]
     return data["html_url"], data["node_id"]
+
+
+_FAILING_CONCLUSIONS = frozenset({"failure", "timed_out", "cancelled", "action_required"})
+_PASSING_CONCLUSIONS = frozenset({"success", "neutral", "skipped"})
+
+
+def _require_token(token: str, operation: str) -> None:
+    """Raise GitHubAPIError immediately when *token* is empty or whitespace-only.
+
+    Prevents sending a malformed ``Authorization: Bearer `` or
+    ``Authorization: Bearer    `` header to GitHub, which would result in a 401
+    that might be silently retried.
+    """
+    if not token.strip():
+        raise GitHubAPIError(401, f"github_token is required for {operation}")
+
+
+async def get_check_runs(owner: str, repo: str, ref: str, token: str) -> list[dict]:  # type: ignore[type-arg]
+    """Return all check runs for a commit *ref* via the GitHub Checks API."""
+    _require_token(token, "get_check_runs")
+    url = f"{_GITHUB_API}/repos/{owner}/{repo}/commits/{ref}/check-runs"
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.get(url, headers=headers, params={"per_page": "100"})
+    if not resp.is_success:
+        raise GitHubAPIError(resp.status_code, resp.text)
+    return resp.json().get("check_runs", [])
+
+
+def summarise_check_runs(
+    check_runs: list[dict],  # type: ignore[type-arg]
+) -> tuple[Literal["pass", "fail", "pending"], list[dict]]:  # type: ignore[type-arg]
+    """Classify check runs and return (verdict, failed_runs).
+
+    - "pass":    all completed runs have a passing conclusion (or list is empty)
+    - "fail":    one or more runs completed with a failing conclusion
+    - "pending": no failures yet, but some runs are still queued or in_progress
+    """
+    failed: list[dict] = []  # type: ignore[type-arg]
+    has_pending = False
+    for run in check_runs:
+        conclusion = run.get("conclusion")
+        status = run.get("status", "")
+        if conclusion in _FAILING_CONCLUSIONS:
+            failed.append(run)
+        elif status in ("queued", "in_progress"):
+            has_pending = True
+        elif status == "completed" and conclusion not in _PASSING_CONCLUSIONS:
+            # Unknown or null conclusion — treat conservatively as pending
+            has_pending = True
+    if failed:
+        return "fail", failed
+    if has_pending:
+        return "pending", []
+    return "pass", []
 
 
 async def create_pull_request(
@@ -70,6 +129,7 @@ async def create_pull_request(
     If a PR already exists for *branch*, returns the existing PR's details
     rather than raising an error.
     """
+    _require_token(token, "create_pull_request")
     base = score.base_branch or await get_default_branch(owner, repo, token)
     url = f"{_GITHUB_API}/repos/{owner}/{repo}/pulls"
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}

@@ -45,8 +45,7 @@ class AgentService:
         if workspace_info is not None:
             payload["repo_url"] = workspace_info.repo_url
             payload["branch"] = workspace_info.branch
-            if workspace_info.github_token:
-                payload["github_token"] = workspace_info.github_token
+            payload["github_token"] = workspace_info.github_token
             if workspace_info.path is not None:
                 payload["workspace_path"] = str(workspace_info.path)
         message = ProtocolMessage(

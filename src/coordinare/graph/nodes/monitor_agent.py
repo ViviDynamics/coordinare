@@ -96,34 +96,86 @@ async def monitor_agent(state: CoordinareState) -> CoordinareState:
 
         marker = status.get("status", "working")
         if marker == "pr_opened":
-            card["pr_url"] = status.get("pr_url")
-            card["pr_node_id"] = status.get("pr_node_id")
-            card["previous_status"] = card.get("status", "IN_PROGRESS")
-            card["status"] = "IN_REVIEW"
-            state["current_card"] = card
-            state["phase"] = "monitoring_pr"
-            state["system_error_count"] = 0
-            state["system_error_last_at"] = None
-            state["system_error_notified"] = False
-            state["system_error_reason"] = None
+            pr_url = status.get("pr_url")
+            pr_node_id = status.get("pr_node_id")
+            if not pr_url or not pr_node_id:
+                logger.error(
+                    "monitor_agent.pr_opened_missing_fields",
+                    card_id=card_id,
+                    pr_url_present=bool(pr_url),
+                    pr_node_id_present=bool(pr_node_id),
+                )
+                # Reset stale error state inherited from a previous card so this
+                # card gets its full retry budget and operator notification fires.
+                if state.get("system_error_notified"):
+                    state["system_error_count"] = 0
+                    state["system_error_notified"] = False
+                state["system_error_count"] = state.get("system_error_count", 0) + 1
+                state["system_error_last_at"] = datetime.now(UTC)
+                state["system_error_reason"] = (
+                    "Performer reported pr_opened but pr_url or pr_node_id is missing"
+                )
+                state["phase"] = "system_error"
+            else:
+                card["pr_url"] = pr_url
+                card["pr_node_id"] = pr_node_id
+                card["previous_status"] = card.get("status", "IN_PROGRESS")
+                card["status"] = "IN_REVIEW"
+                state["current_card"] = card
+                state["phase"] = "monitoring_pr"
+                state["system_error_count"] = 0
+                state["system_error_last_at"] = None
+                state["system_error_notified"] = False
+                state["system_error_reason"] = None
+                if github is not None:
+                    try:
+                        await github.move_card(card_id, "IN_REVIEW")
+                    except Exception:
+                        logger.warning("move_card_to_in_review_failed", card_id=card_id)
         elif marker == "session_expired":
-            # Transient system failure — auto-requeue to TODO without human intervention.
-            reason = str(status.get("reason", ""))
-            logger.warning(
-                "monitor_agent.session_expired_requeue",
-                card_id=card_id,
-                reason=reason,
-                msg="Session expired — moving card back to TODO for re-dispatch",
-            )
-            if github is not None:
-                try:
-                    await github.move_card(card_id, "TODO")
-                except Exception:
-                    logger.warning("move_card_to_todo_failed", card_id=card_id)
-            state["agent_dispatch"] = {}
-            state["agent_dispatch_at"] = None
+            # Preserve any unanswered questions so the next performer receives them.
+            open_qs = [str(q) for q in (state.get("open_questions") or [])]
+            if open_qs:
+                existing_clarifications = list(state.get("card_clarifications") or [])
+                state["card_clarifications"] = [
+                    *existing_clarifications,
+                    {"questions": open_qs, "answer": ""},
+                ]
             state["open_questions"] = []
-            state["phase"] = "idle"
+
+            # If a PR was already opened in a prior cycle, resume monitoring it
+            # rather than re-queuing the card to TODO (which would trigger a
+            # duplicate dispatch and a GitHub 422 error).
+            if card.get("pr_node_id"):
+                logger.info(
+                    "monitor_agent.session_expired_resume_monitoring_pr",
+                    card_id=card_id,
+                    pr_node_id=card["pr_node_id"],
+                    msg="Session expired but PR already open — resuming monitoring_pr",
+                )
+                # Clear the dead session so relay_feedback doesn't attempt to
+                # contact an expired performer, which would create a
+                # monitoring_pr → relay_feedback → session_expired → monitoring_pr loop.
+                state["agent_dispatch"] = {}
+                state["agent_dispatch_at"] = None
+                state["phase"] = "monitoring_pr"
+            else:
+                # Transient failure with no open PR — auto-requeue to TODO.
+                reason = str(status.get("reason", ""))
+                logger.warning(
+                    "monitor_agent.session_expired_requeue",
+                    card_id=card_id,
+                    reason=reason,
+                    msg="Session expired — moving card back to TODO for re-dispatch",
+                )
+                if github is not None:
+                    try:
+                        await github.move_card(card_id, "TODO")
+                    except Exception:
+                        logger.warning("move_card_to_todo_failed", card_id=card_id)
+                state["agent_dispatch"] = {}
+                state["agent_dispatch_at"] = None
+                state["phase"] = "idle"
         elif marker == "error":
             reason = str(status.get("reason", ""))
             state["system_error_count"] = state.get("system_error_count", 0) + 1
