@@ -4,6 +4,10 @@ from datetime import UTC, datetime
 from pathlib import Path  # noqa: TC003 — needed at runtime for LangGraph get_type_hints()
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypedDict
 
+from coordinare.config import (
+    ProjectConfiguration,  # noqa: TC001 — needed at runtime for LangGraph get_type_hints()
+)
+
 if TYPE_CHECKING:
     from coordinare.models.notification import NotificationEvent
     from coordinare.workspace import WorkspaceInfo
@@ -48,7 +52,7 @@ class NotificationServiceProtocol(Protocol):
 
 
 class AdvocateServiceProtocol(Protocol):
-    async def scan_and_respond(self, processed_ids: set[str]) -> set[str]:
+    async def scan_and_respond(self, processed_ids: set[str], *, persona_instructions: str = "") -> set[str]:
         """Scan open issues, process unhandled ones, return updated processed_ids set."""
         ...
 
@@ -75,6 +79,9 @@ class CoordinareState(TypedDict, total=False):
     workspace_manager: WorkspaceManagerProtocol | None
     workspace_path: Path | None
     workspace_branch: str | None
+
+    config: ProjectConfiguration | None
+    config_path: Path | None
 
     human_reviewers: list[str]
     blocked_reminder_hours: int

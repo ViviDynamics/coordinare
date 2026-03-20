@@ -94,10 +94,10 @@ def _make_app(
 # ---------------------------------------------------------------------------
 
 
-def test_dashboard_html_under_32kb() -> None:
-    """T036: _DASHBOARD_HTML must not exceed the 32 KB size budget (raised to accommodate force-poll button, 016)."""
+def test_dashboard_html_under_40kb() -> None:
+    """T036: _DASHBOARD_HTML must not exceed the 40 KB size budget (raised to accommodate personas panel, 018)."""
     size = len(_DASHBOARD_HTML.encode())
-    assert size < 32 * 1024, f"_DASHBOARD_HTML is {size} bytes (limit: {32 * 1024})"
+    assert size < 40 * 1024, f"_DASHBOARD_HTML is {size} bytes (limit: {40 * 1024})"
 
 
 # ---------------------------------------------------------------------------
@@ -742,3 +742,183 @@ def test_build_snapshot_started_at_falls_back_to_none_on_exception() -> None:
 
     snapshot = store.build_snapshot(daemon, bad_metrics, health)
     assert snapshot.get("daemon_start_time") is None
+
+
+# ---------------------------------------------------------------------------
+# 018 — Personas API endpoint tests (T016, T016b)
+# ---------------------------------------------------------------------------
+
+
+def _make_personas_app(tmp_path, config_path=None):
+    """Build a TestClient for the dashboard with personas support.
+
+    When no explicit config_path is given, writes a default config YAML with
+    a custom implementer persona so GET /api/personas returns non-default data.
+    """
+    import yaml
+
+    from coordinare.dashboard import DashboardStore, create_dashboard_app
+
+    store = DashboardStore()
+    daemon = _make_mock_daemon()
+
+    _path = config_path or (tmp_path / "config.yaml")
+    if config_path is None:
+        _path.write_text(yaml.dump({
+            "project_name": "Demo",
+            "github_org": "acme",
+            "github_project_number": 1,
+            "github_token": "tok",
+            "human_reviewers": ["alice"],
+            "personas": {
+                "implementer": {"instructions": "custom"},
+            },
+        }))
+
+    health = _make_mock_health()
+    metrics = _make_mock_metrics()
+    app = create_dashboard_app(store, daemon, metrics, health, config_path=_path)
+    return TestClient(app)
+
+
+def test_get_personas_returns_list_of_eight_roles(tmp_path) -> None:
+    """T016: GET /api/personas returns 8 roles."""
+    client = _make_personas_app(tmp_path)
+    res = client.get("/api/personas")
+    assert res.status_code == 200
+    data = res.json()
+    assert isinstance(data, list)
+    assert len(data) == 8
+    roles = {p["role"] for p in data}
+    assert roles == {
+        "advocate", "assessor", "architect", "implementer",
+        "reviewer", "security", "qa", "tech_writer",
+    }
+
+
+def test_get_personas_is_default_flags_correct(tmp_path) -> None:
+    """T016: implementer has custom instructions → is_default=False; others → True."""
+    client = _make_personas_app(tmp_path)
+    res = client.get("/api/personas")
+    data = {p["role"]: p for p in res.json()}
+    assert data["implementer"]["is_default"] is False
+    assert data["assessor"]["is_default"] is True
+
+
+def test_put_persona_valid_instructions_returns_200(tmp_path) -> None:
+    """T016: PUT /api/personas/implementer with valid instructions returns 200."""
+    import yaml
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.dump({
+        "project_name": "Demo",
+        "github_org": "acme",
+        "github_project_number": 1,
+        "github_token": "tok",
+        "human_reviewers": ["alice"],
+    }))
+    client = _make_personas_app(tmp_path, config_path=config_path)
+    res = client.put(
+        "/api/personas/implementer",
+        json={"instructions": "Write tests first."},
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["role"] == "implementer"
+    assert data["instructions"] == "Write tests first."
+    assert data["is_default"] is False
+
+
+def test_put_persona_instructions_too_long_returns_400(tmp_path) -> None:
+    """T016: PUT with instructions > 8000 chars returns 400."""
+    from coordinare.config import PERSONA_MAX_LENGTH
+    client = _make_personas_app(tmp_path)
+    res = client.put(
+        "/api/personas/implementer",
+        json={"instructions": "x" * (PERSONA_MAX_LENGTH + 1)},
+    )
+    assert res.status_code == 400
+    assert "exceed" in res.json()["error"].lower()
+
+
+def test_put_persona_unknown_role_returns_404(tmp_path) -> None:
+    """T016: PUT with unknown role returns 404."""
+    client = _make_personas_app(tmp_path)
+    res = client.put("/api/personas/wizard", json={"instructions": "Hello."})
+    assert res.status_code == 404
+
+
+def test_delete_persona_returns_204(tmp_path) -> None:
+    """T016: DELETE /api/personas/assessor returns 204."""
+    import yaml
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.dump({
+        "project_name": "Demo",
+        "github_org": "acme",
+        "github_project_number": 1,
+        "github_token": "tok",
+        "human_reviewers": ["alice"],
+    }))
+    client = _make_personas_app(tmp_path, config_path=config_path)
+    res = client.delete("/api/personas/assessor")
+    assert res.status_code == 204
+
+
+def test_delete_persona_unknown_role_returns_404(tmp_path) -> None:
+    """T016: DELETE with unknown role returns 404."""
+    client = _make_personas_app(tmp_path)
+    res = client.delete("/api/personas/wizard")
+    assert res.status_code == 404
+
+
+def test_put_persona_save_oserror_returns_500(tmp_path) -> None:
+    """T016: PUT when save_persona raises OSError returns HTTP 500 with error body (D2)."""
+    from unittest.mock import patch
+
+    import yaml
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.dump({
+        "project_name": "Demo", "github_org": "acme",
+        "github_project_number": 1, "github_token": "tok",
+        "human_reviewers": ["alice"],
+    }))
+    client = _make_personas_app(tmp_path, config_path=config_path)
+
+    with patch(
+        "coordinare.services.persona_service.save_persona",
+        side_effect=OSError("disk full"),
+    ) as mock_save:
+        res = client.put(
+            "/api/personas/implementer",
+            json={"instructions": "Write tests."},
+        )
+    assert res.status_code == 500
+    assert "error" in res.json()
+    assert mock_save.called
+
+
+def test_put_persona_responds_under_two_seconds(tmp_path) -> None:
+    """T016b: PUT /api/personas/implementer responds in < 2 seconds (SC-003)."""
+    import time
+
+    import yaml
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.dump({
+        "project_name": "Demo",
+        "github_org": "acme",
+        "github_project_number": 1,
+        "github_token": "tok",
+        "human_reviewers": ["alice"],
+    }))
+    client = _make_personas_app(tmp_path, config_path=config_path)
+
+    t0 = time.perf_counter()
+    res = client.put(
+        "/api/personas/implementer",
+        json={"instructions": "Write tests first."},
+    )
+    elapsed = time.perf_counter() - t0
+
+    assert res.status_code == 200
+    assert elapsed < 2.0, f"PUT /api/personas took {elapsed:.3f}s (> 2s limit)"

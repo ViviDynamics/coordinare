@@ -23,6 +23,10 @@ Auto-generated from all feature plans. Last updated: 2026-02-16
 - N/A — trigger is ephemeral; no persistence required (016-force-poll)
 - Python 3.12+ + structlog (existing), asyncio (stdlib) — no new dependencies required (017-fix-post-pr-workflow)
 - N/A — in-memory state updates only; StateStore already persists all modified fields (017-fix-post-pr-workflow)
+- Python 3.12+ + `pydantic>=2.9`, `pydantic-settings>=2.6`, `structlog>=24.1`, FastAPI (existing) — **no new dependencies required** (018-performer-personas)
+- Existing `config.yaml` YAML file — extended with a `personas:` top-level key; no new persistence backend (018-performer-personas)
+- Python 3.12+ + LangGraph ≥ 0.2 (existing), pydantic-settings (existing), structlog (existing), asyncio (stdlib) — **no new dependencies required** (019-performer-lifecycle)
+- N/A — `CoordinareState` is in-memory; `performers:` key added to existing `config.yaml` (019-performer-lifecycle)
 
 - Python 3.12+ + LangGraph (>=0.2), anthropic (>=0.40), gql[aiohttp], FastAPI, structlog, slack-sdk, aiosmtplib, prometheus-client, pydantic-settings (001-board-orchestrator)
 - Python 3.12+ + Pydantic v2 (existing), `asyncio.create_subprocess_exec` (stdlib), `structlog` (existing); `asyncssh` removed — replaced by pluggable transport architecture (004-agent-protocol)
@@ -43,9 +47,9 @@ cd src [ONLY COMMANDS FOR ACTIVE TECHNOLOGIES][ONLY COMMANDS FOR ACTIVE TECHNOLO
 Python 3.12+: Follow standard conventions
 
 ## Recent Changes
+- 019-performer-lifecycle: Added Python 3.12+ + LangGraph ≥ 0.2 (existing), pydantic-settings (existing), structlog (existing), asyncio (stdlib) — **no new dependencies required**
+- 018-performer-personas: Added Python 3.12+ + `pydantic>=2.9`, `pydantic-settings>=2.6`, `structlog>=24.1`, FastAPI (existing) — **no new dependencies required**
 - 017-fix-post-pr-workflow: Added Python 3.12+ + structlog (existing), asyncio (stdlib) — no new dependencies required
-- 016-force-poll: Added Python 3.12+ + FastAPI + Starlette (existing), asyncio stdlib, vanilla JavaScript (inline in dashboard HTML)
-- 015-github-app-auth: Added Python 3.12+ + PyJWT[crypto]>=2.8 (new), httpx (existing), FastAPI (existing), pydantic-settings (existing), structlog (existing)
 
 
 <!-- MANUAL ADDITIONS START -->

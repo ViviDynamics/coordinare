@@ -42,8 +42,19 @@ class AdvocateService:
         self._label_ids: dict[str, str] = label_ids or {}
         self._scorers: list[ScoringProviderProtocol] = scorers or []
 
-    async def scan_and_respond(self, processed_ids: set[str]) -> set[str]:
-        """Scan open issues, process unhandled ones, return updated processed_ids set."""
+    async def scan_and_respond(
+        self,
+        processed_ids: set[str],
+        *,
+        persona_instructions: str = "",
+    ) -> set[str]:
+        """Scan open issues, process unhandled ones, return updated processed_ids set.
+
+        Args:
+            processed_ids: Set of already-processed issue IDs to skip.
+            persona_instructions: Optional behavioral instructions for the advocate
+                role (018-performer-personas). Forwarded to scorers as additional context.
+        """
         start = monotonic()
         cycle_id = f"cycle-{int(start)}"
 
@@ -87,7 +98,9 @@ class AdvocateService:
             async with sem:
                 issue_id = str(issue.get("id", ""))
                 try:
-                    await self._process_issue(issue, doc_sources)
+                    await self._process_issue(
+                        issue, doc_sources, persona_instructions=persona_instructions
+                    )
                     new_ids.add(issue_id)
                 except Exception as exc:
                     logger.error(
@@ -156,6 +169,8 @@ class AdvocateService:
         self,
         issue: dict[str, Any],
         doc_sources: list[DocumentationSource],
+        *,
+        persona_instructions: str = "",
     ) -> None:
         issue_id = str(issue.get("id", ""))
         issue_number = int(issue.get("number", 0))
@@ -193,9 +208,16 @@ class AdvocateService:
             else ""
         )
 
-        # Step 3: Call scorers
+        # Step 3: Call scorers (prepend persona instructions when set, 018-performer-personas)
+        effective_doc_content = doc_content
+        if persona_instructions.strip():
+            effective_doc_content = (
+                f"## Advocate Instructions\n{persona_instructions.strip()}\n\n{doc_content}"
+                if doc_content
+                else f"## Advocate Instructions\n{persona_instructions.strip()}"
+            )
         consensus, primary = await compute_consensus(
-            self._scorers, title, body, doc_content
+            self._scorers, title, body, effective_doc_content
         )
         classification = primary.classification
         confidence = consensus.final_score

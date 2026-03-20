@@ -181,8 +181,9 @@ async def test_advocate_service_none_returns_state_unchanged() -> None:
 
 @pytest.mark.asyncio
 async def test_advocate_scan_node_calls_service_and_updates_history() -> None:
-    """advocate_scan with a live service calls scan_and_respond and stores returned ids."""
+    """advocate_scan with a live service calls scan_and_respond with default persona instructions."""
     from coordinare.graph.nodes.advocate import advocate_scan
+    from coordinare.services.persona_service import DEFAULT_INSTRUCTIONS
 
     mock_service = MagicMock()
     mock_service.scan_and_respond = AsyncMock(return_value={"issue-1", "issue-2"})
@@ -194,7 +195,11 @@ async def test_advocate_scan_node_calls_service_and_updates_history() -> None:
     }
     result = await advocate_scan(state)
 
-    mock_service.scan_and_respond.assert_awaited_once_with(set())
+    # When no config is in state, the node falls back to built-in default
+    # instructions (FR-007) rather than passing an empty string.
+    mock_service.scan_and_respond.assert_awaited_once_with(
+        set(), persona_instructions=DEFAULT_INSTRUCTIONS["advocate"]
+    )
     assert result["advocate_history"] == {"issue-1", "issue-2"}
 
 
@@ -457,11 +462,11 @@ async def test_process_one_exception_skips_issue_continues_others() -> None:
     original_process = service._process_issue
     call_count = {"n": 0}
 
-    async def _patched(issue, doc_sources):
+    async def _patched(issue, doc_sources, *, persona_instructions=""):
         call_count["n"] += 1
         if issue["id"] == "issue-1":
             raise RuntimeError("transient error")
-        return await original_process(issue, doc_sources)
+        return await original_process(issue, doc_sources, persona_instructions=persona_instructions)
 
     service._process_issue = _patched  # type: ignore[method-assign]
 
@@ -704,3 +709,70 @@ async def test_escalation_notification_exception_is_caught() -> None:
     # Must NOT raise even though dispatch fails
     await service.scan_and_respond(set())
     notification_service.dispatch.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# 018 — Advocate persona injection tests (T019)
+# ---------------------------------------------------------------------------
+
+
+def _make_config_with_persona(instructions: str):
+    from coordinare.config import PersonaConfig, PersonasConfig
+
+    class _FakeConfig:
+        pass
+
+    cfg = _FakeConfig()
+    cfg.personas = PersonasConfig(advocate=PersonaConfig(instructions=instructions))
+    return cfg
+
+
+@pytest.mark.asyncio
+async def test_advocate_scan_passes_persona_instructions_to_service() -> None:
+    """FR-006: configured advocate persona reaches scan_and_respond."""
+
+    from coordinare.graph.nodes.advocate import advocate_scan
+    from coordinare.graph.state import initial_state
+
+    captured: list[str] = []
+
+    class _FakeAdvocate:
+        async def scan_and_respond(self, processed_ids, *, persona_instructions=""):
+            captured.append(persona_instructions)
+            return processed_ids
+
+    state = initial_state()
+    state["advocate_service"] = _FakeAdvocate()
+    state["advocate_history"] = set()
+    state["config"] = _make_config_with_persona("Only scan issues labelled coordinare-ready.")
+
+    await advocate_scan(state)
+
+    assert len(captured) == 1
+    assert captured[0] == "Only scan issues labelled coordinare-ready."
+
+
+@pytest.mark.asyncio
+async def test_advocate_scan_passes_default_instructions_when_no_custom_persona() -> None:
+    """FR-007: default advocate persona is passed when no custom persona set."""
+    from coordinare.graph.nodes.advocate import advocate_scan
+    from coordinare.graph.state import initial_state
+    from coordinare.services.persona_service import DEFAULT_INSTRUCTIONS
+
+    captured: list[str] = []
+
+    class _FakeAdvocate:
+        async def scan_and_respond(self, processed_ids, *, persona_instructions=""):
+            captured.append(persona_instructions)
+            return processed_ids
+
+    state = initial_state()
+    state["advocate_service"] = _FakeAdvocate()
+    state["advocate_history"] = set()
+    state["config"] = _make_config_with_persona("")
+
+    await advocate_scan(state)
+
+    assert len(captured) == 1
+    assert captured[0] == DEFAULT_INSTRUCTIONS["advocate"]
+    assert captured[0]  # non-empty

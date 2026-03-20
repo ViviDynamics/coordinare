@@ -124,6 +124,45 @@ class NotificationsConfig(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# 018 — Performer Personas config models
+# ---------------------------------------------------------------------------
+
+PERSONA_MAX_LENGTH = 8_000
+
+
+class PersonaConfig(BaseModel):
+    """Per-role behavioral instructions for the AI agent."""
+
+    instructions: str = ""
+
+    @field_validator("instructions", mode="before")
+    @classmethod
+    def _validate_instructions_length(cls, v: Any) -> str:
+        if v is None:
+            return ""
+        if not isinstance(v, str):
+            msg = f"instructions must be a string, got {type(v).__name__}"
+            raise ValueError(msg)
+        if len(v) > PERSONA_MAX_LENGTH or len(v.strip()) > PERSONA_MAX_LENGTH:
+            msg = f"Instructions exceed maximum length ({PERSONA_MAX_LENGTH} chars)"
+            raise ValueError(msg)
+        return v
+
+
+class PersonasConfig(BaseModel):
+    """Container for all eight role personas."""
+
+    advocate: PersonaConfig = Field(default_factory=PersonaConfig)
+    assessor: PersonaConfig = Field(default_factory=PersonaConfig)
+    architect: PersonaConfig = Field(default_factory=PersonaConfig)
+    implementer: PersonaConfig = Field(default_factory=PersonaConfig)
+    reviewer: PersonaConfig = Field(default_factory=PersonaConfig)
+    security: PersonaConfig = Field(default_factory=PersonaConfig)
+    qa: PersonaConfig = Field(default_factory=PersonaConfig)
+    tech_writer: PersonaConfig = Field(default_factory=PersonaConfig)
+
+
+# ---------------------------------------------------------------------------
 # 007 — Customer advocate config model
 # ---------------------------------------------------------------------------
 
@@ -292,6 +331,7 @@ class ProjectConfiguration(BaseSettings):
     resilience: ResilienceConfig = Field(default_factory=ResilienceConfig)
     notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
     advocate: AdvocateConfig = Field(default_factory=AdvocateConfig)
+    personas: PersonasConfig = Field(default_factory=PersonasConfig)
 
     # Card assessment backend — determines how assess_card evaluates card sufficiency.
     # "anthropic_api": direct Anthropic SDK call (requires ANTHROPIC_API_KEY)

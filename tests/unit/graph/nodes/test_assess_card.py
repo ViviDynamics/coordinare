@@ -135,3 +135,86 @@ async def test_assess_card_embeds_clarifications_into_card_when_sufficient() -> 
 
     assert result["phase"] == "dispatching"
     assert result["current_card"].get("clarifications") == [{"question": "Q?", "answer": "A"}]
+
+
+# ---------------------------------------------------------------------------
+# 018 — Assessor persona injection tests (T011)
+# ---------------------------------------------------------------------------
+
+
+class _DetailsCapture:
+    """Backend that captures the details dict passed to assess()."""
+
+    def __init__(self) -> None:
+        self.last_details: dict | None = None
+
+    async def assess(self, card):
+        self.last_details = card
+        return {"sufficient": True, "questions": []}
+
+
+def _make_config_with_persona(instructions: str):
+    from coordinare.config import PersonaConfig, PersonasConfig
+
+    class _FakeConfig:
+        pass
+
+    cfg = _FakeConfig()
+    cfg.personas = PersonasConfig(assessor=PersonaConfig(instructions=instructions))
+    return cfg
+
+
+@pytest.mark.asyncio
+async def test_assessor_persona_instructions_present_in_details_when_configured() -> None:
+    """FR-005: custom assessor persona reaches the backend details dict."""
+    backend = _DetailsCapture()
+    state = initial_state()
+    state["current_card"] = {"id": "CARD_1", "issue_id": "ISSUE_1"}
+    state["github_service"] = _GitHub()
+    state["assessment_backend"] = backend
+    state["config"] = _make_config_with_persona("Focus on business value.")
+
+    await assess_card(state)
+
+    assert backend.last_details is not None
+    assert backend.last_details.get("persona_instructions") == "Focus on business value."
+
+
+@pytest.mark.asyncio
+async def test_assessor_default_instructions_used_when_no_custom_persona() -> None:
+    """FR-007: empty persona config → default instructions injected."""
+    from coordinare.services.persona_service import DEFAULT_INSTRUCTIONS
+    backend = _DetailsCapture()
+    state = initial_state()
+    state["current_card"] = {"id": "CARD_1", "issue_id": "ISSUE_1"}
+    state["github_service"] = _GitHub()
+    state["assessment_backend"] = backend
+    state["config"] = _make_config_with_persona("")
+
+    await assess_card(state)
+
+    assert backend.last_details is not None
+    instructions = backend.last_details.get("persona_instructions")
+    assert instructions == DEFAULT_INSTRUCTIONS["assessor"]
+    assert instructions  # non-empty
+
+
+def test_assess_prompt_starts_with_assessor_instructions_when_set() -> None:
+    """T010: persona_instructions are prepended to the assessment prompt."""
+    from coordinare.services.assessment import _build_assess_prompt
+    card = {
+        "title": "My card",
+        "body": "Some description",
+        "persona_instructions": "Focus on business value.",
+    }
+    prompt = _build_assess_prompt(card)
+    assert prompt.startswith("## Assessor Instructions\nFocus on business value.")
+
+
+def test_assess_prompt_unchanged_when_persona_instructions_absent() -> None:
+    """T010: prompt is unmodified when persona_instructions key is absent."""
+    from coordinare.services.assessment import _build_assess_prompt
+    card = {"title": "My card", "body": "Some description"}
+    prompt = _build_assess_prompt(card)
+    assert not prompt.startswith("## Assessor Instructions")
+    assert "You are reviewing" in prompt

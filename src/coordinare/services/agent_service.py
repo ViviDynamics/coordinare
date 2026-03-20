@@ -42,6 +42,9 @@ class AgentService:
                 for c in clarifications
                 if isinstance(c, dict)
             ]
+        persona_instructions = card_context.get("persona_instructions")
+        if persona_instructions:
+            payload["persona_instructions"] = persona_instructions
         if workspace_info is not None:
             payload["repo_url"] = workspace_info.repo_url
             payload["branch"] = workspace_info.branch

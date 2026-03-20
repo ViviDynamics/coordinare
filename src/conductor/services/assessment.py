@@ -21,7 +21,16 @@ def _build_assess_prompt(card: dict[str, Any]) -> str:
     labels, and comments) and card dicts stored in state (which use 'description'
     instead of 'body').  Inlines all available context so the model can ask
     targeted questions and avoid repeating ones already answered.
+
+    If card contains a non-empty ``persona_instructions`` key, those instructions
+    are prepended as a ``## Assessor Instructions`` section (018-performer-personas).
     """
+    # Persona instructions prefix (018-performer-personas)
+    persona_prefix = ""
+    persona_instructions = str(card.get("persona_instructions", "") or "").strip()
+    if persona_instructions:
+        persona_prefix = f"## Assessor Instructions\n{persona_instructions}\n\n"
+
     title = str(card.get("title", "")).strip()
     body = str(card.get("body", "") or card.get("description", "")).strip()
     url = str(card.get("url", "")).strip()
@@ -72,7 +81,8 @@ def _build_assess_prompt(card: dict[str, Any]) -> str:
                 history_lines.append(f"User answered:\n  {ans}")
         history_text = "\n".join(history_lines)
         return (
-            "You are reviewing a software feature card to determine if it has enough detail to implement.\n\n"
+            persona_prefix
+            + "You are reviewing a software feature card to determine if it has enough detail to implement.\n\n"
             f"{card_text}\n\n"
             f"Clarification conversation so far:\n{history_text}\n\n"
             "Based on all the above, decide if there is now sufficient information to implement this feature.\n"
@@ -84,7 +94,8 @@ def _build_assess_prompt(card: dict[str, Any]) -> str:
         )
 
     return (
-        "You are reviewing a software feature card to determine if it has enough detail to implement.\n\n"
+        persona_prefix
+        + "You are reviewing a software feature card to determine if it has enough detail to implement.\n\n"
         f"{card_text}\n\n"
         "Check for: clear requirements, defined scope, affected components or routes, acceptance criteria, "
         "and technical constraints or edge cases.\n"

@@ -273,6 +273,7 @@ def _build_transport(config: ProjectConfiguration) -> AgentTransport:
 async def _bootstrap_services(
     config: ProjectConfiguration,
     circuit_breakers: dict[str, CircuitBreaker],
+    config_path: Path | None = None,
 ) -> CoordinareState:
     r = config.resilience
 
@@ -324,6 +325,8 @@ async def _bootstrap_services(
     workspace_manager = WorkspaceManager(config)
 
     service_state: CoordinareState = {
+        "config": config,
+        "config_path": config_path,
         "github_service": github,
         "agent_service": resilient_agent,
         "claude_service": claude_service,
@@ -370,7 +373,7 @@ async def _bootstrap_services(
     return service_state
 
 
-async def _run(config: ProjectConfiguration) -> None:
+async def _run(config: ProjectConfiguration, config_path: Path | None = None) -> None:
     run_mode = os.getenv("COORDINARE_RUN_MODE", "shell").strip().lower() or "shell"
     graph = CoordinareGraphBuilder().build()
 
@@ -431,7 +434,7 @@ async def _run(config: ProjectConfiguration) -> None:
         dashboard_store=dashboard_store,
     )
 
-    daemon.state.update(await _bootstrap_services(config, circuit_breakers))
+    daemon.state.update(await _bootstrap_services(config, circuit_breakers, config_path=config_path))
 
     app = _create_health_app(daemon, circuit_breakers=circuit_breakers)
     server = uvicorn.Server(
@@ -446,7 +449,7 @@ async def _run(config: ProjectConfiguration) -> None:
     )
     server.install_signal_handlers = lambda: None  # type: ignore[method-assign]
 
-    dashboard_app = create_dashboard_app(dashboard_store, daemon, METRICS, HEALTH)
+    dashboard_app = create_dashboard_app(dashboard_store, daemon, METRICS, HEALTH, config_path=config_path)
 
     if config.webhooks.enabled and config.webhooks.secret:
         from coordinare.dashboard import register_webhook_route
@@ -608,7 +611,7 @@ def main() -> None:
     HEALTH.update("config", _HealthStatus.healthy)
 
     try:
-        asyncio.run(_run(config))
+        asyncio.run(_run(config, config_path=result.config_file_path))
     except RuntimeExecutionError as exc:
         logger.error(
             "runtime_failure",

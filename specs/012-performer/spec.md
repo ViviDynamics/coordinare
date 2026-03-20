@@ -6,9 +6,86 @@
 
 ## Overview
 
-The performer is the orchestra member that does the actual coding work the coordinare assigns. It is a self-contained, deployable unit that receives a score (card assignment) from the coordinare, sets up its own stand (workspace), runs an AI coding agent against the codebase, and returns the result of its performance — a pull request — back to the coordinare. The performer lives alongside the coordinare in the same repository but is built and deployed independently as a container image.
+A performer is an AI-backed actor that carries out a specialized role in the software development lifecycle on behalf of the coordinare. Performers are self-contained, deployable units — each receives a score (card assignment) from the coordinare, does its assigned work, and returns a result. All performers share the same wire protocol (JSON stdin/stdout) and are built and deployed independently as container images.
 
-Today coordinare has no performer to dispatch to — this is the first concrete implementation of the other side of the coordinare wire protocol.
+The development lifecycle supported by performers is fully sequential — each role completes and approves before the next is triggered. This keeps the feedback cycle simple and predictable; parallelisation is a future optimisation once the sequential path is proven.
+
+```
+advocate → assessor → architect → implementer → reviewer → security → QA → tech writer → human
+                                       ↑                                                     │
+                                       └─────────── human review feedback ───────────────────┘
+```
+
+When the human reviews the PR and requests changes, the coordinare reads the review comments and classifies them to determine where in the cycle to re-enter — rather than always restarting from the implementer. This classification is performed by a dedicated **`handle_human_review_feedback`** coordinare node (not a performer) that routes feedback to the appropriate role.
+
+- **Advocate**: scans GitHub issues and surfaces new work for the coordinare board (see spec 007)
+- **Assessor**: evaluates whether a card is sufficiently specified before dispatch (built into the coordinare; see spec 001)
+- **Architect**: produces a technical design and approach for the card before any code is written — the implementer follows this plan rather than starting from a blank slate
+- **Implementer**: clones the repo, writes code following the architect's plan, pushes a branch, and opens a pull request
+- **Reviewer**: reads the PR diff, leaves inline comments, and either approves or requests changes — before any human sees the PR
+- **Security**: performs a focused security review of the diff — routes code-level findings back to the implementer, and architecture-level findings back to the architect
+- **QA**: checks out the approved branch, exercises the application, and validates that the acceptance criteria are met — triggered only after the security reviewer approves
+- **Tech Writer**: updates documentation, changelogs, and READMEs to reflect the change — triggered only after QA passes
+
+**Feedback loops** (all sequential — a role sends feedback and waits for another attempt before proceeding):
+
+| Role | Finding type | Feedback goes to |
+|------|-------------|-----------------|
+| Reviewer | Code quality / logic issues | Implementer |
+| Security | Code-level vulnerability | Implementer |
+| Security | Architecture-level vulnerability | Architect |
+| QA | Acceptance criteria not met | Implementer |
+| Tech Writer | Needs implementation clarification | Implementer |
+| Human | Code / implementation issue | Implementer |
+| Human | Design / architecture concern | Architect |
+| Human | Security issue | Security |
+| Human | Acceptance criteria not met | QA |
+| Human | Documentation gap | Tech Writer |
+| Human | Card requirements unclear | Assessor |
+
+Each role has a configurable maximum number of feedback cycles before the card is BLOCKED for human intervention.
+
+**GitHub board column mapping**:
+
+The coordinare tracks its internal performer stage in its own state machine. The GitHub project board shows a simplified, human-readable view with exactly six columns:
+
+| Board column | Meaning |
+|-------------|---------|
+| `Backlog` | Not yet ready for work; not managed by coordinare |
+| `TODO` | Ready for coordinare to pick up |
+| `In Progress` | Coordinare is actively directing a performance — covers all internal stages from assessor through tech writer |
+| `Blocked` | Needs human input, or a fundamental dependency/architectural blocker exists |
+| `In Review` | All performer stages complete; PR is open and ready for human review |
+| `Done` | Human approved; coordinare squash-merged the PR |
+
+Board transitions:
+- `TODO` → `In Progress`: coordinare picks up the card and begins the performer chain
+- `In Progress` → `Blocked`: any performer exhausts its retry limit, or raises a blocker requiring human input
+- `In Progress` → `In Review`: tech writer completes; PR is ready for human eyes
+- `In Review` → `Done`: human approves; coordinare squash-merges and closes the card
+- `In Review` → `In Progress`: human requests changes; coordinare classifies the feedback and re-enters the performer chain at the appropriate role
+- `Blocked` → `TODO`: human resolves the blocker; coordinare re-queues the card
+
+The board column model is intentionally minimal. Additional columns (e.g. per-stage visibility) are a future configuration concern and out of scope for this spec.
+
+**Each performer role is a distinct deployable unit** with its own backend, tools, and response contract. They share the same wire protocol (spec 004), but what runs on the other side of the wire differs per role:
+
+| Role | Nature of work |
+|------|---------------|
+| Architect | Design and planning — no code execution required |
+| Implementer | Active coding — needs workspace, git access, tool use |
+| Reviewer | Code analysis — reads PR diff, posts GitHub review comments |
+| Security | Vulnerability analysis — specialized scanning + synthesis |
+| QA | Acceptance validation — needs workspace to build and run the application |
+| Tech Writer | Documentation — reads changes, writes and commits docs updates |
+
+**No vendor lock-in**: each role's backend agent is declared in configuration. The coordinare does not hardcode any specific AI provider. A team may run the architect on one model, the implementer on another, and the security reviewer on a third — or all on the same. The configuration drives it.
+
+**Coordinare-side registry**: the coordinare maintains a `performer_services` registry — a map from role name to the configured service instance for that role. `dispatch_performer` looks up the registry at dispatch time. Adding a new role requires only a new registry entry, not new graph nodes.
+
+**Persona injection**: each service injects its configured persona instructions into the dispatch payload before sending. The persona is role-scoped and backend-agnostic (see spec 018).
+
+This spec introduces the performer pattern and the first concrete implementation: the **implementer**. The architect, reviewer, security, QA, and tech writer roles are specified here as future user stories and will be built in subsequent implementation cycles. Today coordinare has no performer to dispatch to — this is the first concrete implementation of the other side of the coordinare wire protocol.
 
 ## Clarifications
 
@@ -117,6 +194,124 @@ Each performance is fully isolated from every other. No files, credentials, envi
 
 ---
 
+### User Story 7 — Architect Performer (Priority: P4 — future)
+
+Before the implementer begins coding, an architect performer is dispatched with the card details. It produces a technical design document: which files to touch, what approach to take, key decisions and trade-offs, and any risks or unknowns. The implementer receives this plan as part of its dispatch payload and follows it rather than starting from a blank slate.
+
+**Why this priority**: Without an architect, the implementer makes structural decisions ad hoc on every card — leading to inconsistent approaches and avoidable rework. The architect front-loads the thinking so the implementer executes rather than designs.
+
+**Independent Test**: Dispatch an architect with a real card; verify it produces a structured technical plan covering files to change, approach, and key decisions. Dispatch the implementer with that plan; verify the resulting code follows it.
+
+**Acceptance Scenarios**:
+
+1. **Given** an architect is dispatched with a card, **When** it completes, **Then** it returns a structured technical plan containing: files to change, approach summary, key decisions, and known risks.
+2. **Given** an architect's plan is included in the implementer's dispatch payload, **When** the implementer runs, **Then** the resulting code follows the plan's structural decisions.
+3. **Given** the architect determines the card is impossible or contradictory to implement, **When** it cannot produce a valid plan, **Then** it returns `blocked` with a specific explanation so the assessor or human can refine the card.
+4. **Given** security finds an architecture-level vulnerability in a prior cycle, **When** the architect is re-dispatched with the security findings, **Then** it produces a revised plan addressing the vulnerability before the implementer attempts another cycle.
+
+---
+
+### User Story 9 — Security Reviewer Performer (Priority: P4 — future)
+
+After the reviewer approves, a security performer reviews the diff for vulnerabilities: injection flaws, secrets in code, insecure dependencies, missing auth checks, and architectural security concerns. Code-level findings are sent back to the implementer; architecture-level findings (wrong auth model, insecure data flow) are sent back to the architect for a redesign. The security reviewer only approves — passing to QA — when no unresolved findings remain.
+
+**Why this priority**: Security review is a specialized discipline distinct from code quality review. Running it as a dedicated sequential step ensures it is never skipped and its findings are always routed to the right level of the stack.
+
+**Independent Test**: Dispatch a security reviewer against a diff containing a known SQL injection vulnerability; verify it returns `changes_requested` with the finding categorized as code-level and routed to the implementer. Dispatch it against a clean diff; verify it returns `approved`.
+
+**Acceptance Scenarios**:
+
+1. **Given** the security reviewer is dispatched with a PR diff, **When** it finds a code-level vulnerability (e.g. injection, hardcoded secret), **Then** it returns `changes_requested` with the finding marked as implementer-level and does not advance to QA.
+2. **Given** the security reviewer finds an architecture-level vulnerability (e.g. broken auth model), **When** it cannot be fixed by the implementer alone, **Then** it returns `changes_requested` with the finding marked as architect-level, triggering an architect re-dispatch.
+3. **Given** the security reviewer finds no issues, **When** its review is complete, **Then** it returns `approved` and QA is triggered.
+4. **Given** security has exceeded its configured maximum fix cycles without approval, **Then** it returns `blocked` for human intervention.
+
+---
+
+### User Story 10 — Tech Writer Performer (Priority: P5 — future)
+
+After QA passes, a tech writer performer reviews the changes and updates any affected documentation — README sections, API docs, changelogs, inline code comments where behavior has changed. The updated docs are committed to the same branch before the PR is presented to a human reviewer.
+
+**Why this priority**: Documentation is consistently the last thing addressed in a development cycle and frequently skipped under time pressure. Automating it as a dedicated final step ensures the PR a human sees is complete — code and docs together.
+
+**Independent Test**: Dispatch a tech writer against a branch containing code changes with no corresponding doc updates; verify it commits documentation updates to the branch before returning `done`.
+
+**Acceptance Scenarios**:
+
+1. **Given** the tech writer is dispatched with a branch that has code changes, **When** it identifies affected documentation, **Then** it commits updated docs to the same branch and returns `done`.
+2. **Given** the changes require no documentation updates (e.g. internal refactor with no behavior change), **When** the tech writer finds nothing to update, **Then** it returns `done` without committing any changes.
+3. **Given** the tech writer needs clarification about what changed or why, **When** it cannot determine the scope of documentation needed, **Then** it returns `blocked` with specific questions routed back to the implementer.
+
+---
+
+### User Story 8 — Reviewer Performer (Priority: P4 — future)
+
+After the implementer opens a PR, a reviewer performer is dispatched with the PR URL and diff. It reads the changes, assesses code quality and correctness, and either approves the PR or requests specific changes via inline GitHub review comments. If changes are requested, the feedback is relayed back to the implementer for another coding cycle. The reviewer repeats this loop until it is satisfied, then approves — only then is the QA performer triggered.
+
+**Why this priority**: Automated code review before human involvement catches obvious issues (style violations, missing tests, logic errors) and reduces the review burden on humans. It also closes the feedback loop faster than waiting for a human reviewer.
+
+**Independent Test**: Dispatch a reviewer with a known PR containing deliberate issues; verify it leaves review comments and returns `changes_requested`. Then dispatch it against a clean PR and verify it returns `approved`.
+
+**Acceptance Scenarios**:
+
+1. **Given** the reviewer is dispatched with a PR URL and diff, **When** it finds issues in the code, **Then** it posts inline review comments on the PR and returns `changes_requested` with a summary of the issues.
+2. **Given** the reviewer is dispatched with a PR URL and diff, **When** the code meets its standards, **Then** it approves the PR on GitHub and returns `approved`.
+3. **Given** the reviewer has requested changes and the implementer has pushed a new commit, **When** the reviewer is dispatched again, **Then** it re-reads only the new changes and updates its review accordingly.
+4. **Given** the reviewer has exceeded a configurable number of review cycles without approval, **When** the next dispatch occurs, **Then** it returns `blocked` with a summary so a human can intervene.
+
+---
+
+### User Story 8 — QA Performer (Priority: P4 — future)
+
+After the reviewer approves the PR, a QA performer is dispatched with the branch and the card's acceptance criteria. It checks out the branch, builds and runs the application, and exercises the stated acceptance criteria. If all criteria pass it returns `passed`; if any fail it sends a detailed failure report back to the implementer via a separate feedback channel for another fix cycle.
+
+**Why this priority**: Automated acceptance testing before human review ensures the PR actually does what the card says, not just that the code looks correct. It shifts defect detection left and reduces back-and-forth in human review.
+
+**Independent Test**: Dispatch a QA performer against a branch with a known failing acceptance criterion; verify it returns `failed` with specific failure details. Then fix the branch and dispatch again; verify it returns `passed`.
+
+**Acceptance Scenarios**:
+
+1. **Given** the QA performer is dispatched with a branch and acceptance criteria, **When** all criteria are met by the running application, **Then** it returns `passed` and signals the coordinare to proceed to human review.
+2. **Given** the QA performer is dispatched with a branch and acceptance criteria, **When** one or more criteria are not met, **Then** it returns `failed` with specific details of which criteria failed and what the observed behavior was.
+3. **Given** QA has reported a failure and the implementer has pushed a fix, **When** QA is dispatched again, **Then** it re-validates all acceptance criteria from scratch (not just the previously failing ones).
+4. **Given** QA has exceeded a configurable number of fix cycles without all criteria passing, **When** the next dispatch occurs, **Then** it returns `blocked` with a full failure report so a human can intervene.
+5. **Given** QA and the reviewer use separate feedback channels, **When** QA sends a failure report to the implementer, **Then** it does not share, overwrite, or interfere with any pending reviewer feedback.
+
+---
+
+### User Story 11 — Human Review Feedback Routing (Priority: P5 — future)
+
+After the tech writer completes and the PR is presented for human review, a human may approve (done), or request changes with comments. When changes are requested, the coordinare reads the review comments and classifies them to determine where in the lifecycle to re-enter — rather than blindly restarting from the implementer.
+
+This classification is performed by a dedicated coordinare node (`handle_human_review_feedback`), not a performer. It reads the PR comments and routes back to the appropriate performer role, which then runs its full cycle forward again from that point.
+
+**Why this priority**: Blindly routing all human feedback to the implementer is wasteful and incorrect. A comment about a flawed design decision should go to the architect; a comment about missing tests to the QA; a comment about outdated docs to the tech writer. Smart re-entry avoids unnecessary rework and keeps the downstream roles (reviewer, security, QA, tech writer) honest — they re-run from the re-entry point forward.
+
+**Routing rules**:
+
+| Human feedback type | Re-enter at |
+|--------------------|-------------|
+| Code logic / implementation issue | Implementer |
+| Design / architecture concern | Architect |
+| Security vulnerability | Security |
+| Acceptance criteria not met / behavior wrong | QA |
+| Documentation missing or incorrect | Tech Writer |
+| Card requirements unclear or contradictory | Assessor |
+
+Once re-entered, the lifecycle runs forward sequentially from that point through to human review again.
+
+**Independent Test**: Create a PR with a human review comment about a documentation gap; verify the coordinare routes to the tech writer (not the implementer). Create a comment about a design concern; verify it routes to the architect.
+
+**Acceptance Scenarios**:
+
+1. **Given** a human requests changes with a comment about a code bug, **When** `handle_human_review_feedback` classifies the comment, **Then** the implementer is dispatched with the feedback and the lifecycle proceeds forward from implementer → reviewer → security → QA → tech writer → human.
+2. **Given** a human requests changes with a comment about a design flaw, **When** `handle_human_review_feedback` classifies the comment, **Then** the architect is dispatched with the feedback and the lifecycle proceeds forward from architect → implementer → reviewer → security → QA → tech writer → human.
+3. **Given** a human review contains comments of mixed types (e.g. a doc gap and a code bug), **When** `handle_human_review_feedback` processes them, **Then** it re-enters at the earliest affected role so all issues are addressed in a single cycle.
+4. **Given** a human approves the PR without requesting changes, **When** the coordinare detects the approval, **Then** the card is marked done and no further performer dispatch occurs.
+5. **Given** the coordinare cannot confidently classify a human comment, **When** classification is ambiguous, **Then** it defaults to re-entering at the implementer (safest re-entry point) and includes the original comment verbatim in the dispatch payload.
+
+---
+
 ### Edge Cases
 
 - What happens if the repository clone fails (bad token, network error, repo not found)?
@@ -147,12 +342,38 @@ Each performance is fully isolated from every other. No files, credentials, envi
 - **FR-015**: The performer MUST enforce a configurable backend timeout via the `AGENT_TIMEOUT` environment variable (default: 30 minutes). When the timeout elapses, the performer MUST terminate the backend process tree, clean up the stand, and transition the session to `error` state with a human-readable reason.
 - **FR-016**: Status responses SHOULD include a `metrics` object containing best-effort runtime telemetry: tokens processed by the AI backend (where the backend exposes a token count), the performer's process ID, active child process IDs, current memory usage (RSS in bytes), and current CPU utilisation (percentage). Metric fields are individually omittable if the data is unavailable.
 
+- **FR-017** *(future — architect)*: An architect performer MUST accept a dispatch payload containing the card's title, description, and acceptance criteria, and return a structured technical plan: files to change, approach summary, key decisions, and known risks.
+- **FR-018** *(future — architect)*: The architect's plan MUST be included in the subsequent implementer dispatch payload as a dedicated field so the implementer receives it as part of its working context.
+- **FR-019** *(future — architect)*: When the architect receives security findings marked as architecture-level, it MUST produce a revised plan addressing those findings before the implementer is re-dispatched.
+- **FR-020** *(future — reviewer)*: A reviewer performer MUST accept a dispatch payload containing `pr_url`, `pr_node_id`, and the card's acceptance criteria, in addition to the standard workspace fields.
+- **FR-021** *(future — reviewer)*: A reviewer performer MUST return one of: `approved` (PR meets standards), `changes_requested` (with inline comments posted to GitHub and a summary), or `blocked` (max review cycles exhausted).
+- **FR-022** *(future — reviewer)*: The reviewer MUST post review comments directly to the GitHub PR so that human reviewers can see the full review history in the GitHub UI.
+- **FR-023** *(future — security)*: A security performer MUST accept a dispatch payload containing the PR diff and categorize findings as either code-level (route to implementer) or architecture-level (route to architect).
+- **FR-024** *(future — security)*: A security performer MUST return one of: `approved` (no findings), `changes_requested` with a `target` field indicating `implementer` or `architect`, or `blocked` (max cycles exhausted).
+- **FR-025** *(future — security)*: Security MUST only be triggered after the reviewer has returned `approved` — roles are strictly sequential.
+- **FR-026** *(future — QA)*: A QA performer MUST accept a dispatch payload containing the branch, `repo_url`, `github_token`, and the card's acceptance criteria. It MUST check out the branch, build and run the application, and validate each criterion.
+- **FR-027** *(future — QA)*: A QA performer MUST return one of: `passed` (all criteria met), `failed` (with specific per-criterion failure details and observed behavior), or `blocked` (max QA cycles exhausted).
+- **FR-028** *(future — QA)*: QA feedback MUST travel through a separate feedback channel from reviewer and security feedback — the coordinare MUST NOT merge or conflate them; the implementer receives each as distinct inputs.
+- **FR-029** *(future — QA)*: QA MUST only be triggered after the security performer has returned `approved`.
+- **FR-030** *(future — tech writer)*: A tech writer performer MUST accept a dispatch payload containing the branch and a summary of changes, check out the branch, update affected documentation, and commit those changes to the branch before returning `done`.
+- **FR-031** *(future — tech writer)*: Tech writer MUST only be triggered after QA has returned `passed`.
+- **FR-032** *(future — all roles)*: All performer roles MUST share the same wire protocol (JSON stdin/stdout, action types, response shapes). Role-specific dispatch payload fields are additive extensions to the base Score model.
+- **FR-037**: The coordinare MUST NOT hardcode any AI provider or backend for any performer role. Each role's backend agent MUST be independently configurable via the coordinare configuration file.
+- **FR-038**: The coordinare MUST maintain a performer services registry — a map from role name to the configured service instance for that role. `dispatch_performer` resolves the correct service at dispatch time by looking up the current `performer_stage` in this registry.
+- **FR-039**: The configuration MUST allow each performer role to declare its own backend independently. A team MUST be able to run different roles on different agents (e.g. architect on one model, implementer on another) without any code changes.
+- **FR-040**: If a performer role has no backend configured, the coordinare MUST treat the card as blocked with a clear message indicating which role is unconfigured, rather than silently skipping the stage or crashing.
+- **FR-033** *(future — human feedback routing)*: The coordinare MUST implement a `handle_human_review_feedback` node that reads PR review comments from a human and classifies each comment into one of: implementer, architect, security, QA, tech writer, or assessor — then re-enters the lifecycle at the earliest affected role.
+- **FR-034** *(future — human feedback routing)*: When a human review contains comments spanning multiple classification types, the coordinare MUST re-enter at the earliest role in the sequential lifecycle that covers all findings, so all issues are addressed in a single forward pass.
+- **FR-035** *(future — human feedback routing)*: When comment classification is ambiguous, the coordinare MUST default to re-entering at the implementer and include the original comment verbatim in the dispatch payload.
+- **FR-036** *(future — human feedback routing)*: Human PR approval MUST be detected by the coordinare and result in the card being marked done with no further performer dispatch.
+
 ### Key Entities
 
-- **Score**: The dispatch payload received from the coordinare — contains the card's title, description, acceptance criteria, `repo_url`, `branch`, and `github_token`.
+- **Score**: The dispatch payload received from the coordinare — contains the card's title, description, acceptance criteria, `repo_url`, `branch`, and `github_token`. Extended for reviewer dispatches to include `pr_url` and `pr_node_id`; for QA dispatches to include the full acceptance criteria list.
 - **Stand**: The ephemeral local workspace created for a single performance — a cloned repository directory that exists only for the duration of that performance.
-- **Performance**: A single end-to-end session from dispatch receipt through PR creation, identified by a unique session ID returned on acceptance.
-- **Backend**: The AI coding agent the performer delegates actual code generation to (opencode by default) — the actual coding intelligence (e.g. opencode, Claude Code, Codex) that reads the codebase and produces changes. Each backend is implemented as an adapter (strategy) that encapsulates start, monitor, relay_feedback delivery, and stop — so the performer's protocol layer is unaffected by backend swaps.
+- **Performance**: A single end-to-end session from dispatch receipt through a terminal result, identified by a unique session ID returned on acceptance.
+- **Backend**: The AI agent the performer delegates work to — the actual intelligence (e.g. opencode, Claude Code, Codex) that reads the codebase and produces changes or analysis. Each backend is implemented as an adapter (strategy) that encapsulates start, monitor, relay_feedback delivery, and stop — so the performer's protocol layer is unaffected by backend swaps.
+- **Performer Role**: One of `architect`, `implementer`, `reviewer`, `security`, `QA`, or `tech writer` — determines the dispatch payload shape, the work performed, and the set of valid terminal responses. All roles share the same wire protocol and are executed strictly sequentially.
 - **Base Image**: The minimal performer container image (`coordinare-performer:base`) — protocol entrypoint + AI backend only. The intended extension point for custom environments.
 - **Full Image**: A ready-to-use performer container image (`coordinare-performer:full`) built on top of the base, extended with common language runtimes and build tools. No customisation required for typical projects.
 

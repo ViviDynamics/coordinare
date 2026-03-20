@@ -5,6 +5,8 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from coordinare.services.persona_service import get_effective_instructions, load_personas_hot
+
 if TYPE_CHECKING:
     from coordinare.graph.state import CoordinareState
 
@@ -23,8 +25,14 @@ async def advocate_scan(state: CoordinareState) -> CoordinareState:
 
     processed_ids: set[str] = state.get("advocate_history") or set()  # type: ignore[assignment]
 
+    # Inject advocate persona instructions with hot-reload (018-performer-personas).
+    personas = load_personas_hot(state.get("config_path"), state.get("config"))
+    persona_instructions = get_effective_instructions("advocate", personas)
+
     try:
-        updated_ids = await advocate_service.scan_and_respond(processed_ids)
+        updated_ids = await advocate_service.scan_and_respond(
+            processed_ids, persona_instructions=persona_instructions
+        )
         state["advocate_history"] = updated_ids
         logger.info("advocate_scan_complete", processed_count=len(updated_ids - processed_ids))
     except Exception as exc:

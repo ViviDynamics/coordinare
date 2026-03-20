@@ -1,0 +1,200 @@
+"""Unit tests for persona_service (018-performer-personas, T004)."""
+from __future__ import annotations
+
+import pytest
+import yaml
+
+from coordinare.config import PersonaConfig, PersonasConfig
+from coordinare.services.persona_service import (
+    DEFAULT_INSTRUCTIONS,
+    PERSONA_MAX_LENGTH,
+    VALID_ROLES,
+    get_effective_instructions,
+    reset_persona,
+    save_persona,
+)
+
+# ---------------------------------------------------------------------------
+# get_effective_instructions
+# ---------------------------------------------------------------------------
+
+
+def _personas(**kwargs: str) -> PersonasConfig:
+    """Build a PersonasConfig with the given role overrides."""
+    fields = {role: PersonaConfig(instructions=kwargs.get(role, "")) for role in VALID_ROLES}
+    return PersonasConfig(**fields)
+
+
+def test_returns_custom_when_set() -> None:
+    personas = _personas(implementer="Always write tests first.")
+    result = get_effective_instructions("implementer", personas)
+    assert result == "Always write tests first."
+
+
+def test_returns_default_when_empty_string() -> None:
+    personas = _personas(implementer="")
+    result = get_effective_instructions("implementer", personas)
+    assert result == DEFAULT_INSTRUCTIONS["implementer"]
+    assert result  # non-empty
+
+
+def test_returns_default_when_whitespace_only() -> None:
+    personas = _personas(implementer="   \n  ")
+    result = get_effective_instructions("implementer", personas)
+    assert result == DEFAULT_INSTRUCTIONS["implementer"]
+
+
+def test_raises_for_unknown_role() -> None:
+    personas = PersonasConfig()
+    with pytest.raises(ValueError, match="Unknown role"):
+        get_effective_instructions("wizard", personas)
+
+
+def test_all_eight_roles_return_non_empty_default() -> None:
+    """FR-001: all 8 roles must have non-empty default instructions."""
+    personas = PersonasConfig()
+    for role in (
+        "advocate", "assessor", "architect", "implementer",
+        "reviewer", "security", "qa", "tech_writer",
+    ):
+        result = get_effective_instructions(role, personas)
+        assert result, f"Role {role!r} returned empty default instructions"
+
+
+# ---------------------------------------------------------------------------
+# save_persona / reset_persona
+# ---------------------------------------------------------------------------
+
+
+def _base_yaml() -> dict:
+    """Return a minimal valid config dict suitable for writing as YAML."""
+    return {
+        "project_name": "Demo",
+        "github_org": "acme",
+        "github_project_number": 1,
+        "github_token": "tok",
+        "human_reviewers": ["alice"],
+    }
+
+
+def test_save_persona_raises_for_unknown_role(tmp_path) -> None:
+    config_path = tmp_path / "config.yaml"
+    with pytest.raises(ValueError, match="Unknown role"):
+        save_persona("wizard", "some text", config_path)
+
+
+def test_save_persona_raises_when_instructions_exceed_max_length(tmp_path) -> None:
+    config_path = tmp_path / "config.yaml"
+    long_instructions = "x" * (PERSONA_MAX_LENGTH + 1)
+    with pytest.raises(ValueError, match="exceed maximum length"):
+        save_persona("implementer", long_instructions, config_path)
+
+
+def test_save_and_read_round_trip(tmp_path) -> None:
+    config_path = tmp_path / "config.yaml"
+    raw = _base_yaml()
+    config_path.write_text(yaml.dump(raw))
+
+    save_persona("implementer", "Always use TDD.", config_path)
+
+    loaded = yaml.safe_load(config_path.read_text())
+    assert loaded["personas"]["implementer"]["instructions"] == "Always use TDD."
+
+
+def test_save_persona_creates_personas_section_if_missing(tmp_path) -> None:
+    config_path = tmp_path / "config.yaml"
+    raw = _base_yaml()
+    config_path.write_text(yaml.dump(raw))
+
+    save_persona("assessor", "Focus on value.", config_path)
+
+    loaded = yaml.safe_load(config_path.read_text())
+    assert "personas" in loaded
+    assert loaded["personas"]["assessor"]["instructions"] == "Focus on value."
+
+
+def test_save_persona_preserves_other_keys(tmp_path) -> None:
+    config_path = tmp_path / "config.yaml"
+    raw = _base_yaml()
+    raw["personas"] = {"implementer": {"instructions": "old"}}
+    config_path.write_text(yaml.dump(raw))
+
+    save_persona("assessor", "New.", config_path)
+
+    loaded = yaml.safe_load(config_path.read_text())
+    assert loaded["personas"]["implementer"]["instructions"] == "old"
+    assert loaded["personas"]["assessor"]["instructions"] == "New."
+
+
+def test_reset_persona_clears_instructions(tmp_path) -> None:
+    config_path = tmp_path / "config.yaml"
+    raw = _base_yaml()
+    raw["personas"] = {"implementer": {"instructions": "custom"}}
+    config_path.write_text(yaml.dump(raw))
+
+    reset_persona("implementer", config_path)
+
+    loaded = yaml.safe_load(config_path.read_text())
+    assert loaded["personas"]["implementer"]["instructions"] == ""
+
+
+def test_save_persona_raises_on_nonexistent_file(tmp_path) -> None:
+    config_path = tmp_path / "config.yaml"
+    assert not config_path.exists()
+
+    with pytest.raises(ValueError, match="Config file does not exist"):
+        save_persona("implementer", "Hello.", config_path)
+
+
+def test_save_persona_accepts_exactly_max_length(tmp_path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.dump(_base_yaml()))
+    instructions = "x" * PERSONA_MAX_LENGTH
+    save_persona("implementer", instructions, config_path)  # should not raise
+
+    loaded = yaml.safe_load(config_path.read_text())
+    assert len(loaded["personas"]["implementer"]["instructions"]) == PERSONA_MAX_LENGTH
+
+
+# ---------------------------------------------------------------------------
+# T021 — Hot-reload: no caching, on-demand reads
+# ---------------------------------------------------------------------------
+
+
+def test_hot_reload_no_caching(tmp_path) -> None:
+    """T021: changing persona in config takes effect on next get_effective_instructions call.
+
+    Verifies that get_effective_instructions reads from PersonasConfig each time
+    (no module-level or service-level caching). The test simulates the daemon's
+    behavior: config is loaded from YAML on each invocation.
+    """
+    import yaml
+
+    from coordinare.config import ProjectConfiguration
+
+    config_path = tmp_path / "config.yaml"
+    base = {
+        "project_name": "Demo",
+        "github_org": "acme",
+        "github_project_number": 1,
+        "github_token": "tok",
+        "human_reviewers": ["alice"],
+    }
+
+    # First load: no custom implementer persona → default
+    config_path.write_text(yaml.dump(base))
+    config1 = ProjectConfiguration.from_yaml(config_path)
+    result1 = get_effective_instructions("implementer", config1.personas)
+    assert result1 == DEFAULT_INSTRUCTIONS["implementer"]
+
+    # Update config file with custom instructions
+    base["personas"] = {"implementer": {"instructions": "Custom hot-reload value."}}
+    config_path.write_text(yaml.dump(base))
+
+    # Second load (no daemon restart): should reflect updated instructions
+    config2 = ProjectConfiguration.from_yaml(config_path)
+    result2 = get_effective_instructions("implementer", config2.personas)
+    assert result2 == "Custom hot-reload value."
+
+    # Confirm the two results are different
+    assert result1 != result2

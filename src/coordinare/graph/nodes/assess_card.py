@@ -4,6 +4,8 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from coordinare.services.persona_service import get_effective_instructions, load_personas_hot
+
 if TYPE_CHECKING:
     from coordinare.graph.state import CoordinareState
 
@@ -20,13 +22,20 @@ async def assess_card(state: CoordinareState) -> CoordinareState:
 
     try:
         details = await github.get_issue_details(str(card.get("issue_id", "")))
+        # Work with a mutable copy before attaching additional metadata.
+        details = dict(details)
+
         # Attach any accumulated Q&A history so the assessment backend can
         # incorporate it when generating follow-up questions or deciding
         # whether there is now enough information to proceed.
         clarifications = state.get("card_clarifications") or []
         if clarifications:
-            details = dict(details)
             details["clarifications"] = clarifications
+
+        # Inject assessor persona instructions with hot-reload (018-performer-personas).
+        personas = load_personas_hot(state.get("config_path"), state.get("config"))
+        details["persona_instructions"] = get_effective_instructions("assessor", personas)
+
         assessment = await backend.assess(details)
     except Exception as exc:
         logger.error(

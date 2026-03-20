@@ -13,14 +13,15 @@ import sys
 import time
 from collections import deque
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import structlog
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
+    from pathlib import Path
 
     from coordinare.daemon import CoordinareDaemon
     from coordinare.metrics import CoordinareMetrics
@@ -473,6 +474,11 @@ td { padding: 4px 8px; border-bottom: 1px solid #21262d; }
   <div id="history-section"><span class="empty-state">Loading...</span></div>
 </div>
 
+<div class="card full">
+  <h2>Personas</h2>
+  <div id="personas-section"><span class="empty-state">Loading...</span></div>
+</div>
+
 </main>
 
 <script>
@@ -758,7 +764,7 @@ function renderState(s) {
 
 function esc(s) {
   if (!s) return '';
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
 function fmtBytes(b) {
@@ -966,6 +972,115 @@ async function forcePoll() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Personas panel (018-performer-personas)
+// ---------------------------------------------------------------------------
+
+async function loadPersonas() {
+  var section = document.getElementById('personas-section');
+  if (!section) return;
+  try {
+    var res = await fetch('/api/personas');
+    if (!res.ok) {
+      section.innerHTML = '<span class="empty-state">Could not load personas: ' + esc(res.status + ' ' + res.statusText) + '</span>';
+      return;
+    }
+    var personas = await res.json();
+    renderPersonas(personas);
+  } catch(err) {
+    section.innerHTML = '<span class="empty-state">Could not load personas: ' + esc(String(err)) + '</span>';
+  }
+}
+
+function renderPersonas(personas) {
+  var section = document.getElementById('personas-section');
+  if (!section) return;
+  var rows = personas.map(function(p) {
+    var badge = p.is_default
+      ? '<span style="font-size:11px;color:#8b949e;margin-left:6px">using default</span>'
+      : '<span style="font-size:11px;color:#58a6ff;margin-left:6px">custom</span>';
+    return '<div style="margin-bottom:16px;border-bottom:1px solid #21262d;padding-bottom:14px">' +
+      '<div style="display:flex;align-items:center;margin-bottom:6px">' +
+        '<strong style="font-size:13px">' + esc(p.role) + '</strong>' + badge +
+      '</div>' +
+      '<textarea id="persona-ta-' + esc(p.role) + '" rows="4" style="width:100%;box-sizing:border-box;' +
+        'background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:6px;font-family:monospace;' +
+        'font-size:12px;border-radius:4px;resize:vertical">' + esc(p.instructions) + '</textarea>' +
+      '<div style="margin-top:6px;display:flex;gap:8px;align-items:center">' +
+        '<button onclick="savePersona(\\\'' + esc(p.role) + '\\\')" ' +
+          'id="persona-save-' + esc(p.role) + '" ' +
+          'style="background:#238636;border:none;color:#fff;padding:4px 12px;border-radius:4px;cursor:pointer">' +
+          'Save</button>' +
+        '<button onclick="resetPersona(\\\'' + esc(p.role) + '\\\')" ' +
+          'id="persona-reset-' + esc(p.role) + '" ' +
+          'style="background:#21262d;border:1px solid #30363d;color:#c9d1d9;padding:4px 12px;' +
+          'border-radius:4px;cursor:pointer">Reset to defaults</button>' +
+        '<span id="persona-msg-' + esc(p.role) + '" style="font-size:12px;color:#8b949e"></span>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+  section.innerHTML = rows || '<span class="empty-state">No personas found.</span>';
+}
+
+async function savePersona(role) {
+  var ta = document.getElementById('persona-ta-' + role);
+  var btn = document.getElementById('persona-save-' + role);
+  var msg = document.getElementById('persona-msg-' + role);
+  if (!ta || !btn) return;
+  btn.disabled = true;
+  msg.textContent = 'Saving...';
+  try {
+    var res = await fetch('/api/personas/' + encodeURIComponent(role), {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({instructions: ta.value}),
+    });
+    var data = res.headers.get('content-type') && res.headers.get('content-type').includes('application/json')
+      ? await res.json() : {};
+    if (!res.ok) {
+      msg.textContent = 'Error: ' + (data.error || res.statusText || res.status);
+      msg.style.color = '#f85149';
+    } else {
+      msg.textContent = 'Saved.';
+      msg.style.color = '#3fb950';
+      setTimeout(function() { if (msg) { msg.textContent = ''; msg.style.color = '#8b949e'; }}, 3000);
+      loadPersonas();
+    }
+  } catch(err) {
+    msg.textContent = 'Network error';
+    msg.style.color = '#f85149';
+  }
+  btn.disabled = false;
+}
+
+async function resetPersona(role) {
+  var btn = document.getElementById('persona-reset-' + role);
+  var msg = document.getElementById('persona-msg-' + role);
+  if (!btn) return;
+  btn.disabled = true;
+  msg.textContent = 'Resetting...';
+  try {
+    var res = await fetch('/api/personas/' + encodeURIComponent(role), {method: 'DELETE'});
+    if (res.status === 204 || res.ok) {
+      msg.textContent = 'Reset to defaults.';
+      msg.style.color = '#3fb950';
+      setTimeout(function() { if (msg) { msg.textContent = ''; msg.style.color = '#8b949e'; }}, 3000);
+      loadPersonas();
+    } else {
+      var data = await res.json().catch(function() { return {}; });
+      msg.textContent = 'Error: ' + (data.error || res.status);
+      msg.style.color = '#f85149';
+    }
+  } catch(err) {
+    msg.textContent = 'Network error';
+    msg.style.color = '#f85149';
+  }
+  btn.disabled = false;
+}
+
+// Load personas on page load
+loadPersonas();
+
 var banner = document.getElementById('disconnected-banner');
 var es = new EventSource('events');
 es.addEventListener('state_update', function(e) {
@@ -995,12 +1110,16 @@ def create_dashboard_app(
     daemon: CoordinareDaemon,
     metrics: CoordinareMetrics,
     health: HealthRegistry,
+    config_path: Path | None = None,
 ) -> FastAPI:
     """Create the dashboard FastAPI application.
 
     Endpoints:
         GET /        — serves the dashboard HTML page
         GET /events  — SSE stream of state_update events
+        GET /api/personas          — list all role personas (018)
+        PUT /api/personas/{role}   — update persona for a role (018)
+        DELETE /api/personas/{role} — reset persona to defaults (018)
     """
     app = FastAPI(title="coordinare-dashboard")
 
@@ -1067,6 +1186,105 @@ def create_dashboard_app(
             store.sse_stream(daemon, metrics, health),
             media_type="text/event-stream",
         )
+
+    # -----------------------------------------------------------------------
+    # 018 — Personas API endpoints
+    # -----------------------------------------------------------------------
+
+    @app.get("/api/personas")
+    async def get_personas() -> JSONResponse:
+        """Return effective instructions and is_default flag for all 8 roles.
+
+        Reads config_path on every request for hot-reload behaviour.
+        Falls back to the daemon's last-known config so the UI reflects the
+        effective personas actually in use rather than bare defaults.
+        """
+        from coordinare.services.persona_service import (
+            VALID_ROLES,
+            get_effective_instructions,
+            load_personas_hot,
+        )
+
+        personas = load_personas_hot(config_path, daemon.state.get("config"))
+
+        result: list[dict[str, Any]] = []
+        for role in sorted(VALID_ROLES):
+            instructions = get_effective_instructions(role, personas)
+            is_default = not getattr(personas, role).instructions.strip()
+            result.append({"role": role, "instructions": instructions, "is_default": is_default})
+        return JSONResponse(result)
+
+    @app.put("/api/personas/{role}")
+    async def update_persona(role: str, request: Request) -> JSONResponse:
+        """Update persona instructions for a role. Returns 404 for unknown roles, 400 for oversized instructions."""
+        from coordinare.config import PERSONA_MAX_LENGTH
+        from coordinare.services.persona_service import (
+            VALID_ROLES,
+            save_persona,
+        )
+
+        if role not in VALID_ROLES:
+            return JSONResponse({"error": f"Unknown role: {role!r}"}, status_code=404)
+
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "Request body must be a JSON object"}, status_code=400)
+
+        if "instructions" not in body:
+            return JSONResponse({"error": "Missing required field: instructions"}, status_code=400)
+        raw_instructions = body["instructions"]
+        if not isinstance(raw_instructions, str):
+            return JSONResponse({"error": "instructions must be a string"}, status_code=400)
+        instructions: str = raw_instructions
+        if len(instructions) > PERSONA_MAX_LENGTH * 2 or len(instructions.strip()) > PERSONA_MAX_LENGTH:
+            return JSONResponse(
+                {"error": f"Instructions exceed maximum length ({PERSONA_MAX_LENGTH} chars)"},
+                status_code=400,
+            )
+
+        if config_path is None or not config_path.is_file():
+            return JSONResponse({"error": "Config file not found"}, status_code=500)
+
+        try:
+            save_persona(role, instructions, config_path)
+        except ValueError as exc:
+            # ValueError here means malformed config shape (role/length already
+            # validated above); treat as validation error per API contract.
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        except OSError as exc:
+            return JSONResponse({"error": f"Failed to write config: {exc}"}, status_code=500)
+
+        # Re-read from config to return what's actually stored/effective.
+        from coordinare.services.persona_service import get_effective_instructions, load_personas_hot
+
+        personas = load_personas_hot(config_path, daemon.state.get("config"))
+        effective = get_effective_instructions(role, personas)
+        is_default = not getattr(personas, role).instructions.strip()
+        return JSONResponse({"role": role, "instructions": effective, "is_default": is_default})
+
+    @app.delete("/api/personas/{role}", status_code=204)
+    async def reset_persona_endpoint(role: str) -> Response:
+        """Reset a role's persona to built-in defaults (clears custom instructions)."""
+        from coordinare.services.persona_service import VALID_ROLES, reset_persona
+
+        if role not in VALID_ROLES:
+            return JSONResponse({"error": f"Unknown role: {role!r}"}, status_code=404)
+
+        if config_path is None or not config_path.is_file():
+            return JSONResponse({"error": "Config file not found"}, status_code=500)
+
+        try:
+            reset_persona(role, config_path)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        except OSError as exc:
+            return JSONResponse({"error": f"Failed to write config: {exc}"}, status_code=500)
+
+        return Response(status_code=204)
 
     return app
 

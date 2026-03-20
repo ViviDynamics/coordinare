@@ -542,3 +542,87 @@ async def test_dispatch_incomplete_workspace_teardown_failure_does_not_raise() -
     assert result["phase"] == "blocked"
     assert result["workspace_path"] is None
     assert result["workspace_branch"] is None
+
+
+# ---------------------------------------------------------------------------
+# 018 — Persona injection tests (T008)
+# ---------------------------------------------------------------------------
+
+
+class _AgentCapture:
+    """Captures the card_context dict passed to dispatch_card."""
+
+    def __init__(self) -> None:
+        self.captured_context: dict | None = None
+
+    async def check_health(self):
+        return {"status": "accepted"}
+
+    async def dispatch_card(self, card_context, workspace_info=None):
+        self.captured_context = card_context
+        return {"status": "accepted", "session_id": "s1"}
+
+
+def _make_config_with_persona(instructions: str):
+    from coordinare.config import PersonaConfig, PersonasConfig
+    personas = PersonasConfig(implementer=PersonaConfig(instructions=instructions))
+
+    class _FakeConfig:
+        pass
+
+    cfg = _FakeConfig()
+    cfg.personas = personas
+    return cfg
+
+
+@pytest.mark.asyncio
+async def test_persona_instructions_present_in_payload_when_configured() -> None:
+    """FR-004: custom persona instructions appear in dispatch payload."""
+    agent = _AgentCapture()
+    state = initial_state()
+    state["current_card"] = {"id": "CARD_1", "status": "TODO"}
+    state["github_service"] = _GitHub()
+    state["agent_service"] = agent
+    state["config"] = _make_config_with_persona("Always write tests first.")
+
+    await dispatch_card(state)
+
+    assert agent.captured_context is not None
+    assert agent.captured_context.get("persona_instructions") == "Always write tests first."
+
+
+@pytest.mark.asyncio
+async def test_persona_instructions_equals_default_when_config_field_empty() -> None:
+    """FR-007: empty instructions → default (non-empty) instructions injected."""
+    from coordinare.services.persona_service import DEFAULT_INSTRUCTIONS
+    agent = _AgentCapture()
+    state = initial_state()
+    state["current_card"] = {"id": "CARD_1", "status": "TODO"}
+    state["github_service"] = _GitHub()
+    state["agent_service"] = agent
+    state["config"] = _make_config_with_persona("")
+
+    await dispatch_card(state)
+
+    assert agent.captured_context is not None
+    instructions = agent.captured_context.get("persona_instructions")
+    assert instructions == DEFAULT_INSTRUCTIONS["implementer"]
+    assert instructions  # non-empty
+
+
+@pytest.mark.asyncio
+async def test_persona_instructions_equals_default_when_whitespace_only() -> None:
+    """FR-007: whitespace-only instructions → default instructions injected."""
+    from coordinare.services.persona_service import DEFAULT_INSTRUCTIONS
+    agent = _AgentCapture()
+    state = initial_state()
+    state["current_card"] = {"id": "CARD_1", "status": "TODO"}
+    state["github_service"] = _GitHub()
+    state["agent_service"] = agent
+    state["config"] = _make_config_with_persona("   \n  ")
+
+    await dispatch_card(state)
+
+    assert agent.captured_context is not None
+    instructions = agent.captured_context.get("persona_instructions")
+    assert instructions == DEFAULT_INSTRUCTIONS["implementer"]

@@ -1,0 +1,170 @@
+openapi: "3.1.0"
+info:
+  title: Coordinare Personas API
+  version: "1.0.0"
+  description: |
+    Dashboard API for viewing, updating, and resetting per-role AI agent personas.
+    All endpoints are served by the existing dashboard server (default port 8090).
+
+servers:
+  - url: http://localhost:8090
+    description: Local coordinare dashboard
+
+paths:
+  /api/personas:
+    get:
+      operationId: listPersonas
+      summary: List all role personas
+      description: |
+        Returns the effective instructions and metadata for every coordinare role.
+        The `is_default` field indicates whether a custom override is active.
+      responses:
+        "200":
+          description: All role personas
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PersonaResponse"
+              example:
+                - role: implementer
+                  instructions: "Always write tests first using TDD..."
+                  is_default: false
+                - role: assessor
+                  instructions: "Evaluate whether the card has sufficient context..."
+                  is_default: true
+
+  /api/personas/{role}:
+    put:
+      operationId: updatePersona
+      summary: Update persona instructions for a role
+      description: |
+        Writes the given instructions to config.yaml for the specified role.
+        The change takes effect on the next dispatch/assess/scan invocation (hot-reload).
+        Instructions must not exceed 8,000 characters.
+      parameters:
+        - name: role
+          in: path
+          required: true
+          schema:
+            $ref: "#/components/schemas/RoleName"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdatePersonaRequest"
+            example:
+              instructions: "Always write tests first. Prefer functional patterns..."
+      responses:
+        "200":
+          description: Updated persona
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PersonaResponse"
+        "400":
+          description: Instructions exceed maximum length or other validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "Instructions exceed maximum length (8000 chars)"
+        "404":
+          description: Unknown role name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "Unknown role: 'wizard'"
+        "500":
+          description: Failed to write config file
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    delete:
+      operationId: resetPersona
+      summary: Reset persona to built-in defaults
+      description: |
+        Clears any custom instructions for the specified role.
+        The next dispatch/assess/scan will use the built-in default instructions.
+      parameters:
+        - name: role
+          in: path
+          required: true
+          schema:
+            $ref: "#/components/schemas/RoleName"
+      responses:
+        "204":
+          description: Persona reset; no content returned
+        "404":
+          description: Unknown role name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Failed to write config file
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+components:
+  schemas:
+    RoleName:
+      type: string
+      enum:
+        - advocate
+        - assessor
+        - architect
+        - implementer
+        - reviewer
+        - security
+        - qa
+        - tech_writer
+      description: One of the eight valid coordinare role names.
+
+    PersonaResponse:
+      type: object
+      required:
+        - role
+        - instructions
+        - is_default
+      properties:
+        role:
+          $ref: "#/components/schemas/RoleName"
+        instructions:
+          type: string
+          description: |
+            The currently active instructions for this role.
+            Always set — if no custom instructions exist, returns the built-in default.
+        is_default:
+          type: boolean
+          description: True when the active instructions are the built-in default (no custom override).
+
+    UpdatePersonaRequest:
+      type: object
+      required:
+        - instructions
+      properties:
+        instructions:
+          type: string
+          maxLength: 8000
+          description: |
+            Freeform behavioral guidance for the AI agent.
+            Pass an empty string to restore built-in defaults (equivalent to DELETE).
+
+    ErrorResponse:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: string
+          description: Human-readable error description.

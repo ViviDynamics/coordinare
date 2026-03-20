@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from coordinare.services.github import PermanentGitHubError
+from coordinare.services.persona_service import get_effective_instructions, load_personas_hot
 from coordinare.transport.base import TransportError
 from coordinare.workspace import WorkspaceSetupError
 
@@ -150,9 +151,15 @@ async def dispatch_card(state: CoordinareState) -> CoordinareState:
                 return state
 
     card_id = str(card.get("id", ""))
+
+    # Inject persona instructions with hot-reload (018-performer-personas).
+    personas = load_personas_hot(state.get("config_path"), state.get("config"))
+    card_context = dict(card)
+    card_context["persona_instructions"] = get_effective_instructions("implementer", personas)
+
     try:
         await github.move_card(card_id, "IN_PROGRESS")
-        result = await agent.dispatch_card(card, workspace_info=workspace_info)
+        result = await agent.dispatch_card(card_context, workspace_info=workspace_info)
     except TransportError as exc:
         # Network / transport failure — transient, route through retry logic.
         reason = f"Transport failure during dispatch: {type(exc).__name__}"

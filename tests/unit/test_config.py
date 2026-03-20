@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
-from coordinare.config import ProjectConfiguration
+from coordinare.config import PersonaConfig, PersonasConfig, ProjectConfiguration
 
 
 def _write_config(tmp_path, github_token: str = "token-from-file"):
@@ -240,7 +241,7 @@ def test_daemon_startup_emits_config_loaded_log(tmp_path) -> None:
 
     config_file = _write_config(tmp_path)
 
-    async def _noop_run(config):
+    async def _noop_run(config, config_path=None):
         pass
 
     with (
@@ -432,3 +433,95 @@ def test_from_yaml_with_non_dict_yaml_uses_defaults(tmp_path, monkeypatch) -> No
     path.write_text("- item1\n- item2\n")
     config = ProjectConfiguration.from_yaml(path)
     assert config is not None
+
+
+# ---------------------------------------------------------------------------
+# 018 — PersonaConfig and PersonasConfig model tests (T005)
+# ---------------------------------------------------------------------------
+
+
+def test_personas_config_parses_all_eight_roles_from_yaml(tmp_path) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        yaml.dump({
+            "project_name": "Demo",
+            "github_org": "acme",
+            "github_project_number": 1,
+            "github_token": "tok",
+            "human_reviewers": ["alice"],
+            "personas": {
+                "advocate": {"instructions": "scan issues"},
+                "assessor": {"instructions": "assess cards"},
+                "architect": {"instructions": "plan work"},
+                "implementer": {"instructions": "write code"},
+                "reviewer": {"instructions": "review pr"},
+                "security": {"instructions": "check security"},
+                "qa": {"instructions": "validate tests"},
+                "tech_writer": {"instructions": "write docs"},
+            },
+        })
+    )
+    config = ProjectConfiguration.from_yaml(path)
+    assert config.personas.advocate.instructions == "scan issues"
+    assert config.personas.assessor.instructions == "assess cards"
+    assert config.personas.architect.instructions == "plan work"
+    assert config.personas.implementer.instructions == "write code"
+    assert config.personas.reviewer.instructions == "review pr"
+    assert config.personas.security.instructions == "check security"
+    assert config.personas.qa.instructions == "validate tests"
+    assert config.personas.tech_writer.instructions == "write docs"
+
+
+def test_missing_personas_key_produces_all_default_personas_config(tmp_path) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        yaml.dump({
+            "project_name": "Demo",
+            "github_org": "acme",
+            "github_project_number": 1,
+            "github_token": "tok",
+            "human_reviewers": ["alice"],
+        })
+    )
+    config = ProjectConfiguration.from_yaml(path)
+    assert isinstance(config.personas, PersonasConfig)
+    assert config.personas.implementer.instructions == ""
+
+
+def test_empty_instructions_field_parsed_correctly() -> None:
+    pc = PersonaConfig(instructions="")
+    assert pc.instructions == ""
+
+
+def test_role_isolation_sc004() -> None:
+    """SC-004: changing one role's persona must not affect others."""
+    personas = PersonasConfig()
+    personas.implementer.instructions = "custom"  # type: ignore[misc]
+    assert personas.assessor.instructions == ""
+
+
+def test_persona_config_rejects_instructions_exceeding_max_length() -> None:
+    """T020: config load rejects instructions > 8000 chars with ValidationError."""
+    from coordinare.config import PERSONA_MAX_LENGTH
+    with pytest.raises(ValidationError):
+        PersonaConfig(instructions="x" * (PERSONA_MAX_LENGTH + 1))
+
+
+def test_project_configuration_raises_validation_error_for_oversized_persona(tmp_path) -> None:
+    """T020: ProjectConfiguration.from_yaml raises ValidationError when YAML contains oversized persona."""
+    from coordinare.config import PERSONA_MAX_LENGTH
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        yaml.dump({
+            "project_name": "Demo",
+            "github_org": "acme",
+            "github_project_number": 1,
+            "github_token": "tok",
+            "human_reviewers": ["alice"],
+            "personas": {
+                "implementer": {"instructions": "x" * (PERSONA_MAX_LENGTH + 1)},
+            },
+        })
+    )
+    with pytest.raises(ValidationError):
+        ProjectConfiguration.from_yaml(path)
