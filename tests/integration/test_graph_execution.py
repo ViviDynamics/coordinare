@@ -80,4 +80,4 @@ async def test_dispatch_loop_integration() -> None:
     graph = CoordinareGraphBuilder().build()
     result = await graph.ainvoke(state)
 
-    assert result["phase"] in {"monitoring_agent", "idle"}
+    assert result["phase"] in {"monitoring_agent", "monitoring_performer", "idle"}

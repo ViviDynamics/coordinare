@@ -21,11 +21,13 @@ WorkflowPhase = Literal[
     "idle",
     "dispatching",
     "monitoring_agent",
+    "monitoring_performer",
     "monitoring_pr",
     "merging",
     "relay_feedback",
     "blocked",
     "recovery",
+    "system_error",
 ]
 
 

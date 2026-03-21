@@ -97,6 +97,19 @@ class _WorkspaceManager:
 
 
 # ---------------------------------------------------------------------------
+# Helper: set up performer_services for 019 lifecycle (dispatch_card now
+# delegates to dispatch_performer which reads performer_services)
+# ---------------------------------------------------------------------------
+
+
+def _add_performer_services(state, agent):
+    """Register the mock agent as the implementer in performer_services."""
+    state["performer_services"] = {"implementing": agent}
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing"]
+
+
+# ---------------------------------------------------------------------------
 # Existing tests — all inject a no-op workspace_manager for backward compat
 # ---------------------------------------------------------------------------
 
@@ -106,12 +119,14 @@ async def test_dispatch_card_moves_and_dispatches() -> None:
     state = initial_state()
     state["current_card"] = {"id": "ITEM_1", "status": "TODO"}
     state["github_service"] = _GitHub()
-    state["agent_service"] = _Agent()
+    agent = _Agent()
+    state["agent_service"] = agent
     state["workspace_manager"] = _WorkspaceManager()
+    _add_performer_services(state, agent)
 
     result = await dispatch_card(state)
 
-    assert result["phase"] == "monitoring_agent"
+    assert result["phase"] == "monitoring_performer"
     assert result["agent_dispatch"]["status"] == "accepted"
     assert result["agent_health_status"] == "accepted"
 
@@ -185,7 +200,7 @@ async def test_dispatch_enriches_payload_with_workspace_fields() -> None:
 
     result = await dispatch_card(state)
 
-    assert result["phase"] == "monitoring_agent"
+    assert result["phase"] == "monitoring_performer"
     assert agent.last_workspace_info is not None
     assert agent.last_workspace_info.branch == "coordinare/ITEM_1/test-card"
     assert agent.last_workspace_info.repo_url == "https://github.com/acme/repo.git"
@@ -307,7 +322,7 @@ async def test_dispatch_no_workspace_manager_still_dispatches() -> None:
 
     result = await dispatch_card(state)
 
-    assert result["phase"] == "monitoring_agent"
+    assert result["phase"] == "monitoring_performer"
     assert agent.last_workspace_info is None
 
 
@@ -451,7 +466,7 @@ async def test_dispatch_card_workspace_complete_info_dispatches_normally() -> No
 
     result = await dispatch_card(state)
 
-    assert result["phase"] == "monitoring_agent"
+    assert result["phase"] == "monitoring_performer"
     assert agent.last_workspace_info is not None
 
 
@@ -467,7 +482,7 @@ async def test_dispatch_card_workspace_manager_none_dispatches_without_workspace
 
     result = await dispatch_card(state)
 
-    assert result["phase"] == "monitoring_agent"
+    assert result["phase"] == "monitoring_performer"
     assert agent.last_workspace_info is None
 
 
@@ -487,7 +502,7 @@ async def test_dispatch_card_kubernetes_empty_token_dispatches_normally() -> Non
 
     result = await dispatch_card(state)
 
-    assert result["phase"] == "monitoring_agent"
+    assert result["phase"] == "monitoring_performer"
     assert agent.last_workspace_info is not None
     assert agent.last_workspace_info.path is None
     assert agent.last_workspace_info.github_token == ""

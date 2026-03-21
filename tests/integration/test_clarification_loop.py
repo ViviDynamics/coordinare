@@ -237,7 +237,7 @@ async def test_user_answer_triggers_dispatch() -> None:
     result = await graph.ainvoke(state)
 
     # Card should have been dispatched
-    assert result["phase"] in {"monitoring_agent", "dispatching"}
+    assert result["phase"] in {"monitoring_agent", "monitoring_performer", "dispatching"}
     assert len(agent.dispatched) == 1
     # Clarification history should be stored
     clarifications = result.get("card_clarifications") or []
@@ -301,7 +301,7 @@ async def test_multi_round_qa_accumulates() -> None:
     }
 
     result2 = await graph.ainvoke(result)
-    assert result2["phase"] in {"monitoring_agent", "dispatching"}
+    assert result2["phase"] in {"monitoring_agent", "monitoring_performer", "dispatching"}
     assert len(agent.dispatched) == 1
     # Both clarification rounds should be in the dispatch payload
     dispatched_card = agent.dispatched[0]
@@ -576,7 +576,7 @@ async def test_assess_card_dispatches_after_answered_rounds() -> None:
     graph = CoordinareGraphBuilder().build()
     result = await graph.ainvoke(state)
 
-    assert result["phase"] in {"monitoring_agent", "dispatching"}
+    assert result["phase"] in {"monitoring_agent", "monitoring_performer", "dispatching"}
     assert len(agent.dispatched) == 1
     # Clarifications should be embedded in the dispatched card context
     dispatched = agent.dispatched[0]

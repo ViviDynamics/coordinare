@@ -4,7 +4,13 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from coordinare.config import PersonaConfig, PersonasConfig, ProjectConfiguration
+from coordinare.config import (
+    PerformerRoleConfig,
+    PerformersConfig,
+    PersonaConfig,
+    PersonasConfig,
+    ProjectConfiguration,
+)
 
 
 def _write_config(tmp_path, github_token: str = "token-from-file"):
@@ -525,3 +531,99 @@ def test_project_configuration_raises_validation_error_for_oversized_persona(tmp
     )
     with pytest.raises(ValidationError):
         ProjectConfiguration.from_yaml(path)
+
+
+# ---------------------------------------------------------------------------
+# 019 — Performer Lifecycle config models
+# ---------------------------------------------------------------------------
+
+
+class TestPerformerRoleConfig:
+    """Tests for PerformerRoleConfig model."""
+
+    def test_defaults(self) -> None:
+        cfg = PerformerRoleConfig()
+        assert cfg.backend == "opencode"
+        assert cfg.transport is None  # None = falls back to global config default
+        assert cfg.image is None
+        assert cfg.executable is None
+        assert cfg.host is None
+        assert cfg.port is None
+        assert cfg.timeout_seconds is None
+
+    def test_custom_values(self) -> None:
+        cfg = PerformerRoleConfig(
+            backend="claude-code",
+            transport="kubernetes",
+            image="coordinare-performer:latest",
+            executable="/usr/bin/claude",
+            host="k8s.internal",
+            port=8080,
+            timeout_seconds=3600,
+        )
+        assert cfg.backend == "claude-code"
+        assert cfg.transport == "kubernetes"
+        assert cfg.image == "coordinare-performer:latest"
+        assert cfg.timeout_seconds == 3600
+
+
+class TestPerformersConfig:
+    """Tests for PerformersConfig model."""
+
+    def test_all_roles_default_to_none(self) -> None:
+        cfg = PerformersConfig()
+        for role in ("advocate", "assessor", "architect", "implementer",
+                     "reviewer", "security", "qa", "tech_writer"):
+            assert getattr(cfg, role) is None
+
+    def test_two_roles_configured(self) -> None:
+        cfg = PerformersConfig(
+            implementer=PerformerRoleConfig(backend="opencode"),
+            reviewer=PerformerRoleConfig(backend="claude-code"),
+        )
+        assert cfg.implementer is not None
+        assert cfg.implementer.backend == "opencode"
+        assert cfg.reviewer is not None
+        assert cfg.reviewer.backend == "claude-code"
+        assert cfg.architect is None
+
+    def test_invalid_role_field_type_raises(self) -> None:
+        with pytest.raises(ValidationError):
+            PerformersConfig(implementer="not-a-config")  # type: ignore[arg-type]
+
+
+class TestPerformersInProjectConfiguration:
+    """Tests for performers field on ProjectConfiguration."""
+
+    def test_missing_performers_key_loads_default(self, tmp_path) -> None:
+        path = tmp_path / "config.yaml"
+        path.write_text(yaml.dump({
+            "project_name": "Demo",
+            "github_org": "acme",
+            "github_project_number": 1,
+            "github_token": "tok",
+            "human_reviewers": ["alice"],
+        }))
+        cfg = ProjectConfiguration.from_yaml(path)
+        assert isinstance(cfg.performers, PerformersConfig)
+        assert cfg.performers.implementer is None
+
+    def test_performers_with_roles_configured(self, tmp_path) -> None:
+        path = tmp_path / "config.yaml"
+        path.write_text(yaml.dump({
+            "project_name": "Demo",
+            "github_org": "acme",
+            "github_project_number": 1,
+            "github_token": "tok",
+            "human_reviewers": ["alice"],
+            "performers": {
+                "implementer": {"backend": "opencode", "transport": "subprocess"},
+                "security": {"backend": "claude-code", "transport": "kubernetes", "image": "sec:v1"},
+            },
+        }))
+        cfg = ProjectConfiguration.from_yaml(path)
+        assert cfg.performers.implementer is not None
+        assert cfg.performers.implementer.backend == "opencode"
+        assert cfg.performers.security is not None
+        assert cfg.performers.security.image == "sec:v1"
+        assert cfg.performers.reviewer is None

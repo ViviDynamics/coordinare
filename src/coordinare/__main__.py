@@ -10,7 +10,7 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from time import perf_counter
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import structlog
 import uvicorn
@@ -257,6 +257,141 @@ def _build_circuit_breakers(config: ProjectConfiguration) -> dict[str, CircuitBr
     }
 
 
+# ---------------------------------------------------------------------------
+# 019 — Performer Lifecycle: sequence derivation and service registry
+# ---------------------------------------------------------------------------
+
+# Canonical order of performer stages. Config field names map to stage names
+# via this table (see data-model.md for the full mapping).
+_ROLE_TO_STAGE: dict[str, str] = {
+    "advocate": "advocate",
+    "assessor": "assessing",
+    "architect": "architecting",
+    "implementer": "implementing",
+    "reviewer": "reviewing",
+    "security": "security",
+    "qa": "qa",
+    "tech_writer": "documenting",
+}
+
+_CANONICAL_ORDER: list[str] = [
+    "advocate", "assessor", "architect", "implementer",
+    "reviewer", "security", "qa", "tech_writer",
+]
+
+
+def _build_lifecycle_sequence(config: ProjectConfiguration) -> list[str]:
+    """Derive the ordered lifecycle sequence from configured performer roles.
+
+    Returns the list of performer_stage values (e.g. ["implementing", "reviewing"])
+    in canonical order, filtered by which roles are non-None in config.performers.
+
+    Falls back to ["implementing"] when no roles are configured but a legacy
+    agent_service transport is available. Raises ValueError when no roles
+    are configured and no legacy fallback exists.
+    """
+    sequence: list[str] = []
+    for role in _CANONICAL_ORDER:
+        role_config = getattr(config.performers, role, None)
+        if role_config is not None:
+            stage = _ROLE_TO_STAGE[role]
+            sequence.append(stage)
+
+    if sequence:
+        return sequence
+
+    # No roles configured — check for legacy backward-compatible fallback.
+    # If the config has an agent_transport (the pre-019 single-implementer field),
+    # fall back to implementer-only.  Note: agent_transport defaults to
+    # "subprocess", so this branch is always taken for empty performers.
+    # The ValueError below is a safety net for defensive coding.
+    if config.agent_transport:
+        return ["implementing"]
+
+    msg = (
+        "No performer roles configured. Add a 'performers' section to config.yaml "
+        "with at least one role, or ensure the legacy agent_transport is set."
+    )
+    raise ValueError(msg)
+
+
+def _build_transport_for_role(
+    role_config: object,
+    config: ProjectConfiguration,
+) -> AgentTransport:
+    """Build the appropriate transport for a performer role config.
+
+    Uses role-specific overrides when available, falling back to the
+    global config defaults.
+    """
+    from coordinare.config import PerformerRoleConfig
+
+    if not isinstance(role_config, PerformerRoleConfig):
+        return _build_transport(config)
+
+    transport_type = role_config.transport or config.agent_transport
+    executable = role_config.executable or config.agent_executable
+    timeout = role_config.timeout_seconds or config.transport_timeout_seconds
+
+    match transport_type:
+        case "subprocess":
+            return SubprocessTransport(executable, timeout)
+        case "ssh":
+            return SshTransport()
+        case "kubernetes":
+            return KubernetesTransport()
+        case _:
+            msg = f"Unknown transport: {transport_type!r}"
+            raise ValueError(msg)
+
+
+def _build_performer_services(
+    config: ProjectConfiguration,
+    circuit_breakers: dict[str, CircuitBreaker],
+) -> dict[str, Any]:
+    """Build the performer_services registry from config.
+
+    Returns a mapping of stage name → ResilientAgentService for each
+    configured performer role.
+
+    Note: ``PerformerRoleConfig.backend`` and ``image``/``host``/``port``
+    are stored in config for operator documentation and future use.
+    Transport selection currently uses ``transport`` and ``executable``;
+    additional fields will be wired in when provider-specific transport
+    constructors are added (e.g. a Claude-Code-specific subprocess mode).
+    """
+    r = config.resilience
+    services: dict[str, Any] = {}
+
+    for role in _CANONICAL_ORDER:
+        role_config = getattr(config.performers, role, None)
+        if role_config is None:
+            continue
+
+        stage = _ROLE_TO_STAGE[role]
+        try:
+            transport = _build_transport_for_role(role_config, config)
+        except (NotImplementedError, ValueError) as exc:
+            logger.warning(
+                "performer_transport_build_failed.role_skipped",
+                role=role,
+                stage=stage,
+                transport=getattr(role_config, "transport", None),
+                error=str(exc),
+                msg=f"Skipping performer role {role!r} — transport is not available",
+            )
+            continue
+        agent_svc = AgentService(transport)
+        resilient = ResilientAgentService(
+            inner=agent_svc,
+            retry_config=_retry_config_from(r.agent_retry),
+            circuit_breaker=circuit_breakers["agent"],
+        )
+        services[stage] = resilient
+
+    return services
+
+
 def _build_transport(config: ProjectConfiguration) -> AgentTransport:
     match config.agent_transport:
         case "subprocess":
@@ -324,6 +459,39 @@ async def _bootstrap_services(
 
     workspace_manager = WorkspaceManager(config)
 
+    # 019 — Build performer lifecycle registry
+    lifecycle_sequence = _build_lifecycle_sequence(config)
+    performer_services = _build_performer_services(config, circuit_breakers)
+
+    # If no explicit performer roles are configured but legacy agent_service exists,
+    # register it as the implementer service for backward compatibility.
+    if not performer_services and "implementing" in lifecycle_sequence:
+        performer_services["implementing"] = resilient_agent
+
+    # Warn when lifecycle expects stages that have no service (e.g. all
+    # configured transports failed to build).  These stages will be skipped
+    # by dispatch_performer at runtime — this is by design (FR-013).
+    missing_stages = [s for s in lifecycle_sequence if s not in performer_services]
+    if missing_stages:
+        logger.warning(
+            "performer_services.missing_stages",
+            missing=missing_stages,
+            available=list(performer_services.keys()),
+            msg="Some lifecycle stages have no service — they will be skipped at dispatch time",
+        )
+        # Remove missing stages from lifecycle_sequence so dispatch_performer
+        # doesn't need to skip them on every cycle.
+        lifecycle_sequence = [s for s in lifecycle_sequence if s in performer_services]
+        if not lifecycle_sequence:
+            # All configured transports failed — fall back to legacy mode
+            # only if the legacy agent_service is available.
+            if "implementing" not in performer_services:
+                logger.error(
+                    "performer_services.all_transports_failed",
+                    msg="All configured performer transports failed to build and no legacy fallback is available",
+                )
+            lifecycle_sequence = ["implementing"]
+
     service_state: CoordinareState = {
         "config": config,
         "config_path": config_path,
@@ -335,6 +503,9 @@ async def _bootstrap_services(
         "human_reviewers": config.human_reviewers,
         "blocked_reminder_hours": config.blocked_reminder_hours,
         "workspace_manager": workspace_manager,
+        "performer_services": performer_services,
+        "lifecycle_sequence": lifecycle_sequence,
+        "performer_stage": lifecycle_sequence[0] if lifecycle_sequence else "implementing",
     }
 
     if config.advocate.enabled:

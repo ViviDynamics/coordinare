@@ -1,0 +1,586 @@
+"""Unit tests for monitor_performer node (019-performer-lifecycle, T015).
+
+Tests cover lifecycle advancement, terminal success states, error/blocked
+handling, session_expired routing, and TransportError handling.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from coordinare.graph.nodes.monitor_performer import (
+    TERMINAL_SUCCESS_STATES,
+    monitor_performer,
+)
+from coordinare.graph.state import initial_state
+from coordinare.transport.base import TransportError
+
+# ---------------------------------------------------------------------------
+# Mock helpers (mirrors test_monitor_agent.py patterns)
+# ---------------------------------------------------------------------------
+
+
+class _GitHub:
+    """Tracks move_card calls."""
+
+    def __init__(self) -> None:
+        self.move_calls: list[tuple[str, str]] = []
+
+    async def move_card(self, item_id: str, status: str) -> None:
+        self.move_calls.append((item_id, status))
+
+
+class _Performer:
+    """Returns a configurable check_status response."""
+
+    def __init__(self, response: dict) -> None:
+        self._response = response
+
+    async def check_status(self, session_id: str) -> dict:
+        _ = session_id
+        return self._response
+
+
+class _PerformerTransportError:
+    """Raises TransportError from check_status."""
+
+    async def check_status(self, session_id: str) -> dict:
+        raise TransportError("connection refused")
+
+
+class _WorkspaceManager:
+    """Stub WorkspaceManager that records teardown calls."""
+
+    def __init__(self) -> None:
+        self.teardown_calls: list[Path] = []
+
+    async def teardown(self, path: Path) -> None:
+        self.teardown_calls.append(path)
+
+
+# ---------------------------------------------------------------------------
+# Helper to build state with performer_services for a given stage/sequence
+# ---------------------------------------------------------------------------
+
+
+def _make_state(
+    *,
+    service: object,
+    stage: str = "implementing",
+    sequence: list[str] | None = None,
+    card: dict | None = None,
+    github: object | None = None,
+) -> dict:
+    """Return a state dict pre-configured with performer_services and lifecycle_sequence."""
+    state = initial_state()
+    state["performer_services"] = {stage: service}
+    state["performer_stage"] = stage
+    state["lifecycle_sequence"] = sequence or [stage]
+    state["current_card"] = card or {"id": "ITEM_1", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    if github is not None:
+        state["github_service"] = github
+    return state
+
+
+# ---------------------------------------------------------------------------
+# T015-1: pr_opened triggers advancement to next stage
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pr_opened_advances_to_next_stage() -> None:
+    """pr_opened on first of 2+ stages advances performer_stage and resets dispatch."""
+    service = _Performer({
+        "status": "pr_opened",
+        "pr_url": "https://github.com/org/repo/pull/1",
+        "pr_node_id": "PR_NODE_1",
+    })
+    state = _make_state(
+        service=service,
+        stage="implementing",
+        sequence=["implementing", "reviewing"],
+    )
+
+    result = await monitor_performer(state)
+
+    assert result["performer_stage"] == "reviewing"
+    assert result["phase"] == "dispatching"
+    assert result["agent_dispatch"] == {}
+    assert result["agent_dispatch_at"] is None
+
+
+# ---------------------------------------------------------------------------
+# T015-2: advancement from final stage transitions to monitoring_pr
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_final_stage_pr_opened_transitions_to_monitoring_pr() -> None:
+    """pr_opened on the only/final stage transitions to monitoring_pr."""
+    gh = _GitHub()
+    service = _Performer({
+        "status": "pr_opened",
+        "pr_url": "https://github.com/org/repo/pull/42",
+        "pr_node_id": "PR_NODE_42",
+    })
+    state = _make_state(
+        service=service,
+        stage="implementing",
+        sequence=["implementing"],
+        card={"id": "ITEM_1", "status": "IN_PROGRESS"},
+        github=gh,
+    )
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "monitoring_pr"
+    assert result["current_card"]["pr_url"] == "https://github.com/org/repo/pull/42"
+    assert result["current_card"]["pr_node_id"] == "PR_NODE_42"
+    assert result["current_card"]["status"] == "IN_REVIEW"
+    assert result["current_card"]["previous_status"] == "IN_PROGRESS"
+    assert ("ITEM_1", "IN_REVIEW") in gh.move_calls
+
+
+# ---------------------------------------------------------------------------
+# T015-3: error status sets phase="blocked", does NOT advance performer_stage
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_error_status_blocks_without_advancing_stage() -> None:
+    """error status sets phase='blocked' and does NOT advance performer_stage."""
+    service = _Performer({"status": "error", "reason": "Compilation failed"})
+    state = _make_state(
+        service=service,
+        stage="implementing",
+        sequence=["implementing", "reviewing"],
+    )
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "blocked"
+    assert result["performer_stage"] == "implementing"  # NOT advanced
+    assert any("Compilation failed" in q for q in result["open_questions"])
+
+
+# ---------------------------------------------------------------------------
+# T015-4: in-progress returns unchanged state with phase="monitoring_performer"
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_in_progress_returns_monitoring_performer() -> None:
+    """Working/in-progress status keeps phase='monitoring_performer'."""
+    service = _Performer({"status": "working"})
+    state = _make_state(service=service)
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "monitoring_performer"
+    # performer_stage unchanged
+    assert result["performer_stage"] == "implementing"
+
+
+# ---------------------------------------------------------------------------
+# T015-5: all terminal success states are recognized
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("terminal_status", sorted(TERMINAL_SUCCESS_STATES))
+async def test_all_terminal_success_states_trigger_advancement(terminal_status: str) -> None:
+    """Every member of TERMINAL_SUCCESS_STATES triggers _advance_stage."""
+    service = _Performer({
+        "status": terminal_status,
+        "pr_url": "https://github.com/org/repo/pull/1",
+        "pr_node_id": "PR_NODE_1",
+    })
+    state = _make_state(
+        service=service,
+        stage="implementing",
+        sequence=["implementing", "reviewing"],
+    )
+
+    result = await monitor_performer(state)
+
+    # All terminal states on a non-final stage should advance
+    assert result["performer_stage"] == "reviewing"
+    assert result["phase"] == "dispatching"
+
+
+def test_terminal_success_states_contains_expected_members() -> None:
+    """Verify the exact set of terminal success states."""
+    expected = {
+        "pr_opened",
+        "plan_committed",
+        "approved",
+        "security_passed",
+        "qa_passed",
+        "docs_committed",
+    }
+    assert expected == TERMINAL_SUCCESS_STATES
+
+
+# ---------------------------------------------------------------------------
+# T015-6 / SC-001: 4 configured roles — full sequence advancement ending in monitoring_pr
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_four_role_lifecycle_full_advancement() -> None:
+    """4 roles (implementer, reviewer, security, QA) — advance through all, ending in monitoring_pr."""
+    gh = _GitHub()
+    roles = ["implementing", "reviewing", "security", "qa"]
+
+    # Build performer services — each role gets its own service
+    services = {}
+    for role in roles:
+        services[role] = _Performer({
+            "status": "pr_opened",
+            "pr_url": "https://github.com/org/repo/pull/99",
+            "pr_node_id": "PR_NODE_99",
+        })
+
+    state = initial_state()
+    state["performer_services"] = services
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = roles
+    state["current_card"] = {"id": "ITEM_SC001", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["github_service"] = gh
+
+    # Stage 1: implementing -> reviewing
+    result = await monitor_performer(state)
+    assert result["performer_stage"] == "reviewing"
+    assert result["phase"] == "dispatching"
+
+    # Simulate re-dispatch: set phase back, set dispatch, keep stage
+    result["agent_dispatch"] = {"session_id": "s2"}
+
+    # Stage 2: reviewing -> security
+    result = await monitor_performer(result)
+    assert result["performer_stage"] == "security"
+    assert result["phase"] == "dispatching"
+
+    # Simulate re-dispatch
+    result["agent_dispatch"] = {"session_id": "s3"}
+
+    # Stage 3: security -> qa
+    result = await monitor_performer(result)
+    assert result["performer_stage"] == "qa"
+    assert result["phase"] == "dispatching"
+
+    # Simulate re-dispatch
+    result["agent_dispatch"] = {"session_id": "s4"}
+
+    # Stage 4 (final): qa -> monitoring_pr
+    result = await monitor_performer(result)
+    assert result["phase"] == "monitoring_pr"
+    assert result["current_card"]["status"] == "IN_REVIEW"
+    assert result["current_card"]["pr_url"] == "https://github.com/org/repo/pull/99"
+    assert result["current_card"]["pr_node_id"] == "PR_NODE_99"
+    assert ("ITEM_SC001", "IN_REVIEW") in gh.move_calls
+
+
+# ---------------------------------------------------------------------------
+# T015-7: blocked status with questions
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_blocked_status_with_questions() -> None:
+    """Blocked with questions sets phase='blocked' and populates open_questions."""
+    service = _Performer({
+        "status": "blocked",
+        "questions": ["What API key?", "Which region?"],
+    })
+    state = _make_state(service=service)
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "blocked"
+    assert result["open_questions"] == ["What API key?", "Which region?"]
+
+
+@pytest.mark.asyncio
+async def test_blocked_status_without_questions() -> None:
+    """Blocked with no questions list sets open_questions to empty list."""
+    service = _Performer({"status": "blocked"})
+    state = _make_state(service=service)
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "blocked"
+    assert result["open_questions"] == []
+
+
+# ---------------------------------------------------------------------------
+# T015-8: session_expired handling
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_session_expired_no_pr_requeues_to_idle() -> None:
+    """session_expired with no PR requeues card to TODO and sets phase='idle'."""
+    gh = _GitHub()
+    service = _Performer({"status": "session_expired", "reason": "timeout"})
+    state = _make_state(
+        service=service,
+        card={"id": "ITEM_1"},
+        github=gh,
+    )
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "idle"
+    assert result["agent_dispatch"] == {}
+    assert result["agent_dispatch_at"] is None
+    assert ("ITEM_1", "TODO") in gh.move_calls
+
+
+@pytest.mark.asyncio
+async def test_session_expired_with_pr_resumes_monitoring_pr() -> None:
+    """session_expired with pr_node_id set transitions to monitoring_pr."""
+    gh = _GitHub()
+    service = _Performer({"status": "session_expired"})
+    state = _make_state(
+        service=service,
+        card={"id": "ITEM_1", "pr_node_id": "PR_NODE_1"},
+        github=gh,
+    )
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "monitoring_pr"
+    assert result["agent_dispatch"] == {}
+    assert result["agent_dispatch_at"] is None
+    # Should NOT move to TODO when PR exists
+    assert ("ITEM_1", "TODO") not in gh.move_calls
+
+
+@pytest.mark.asyncio
+async def test_session_expired_preserves_open_questions_to_clarifications() -> None:
+    """Open questions are saved to card_clarifications before clearing."""
+    service = _Performer({"status": "session_expired"})
+    state = _make_state(service=service, card={"id": "ITEM_1"})
+    state["open_questions"] = ["Pending question"]
+
+    result = await monitor_performer(state)
+
+    assert result["open_questions"] == []
+    assert len(result["card_clarifications"]) == 1
+    assert result["card_clarifications"][0]["questions"] == ["Pending question"]
+    assert result["card_clarifications"][0]["answer"] == ""
+
+
+# ---------------------------------------------------------------------------
+# T015-9: TransportError -> system_error
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_transport_error_routes_to_system_error() -> None:
+    """TransportError from check_status sets phase='system_error'."""
+    service = _PerformerTransportError()
+    state = _make_state(service=service)
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "system_error"
+    assert result["system_error_count"] == 1
+    assert result["system_error_reason"] is not None
+    assert "TransportError" in result["system_error_reason"]
+    assert result["agent_dispatch"] == {}
+    assert result["agent_dispatch_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_transport_error_resets_stale_notified_state() -> None:
+    """Stale system_error_notified=True is reset before incrementing."""
+    service = _PerformerTransportError()
+    state = _make_state(service=service)
+    state["system_error_count"] = 5
+    state["system_error_notified"] = True
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "system_error"
+    # Count was reset to 0, then incremented to 1
+    assert result["system_error_count"] == 1
+    assert result["system_error_notified"] is False
+
+
+# ---------------------------------------------------------------------------
+# Additional edge cases
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_no_service_and_no_card_returns_idle() -> None:
+    """No performer service and no card -> idle."""
+    state = initial_state()
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "idle"
+
+
+@pytest.mark.asyncio
+async def test_fallback_to_legacy_agent_service() -> None:
+    """When performer_services is empty, falls back to agent_service."""
+    service = _Performer({"status": "working"})
+    state = initial_state()
+    state["performer_services"] = {}
+    state["agent_service"] = service
+    state["current_card"] = {"id": "ITEM_1"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "monitoring_performer"
+
+
+@pytest.mark.asyncio
+async def test_advancement_mid_sequence_resets_dispatch_state() -> None:
+    """Advancing to a non-final stage resets agent_dispatch and agent_dispatch_at."""
+    service = _Performer({
+        "status": "plan_committed",
+        "pr_url": "https://github.com/org/repo/pull/1",
+        "pr_node_id": "PR_NODE_1",
+    })
+    state = _make_state(
+        service=service,
+        stage="implementing",
+        sequence=["implementing", "reviewing", "qa"],
+    )
+
+    result = await monitor_performer(state)
+
+    assert result["performer_stage"] == "reviewing"
+    assert result["phase"] == "dispatching"
+    assert result["agent_dispatch"] == {}
+    assert result["agent_dispatch_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_final_stage_missing_pr_fields_routes_to_system_error() -> None:
+    """Final stage pr_opened with missing pr_url/pr_node_id routes to system_error."""
+    gh = _GitHub()
+    service = _Performer({
+        "status": "pr_opened",
+        "pr_url": None,
+        "pr_node_id": None,
+    })
+    state = _make_state(
+        service=service,
+        stage="implementing",
+        sequence=["implementing"],
+        github=gh,
+    )
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "system_error"
+    assert ("ITEM_1", "IN_REVIEW") not in gh.move_calls
+
+
+@pytest.mark.asyncio
+async def test_workspace_teardown_on_terminal_state() -> None:
+    """Workspace teardown is called on terminal state (pr_opened final stage)."""
+    wm = _WorkspaceManager()
+    fake_ws = Path("/tmp/fake-ws")
+    gh = _GitHub()
+    service = _Performer({
+        "status": "pr_opened",
+        "pr_url": "https://github.com/org/repo/pull/1",
+        "pr_node_id": "PR_NODE_1",
+    })
+    state = _make_state(
+        service=service,
+        stage="implementing",
+        sequence=["implementing"],
+        github=gh,
+    )
+    state["workspace_manager"] = wm
+    state["workspace_path"] = fake_ws
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "monitoring_pr"
+    assert wm.teardown_calls == [fake_ws]
+    assert result["workspace_path"] is None
+    assert result["workspace_branch"] is None
+
+
+@pytest.mark.asyncio
+async def test_no_workspace_teardown_when_still_working() -> None:
+    """Workspace is NOT torn down while performer is still working."""
+    wm = _WorkspaceManager()
+    fake_ws = Path("/tmp/fake-ws")
+    service = _Performer({"status": "working"})
+    state = _make_state(service=service)
+    state["workspace_manager"] = wm
+    state["workspace_path"] = fake_ws
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "monitoring_performer"
+    assert wm.teardown_calls == []
+    assert result["workspace_path"] == fake_ws
+
+
+@pytest.mark.asyncio
+async def test_events_accumulated_from_status() -> None:
+    """Performer events are accumulated (capped at 100)."""
+    service = _Performer({"status": "working", "events": [{"type": "new_event"}]})
+    state = _make_state(service=service)
+    state["performer_events"] = [{"type": "old_event"}]
+
+    result = await monitor_performer(state)
+
+    assert result["performer_events"] == [{"type": "old_event"}, {"type": "new_event"}]
+
+
+@pytest.mark.asyncio
+async def test_metrics_stored_from_status() -> None:
+    """Performer metrics are updated from status."""
+    service = _Performer({"status": "working", "metrics": {"cpu": 42}})
+    state = _make_state(service=service)
+
+    result = await monitor_performer(state)
+
+    assert result["performer_metrics"] == {"cpu": 42}
+
+
+@pytest.mark.asyncio
+async def test_error_status_includes_reason_in_open_questions() -> None:
+    """Error status includes the reason in open_questions."""
+    service = _Performer({"status": "error", "reason": "Out of memory"})
+    state = _make_state(
+        service=service,
+        stage="reviewing",
+        sequence=["implementing", "reviewing"],
+    )
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "blocked"
+    assert len(result["open_questions"]) == 1
+    assert "Out of memory" in result["open_questions"][0]
+    assert "reviewing" in result["open_questions"][0]
+
+
+@pytest.mark.asyncio
+async def test_error_status_without_reason() -> None:
+    """Error status with no reason still produces a meaningful open_questions entry."""
+    service = _Performer({"status": "error"})
+    state = _make_state(service=service)
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "blocked"
+    assert len(result["open_questions"]) == 1
+    assert "error" in result["open_questions"][0].lower()

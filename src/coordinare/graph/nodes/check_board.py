@@ -35,11 +35,21 @@ async def check_board(state: CoordinareState) -> CoordinareState:
     todo = state["board_snapshot"].get("TODO", [])
 
     if in_review:
+        # Preserve dispatching phase from classify_human_feedback even if
+        # the GitHub move to IN_PROGRESS failed and the card is still in
+        # IN_REVIEW.  The dispatch will move it on the next attempt.
+        if state.get("phase") == "dispatching":
+            return state
         state["phase"] = "monitoring_pr"
         return state
     if in_progress:
         if state.get("system_error_count", 0) > 0:
             state["phase"] = "system_error"
+            return state
+        # Preserve dispatching and monitoring_performer phases so the
+        # lifecycle re-entry and new performer monitoring aren't overwritten.
+        current_phase = state.get("phase")
+        if current_phase in ("dispatching", "monitoring_performer"):
             return state
         state["phase"] = "monitoring_agent"
         return state

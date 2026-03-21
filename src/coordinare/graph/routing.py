@@ -7,7 +7,7 @@ def route_from_board_check(state: dict[str, object]) -> str:
         return "dispatch"
     if phase == "monitoring_pr":
         return "monitor_pr"
-    if phase == "monitoring_agent":
+    if phase in ("monitoring_agent", "monitoring_performer"):
         return "monitor_agent"
     if phase == "blocked":
         return "blocked"
@@ -58,4 +58,6 @@ def route_from_agent_status(state: dict[str, object]) -> str:
         return "blocked"
     if phase == "system_error":
         return "handle_system_error"
+    if phase == "dispatching":
+        return "dispatch"
     return "monitor"

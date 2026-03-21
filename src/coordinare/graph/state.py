@@ -60,7 +60,7 @@ class AdvocateServiceProtocol(Protocol):
 class CoordinareState(TypedDict, total=False):
     current_card: dict[str, Any] | None
     board_snapshot: dict[str, list[str]]
-    phase: Literal["idle", "dispatching", "monitoring_agent", "monitoring_pr", "merging", "relay_feedback", "blocked", "recovery", "system_error"]
+    phase: Literal["idle", "dispatching", "monitoring_agent", "monitoring_performer", "monitoring_pr", "merging", "relay_feedback", "blocked", "recovery", "system_error"]
     pending_reviews: list[dict[str, Any]]
     last_poll_at: datetime | None
     error_count: int
@@ -100,6 +100,12 @@ class CoordinareState(TypedDict, total=False):
     agent_health_status: str | None
     last_blocked_notified_at: datetime | None
 
+    # 019 — Performer Lifecycle
+    performer_stage: str  # Active role in the lifecycle (e.g. "implementing", "reviewing")
+    performer_services: dict[str, Any]  # stage name (e.g. "implementing", "reviewing") → AgentService instance
+    lifecycle_sequence: list[str]  # Ordered list of role stage names to execute
+    relay_feedback: list[dict[str, Any]]  # PR comments to relay on next dispatch
+
 
 def initial_state() -> CoordinareState:
     return {
@@ -121,4 +127,8 @@ def initial_state() -> CoordinareState:
         "workspace_manager": None,
         "workspace_path": None,
         "workspace_branch": None,
+        "performer_stage": "implementing",
+        "performer_services": {},
+        "lifecycle_sequence": ["implementing"],
+        "relay_feedback": [],
     }

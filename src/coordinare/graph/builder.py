@@ -7,11 +7,12 @@ from langgraph.graph import END, START, StateGraph
 from coordinare.graph.nodes.advocate import advocate_scan
 from coordinare.graph.nodes.assess_card import assess_card
 from coordinare.graph.nodes.check_board import check_board
-from coordinare.graph.nodes.dispatch_card import dispatch_card
+from coordinare.graph.nodes.classify_human_feedback import classify_human_feedback
+from coordinare.graph.nodes.dispatch_performer import dispatch_performer
 from coordinare.graph.nodes.handle_blocked import handle_blocked
 from coordinare.graph.nodes.handle_system_error import handle_system_error
 from coordinare.graph.nodes.merge_pr import merge_pr
-from coordinare.graph.nodes.monitor_agent import monitor_agent
+from coordinare.graph.nodes.monitor_performer import monitor_performer
 from coordinare.graph.nodes.monitor_pr import monitor_pr
 from coordinare.graph.nodes.notify import notify
 from coordinare.graph.nodes.relay_feedback import relay_feedback
@@ -34,10 +35,11 @@ _DEFAULT_NODES: dict[str, Any] = {
     "advocate_scan": advocate_scan,
     "check_board": check_board,
     "assess_card": assess_card,
-    "dispatch_card": dispatch_card,
-    "monitor_agent": monitor_agent,
+    "dispatch_card": dispatch_performer,
+    "monitor_agent": monitor_performer,
     "monitor_pr": monitor_pr,
     "relay_feedback": relay_feedback,
+    "classify_human_feedback": classify_human_feedback,
     "merge_pr": merge_pr,
     "handle_blocked": handle_blocked,
     "handle_system_error": handle_system_error,
@@ -69,6 +71,7 @@ class CoordinareGraphBuilder:
         graph.add_node("monitor_agent", cast("Any", self._node("monitor_agent")))
         graph.add_node("monitor_pr", cast("Any", self._node("monitor_pr")))
         graph.add_node("relay_feedback", cast("Any", self._node("relay_feedback")))
+        graph.add_node("classify_human_feedback", cast("Any", self._node("classify_human_feedback")))
         graph.add_node("merge_pr", cast("Any", self._node("merge_pr")))
         graph.add_node("handle_blocked", cast("Any", self._node("handle_blocked")))
         graph.add_node("handle_system_error", cast("Any", self._node("handle_system_error")))
@@ -116,6 +119,7 @@ class CoordinareGraphBuilder:
                 "review": "monitor_pr",
                 "blocked": "handle_blocked",
                 "handle_system_error": "handle_system_error",
+                "dispatch": "dispatch_card",
                 "monitor": END,
             },
         )
@@ -131,12 +135,16 @@ class CoordinareGraphBuilder:
             route_from_review,
             {
                 "merge": "merge_pr",
-                "relay": "relay_feedback",
+                "relay": "classify_human_feedback",
                 "blocked": "handle_blocked",
                 "monitor": END,
             },
         )
 
+        # classify_human_feedback sets phase="dispatching" → next cycle picks
+        # it up via check_board routing.  relay_feedback is kept as a legacy
+        # node for any direct callers.
+        graph.add_edge("classify_human_feedback", END)
         graph.add_edge("relay_feedback", END)
         graph.add_edge("merge_pr", "notify")
         graph.add_edge("handle_blocked", "notify")

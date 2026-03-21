@@ -81,7 +81,7 @@ async def test_monitor_agent_stays_monitoring_when_working() -> None:
 
     result = await monitor_agent(state)
 
-    assert result["phase"] == "monitoring_agent"
+    assert result["phase"] == "monitoring_performer"
 
 
 # ---------------------------------------------------------------------------
@@ -136,8 +136,8 @@ async def test_monitor_agent_marks_blocked_on_error_status() -> None:
 
     result = await monitor_agent(state)
 
-    assert result["phase"] == "system_error"
-    assert result["system_error_reason"] == "Performer returned an error: Crash dump"
+    # 019: error status now sets phase="blocked" (FR-006) instead of system_error
+    assert result["phase"] == "blocked"
 
 
 # ---------------------------------------------------------------------------
@@ -263,8 +263,8 @@ async def test_monitor_agent_teardown_called_on_error() -> None:
 
     result = await monitor_agent(state)
 
-    assert result["phase"] == "system_error"
-    assert result["system_error_reason"] == "Performer returned an error: crash"
+    # 019: error status now sets phase="blocked" (FR-006)
+    assert result["phase"] == "blocked"
     assert wm.teardown_calls == [_FAKE_WS]
     assert result["workspace_path"] is None
 
@@ -339,7 +339,7 @@ async def test_monitor_agent_no_teardown_when_still_working() -> None:
 
     result = await monitor_agent(state)
 
-    assert result["phase"] == "monitoring_agent"
+    assert result["phase"] == "monitoring_performer"
     assert wm.teardown_calls == []
     # workspace_path remains set while agent is still working
     assert result["workspace_path"] == _FAKE_WS

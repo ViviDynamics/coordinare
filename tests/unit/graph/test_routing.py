@@ -14,6 +14,7 @@ def test_route_from_board_check_paths() -> None:
     assert route_from_board_check({"phase": "dispatching"}) == "dispatch"
     assert route_from_board_check({"phase": "monitoring_pr"}) == "monitor_pr"
     assert route_from_board_check({"phase": "monitoring_agent"}) == "monitor_agent"
+    assert route_from_board_check({"phase": "monitoring_performer"}) == "monitor_agent"  # 019
     assert route_from_board_check({"phase": "blocked"}) == "blocked"
     assert route_from_board_check({"phase": "system_error"}) == "handle_system_error"
     assert route_from_board_check({}) == "idle"
@@ -30,6 +31,7 @@ def test_route_from_agent_status_paths() -> None:
     assert route_from_agent_status({"phase": "monitoring_pr"}) == "review"
     assert route_from_agent_status({"phase": "blocked"}) == "blocked"
     assert route_from_agent_status({"phase": "system_error"}) == "handle_system_error"
+    assert route_from_agent_status({"phase": "dispatching"}) == "dispatch"  # 019: lifecycle advancement
     assert route_from_agent_status({}) == "monitor"
 
 

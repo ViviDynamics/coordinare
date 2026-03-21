@@ -502,6 +502,7 @@ var PHASE_NODE = {
   'idle':             'CB',
   'dispatching':      'AC',
   'monitoring_agent': 'MA',
+  'monitoring_performer': 'MA',
   'monitoring_pr':    'MP',
   'merging':          'MR',
   'relay_feedback':   'RF',
@@ -621,6 +622,7 @@ function renderState(s) {
     'blocked':          'Work is paused — review the Open Questions below and take action.',
     'dispatching':      'Assessing and dispatching card to the performer agent.',
     'monitoring_agent': 'Performer agent is actively working on the card.',
+    'monitoring_performer': 'Performer agent is actively working on the card.',
     'monitoring_pr':    'Waiting for PR review approval.',
     'merging':          'Merging the approved pull request.',
     'relay_feedback':   'Relaying PR review feedback to the performer agent.',
@@ -630,7 +632,7 @@ function renderState(s) {
 
   // Session age (shown when monitoring_agent)
   var ageEl = document.getElementById('session-age');
-  if (s.phase === 'monitoring_agent' && s.agent_dispatch_at) {
+  if ((s.phase === 'monitoring_agent' || s.phase === 'monitoring_performer') && s.agent_dispatch_at) {
     ageEl.style.display = '';
     ageEl.textContent = 'Agent running for: ' + (fmtAge(s.agent_dispatch_at) || '—');
   } else {
@@ -846,7 +848,7 @@ function updatePerformerLogs(logs) {
 
 function updatePerformers(s) {
   var card = document.getElementById('performers-card');
-  var isActive = (s.phase === 'monitoring_agent' || s.phase === 'relay_feedback');
+  var isActive = (s.phase === 'monitoring_agent' || s.phase === 'monitoring_performer' || s.phase === 'relay_feedback');
   var events = s.performer_events || [];
   var logs = s.performer_logs || [];
 
@@ -943,7 +945,7 @@ function updatePerformers(s) {
 var _lastState = null;
 setInterval(function() {
   if (!_lastState) return;
-  if (_lastState.phase === 'monitoring_agent' && _lastState.agent_dispatch_at) {
+  if ((_lastState.phase === 'monitoring_agent' || _lastState.phase === 'monitoring_performer') && _lastState.agent_dispatch_at) {
     var age = fmtAge(_lastState.agent_dispatch_at) || '—';
     document.getElementById('session-age').textContent = 'Agent running for: ' + age;
     // Refresh uptime in detail view header

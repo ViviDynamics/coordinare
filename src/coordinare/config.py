@@ -163,6 +163,44 @@ class PersonasConfig(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# 019 — Performer Lifecycle config models
+# ---------------------------------------------------------------------------
+
+
+class PerformerRoleConfig(BaseModel):
+    """Configuration for a single performer role's backend.
+
+    Fields that are None fall back to the global ProjectConfiguration
+    defaults (e.g. agent_transport, agent_executable, transport_timeout_seconds).
+    """
+
+    backend: str = "opencode"
+    transport: str | None = None
+    image: str | None = None
+    executable: str | None = None
+    host: str | None = None
+    port: int | None = None
+    timeout_seconds: int | None = None
+
+
+class PerformersConfig(BaseModel):
+    """Per-role performer backend configuration.
+
+    A role is considered configured when its field is non-None.
+    Roles that are None are skipped in the lifecycle sequence.
+    """
+
+    advocate: PerformerRoleConfig | None = None
+    assessor: PerformerRoleConfig | None = None
+    architect: PerformerRoleConfig | None = None
+    implementer: PerformerRoleConfig | None = None
+    reviewer: PerformerRoleConfig | None = None
+    security: PerformerRoleConfig | None = None
+    qa: PerformerRoleConfig | None = None
+    tech_writer: PerformerRoleConfig | None = None
+
+
+# ---------------------------------------------------------------------------
 # 007 — Customer advocate config model
 # ---------------------------------------------------------------------------
 
@@ -332,6 +370,7 @@ class ProjectConfiguration(BaseSettings):
     notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
     advocate: AdvocateConfig = Field(default_factory=AdvocateConfig)
     personas: PersonasConfig = Field(default_factory=PersonasConfig)
+    performers: PerformersConfig = Field(default_factory=PerformersConfig)
 
     # Card assessment backend — determines how assess_card evaluates card sufficiency.
     # "anthropic_api": direct Anthropic SDK call (requires ANTHROPIC_API_KEY)
