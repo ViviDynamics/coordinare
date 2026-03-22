@@ -310,3 +310,60 @@ class TestBackendEventRedaction:
     def test_detail_defaults_to_empty_string(self) -> None:
         event = BackendEvent(type=BackendEventType.progress, text="hello")
         assert event.detail == ""
+
+
+# ---------------------------------------------------------------------------
+# 020 — Architect performer model additions
+# ---------------------------------------------------------------------------
+
+
+class TestPlanCommittedStatus:
+    """Tests for plan_committed status and Performance fields (020)."""
+
+    def test_plan_committed_is_valid_performance_state(self) -> None:
+        from performer.models import Performance, Stand
+        from pathlib import Path
+        from unittest.mock import MagicMock
+        from performer.models import Score
+
+        stand = Stand(path=Path("/tmp/test"), branch="feat/test")
+        score = Score(
+            title="Test", repo_url="https://github.com/acme/repo", branch="feat/test",
+        )
+        perf = Performance(
+            session_id="s1", stand=stand, score=score, backend=MagicMock(),
+        )
+        perf.state = "plan_committed"
+        assert perf.state == "plan_committed"
+
+    def test_performance_defaults_for_role_and_plan_path(self) -> None:
+        from performer.models import Performance, Stand
+        from pathlib import Path
+        from unittest.mock import MagicMock
+        from performer.models import Score
+
+        stand = Stand(path=Path("/tmp/test"), branch="feat/test")
+        score = Score(
+            title="Test", repo_url="https://github.com/acme/repo", branch="feat/test",
+        )
+        perf = Performance(
+            session_id="s1", stand=stand, score=score, backend=MagicMock(),
+        )
+        assert perf.role == "implementing"
+        assert perf.plan_path is None
+
+    def test_performance_role_can_be_set_to_architecting(self) -> None:
+        from performer.models import Performance, Stand
+        from pathlib import Path
+        from unittest.mock import MagicMock
+        from performer.models import Score
+
+        stand = Stand(path=Path("/tmp/test"), branch="feat/test")
+        score = Score(
+            title="Test", repo_url="https://github.com/acme/repo", branch="feat/test",
+        )
+        perf = Performance(
+            session_id="s1", stand=stand, score=score, backend=MagicMock(),
+            role="architecting",
+        )
+        assert perf.role == "architecting"

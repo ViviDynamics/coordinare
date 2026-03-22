@@ -19,6 +19,7 @@ class BackendStatus:
     error_reason: str | None = None
     tokens_processed: int | None = None
     progress: str | None = None
+    output: str | None = None  # 020: AI-generated content (e.g. architecture plan)
 
 
 @runtime_checkable

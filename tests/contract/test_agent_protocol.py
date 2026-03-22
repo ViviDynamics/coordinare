@@ -26,9 +26,9 @@ class TestSchemaContractValidation:
         schema = ProtocolResponse.model_json_schema()
         status_prop = schema["properties"]["status"]
         expected = {
-            "accepted", "working", "pr_opened", "blocked", "error",
-            "unknown", "busy", "acknowledged", "session_expired",
-            "healthy", "unhealthy",
+            "accepted", "working", "pr_opened", "plan_committed",
+            "blocked", "error", "unknown", "busy", "acknowledged",
+            "session_expired", "healthy", "unhealthy",
         }
         # status enum may be in the property directly or via $ref
         enum_values = set()

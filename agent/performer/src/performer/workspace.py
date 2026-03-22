@@ -239,6 +239,67 @@ async def get_head_sha(stand: Stand) -> str:
     return stdout.decode().strip()
 
 
+async def commit_file(stand: Stand, path: str, content: str, message: str) -> None:
+    """Write *content* to *path* in the stand's repo, commit, and push.
+
+    If the file already exists, it is overwritten (FR-009: re-run safety).
+    If the content is identical to the existing file, the commit is a no-op
+    (idempotent).  Parent directories are created as needed.
+
+    Raises WorkspaceSetupError on git failures or path traversal attempts.
+    """
+    # Validate path is relative and doesn't escape the workspace.
+    if os.path.isabs(path) or ".." in Path(path).parts:
+        raise WorkspaceSetupError(f"commit_file: unsafe path rejected: {path!r}")
+
+    abs_path = stand.path / path
+    abs_path.parent.mkdir(parents=True, exist_ok=True)
+    abs_path.write_text(content, encoding="utf-8")
+
+    env = {**os.environ, **stand.git_env} if stand.git_env else {**os.environ}
+
+    # Stage the file (use -- separator to prevent option injection from paths starting with -)
+    returncode, stderr = await _run_git(
+        ["git", "add", "--", path], cwd=stand.path, env=env,
+    )
+    if returncode != 0:
+        raise WorkspaceSetupError(f"git add failed (exit {returncode}): {stderr}")
+
+    # Check if there are staged changes (exit 0 = no changes, 1 = changes, >1 = error)
+    returncode, stderr = await _run_git(
+        ["git", "diff", "--cached", "--quiet"], cwd=stand.path, env=env,
+    )
+    if returncode == 0:
+        log.info("commit_file.no_changes", path=path)
+        return
+    if returncode > 1:
+        raise WorkspaceSetupError(f"git diff --cached failed (exit {returncode}): {stderr}")
+
+    # Set git identity for commit (container may not have global config)
+    for cfg_cmd in [
+        ["git", "config", "user.name", "coordinare-performer"],
+        ["git", "config", "user.email", "coordinare@noreply"],
+    ]:
+        await _run_git(cfg_cmd, cwd=stand.path, env=env)
+
+    # Commit
+    returncode, stderr = await _run_git(
+        ["git", "commit", "-m", message], cwd=stand.path, env=env,
+    )
+    if returncode != 0:
+        raise WorkspaceSetupError(f"git commit failed (exit {returncode}): {stderr}")
+
+    # Push (force — same rationale as push_branch: coordinare-managed branches)
+    returncode, stderr = await _run_git(
+        ["git", "push", "--force", "origin", f"HEAD:{stand.branch}"],
+        cwd=stand.path, env=env,
+    )
+    if returncode != 0:
+        raise WorkspaceSetupError(f"git push failed (exit {returncode}): {stderr}")
+
+    log.info("commit_file.committed", path=path, branch=stand.branch)
+
+
 def cleanup_stand(stand: Stand) -> None:
     """Remove the stand directory unconditionally."""
     shutil.rmtree(stand.path, ignore_errors=True)

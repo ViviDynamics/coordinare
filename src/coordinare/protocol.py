@@ -14,6 +14,7 @@ StatusType = Literal[
     "accepted",
     "working",
     "pr_opened",
+    "plan_committed",
     "blocked",
     "error",
     "unknown",
@@ -42,6 +43,7 @@ class ProtocolResponse(BaseModel):
     # Telemetry fields — populated by performer on "working" status responses.
     # Must be kept in sync with performer.protocol.PerformerResponse.
     backend: str | None = None  # AGENT_BACKEND name, returned on dispatch
+    plan_path: str | None = None  # 020: path to committed architecture plan
     events: list[dict] = Field(default_factory=list)  # serialised BackendEvent list
     metrics: dict | None = None  # PerformerMetrics (pid, memory_bytes, cpu_percent, …)
 

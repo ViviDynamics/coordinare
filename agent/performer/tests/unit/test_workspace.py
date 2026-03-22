@@ -370,3 +370,192 @@ class TestRunGitTimeout:
                 await _run_git(["git", "clone", "https://github.com/x/y"], tmp_path, env, timeout=0.01)
 
         proc.kill.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# 020 — commit_file tests
+# ---------------------------------------------------------------------------
+
+
+class TestCommitFile:
+    """Tests for commit_file() helper (020)."""
+
+    @pytest.mark.asyncio
+    async def test_new_file_is_committed_and_pushed(self, tmp_path: Path) -> None:
+        """commit_file writes a new file, commits, and pushes."""
+        from performer.workspace import commit_file
+
+        stand = Stand(path=tmp_path, branch="feat/test")
+        stand.git_env = {}
+
+        calls: list[list[str]] = []
+
+        async def mock_run_git(args, cwd=None, env=None, timeout=120.0):
+            calls.append(args)
+            if "diff" in args:
+                return (1, "")  # changes exist
+            return (0, "")
+
+        with patch("performer.workspace._run_git", side_effect=mock_run_git):
+            await commit_file(stand, "docs/plan.md", "# Plan\nContent", "chore: add plan")
+
+        assert (tmp_path / "docs" / "plan.md").read_text() == "# Plan\nContent"
+        assert any("add" in c for c in calls)
+        assert any("commit" in c for c in calls)
+        assert any("push" in c for c in calls)
+
+    @pytest.mark.asyncio
+    async def test_existing_file_is_overwritten(self, tmp_path: Path) -> None:
+        """commit_file overwrites an existing file (FR-009)."""
+        from performer.workspace import commit_file
+
+        stand = Stand(path=tmp_path, branch="feat/test")
+        stand.git_env = {}
+
+        (tmp_path / "docs").mkdir(parents=True)
+        (tmp_path / "docs" / "plan.md").write_text("old content")
+
+        async def mock_run_git(args, cwd=None, env=None, timeout=120.0):
+            if "diff" in args:
+                return (1, "")
+            return (0, "")
+
+        with patch("performer.workspace._run_git", side_effect=mock_run_git):
+            await commit_file(stand, "docs/plan.md", "new content", "chore: update plan")
+
+        assert (tmp_path / "docs" / "plan.md").read_text() == "new content"
+
+    @pytest.mark.asyncio
+    async def test_no_op_when_content_identical(self, tmp_path: Path) -> None:
+        """commit_file skips commit/push when content is identical (idempotent)."""
+        from performer.workspace import commit_file
+
+        stand = Stand(path=tmp_path, branch="feat/test")
+        stand.git_env = {}
+
+        calls: list[list[str]] = []
+
+        async def mock_run_git(args, cwd=None, env=None, timeout=120.0):
+            calls.append(args)
+            if "diff" in args:
+                return (0, "")  # no changes
+            return (0, "")
+
+        with patch("performer.workspace._run_git", side_effect=mock_run_git):
+            await commit_file(stand, "docs/plan.md", "same content", "chore: no-op")
+
+        # Should not have called commit or push
+        assert not any("commit" in c for c in calls)
+        assert not any("push" in c for c in calls)
+
+    @pytest.mark.asyncio
+    async def test_parent_directories_created(self, tmp_path: Path) -> None:
+        """commit_file creates parent directories if they don't exist."""
+        from performer.workspace import commit_file
+
+        stand = Stand(path=tmp_path, branch="feat/test")
+        stand.git_env = {}
+
+        async def mock_run_git(args, cwd=None, env=None, timeout=120.0):
+            if "diff" in args:
+                return (1, "")
+            return (0, "")
+
+        with patch("performer.workspace._run_git", side_effect=mock_run_git):
+            await commit_file(stand, "deep/nested/dir/plan.md", "content", "chore: test")
+
+        assert (tmp_path / "deep" / "nested" / "dir" / "plan.md").exists()
+
+    @pytest.mark.asyncio
+    async def test_commit_file_rejects_absolute_path(self, tmp_path: Path) -> None:
+        """commit_file raises WorkspaceSetupError for absolute paths."""
+        from performer.workspace import commit_file
+
+        stand = Stand(path=tmp_path, branch="feat/test")
+        stand.git_env = {}
+
+        with pytest.raises(WorkspaceSetupError, match="unsafe path rejected"):
+            await commit_file(stand, "/etc/plan.md", "content", "chore: test")
+
+    @pytest.mark.asyncio
+    async def test_commit_file_rejects_path_traversal(self, tmp_path: Path) -> None:
+        """commit_file raises WorkspaceSetupError for path traversal attempts."""
+        from performer.workspace import commit_file
+
+        stand = Stand(path=tmp_path, branch="feat/test")
+        stand.git_env = {}
+
+        with pytest.raises(WorkspaceSetupError, match="unsafe path rejected"):
+            await commit_file(stand, "../escape/plan.md", "content", "chore: test")
+
+    @pytest.mark.asyncio
+    async def test_commit_file_git_add_fails(self, tmp_path: Path) -> None:
+        """commit_file raises WorkspaceSetupError when git add returns non-zero."""
+        from performer.workspace import commit_file
+
+        stand = Stand(path=tmp_path, branch="feat/test")
+        stand.git_env = {}
+
+        async def mock_run_git(args, cwd=None, env=None, timeout=120.0):
+            if "add" in args:
+                return (1, "error: could not add file")
+            return (0, "")
+
+        with patch("performer.workspace._run_git", side_effect=mock_run_git):
+            with pytest.raises(WorkspaceSetupError, match="git add failed"):
+                await commit_file(stand, "docs/plan.md", "content", "chore: test")
+
+    @pytest.mark.asyncio
+    async def test_commit_file_git_diff_error_exit(self, tmp_path: Path) -> None:
+        """commit_file raises WorkspaceSetupError when git diff returns exit code > 1."""
+        from performer.workspace import commit_file
+
+        stand = Stand(path=tmp_path, branch="feat/test")
+        stand.git_env = {}
+
+        async def mock_run_git(args, cwd=None, env=None, timeout=120.0):
+            if "diff" in args:
+                return (2, "fatal: bad revision")
+            return (0, "")
+
+        with patch("performer.workspace._run_git", side_effect=mock_run_git):
+            with pytest.raises(WorkspaceSetupError, match="git diff --cached failed"):
+                await commit_file(stand, "docs/plan.md", "content", "chore: test")
+
+    @pytest.mark.asyncio
+    async def test_commit_file_git_commit_fails(self, tmp_path: Path) -> None:
+        """commit_file raises WorkspaceSetupError when git commit returns non-zero."""
+        from performer.workspace import commit_file
+
+        stand = Stand(path=tmp_path, branch="feat/test")
+        stand.git_env = {}
+
+        async def mock_run_git(args, cwd=None, env=None, timeout=120.0):
+            if "diff" in args:
+                return (1, "")  # changes exist
+            if "commit" in args:
+                return (1, "error: commit failed")
+            return (0, "")
+
+        with patch("performer.workspace._run_git", side_effect=mock_run_git):
+            with pytest.raises(WorkspaceSetupError, match="git commit failed"):
+                await commit_file(stand, "docs/plan.md", "content", "chore: test")
+
+    @pytest.mark.asyncio
+    async def test_commit_file_git_push_fails(self, tmp_path: Path) -> None:
+        """commit_file raises WorkspaceSetupError when git push returns non-zero."""
+        from performer.workspace import commit_file
+
+        stand = Stand(path=tmp_path, branch="feat/test")
+        stand.git_env = {}
+
+        async def mock_run_git(args, cwd=None, env=None, timeout=120.0):
+            if "diff" in args:
+                return (1, "")  # changes exist
+            if "push" in args:
+                return (1, "error: push rejected")
+            return (0, "")
+
+        with patch("performer.workspace._run_git", side_effect=mock_run_git):
+            with pytest.raises(WorkspaceSetupError, match="git push failed"):
+                await commit_file(stand, "docs/plan.md", "content", "chore: test")

@@ -228,6 +228,17 @@ async def dispatch_performer(state: CoordinareState) -> CoordinareState:
     if relay_feedback:
         card_context["relay_feedback"] = relay_feedback
 
+    # 020: Include architecture plan in dispatch payload for downstream roles (FR-007).
+    # The plan_path is set on the card by monitor_performer when the architect
+    # returns plan_committed.
+    plan_path = card.get("plan_path")
+    if plan_path and performer_stage != "architecting":
+        # Include plan path reference; downstream performers read from branch.
+        card_context["architecture_plan_path"] = plan_path
+
+    # Pass the performer role so the performer can gate behavior on it.
+    card_context["role"] = performer_stage
+
     # --- Dispatch ---
     try:
         await github.move_card(card_id, "IN_PROGRESS")

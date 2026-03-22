@@ -132,8 +132,8 @@ class Score(BaseModel):
 # ---------------------------------------------------------------------------
 
 PerformanceState = Literal[
-    "accepted", "working", "blocked", "pr_opened", "error", "session_expired",
-    "waiting_for_checks",
+    "accepted", "working", "blocked", "pr_opened", "plan_committed",
+    "error", "session_expired", "waiting_for_checks",
 ]
 
 
@@ -160,9 +160,11 @@ class Performance:
     score: Score
     backend: "BackendAdapter"
     state: PerformanceState = "accepted"
+    role: str = "implementing"  # 020: performer role (e.g. "implementing", "architecting")
     pr_url: str | None = None
     pr_node_id: str | None = None
     pr_head_sha: str | None = None
+    plan_path: str | None = None  # 020: path to committed architecture plan
     check_attempt: int = 0
     open_questions: list[str] = field(default_factory=list)
     error_reason: str | None = None

@@ -81,13 +81,20 @@ def _advance_stage(state: CoordinareState, status: dict[str, Any] | None = None)
         }
         if status is not None:
             card = dict(state.get("current_card") or {})
+            changed = False
             pr_url = status.get("pr_url")
             pr_node_id = status.get("pr_node_id")
+            plan_path = status.get("plan_path")
             if pr_url:
                 card["pr_url"] = pr_url
+                changed = True
             if pr_node_id:
                 card["pr_node_id"] = pr_node_id
-            if pr_url or pr_node_id:
+                changed = True
+            if plan_path:
+                card["plan_path"] = plan_path
+                changed = True
+            if changed:
                 updates["current_card"] = card
         return updates
 
@@ -96,10 +103,13 @@ def _advance_stage(state: CoordinareState, status: dict[str, Any] | None = None)
     if status is not None:
         pr_url = status.get("pr_url")
         pr_node_id = status.get("pr_node_id")
+        plan_path = status.get("plan_path")
         if pr_url:
             card["pr_url"] = pr_url
         if pr_node_id:
             card["pr_node_id"] = pr_node_id
+        if plan_path:
+            card["plan_path"] = plan_path
 
     card["previous_status"] = card.get("status", "IN_PROGRESS")
     card["status"] = "IN_REVIEW"

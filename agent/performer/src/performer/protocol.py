@@ -25,6 +25,7 @@ PerformerStatusType = Literal[
     "busy",
     "acknowledged",
     "session_expired",
+    "plan_committed",
     "healthy",
     "unhealthy",
 ]
@@ -59,5 +60,6 @@ class PerformerResponse(BaseModel):
     pr_node_id: str | None = None
     progress: str | None = None
     backend: str | None = None  # AGENT_BACKEND name returned on dispatch
+    plan_path: str | None = None  # 020: path to committed architecture plan
     metrics: PerformerMetrics | None = None
     events: list[dict] = Field(default_factory=list)  # serialised BackendEvent list

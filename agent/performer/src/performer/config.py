@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     AGENT_TIMEOUT: int = 1800  # seconds — 30 minutes
     CHECK_MAX_ATTEMPTS: int = 3  # max CI fix cycles before blocking the card
 
+    # 020 — Architect performer settings
+    PLAN_FILE_PATH: str = "docs/coordinare-architecture.md"
+
 
 @functools.lru_cache(maxsize=1)
 def get_settings() -> Settings:

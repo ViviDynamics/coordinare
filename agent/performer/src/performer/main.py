@@ -18,6 +18,7 @@ from performer.config import Settings, get_settings
 from performer.github import GitHubAPIError, create_pull_request, get_check_runs, summarise_check_runs
 from performer.models import Performance, Score, Stand
 from performer.protocol import PerformerMessage, PerformerMetrics, PerformerResponse
+from performer.workspace import commit_file
 from performer.workspace import (
     BranchConflictError,
     WorkspaceSetupError,
@@ -63,6 +64,8 @@ async def handle_dispatch(
 ) -> tuple[PerformerResponse, Performance]:
     """Clone the repo, start the backend, and return accepted + session_id."""
     score = Score(**msg.payload)
+    # 020: read performer role before backend.start so the backend can adapt prompting
+    role = msg.payload.get("role", "implementing") if isinstance(msg.payload, dict) else "implementing"
     stand: Stand = await clone_repository(score)
     try:
         backend = get_backend(settings.AGENT_BACKEND)
@@ -76,6 +79,7 @@ async def handle_dispatch(
         stand=stand,
         score=score,
         backend=backend,
+        role=role,
     )
     log.info("dispatch accepted", session_id=session_id)
     return PerformerResponse(
@@ -223,6 +227,12 @@ async def handle_status(
     # backend logic.  Without this guard, a coordinare poll arriving after
     # _poll_check_runs sets perf.state = "blocked" would fall through to
     # backend.get_status(), see "done", and re-execute the push/PR-open path.
+    if perf.state == "plan_committed":
+        return PerformerResponse(
+            status="plan_committed",
+            session_id=perf.session_id,
+            plan_path=perf.plan_path,
+        )
     if perf.state == "blocked":
         return PerformerResponse(
             status="blocked",
@@ -237,6 +247,32 @@ async def handle_status(
     backend_status: BackendStatus = perf.backend.get_status()
 
     if backend_status.state == "done":
+        # 020: Architect path — commit plan file instead of opening a PR.
+        # Note: backends must populate BackendStatus.output with the generated
+        # plan content when role=="architecting". The architect backend adapter
+        # (not yet implemented) will set this field; existing backends (opencode,
+        # claude_code, codex) do not — they will hit the empty-plan error below.
+        if perf.role == "architecting":
+            plan_content = backend_status.output or ""
+            if not plan_content.strip():
+                perf.state = "error"
+                perf.error_reason = "Backend produced an empty architecture plan"
+                return PerformerResponse(
+                    status="error",
+                    session_id=perf.session_id,
+                    reason="Backend produced an empty architecture plan",
+                )
+            plan_path = settings.PLAN_FILE_PATH if settings else "docs/coordinare-architecture.md"
+            await commit_file(perf.stand, plan_path, plan_content, "chore: add architecture plan")
+            perf.plan_path = plan_path
+            perf.state = "plan_committed"
+            return PerformerResponse(
+                status="plan_committed",
+                session_id=perf.session_id,
+                plan_path=plan_path,
+            )
+
+        # Default path: push branch and open PR
         owner, repo = perf.score.owner_repo
         await push_branch(perf.stand, perf.score)
         pr_url, pr_node_id = await create_pull_request(
@@ -400,7 +436,7 @@ async def run_loop() -> None:
         except asyncio.TimeoutError:
             log.warning("session watchdog fired — stopping backend",
                         session_id=perf.session_id if perf else "")
-            if perf is not None and perf.state not in ("pr_opened", "error"):
+            if perf is not None and perf.state not in ("pr_opened", "plan_committed", "error"):
                 perf.state = "error"
                 perf.error_reason = (
                     f"watchdog: session exceeded {settings.AGENT_TIMEOUT:.0f}s"
@@ -500,7 +536,7 @@ async def run_loop() -> None:
         _write_response(resp)
 
         # Terminal states exit the loop
-        if resp.status in ("pr_opened", "error") and msg.action != "health":
+        if resp.status in ("pr_opened", "plan_committed", "error") and msg.action != "health":
             break
         # session_expired with no active session means nothing will ever start
         if resp.status == "session_expired" and perf is None:

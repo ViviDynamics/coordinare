@@ -792,3 +792,170 @@ class TestCheckPolling:
         assert resp.status == "blocked"
         assert perf.open_questions == resp.questions
         assert any("test-suite" in q for q in perf.open_questions)
+
+
+# ---------------------------------------------------------------------------
+# 020 — Architect performer tests
+# ---------------------------------------------------------------------------
+
+
+class TestArchitectPerformer:
+    """Tests for the architect role in handle_status and handle_dispatch (020)."""
+
+    def _make_perf(self, role: str = "architecting") -> Performance:
+        stand = Stand(path=Path("/tmp/fake"), branch="feat/test")
+        stand.git_env = {}
+        score = Score(
+            title="Test card",
+            repo_url="https://github.com/acme/repo",
+            branch="feat/test",
+        )
+        return Performance(
+            session_id="sid",
+            stand=stand,
+            score=score,
+            backend=MagicMock(),
+            role=role,
+        )
+
+    @pytest.mark.asyncio
+    async def test_architect_produces_plan_committed(self) -> None:
+        """Architect role returns plan_committed when backend is done."""
+        perf = self._make_perf(role="architecting")
+        perf.backend.get_status.return_value = BackendStatus(state="done", output="# Plan\n## Overview\n...")
+        settings = Settings(AGENT_BACKEND="opencode", AGENT_TIMEOUT=1800, PLAN_FILE_PATH="docs/coordinare-architecture.md")
+
+        with patch("performer.main.commit_file", new=AsyncMock()):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
+
+        assert resp.status == "plan_committed"
+        assert resp.plan_path == "docs/coordinare-architecture.md"
+        assert perf.state == "plan_committed"
+        assert perf.plan_path == "docs/coordinare-architecture.md"
+
+    @pytest.mark.asyncio
+    async def test_architect_commits_plan_to_correct_path(self) -> None:
+        """commit_file is called with the configured plan path."""
+        perf = self._make_perf(role="architecting")
+        perf.backend.get_status.return_value = BackendStatus(state="done", output="plan content")
+        settings = Settings(AGENT_BACKEND="opencode", AGENT_TIMEOUT=1800, PLAN_FILE_PATH="docs/my-plan.md")
+
+        mock_commit = AsyncMock()
+        with patch("performer.main.commit_file", new=mock_commit):
+            await handle_status(_msg("status", session_id="sid"), perf, settings)
+
+        mock_commit.assert_called_once()
+        call_args = mock_commit.call_args
+        assert call_args[0][1] == "docs/my-plan.md"  # path argument
+        assert call_args[0][2] == "plan content"  # content argument
+
+    @pytest.mark.asyncio
+    async def test_implementer_still_produces_pr_opened(self) -> None:
+        """Non-architect role follows the normal PR path (no regression)."""
+        perf = self._make_perf(role="implementing")
+        perf.backend.get_status.return_value = BackendStatus(state="done")
+
+        with patch("performer.main.push_branch", new=AsyncMock()), \
+             patch("performer.main.create_pull_request", new=AsyncMock(return_value=("http://pr", "PR_1"))), \
+             patch("performer.main.get_head_sha", new=AsyncMock(return_value="abc123")):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+
+        assert resp.status == "working"  # waiting_for_checks
+        assert perf.state == "waiting_for_checks"
+
+    @pytest.mark.asyncio
+    async def test_plan_committed_is_terminal(self) -> None:
+        """After plan_committed, subsequent status checks return the same state."""
+        perf = self._make_perf(role="architecting")
+        perf.state = "plan_committed"
+        perf.plan_path = "docs/plan.md"
+
+        resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+
+        assert resp.status == "plan_committed"
+        assert resp.plan_path == "docs/plan.md"
+
+    @pytest.mark.asyncio
+    async def test_dispatch_reads_role_from_payload(self) -> None:
+        """handle_dispatch sets perf.role from the dispatch payload."""
+        msg = _msg(
+            "dispatch",
+            title="Test",
+            repo_url="https://github.com/acme/repo",
+            branch="feat/test",
+            role="architecting",
+        )
+
+        mock_backend = MagicMock()
+        mock_backend.start = AsyncMock()
+
+        with patch("performer.main.clone_repository", new=AsyncMock(
+            return_value=Stand(path=Path("/tmp/test"), branch="feat/test")
+        )), patch("performer.main.get_backend", return_value=mock_backend):
+            resp, perf = await handle_dispatch(msg, Settings(AGENT_BACKEND="opencode"))
+
+        assert perf.role == "architecting"
+        assert resp.status == "accepted"
+
+    @pytest.mark.asyncio
+    async def test_architect_empty_output_returns_error(self) -> None:
+        """Architect backend done with empty output returns error status."""
+        perf = self._make_perf(role="architecting")
+        perf.backend.get_status.return_value = BackendStatus(state="done", output="")
+        settings = Settings(AGENT_BACKEND="opencode", AGENT_TIMEOUT=1800)
+
+        resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
+
+        assert resp.status == "error"
+        assert "empty" in (resp.reason or "").lower()
+        assert perf.state == "error"
+
+    @pytest.mark.asyncio
+    async def test_architect_none_output_returns_error(self) -> None:
+        """Architect backend done with None output returns error status."""
+        perf = self._make_perf(role="architecting")
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=None)
+        settings = Settings(AGENT_BACKEND="opencode", AGENT_TIMEOUT=1800)
+
+        resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
+
+        assert resp.status == "error"
+        assert "empty" in (resp.reason or "").lower()
+        assert perf.state == "error"
+
+    @pytest.mark.asyncio
+    async def test_architect_commit_file_raises_propagates(self) -> None:
+        """WorkspaceSetupError from commit_file propagates out of handle_status."""
+        from performer.workspace import WorkspaceSetupError
+
+        perf = self._make_perf(role="architecting")
+        perf.backend.get_status.return_value = BackendStatus(state="done", output="# Real plan content")
+        settings = Settings(AGENT_BACKEND="opencode", AGENT_TIMEOUT=1800)
+
+        with patch("performer.main.commit_file", new=AsyncMock(
+            side_effect=WorkspaceSetupError("git push failed (exit 1): error")
+        )):
+            with pytest.raises(WorkspaceSetupError, match="git push failed"):
+                await handle_status(_msg("status", session_id="sid"), perf, settings)
+
+    @pytest.mark.asyncio
+    async def test_dispatch_role_defaults_to_implementing(self) -> None:
+        """Dispatch with no role in payload defaults perf.role to 'implementing'."""
+        msg = _msg(
+            "dispatch",
+            title="Test",
+            repo_url="https://github.com/acme/repo",
+            branch="feat/test",
+            # no role key
+        )
+
+        mock_backend = MagicMock()
+        mock_backend.start = AsyncMock()
+
+        with patch("performer.main.clone_repository", new=AsyncMock(
+            return_value=Stand(path=Path("/tmp/test"), branch="feat/test")
+        )), patch("performer.main.get_backend", return_value=mock_backend):
+            resp, perf = await handle_dispatch(msg, Settings(AGENT_BACKEND="opencode"))
+
+        assert perf.role == "implementing"
+        assert resp.status == "accepted"

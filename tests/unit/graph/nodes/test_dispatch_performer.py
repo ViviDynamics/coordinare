@@ -510,3 +510,77 @@ async def test_success_resets_system_error_fields() -> None:
     assert result["system_error_last_at"] is None
     assert result["system_error_notified"] is False
     assert result["system_error_reason"] is None
+
+
+# ---------------------------------------------------------------------------
+# 020 — Architecture plan injection tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_architecture_plan_path_included_for_downstream_roles() -> None:
+    """When the card has a plan_path, dispatch payload includes architecture_plan_path."""
+    svc = _Service()
+    state = _base_state(
+        performer_services={"implementing": svc},
+        performer_stage="implementing",
+        lifecycle_sequence=["implementing"],
+    )
+    state["current_card"]["plan_path"] = "docs/coordinare-architecture.md"
+
+    await dispatch_performer(state)
+
+    assert len(svc.dispatched) == 1
+    assert svc.dispatched[0].get("architecture_plan_path") == "docs/coordinare-architecture.md"
+
+
+@pytest.mark.asyncio
+async def test_architecture_plan_path_not_included_for_architect() -> None:
+    """When the role IS the architect, plan_path is NOT included."""
+    svc = _Service()
+    state = _base_state(
+        performer_services={"architecting": svc},
+        performer_stage="architecting",
+        lifecycle_sequence=["architecting"],
+    )
+    state["current_card"]["plan_path"] = "docs/coordinare-architecture.md"
+
+    await dispatch_performer(state)
+
+    assert len(svc.dispatched) == 1
+    assert "architecture_plan_path" not in svc.dispatched[0]
+
+
+@pytest.mark.asyncio
+async def test_role_passed_in_dispatch_payload() -> None:
+    """The performer_stage is passed as 'role' in the dispatch payload."""
+    svc = _Service()
+    state = _base_state(
+        performer_services={"reviewing": svc},
+        performer_stage="reviewing",
+        lifecycle_sequence=["reviewing"],
+    )
+
+    await dispatch_performer(state)
+
+    assert len(svc.dispatched) == 1
+    assert svc.dispatched[0].get("role") == "reviewing"
+
+
+@pytest.mark.asyncio
+async def test_plan_path_empty_string_not_injected() -> None:
+    """When the card has plan_path="" (empty string), architecture_plan_path
+    must NOT appear in the dispatch payload — the truthiness guard in
+    dispatch_performer should filter it out."""
+    svc = _Service()
+    state = _base_state(
+        performer_services={"implementing": svc},
+        performer_stage="implementing",
+        lifecycle_sequence=["implementing"],
+    )
+    state["current_card"]["plan_path"] = ""
+
+    await dispatch_performer(state)
+
+    assert len(svc.dispatched) == 1
+    assert "architecture_plan_path" not in svc.dispatched[0]

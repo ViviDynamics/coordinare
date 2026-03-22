@@ -12,6 +12,7 @@ import pytest
 
 from coordinare.graph.nodes.monitor_performer import (
     TERMINAL_SUCCESS_STATES,
+    _advance_stage,
     monitor_performer,
 )
 from coordinare.graph.state import initial_state
@@ -584,3 +585,74 @@ async def test_error_status_without_reason() -> None:
     assert result["phase"] == "blocked"
     assert len(result["open_questions"]) == 1
     assert "error" in result["open_questions"][0].lower()
+
+
+# ---------------------------------------------------------------------------
+# 020 — plan_path persistence via _advance_stage
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_plan_path_persisted_to_card_mid_sequence() -> None:
+    """Architect returns plan_committed with plan_path — card gets plan_path
+    when advancing to the next stage (mid-sequence, not final)."""
+    service = _Performer({
+        "status": "plan_committed",
+        "plan_path": "docs/plan.md",
+    })
+    state = _make_state(
+        service=service,
+        stage="architecting",
+        sequence=["architecting", "implementing"],
+        card={"id": "ITEM_1", "status": "IN_PROGRESS"},
+    )
+
+    result = await monitor_performer(state)
+
+    assert result["performer_stage"] == "implementing"
+    assert result["phase"] == "dispatching"
+    assert result["current_card"]["plan_path"] == "docs/plan.md"
+
+
+@pytest.mark.asyncio
+async def test_final_stage_plan_path_persisted() -> None:
+    """Single-stage lifecycle (architecting only) — plan_committed with
+    plan_path and pr_url persists plan_path on the card when transitioning
+    to monitoring_pr."""
+    gh = _GitHub()
+    service = _Performer({
+        "status": "plan_committed",
+        "plan_path": "docs/architecture.md",
+        "pr_url": "https://github.com/org/repo/pull/7",
+        "pr_node_id": "PR_NODE_7",
+    })
+    state = _make_state(
+        service=service,
+        stage="architecting",
+        sequence=["architecting"],
+        card={"id": "ITEM_2", "status": "IN_PROGRESS"},
+        github=gh,
+    )
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "monitoring_pr"
+    assert result["current_card"]["plan_path"] == "docs/architecture.md"
+    assert result["current_card"]["pr_url"] == "https://github.com/org/repo/pull/7"
+    assert result["current_card"]["pr_node_id"] == "PR_NODE_7"
+
+
+def test_advance_stage_plan_path_none_status() -> None:
+    """_advance_stage with status=None does not crash and does not set
+    plan_path on the card."""
+    state = initial_state()
+    state["lifecycle_sequence"] = ["architecting", "implementing"]
+    state["performer_stage"] = "architecting"
+    state["current_card"] = {"id": "ITEM_3", "status": "IN_PROGRESS"}
+
+    updates = _advance_stage(state, status=None)
+
+    assert updates["performer_stage"] == "implementing"
+    assert updates["phase"] == "dispatching"
+    # No current_card update should be present when status is None.
+    assert "current_card" not in updates

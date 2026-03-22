@@ -81,3 +81,98 @@ async def test_dispatch_loop_integration() -> None:
     result = await graph.ainvoke(state)
 
     assert result["phase"] in {"monitoring_agent", "monitoring_performer", "idle"}
+
+
+# ---------------------------------------------------------------------------
+# 020 — Multi-role lifecycle integration with architect
+# ---------------------------------------------------------------------------
+
+
+class _ArchitectAgent:
+    """Mock agent that returns plan_committed for the architect role."""
+
+    def __init__(self) -> None:
+        self.dispatched: list[dict] = []
+
+    async def dispatch_card(self, card_context, workspace_info=None):
+        self.dispatched.append(card_context)
+        return {"status": "accepted", "session_id": "arch-1"}
+
+    async def check_health(self):
+        return {"status": "accepted"}
+
+    async def relay_feedback(self, review_payload):
+        return {"status": "acknowledged"}
+
+    async def check_status(self, session_id: str):
+        return {
+            "status": "plan_committed",
+            "plan_path": "docs/coordinare-architecture.md",
+            "session_id": session_id,
+        }
+
+
+class _ImplementerAgent:
+    """Mock agent that stays working (doesn't complete in one cycle)."""
+
+    def __init__(self) -> None:
+        self.dispatched: list[dict] = []
+
+    async def dispatch_card(self, card_context, workspace_info=None):
+        self.dispatched.append(card_context)
+        return {"status": "accepted", "session_id": "impl-1"}
+
+    async def check_health(self):
+        return {"status": "accepted"}
+
+    async def relay_feedback(self, review_payload):
+        return {"status": "acknowledged"}
+
+    async def check_status(self, session_id: str):
+        return {"status": "working", "session_id": session_id}
+
+
+@pytest.mark.asyncio
+async def test_architect_to_implementer_lifecycle() -> None:
+    """Integration: architect completes → lifecycle advances → implementer dispatched.
+
+    Tests the multi-role lifecycle by directly invoking monitor_performer and
+    dispatch_performer nodes (bypassing the full graph cycle which involves
+    check_board and poll_board mocking complexity).
+    """
+    from coordinare.graph.nodes.dispatch_performer import dispatch_performer
+    from coordinare.graph.nodes.monitor_performer import monitor_performer
+
+    architect = _ArchitectAgent()
+    implementer = _ImplementerAgent()
+
+    state = initial_state()
+    state.update({
+        "github_service": _GitHub(),
+        "notification_service": FakeNotificationService(),
+        "human_reviewers": ["alice"],
+        "blocked_reminder_hours": 24,
+        "performer_services": {
+            "architecting": architect,
+            "implementing": implementer,
+        },
+        "lifecycle_sequence": ["architecting", "implementing"],
+        "performer_stage": "architecting",
+        "current_card": {"id": "ITEM_1", "status": "IN_PROGRESS"},
+        "agent_dispatch": {"session_id": "arch-1"},
+    })
+
+    # Step 1: monitor_performer polls architect → plan_committed → advances
+    result = await monitor_performer(state)
+    assert result["performer_stage"] == "implementing"
+    assert result["phase"] == "dispatching"
+    card = result.get("current_card") or {}
+    assert card.get("plan_path") == "docs/coordinare-architecture.md"
+
+    # Step 2: dispatch_performer dispatches the implementer
+    result2 = await dispatch_performer(result)
+    assert result2["phase"] == "monitoring_performer"
+    assert len(implementer.dispatched) == 1
+    impl_payload = implementer.dispatched[0]
+    assert impl_payload.get("architecture_plan_path") == "docs/coordinare-architecture.md"
+    assert impl_payload.get("role") == "implementing"
