@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     # 021 — Reviewer performer settings
     REVIEWER_MAX_CYCLES: int = 3  # max review cycles before blocking for human
 
+    # 022 — Security performer settings
+    SECURITY_MAX_CYCLES: int = 3  # max security fix cycles before blocking for human
+
 
 @functools.lru_cache(maxsize=1)
 def get_settings() -> Settings:

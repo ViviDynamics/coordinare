@@ -134,6 +134,7 @@ class Score(BaseModel):
 PerformanceState = Literal[
     "accepted", "working", "blocked", "pr_opened", "plan_committed",
     "approved", "changes_requested",
+    "security_passed", "security_failed",
     "error", "session_expired", "waiting_for_checks",
 ]
 
@@ -170,6 +171,8 @@ class Performance:
     review_comments: list[dict] = field(default_factory=list)  # 021: [{file, line, body}]
     review_suggestions: list[str] = field(default_factory=list)  # 021: non-blocking suggestions
     review_cycle: int = 0  # 021: number of review cycles exhausted
+    security_findings: list[dict] = field(default_factory=list)  # 022: [{severity, category, ...}]
+    security_cycle: int = 0  # 022: number of security fix cycles
     open_questions: list[str] = field(default_factory=list)
     error_reason: str | None = None
     started_at: datetime = field(default_factory=lambda: datetime.now(UTC))

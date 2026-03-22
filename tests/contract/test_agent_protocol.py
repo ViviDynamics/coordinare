@@ -28,6 +28,7 @@ class TestSchemaContractValidation:
         expected = {
             "accepted", "working", "pr_opened", "plan_committed",
             "approved", "changes_requested",
+            "security_passed", "security_failed",
             "blocked", "error", "unknown", "busy", "acknowledged",
             "session_expired", "healthy", "unhealthy",
         }

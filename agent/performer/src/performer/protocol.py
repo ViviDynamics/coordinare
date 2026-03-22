@@ -28,6 +28,8 @@ PerformerStatusType = Literal[
     "plan_committed",
     "approved",
     "changes_requested",
+    "security_passed",
+    "security_failed",
     "healthy",
     "unhealthy",
 ]
@@ -65,5 +67,6 @@ class PerformerResponse(BaseModel):
     plan_path: str | None = None  # 020: path to committed architecture plan
     comments: list[dict] = Field(default_factory=list)  # 021: review comments [{file, line, body}]
     suggestions: list[str] = Field(default_factory=list)  # 021: non-blocking suggestions
+    findings: list[dict] = Field(default_factory=list)  # 022: security findings [{severity, category, ...}]
     metrics: PerformerMetrics | None = None
     events: list[dict] = Field(default_factory=list)  # serialised BackendEvent list

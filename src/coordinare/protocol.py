@@ -17,6 +17,8 @@ StatusType = Literal[
     "plan_committed",
     "approved",
     "changes_requested",
+    "security_passed",
+    "security_failed",
     "blocked",
     "error",
     "unknown",
@@ -48,6 +50,7 @@ class ProtocolResponse(BaseModel):
     plan_path: str | None = None  # 020: path to committed architecture plan
     comments: list[dict] = Field(default_factory=list)  # 021: review comments [{file, line, body}]
     suggestions: list[str] = Field(default_factory=list)  # 021: non-blocking suggestions
+    findings: list[dict] = Field(default_factory=list)  # 022: security findings
     events: list[dict] = Field(default_factory=list)  # serialised BackendEvent list
     metrics: dict | None = None  # PerformerMetrics (pid, memory_bytes, cpu_percent, …)
 

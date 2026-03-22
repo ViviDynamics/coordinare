@@ -260,7 +260,8 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
         # --- Changes requested (021-reviewer-performer) ---
         # Non-terminal outcome: relay reviewer comments back to implementer.
         if marker == "changes_requested":
-            comments = status.get("comments", [])
+            raw_comments = status.get("comments", [])
+            comments = raw_comments if isinstance(raw_comments, list) else []
             logger.info(
                 "monitor_performer.changes_requested",
                 performer_stage=stage,
@@ -269,6 +270,44 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
             )
             state["relay_feedback"] = comments  # type: ignore[typeddict-unknown-key]
             state["performer_stage"] = "implementing"
+            state["phase"] = "dispatching"
+            state["agent_dispatch"] = {}
+            state["agent_dispatch_at"] = None
+            return state
+
+        # --- Security failed (022-security-performer) ---
+        # Non-terminal: route findings to implementer or architect based on routing field.
+        if marker == "security_failed":
+            raw_findings = status.get("findings", [])
+            findings = raw_findings if isinstance(raw_findings, list) else []
+            lifecycle = state.get("lifecycle_sequence") or []
+            # Determine earliest routing target from findings
+            targets = set()
+            for f in findings:
+                if isinstance(f, dict):
+                    targets.add(f.get("routing", "implementer"))
+            # Route to earliest: architect before implementer
+            target_stage = "architecting" if "architect" in targets else "implementing"
+            if target_stage not in lifecycle:
+                target_stage = lifecycle[0] if lifecycle else "implementing"
+
+            # Only relay findings targeted at this stage's role
+            target_role = "architect" if target_stage == "architecting" else "implementer"
+            relevant_findings = [
+                f for f in findings
+                if isinstance(f, dict) and f.get("routing", "implementer") == target_role
+            ]
+
+            logger.info(
+                "monitor_performer.security_failed",
+                performer_stage=stage,
+                card_id=card_id,
+                finding_count=len(findings),
+                routed_count=len(relevant_findings),
+                routing_target=target_stage,
+            )
+            state["relay_feedback"] = relevant_findings  # type: ignore[typeddict-unknown-key]
+            state["performer_stage"] = target_stage
             state["phase"] = "dispatching"
             state["agent_dispatch"] = {}
             state["agent_dispatch_at"] = None

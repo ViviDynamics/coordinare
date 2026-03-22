@@ -15,7 +15,7 @@ from pydantic import ValidationError
 from performer.backends import UnsupportedBackendError, get_backend
 from performer.backends.base import BackendAdapter, BackendStatus
 from performer.config import Settings, get_settings
-from performer.github import GitHubAPIError, create_pull_request, get_check_runs, post_pull_request_review, summarise_check_runs
+from performer.github import GitHubAPIError, create_pull_request, get_check_runs, post_pr_comment, post_pull_request_review, summarise_check_runs
 from performer.models import Performance, Score, Stand
 from performer.protocol import PerformerMessage, PerformerMetrics, PerformerResponse
 from performer.workspace import commit_file
@@ -250,6 +250,17 @@ async def handle_status(
             session_id=perf.session_id,
             comments=perf.review_comments,
         )
+    if perf.state == "security_passed":
+        return PerformerResponse(
+            status="security_passed",
+            session_id=perf.session_id,
+        )
+    if perf.state == "security_failed":
+        return PerformerResponse(
+            status="security_failed",
+            session_id=perf.session_id,
+            findings=perf.security_findings,
+        )
     if perf.state == "blocked":
         return PerformerResponse(
             status="blocked",
@@ -385,6 +396,96 @@ async def handle_status(
                 status="changes_requested",
                 session_id=perf.session_id,
                 comments=comments,
+            )
+
+        # 022: Security performer path — analyse findings, post advisories, pass or fail.
+        if perf.role == "security":
+            import json as _json_sec
+            sec_raw = backend_status.output or ""
+            if not sec_raw.strip():
+                perf.state = "error"
+                perf.error_reason = "Backend produced empty security output"
+                return PerformerResponse(
+                    status="error", session_id=perf.session_id,
+                    reason="Backend produced empty security output",
+                )
+            try:
+                sec_output = _json_sec.loads(sec_raw) if isinstance(sec_raw, str) else sec_raw
+            except (ValueError, TypeError):
+                perf.state = "error"
+                perf.error_reason = "Backend produced invalid JSON security output"
+                return PerformerResponse(
+                    status="error", session_id=perf.session_id,
+                    reason="Backend produced invalid JSON security output",
+                )
+            if not isinstance(sec_output, dict):
+                perf.state = "error"
+                perf.error_reason = "Backend security output is not a JSON object"
+                return PerformerResponse(
+                    status="error", session_id=perf.session_id,
+                    reason="Backend security output is not a JSON object",
+                )
+
+            raw_findings = sec_output.get("findings", [])
+            findings = raw_findings if isinstance(raw_findings, list) else []
+
+            # Extract PR number for advisory comments
+            pr_number = 0
+            pr_url = (perf.pr_url or "").rstrip("/")
+            if pr_url and "/" in pr_url:
+                try:
+                    pr_number = int(pr_url.rsplit("/", 1)[-1])
+                except (ValueError, IndexError):
+                    pass
+
+            # Post advisory comments for medium/low findings (FR-007)
+            advisory = [f for f in findings if isinstance(f, dict) and f.get("severity") in ("medium", "low")]
+            if advisory and pr_number <= 0:
+                log.warning(
+                    "security.advisory_comments_skipped",
+                    count=len(advisory),
+                    reason="pr_url missing or invalid — cannot post advisory comments",
+                )
+            if advisory and pr_number > 0:
+                owner, repo = perf.score.owner_repo
+                token = perf.score.effective_github_token
+                for finding in advisory:
+                    cat = finding.get("category", "unknown")
+                    sev = finding.get("severity", "")
+                    desc = finding.get("description", "")
+                    body = f"[Advisory - Security] **{cat}** ({sev})\n\n{desc}"
+                    try:
+                        await post_pr_comment(owner, repo, pr_number, body=body, token=token)
+                    except Exception as exc:
+                        log.warning("advisory_comment_failed", category=cat, error=str(exc), exc_info=True)
+
+            # Check for blocking findings (critical/high)
+            blocking = [f for f in findings if isinstance(f, dict) and f.get("severity") in ("critical", "high")]
+            if not blocking:
+                perf.state = "security_passed"
+                return PerformerResponse(
+                    status="security_passed",
+                    session_id=perf.session_id,
+                )
+
+            # Blocking findings exist
+            max_cycles = settings.SECURITY_MAX_CYCLES if settings else 3
+            perf.security_cycle += 1
+            if perf.security_cycle >= max_cycles:
+                summary = f"Security: {len(blocking)} blocking finding(s) after {perf.security_cycle} fix attempt(s)"
+                perf.state = "blocked"
+                perf.open_questions = [summary]
+                return PerformerResponse(
+                    status="blocked",
+                    session_id=perf.session_id,
+                    questions=[summary],
+                )
+            perf.security_findings = [f for f in blocking if isinstance(f, dict)]
+            perf.state = "security_failed"
+            return PerformerResponse(
+                status="security_failed",
+                session_id=perf.session_id,
+                findings=perf.security_findings,
             )
 
         # Default path: push branch and open PR
@@ -551,7 +652,7 @@ async def run_loop() -> None:
         except asyncio.TimeoutError:
             log.warning("session watchdog fired — stopping backend",
                         session_id=perf.session_id if perf else "")
-            if perf is not None and perf.state not in ("pr_opened", "plan_committed", "approved", "changes_requested", "error"):
+            if perf is not None and perf.state not in ("pr_opened", "plan_committed", "approved", "changes_requested", "security_passed", "security_failed", "error"):
                 perf.state = "error"
                 perf.error_reason = (
                     f"watchdog: session exceeded {settings.AGENT_TIMEOUT:.0f}s"
@@ -651,7 +752,7 @@ async def run_loop() -> None:
         _write_response(resp)
 
         # Terminal states exit the loop
-        if resp.status in ("pr_opened", "plan_committed", "approved", "changes_requested", "error") and msg.action != "health":
+        if resp.status in ("pr_opened", "plan_committed", "approved", "changes_requested", "security_passed", "security_failed", "error") and msg.action != "health":
             break
         # session_expired with no active session means nothing will ever start
         if resp.status == "session_expired" and perf is None:

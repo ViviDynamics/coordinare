@@ -220,3 +220,29 @@ async def post_pull_request_review(
         raise GitHubAPIError(resp.status_code, resp.text)
     log.info("review posted", owner=owner, repo=repo, pr_number=pr_number, review_event=event)
     return resp.json()
+
+
+async def post_pr_comment(
+    owner: str,
+    repo: str,
+    pr_number: int,
+    body: str,
+    token: str,
+) -> dict:  # type: ignore[type-arg]
+    """Post a general comment to a GitHub Pull Request (issue comments API).
+
+    Used for advisory security findings and other non-inline comments.
+    POST /repos/{owner}/{repo}/issues/{pr_number}/comments
+    """
+    _require_token(token, "post_pr_comment")
+    url = f"{_GITHUB_API}/repos/{owner}/{repo}/issues/{pr_number}/comments"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+    }
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(url, headers=headers, json={"body": body})
+    if not resp.is_success:
+        raise GitHubAPIError(resp.status_code, resp.text)
+    log.info("pr comment posted", owner=owner, repo=repo, pr_number=pr_number)
+    return resp.json()

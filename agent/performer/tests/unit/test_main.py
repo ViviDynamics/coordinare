@@ -1101,5 +1101,99 @@ class TestReviewerPerformer:
              patch("performer.main.get_head_sha", new=AsyncMock(return_value="abc123")):
             resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
 
-        assert resp.status == "working"  # waiting_for_checks
+        assert resp.status == "working"  # waiting_for_checks  (reviewer test)
         assert perf.state == "waiting_for_checks"
+
+
+# ---------------------------------------------------------------------------
+# 022 — Security performer tests
+# ---------------------------------------------------------------------------
+
+
+class TestSecurityPerformer:
+    """Tests for the security role in handle_status (022)."""
+
+    def _make_perf(self, pr_url: str = "https://github.com/acme/repo/pull/42") -> Performance:
+        stand = Stand(path=Path("/tmp/fake"), branch="feat/test")
+        stand.git_env = {}
+        score = Score(title="Test", repo_url="https://github.com/acme/repo", branch="feat/test")
+        perf = Performance(session_id="sid", stand=stand, score=score, backend=MagicMock(), role="security")
+        perf.pr_url = pr_url
+        return perf
+
+    @pytest.mark.asyncio
+    async def test_security_passed_no_blocking_findings(self) -> None:
+        import json
+        perf = self._make_perf()
+        output = json.dumps({"findings": [{"severity": "low", "category": "style", "description": "minor", "routing": "implementer"}]})
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+        settings = Settings(AGENT_BACKEND="opencode", AGENT_TIMEOUT=1800)
+
+        with patch("performer.main.post_pr_comment", new=AsyncMock(return_value={})):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
+
+        assert resp.status == "security_passed"
+        assert perf.state == "security_passed"
+
+    @pytest.mark.asyncio
+    async def test_security_failed_with_blocking_findings(self) -> None:
+        import json
+        perf = self._make_perf()
+        findings = [{"severity": "critical", "category": "secret_leakage", "description": "hardcoded key", "file": "config.py", "line": 10, "routing": "implementer"}]
+        output = json.dumps({"findings": findings})
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+        settings = Settings(AGENT_BACKEND="opencode", AGENT_TIMEOUT=1800, SECURITY_MAX_CYCLES=3)
+
+        with patch("performer.main.post_pr_comment", new=AsyncMock(return_value={})):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
+
+        assert resp.status == "security_failed"
+        assert len(resp.findings) == 1
+        assert perf.security_cycle == 1
+
+    @pytest.mark.asyncio
+    async def test_security_max_cycles_returns_blocked(self) -> None:
+        import json
+        perf = self._make_perf()
+        perf.security_cycle = 2
+        findings = [{"severity": "high", "category": "injection", "description": "SQL injection", "routing": "implementer"}]
+        output = json.dumps({"findings": findings})
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+        settings = Settings(AGENT_BACKEND="opencode", AGENT_TIMEOUT=1800, SECURITY_MAX_CYCLES=3)
+
+        with patch("performer.main.post_pr_comment", new=AsyncMock(return_value={})):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
+
+        assert resp.status == "blocked"
+        assert perf.state == "blocked"
+
+    @pytest.mark.asyncio
+    async def test_advisory_comments_posted(self) -> None:
+        import json
+        perf = self._make_perf()
+        findings = [{"severity": "medium", "category": "insecure_default", "description": "debug mode", "routing": "implementer"}]
+        output = json.dumps({"findings": findings})
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+
+        mock_comment = AsyncMock(return_value={})
+        with patch("performer.main.post_pr_comment", new=mock_comment):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+
+        assert resp.status == "security_passed"
+        mock_comment.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_security_passed_is_terminal(self) -> None:
+        perf = self._make_perf()
+        perf.state = "security_passed"
+        resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+        assert resp.status == "security_passed"
+
+    @pytest.mark.asyncio
+    async def test_security_failed_is_terminal(self) -> None:
+        perf = self._make_perf()
+        perf.state = "security_failed"
+        perf.security_findings = [{"severity": "high", "category": "xss"}]
+        resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+        assert resp.status == "security_failed"
+        assert len(resp.findings) == 1

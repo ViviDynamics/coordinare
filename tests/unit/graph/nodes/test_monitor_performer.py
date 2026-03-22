@@ -702,3 +702,46 @@ async def test_changes_requested_does_not_advance_lifecycle() -> None:
     # Should route back to implementing, NOT advance to security
     assert result["performer_stage"] == "implementing"
     assert result["phase"] == "dispatching"
+
+
+# ---------------------------------------------------------------------------
+# 022 — security_failed handling
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_security_failed_routes_findings_to_implementer() -> None:
+    """security_failed with implementer-routed findings resets to implementing."""
+    state = initial_state()
+    findings = [{"severity": "critical", "category": "injection", "routing": "implementer"}]
+    svc = _Performer(response={"status": "security_failed", "findings": findings})
+    state["performer_services"] = {"security": svc}
+    state["performer_stage"] = "security"
+    state["lifecycle_sequence"] = ["implementing", "security", "qa"]
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+
+    result = await monitor_performer(state)
+
+    assert result["performer_stage"] == "implementing"
+    assert result["phase"] == "dispatching"
+    assert result.get("relay_feedback") == findings
+
+
+@pytest.mark.asyncio
+async def test_security_failed_routes_architecture_findings_to_architect() -> None:
+    """security_failed with architect-routed findings resets to architecting."""
+    state = initial_state()
+    findings = [{"severity": "high", "category": "insecure_design", "routing": "architect"}]
+    svc = _Performer(response={"status": "security_failed", "findings": findings})
+    state["performer_services"] = {"security": svc}
+    state["performer_stage"] = "security"
+    state["lifecycle_sequence"] = ["architecting", "implementing", "security"]
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+
+    result = await monitor_performer(state)
+
+    assert result["performer_stage"] == "architecting"
+    assert result["phase"] == "dispatching"
+    assert result.get("relay_feedback") == findings
