@@ -11,6 +11,7 @@ from performer.github import (
     get_check_runs,
     get_default_branch,
     get_existing_pull_request,
+    post_pull_request_review,
     summarise_check_runs,
 )
 from performer.models import Score
@@ -299,3 +300,116 @@ class TestSummariseCheckRuns:
         verdict, failed = summarise_check_runs(runs)
         assert verdict == "fail"
         assert any(r["name"] == "tests" for r in failed)
+
+
+# ---------------------------------------------------------------------------
+# post_pull_request_review
+# ---------------------------------------------------------------------------
+
+
+_REVIEW_URL = "https://api.github.com/repos/org/repo/pulls/42/reviews"
+
+
+class TestPostPullRequestReview:
+    @respx.mock
+    async def test_post_review_approve_sends_correct_payload(self) -> None:
+        """APPROVE event sends event + body, no comments key in payload."""
+        route = respx.post(_REVIEW_URL).mock(
+            return_value=httpx.Response(200, json={"id": 1, "state": "APPROVED"})
+        )
+        result = await post_pull_request_review(
+            owner="org",
+            repo="repo",
+            pr_number=42,
+            event="APPROVE",
+            body="Looks good!",
+            comments=[],
+            token="tok",
+        )
+        assert result == {"id": 1, "state": "APPROVED"}
+        # Verify the payload sent to GitHub
+        sent = route.calls[0].request
+        import json as _json
+
+        payload = _json.loads(sent.content)
+        assert payload["event"] == "APPROVE"
+        assert payload["body"] == "Looks good!"
+        # Empty comments should NOT produce a "comments" key in the payload
+        assert "comments" not in payload
+
+    @respx.mock
+    async def test_post_review_request_changes_includes_comments(self) -> None:
+        """REQUEST_CHANGES event includes inline comments with path, line, body."""
+        route = respx.post(_REVIEW_URL).mock(
+            return_value=httpx.Response(
+                200, json={"id": 2, "state": "CHANGES_REQUESTED"}
+            )
+        )
+        inline_comments = [
+            {"path": "src/main.py", "line": 10, "body": "Fix this"},
+            {"path": "src/util.py", "line": 25, "body": "Rename variable"},
+        ]
+        result = await post_pull_request_review(
+            owner="org",
+            repo="repo",
+            pr_number=42,
+            event="REQUEST_CHANGES",
+            body="Needs work",
+            comments=inline_comments,
+            token="tok",
+        )
+        assert result["state"] == "CHANGES_REQUESTED"
+        import json as _json
+
+        payload = _json.loads(route.calls[0].request.content)
+        assert payload["event"] == "REQUEST_CHANGES"
+        assert payload["body"] == "Needs work"
+        assert len(payload["comments"]) == 2
+        assert payload["comments"][0] == {
+            "path": "src/main.py",
+            "line": 10,
+            "body": "Fix this",
+        }
+        assert payload["comments"][1] == {
+            "path": "src/util.py",
+            "line": 25,
+            "body": "Rename variable",
+        }
+
+    @respx.mock
+    async def test_post_review_non_2xx_raises_github_api_error(self) -> None:
+        """Non-2xx response (422) raises GitHubAPIError."""
+        respx.post(_REVIEW_URL).mock(
+            return_value=httpx.Response(
+                422, json={"message": "Validation Failed"}
+            )
+        )
+        with pytest.raises(GitHubAPIError) as exc_info:
+            await post_pull_request_review(
+                owner="org",
+                repo="repo",
+                pr_number=42,
+                event="APPROVE",
+                body="LGTM",
+                comments=[],
+                token="tok",
+            )
+        assert exc_info.value.status_code == 422
+
+    @respx.mock
+    async def test_post_review_empty_comments_is_valid(self) -> None:
+        """An empty comments list is accepted and the call succeeds."""
+        respx.post(_REVIEW_URL).mock(
+            return_value=httpx.Response(200, json={"id": 3, "state": "COMMENTED"})
+        )
+        result = await post_pull_request_review(
+            owner="org",
+            repo="repo",
+            pr_number=42,
+            event="COMMENT",
+            body="Informational note",
+            comments=[],
+            token="tok",
+        )
+        assert result["id"] == 3
+        assert result["state"] == "COMMENTED"

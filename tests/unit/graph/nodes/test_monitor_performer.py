@@ -656,3 +656,49 @@ def test_advance_stage_plan_path_none_status() -> None:
     assert updates["phase"] == "dispatching"
     # No current_card update should be present when status is None.
     assert "current_card" not in updates
+
+
+# ---------------------------------------------------------------------------
+# 021 — changes_requested handling
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_changes_requested_routes_to_implementer() -> None:
+    """changes_requested stores comments as relay_feedback and re-dispatches implementer."""
+    state = initial_state()
+    svc = _Performer(response={"status": "changes_requested", "comments": [
+        {"file": "src/main.py", "line": 10, "body": "Missing null check"},
+    ]})
+    state["performer_services"] = {"reviewing": svc}
+    state["performer_stage"] = "reviewing"
+    state["lifecycle_sequence"] = ["implementing", "reviewing"]
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+
+    result = await monitor_performer(state)
+
+    assert result["performer_stage"] == "implementing"
+    assert result["phase"] == "dispatching"
+    assert result.get("relay_feedback") == [
+        {"file": "src/main.py", "line": 10, "body": "Missing null check"},
+    ]
+    assert result["agent_dispatch"] == {}
+
+
+@pytest.mark.asyncio
+async def test_changes_requested_does_not_advance_lifecycle() -> None:
+    """changes_requested does NOT advance to the next role — it routes back."""
+    state = initial_state()
+    svc = _Performer(response={"status": "changes_requested", "comments": []})
+    state["performer_services"] = {"reviewing": svc}
+    state["performer_stage"] = "reviewing"
+    state["lifecycle_sequence"] = ["implementing", "reviewing", "security"]
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+
+    result = await monitor_performer(state)
+
+    # Should route back to implementing, NOT advance to security
+    assert result["performer_stage"] == "implementing"
+    assert result["phase"] == "dispatching"

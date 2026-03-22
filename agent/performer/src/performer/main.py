@@ -15,7 +15,7 @@ from pydantic import ValidationError
 from performer.backends import UnsupportedBackendError, get_backend
 from performer.backends.base import BackendAdapter, BackendStatus
 from performer.config import Settings, get_settings
-from performer.github import GitHubAPIError, create_pull_request, get_check_runs, summarise_check_runs
+from performer.github import GitHubAPIError, create_pull_request, get_check_runs, post_pull_request_review, summarise_check_runs
 from performer.models import Performance, Score, Stand
 from performer.protocol import PerformerMessage, PerformerMetrics, PerformerResponse
 from performer.workspace import commit_file
@@ -74,12 +74,17 @@ async def handle_dispatch(
         cleanup_stand(stand)
         raise
     session_id = str(uuid.uuid4())
+    # 021: read pr_url from dispatch payload (set on card by implementer)
+    pr_url = msg.payload.get("pr_url") if isinstance(msg.payload, dict) else None
+    pr_node_id = msg.payload.get("pr_node_id") if isinstance(msg.payload, dict) else None
     perf = Performance(
         session_id=session_id,
         stand=stand,
         score=score,
         backend=backend,
         role=role,
+        pr_url=pr_url,
+        pr_node_id=pr_node_id,
     )
     log.info("dispatch accepted", session_id=session_id)
     return PerformerResponse(
@@ -233,6 +238,18 @@ async def handle_status(
             session_id=perf.session_id,
             plan_path=perf.plan_path,
         )
+    if perf.state == "approved":
+        return PerformerResponse(
+            status="approved",
+            session_id=perf.session_id,
+            suggestions=perf.review_suggestions,
+        )
+    if perf.state == "changes_requested":
+        return PerformerResponse(
+            status="changes_requested",
+            session_id=perf.session_id,
+            comments=perf.review_comments,
+        )
     if perf.state == "blocked":
         return PerformerResponse(
             status="blocked",
@@ -270,6 +287,104 @@ async def handle_status(
                 status="plan_committed",
                 session_id=perf.session_id,
                 plan_path=plan_path,
+            )
+
+        # 021: Reviewer path — post review to GitHub PR, return approved or changes_requested.
+        # Backend output is expected to be JSON with: approved (bool), comments (list),
+        # suggestions (list), body (str). Existing backends don't produce this yet —
+        # the reviewer backend adapter will be implemented separately.
+        if perf.role == "reviewing":
+            import json as _json
+            review_raw = backend_status.output or ""
+            if not review_raw.strip():
+                perf.state = "error"
+                perf.error_reason = "Backend produced empty review output"
+                return PerformerResponse(
+                    status="error", session_id=perf.session_id,
+                    reason="Backend produced empty review output",
+                )
+            try:
+                review_output = _json.loads(review_raw) if isinstance(review_raw, str) else review_raw
+            except (ValueError, TypeError):
+                perf.state = "error"
+                perf.error_reason = "Backend produced invalid JSON review output"
+                return PerformerResponse(
+                    status="error", session_id=perf.session_id,
+                    reason="Backend produced invalid JSON review output",
+                )
+            if not isinstance(review_output, dict):
+                perf.state = "error"
+                perf.error_reason = "Backend review output is not a JSON object"
+                return PerformerResponse(
+                    status="error", session_id=perf.session_id,
+                    reason="Backend review output is not a JSON object",
+                )
+
+            is_approved = review_output.get("approved") is True  # strict bool check
+            raw_comments = review_output.get("comments", [])
+            comments = raw_comments if isinstance(raw_comments, list) else []
+            raw_suggestions = review_output.get("suggestions", [])
+            suggestions = raw_suggestions if isinstance(raw_suggestions, list) else []
+            review_body = str(review_output.get("body", ""))
+            event = "APPROVE" if is_approved else "REQUEST_CHANGES"
+
+            # Extract PR number from pr_url (set by implementer earlier in lifecycle)
+            pr_number = 0
+            pr_url = (perf.pr_url or "").rstrip("/")
+            if pr_url and "/" in pr_url:
+                try:
+                    pr_number = int(pr_url.rsplit("/", 1)[-1])
+                except (ValueError, IndexError):
+                    pass
+
+            if pr_number <= 0:
+                perf.state = "error"
+                perf.error_reason = f"Cannot post review: pr_url is missing or invalid ({perf.pr_url!r})"
+                return PerformerResponse(
+                    status="error", session_id=perf.session_id,
+                    reason=perf.error_reason,
+                )
+
+            owner, repo = perf.score.owner_repo
+            token = perf.score.effective_github_token
+            # Append non-blocking suggestions to review body (FR-006)
+            full_body = review_body
+            if suggestions:
+                full_body += "\n\n### Suggestions (non-blocking)\n" + "\n".join(
+                    f"- {s}" for s in suggestions
+                )
+            await post_pull_request_review(
+                owner, repo, pr_number, event=event,
+                body=full_body, comments=comments, token=token,
+            )
+
+            if is_approved:
+                perf.state = "approved"
+                perf.review_suggestions = suggestions
+                return PerformerResponse(
+                    status="approved",
+                    session_id=perf.session_id,
+                    suggestions=suggestions,
+                )
+
+            # Changes requested
+            max_cycles = settings.REVIEWER_MAX_CYCLES if settings else 3
+            perf.review_cycle += 1
+            if perf.review_cycle >= max_cycles:
+                summary = f"Review cycle limit reached ({perf.review_cycle}). Unresolved issues remain."
+                perf.state = "blocked"
+                perf.open_questions = [summary]
+                return PerformerResponse(
+                    status="blocked",
+                    session_id=perf.session_id,
+                    questions=[summary],
+                )
+            perf.review_comments = comments
+            perf.state = "changes_requested"
+            return PerformerResponse(
+                status="changes_requested",
+                session_id=perf.session_id,
+                comments=comments,
             )
 
         # Default path: push branch and open PR
@@ -436,7 +551,7 @@ async def run_loop() -> None:
         except asyncio.TimeoutError:
             log.warning("session watchdog fired — stopping backend",
                         session_id=perf.session_id if perf else "")
-            if perf is not None and perf.state not in ("pr_opened", "plan_committed", "error"):
+            if perf is not None and perf.state not in ("pr_opened", "plan_committed", "approved", "changes_requested", "error"):
                 perf.state = "error"
                 perf.error_reason = (
                     f"watchdog: session exceeded {settings.AGENT_TIMEOUT:.0f}s"
@@ -536,7 +651,7 @@ async def run_loop() -> None:
         _write_response(resp)
 
         # Terminal states exit the loop
-        if resp.status in ("pr_opened", "plan_committed", "error") and msg.action != "health":
+        if resp.status in ("pr_opened", "plan_committed", "approved", "changes_requested", "error") and msg.action != "health":
             break
         # session_expired with no active session means nothing will ever start
         if resp.status == "session_expired" and perf is None:

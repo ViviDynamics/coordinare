@@ -959,3 +959,147 @@ class TestArchitectPerformer:
 
         assert perf.role == "implementing"
         assert resp.status == "accepted"
+
+
+# ---------------------------------------------------------------------------
+# 021 — Reviewer performer tests
+# ---------------------------------------------------------------------------
+
+
+class TestReviewerPerformer:
+    """Tests for the reviewer role in handle_status (021)."""
+
+    def _make_perf(self, role: str = "reviewing", pr_url: str = "https://github.com/acme/repo/pull/42") -> Performance:
+        stand = Stand(path=Path("/tmp/fake"), branch="feat/test")
+        stand.git_env = {}
+        score = Score(
+            title="Test card",
+            repo_url="https://github.com/acme/repo",
+            branch="feat/test",
+        )
+        perf = Performance(
+            session_id="sid",
+            stand=stand,
+            score=score,
+            backend=MagicMock(),
+            role=role,
+        )
+        perf.pr_url = pr_url
+        return perf
+
+    @pytest.mark.asyncio
+    async def test_reviewer_approved_returns_approved_status(self) -> None:
+        """Reviewer with approved output returns approved status."""
+        import json
+        perf = self._make_perf()
+        output = json.dumps({"approved": True, "comments": [], "suggestions": ["Consider adding docstring"], "body": "LGTM"})
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+        settings = Settings(AGENT_BACKEND="opencode", AGENT_TIMEOUT=1800)
+
+        with patch("performer.main.post_pull_request_review", new=AsyncMock(return_value={})):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
+
+        assert resp.status == "approved"
+        assert resp.suggestions == ["Consider adding docstring"]
+        assert perf.state == "approved"
+
+    @pytest.mark.asyncio
+    async def test_reviewer_posts_approve_review_to_github(self) -> None:
+        """Reviewer calls post_pull_request_review with APPROVE event."""
+        import json
+        perf = self._make_perf()
+        output = json.dumps({"approved": True, "body": "Looks good"})
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+        settings = Settings(AGENT_BACKEND="opencode", AGENT_TIMEOUT=1800)
+
+        mock_post = AsyncMock(return_value={})
+        with patch("performer.main.post_pull_request_review", new=mock_post):
+            await handle_status(_msg("status", session_id="sid"), perf, settings)
+
+        mock_post.assert_called_once()
+        assert mock_post.call_args.kwargs.get("event") == "APPROVE"
+
+    @pytest.mark.asyncio
+    async def test_reviewer_changes_requested_returns_comments(self) -> None:
+        """Reviewer with changes returns changes_requested with comments."""
+        import json
+        perf = self._make_perf()
+        comments = [{"file": "src/main.py", "line": 10, "body": "Missing null check"}]
+        output = json.dumps({"approved": False, "comments": comments, "body": "Issues found"})
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+        settings = Settings(AGENT_BACKEND="opencode", AGENT_TIMEOUT=1800, REVIEWER_MAX_CYCLES=3)
+
+        with patch("performer.main.post_pull_request_review", new=AsyncMock(return_value={})):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
+
+        assert resp.status == "changes_requested"
+        assert len(resp.comments) == 1
+        assert perf.state == "changes_requested"
+        assert perf.review_cycle == 1
+
+    @pytest.mark.asyncio
+    async def test_reviewer_max_cycles_returns_blocked(self) -> None:
+        """Reviewer returns blocked when max review cycles reached."""
+        import json
+        perf = self._make_perf()
+        perf.review_cycle = 2  # already at limit - 1
+        output = json.dumps({"approved": False, "comments": [{"file": "x.py", "line": 1, "body": "still broken"}]})
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+        settings = Settings(AGENT_BACKEND="opencode", AGENT_TIMEOUT=1800, REVIEWER_MAX_CYCLES=3)
+
+        with patch("performer.main.post_pull_request_review", new=AsyncMock(return_value={})):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
+
+        assert resp.status == "blocked"
+        assert perf.state == "blocked"
+        assert any("cycle limit" in q.lower() for q in resp.questions)
+
+    @pytest.mark.asyncio
+    async def test_reviewer_posts_request_changes_to_github(self) -> None:
+        """Reviewer calls post_pull_request_review with REQUEST_CHANGES event."""
+        import json
+        perf = self._make_perf()
+        output = json.dumps({"approved": False, "comments": [{"file": "a.py", "line": 5, "body": "bug"}], "body": "Fix needed"})
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+        settings = Settings(AGENT_BACKEND="opencode", AGENT_TIMEOUT=1800, REVIEWER_MAX_CYCLES=3)
+
+        mock_post = AsyncMock(return_value={})
+        with patch("performer.main.post_pull_request_review", new=mock_post):
+            await handle_status(_msg("status", session_id="sid"), perf, settings)
+
+        mock_post.assert_called_once()
+        assert mock_post.call_args.kwargs.get("event") == "REQUEST_CHANGES"
+
+    @pytest.mark.asyncio
+    async def test_approved_is_terminal(self) -> None:
+        """After approved, subsequent status polls return cached approved."""
+        perf = self._make_perf()
+        perf.state = "approved"
+
+        resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+        assert resp.status == "approved"
+
+    @pytest.mark.asyncio
+    async def test_changes_requested_is_terminal(self) -> None:
+        """After changes_requested, subsequent polls return cached result."""
+        perf = self._make_perf()
+        perf.state = "changes_requested"
+        perf.review_comments = [{"file": "x.py", "line": 1, "body": "fix"}]
+
+        resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+        assert resp.status == "changes_requested"
+        assert len(resp.comments) == 1
+
+    @pytest.mark.asyncio
+    async def test_implementer_unaffected_by_reviewer(self) -> None:
+        """Implementer role still follows the PR path (no regression)."""
+        perf = self._make_perf(role="implementing")
+        perf.backend.get_status.return_value = BackendStatus(state="done")
+
+        with patch("performer.main.push_branch", new=AsyncMock()), \
+             patch("performer.main.create_pull_request", new=AsyncMock(return_value=("http://pr", "PR_1"))), \
+             patch("performer.main.get_head_sha", new=AsyncMock(return_value="abc123")):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+
+        assert resp.status == "working"  # waiting_for_checks
+        assert perf.state == "waiting_for_checks"

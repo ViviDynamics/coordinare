@@ -155,3 +155,68 @@ async def create_pull_request(
     node_id: str = data["node_id"]
     log.info("pull request opened", pr_url=html_url)
     return html_url, node_id
+
+
+async def post_pull_request_review(
+    owner: str,
+    repo: str,
+    pr_number: int,
+    event: Literal["APPROVE", "REQUEST_CHANGES", "COMMENT"],
+    body: str,
+    comments: list[dict],  # type: ignore[type-arg]
+    token: str,
+) -> dict:  # type: ignore[type-arg]
+    """Post a review to a GitHub Pull Request via the Reviews API.
+
+    Parameters
+    ----------
+    owner, repo : str
+        Repository coordinates.
+    pr_number : int
+        Pull request number.
+    event : Literal["APPROVE", "REQUEST_CHANGES", "COMMENT"]
+        Review action.
+    body : str
+        Top-level review comment body.
+    comments : list[dict]
+        Inline review comments, each with ``path``, ``line``, and ``body``.
+    token : str
+        GitHub token for authentication.
+
+    Returns
+    -------
+    dict
+        The created review object from the GitHub API.
+
+    Raises
+    ------
+    GitHubAPIError
+        On non-2xx response.
+    """
+    _require_token(token, "post_pull_request_review")
+    url = f"{_GITHUB_API}/repos/{owner}/{repo}/pulls/{pr_number}/reviews"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+    }
+    payload: dict = {  # type: ignore[type-arg]
+        "event": event,
+        "body": body,
+    }
+    if comments:
+        valid_comments = []
+        for c in comments:
+            if not isinstance(c, dict):
+                continue
+            path = c.get("file", c.get("path", ""))
+            body = c.get("body", "")
+            if path and body:
+                valid_comments.append({"path": path, "line": c.get("line", 1), "body": body})
+        if valid_comments:
+            payload["comments"] = valid_comments
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(url, headers=headers, json=payload)
+    if not resp.is_success:
+        raise GitHubAPIError(resp.status_code, resp.text)
+    log.info("review posted", owner=owner, repo=repo, pr_number=pr_number, review_event=event)
+    return resp.json()

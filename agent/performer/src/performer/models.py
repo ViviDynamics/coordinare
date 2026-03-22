@@ -133,6 +133,7 @@ class Score(BaseModel):
 
 PerformanceState = Literal[
     "accepted", "working", "blocked", "pr_opened", "plan_committed",
+    "approved", "changes_requested",
     "error", "session_expired", "waiting_for_checks",
 ]
 
@@ -166,6 +167,9 @@ class Performance:
     pr_head_sha: str | None = None
     plan_path: str | None = None  # 020: path to committed architecture plan
     check_attempt: int = 0
+    review_comments: list[dict] = field(default_factory=list)  # 021: [{file, line, body}]
+    review_suggestions: list[str] = field(default_factory=list)  # 021: non-blocking suggestions
+    review_cycle: int = 0  # 021: number of review cycles exhausted
     open_questions: list[str] = field(default_factory=list)
     error_reason: str | None = None
     started_at: datetime = field(default_factory=lambda: datetime.now(UTC))

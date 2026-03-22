@@ -257,6 +257,23 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
                 state[key] = value  # type: ignore[literal-required]
             return state
 
+        # --- Changes requested (021-reviewer-performer) ---
+        # Non-terminal outcome: relay reviewer comments back to implementer.
+        if marker == "changes_requested":
+            comments = status.get("comments", [])
+            logger.info(
+                "monitor_performer.changes_requested",
+                performer_stage=stage,
+                card_id=card_id,
+                comment_count=len(comments),
+            )
+            state["relay_feedback"] = comments  # type: ignore[typeddict-unknown-key]
+            state["performer_stage"] = "implementing"
+            state["phase"] = "dispatching"
+            state["agent_dispatch"] = {}
+            state["agent_dispatch_at"] = None
+            return state
+
         # --- Error status (FR-006) ---
         if marker == "error":
             state["phase"] = "blocked"

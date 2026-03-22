@@ -15,6 +15,8 @@ StatusType = Literal[
     "working",
     "pr_opened",
     "plan_committed",
+    "approved",
+    "changes_requested",
     "blocked",
     "error",
     "unknown",
@@ -44,6 +46,8 @@ class ProtocolResponse(BaseModel):
     # Must be kept in sync with performer.protocol.PerformerResponse.
     backend: str | None = None  # AGENT_BACKEND name, returned on dispatch
     plan_path: str | None = None  # 020: path to committed architecture plan
+    comments: list[dict] = Field(default_factory=list)  # 021: review comments [{file, line, body}]
+    suggestions: list[str] = Field(default_factory=list)  # 021: non-blocking suggestions
     events: list[dict] = Field(default_factory=list)  # serialised BackendEvent list
     metrics: dict | None = None  # PerformerMetrics (pid, memory_bytes, cpu_percent, …)
 

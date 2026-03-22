@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     # 020 — Architect performer settings
     PLAN_FILE_PATH: str = "docs/coordinare-architecture.md"
 
+    # 021 — Reviewer performer settings
+    REVIEWER_MAX_CYCLES: int = 3  # max review cycles before blocking for human
+
 
 @functools.lru_cache(maxsize=1)
 def get_settings() -> Settings:

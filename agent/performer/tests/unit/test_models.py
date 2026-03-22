@@ -367,3 +367,49 @@ class TestPlanCommittedStatus:
             role="architecting",
         )
         assert perf.role == "architecting"
+
+
+class TestReviewerModelFields:
+    """Tests for reviewer-related model additions (021)."""
+
+    def test_approved_is_valid_performance_state(self) -> None:
+        from performer.models import Performance, Stand, Score
+        from pathlib import Path
+        from unittest.mock import MagicMock
+
+        stand = Stand(path=Path("/tmp/test"), branch="feat/test")
+        score = Score(title="Test", repo_url="https://github.com/acme/repo", branch="feat/test")
+        perf = Performance(session_id="s1", stand=stand, score=score, backend=MagicMock())
+        perf.state = "approved"
+        assert perf.state == "approved"
+
+    def test_changes_requested_is_valid_performance_state(self) -> None:
+        from performer.models import Performance, Stand, Score
+        from pathlib import Path
+        from unittest.mock import MagicMock
+
+        stand = Stand(path=Path("/tmp/test"), branch="feat/test")
+        score = Score(title="Test", repo_url="https://github.com/acme/repo", branch="feat/test")
+        perf = Performance(session_id="s1", stand=stand, score=score, backend=MagicMock())
+        perf.state = "changes_requested"
+        assert perf.state == "changes_requested"
+
+    def test_review_comments_defaults_to_empty_list(self) -> None:
+        from performer.models import Performance, Stand, Score
+        from pathlib import Path
+        from unittest.mock import MagicMock
+
+        stand = Stand(path=Path("/tmp/test"), branch="feat/test")
+        score = Score(title="Test", repo_url="https://github.com/acme/repo", branch="feat/test")
+        perf = Performance(session_id="s1", stand=stand, score=score, backend=MagicMock())
+        assert perf.review_comments == []
+
+    def test_review_cycle_defaults_to_zero(self) -> None:
+        from performer.models import Performance, Stand, Score
+        from pathlib import Path
+        from unittest.mock import MagicMock
+
+        stand = Stand(path=Path("/tmp/test"), branch="feat/test")
+        score = Score(title="Test", repo_url="https://github.com/acme/repo", branch="feat/test")
+        perf = Performance(session_id="s1", stand=stand, score=score, backend=MagicMock())
+        assert perf.review_cycle == 0

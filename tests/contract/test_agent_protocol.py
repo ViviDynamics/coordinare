@@ -27,6 +27,7 @@ class TestSchemaContractValidation:
         status_prop = schema["properties"]["status"]
         expected = {
             "accepted", "working", "pr_opened", "plan_committed",
+            "approved", "changes_requested",
             "blocked", "error", "unknown", "busy", "acknowledged",
             "session_expired", "healthy", "unhealthy",
         }
