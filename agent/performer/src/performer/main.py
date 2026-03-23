@@ -273,6 +273,12 @@ async def handle_status(
             session_id=perf.session_id,
             failures=perf.qa_failures,
         )
+    if perf.state == "docs_committed":
+        return PerformerResponse(
+            status="docs_committed",
+            session_id=perf.session_id,
+            files_modified=perf.docs_files_modified,
+        )
     if perf.state == "blocked":
         return PerformerResponse(
             status="blocked",
@@ -594,6 +600,65 @@ async def handle_status(
                 failures=perf.qa_failures,
             )
 
+        # 024: Tech writer path — commit documentation files, return docs_committed.
+        if perf.role == "documenting":
+            import json as _json_docs
+            docs_raw = backend_status.output or ""
+            if not docs_raw.strip():
+                # Empty diff or config-only changes — return docs_committed with empty list (FR-010)
+                perf.state = "docs_committed"
+                perf.docs_files_modified = []
+                return PerformerResponse(
+                    status="docs_committed",
+                    session_id=perf.session_id,
+                    files_modified=[],
+                )
+            try:
+                docs_output = _json_docs.loads(docs_raw) if isinstance(docs_raw, str) else docs_raw
+            except (ValueError, TypeError):
+                perf.state = "error"
+                perf.error_reason = "Backend produced invalid JSON docs output"
+                return PerformerResponse(
+                    status="error", session_id=perf.session_id,
+                    reason="Backend produced invalid JSON docs output",
+                )
+            if not isinstance(docs_output, dict):
+                perf.state = "error"
+                perf.error_reason = "Backend docs output is not a JSON object"
+                return PerformerResponse(
+                    status="error", session_id=perf.session_id,
+                    reason="Backend docs output is not a JSON object",
+                )
+
+            # Commit each documentation file
+            doc_files = docs_output.get("files", [])
+            if not isinstance(doc_files, list):
+                log.warning("docs.files_not_a_list", files_type=type(doc_files).__name__)
+                doc_files = []
+            for df in doc_files:
+                if not isinstance(df, dict) or not df.get("path") or "content" not in df:
+                    log.warning("docs.skipping_invalid_file_entry", entry=str(df)[:100])
+                    continue
+                try:
+                    await commit_file(perf.stand, df["path"], df["content"],
+                                      "docs: update documentation")
+                    perf.docs_files_modified.append(df["path"])
+                except Exception as exc:
+                    log.error("docs_commit_failed", path=df.get("path"), error=str(exc))
+                    perf.state = "error"
+                    perf.error_reason = f"Failed to commit doc file {df.get('path')}: {exc}"
+                    return PerformerResponse(
+                        status="error", session_id=perf.session_id,
+                                reason=perf.error_reason,
+                            )
+
+            perf.state = "docs_committed"
+            return PerformerResponse(
+                status="docs_committed",
+                session_id=perf.session_id,
+                files_modified=perf.docs_files_modified,
+            )
+
         # Default path: push branch and open PR
         owner, repo = perf.score.owner_repo
         await push_branch(perf.stand, perf.score)
@@ -758,7 +823,7 @@ async def run_loop() -> None:
         except asyncio.TimeoutError:
             log.warning("session watchdog fired — stopping backend",
                         session_id=perf.session_id if perf else "")
-            if perf is not None and perf.state not in ("pr_opened", "plan_committed", "approved", "changes_requested", "security_passed", "security_failed", "qa_passed", "qa_failed", "error"):
+            if perf is not None and perf.state not in ("pr_opened", "plan_committed", "approved", "changes_requested", "security_passed", "security_failed", "qa_passed", "qa_failed", "docs_committed", "error"):
                 perf.state = "error"
                 perf.error_reason = (
                     f"watchdog: session exceeded {settings.AGENT_TIMEOUT:.0f}s"
@@ -858,7 +923,7 @@ async def run_loop() -> None:
         _write_response(resp)
 
         # Terminal states exit the loop
-        if resp.status in ("pr_opened", "plan_committed", "approved", "changes_requested", "security_passed", "security_failed", "qa_passed", "qa_failed", "error") and msg.action != "health":
+        if resp.status in ("pr_opened", "plan_committed", "approved", "changes_requested", "security_passed", "security_failed", "qa_passed", "qa_failed", "docs_committed", "error") and msg.action != "health":
             break
         # session_expired with no active session means nothing will ever start
         if resp.status == "session_expired" and perf is None:

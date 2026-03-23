@@ -21,6 +21,7 @@ StatusType = Literal[
     "security_failed",
     "qa_passed",
     "qa_failed",
+    "docs_committed",
     "blocked",
     "error",
     "unknown",
@@ -55,6 +56,7 @@ class ProtocolResponse(BaseModel):
     findings: list[dict] = Field(default_factory=list)  # 022: security findings
     failures: list[dict] = Field(default_factory=list)  # 023: QA failures
     report: dict | None = None  # 023: QA pass report
+    files_modified: list[str] = Field(default_factory=list)  # 024: doc files committed
     events: list[dict] = Field(default_factory=list)  # serialised BackendEvent list
     metrics: dict | None = None  # PerformerMetrics (pid, memory_bytes, cpu_percent, …)
 

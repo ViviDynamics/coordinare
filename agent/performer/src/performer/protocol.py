@@ -32,6 +32,7 @@ PerformerStatusType = Literal[
     "security_failed",
     "qa_passed",
     "qa_failed",
+    "docs_committed",
     "healthy",
     "unhealthy",
 ]
@@ -72,5 +73,6 @@ class PerformerResponse(BaseModel):
     findings: list[dict] = Field(default_factory=list)  # 022: security findings [{severity, category, ...}]
     failures: list[dict] = Field(default_factory=list)  # 023: QA failures [{criterion, expected, actual, test}]
     report: dict | None = None  # 023: QA pass report {criteria_checked, criteria_passed, new_tests_added}
+    files_modified: list[str] = Field(default_factory=list)  # 024: doc files committed by tech writer
     metrics: PerformerMetrics | None = None
     events: list[dict] = Field(default_factory=list)  # serialised BackendEvent list

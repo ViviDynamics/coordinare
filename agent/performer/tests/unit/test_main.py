@@ -1305,3 +1305,95 @@ class TestQAPerformer:
         perf.qa_failures = [{"criterion": "X"}]
         resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
         assert resp.status == "qa_failed"
+
+
+# ---------------------------------------------------------------------------
+# 024 — Tech writer performer tests
+# ---------------------------------------------------------------------------
+
+
+class TestTechWriterPerformer:
+    def _make_perf(self) -> Performance:
+        stand = Stand(path=Path("/tmp/fake"), branch="feat/test")
+        stand.git_env = {}
+        score = Score(title="Test", repo_url="https://github.com/acme/repo", branch="feat/test")
+        return Performance(session_id="sid", stand=stand, score=score, backend=MagicMock(), role="documenting")
+
+    @pytest.mark.asyncio
+    async def test_docs_committed_with_files(self) -> None:
+        import json
+        perf = self._make_perf()
+        output = json.dumps({"files": [
+            {"path": "CHANGELOG.md", "content": "## 1.0.0\n- New feature"},
+            {"path": "README.md", "content": "# Updated README"},
+        ]})
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+        mock_commit = AsyncMock()
+        with patch("performer.main.commit_file", new=mock_commit):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+        assert resp.status == "docs_committed"
+        assert resp.files_modified == ["CHANGELOG.md", "README.md"]
+        assert mock_commit.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_docs_committed_empty_diff(self) -> None:
+        """Empty output → docs_committed with empty files_modified (FR-010)."""
+        perf = self._make_perf()
+        perf.backend.get_status.return_value = BackendStatus(state="done", output="")
+        resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+        assert resp.status == "docs_committed"
+        assert resp.files_modified == []
+
+    @pytest.mark.asyncio
+    async def test_docs_committed_is_terminal(self) -> None:
+        perf = self._make_perf()
+        perf.state = "docs_committed"
+        perf.docs_files_modified = ["CHANGELOG.md"]
+        resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+        assert resp.status == "docs_committed"
+        assert resp.files_modified == ["CHANGELOG.md"]
+
+    @pytest.mark.asyncio
+    async def test_docs_commit_failure_returns_error(self) -> None:
+        import json
+        perf = self._make_perf()
+        output = json.dumps({"files": [{"path": "README.md", "content": "new content"}]})
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+        mock_commit = AsyncMock(side_effect=Exception("git push failed"))
+        with patch("performer.main.commit_file", new=mock_commit):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+        assert resp.status == "error"
+        assert "README.md" in (resp.reason or "")
+
+    @pytest.mark.asyncio
+    async def test_docs_malformed_files_skipped(self) -> None:
+        """Malformed file entries are skipped; valid ones still committed."""
+        import json
+        perf = self._make_perf()
+        output = json.dumps({"files": [
+            "not a dict",
+            {"path": "CHANGELOG.md", "content": "# Log"},
+            {"path": "", "content": "no path"},
+            {"no_path_key": True},
+        ]})
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+        mock_commit = AsyncMock()
+        with patch("performer.main.commit_file", new=mock_commit):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+        assert resp.status == "docs_committed"
+        assert resp.files_modified == ["CHANGELOG.md"]
+        mock_commit.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_docs_idempotent_commit_still_reports_file(self) -> None:
+        """When commit_file is a no-op (identical content), file is still reported as processed."""
+        import json
+        perf = self._make_perf()
+        output = json.dumps({"files": [{"path": "README.md", "content": "same content"}]})
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+        # commit_file succeeds but doesn't actually commit (no-op)
+        mock_commit = AsyncMock()
+        with patch("performer.main.commit_file", new=mock_commit):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+        assert resp.status == "docs_committed"
+        assert resp.files_modified == ["README.md"]  # still reported as processed
