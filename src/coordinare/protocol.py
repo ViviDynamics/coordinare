@@ -19,6 +19,8 @@ StatusType = Literal[
     "changes_requested",
     "security_passed",
     "security_failed",
+    "qa_passed",
+    "qa_failed",
     "blocked",
     "error",
     "unknown",
@@ -51,6 +53,8 @@ class ProtocolResponse(BaseModel):
     comments: list[dict] = Field(default_factory=list)  # 021: review comments [{file, line, body}]
     suggestions: list[str] = Field(default_factory=list)  # 021: non-blocking suggestions
     findings: list[dict] = Field(default_factory=list)  # 022: security findings
+    failures: list[dict] = Field(default_factory=list)  # 023: QA failures
+    report: dict | None = None  # 023: QA pass report
     events: list[dict] = Field(default_factory=list)  # serialised BackendEvent list
     metrics: dict | None = None  # PerformerMetrics (pid, memory_bytes, cpu_percent, …)
 

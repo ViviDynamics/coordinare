@@ -261,6 +261,18 @@ async def handle_status(
             session_id=perf.session_id,
             findings=perf.security_findings,
         )
+    if perf.state == "qa_passed":
+        return PerformerResponse(
+            status="qa_passed",
+            session_id=perf.session_id,
+            report=perf.qa_report,
+        )
+    if perf.state == "qa_failed":
+        return PerformerResponse(
+            status="qa_failed",
+            session_id=perf.session_id,
+            failures=perf.qa_failures,
+        )
     if perf.state == "blocked":
         return PerformerResponse(
             status="blocked",
@@ -488,6 +500,100 @@ async def handle_status(
                 findings=perf.security_findings,
             )
 
+        # 023: QA performer path — validate acceptance criteria, commit new tests, pass or fail.
+        if perf.role == "qa":
+            import json as _json_qa
+            qa_raw = backend_status.output or ""
+            if not qa_raw.strip():
+                perf.state = "error"
+                perf.error_reason = "Backend produced empty QA output"
+                return PerformerResponse(
+                    status="error", session_id=perf.session_id,
+                    reason="Backend produced empty QA output",
+                )
+            try:
+                qa_output = _json_qa.loads(qa_raw) if isinstance(qa_raw, str) else qa_raw
+            except (ValueError, TypeError):
+                perf.state = "error"
+                perf.error_reason = "Backend produced invalid JSON QA output"
+                return PerformerResponse(
+                    status="error", session_id=perf.session_id,
+                    reason="Backend produced invalid JSON QA output",
+                )
+            if not isinstance(qa_output, dict):
+                perf.state = "error"
+                perf.error_reason = "Backend QA output is not a JSON object"
+                return PerformerResponse(
+                    status="error", session_id=perf.session_id,
+                    reason="Backend QA output is not a JSON object",
+                )
+
+            # Commit new test files written by the backend (FR-005)
+            new_tests = qa_output.get("new_test_files", [])
+            if isinstance(new_tests, list):
+                for tf in new_tests:
+                    if isinstance(tf, dict) and tf.get("path") and "content" in tf:
+                        try:
+                            await commit_file(perf.stand, tf["path"], tf["content"],
+                                              "test: add QA acceptance criterion tests")
+                            perf.qa_new_tests.append(tf["path"])
+                        except Exception as exc:
+                            log.error("qa_test_commit_failed", path=tf.get("path"), error=str(exc))
+                            perf.state = "error"
+                            perf.error_reason = f"Failed to commit new test file {tf.get('path')}: {exc}"
+                            return PerformerResponse(
+                                status="error", session_id=perf.session_id,
+                                reason=perf.error_reason,
+                            )
+
+            # Check for environment failure before acceptance criteria
+            env_error = qa_output.get("environment_error")
+            if env_error:
+                perf.state = "blocked"
+                perf.open_questions = [str(env_error)]
+                return PerformerResponse(
+                    status="blocked",
+                    session_id=perf.session_id,
+                    questions=[str(env_error)],
+                )
+
+            # Check for failures
+            raw_failures = qa_output.get("failures", [])
+            failures = [f for f in (raw_failures if isinstance(raw_failures, list) else []) if isinstance(f, dict)]
+
+            if not failures:
+                perf.state = "qa_passed"
+                perf.qa_report = {
+                    "criteria_checked": qa_output.get("criteria_checked", 0),
+                    "criteria_passed": qa_output.get("criteria_passed", 0),
+                    "new_tests_added": len(perf.qa_new_tests),
+                }
+                return PerformerResponse(
+                    status="qa_passed",
+                    session_id=perf.session_id,
+                    report=perf.qa_report,
+                )
+
+            # Failures exist
+            max_cycles = settings.QA_MAX_CYCLES if settings else 3
+            perf.qa_cycle += 1
+            if perf.qa_cycle >= max_cycles:
+                summary = f"QA: {len(failures)} acceptance criterion failure(s) after {perf.qa_cycle} fix attempt(s)"
+                perf.state = "blocked"
+                perf.open_questions = [summary]
+                return PerformerResponse(
+                    status="blocked",
+                    session_id=perf.session_id,
+                    questions=[summary],
+                )
+            perf.qa_failures = [f for f in failures if isinstance(f, dict)]
+            perf.state = "qa_failed"
+            return PerformerResponse(
+                status="qa_failed",
+                session_id=perf.session_id,
+                failures=perf.qa_failures,
+            )
+
         # Default path: push branch and open PR
         owner, repo = perf.score.owner_repo
         await push_branch(perf.stand, perf.score)
@@ -652,7 +758,7 @@ async def run_loop() -> None:
         except asyncio.TimeoutError:
             log.warning("session watchdog fired — stopping backend",
                         session_id=perf.session_id if perf else "")
-            if perf is not None and perf.state not in ("pr_opened", "plan_committed", "approved", "changes_requested", "security_passed", "security_failed", "error"):
+            if perf is not None and perf.state not in ("pr_opened", "plan_committed", "approved", "changes_requested", "security_passed", "security_failed", "qa_passed", "qa_failed", "error"):
                 perf.state = "error"
                 perf.error_reason = (
                     f"watchdog: session exceeded {settings.AGENT_TIMEOUT:.0f}s"
@@ -752,7 +858,7 @@ async def run_loop() -> None:
         _write_response(resp)
 
         # Terminal states exit the loop
-        if resp.status in ("pr_opened", "plan_committed", "approved", "changes_requested", "security_passed", "security_failed", "error") and msg.action != "health":
+        if resp.status in ("pr_opened", "plan_committed", "approved", "changes_requested", "security_passed", "security_failed", "qa_passed", "qa_failed", "error") and msg.action != "health":
             break
         # session_expired with no active session means nothing will ever start
         if resp.status == "session_expired" and perf is None:

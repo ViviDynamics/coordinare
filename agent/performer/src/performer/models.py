@@ -135,6 +135,7 @@ PerformanceState = Literal[
     "accepted", "working", "blocked", "pr_opened", "plan_committed",
     "approved", "changes_requested",
     "security_passed", "security_failed",
+    "qa_passed", "qa_failed",
     "error", "session_expired", "waiting_for_checks",
 ]
 
@@ -173,6 +174,10 @@ class Performance:
     review_cycle: int = 0  # 021: number of review cycles exhausted
     security_findings: list[dict] = field(default_factory=list)  # 022: [{severity, category, ...}]
     security_cycle: int = 0  # 022: number of security fix cycles
+    qa_failures: list[dict] = field(default_factory=list)  # 023: [{criterion, expected, actual, test}]
+    qa_new_tests: list[str] = field(default_factory=list)  # 023: paths of committed test files
+    qa_report: dict | None = None  # 023: pass report {criteria_checked, criteria_passed, new_tests_added}
+    qa_cycle: int = 0  # 023: number of QA fix cycles
     open_questions: list[str] = field(default_factory=list)
     error_reason: str | None = None
     started_at: datetime = field(default_factory=lambda: datetime.now(UTC))

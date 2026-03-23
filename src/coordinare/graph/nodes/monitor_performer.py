@@ -313,6 +313,24 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
             state["agent_dispatch_at"] = None
             return state
 
+        # --- QA failed (023-qa-performer) ---
+        # Non-terminal: relay failures to implementer for remediation.
+        if marker == "qa_failed":
+            raw_failures = status.get("failures", [])
+            failures = [f for f in (raw_failures if isinstance(raw_failures, list) else []) if isinstance(f, dict)]
+            logger.info(
+                "monitor_performer.qa_failed",
+                performer_stage=stage,
+                card_id=card_id,
+                failure_count=len(failures),
+            )
+            state["relay_feedback"] = failures  # type: ignore[typeddict-unknown-key]
+            state["performer_stage"] = "implementing"
+            state["phase"] = "dispatching"
+            state["agent_dispatch"] = {}
+            state["agent_dispatch_at"] = None
+            return state
+
         # --- Error status (FR-006) ---
         if marker == "error":
             state["phase"] = "blocked"

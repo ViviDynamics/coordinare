@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     # 022 — Security performer settings
     SECURITY_MAX_CYCLES: int = 3  # max security fix cycles before blocking for human
 
+    # 023 — QA performer settings
+    QA_MAX_CYCLES: int = 3  # max QA fix cycles before blocking for human
+
 
 @functools.lru_cache(maxsize=1)
 def get_settings() -> Settings:

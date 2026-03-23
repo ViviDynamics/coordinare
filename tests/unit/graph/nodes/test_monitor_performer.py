@@ -745,3 +745,27 @@ async def test_security_failed_routes_architecture_findings_to_architect() -> No
     assert result["performer_stage"] == "architecting"
     assert result["phase"] == "dispatching"
     assert result.get("relay_feedback") == findings
+
+
+# ---------------------------------------------------------------------------
+# 023 — qa_failed handling
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_qa_failed_routes_to_implementer() -> None:
+    """qa_failed routes failures to implementer for remediation."""
+    state = initial_state()
+    failures = [{"criterion": "Login works", "expected": "200", "actual": "500", "test": "test_login"}]
+    svc = _Performer(response={"status": "qa_failed", "failures": failures})
+    state["performer_services"] = {"qa": svc}
+    state["performer_stage"] = "qa"
+    state["lifecycle_sequence"] = ["implementing", "qa"]
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+
+    result = await monitor_performer(state)
+
+    assert result["performer_stage"] == "implementing"
+    assert result["phase"] == "dispatching"
+    assert result.get("relay_feedback") == failures

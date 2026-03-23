@@ -1196,4 +1196,112 @@ class TestSecurityPerformer:
         perf.security_findings = [{"severity": "high", "category": "xss"}]
         resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
         assert resp.status == "security_failed"
-        assert len(resp.findings) == 1
+        assert len(resp.findings) == 1  # security terminal test
+
+
+# ---------------------------------------------------------------------------
+# 023 — QA performer tests
+# ---------------------------------------------------------------------------
+
+
+class TestQAPerformer:
+    def _make_perf(self) -> Performance:
+        stand = Stand(path=Path("/tmp/fake"), branch="feat/test")
+        stand.git_env = {}
+        score = Score(title="Test", repo_url="https://github.com/acme/repo", branch="feat/test")
+        return Performance(session_id="sid", stand=stand, score=score, backend=MagicMock(), role="qa")
+
+    @pytest.mark.asyncio
+    async def test_qa_passed_no_failures(self) -> None:
+        import json
+        perf = self._make_perf()
+        output = json.dumps({"failures": [], "criteria_checked": 5, "criteria_passed": 5})
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+        with patch("performer.main.commit_file", new=AsyncMock()):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+        assert resp.status == "qa_passed"
+        assert resp.report["criteria_checked"] == 5
+
+    @pytest.mark.asyncio
+    async def test_qa_failed_with_failures(self) -> None:
+        import json
+        perf = self._make_perf()
+        failures = [{"criterion": "Login", "expected": "200", "actual": "500", "test": "test_login"}]
+        output = json.dumps({"failures": failures})
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+        with patch("performer.main.commit_file", new=AsyncMock()):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode", QA_MAX_CYCLES=3))
+        assert resp.status == "qa_failed"
+        assert len(resp.failures) == 1
+        assert perf.qa_cycle == 1
+
+    @pytest.mark.asyncio
+    async def test_qa_max_cycles_blocked(self) -> None:
+        import json
+        perf = self._make_perf()
+        perf.qa_cycle = 2
+        output = json.dumps({"failures": [{"criterion": "X", "expected": "Y", "actual": "Z", "test": "t"}]})
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+        with patch("performer.main.commit_file", new=AsyncMock()):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode", QA_MAX_CYCLES=3))
+        assert resp.status == "blocked"
+
+    @pytest.mark.asyncio
+    async def test_qa_commits_new_tests(self) -> None:
+        import json
+        perf = self._make_perf()
+        output = json.dumps({"failures": [], "criteria_checked": 1, "criteria_passed": 1,
+                             "new_test_files": [{"path": "tests/test_new.py", "content": "pass"}]})
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+        mock_commit = AsyncMock()
+        with patch("performer.main.commit_file", new=mock_commit):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+        assert resp.status == "qa_passed"
+        mock_commit.assert_called_once()
+        assert resp.report["new_tests_added"] == 1
+
+    @pytest.mark.asyncio
+    async def test_qa_environment_error_returns_blocked(self) -> None:
+        """Environment failure returns blocked, not qa_failed."""
+        import json
+        perf = self._make_perf()
+        output = json.dumps({"environment_error": "Missing runtime: node", "failures": []})
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+        with patch("performer.main.commit_file", new=AsyncMock()):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+        assert resp.status == "blocked"
+        assert "node" in resp.questions[0].lower()
+        assert perf.state == "blocked"
+
+    @pytest.mark.asyncio
+    async def test_qa_commits_empty_content_test_file(self) -> None:
+        """Test file with empty content string is still committed."""
+        import json
+        perf = self._make_perf()
+        output = json.dumps({"failures": [], "criteria_checked": 1, "criteria_passed": 1,
+                             "new_test_files": [{"path": "tests/test_empty.py", "content": ""}]})
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+        mock_commit = AsyncMock()
+        with patch("performer.main.commit_file", new=mock_commit):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+        assert resp.status == "qa_passed"
+        mock_commit.assert_called_once()
+        assert perf.qa_new_tests == ["tests/test_empty.py"]
+
+    @pytest.mark.asyncio
+    async def test_qa_passed_terminal_preserves_report(self) -> None:
+        """Subsequent polls return the same report."""
+        perf = self._make_perf()
+        perf.state = "qa_passed"
+        perf.qa_report = {"criteria_checked": 3, "criteria_passed": 3, "new_tests_added": 1}
+        resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+        assert resp.status == "qa_passed"
+        assert resp.report == {"criteria_checked": 3, "criteria_passed": 3, "new_tests_added": 1}
+
+    @pytest.mark.asyncio
+    async def test_qa_failed_is_terminal(self) -> None:
+        perf = self._make_perf()
+        perf.state = "qa_failed"
+        perf.qa_failures = [{"criterion": "X"}]
+        resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+        assert resp.status == "qa_failed"
