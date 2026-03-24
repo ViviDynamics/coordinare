@@ -41,6 +41,39 @@ agent_executable: "/usr/local/bin/agent"
 human_reviewers:
   - "reviewer-login"
 
+# Performer lifecycle (019) — configure which roles run and their backends.
+# Unconfigured roles are skipped. With no performers section, coordinare
+# falls back to implementer-only mode (backward compatible).
+#
+# performers:
+#   architect:
+#     backend: opencode
+#     transport: subprocess
+#   implementer:
+#     backend: opencode
+#     transport: subprocess
+#   reviewer:
+#     backend: opencode
+#     transport: subprocess
+#   security:
+#     backend: opencode
+#     transport: subprocess
+#   qa:
+#     backend: opencode
+#     transport: subprocess
+#   tech_writer:
+#     backend: opencode
+#     transport: subprocess
+
+# Persona instructions (018) — customise per-role AI prompts.
+# Omitted roles use built-in default instructions.
+#
+# personas:
+#   implementer:
+#     instructions: "Always write tests first."
+#   reviewer:
+#     instructions: "Focus on correctness and test coverage."
+
 poll_interval_seconds: 30
 heartbeat_interval_seconds: 30
 health_check_port: 8080
