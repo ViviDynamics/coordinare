@@ -153,10 +153,34 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
     session_id = state.get("agent_dispatch", {}).get("session_id", "")
     card_id = str(card.get("id", ""))
 
+    # 027: Enforce per-role session timeout at coordinare level
+    # Only enforced when explicitly configured (role_timeouts[stage] > 0).
+    role_timeouts: dict[str, int] = state.get("role_timeouts") or {}
+    timeout_secs = role_timeouts.get(stage, 0)
+
     # Assume terminal by default; cleared only when the performer is still working.
     # The finally block guarantees teardown even on unexpected exceptions.
     _teardown_on_exit = True
     try:
+        # 027: Check session timeout before polling status
+        dispatch_at = state.get("agent_dispatch_at")
+        if timeout_secs > 0 and dispatch_at is not None:
+            elapsed = (datetime.now(UTC) - dispatch_at).total_seconds()
+            if elapsed > timeout_secs:
+                logger.warning(
+                    "monitor_performer.session_timeout",
+                    performer_stage=stage,
+                    card_id=card_id,
+                    elapsed_seconds=round(elapsed),
+                    timeout_seconds=timeout_secs,
+                )
+                state["phase"] = "blocked"
+                state["open_questions"] = [
+                    f"Performer ({stage}) timed out after {round(elapsed)}s "
+                    f"(limit: {timeout_secs}s)"
+                ]
+                return state
+
         try:
             status = await service.check_status(str(session_id))
         except (TransportError, ConnectionError, TimeoutError) as exc:

@@ -769,3 +769,69 @@ async def test_qa_failed_routes_to_implementer() -> None:
     assert result["performer_stage"] == "implementing"
     assert result["phase"] == "dispatching"
     assert result.get("relay_feedback") == failures
+
+
+# ---------------------------------------------------------------------------
+# 027 — Per-role timeout tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_session_timeout_blocks_card() -> None:
+    """When role timeout is exceeded, card is blocked with timeout message."""
+    from datetime import UTC, datetime, timedelta
+
+    state = initial_state()
+    svc = _Performer(response={"status": "working"})
+    state["performer_services"] = {"implementing": svc}
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing"]
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["agent_dispatch_at"] = datetime.now(UTC) - timedelta(seconds=600)
+    state["role_timeouts"] = {"implementing": 300}  # 5 min timeout, 10 min elapsed
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "blocked"
+    assert any("timed out" in q for q in result.get("open_questions", []))
+
+
+@pytest.mark.asyncio
+async def test_no_timeout_when_within_limit() -> None:
+    """When elapsed time is within timeout, normal monitoring continues."""
+    from datetime import UTC, datetime, timedelta
+
+    state = initial_state()
+    svc = _Performer(response={"status": "working"})
+    state["performer_services"] = {"implementing": svc}
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing"]
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["agent_dispatch_at"] = datetime.now(UTC) - timedelta(seconds=10)
+    state["role_timeouts"] = {"implementing": 300}  # 5 min timeout, 10s elapsed
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "monitoring_performer"  # still working
+
+
+@pytest.mark.asyncio
+async def test_no_timeout_when_not_configured() -> None:
+    """No role_timeouts entry → no timeout enforcement."""
+    from datetime import UTC, datetime, timedelta
+
+    state = initial_state()
+    svc = _Performer(response={"status": "working"})
+    state["performer_services"] = {"implementing": svc}
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing"]
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["agent_dispatch_at"] = datetime.now(UTC) - timedelta(hours=2)
+    state["role_timeouts"] = {}  # no timeout configured
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "monitoring_performer"  # no enforcement

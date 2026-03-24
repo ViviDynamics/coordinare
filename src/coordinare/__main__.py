@@ -492,6 +492,14 @@ async def _bootstrap_services(
                 )
             lifecycle_sequence = ["implementing"]
 
+    # 027: Build per-role timeout mapping (only for explicitly configured roles)
+    role_timeouts: dict[str, int] = {}
+    for role in _CANONICAL_ORDER:
+        role_config = getattr(config.performers, role, None)
+        if role_config is not None and role_config.timeout_seconds is not None:
+            stage = _ROLE_TO_STAGE[role]
+            role_timeouts[stage] = role_config.timeout_seconds
+
     service_state: CoordinareState = {
         "config": config,
         "config_path": config_path,
@@ -506,6 +514,7 @@ async def _bootstrap_services(
         "performer_services": performer_services,
         "lifecycle_sequence": lifecycle_sequence,
         "performer_stage": lifecycle_sequence[0] if lifecycle_sequence else "implementing",
+        "role_timeouts": role_timeouts,
     }
 
     if config.advocate.enabled:

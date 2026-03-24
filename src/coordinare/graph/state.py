@@ -105,6 +105,7 @@ class CoordinareState(TypedDict, total=False):
     performer_services: dict[str, Any]  # stage name (e.g. "implementing", "reviewing") → AgentService instance
     lifecycle_sequence: list[str]  # Ordered list of role stage names to execute
     relay_feedback: list[dict[str, Any]]  # PR comments to relay on next dispatch
+    role_timeouts: dict[str, int]  # 027: stage name → timeout seconds
 
 
 def initial_state() -> CoordinareState:
@@ -131,4 +132,5 @@ def initial_state() -> CoordinareState:
         "performer_services": {},
         "lifecycle_sequence": ["implementing"],
         "relay_feedback": [],
+        "role_timeouts": {},
     }
