@@ -8,6 +8,7 @@ from coordinare.config import (
     PerformerRoleConfig,
     PerformersConfig,
     PersonaConfig,
+    PriorityConfig,
     PersonasConfig,
     ProjectConfiguration,
 )
@@ -627,3 +628,46 @@ class TestPerformersInProjectConfiguration:
         assert cfg.performers.security is not None
         assert cfg.performers.security.image == "sec:v1"
         assert cfg.performers.reviewer is None
+
+
+# ---------------------------------------------------------------------------
+# 025 — PriorityConfig tests
+# ---------------------------------------------------------------------------
+
+
+class TestPriorityConfig:
+    def test_defaults(self) -> None:
+        cfg = PriorityConfig()
+        assert cfg.field_name is None
+        assert cfg.priority_order == []
+
+    def test_with_field_name(self) -> None:
+        cfg = PriorityConfig(field_name="Priority")
+        assert cfg.field_name == "Priority"
+
+    def test_with_priority_order(self) -> None:
+        cfg = PriorityConfig(field_name="P", priority_order=["P0", "P1", "P2"])
+        assert cfg.priority_order == ["P0", "P1", "P2"]
+
+    def test_missing_priority_key_in_yaml(self, tmp_path) -> None:
+        path = tmp_path / "config.yaml"
+        path.write_text(yaml.dump({
+            "project_name": "Demo", "github_org": "acme",
+            "github_project_number": 1, "github_token": "tok",
+            "human_reviewers": ["alice"],
+        }))
+        cfg = ProjectConfiguration.from_yaml(path)
+        assert cfg.priority.field_name is None
+        assert cfg.priority.priority_order == []
+
+    def test_priority_in_yaml(self, tmp_path) -> None:
+        path = tmp_path / "config.yaml"
+        path.write_text(yaml.dump({
+            "project_name": "Demo", "github_org": "acme",
+            "github_project_number": 1, "github_token": "tok",
+            "human_reviewers": ["alice"],
+            "priority": {"field_name": "Urgency", "priority_order": ["Critical", "High"]},
+        }))
+        cfg = ProjectConfiguration.from_yaml(path)
+        assert cfg.priority.field_name == "Urgency"
+        assert cfg.priority.priority_order == ["Critical", "High"]

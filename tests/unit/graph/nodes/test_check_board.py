@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from coordinare.graph.nodes.check_board import check_board
+from coordinare.graph.nodes.check_board import _sort_by_priority, check_board
 from coordinare.graph.state import initial_state
 
 
@@ -365,3 +365,90 @@ async def test_check_board_preserves_clarifications_for_same_card() -> None:
 
     # Clarifications must be preserved (same card returned from re-queue)
     assert result.get("card_clarifications") == [{"question": "Q?", "answer": "A"}]
+
+
+# ---------------------------------------------------------------------------
+# 025 — Card Prioritization tests
+# ---------------------------------------------------------------------------
+
+
+class TestSortByPriority:
+    """Tests for _sort_by_priority helper."""
+
+    def test_sorts_by_priority_value_lexicographic(self) -> None:
+        items = ["C", "A", "B"]
+        fields = {"A": {"Priority": "P1"}, "B": {"Priority": "P0"}, "C": {"Priority": "P2"}}
+        result = _sort_by_priority(items, fields, "Priority", [])
+        assert result == ["B", "A", "C"]  # P0 < P1 < P2
+
+    def test_null_priority_sorts_last(self) -> None:
+        items = ["A", "B", "C"]
+        fields = {"A": {}, "B": {"Priority": "P0"}, "C": {"Priority": "P1"}}
+        result = _sort_by_priority(items, fields, "Priority", [])
+        assert result == ["B", "C", "A"]  # B(P0), C(P1), A(no value)
+
+    def test_tied_priority_preserves_board_order(self) -> None:
+        items = ["A", "B", "C"]
+        fields = {"A": {"Priority": "P1"}, "B": {"Priority": "P1"}, "C": {"Priority": "P0"}}
+        result = _sort_by_priority(items, fields, "Priority", [])
+        assert result == ["C", "A", "B"]  # C(P0), then A,B(P1) in original order
+
+    def test_custom_priority_order(self) -> None:
+        items = ["A", "B", "C"]
+        fields = {"A": {"Urgency": "Low"}, "B": {"Urgency": "Critical"}, "C": {"Urgency": "High"}}
+        result = _sort_by_priority(items, fields, "Urgency", ["Critical", "High", "Medium", "Low"])
+        assert result == ["B", "C", "A"]  # Critical < High < Low
+
+    def test_unlisted_value_sorts_after_listed(self) -> None:
+        items = ["A", "B"]
+        fields = {"A": {"Priority": "Unknown"}, "B": {"Priority": "P0"}}
+        result = _sort_by_priority(items, fields, "Priority", ["P0", "P1"])
+        assert result == ["B", "A"]  # P0 listed, Unknown not listed → sorts after
+
+    def test_no_field_values_returns_original_order(self) -> None:
+        items = ["A", "B", "C"]
+        result = _sort_by_priority(items, {}, "Priority", [])
+        assert result == ["A", "B", "C"]  # all null → original order preserved
+
+    def test_all_same_priority_preserves_order(self) -> None:
+        items = ["X", "Y", "Z"]
+        fields = {"X": {"P": "P1"}, "Y": {"P": "P1"}, "Z": {"P": "P1"}}
+        result = _sort_by_priority(items, fields, "P", [])
+        assert result == ["X", "Y", "Z"]
+
+
+@pytest.mark.asyncio
+async def test_check_board_selects_highest_priority_card() -> None:
+    """Integration: check_board uses priority sorting when configured."""
+    from unittest.mock import MagicMock
+
+    class _GitHubWithPriority:
+        async def poll_board(self):
+            return {
+                "snapshot": {"TODO": ["LOW", "HIGH", "MED"], "IN_PROGRESS": [], "IN_REVIEW": [], "BLOCKED": []},
+                "titles": {"LOW": "Low", "HIGH": "High", "MED": "Med"},
+                "descriptions": {"LOW": "", "HIGH": "", "MED": ""},
+                "issue_numbers": {"LOW": 1, "HIGH": 2, "MED": 3},
+                "issue_urls": {},
+                "content_node_ids": {},
+                "item_field_values": {
+                    "LOW": {"Priority": "P2"},
+                    "HIGH": {"Priority": "P0"},
+                    "MED": {"Priority": "P1"},
+                },
+            }
+        async def get_issue_details(self, issue_id): return {}
+        async def move_card(self, item_id, status): pass
+
+    from coordinare.config import PriorityConfig
+
+    config = MagicMock()
+    config.priority = PriorityConfig(field_name="Priority", priority_order=[])
+
+    state = initial_state()
+    state["github_service"] = _GitHubWithPriority()
+    state["config"] = config
+
+    result = await check_board(state)
+
+    assert result["current_card"]["id"] == "HIGH"  # P0 is highest priority

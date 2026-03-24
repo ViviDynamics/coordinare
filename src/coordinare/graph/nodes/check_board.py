@@ -13,6 +13,36 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
+def _sort_by_priority(
+    item_ids: list[str],
+    item_field_values: dict[str, dict[str, str]],
+    field_name: str,
+    priority_order: list[str],
+) -> list[str]:
+    """Sort *item_ids* by their priority field value.
+
+    - When *priority_order* is set, values rank by list index (lower = higher priority).
+      Values not in *priority_order* sort after all listed values.
+    - When *priority_order* is empty, values are compared lexicographically (ascending).
+    - Items without a priority value (None/missing) sort after items that have one.
+    - Stable sort: ties preserve the original board position order.
+    """
+    order_map = {v: i for i, v in enumerate(priority_order)} if priority_order else {}
+    max_rank = len(priority_order)  # rank for unlisted values
+
+    def _sort_key(item_id: str) -> tuple[int, int | str]:
+        fields = item_field_values.get(item_id, {})
+        value = fields.get(field_name)
+        if value is None:
+            # No value → sort last (after everything)
+            return (1, "")
+        if order_map:
+            return (0, order_map.get(value, max_rank))
+        return (0, value)
+
+    return sorted(item_ids, key=_sort_key)
+
+
 async def check_board(state: CoordinareState) -> CoordinareState:
     github = state.get("github_service")
     if github is None:
@@ -151,6 +181,27 @@ async def check_board(state: CoordinareState) -> CoordinareState:
             item_id for item_id in todo
             if not (set(item_labels.get(item_id, [])) & advocate_labels)
         ]
+
+        # 025: Sort by priority field if configured
+        config = state.get("config")
+        if config is not None and hasattr(config, "priority"):
+            prio_cfg = config.priority
+            if prio_cfg.field_name:
+                item_field_values = board.get("item_field_values", {})
+                has_field = any(
+                    prio_cfg.field_name in item_field_values.get(iid, {})
+                    for iid in eligible_todo
+                )
+                if has_field:
+                    eligible_todo = _sort_by_priority(
+                        eligible_todo, item_field_values,
+                        prio_cfg.field_name, prio_cfg.priority_order,
+                    )
+                else:
+                    logger.debug(
+                        "check_board.priority_field_not_found_on_cards",
+                        field_name=prio_cfg.field_name,
+                    )
 
         if eligible_todo:
             item = eligible_todo[0]

@@ -163,6 +163,18 @@ class PersonasConfig(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# 025 — Card Prioritization config
+# ---------------------------------------------------------------------------
+
+
+class PriorityConfig(BaseModel):
+    """Configuration for priority-aware card selection from TODO column."""
+
+    field_name: str | None = None  # GitHub Project V2 custom field name (e.g. "Priority")
+    priority_order: list[str] = Field(default_factory=list)  # Custom sort precedence (e.g. ["P0", "P1", "P2"])
+
+
+# ---------------------------------------------------------------------------
 # 019 — Performer Lifecycle config models
 # ---------------------------------------------------------------------------
 
@@ -371,6 +383,7 @@ class ProjectConfiguration(BaseSettings):
     advocate: AdvocateConfig = Field(default_factory=AdvocateConfig)
     personas: PersonasConfig = Field(default_factory=PersonasConfig)
     performers: PerformersConfig = Field(default_factory=PerformersConfig)
+    priority: PriorityConfig = Field(default_factory=PriorityConfig)
 
     # Card assessment backend — determines how assess_card evaluates card sufficiency.
     # "anthropic_api": direct Anthropic SDK call (requires ANTHROPIC_API_KEY)
