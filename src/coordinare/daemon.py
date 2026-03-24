@@ -415,6 +415,8 @@ class CoordinareDaemon:
                             transition_type=_transition_label,
                         ).inc()
                     previous_phase = current_phase
+                    # 028: Track when the phase was entered
+                    self._state["phase_entered_at"] = datetime.now(UTC)
                     # T021: Persist snapshot on every phase transition
                     if self._state_store is not None:
                         await self._state_store.save(self._build_snapshot())
@@ -450,6 +452,45 @@ class CoordinareDaemon:
                             )
                         except Exception as exc:
                             logger.warning("prolonged_idle_notification_failed", error=str(exc))
+
+                # 028: Stuck card detection
+                _stuck_phase = self._state.get("phase")
+                _stuck_excluded = {"idle", "system_error"}
+                if _stuck_phase and _stuck_phase not in _stuck_excluded and notification_service is not None:
+                    _config = self._state.get("config")
+                    _phase_entered = self._state.get("phase_entered_at")
+                    if _config is not None and _phase_entered is not None and hasattr(_config, "stuck_alerts"):
+                        _stuck_cfg = _config.stuck_alerts
+                        _threshold = _stuck_cfg.per_phase_thresholds.get(_stuck_phase, _stuck_cfg.threshold_seconds)
+                        if _threshold > 0:
+                            _elapsed = (datetime.now(UTC) - _phase_entered).total_seconds()
+                            if _elapsed > _threshold:
+                                from coordinare.models.notification import (
+                                    EventType,
+                                    NotificationEvent,
+                                    NotificationSeverity,
+                                )
+                                _card = self._state.get("current_card") or {}
+                                _summary = f"Card stuck in {_stuck_phase} for {round(_elapsed)}s (limit: {_threshold}s)"
+                                try:
+                                    await notification_service.dispatch(
+                                        NotificationEvent(
+                                            event_type=EventType.card_stuck,
+                                            severity=NotificationSeverity.warning,
+                                            payload={
+                                                "phase": _stuck_phase,
+                                                "elapsed_seconds": str(round(_elapsed)),
+                                                "threshold_seconds": str(_threshold),
+                                                "card_title": str(_card.get("title", "")),
+                                                "card_id": str(_card.get("id", "")),
+                                                "summary": _summary,
+                                            },
+                                            source="daemon",
+                                            dedup_key=f"stuck:{_card.get('id', '')}:{_stuck_phase}",
+                                        )
+                                    )
+                                except Exception as _exc:
+                                    logger.warning("stuck_card_notification_failed", error=str(_exc))
 
                 now = monotonic()
                 if now - last_heartbeat >= self._heartbeat_interval_seconds:

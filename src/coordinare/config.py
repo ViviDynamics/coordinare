@@ -175,6 +175,18 @@ class PriorityConfig(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# 028 — Stuck Card Alerts config
+# ---------------------------------------------------------------------------
+
+
+class StuckAlertConfig(BaseModel):
+    """Configuration for stuck card detection and alerting."""
+
+    threshold_seconds: int = Field(default=1800, ge=0)  # 30 min default; 0 = disabled
+    per_phase_thresholds: dict[str, int] = Field(default_factory=dict)  # phase → seconds; 0 = disabled
+
+
+# ---------------------------------------------------------------------------
 # 019 — Performer Lifecycle config models
 # ---------------------------------------------------------------------------
 
@@ -384,6 +396,7 @@ class ProjectConfiguration(BaseSettings):
     personas: PersonasConfig = Field(default_factory=PersonasConfig)
     performers: PerformersConfig = Field(default_factory=PerformersConfig)
     priority: PriorityConfig = Field(default_factory=PriorityConfig)
+    stuck_alerts: StuckAlertConfig = Field(default_factory=StuckAlertConfig)
 
     # Card assessment backend — determines how assess_card evaluates card sufficiency.
     # "anthropic_api": direct Anthropic SDK call (requires ANTHROPIC_API_KEY)

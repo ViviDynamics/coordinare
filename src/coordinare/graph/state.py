@@ -106,6 +106,7 @@ class CoordinareState(TypedDict, total=False):
     lifecycle_sequence: list[str]  # Ordered list of role stage names to execute
     relay_feedback: list[dict[str, Any]]  # PR comments to relay on next dispatch
     role_timeouts: dict[str, int]  # 027: stage name → timeout seconds
+    phase_entered_at: datetime | None  # 028: timestamp when current phase was entered
 
 
 def initial_state() -> CoordinareState:

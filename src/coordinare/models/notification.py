@@ -19,6 +19,7 @@ class EventType(StrEnum):
     circuit_breaker_trip = "circuit_breaker_trip"
     prolonged_idle = "prolonged_idle"
     performer_error = "performer_error"
+    card_stuck = "card_stuck"  # 028: card stuck in same phase too long
 
 
 class NotificationSeverity(StrEnum):
