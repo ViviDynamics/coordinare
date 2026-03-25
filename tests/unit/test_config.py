@@ -8,8 +8,8 @@ from coordinare.config import (
     PerformerRoleConfig,
     PerformersConfig,
     PersonaConfig,
-    PriorityConfig,
     PersonasConfig,
+    PriorityConfig,
     ProjectConfiguration,
 )
 

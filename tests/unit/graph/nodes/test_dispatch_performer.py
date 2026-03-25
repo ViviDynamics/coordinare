@@ -584,3 +584,168 @@ async def test_plan_path_empty_string_not_injected() -> None:
 
     assert len(svc.dispatched) == 1
     assert "architecture_plan_path" not in svc.dispatched[0]
+
+
+# ---------------------------------------------------------------------------
+# 033 — Smart Health-Check Retry tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_health_retry_succeeds_on_third_attempt() -> None:
+    """Health check fails twice then succeeds → dispatch proceeds."""
+    from unittest.mock import AsyncMock, patch
+
+    call_count = 0
+
+    class _RetryService:
+        def __init__(self) -> None:
+            self.dispatched: list[dict] = []
+
+        async def check_health(self) -> dict:
+            nonlocal call_count
+            call_count += 1
+            if call_count < 3:
+                raise ConnectionError("not ready")
+            return {"status": "accepted"}
+
+        async def dispatch_card(self, card_context, workspace_info=None):
+            self.dispatched.append(card_context)
+            return {"status": "accepted", "session_id": "s1"}
+
+    from coordinare.config import HealthCheckConfig, ProjectConfiguration
+
+    svc = _RetryService()
+    config = ProjectConfiguration(
+        project_name="Test", github_org="acme", github_project_number=1,
+        github_token="tok", human_reviewers=["alice"],
+        health_check=HealthCheckConfig(max_attempts=3, backoff_seconds=0.01),
+    )
+
+    state = _base_state(
+        performer_services={"implementing": svc},
+        performer_stage="implementing",
+        lifecycle_sequence=["implementing"],
+        config=config,
+    )
+
+    with patch("coordinare.graph.nodes.dispatch_performer.asyncio.sleep", new=AsyncMock()):
+        result = await dispatch_performer(state)
+
+    assert result["phase"] == "monitoring_performer"
+    assert len(svc.dispatched) == 1
+    assert call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_health_retries_exhausted_goes_idle() -> None:
+    """All retries exhausted → idle."""
+    from unittest.mock import AsyncMock, patch
+
+    class _AlwaysUnreachable:
+        async def check_health(self) -> dict:
+            raise ConnectionError("down")
+        async def dispatch_card(self, *a, **kw):
+            raise AssertionError("Should not dispatch")
+
+    from coordinare.config import HealthCheckConfig, ProjectConfiguration
+
+    svc = _AlwaysUnreachable()
+    config = ProjectConfiguration(
+        project_name="Test", github_org="acme", github_project_number=1,
+        github_token="tok", human_reviewers=["alice"],
+        health_check=HealthCheckConfig(max_attempts=2, backoff_seconds=0.01),
+    )
+
+    state = _base_state(
+        performer_services={"implementing": svc},
+        performer_stage="implementing",
+        lifecycle_sequence=["implementing"],
+        config=config,
+    )
+
+    with patch("coordinare.graph.nodes.dispatch_performer.asyncio.sleep", new=AsyncMock()):
+        result = await dispatch_performer(state)
+
+    assert result["phase"] == "idle"
+
+
+@pytest.mark.asyncio
+async def test_health_error_not_retried() -> None:
+    """Health status 'error' → blocked immediately, no retry."""
+
+    class _ErrorService:
+        async def check_health(self) -> dict:
+            return {"status": "error", "reason": "crashed"}
+        async def dispatch_card(self, *a, **kw):
+            raise AssertionError("Should not dispatch")
+
+    svc = _ErrorService()
+
+    state = _base_state(
+        performer_services={"implementing": svc},
+        performer_stage="implementing",
+        lifecycle_sequence=["implementing"],
+    )
+
+    result = await dispatch_performer(state)
+
+    assert result["phase"] == "blocked"
+
+
+@pytest.mark.asyncio
+async def test_health_single_attempt_no_retry() -> None:
+    """max_attempts=1 → one attempt, no sleep."""
+    from unittest.mock import AsyncMock, patch
+
+    class _Unreachable:
+        async def check_health(self) -> dict:
+            raise ConnectionError("down")
+        async def dispatch_card(self, *a, **kw):
+            raise AssertionError("Should not dispatch")
+
+    from coordinare.config import HealthCheckConfig, ProjectConfiguration
+
+    svc = _Unreachable()
+    config = ProjectConfiguration(
+        project_name="Test", github_org="acme", github_project_number=1,
+        github_token="tok", human_reviewers=["alice"],
+        health_check=HealthCheckConfig(max_attempts=1, backoff_seconds=1.0),
+    )
+
+    state = _base_state(
+        performer_services={"implementing": svc},
+        performer_stage="implementing",
+        lifecycle_sequence=["implementing"],
+        config=config,
+    )
+
+    sleep_mock = AsyncMock()
+    with patch("coordinare.graph.nodes.dispatch_performer.asyncio.sleep", new=sleep_mock):
+        result = await dispatch_performer(state)
+
+    assert result["phase"] == "idle"
+    sleep_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_health_cancelled_error_propagates() -> None:
+    """CancelledError during health check propagates immediately."""
+    import asyncio as _aio
+
+    class _CancelService:
+        async def check_health(self) -> dict:
+            raise _aio.CancelledError()
+        async def dispatch_card(self, *a, **kw):
+            raise AssertionError("Should not dispatch")
+
+    svc = _CancelService()
+
+    state = _base_state(
+        performer_services={"implementing": svc},
+        performer_stage="implementing",
+        lifecycle_sequence=["implementing"],
+    )
+
+    with pytest.raises(_aio.CancelledError):
+        await dispatch_performer(state)

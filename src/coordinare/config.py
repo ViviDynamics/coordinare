@@ -163,6 +163,18 @@ class PersonasConfig(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# 033 — Smart Health-Check Retry config
+# ---------------------------------------------------------------------------
+
+
+class HealthCheckConfig(BaseModel):
+    """Configuration for health-check retry in dispatch_performer."""
+
+    max_attempts: int = Field(default=3, ge=1, le=10)  # total attempts including first (1 = no retry)
+    backoff_seconds: float = Field(default=1.0, ge=0.0, le=30.0)  # base backoff; exponential: backoff * 2^(attempt-1)
+
+
+# ---------------------------------------------------------------------------
 # 025 — Card Prioritization config
 # ---------------------------------------------------------------------------
 
@@ -397,6 +409,7 @@ class ProjectConfiguration(BaseSettings):
     performers: PerformersConfig = Field(default_factory=PerformersConfig)
     priority: PriorityConfig = Field(default_factory=PriorityConfig)
     stuck_alerts: StuckAlertConfig = Field(default_factory=StuckAlertConfig)
+    health_check: HealthCheckConfig = Field(default_factory=HealthCheckConfig)
 
     # Card assessment backend — determines how assess_card evaluates card sufficiency.
     # "anthropic_api": direct Anthropic SDK call (requires ANTHROPIC_API_KEY)

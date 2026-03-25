@@ -98,22 +98,53 @@ async def dispatch_performer(state: CoordinareState) -> CoordinareState:
             state[key] = value  # type: ignore[literal-required]
         return state
 
-    # --- Health check ---
+    # --- Health check with retry (033) ---
     card_id = str(card.get("id", ""))
 
-    try:
-        health = await service.check_health()
-        health_status = str(health.get("status", "unknown"))
-    except Exception:
-        health_status = "unreachable"
+    config = state.get("config")
+    max_attempts = 3
+    backoff_base = 1.0
+    if config is not None and hasattr(config, "health_check"):
+        max_attempts = config.health_check.max_attempts
+        backoff_base = config.health_check.backoff_seconds
+
+    health: dict[str, Any] = {}
+    health_status = "unknown"
+    from time import monotonic as _monotonic
+    _t0 = _monotonic()
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            health = await service.check_health()
+            health_status = str(health.get("status", "unknown"))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            health_status = "unreachable"
+
+        if health_status not in {"unknown", "unreachable"}:
+            if attempt > 1:
+                logger.info(
+                    "dispatch_performer.health_check_retry_succeeded",
+                    performer_stage=performer_stage,
+                    attempt=attempt,
+                    elapsed_seconds=round(_monotonic() - _t0, 1),
+                )
+            break
+
+        if attempt < max_attempts:
+            delay = backoff_base * (2 ** (attempt - 1))
+            await asyncio.sleep(delay)
 
     state["agent_health_status"] = health_status
 
     if health_status in {"unknown", "unreachable"}:
         logger.warning(
-            "dispatch_performer.agent_unreachable",
+            "dispatch_performer.health_check_retries_exhausted",
             health_status=health_status,
             performer_stage=performer_stage,
+            attempts=max_attempts,
+            elapsed_seconds=round(_monotonic() - _t0, 1),
         )
         state["phase"] = "idle"
         return state
