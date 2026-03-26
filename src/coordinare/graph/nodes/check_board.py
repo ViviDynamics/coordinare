@@ -64,6 +64,28 @@ async def check_board(state: CoordinareState) -> CoordinareState:
     blocked = state["board_snapshot"].get("BLOCKED", [])
     todo = state["board_snapshot"].get("TODO", [])
 
+    # 026: Detect active card removed from all known columns (cancellation)
+    active_card = state.get("current_card")
+    active_phase = state.get("phase", "idle")
+    if active_card and isinstance(active_card, dict) and active_phase not in ("idle",):
+        active_id = str(active_card.get("id", ""))
+        all_known_ids = {
+            str(item_id) for col in (
+                in_progress, in_review, blocked, todo,
+                state["board_snapshot"].get("DONE", []),
+                state["board_snapshot"].get("BACKLOG", []),
+            ) for item_id in col
+        }
+        if active_id and active_id not in all_known_ids:
+            logger.warning(
+                "check_board.active_card_disappeared",
+                card_id=active_id,
+                previous_phase=active_phase,
+            )
+            from coordinare.cancel import cancel_active_card
+            await cancel_active_card(state, move_to_todo=False)
+            return state
+
     if in_review:
         # Preserve dispatching phase from classify_human_feedback even if
         # the GitHub move to IN_PROGRESS failed and the card is still in

@@ -20,6 +20,7 @@ class EventType(StrEnum):
     prolonged_idle = "prolonged_idle"
     performer_error = "performer_error"
     card_stuck = "card_stuck"  # 028: card stuck in same phase too long
+    card_cancelled = "card_cancelled"  # 026: card cancelled by operator or board
 
 
 class NotificationSeverity(StrEnum):

@@ -1182,6 +1182,21 @@ def create_dashboard_app(
         daemon._webhook_trigger.set()
         return JSONResponse({"status": "accepted"}, status_code=202)
 
+    @app.post("/api/cancel")
+    async def cancel_card() -> JSONResponse:
+        """Cancel the currently active card (026-card-cancellation).
+
+        Stops the performer, cleans up workspace, moves card to TODO.
+        Returns 200 with cancellation result. Returns 409 if a cycle is active.
+        """
+        if daemon._cycle_active:
+            return JSONResponse({"status": "cycle_in_progress"}, status_code=409)
+
+        from coordinare.cancel import cancel_active_card
+
+        result = await cancel_active_card(daemon.state)
+        return JSONResponse(result)
+
     @app.get("/events")
     async def sse_events() -> StreamingResponse:
         return StreamingResponse(
