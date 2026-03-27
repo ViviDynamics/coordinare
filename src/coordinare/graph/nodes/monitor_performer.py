@@ -31,6 +31,109 @@ TERMINAL_SUCCESS_STATES: frozenset[str] = frozenset({
     "docs_committed",
 })
 
+# 032: Phase → expected board column mapping for reconciliation
+PHASE_TO_EXPECTED_COLUMN: dict[str, str] = {
+    "monitoring_agent": "IN_PROGRESS",
+    "monitoring_performer": "IN_PROGRESS",
+    "monitoring_pr": "IN_REVIEW",
+    "merging": "IN_REVIEW",
+}
+
+
+def _find_card_column(card_id: str, board_snapshot: dict[str, Any]) -> str | None:
+    """Find which board column a card is in, or None if not found."""
+    for column, items in board_snapshot.items():
+        if isinstance(items, list) and card_id in items:
+            return column
+    return None
+
+
+def _reconcile_board_mismatch(
+    state: dict[str, Any],
+    card_id: str,
+    expected_column: str,
+    actual_column: str | None,
+) -> bool:
+    """Check for board mismatch and reconcile state if needed.
+
+    Returns True if reconciliation occurred (caller should return early).
+    """
+    if actual_column == expected_column:
+        return False  # consistent — no action
+
+    if actual_column is None:
+        # Card disappeared from board — handled by 026 cancel logic
+        logger.warning(
+            "monitor_performer.reconcile.card_not_found",
+            card_id=card_id,
+            expected_column=expected_column,
+        )
+        state["phase"] = "idle"
+        state["current_card"] = None
+        state["agent_dispatch"] = {}
+        state["agent_dispatch_at"] = None
+        return True
+
+    # Backward move (e.g., IN_PROGRESS → TODO)
+    if actual_column in ("TODO", "BACKLOG"):
+        logger.warning(
+            "monitor_performer.reconcile.backward_move",
+            card_id=card_id,
+            expected_column=expected_column,
+            actual_column=actual_column,
+        )
+        state["phase"] = "idle"
+        state["current_card"] = None
+        state["agent_dispatch"] = {}
+        state["agent_dispatch_at"] = None
+        state["relay_feedback"] = []
+        state["pending_reviews"] = []
+        lifecycle_seq = state.get("lifecycle_sequence") or ["implementing"]
+        state["performer_stage"] = lifecycle_seq[0] if lifecycle_seq else "implementing"
+        return True
+
+    # Forward move to DONE
+    if actual_column == "DONE":
+        logger.info(
+            "monitor_performer.reconcile.forward_to_done",
+            card_id=card_id,
+            expected_column=expected_column,
+        )
+        lifecycle_seq = state.get("lifecycle_sequence") or ["implementing"]
+        state["phase"] = "idle"
+        state["current_card"] = None
+        state["agent_dispatch"] = {}
+        state["agent_dispatch_at"] = None
+        state["relay_feedback"] = []
+        state["pending_reviews"] = []
+        state["open_questions"] = []
+        state["performer_stage"] = lifecycle_seq[0] if lifecycle_seq else "implementing"
+        state["system_error_count"] = 0
+        state["system_error_reason"] = None
+        state["system_error_notified"] = False
+        return True
+
+    # Move to BLOCKED
+    if actual_column == "BLOCKED":
+        logger.info(
+            "monitor_performer.reconcile.moved_to_blocked",
+            card_id=card_id,
+            expected_column=expected_column,
+        )
+        state["phase"] = "blocked"
+        state["agent_dispatch"] = {}
+        state["agent_dispatch_at"] = None
+        return True
+
+    # Any other column mismatch — log but don't act
+    logger.debug(
+        "monitor_performer.reconcile.unknown_column",
+        card_id=card_id,
+        expected_column=expected_column,
+        actual_column=actual_column,
+    )
+    return False
+
 
 async def _teardown_workspace(state: CoordinareState) -> None:
     """Tear down the workspace if one was prepared for this session.
@@ -162,6 +265,20 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
     # The finally block guarantees teardown even on unexpected exceptions.
     _teardown_on_exit = True
     try:
+        # 032: Board reconciliation — check card column before polling status
+        current_phase = state.get("phase", "")
+        expected_column = PHASE_TO_EXPECTED_COLUMN.get(current_phase)
+        if expected_column and isinstance(card, dict):
+            board_snapshot = state.get("board_snapshot") or {}
+            # Only reconcile when board_snapshot has at least one card in any column.
+            # An empty snapshot (all columns []) means either check_board hasn't run
+            # yet this cycle, or the board is genuinely empty. In the latter case,
+            # the card would be detected as "disappeared" by check_board's 026 logic.
+            has_data = any(isinstance(v, list) and len(v) > 0 for v in board_snapshot.values())
+            if has_data:
+                actual_column = _find_card_column(card_id, board_snapshot)
+                if _reconcile_board_mismatch(state, card_id, expected_column, actual_column):
+                    return state
         # 027: Check session timeout before polling status
         dispatch_at = state.get("agent_dispatch_at")
         if timeout_secs > 0 and dispatch_at is not None:

@@ -835,3 +835,119 @@ async def test_no_timeout_when_not_configured() -> None:
     result = await monitor_performer(state)
 
     assert result["phase"] == "monitoring_performer"  # no enforcement
+
+
+# ---------------------------------------------------------------------------
+# 032 — Active Board Reconciliation tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reconcile_consistent_column_no_action() -> None:
+    """Card in expected column → normal monitoring continues."""
+    state = initial_state()
+    svc = _Performer(response={"status": "working"})
+    state["performer_services"] = {"implementing": svc}
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing"]
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["phase"] = "monitoring_performer"
+    state["board_snapshot"] = {"IN_PROGRESS": ["ITEM_1"], "TODO": [], "IN_REVIEW": []}
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "monitoring_performer"  # no reconciliation
+
+
+@pytest.mark.asyncio
+async def test_reconcile_backward_move_to_todo() -> None:
+    """Card moved backward to TODO → idle."""
+    state = initial_state()
+    svc = _Performer(response={"status": "working"})
+    state["performer_services"] = {"implementing": svc}
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing"]
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["phase"] = "monitoring_performer"
+    state["board_snapshot"] = {"IN_PROGRESS": [], "TODO": ["ITEM_1"], "IN_REVIEW": []}
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "idle"
+    assert result["agent_dispatch"] == {}
+
+
+@pytest.mark.asyncio
+async def test_reconcile_forward_to_done() -> None:
+    """Card moved to DONE → idle with cleared card."""
+    state = initial_state()
+    svc = _Performer(response={"status": "working"})
+    state["performer_services"] = {"implementing": svc}
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing"]
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["phase"] = "monitoring_performer"
+    state["board_snapshot"] = {"IN_PROGRESS": [], "TODO": [], "DONE": ["ITEM_1"]}
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "idle"
+    assert result["current_card"] is None
+
+
+@pytest.mark.asyncio
+async def test_reconcile_moved_to_blocked() -> None:
+    """Card moved to BLOCKED → blocked phase."""
+    state = initial_state()
+    svc = _Performer(response={"status": "working"})
+    state["performer_services"] = {"implementing": svc}
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing"]
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["phase"] = "monitoring_performer"
+    state["board_snapshot"] = {"IN_PROGRESS": [], "BLOCKED": ["ITEM_1"], "TODO": []}
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "blocked"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_no_board_snapshot_skips() -> None:
+    """No board_snapshot → reconciliation skipped, normal monitoring."""
+    state = initial_state()
+    svc = _Performer(response={"status": "working"})
+    state["performer_services"] = {"implementing": svc}
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing"]
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["phase"] = "monitoring_performer"
+    # board_snapshot defaults to {} from initial_state — reconciliation skipped
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "monitoring_performer"  # reconciliation skipped
+
+
+@pytest.mark.asyncio
+async def test_reconcile_card_not_found_in_populated_board() -> None:
+    """Card not in any column of a populated board → idle."""
+    state = initial_state()
+    svc = _Performer(response={"status": "working"})
+    state["performer_services"] = {"implementing": svc}
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing"]
+    state["current_card"] = {"id": "ITEM_GONE", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["phase"] = "monitoring_performer"
+    state["board_snapshot"] = {"IN_PROGRESS": ["OTHER_CARD"], "TODO": [], "IN_REVIEW": []}
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "idle"
+    assert result["current_card"] is None
