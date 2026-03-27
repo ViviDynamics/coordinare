@@ -4,6 +4,7 @@ from __future__ import annotations
 import pytest
 
 from coordinare.graph.nodes.classify_human_feedback import (
+    _classify_with_ai,
     classify_feedback_concerns,
     classify_human_feedback,
 )
@@ -199,3 +200,123 @@ class TestClassifyHumanFeedback:
 
         # "architecting" comes before "documenting" in lifecycle
         assert result["performer_stage"] == "architecting"
+
+
+# ---------------------------------------------------------------------------
+# 029 — AI Classification tests
+# ---------------------------------------------------------------------------
+
+
+class TestAIClassification:
+    """Tests for _classify_with_ai and AI-first routing."""
+
+    @pytest.mark.asyncio
+    async def test_ai_returns_valid_classification(self) -> None:
+        """AI backend returns valid classification → used."""
+        import json
+        from unittest.mock import AsyncMock
+
+        backend = AsyncMock()
+        backend.assess = AsyncMock(return_value={
+            "rationale": json.dumps([
+                {"concern": "security", "confidence": 0.9},
+                {"concern": "implementation", "confidence": 0.8},
+            ])
+        })
+
+        reviews = [{"body": "There's a vulnerability in the auth flow"}]
+        result = await _classify_with_ai(reviews, backend)
+
+        assert result is not None
+        assert "security" in result
+        assert "implementation" in result
+
+    @pytest.mark.asyncio
+    async def test_ai_low_confidence_returns_none(self) -> None:
+        """AI returns all concerns below threshold → returns None (triggers keyword fallback)."""
+        import json
+        from unittest.mock import AsyncMock
+
+        backend = AsyncMock()
+        backend.assess = AsyncMock(return_value={
+            "rationale": json.dumps([
+                {"concern": "implementation", "confidence": 0.3},
+                {"concern": "review", "confidence": 0.2},
+            ])
+        })
+
+        reviews = [{"body": "minor style issue"}]
+        result = await _classify_with_ai(reviews, backend)
+
+        assert result is None  # all below 0.6 threshold
+
+    @pytest.mark.asyncio
+    async def test_ai_backend_error_returns_none(self) -> None:
+        """AI backend raises → returns None (triggers keyword fallback)."""
+        from unittest.mock import AsyncMock
+
+        backend = AsyncMock()
+        backend.assess.side_effect = ConnectionError("backend down")
+
+        reviews = [{"body": "there's a bug"}]
+        result = await _classify_with_ai(reviews, backend)
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_ai_malformed_response_returns_none(self) -> None:
+        """AI returns non-JSON → returns None."""
+        from unittest.mock import AsyncMock
+
+        backend = AsyncMock()
+        backend.assess.return_value = {"rationale": "not json at all"}
+
+        reviews = [{"body": "fix this"}]
+        result = await _classify_with_ai(reviews, backend)
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_classify_uses_ai_when_available(self) -> None:
+        """classify_human_feedback uses AI classification when backend is available."""
+        import json
+        from unittest.mock import AsyncMock
+
+        backend = AsyncMock()
+        backend.assess = AsyncMock(return_value={
+            "rationale": json.dumps([{"concern": "security", "confidence": 0.95}])
+        })
+
+        state = initial_state()
+        state["lifecycle_sequence"] = ["implementing", "security"]
+        state["performer_stage"] = "implementing"
+        state["pending_reviews"] = [{"body": "I think there might be a vulnerability"}]
+        state["assessment_backend"] = backend
+        state["github_service"] = AsyncMock(move_card=AsyncMock())
+        state["current_card"] = {"id": "ITEM_1", "status": "IN_REVIEW"}
+
+        result = await classify_human_feedback(state)
+
+        assert result["performer_stage"] == "security"
+        backend.assess.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_classify_falls_back_to_keywords_on_ai_failure(self) -> None:
+        """When AI fails, keyword classification is used."""
+        from unittest.mock import AsyncMock
+
+        backend = AsyncMock()
+        backend.assess.side_effect = ConnectionError("down")
+
+        state = initial_state()
+        state["lifecycle_sequence"] = ["implementing", "reviewing"]
+        state["performer_stage"] = "reviewing"
+        state["pending_reviews"] = [{"body": "The code has a bug in the error handling logic."}]
+        state["assessment_backend"] = backend
+        state["github_service"] = AsyncMock(move_card=AsyncMock())
+        state["current_card"] = {"id": "ITEM_1", "status": "IN_REVIEW"}
+
+        result = await classify_human_feedback(state)
+
+        # Keyword matching should pick up "bug" → implementation
+        assert result["performer_stage"] == "implementing"

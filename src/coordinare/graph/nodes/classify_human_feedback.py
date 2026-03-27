@@ -77,12 +77,110 @@ _CONCERN_KEYWORDS: dict[str, list[str]] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# 029 — AI Classification prompt and confidence threshold
+# ---------------------------------------------------------------------------
+
+CONFIDENCE_THRESHOLD = 0.6
+
+CLASSIFICATION_PROMPT = """Classify the following PR review comments into concern categories.
+
+Valid categories: implementation, architecture, security, documentation, qa, review
+
+For each comment, return a JSON array of objects with "concern" (string) and "confidence" (float 0.0-1.0).
+Only include concerns with confidence >= {threshold}.
+
+Example response:
+[{{"concern": "implementation", "confidence": 0.9}}, {{"concern": "security", "confidence": 0.7}}]
+
+PR comments to classify:
+{comment_text}
+
+Respond with ONLY a JSON array. No explanation."""
+
+
+async def _classify_with_ai(
+    reviews: list[dict[str, Any]],
+    assessment_backend: Any,
+) -> list[str] | None:
+    """Classify PR comments using the AI assessment backend.
+
+    Returns a sorted list of concern names above the confidence threshold,
+    or None if the AI backend is unavailable or returns an unusable response.
+    """
+    import json
+
+    # Build comment text from all reviews
+    parts: list[str] = []
+    for review in reviews:
+        body = str(review.get("body", ""))
+        if body.strip():
+            parts.append(body)
+        raw_comments = review.get("comments")
+        if isinstance(raw_comments, list):
+            for c in raw_comments:
+                if isinstance(c, dict):
+                    parts.append(str(c.get("body", "")))
+    comment_text = "\n\n".join(parts)
+
+    if not comment_text.strip():
+        return None
+
+    prompt = CLASSIFICATION_PROMPT.format(comment_text=comment_text, threshold=CONFIDENCE_THRESHOLD)
+
+    # The assessment backend's assess() takes a card dict and builds a prompt
+    # internally. We pass a synthetic card with our classification prompt as
+    # the description so the backend sends it to the AI model.
+    synthetic_card = {
+        "title": "Classify PR feedback",
+        "description": prompt,
+        "acceptance_criteria": [],
+    }
+
+    try:
+        result = await assessment_backend.assess(synthetic_card)
+    except Exception as exc:
+        logger.warning("classify_human_feedback.ai_backend_error", error=str(exc))
+        return None
+
+    if not isinstance(result, dict):
+        logger.warning("classify_human_feedback.ai_response_not_dict")
+        return None
+
+    # Parse the response — the backend returns a sufficiency dict;
+    # we look for the AI's text response in "rationale" or "questions".
+    raw = result.get("rationale", result.get("response", result.get("text", "")))
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except (ValueError, TypeError):
+            logger.warning("classify_human_feedback.ai_response_parse_failed")
+            return None
+    elif isinstance(raw, list):
+        parsed = raw
+    else:
+        return None
+
+    if not isinstance(parsed, list):
+        return None
+
+    concerns = set()
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        concern = item.get("concern", "")
+        confidence = item.get("confidence", 0.0)
+        if isinstance(confidence, (int, float)) and confidence >= CONFIDENCE_THRESHOLD and concern in CONCERN_TO_STAGE:
+            concerns.add(concern)
+
+    return sorted(concerns) if concerns else None
+
+
 def classify_feedback_concerns(reviews: list[dict[str, Any]]) -> list[str]:
     """Extract concern categories from pending reviews using keyword heuristics.
 
-    This is the V1 implementation.  A future version may use the assessment
-    backend (Claude) for AI-powered classification.  For now, keyword matching
-    provides fast, deterministic routing.
+    This is the fallback classifier used when the AI backend is unavailable
+    or returns no actionable results.
     """
     concerns: set[str] = set()
 
@@ -118,14 +216,24 @@ async def classify_human_feedback(state: CoordinareState) -> CoordinareState:
         state["phase"] = "monitoring_pr"
         return state
 
-    # Classify concerns from review content.
-    concern_names = classify_feedback_concerns(pending_reviews)
+    # 029: Try AI classification first, fall back to keywords
+    classification_method = "keyword"
+    assessment_backend = state.get("assessment_backend")
+    concern_names: list[str] | None = None
+
+    if assessment_backend is not None:
+        concern_names = await _classify_with_ai(pending_reviews, assessment_backend)
+        if concern_names is not None:
+            classification_method = "ai"
+
+    if concern_names is None:
+        concern_names = classify_feedback_concerns(pending_reviews)
+
     target_stages = [
         CONCERN_TO_STAGE[c] for c in concern_names if c in CONCERN_TO_STAGE
     ]
 
     if not target_stages:
-        # Could not classify — default to implementer.
         target_stages = ["implementing"]
 
     target_stage = _earliest_stage(target_stages, lifecycle)
@@ -139,6 +247,7 @@ async def classify_human_feedback(state: CoordinareState) -> CoordinareState:
         concerns=concern_names,
         target_stage=target_stage,
         review_count=len(pending_reviews),
+        classification_method=classification_method,
     )
 
     # Move card to IN_PROGRESS on the board so the next check_board cycle
