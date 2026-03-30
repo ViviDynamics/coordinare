@@ -9,11 +9,14 @@ logic (FR-004).  Terminal success states trigger lifecycle advancement via
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from coordinare.lib.acceptance_criteria import parse_acceptance_criteria
 from coordinare.services.github import PermanentGitHubError
 from coordinare.transport.base import TransportError
 
@@ -249,6 +252,11 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
     if service is None and not performer_services:
         service = state.get("agent_service")
 
+    # 030: Reset requirement-change flags at cycle start so stale flags never persist.
+    # Placed before all early-return paths (incl. service/card guard, board reconciliation).
+    state["requirements_changed"] = False
+    state["requirements_changed_details"] = {}
+
     if service is None or not isinstance(card, dict):
         state["phase"] = "idle"
         return state
@@ -354,6 +362,66 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
             state["performer_metrics"] = new_metrics
 
         marker = status.get("status", "working")
+
+        # 030: Live requirement sync — detect card changes mid-cycle.
+        # Only check when the performer is still working; terminal statuses
+        # (success, error, etc.) take priority and must not be preempted.
+        config = state.get("config")
+        policy = "warn"
+        if config is not None and hasattr(config, "requirement_change_policy"):
+            policy = config.requirement_change_policy
+
+        if (
+            policy != "ignore"
+            and marker == "working"
+            and isinstance(card, dict)
+            and github is not None
+        ):
+            issue_id_raw = card.get("issue_id")
+            issue_id = str(issue_id_raw).strip() if issue_id_raw is not None else ""
+            if issue_id:
+                try:
+                    fresh = await github.get_issue_details(issue_id)
+                    old_desc = str(card.get("description", ""))
+                    new_desc = fresh.get("body") or fresh.get("description") or ""
+                    has_new_field = ("body" in fresh) or ("description" in fresh)
+                    if old_desc.strip() != new_desc.strip() and (new_desc.strip() or has_new_field):
+                        state["requirements_changed"] = True
+                        state["requirements_changed_details"] = {
+                            "old_length": len(old_desc),
+                            "new_length": len(new_desc),
+                        }
+                        if policy == "warn":
+                            logger.warning(
+                                "monitor_performer.requirements_changed",
+                                card_id=card_id,
+                                performer_stage=stage,
+                                policy=policy,
+                            )
+                        elif policy == "re-dispatch":
+                            logger.info(
+                                "monitor_performer.requirements_changed.re_dispatch",
+                                card_id=card_id,
+                                performer_stage=stage,
+                                workspace_policy="restart",
+                            )
+                            card["description"] = new_desc
+                            with contextlib.suppress(Exception):
+                                card["acceptance_criteria"] = parse_acceptance_criteria(new_desc)
+                            state["current_card"] = card
+                            state["phase"] = "dispatching"
+                            state["agent_dispatch"] = {}
+                            state["agent_dispatch_at"] = None
+                            return state
+                except asyncio.CancelledError:
+                    raise
+                except (ConnectionError, TimeoutError, OSError, ValueError) as exc:
+                    logger.debug(
+                        "monitor_performer.requirement_check_failed",
+                        card_id=card_id,
+                        error=str(exc),
+                        exc_info=True,
+                    )
 
         # --- Terminal success states ---
         if marker in TERMINAL_SUCCESS_STATES:

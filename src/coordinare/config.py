@@ -163,6 +163,13 @@ class PersonasConfig(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# 030 — Live Requirement Sync config
+# ---------------------------------------------------------------------------
+
+RequirementChangePolicy = Literal["ignore", "warn", "re-dispatch"]
+
+
+# ---------------------------------------------------------------------------
 # 033 — Smart Health-Check Retry config
 # ---------------------------------------------------------------------------
 
@@ -410,6 +417,7 @@ class ProjectConfiguration(BaseSettings):
     priority: PriorityConfig = Field(default_factory=PriorityConfig)
     stuck_alerts: StuckAlertConfig = Field(default_factory=StuckAlertConfig)
     health_check: HealthCheckConfig = Field(default_factory=HealthCheckConfig)
+    requirement_change_policy: RequirementChangePolicy = "warn"  # 030: ignore | warn | re-dispatch
 
     # Card assessment backend — determines how assess_card evaluates card sufficiency.
     # "anthropic_api": direct Anthropic SDK call (requires ANTHROPIC_API_KEY)

@@ -951,3 +951,180 @@ async def test_reconcile_card_not_found_in_populated_board() -> None:
 
     assert result["phase"] == "idle"
     assert result["current_card"] is None
+
+
+# ---------------------------------------------------------------------------
+# 030 — Live Requirement Sync tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_requirement_change_detected_warn_policy() -> None:
+    """Description change → requirements_changed=True, phase stays monitoring."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    github = MagicMock()
+    github.get_issue_details = AsyncMock(return_value={"body": "NEW description"})
+
+    config = MagicMock()
+    config.requirement_change_policy = "warn"
+
+    state = initial_state()
+    svc = _Performer(response={"status": "working"})
+    state["performer_services"] = {"implementing": svc}
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing"]
+    state["current_card"] = {"id": "ITEM_1", "issue_id": "ISS_1", "description": "OLD description", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["phase"] = "monitoring_performer"
+    state["github_service"] = github
+    state["config"] = config
+
+    result = await monitor_performer(state)
+
+    assert result["requirements_changed"] is True
+    assert result["phase"] == "monitoring_performer"  # warn doesn't re-dispatch
+
+
+@pytest.mark.asyncio
+async def test_requirement_unchanged_no_flag() -> None:
+    """Same description → requirements_changed remains False."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    github = MagicMock()
+    github.get_issue_details = AsyncMock(return_value={"body": "Same description"})
+
+    config = MagicMock()
+    config.requirement_change_policy = "warn"
+
+    state = initial_state()
+    svc = _Performer(response={"status": "working"})
+    state["performer_services"] = {"implementing": svc}
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing"]
+    state["current_card"] = {"id": "ITEM_1", "issue_id": "ISS_1", "description": "Same description", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["phase"] = "monitoring_performer"
+    state["github_service"] = github
+    state["config"] = config
+
+    result = await monitor_performer(state)
+
+    assert result["requirements_changed"] is False
+
+
+@pytest.mark.asyncio
+async def test_requirement_change_redispatch_policy() -> None:
+    """re-dispatch policy → phase set to dispatching with updated card."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    github = MagicMock()
+    github.get_issue_details = AsyncMock(return_value={"body": "UPDATED requirements"})
+
+    config = MagicMock()
+    config.requirement_change_policy = "re-dispatch"
+
+    state = initial_state()
+    svc = _Performer(response={"status": "working"})
+    state["performer_services"] = {"implementing": svc}
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing"]
+    state["current_card"] = {"id": "ITEM_1", "issue_id": "ISS_1", "description": "OLD requirements", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["phase"] = "monitoring_performer"
+    state["github_service"] = github
+    state["config"] = config
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "dispatching"
+    assert result["current_card"]["description"] == "UPDATED requirements"
+    assert result["agent_dispatch"] == {}
+
+
+@pytest.mark.asyncio
+async def test_requirement_check_api_failure_no_crash() -> None:
+    """GitHub API failure → no crash, monitoring continues."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    github = MagicMock()
+    github.get_issue_details = AsyncMock(side_effect=ConnectionError("api down"))
+
+    config = MagicMock()
+    config.requirement_change_policy = "warn"
+
+    state = initial_state()
+    svc = _Performer(response={"status": "working"})
+    state["performer_services"] = {"implementing": svc}
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing"]
+    state["current_card"] = {"id": "ITEM_1", "issue_id": "ISS_1", "description": "desc", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["phase"] = "monitoring_performer"
+    state["github_service"] = github
+    state["config"] = config
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "monitoring_performer"  # continues despite error
+
+
+@pytest.mark.asyncio
+async def test_requirement_change_ignore_policy() -> None:
+    """ignore policy → requirement change check skipped, no warning, performer continues."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    github = MagicMock()
+    github.get_issue_details = AsyncMock(return_value={"body": "NEW description"})
+
+    config = MagicMock()
+    config.requirement_change_policy = "ignore"
+
+    state = initial_state()
+    svc = _Performer(response={"status": "working"})
+    state["performer_services"] = {"implementing": svc}
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing"]
+    state["current_card"] = {"id": "ITEM_1", "issue_id": "ISS_1", "description": "OLD description", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["phase"] = "monitoring_performer"
+    state["github_service"] = github
+    state["config"] = config
+
+    result = await monitor_performer(state)
+
+    # ignore policy skips the check entirely — requirements_changed stays False
+    assert result["requirements_changed"] is False
+    assert result["phase"] == "monitoring_performer"
+    # and no GitHub requirement refetch should be performed
+    github.get_issue_details.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_requirement_sync_skipped_on_terminal_status() -> None:
+    """Terminal performer status → requirement sync skipped, no re-dispatch."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    github = MagicMock()
+    github.get_issue_details = AsyncMock(return_value={"body": "CHANGED"})
+    github.move_card = AsyncMock()
+
+    config = MagicMock()
+    config.requirement_change_policy = "re-dispatch"
+
+    state = initial_state()
+    svc = _Performer(response={"status": "pr_opened", "pr_url": "https://github.com/test/1", "pr_node_id": "PR_1"})
+    state["performer_services"] = {"implementing": svc}
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing"]
+    state["current_card"] = {"id": "ITEM_1", "issue_id": "ISS_1", "description": "OLD", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["phase"] = "monitoring_performer"
+    state["github_service"] = github
+    state["config"] = config
+
+    result = await monitor_performer(state)
+
+    # Terminal status takes priority — no re-dispatch even with re-dispatch policy
+    assert result["phase"] != "dispatching"
+    github.get_issue_details.assert_not_awaited()

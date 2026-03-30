@@ -107,6 +107,8 @@ class CoordinareState(TypedDict, total=False):
     relay_feedback: list[dict[str, Any]]  # PR comments to relay on next dispatch
     role_timeouts: dict[str, int]  # 027: stage name → timeout seconds
     phase_entered_at: datetime | None  # 028: timestamp when current phase was entered
+    requirements_changed: bool  # 030: True if card requirements changed during monitoring
+    requirements_changed_details: dict[str, Any]  # 030: diff details
 
 
 def initial_state() -> CoordinareState:
