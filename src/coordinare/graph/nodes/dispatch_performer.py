@@ -60,10 +60,52 @@ async def dispatch_performer(state: CoordinareState) -> CoordinareState:
     """
     # Lazy import to avoid circular dependency -- monitor_performer is created
     # in parallel and will exist by the time this node is actually invoked.
-    from coordinare.graph.nodes.monitor_performer import _advance_stage
+    from coordinare.graph.nodes.monitor_performer import _advance_stage, _apply_pending_override
 
     card: dict[str, Any] | None = state.get("current_card")
     github = state.get("github_service")
+
+    # 031: Check for a pending human override before dispatching.
+    # Done after card/github extraction so skip-final can move the card.
+    override_result = _apply_pending_override(state)
+    if override_result is not None:
+        new_phase = override_result.get("phase")
+        if new_phase == "dispatching":
+            # Skip/restart kept us in dispatching — continue and dispatch
+            # for the updated performer_stage in this invocation.
+            state = override_result
+        elif new_phase == "monitoring_pr" and github is not None:
+            # Skip on final stage — move card to IN_REVIEW, validate PR fields.
+            effective_card = override_result.get("current_card", card)
+            if not isinstance(effective_card, dict):
+                return override_result
+            card_id = str(effective_card.get("id", ""))
+            pr_url = effective_card.get("pr_url")
+            pr_node_id = effective_card.get("pr_node_id")
+            if pr_url and pr_node_id:
+                try:
+                    await github.move_card(card_id, "IN_REVIEW")
+                except Exception:
+                    logger.warning("override.skip_move_card_failed", card_id=card_id)
+            else:
+                override_result["phase"] = "system_error"
+                override_result["system_error_count"] = state.get("system_error_count", 0) + 1
+                override_result["system_error_reason"] = (
+                    "Skip override reached final stage but pr_url or pr_node_id is missing"
+                )
+                override_result["system_error_last_at"] = datetime.now(UTC)
+                override_result["system_error_notified"] = False
+                # Restore card status — _advance_stage set IN_REVIEW but we never moved it.
+                updated_card = override_result.get("current_card")
+                if isinstance(updated_card, dict):
+                    previous_status = updated_card.get("previous_status")
+                    if previous_status is not None:
+                        updated_card["status"] = previous_status
+                    override_result["current_card"] = updated_card
+            return override_result
+        else:
+            # Non-dispatching phase (blocked, etc.) — return early.
+            return override_result
     performer_stage: str = state.get("performer_stage", "")  # type: ignore[assignment]
     performer_services: dict[str, Any] = state.get("performer_services", {})  # type: ignore[assignment]
 

@@ -90,7 +90,8 @@ async def check_board(state: CoordinareState) -> CoordinareState:
         # Preserve dispatching phase from classify_human_feedback even if
         # the GitHub move to IN_PROGRESS failed and the card is still in
         # IN_REVIEW.  The dispatch will move it on the next attempt.
-        if state.get("phase") == "dispatching":
+        # Also preserve blocked phase from veto override (031).
+        if state.get("phase") in ("dispatching", "blocked"):
             return state
         state["phase"] = "monitoring_pr"
         return state
@@ -98,10 +99,11 @@ async def check_board(state: CoordinareState) -> CoordinareState:
         if state.get("system_error_count", 0) > 0:
             state["phase"] = "system_error"
             return state
-        # Preserve dispatching and monitoring_performer phases so the
-        # lifecycle re-entry and new performer monitoring aren't overwritten.
+        # Preserve dispatching, monitoring_performer, and blocked phases so
+        # the lifecycle re-entry, performer monitoring, and veto overrides
+        # aren't overwritten by check_board.
         current_phase = state.get("phase")
-        if current_phase in ("dispatching", "monitoring_performer"):
+        if current_phase in ("dispatching", "monitoring_performer", "blocked"):
             return state
         state["phase"] = "monitoring_agent"
         return state

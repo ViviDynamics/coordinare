@@ -86,6 +86,7 @@ async def cancel_active_card(
     state["performer_stage"] = lifecycle_seq[0] if lifecycle_seq else "implementing"
     state["relay_feedback"] = []
     state["pending_reviews"] = []
+    state["pending_override"] = None  # 031: clear any queued override
     state["card_clarifications"] = []
 
     # Emit notification

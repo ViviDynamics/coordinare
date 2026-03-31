@@ -109,6 +109,7 @@ class CoordinareState(TypedDict, total=False):
     phase_entered_at: datetime | None  # 028: timestamp when current phase was entered
     requirements_changed: bool  # 030: True if card requirements changed during monitoring
     requirements_changed_details: dict[str, Any]  # 030: diff details
+    pending_override: dict[str, Any] | None  # 031: human override queued via dashboard or PR comment
 
 
 def initial_state() -> CoordinareState:
@@ -136,4 +137,5 @@ def initial_state() -> CoordinareState:
         "lifecycle_sequence": ["implementing"],
         "relay_feedback": [],
         "role_timeouts": {},
+        "pending_override": None,
     }

@@ -320,3 +320,160 @@ class TestAIClassification:
 
         # Keyword matching should pick up "bug" → implementation
         assert result["performer_stage"] == "implementing"
+
+
+# ---------------------------------------------------------------------------
+# 031 — /coordinare command parsing tests
+# ---------------------------------------------------------------------------
+
+
+class TestParseCommandsParsing:
+    """Test _parse_coordinare_commands function."""
+
+    def test_skip_command(self) -> None:
+        from coordinare.graph.nodes.classify_human_feedback import _parse_coordinare_commands
+
+        reviews = [{"body": "LGTM but /coordinare skip-reviewer please"}]
+        result = _parse_coordinare_commands(reviews)
+        assert result == {"action": "skip"}
+
+    def test_restart_from_command(self) -> None:
+        from coordinare.graph.nodes.classify_human_feedback import _parse_coordinare_commands
+
+        reviews = [{"body": "/coordinare restart-from architect"}]
+        lifecycle = ["implementing", "architecting", "reviewing"]
+        result = _parse_coordinare_commands(reviews, lifecycle)
+        assert result == {"action": "restart", "target_stage": "architecting"}
+
+    def test_veto_command(self) -> None:
+        from coordinare.graph.nodes.classify_human_feedback import _parse_coordinare_commands
+
+        reviews = [{"body": "/coordinare veto"}]
+        result = _parse_coordinare_commands(reviews)
+        assert result == {"action": "veto"}
+
+    def test_no_command(self) -> None:
+        from coordinare.graph.nodes.classify_human_feedback import _parse_coordinare_commands
+
+        reviews = [{"body": "Looks good, minor style nit."}]
+        result = _parse_coordinare_commands(reviews)
+        assert result is None
+
+    def test_mixed_text_with_command(self) -> None:
+        from coordinare.graph.nodes.classify_human_feedback import _parse_coordinare_commands
+
+        reviews = [
+            {"body": "I think we need to go back. /coordinare restart-from implementing"},
+        ]
+        lifecycle = ["implementing", "reviewing"]
+        result = _parse_coordinare_commands(reviews, lifecycle)
+        assert result == {"action": "restart", "target_stage": "implementing"}
+
+    def test_case_insensitive(self) -> None:
+        from coordinare.graph.nodes.classify_human_feedback import _parse_coordinare_commands
+
+        reviews = [{"body": "/Coordinare VETO"}]
+        result = _parse_coordinare_commands(reviews)
+        assert result == {"action": "veto"}
+
+
+class TestClassifyHumanFeedbackCommands:
+    """Integration tests for /coordinare commands in classify_human_feedback."""
+
+    @pytest.mark.asyncio
+    async def test_skip_command_sets_override(self) -> None:
+        state = initial_state()
+        state["pending_reviews"] = [{"body": "/coordinare skip-reviewer"}]
+        state["lifecycle_sequence"] = ["implementing", "reviewing"]
+
+        result = await classify_human_feedback(state)
+
+        assert result["pending_override"] == {"action": "skip"}
+        assert result["phase"] == "dispatching"
+        assert result["pending_reviews"] == []
+
+    @pytest.mark.asyncio
+    async def test_veto_command_sets_override(self) -> None:
+        state = initial_state()
+        state["pending_reviews"] = [{"body": "/coordinare veto"}]
+        state["lifecycle_sequence"] = ["implementing"]
+
+        result = await classify_human_feedback(state)
+
+        assert result["pending_override"] == {"action": "veto"}
+        assert result["phase"] == "dispatching"
+
+    @pytest.mark.asyncio
+    async def test_command_skipped_when_override_pending(self) -> None:
+        """If dashboard already queued an override, PR command is ignored (FR-010)."""
+        from unittest.mock import AsyncMock
+
+        state = initial_state()
+        state["pending_reviews"] = [{"body": "/coordinare skip-reviewer"}]
+        state["lifecycle_sequence"] = ["implementing", "reviewing"]
+        state["pending_override"] = {"action": "veto"}  # dashboard override
+        state["github_service"] = AsyncMock(move_card=AsyncMock())
+        state["current_card"] = {"id": "ITEM_1", "status": "IN_REVIEW"}
+
+        result = await classify_human_feedback(state)
+
+        # Dashboard veto preserved, PR skip command ignored
+        assert result["pending_override"] == {"action": "veto"}
+        assert result["phase"] == "dispatching"  # normal classification path
+
+    @pytest.mark.asyncio
+    async def test_restart_from_valid_stage_queues_override(self) -> None:
+        """Valid restart-from with stage name queues override."""
+        state = initial_state()
+        state["pending_reviews"] = [{"body": "/coordinare restart-from implementing"}]
+        state["lifecycle_sequence"] = ["implementing", "reviewing"]
+
+        result = await classify_human_feedback(state)
+
+        assert result["pending_override"] == {"action": "restart", "target_stage": "implementing"}
+        assert result["phase"] == "dispatching"
+
+    @pytest.mark.asyncio
+    async def test_restart_from_role_noun_resolved_to_stage(self) -> None:
+        """restart-from with role noun (architect) resolves to stage (architecting)."""
+        state = initial_state()
+        state["pending_reviews"] = [{"body": "/coordinare restart-from architect"}]
+        state["lifecycle_sequence"] = ["implementing", "architecting", "reviewing"]
+
+        result = await classify_human_feedback(state)
+
+        assert result["pending_override"] == {"action": "restart", "target_stage": "architecting"}
+        assert result["phase"] == "dispatching"
+
+    @pytest.mark.asyncio
+    async def test_restart_from_invalid_role_falls_through(self) -> None:
+        """Invalid restart-from target falls through to normal classification."""
+        from unittest.mock import AsyncMock
+
+        state = initial_state()
+        state["pending_reviews"] = [{"body": "/coordinare restart-from nonexistent"}]
+        state["lifecycle_sequence"] = ["implementing", "reviewing"]
+        state["github_service"] = AsyncMock(move_card=AsyncMock())
+        state["current_card"] = {"id": "ITEM_1", "status": "IN_REVIEW"}
+
+        result = await classify_human_feedback(state)
+
+        # Invalid role → falls through to normal classification
+        assert result.get("pending_override") is None
+        assert result["phase"] == "dispatching"  # normal classification path
+
+    @pytest.mark.asyncio
+    async def test_normal_text_no_override(self) -> None:
+        """Regular PR comment without /coordinare prefix → normal classification."""
+        from unittest.mock import AsyncMock
+
+        state = initial_state()
+        state["pending_reviews"] = [{"body": "There's a bug in the login flow"}]
+        state["lifecycle_sequence"] = ["implementing", "reviewing"]
+        state["github_service"] = AsyncMock(move_card=AsyncMock())
+        state["current_card"] = {"id": "ITEM_1", "status": "IN_REVIEW"}
+
+        result = await classify_human_feedback(state)
+
+        assert result.get("pending_override") is None
+        assert result["phase"] == "dispatching"  # normal feedback path

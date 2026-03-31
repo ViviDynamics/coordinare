@@ -13,6 +13,7 @@ detects APPROVED reviews and sets ``phase="merging"`` before this node runs.
 """
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -21,6 +22,58 @@ if TYPE_CHECKING:
     from coordinare.graph.state import CoordinareState
 
 logger = structlog.get_logger(__name__)
+
+# ---------------------------------------------------------------------------
+# 031 — /coordinare command parsing for human overrides
+# ---------------------------------------------------------------------------
+
+_COMMAND_RE = re.compile(
+    r"/coordinare\s+(skip-\w+|restart-from\s+\w+|veto)",
+    re.IGNORECASE,
+)
+
+def _resolve_stage(name: str, lifecycle: list[str]) -> str:
+    """Resolve a role noun or stage name to a lifecycle stage.
+
+    Accepts both role nouns (e.g. ``architect``) and stage names
+    (e.g. ``architecting``).  Returns the original name if it's already
+    a valid stage, or the mapped stage derived from
+    ``dispatch_performer._STAGE_TO_ROLE`` (the canonical mapping).
+    """
+    if name in lifecycle:
+        return name
+    # Build role→stage from the canonical stage→role mapping (single source of truth).
+    from coordinare.graph.nodes.dispatch_performer import _STAGE_TO_ROLE
+    role_to_stage = {v: k for k, v in _STAGE_TO_ROLE.items()}
+    return role_to_stage.get(name, name)
+
+
+def _parse_coordinare_commands(
+    reviews: list[dict[str, Any]],
+    lifecycle: list[str] | None = None,
+) -> dict[str, Any] | None:
+    """Extract the first ``/coordinare`` command from review bodies.
+
+    Recognized commands: ``skip-<role>``, ``restart-from <role>``, ``veto``.
+    Returns a pending-override dict or None if no command was found.
+    """
+    _lifecycle = lifecycle or []
+    for review in reviews:
+        body = str(review.get("body", ""))
+        match = _COMMAND_RE.search(body)
+        if match:
+            cmd = match.group(1).lower().strip()
+            if cmd == "veto":
+                return {"action": "veto"}
+            if cmd.startswith("skip-"):
+                return {"action": "skip"}
+            if cmd.startswith("restart-from"):
+                # Regex guarantees \w+ after restart-from, so split always has 2+ parts.
+                parts = cmd.split()
+                target = parts[1]
+                resolved = _resolve_stage(target, _lifecycle)
+                return {"action": "restart", "target_stage": resolved}
+    return None
 
 # ---------------------------------------------------------------------------
 # Concern → performer stage mapping
@@ -215,6 +268,26 @@ async def classify_human_feedback(state: CoordinareState) -> CoordinareState:
         # No reviews to classify — stay in monitoring_pr.
         state["phase"] = "monitoring_pr"
         return state
+
+    # 031: Parse /coordinare commands before concern classification.
+    # Only parse if no override is already queued (dashboard takes precedence per FR-010).
+    if state.get("pending_override") is None:
+        command = _parse_coordinare_commands(pending_reviews, lifecycle)
+        if command is not None:
+            # Validate restart-from target against lifecycle
+            if command.get("action") == "restart" and command.get("target_stage") not in lifecycle:
+                logger.warning(
+                    "classify_human_feedback.invalid_restart_target",
+                    target=command.get("target_stage"),
+                    lifecycle=lifecycle,
+                )
+                # Don't set override — fall through to normal classification
+            else:
+                logger.info("classify_human_feedback.override_command", command=command)
+                state["pending_override"] = command
+                state["pending_reviews"] = []
+                state["phase"] = "dispatching"
+                return state
 
     # 029: Try AI classification first, fall back to keywords
     classification_method = "keyword"

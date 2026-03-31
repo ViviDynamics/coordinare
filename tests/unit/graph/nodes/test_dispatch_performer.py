@@ -749,3 +749,96 @@ async def test_health_cancelled_error_propagates() -> None:
 
     with pytest.raises(_aio.CancelledError):
         await dispatch_performer(state)
+
+
+# ---------------------------------------------------------------------------
+# 031 — Human Override Controls in dispatch_performer
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dispatch_performer_skip_override_continues_dispatching() -> None:
+    """Skip override advances stage, then dispatch continues for the new stage."""
+    svc = _Service()
+    github = _GitHub()
+
+    state = initial_state()
+    state["performer_services"] = {"implementing": svc, "reviewing": svc}
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing", "reviewing"]
+    state["current_card"] = {"id": "ITEM_1", "title": "Test", "status": "IN_PROGRESS"}
+    state["github_service"] = github
+    state["pending_override"] = {"action": "skip"}
+
+    result = await dispatch_performer(state)
+
+    assert result["performer_stage"] == "reviewing"
+    assert result["pending_override"] is None
+    # Skip override keeps phase=dispatching, so dispatch continues for reviewing
+    assert result["phase"] == "monitoring_performer"
+    assert len(svc.dispatched) == 1  # dispatched the reviewing stage
+
+
+@pytest.mark.asyncio
+async def test_dispatch_performer_veto_override_returns_early() -> None:
+    """Veto override returns immediately without dispatching."""
+    svc = _Service()
+    github = _GitHub()
+
+    state = initial_state()
+    state["performer_services"] = {"implementing": svc}
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing"]
+    state["current_card"] = {"id": "ITEM_1", "title": "Test", "status": "IN_PROGRESS"}
+    state["github_service"] = github
+    state["pending_override"] = {"action": "veto"}
+
+    result = await dispatch_performer(state)
+
+    assert result["phase"] == "blocked"
+    assert result["pending_override"] is None
+    assert len(svc.dispatched) == 0  # veto prevents dispatch
+
+
+@pytest.mark.asyncio
+async def test_dispatch_performer_skip_final_stage_moves_card() -> None:
+    """Skip override on final stage moves card to IN_REVIEW via dispatch_performer."""
+    svc = _Service()
+    github = _GitHub()
+
+    state = initial_state()
+    state["performer_services"] = {"implementing": svc}
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing"]
+    state["current_card"] = {
+        "id": "ITEM_1", "title": "Test", "status": "IN_PROGRESS",
+        "pr_url": "https://github.com/test/1", "pr_node_id": "PR_1",
+    }
+    state["github_service"] = github
+    state["pending_override"] = {"action": "skip"}
+
+    result = await dispatch_performer(state)
+
+    assert result["phase"] == "monitoring_pr"
+    assert ("ITEM_1", "IN_REVIEW") in github.move_calls
+
+
+@pytest.mark.asyncio
+async def test_dispatch_performer_skip_final_missing_pr_fields() -> None:
+    """Skip override on final stage without PR fields → system_error."""
+    svc = _Service()
+    github = _GitHub()
+
+    state = initial_state()
+    state["performer_services"] = {"implementing": svc}
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing"]
+    state["current_card"] = {"id": "ITEM_1", "title": "Test", "status": "IN_PROGRESS"}
+    state["github_service"] = github
+    state["pending_override"] = {"action": "skip"}
+
+    result = await dispatch_performer(state)
+
+    assert result["phase"] == "system_error"
+    assert result["system_error_notified"] is False
+    assert "pr_url" in result.get("system_error_reason", "")

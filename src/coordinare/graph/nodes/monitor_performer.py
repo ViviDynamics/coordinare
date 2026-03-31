@@ -156,6 +156,49 @@ async def _teardown_workspace(state: CoordinareState) -> None:
         state["workspace_branch"] = None
 
 
+def _apply_pending_override(state: CoordinareState) -> CoordinareState | None:
+    """Check for and apply a pending human override (031-human-override-controls).
+
+    Returns the updated state if an override was applied, or None if no
+    override was pending.  The override is always cleared from state (FR-008).
+    """
+    override = state.get("pending_override")
+    if override is None:
+        return None
+
+    action = override.get("action")
+    state["pending_override"] = None  # FR-008: clear immediately
+
+    if action == "skip":
+        logger.info("override.skip", performer_stage=state.get("performer_stage"))
+        updates = _advance_stage(state)
+        for k, v in updates.items():
+            state[k] = v  # type: ignore[literal-required]
+        return state
+
+    if action == "restart":
+        target = override.get("target_stage", "")
+        lifecycle = list(state.get("lifecycle_sequence") or [])
+        if target in lifecycle:
+            logger.info("override.restart", target_stage=target)
+            state["performer_stage"] = target
+            state["phase"] = "dispatching"
+            state["agent_dispatch"] = {}
+            state["agent_dispatch_at"] = None
+        else:
+            logger.warning("override.restart_invalid_role", target_stage=target)
+        return state
+
+    if action == "veto":
+        logger.info("override.veto", card_id=(state.get("current_card") or {}).get("id"))
+        state["phase"] = "blocked"
+        state["open_questions"] = ["Lifecycle vetoed by human override."]
+        return state
+
+    logger.warning("override.unknown_action", action=action)
+    return state
+
+
 def _advance_stage(state: CoordinareState, status: dict[str, Any] | None = None) -> dict[str, Any]:
     """Compute the state update to advance the lifecycle to the next role.
 
@@ -238,8 +281,59 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
     Contains zero role-specific logic — all routing is driven by the
     status string returned by the performer.
     """
+    # 030: Reset requirement-change flags at cycle start so stale flags never persist.
+    # Placed before all early-return paths (incl. override check, service/card guard).
+    state["requirements_changed"] = False
+    state["requirements_changed_details"] = {}
+
     card = state.get("current_card")
     github = state.get("github_service")
+
+    # 031: Check for a pending human override before polling status.
+    # Done after card/github extraction so skip-final-stage can move the card.
+    override_result = _apply_pending_override(state)
+    if override_result is not None:
+        # Teardown workspace on override paths to avoid resource leaks.
+        await _teardown_workspace(override_result)
+
+        # When skip advances to monitoring_pr (final stage), move card on board
+        # and validate PR fields — same as the normal terminal-success path.
+        if override_result.get("phase") == "monitoring_pr" and github is not None:
+            effective_card = override_result.get("current_card", card)
+            if not isinstance(effective_card, dict):
+                return override_result
+            card_id = str(effective_card.get("id", ""))
+            pr_url = effective_card.get("pr_url")
+            pr_node_id = effective_card.get("pr_node_id")
+            if pr_url and pr_node_id:
+                try:
+                    await github.move_card(card_id, "IN_REVIEW")
+                except Exception:
+                    logger.warning("override.skip_move_card_failed", card_id=card_id)
+            else:
+                logger.error(
+                    "override.skip_final_missing_pr_fields",
+                    card_id=card_id,
+                    pr_url_present=bool(pr_url),
+                    pr_node_id_present=bool(pr_node_id),
+                )
+                # Mirror normal terminal-success behavior: missing PR fields
+                # is a system error. Restore card status to pre-override value
+                # since we never actually moved it on the board.
+                override_result["phase"] = "system_error"
+                override_result["system_error_count"] = state.get("system_error_count", 0) + 1
+                override_result["system_error_reason"] = (
+                    "Skip override reached final stage but pr_url or pr_node_id is missing"
+                )
+                override_result["system_error_last_at"] = datetime.now(UTC)
+                override_result["system_error_notified"] = False
+                updated_card = override_result.get("current_card")
+                if isinstance(updated_card, dict):
+                    previous_status = updated_card.get("previous_status")
+                    if previous_status is not None:
+                        updated_card["status"] = previous_status
+                    override_result["current_card"] = updated_card
+        return override_result
 
     stage: str = state.get("performer_stage", "implementing")
     performer_services: dict[str, Any] = state.get("performer_services") or {}
@@ -251,11 +345,6 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
     # not configured — do not silently monitor with the legacy service.
     if service is None and not performer_services:
         service = state.get("agent_service")
-
-    # 030: Reset requirement-change flags at cycle start so stale flags never persist.
-    # Placed before all early-return paths (incl. service/card guard, board reconciliation).
-    state["requirements_changed"] = False
-    state["requirements_changed_details"] = {}
 
     if service is None or not isinstance(card, dict):
         state["phase"] = "idle"

@@ -1128,3 +1128,184 @@ async def test_requirement_sync_skipped_on_terminal_status() -> None:
     # Terminal status takes priority — no re-dispatch even with re-dispatch policy
     assert result["phase"] != "dispatching"
     github.get_issue_details.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# 031 — Human Override Controls tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_override_skip_advances_stage() -> None:
+    """pending_override skip → advances to next role in lifecycle."""
+    from coordinare.graph.nodes.monitor_performer import _apply_pending_override
+
+    state = initial_state()
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing", "reviewing", "security"]
+    state["pending_override"] = {"action": "skip"}
+
+    result = _apply_pending_override(state)
+
+    assert result is not None
+    assert result["performer_stage"] == "reviewing"
+    assert result["phase"] == "dispatching"
+    assert result["pending_override"] is None
+
+
+@pytest.mark.asyncio
+async def test_override_skip_last_role_transitions_to_monitoring_pr() -> None:
+    """pending_override skip on final role → monitoring_pr."""
+    from coordinare.graph.nodes.monitor_performer import _apply_pending_override
+
+    state = initial_state()
+    state["performer_stage"] = "security"
+    state["lifecycle_sequence"] = ["implementing", "reviewing", "security"]
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
+    state["pending_override"] = {"action": "skip"}
+
+    result = _apply_pending_override(state)
+
+    assert result is not None
+    assert result["phase"] == "monitoring_pr"
+    assert result["pending_override"] is None
+
+
+@pytest.mark.asyncio
+async def test_override_restart_sets_target_stage() -> None:
+    """pending_override restart → sets performer_stage to target."""
+    from coordinare.graph.nodes.monitor_performer import _apply_pending_override
+
+    state = initial_state()
+    state["performer_stage"] = "reviewing"
+    state["lifecycle_sequence"] = ["implementing", "reviewing", "security"]
+    state["pending_override"] = {"action": "restart", "target_stage": "implementing"}
+
+    result = _apply_pending_override(state)
+
+    assert result is not None
+    assert result["performer_stage"] == "implementing"
+    assert result["phase"] == "dispatching"
+    assert result["pending_override"] is None
+
+
+@pytest.mark.asyncio
+async def test_override_restart_invalid_role_noop() -> None:
+    """pending_override restart with invalid role → no stage change."""
+    from coordinare.graph.nodes.monitor_performer import _apply_pending_override
+
+    state = initial_state()
+    state["performer_stage"] = "reviewing"
+    state["lifecycle_sequence"] = ["implementing", "reviewing"]
+    state["pending_override"] = {"action": "restart", "target_stage": "nonexistent"}
+
+    result = _apply_pending_override(state)
+
+    assert result is not None
+    assert result["performer_stage"] == "reviewing"  # unchanged
+    assert result["pending_override"] is None
+
+
+@pytest.mark.asyncio
+async def test_override_veto_blocks_card() -> None:
+    """pending_override veto → phase set to blocked."""
+    from coordinare.graph.nodes.monitor_performer import _apply_pending_override
+
+    state = initial_state()
+    state["performer_stage"] = "implementing"
+    state["current_card"] = {"id": "ITEM_1"}
+    state["pending_override"] = {"action": "veto"}
+
+    result = _apply_pending_override(state)
+
+    assert result is not None
+    assert result["phase"] == "blocked"
+    assert "vetoed" in result["open_questions"][0].lower()
+    assert result["pending_override"] is None
+
+
+@pytest.mark.asyncio
+async def test_override_none_returns_none() -> None:
+    """No pending_override → returns None (no-op)."""
+    from coordinare.graph.nodes.monitor_performer import _apply_pending_override
+
+    state = initial_state()
+    state["pending_override"] = None
+
+    result = _apply_pending_override(state)
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_monitor_performer_applies_override_before_polling() -> None:
+    """monitor_performer consumes pending_override before checking status."""
+    state = initial_state()
+    svc = _Performer(response={"status": "working"})
+    state["performer_services"] = {"implementing": svc, "reviewing": svc}
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing", "reviewing"]
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["phase"] = "monitoring_performer"
+    state["pending_override"] = {"action": "skip"}
+
+    result = await monitor_performer(state)
+
+    assert result["performer_stage"] == "reviewing"
+    assert result["phase"] == "dispatching"
+    assert result["pending_override"] is None
+
+
+@pytest.mark.asyncio
+async def test_override_dashboard_precedence_over_pr_comment() -> None:
+    """Dashboard override already set takes precedence (FR-010)."""
+    from coordinare.graph.nodes.monitor_performer import _apply_pending_override
+
+    state = initial_state()
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing", "reviewing"]
+    # Dashboard set veto; PR comment would have set skip — but dashboard wins
+    # because it's already in pending_override when the graph runs
+    state["pending_override"] = {"action": "veto"}
+    state["current_card"] = {"id": "ITEM_1"}
+
+    result = _apply_pending_override(state)
+
+    assert result is not None
+    assert result["phase"] == "blocked"
+
+
+@pytest.mark.asyncio
+async def test_override_on_idle_phase_noop() -> None:
+    """Override when card is idle — helper still applies it (API guards prevent this)."""
+    from coordinare.graph.nodes.monitor_performer import _apply_pending_override
+
+    state = initial_state()
+    state["phase"] = "idle"
+    state["pending_override"] = {"action": "skip"}
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing", "reviewing"]
+
+    result = _apply_pending_override(state)
+
+    # Helper applies it; the API endpoints prevent setting overrides on idle
+    assert result is not None
+    assert result["performer_stage"] == "reviewing"
+
+
+@pytest.mark.asyncio
+async def test_override_restart_earlier_than_first_role() -> None:
+    """restart-from to a valid early role works correctly."""
+    from coordinare.graph.nodes.monitor_performer import _apply_pending_override
+
+    state = initial_state()
+    state["performer_stage"] = "security"
+    state["lifecycle_sequence"] = ["implementing", "reviewing", "security"]
+    state["pending_override"] = {"action": "restart", "target_stage": "implementing"}
+
+    result = _apply_pending_override(state)
+
+    assert result is not None
+    assert result["performer_stage"] == "implementing"
+    assert result["phase"] == "dispatching"

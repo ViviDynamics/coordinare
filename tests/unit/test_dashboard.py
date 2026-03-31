@@ -922,3 +922,118 @@ def test_put_persona_responds_under_two_seconds(tmp_path) -> None:
 
     assert res.status_code == 200
     assert elapsed < 2.0, f"PUT /api/personas took {elapsed:.3f}s (> 2s limit)"
+
+
+# ---------------------------------------------------------------------------
+# 031 — Human Override Controls API tests
+# ---------------------------------------------------------------------------
+
+
+def test_skip_role_active_card() -> None:
+    """POST /api/skip-role queues skip override when card is active."""
+    daemon = _make_mock_daemon(phase="monitoring_performer")
+    daemon.state["lifecycle_sequence"] = ["implementing", "reviewing"]
+    daemon.state["performer_stage"] = "implementing"
+    client = _make_app(daemon=daemon)
+
+    res = client.post("/api/skip-role")
+
+    assert res.status_code == 200
+    assert res.json()["status"] == "override_queued"
+    assert res.json()["action"] == "skip"
+    assert daemon.state["pending_override"] == {"action": "skip"}
+
+
+def test_skip_role_no_active_card() -> None:
+    """POST /api/skip-role returns 400 when no card is active."""
+    daemon = _make_mock_daemon(phase="idle")
+    client = _make_app(daemon=daemon)
+
+    res = client.post("/api/skip-role")
+
+    assert res.status_code == 400
+    assert "No active card" in res.json()["error"]
+
+
+def test_restart_from_valid_role() -> None:
+    """POST /api/restart-from/{role} queues restart override for valid role."""
+    daemon = _make_mock_daemon(phase="monitoring_performer")
+    daemon.state["lifecycle_sequence"] = ["implementing", "reviewing", "security"]
+    client = _make_app(daemon=daemon)
+
+    res = client.post("/api/restart-from/reviewing")
+
+    assert res.status_code == 200
+    assert res.json()["action"] == "restart"
+    assert res.json()["target_stage"] == "reviewing"
+    assert daemon.state["pending_override"] == {"action": "restart", "target_stage": "reviewing"}
+
+
+def test_restart_from_role_noun() -> None:
+    """POST /api/restart-from/{role} accepts role noun and resolves to stage."""
+    daemon = _make_mock_daemon(phase="monitoring_performer")
+    daemon.state["lifecycle_sequence"] = ["implementing", "architecting", "reviewing"]
+    client = _make_app(daemon=daemon)
+
+    res = client.post("/api/restart-from/architect")
+
+    assert res.status_code == 200
+    assert res.json()["target_stage"] == "architecting"
+    assert daemon.state["pending_override"] == {"action": "restart", "target_stage": "architecting"}
+
+
+def test_restart_from_invalid_role() -> None:
+    """POST /api/restart-from/{role} returns 400 for unknown role."""
+    daemon = _make_mock_daemon(phase="monitoring_performer")
+    daemon.state["lifecycle_sequence"] = ["implementing", "reviewing"]
+    client = _make_app(daemon=daemon)
+
+    res = client.post("/api/restart-from/nonexistent")
+
+    assert res.status_code == 400
+    assert "nonexistent" in res.json()["error"]
+
+
+def test_restart_from_no_active_card() -> None:
+    """POST /api/restart-from/{role} returns 400 when no card is active."""
+    daemon = _make_mock_daemon(phase="idle")
+    daemon.state["lifecycle_sequence"] = ["implementing"]
+    client = _make_app(daemon=daemon)
+
+    res = client.post("/api/restart-from/implementing")
+
+    assert res.status_code == 400
+
+
+def test_veto_active_card() -> None:
+    """POST /api/veto queues veto override when card is active."""
+    daemon = _make_mock_daemon(phase="dispatching")
+    client = _make_app(daemon=daemon)
+
+    res = client.post("/api/veto")
+
+    assert res.status_code == 200
+    assert res.json()["action"] == "veto"
+    assert daemon.state["pending_override"] == {"action": "veto"}
+
+
+def test_veto_no_active_card() -> None:
+    """POST /api/veto returns 400 when no card is active."""
+    daemon = _make_mock_daemon(phase="idle")
+    client = _make_app(daemon=daemon)
+
+    res = client.post("/api/veto")
+
+    assert res.status_code == 400
+
+
+def test_skip_role_monitoring_agent_phase() -> None:
+    """POST /api/skip-role works during monitoring_agent phase."""
+    daemon = _make_mock_daemon(phase="monitoring_agent")
+    daemon.state["lifecycle_sequence"] = ["implementing", "reviewing"]
+    client = _make_app(daemon=daemon)
+
+    res = client.post("/api/skip-role")
+
+    assert res.status_code == 200
+    assert daemon.state["pending_override"] == {"action": "skip"}

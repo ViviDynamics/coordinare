@@ -1103,6 +1103,11 @@ es.onopen = function() { banner.style.display = 'none'; };
 
 
 # ---------------------------------------------------------------------------
+# 031 — Active phases for override validation
+# ---------------------------------------------------------------------------
+_ACTIVE_PHASES = {"monitoring_performer", "monitoring_agent", "dispatching"}
+
+# ---------------------------------------------------------------------------
 # FastAPI app factory
 # ---------------------------------------------------------------------------
 
@@ -1203,6 +1208,47 @@ def create_dashboard_app(
             store.sse_stream(daemon, metrics, health),
             media_type="text/event-stream",
         )
+
+    # -----------------------------------------------------------------------
+    # 031 — Human Override Controls API endpoints
+    # -----------------------------------------------------------------------
+
+    @app.post("/api/skip-role")
+    async def skip_role() -> JSONResponse:
+        """Queue a skip-role override for the next graph cycle (031)."""
+        if daemon.state.get("phase") not in _ACTIVE_PHASES:
+            return JSONResponse({"error": "No active card to override"}, status_code=400)
+        daemon.state["pending_override"] = {"action": "skip"}
+        return JSONResponse({"status": "override_queued", "action": "skip"})
+
+    @app.post("/api/restart-from/{role}")
+    async def restart_from(role: str) -> JSONResponse:
+        """Queue a restart-from override for the next graph cycle (031).
+
+        Accepts both role nouns (e.g. ``architect``) and stage names
+        (e.g. ``architecting``).
+        """
+        if daemon.state.get("phase") not in _ACTIVE_PHASES:
+            return JSONResponse({"error": "No active card to override"}, status_code=400)
+        lifecycle = list(daemon.state.get("lifecycle_sequence") or [])
+        # Accept role nouns (architect) as well as stage names (architecting)
+        from coordinare.graph.nodes.classify_human_feedback import _resolve_stage
+        resolved = _resolve_stage(role, lifecycle)
+        if resolved not in lifecycle:
+            return JSONResponse(
+                {"error": f"Role {role!r} not in lifecycle: {lifecycle}"},
+                status_code=400,
+            )
+        daemon.state["pending_override"] = {"action": "restart", "target_stage": resolved}
+        return JSONResponse({"status": "override_queued", "action": "restart", "target_stage": resolved})
+
+    @app.post("/api/veto")
+    async def veto() -> JSONResponse:
+        """Queue a veto override for the next graph cycle (031)."""
+        if daemon.state.get("phase") not in _ACTIVE_PHASES:
+            return JSONResponse({"error": "No active card to override"}, status_code=400)
+        daemon.state["pending_override"] = {"action": "veto"}
+        return JSONResponse({"status": "override_queued", "action": "veto"})
 
     # -----------------------------------------------------------------------
     # 018 — Personas API endpoints
