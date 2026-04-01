@@ -181,6 +181,19 @@ class CoordinareMetrics:
             registry=self.registry,
         )
 
+        # --- Cost & Token tracking (spec 034) ---
+        self.card_tokens_total = Counter(
+            "coordinare_card_tokens_total",
+            "Total tokens consumed while processing cards, partitioned by performer role",
+            labelnames=("role",),
+            registry=self.registry,
+        )
+        self.card_cost_estimate_dollars = Gauge(
+            "coordinare_card_cost_estimate_dollars",
+            "Estimated dollar cost for the current card",
+            registry=self.registry,
+        )
+
         self._initialize_zero_values()
 
     def _initialize_zero_values(self) -> None:
@@ -210,6 +223,13 @@ class CoordinareMetrics:
         for svc in ("github", "agent", "slack", "smtp"):
             self.circuit_breaker_trips_total.labels(service_name=svc)
             self.circuit_breaker_state.labels(service_name=svc)
+
+        # 034: card token counter per role
+        for role in (
+            "implementing", "reviewing", "security", "qa",
+            "documenting", "architecting", "advocate", "assessing",
+        ):
+            self.card_tokens_total.labels(role=role)
 
     def observe_error(self, category: str) -> None:
         self.errors_total.labels(category=category).inc()

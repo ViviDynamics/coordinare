@@ -87,6 +87,11 @@ async def cancel_active_card(
     state["relay_feedback"] = []
     state["pending_reviews"] = []
     state["pending_override"] = None  # 031: clear any queued override
+    state["card_tokens_total"] = 0  # 034: clear token counters
+    state["card_cost_estimate"] = 0.0
+    state["card_budget_alert_sent"] = False
+    from coordinare.metrics import METRICS
+    METRICS.card_cost_estimate_dollars.set(0)
     state["card_clarifications"] = []
 
     # Emit notification

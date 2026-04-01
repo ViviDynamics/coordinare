@@ -169,6 +169,13 @@ class PersonasConfig(BaseModel):
 RequirementChangePolicy = Literal["ignore", "warn", "re-dispatch"]
 
 
+class CostTrackingConfig(BaseModel):
+    """034: Cost and token tracking configuration."""
+
+    cost_per_million_tokens: float = Field(default=3.0, ge=0.0)
+    cost_budget_per_card: float | None = Field(default=None, ge=0.0)
+
+
 # ---------------------------------------------------------------------------
 # 033 — Smart Health-Check Retry config
 # ---------------------------------------------------------------------------
@@ -418,6 +425,7 @@ class ProjectConfiguration(BaseSettings):
     stuck_alerts: StuckAlertConfig = Field(default_factory=StuckAlertConfig)
     health_check: HealthCheckConfig = Field(default_factory=HealthCheckConfig)
     requirement_change_policy: RequirementChangePolicy = "warn"  # 030: ignore | warn | re-dispatch
+    cost_tracking: CostTrackingConfig = Field(default_factory=CostTrackingConfig)
 
     # Card assessment backend — determines how assess_card evaluates card sufficiency.
     # "anthropic_api": direct Anthropic SDK call (requires ANTHROPIC_API_KEY)

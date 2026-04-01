@@ -398,6 +398,15 @@ async def dispatch_performer(state: CoordinareState) -> CoordinareState:
         return state
 
     # --- Success ---
+    # 034: Reset token counters when dispatching the first role for a new card.
+    lifecycle = list(state.get("lifecycle_sequence") or [])
+    if lifecycle and performer_stage == lifecycle[0]:
+        state["card_tokens_total"] = 0
+        state["card_cost_estimate"] = 0.0
+        state["card_budget_alert_sent"] = False
+        from coordinare.metrics import METRICS
+        METRICS.card_cost_estimate_dollars.set(0)
+
     # Clear relay_feedback so it isn't re-sent to subsequent roles.
     state["relay_feedback"] = []  # type: ignore[typeddict-unknown-key]
     state["agent_dispatch"] = result

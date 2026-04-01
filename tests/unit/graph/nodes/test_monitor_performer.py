@@ -1309,3 +1309,183 @@ async def test_override_restart_earlier_than_first_role() -> None:
     assert result is not None
     assert result["performer_stage"] == "implementing"
     assert result["phase"] == "dispatching"
+
+
+# ---------------------------------------------------------------------------
+# 034 — Cost & Token Tracking tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_token_accumulation_across_polls() -> None:
+    """tokens_processed accumulates into card_tokens_total across polls."""
+    state = initial_state()
+    svc = _Performer(response={"status": "working", "metrics": {"tokens_processed": 1500}})
+    state["performer_services"] = {"implementing": svc}
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing"]
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["phase"] = "monitoring_performer"
+
+    result = await monitor_performer(state)
+    assert result["card_tokens_total"] == 1500
+
+    # Poll again with more tokens
+    svc2 = _Performer(response={"status": "working", "metrics": {"tokens_processed": 2000}})
+    result["performer_services"] = {"implementing": svc2}
+    result["agent_dispatch"] = {"session_id": "s1"}
+    result = await monitor_performer(result)
+    assert result["card_tokens_total"] == 3500
+
+
+@pytest.mark.asyncio
+async def test_no_tokens_field_leaves_total_unchanged() -> None:
+    """Missing tokens_processed leaves card_tokens_total unchanged."""
+    state = initial_state()
+    svc = _Performer(response={"status": "working", "metrics": {}})
+    state["performer_services"] = {"implementing": svc}
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing"]
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["phase"] = "monitoring_performer"
+    state["card_tokens_total"] = 500
+
+    result = await monitor_performer(state)
+    assert result["card_tokens_total"] == 500
+
+
+@pytest.mark.asyncio
+async def test_negative_tokens_clamped_to_zero() -> None:
+    """Negative tokens_processed is clamped to 0."""
+    state = initial_state()
+    svc = _Performer(response={"status": "working", "metrics": {"tokens_processed": -100}})
+    state["performer_services"] = {"implementing": svc}
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing"]
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["phase"] = "monitoring_performer"
+    state["card_tokens_total"] = 500
+
+    result = await monitor_performer(state)
+    assert result["card_tokens_total"] == 500  # unchanged
+
+
+@pytest.mark.asyncio
+async def test_cost_estimate_calculated() -> None:
+    """card_cost_estimate is calculated from tokens and config rate."""
+    from unittest.mock import MagicMock
+
+    config = MagicMock()
+    config.cost_tracking.cost_per_million_tokens = 3.0
+    config.cost_tracking.cost_budget_per_card = None
+    config.requirement_change_policy = "ignore"
+
+    state = initial_state()
+    svc = _Performer(response={"status": "working", "metrics": {"tokens_processed": 1_000_000}})
+    state["performer_services"] = {"implementing": svc}
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing"]
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["phase"] = "monitoring_performer"
+    state["config"] = config
+
+    result = await monitor_performer(state)
+    assert result["card_cost_estimate"] == pytest.approx(3.0)
+
+
+@pytest.mark.asyncio
+async def test_budget_exceeded_notification_fires_once() -> None:
+    """Budget exceeded dispatches notification exactly once."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    config = MagicMock()
+    config.cost_tracking.cost_per_million_tokens = 3.0
+    config.cost_tracking.cost_budget_per_card = 1.0
+    config.requirement_change_policy = "ignore"
+
+    notification_service = AsyncMock()
+
+    state = initial_state()
+    svc = _Performer(response={"status": "working", "metrics": {"tokens_processed": 500_000}})
+    state["performer_services"] = {"implementing": svc}
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing"]
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["phase"] = "monitoring_performer"
+    state["config"] = config
+    state["notification_service"] = notification_service
+
+    # First poll: cost = $1.50, exceeds $1.00 budget
+    result = await monitor_performer(state)
+    assert result["card_budget_alert_sent"] is True
+    assert notification_service.dispatch.await_count == 1
+
+    # Second poll: more tokens, but alert already sent
+    svc2 = _Performer(response={"status": "working", "metrics": {"tokens_processed": 200_000}})
+    result["performer_services"] = {"implementing": svc2}
+    result["agent_dispatch"] = {"session_id": "s1"}
+    result = await monitor_performer(result)
+    assert notification_service.dispatch.await_count == 1  # no duplicate
+
+
+@pytest.mark.asyncio
+async def test_no_budget_configured_skips_check() -> None:
+    """No cost_budget_per_card → no budget check."""
+    from unittest.mock import MagicMock
+
+    config = MagicMock()
+    config.cost_tracking.cost_per_million_tokens = 3.0
+    config.cost_tracking.cost_budget_per_card = None
+    config.requirement_change_policy = "ignore"
+
+    state = initial_state()
+    svc = _Performer(response={"status": "working", "metrics": {"tokens_processed": 10_000_000}})
+    state["performer_services"] = {"implementing": svc}
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing"]
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["phase"] = "monitoring_performer"
+    state["config"] = config
+
+    result = await monitor_performer(state)
+    assert result["card_budget_alert_sent"] is False
+
+
+@pytest.mark.asyncio
+async def test_float_tokens_processed_rejected() -> None:
+    """Float tokens_processed is rejected (spec requires integers only)."""
+    state = initial_state()
+    svc = _Performer(response={"status": "working", "metrics": {"tokens_processed": 100.5}})
+    state["performer_services"] = {"implementing": svc}
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing"]
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["phase"] = "monitoring_performer"
+    state["card_tokens_total"] = 0
+
+    result = await monitor_performer(state)
+    assert result["card_tokens_total"] == 0  # float rejected
+
+
+@pytest.mark.asyncio
+async def test_non_numeric_tokens_ignored() -> None:
+    """Non-numeric tokens_processed leaves card_tokens_total unchanged."""
+    state = initial_state()
+    svc = _Performer(response={"status": "working", "metrics": {"tokens_processed": "not-a-number"}})
+    state["performer_services"] = {"implementing": svc}
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing"]
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["phase"] = "monitoring_performer"
+    state["card_tokens_total"] = 500
+
+    result = await monitor_performer(state)
+    assert result["card_tokens_total"] == 500  # unchanged

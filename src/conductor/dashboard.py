@@ -254,6 +254,8 @@ class DashboardStore:
             "performer_metrics": performer_metrics,
             "performer_backend": performer_backend,
             "performer_logs": performer_logs,
+            "card_tokens_total": daemon.state.get("card_tokens_total", 0),
+            "card_cost_estimate": daemon.state.get("card_cost_estimate", 0.0),
             "subsystems": subsystems,
             "cycles_completed": cycles_completed,
             "last_cycle_duration_seconds": self.last_cycle_duration,
@@ -454,6 +456,16 @@ td { padding: 4px 8px; border-bottom: 1px solid #21262d; }
     <div class="metric">
       <span class="metric-value" id="error-count">—</span>
       <span class="metric-label">Consecutive Errors</span>
+    </div>
+  </div>
+  <div class="metric-row" style="margin-top:8px">
+    <div class="metric">
+      <span class="metric-value" id="card-tokens-total">0</span>
+      <span class="metric-label">Card Tokens</span>
+    </div>
+    <div class="metric">
+      <span class="metric-value" id="card-cost-estimate">$0.00</span>
+      <span class="metric-label">Estimated Cost</span>
     </div>
   </div>
   <div class="daemon-start">
@@ -705,6 +717,10 @@ function renderState(s) {
   document.getElementById('last-duration').textContent = fmtDuration(s.last_cycle_duration_seconds);
   document.getElementById('error-count').textContent = s.consecutive_error_count;
   document.getElementById('daemon-start-time').textContent = fmtTime(s.daemon_start_time);
+  document.getElementById('card-tokens-total').textContent =
+    (s.card_tokens_total || 0).toLocaleString();
+  document.getElementById('card-cost-estimate').textContent =
+    '$' + (s.card_cost_estimate || 0).toFixed(2);
 
   // Agent session
   var agentEl = document.getElementById('agent-session');

@@ -1037,3 +1037,19 @@ def test_skip_role_monitoring_agent_phase() -> None:
 
     assert res.status_code == 200
     assert daemon.state["pending_override"] == {"action": "skip"}
+
+
+# ---------------------------------------------------------------------------
+# 034 — Cost & Token Tracking dashboard tests
+# ---------------------------------------------------------------------------
+
+
+def test_dashboard_html_includes_token_elements() -> None:
+    """Dashboard HTML includes card-tokens-total and card-cost-estimate elements."""
+    client = _make_app()
+    res = client.get("/")
+    assert res.status_code == 200
+    assert "card-tokens-total" in res.text
+    assert "card-cost-estimate" in res.text
+    assert "Card Tokens" in res.text
+    assert "Estimated Cost" in res.text

@@ -34,6 +34,15 @@ TERMINAL_SUCCESS_STATES: frozenset[str] = frozenset({
     "docs_committed",
 })
 
+def _reset_token_counters(state: CoordinareState) -> None:
+    """034: Clear token/cost counters when card is no longer active."""
+    state["card_tokens_total"] = 0
+    state["card_cost_estimate"] = 0.0
+    state["card_budget_alert_sent"] = False
+    from coordinare.metrics import METRICS
+    METRICS.card_cost_estimate_dollars.set(0)
+
+
 # 032: Phase → expected board column mapping for reconciliation
 PHASE_TO_EXPECTED_COLUMN: dict[str, str] = {
     "monitoring_agent": "IN_PROGRESS",
@@ -75,6 +84,7 @@ def _reconcile_board_mismatch(
         state["current_card"] = None
         state["agent_dispatch"] = {}
         state["agent_dispatch_at"] = None
+        _reset_token_counters(state)
         return True
 
     # Backward move (e.g., IN_PROGRESS → TODO)
@@ -93,6 +103,7 @@ def _reconcile_board_mismatch(
         state["pending_reviews"] = []
         lifecycle_seq = state.get("lifecycle_sequence") or ["implementing"]
         state["performer_stage"] = lifecycle_seq[0] if lifecycle_seq else "implementing"
+        _reset_token_counters(state)
         return True
 
     # Forward move to DONE
@@ -114,6 +125,7 @@ def _reconcile_board_mismatch(
         state["system_error_count"] = 0
         state["system_error_reason"] = None
         state["system_error_notified"] = False
+        _reset_token_counters(state)
         return True
 
     # Move to BLOCKED
@@ -449,6 +461,67 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
         new_metrics = status.get("metrics")
         if isinstance(new_metrics, dict):
             state["performer_metrics"] = new_metrics
+
+        # 034: Accumulate token usage and estimate cost.
+        # Spec: only accept real integers; treat floats/bools/other types as invalid.
+        raw_tokens = (new_metrics or {}).get("tokens_processed", 0) if isinstance(new_metrics, dict) else 0
+        if isinstance(raw_tokens, bool):
+            logger.warning("monitor_performer.invalid_tokens_processed", value=raw_tokens, card_id=card_id, performer_stage=stage)
+            tokens_delta = 0
+        elif isinstance(raw_tokens, float):
+            logger.warning("monitor_performer.non_integer_tokens_processed", value=raw_tokens, card_id=card_id, performer_stage=stage)
+            tokens_delta = 0
+        elif not isinstance(raw_tokens, int):
+            logger.warning("monitor_performer.invalid_tokens_processed", value=raw_tokens, card_id=card_id, performer_stage=stage)
+            tokens_delta = 0
+        elif raw_tokens < 0:
+            logger.warning("monitor_performer.negative_tokens_processed", value=raw_tokens, card_id=card_id, performer_stage=stage)
+            tokens_delta = 0
+        else:
+            tokens_delta = raw_tokens
+        if tokens_delta > 0:
+            state["card_tokens_total"] = state.get("card_tokens_total", 0) + tokens_delta
+            from coordinare.config import CostTrackingConfig
+            config = state.get("config")
+            cost_rate = CostTrackingConfig().cost_per_million_tokens
+            if config is not None and hasattr(config, "cost_tracking"):
+                cost_rate = config.cost_tracking.cost_per_million_tokens
+            state["card_cost_estimate"] = state["card_tokens_total"] / 1_000_000 * cost_rate
+            # Update Prometheus metrics
+            from coordinare.metrics import METRICS
+            METRICS.card_tokens_total.labels(role=stage).inc(tokens_delta)
+            METRICS.card_cost_estimate_dollars.set(state["card_cost_estimate"])
+            # 034: Budget alert — fire once per card
+            budget = None
+            if config is not None and hasattr(config, "cost_tracking"):
+                budget = config.cost_tracking.cost_budget_per_card
+            if budget is not None and state["card_cost_estimate"] > budget and not state.get("card_budget_alert_sent"):
+                notification_service = state.get("notification_service")
+                if notification_service is not None:
+                    try:
+                        from coordinare.models.notification import (
+                            EventType,
+                            NotificationEvent,
+                            NotificationSeverity,
+                        )
+                        await notification_service.dispatch(NotificationEvent(
+                            event_type=EventType.card_budget_exceeded,
+                            severity=NotificationSeverity.warning,
+                            source="monitor_performer",
+                            payload={
+                                "event_type": EventType.card_budget_exceeded.value,
+                                "severity": NotificationSeverity.warning.value,
+                                "source": "monitor_performer",
+                                "card_id": card_id,
+                                "tokens": str(state["card_tokens_total"]),
+                                "cost": f"${state['card_cost_estimate']:.2f}",
+                                "budget": f"${budget:.2f}",
+                                "summary": f"Card {card_id} exceeded cost budget (${state['card_cost_estimate']:.2f} > ${budget:.2f})",
+                            },
+                        ))
+                        state["card_budget_alert_sent"] = True
+                    except Exception as exc:
+                        logger.warning("monitor_performer.budget_alert_failed", card_id=card_id, error=str(exc), exc_info=True)
 
         marker = status.get("status", "working")
 

@@ -842,3 +842,31 @@ async def test_dispatch_performer_skip_final_missing_pr_fields() -> None:
     assert result["phase"] == "system_error"
     assert result["system_error_notified"] is False
     assert "pr_url" in result.get("system_error_reason", "")
+
+
+# ---------------------------------------------------------------------------
+# 034 — Cost & Token Tracking reset tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dispatch_resets_token_counters_on_first_role() -> None:
+    """dispatch_performer resets token counters when dispatching the first role."""
+    svc = _Service()
+    github = _GitHub()
+
+    state = initial_state()
+    state["performer_services"] = {"implementing": svc}
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing", "reviewing"]
+    state["current_card"] = {"id": "ITEM_1", "title": "Test", "status": "IN_PROGRESS"}
+    state["github_service"] = github
+    state["card_tokens_total"] = 5000
+    state["card_cost_estimate"] = 15.0
+    state["card_budget_alert_sent"] = True
+
+    result = await dispatch_performer(state)
+
+    assert result["card_tokens_total"] == 0
+    assert result["card_cost_estimate"] == 0.0
+    assert result["card_budget_alert_sent"] is False
