@@ -225,6 +225,7 @@ class PerformerRoleConfig(BaseModel):
     """
 
     backend: str = "opencode"
+    model: str | None = None  # 037: specific model within backend (e.g. claude-sonnet-4-20250514)
     transport: str | None = None
     image: str | None = None
     executable: str | None = None

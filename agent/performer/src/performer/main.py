@@ -66,17 +66,23 @@ async def handle_dispatch(
     score = Score(**msg.payload)
     # 020: read performer role before backend.start so the backend can adapt prompting
     role = msg.payload.get("role", "implementing") if isinstance(msg.payload, dict) else "implementing"
+    # 037: Read backend/model override from dispatch payload
+    payload = msg.payload if isinstance(msg.payload, dict) else {}
+    raw_backend = payload.get("backend") or settings.AGENT_BACKEND
+    backend_name = raw_backend.replace("-", "_").lower()  # normalize kebab-case
+    model_name = payload.get("model")
+
     stand: Stand = await clone_repository(score)
     try:
-        backend = get_backend(settings.AGENT_BACKEND)
-        await backend.start(stand, score)
+        backend = get_backend(backend_name)
+        await backend.start(stand, score, model=model_name)
     except BaseException:
         cleanup_stand(stand)
         raise
     session_id = str(uuid.uuid4())
     # 021: read pr_url from dispatch payload (set on card by implementer)
-    pr_url = msg.payload.get("pr_url") if isinstance(msg.payload, dict) else None
-    pr_node_id = msg.payload.get("pr_node_id") if isinstance(msg.payload, dict) else None
+    pr_url = payload.get("pr_url")
+    pr_node_id = payload.get("pr_node_id")
     perf = Performance(
         session_id=session_id,
         stand=stand,
@@ -90,7 +96,7 @@ async def handle_dispatch(
     return PerformerResponse(
         status="accepted",
         session_id=session_id,
-        backend=settings.AGENT_BACKEND,
+        backend=backend_name,
     ), perf
 
 

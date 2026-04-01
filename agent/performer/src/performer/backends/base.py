@@ -26,7 +26,7 @@ class BackendStatus:
 class BackendAdapter(Protocol):
     """Strategy interface implemented by each AI coding backend."""
 
-    async def start(self, stand: "Stand", score: "Score") -> None:
+    async def start(self, stand: "Stand", score: "Score", *, model: str | None = None) -> None:
         """Launch the backend in *stand* with the task from *score*."""
         ...
 

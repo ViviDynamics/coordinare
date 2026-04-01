@@ -312,6 +312,15 @@ async def dispatch_performer(state: CoordinareState) -> CoordinareState:
     # Pass the performer role so the performer can gate behavior on it.
     card_context["role"] = performer_stage
 
+    # 037: Include per-role backend and model in dispatch payload.
+    config = state.get("config")
+    if config is not None and hasattr(config, "performers") and role is not None:
+        role_config = getattr(config.performers, role, None)
+        if role_config is not None:
+            card_context["backend"] = role_config.backend
+            if role_config.model is not None:
+                card_context["model"] = role_config.model
+
     # --- Dispatch ---
     try:
         await github.move_card(card_id, "IN_PROGRESS")

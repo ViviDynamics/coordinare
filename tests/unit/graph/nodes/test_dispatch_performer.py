@@ -870,3 +870,110 @@ async def test_dispatch_resets_token_counters_on_first_role() -> None:
     assert result["card_tokens_total"] == 0
     assert result["card_cost_estimate"] == 0.0
     assert result["card_budget_alert_sent"] is False
+
+
+# ---------------------------------------------------------------------------
+# 037 — Per-Role Model Selection tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dispatch_includes_backend_from_role_config() -> None:
+    """dispatch_performer includes backend from PerformerRoleConfig in payload."""
+    from coordinare.config import PerformerRoleConfig, PerformersConfig, ProjectConfiguration
+
+    config = ProjectConfiguration(**{
+        "project_name": "test",
+        "github_org": "org",
+        "github_project_number": 1,
+        "github_token": "tok",
+        "human_reviewers": ["alice"],
+        "performers": PerformersConfig(
+            implementer=PerformerRoleConfig(backend="claude_code"),
+        ),
+    })
+
+    svc = _Service()
+    github = _GitHub()
+
+    state = initial_state()
+    state["performer_services"] = {"implementing": svc}
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing"]
+    state["current_card"] = {"id": "ITEM_1", "title": "Test", "status": "TODO"}
+    state["github_service"] = github
+    state["config"] = config
+
+    await dispatch_performer(state)
+
+    assert len(svc.dispatched) == 1
+    card_context = svc.dispatched[0]
+    assert card_context.get("backend") == "claude_code"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_includes_model_when_set() -> None:
+    """dispatch_performer includes model in payload when role config has it."""
+    from coordinare.config import PerformerRoleConfig, PerformersConfig, ProjectConfiguration
+
+    config = ProjectConfiguration(**{
+        "project_name": "test",
+        "github_org": "org",
+        "github_project_number": 1,
+        "github_token": "tok",
+        "human_reviewers": ["alice"],
+        "performers": PerformersConfig(
+            implementer=PerformerRoleConfig(backend="claude_code", model="claude-sonnet-4-20250514"),
+        ),
+    })
+
+    svc = _Service()
+    github = _GitHub()
+
+    state = initial_state()
+    state["performer_services"] = {"implementing": svc}
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing"]
+    state["current_card"] = {"id": "ITEM_1", "title": "Test", "status": "TODO"}
+    state["github_service"] = github
+    state["config"] = config
+
+    await dispatch_performer(state)
+
+    card_context = svc.dispatched[0]
+    assert card_context.get("backend") == "claude_code"
+    assert card_context.get("model") == "claude-sonnet-4-20250514"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_omits_model_when_not_set() -> None:
+    """dispatch_performer omits model from payload when not configured."""
+    from coordinare.config import PerformerRoleConfig, PerformersConfig, ProjectConfiguration
+
+    config = ProjectConfiguration(**{
+        "project_name": "test",
+        "github_org": "org",
+        "github_project_number": 1,
+        "github_token": "tok",
+        "human_reviewers": ["alice"],
+        "performers": PerformersConfig(
+            implementer=PerformerRoleConfig(backend="opencode"),
+        ),
+    })
+
+    svc = _Service()
+    github = _GitHub()
+
+    state = initial_state()
+    state["performer_services"] = {"implementing": svc}
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing"]
+    state["current_card"] = {"id": "ITEM_1", "title": "Test", "status": "TODO"}
+    state["github_service"] = github
+    state["config"] = config
+
+    await dispatch_performer(state)
+
+    card_context = svc.dispatched[0]
+    assert card_context.get("backend") == "opencode"
+    assert "model" not in card_context

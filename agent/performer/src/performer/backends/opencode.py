@@ -62,7 +62,7 @@ class OpenCodeAdapter:
     # BackendAdapter protocol
     # ------------------------------------------------------------------
 
-    async def start(self, stand: Stand, score: Score) -> None:
+    async def start(self, stand: Stand, score: Score, *, model: str | None = None) -> None:
         """Launch ``opencode serve`` in *stand.path* and send the initial task."""
         port = _find_free_port()
         self._port = port

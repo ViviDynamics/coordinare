@@ -46,15 +46,17 @@ class ClaudeCodeBackend:
         self._stand: Stand | None = None
         self._session_id: str | None = None  # captured from system/init event
         self._git_env: dict[str, str] = {}
+        self._model: str | None = None  # 037: per-role model selection
 
     # ------------------------------------------------------------------
     # BackendAdapter protocol
     # ------------------------------------------------------------------
 
-    async def start(self, stand: Stand, score: Score) -> None:
+    async def start(self, stand: Stand, score: Score, *, model: str | None = None) -> None:
         """Build the prompt and launch ``claude --print --output-format stream-json``."""
         self._stand = stand
         self._git_env = stand.git_env
+        self._model = model
         prompt = _build_task_prompt(score)
         await self._launch(prompt)
 
@@ -125,6 +127,8 @@ class ClaudeCodeBackend:
             "--output-format", "stream-json",
             "--include-partial-messages",
         ]
+        if self._model:
+            args += ["--model", self._model]
         if resume_session_id:
             args += ["--resume", resume_session_id]
         args += ["-p", prompt]
