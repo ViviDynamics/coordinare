@@ -22,6 +22,7 @@ def build_auth(config: object) -> GitHubAuth:
             app_id=config.github_app_id,  # type: ignore[union-attr]
             private_key_path=config.github_private_key_path,  # type: ignore[union-attr]
             installation_id=config.github_installation_id,  # type: ignore[union-attr]
+            api_url=getattr(config, "github_api_url", "https://api.github.com"),
         )
 
     msg = f"Unsupported github_auth mode: {getattr(config, 'github_auth', None)!r}"

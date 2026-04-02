@@ -275,6 +275,47 @@ def _make_http_response(status_code: int, json_body: dict | None = None):
 
 
 # ---------------------------------------------------------------------------
+# 036 — GitHub Enterprise Support: custom API URL for token exchange
+# ---------------------------------------------------------------------------
+
+
+class TestAppAuthCustomAPIURL:
+    """Verify AppAuth derives the token exchange URL from api_url."""
+
+    def test_default_api_url(self, rsa_key_pair) -> None:
+        key_file, _ = rsa_key_pair
+        auth = AppAuth(app_id=1, private_key_path=key_file, installation_id=2)
+        assert auth._api_url == "https://api.github.com"
+
+    def test_custom_api_url(self, rsa_key_pair) -> None:
+        key_file, _ = rsa_key_pair
+        auth = AppAuth(
+            app_id=1, private_key_path=key_file, installation_id=2,
+            api_url="https://github.acme.corp/api/v3",
+        )
+        assert auth._api_url == "https://github.acme.corp/api/v3"
+
+    def test_trailing_slash_stripped(self, rsa_key_pair) -> None:
+        key_file, _ = rsa_key_pair
+        auth = AppAuth(
+            app_id=1, private_key_path=key_file, installation_id=2,
+            api_url="https://github.acme.corp/api/v3/",
+        )
+        assert auth._api_url == "https://github.acme.corp/api/v3"
+
+    def test_token_url_uses_custom_api_url(self, rsa_key_pair) -> None:
+        key_file, _ = rsa_key_pair
+        auth = AppAuth(
+            app_id=1, private_key_path=key_file, installation_id=42,
+            api_url="https://ghes.internal/api/v3",
+        )
+        url = auth.TOKEN_URL_TEMPLATE.format(
+            api_url=auth._api_url, installation_id=42,
+        )
+        assert url == "https://ghes.internal/api/v3/app/installations/42/access_tokens"
+
+
+# ---------------------------------------------------------------------------
 # validate_auth_config tests
 # ---------------------------------------------------------------------------
 

@@ -185,3 +185,33 @@ async def test_execute_500_raises_transient_error() -> None:
 def test_query_constants_include_expected_operation_names() -> None:
     assert "FindProject" in FIND_PROJECT_QUERY
     assert "GetProjectFields" in GET_PROJECT_FIELDS_QUERY
+
+
+# ---------------------------------------------------------------------------
+# 036 — GitHub Enterprise Support: custom endpoint wiring
+# ---------------------------------------------------------------------------
+
+
+class TestGitHubServiceCustomEndpoint:
+    """Verify GitHubService respects the endpoint parameter for GHES support."""
+
+    def test_default_endpoint(self) -> None:
+        service = GitHubService(token="tok", org="acme", project_number=1)
+        assert service._endpoint == "https://api.github.com/graphql"
+
+    def test_custom_endpoint(self) -> None:
+        service = GitHubService(
+            token="tok", org="acme", project_number=1,
+            endpoint="https://github.acme.corp/api/graphql",
+        )
+        assert service._endpoint == "https://github.acme.corp/api/graphql"
+
+    def test_transport_url_matches_custom_endpoint(self) -> None:
+        """The AIOHTTPTransport URL should match the configured endpoint."""
+        service = GitHubService(
+            token="tok", org="acme", project_number=1,
+            endpoint="https://ghes.example.com/api/graphql",
+        )
+        client = service._build_client("test-token")
+        transport = client.transport
+        assert transport.url == "https://ghes.example.com/api/graphql"

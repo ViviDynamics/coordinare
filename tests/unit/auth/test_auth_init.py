@@ -33,6 +33,7 @@ def _app_config(key_path: Path | None = None) -> MagicMock:
     cfg.github_app_id = 12345
     cfg.github_private_key_path = key_path or Path("/tmp/key.pem")
     cfg.github_installation_id = 67890
+    cfg.github_api_url = "https://api.github.com"
     return cfg
 
 

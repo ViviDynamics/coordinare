@@ -22,7 +22,7 @@ class AppAuth:
     """
 
     TOKEN_URL_TEMPLATE = (
-        "https://api.github.com/app/installations/{installation_id}/access_tokens"
+        "{api_url}/app/installations/{installation_id}/access_tokens"
     )
     REFRESH_BUFFER_SECONDS: int = 300  # refresh when < 5 min remain
 
@@ -31,9 +31,32 @@ class AppAuth:
         app_id: int,
         private_key_path: Path,
         installation_id: int,
+        api_url: str = "https://api.github.com",
     ) -> None:
         self._app_id = app_id
         self._installation_id = installation_id
+        from urllib.parse import urlparse
+        cleaned = api_url.strip().rstrip("/")
+        if any(ch.isspace() for ch in cleaned):
+            msg = "api_url must not contain whitespace"
+            raise ValueError(msg)
+        parsed = urlparse(cleaned)
+        safe = f"{parsed.scheme}://{parsed.hostname or ''}{parsed.path or ''}"
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            msg = f"api_url must be a valid http/https URL: {safe}"
+            raise ValueError(msg)
+        if parsed.username is not None or parsed.password is not None:
+            msg = f"api_url must not contain embedded credentials: {safe}"
+            raise ValueError(msg)
+        if parsed.query or parsed.fragment:
+            msg = f"api_url must not include query or fragment: {safe}"
+            raise ValueError(msg)
+        if parsed.scheme == "http":
+            host = parsed.hostname or ""
+            if host not in ("localhost", "127.0.0.1", "::1"):
+                msg = f"api_url with http is only allowed for localhost: {safe}"
+                raise ValueError(msg)
+        self._api_url = cleaned
         self._private_key_pem: bytes = self._load_key(private_key_path)
         self._cached_token: str | None = None
         self._token_expires_at: float | None = None  # monotonic seconds
@@ -70,7 +93,9 @@ class AppAuth:
         from coordinare.services.github import PermanentGitHubError, TransientGitHubError
 
         token_jwt = self._make_jwt()
-        url = self.TOKEN_URL_TEMPLATE.format(installation_id=self._installation_id)
+        url = self.TOKEN_URL_TEMPLATE.format(
+            api_url=self._api_url, installation_id=self._installation_id,
+        )
         headers = {
             "Authorization": f"Bearer {token_jwt}",
             "Accept": "application/vnd.github+json",

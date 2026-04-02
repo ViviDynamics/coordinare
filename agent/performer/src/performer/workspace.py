@@ -34,14 +34,6 @@ class BranchConflictError(RuntimeError):
     """Raised when a branch push fails due to a remote conflict."""
 
 
-def _parse_owner_repo(repo_url: str) -> tuple[str, str]:
-    """Extract (owner, repo) from a GitHub HTTPS URL."""
-    # https://github.com/owner/repo[.git]
-    parts = repo_url.rstrip("/").split("/")
-    repo = parts[-1].removesuffix(".git")
-    owner = parts[-2]
-    return owner, repo
-
 
 def _git_credential_vars(token: str) -> dict[str, str]:
     """Return ONLY the git-specific credential vars (no ``**os.environ``).
@@ -137,8 +129,13 @@ async def clone_repository(score: Score) -> Stand:
             raise WorkspaceSetupError("insufficient disk space") from exc
         raise WorkspaceSetupError(f"failed to create temporary workspace: {exc}") from exc
     stand_path = Path(tmpdir)
-    owner, repo = _parse_owner_repo(score.repo_url)
-    clone_url = f"https://github.com/{owner}/{repo}.git"
+    # 036: Derive clone URL from repo_url to support GitHub Enterprise hosts.
+    # Security: repo_url is validated by Score._validate_repo_url (HTTPS-only,
+    # real host, owner/repo path) and originates from the coordinare's dispatch
+    # payload. Git credential helper sends the token only to this host.
+    clone_url = score.repo_url.rstrip("/")
+    if not clone_url.endswith(".git"):
+        clone_url += ".git"
     env = _git_credential_env(score.effective_github_token)
 
     # Step 1: shallow-clone the default branch
@@ -171,7 +168,7 @@ async def clone_repository(score: Score) -> Stand:
         shutil.rmtree(stand_path, ignore_errors=True)
         raise WorkspaceSetupError(f"git checkout -b failed (exit {returncode}): {stderr}")
 
-    log.info("cloned repository", owner=owner, repo=repo, branch=score.branch)
+    log.info("cloned repository", repo_url=score.repo_url, branch=score.branch)
     stand = Stand(path=stand_path, branch=score.branch)
     stand.git_env = _git_credential_vars(score.effective_github_token)
     return stand
@@ -189,8 +186,10 @@ async def push_branch(stand: Stand, score: Score) -> None:
 
     Raises WorkspaceSetupError on push failure.
     """
-    owner, repo = _parse_owner_repo(score.repo_url)
-    remote_url = f"https://github.com/{owner}/{repo}.git"
+    # 036: Derive push URL from repo_url to support GitHub Enterprise hosts
+    remote_url = score.repo_url.rstrip("/")
+    if not remote_url.endswith(".git"):
+        remote_url += ".git"
     cmd = ["git", "-C", str(stand.path), "push", "--force", remote_url, f"HEAD:{stand.branch}"]
     env = _git_credential_env(score.effective_github_token)
     try:
@@ -211,7 +210,7 @@ async def push_branch(stand: Stand, score: Score) -> None:
             )
         raise WorkspaceSetupError(f"git push failed (exit {returncode}): {err}")
 
-    log.info("pushed branch", branch=stand.branch, owner=owner, repo=repo)
+    log.info("pushed branch", branch=stand.branch, remote_url=remote_url)
 
 
 async def get_head_sha(stand: Stand) -> str:

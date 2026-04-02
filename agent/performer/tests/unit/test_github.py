@@ -310,6 +310,51 @@ class TestSummariseCheckRuns:
 _REVIEW_URL = "https://api.github.com/repos/org/repo/pulls/42/reviews"
 
 
+# ---------------------------------------------------------------------------
+# 036 — GitHub Enterprise Support: configurable API URL
+# ---------------------------------------------------------------------------
+
+
+class TestGitHubAPIURLConfigurable:
+    """Verify performer github module uses the configured GITHUB_API_URL."""
+
+    @respx.mock
+    async def test_get_default_branch_uses_configured_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from performer.config import get_settings
+        get_settings.cache_clear()
+        monkeypatch.setenv("GITHUB_API_URL", "https://ghes.example.com/api/v3")
+        respx.get("https://ghes.example.com/api/v3/repos/org/repo").mock(
+            return_value=httpx.Response(200, json={"default_branch": "main"})
+        )
+        result = await get_default_branch("org", "repo", "tok")
+        assert result == "main"
+        get_settings.cache_clear()
+
+    @respx.mock
+    async def test_get_check_runs_uses_configured_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from performer.config import get_settings
+        get_settings.cache_clear()
+        monkeypatch.setenv("GITHUB_API_URL", "https://ghes.example.com/api/v3")
+        respx.get("https://ghes.example.com/api/v3/repos/org/repo/commits/abc/check-runs").mock(
+            return_value=httpx.Response(200, json={"check_runs": []})
+        )
+        result = await get_check_runs("org", "repo", "abc", "tok")
+        assert result == []
+        get_settings.cache_clear()
+
+    @respx.mock
+    async def test_default_url_backward_compatible(self) -> None:
+        """Without env var override, calls go to api.github.com (backward compat)."""
+        from performer.config import get_settings
+        get_settings.cache_clear()
+        respx.get("https://api.github.com/repos/org/repo").mock(
+            return_value=httpx.Response(200, json={"default_branch": "main"})
+        )
+        result = await get_default_branch("org", "repo", "tok")
+        assert result == "main"
+        get_settings.cache_clear()
+
+
 class TestPostPullRequestReview:
     @respx.mock
     async def test_post_review_approve_sends_correct_payload(self) -> None:

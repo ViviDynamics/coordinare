@@ -62,8 +62,9 @@ if TYPE_CHECKING:
 # Score — the dispatch payload
 # ---------------------------------------------------------------------------
 
+# 036: Accept any HTTPS host with exactly owner/repo path (supports GitHub Enterprise Server)
 _GITHUB_REPO_RE = re.compile(
-    r"^https://github\.com/[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+(\.git)?$"
+    r"^https://[A-Za-z0-9.\-]+(:[0-9]+)?/[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+(\.git)?$"
 )
 
 
@@ -91,8 +92,8 @@ class Score(BaseModel):
     def _validate_repo_url(cls, v: str) -> str:
         if not _GITHUB_REPO_RE.match(v):
             msg = (
-                f"repo_url must be a GitHub HTTPS URL "
-                f"(https://github.com/{{owner}}/{{repo}}[.git]), got: {v!r}"
+                f"repo_url must be an HTTPS URL with owner/repo path "
+                f"(https://{{host}}/{{owner}}/{{repo}}[.git]), got: {v!r}"
             )
             raise ValueError(msg)
         return v

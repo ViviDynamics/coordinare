@@ -312,8 +312,12 @@ async def dispatch_performer(state: CoordinareState) -> CoordinareState:
     # Pass the performer role so the performer can gate behavior on it.
     card_context["role"] = performer_stage
 
-    # 037: Include per-role backend and model in dispatch payload.
+    # 036: Include GitHub API URL so the performer connects to the same instance.
     config = state.get("config")
+    if config is not None and hasattr(config, "github_api_url"):
+        card_context["github_api_url"] = config.github_api_url
+
+    # 037: Include per-role backend and model in dispatch payload.
     if config is not None and hasattr(config, "performers") and role is not None:
         role_config = getattr(config.performers, role, None)
         if role_config is not None:

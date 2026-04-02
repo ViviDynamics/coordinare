@@ -3,6 +3,7 @@ from __future__ import annotations
 import string
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlparse
 
 import yaml
 from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
@@ -381,6 +382,10 @@ class ProjectConfiguration(BaseSettings):
     github_org: str
     github_project_number: int
 
+    # 036 — GitHub Enterprise: configurable API base URL and GraphQL endpoint
+    github_api_url: str = "https://api.github.com"
+    github_graphql_url: str = "https://api.github.com/graphql"
+
     # Auth mode — "pat" (default) or "app"
     github_auth: Literal["pat", "app"] = "pat"
     github_token: SecretStr | None = None
@@ -518,6 +523,37 @@ class ProjectConfiguration(BaseSettings):
             msg = "webhooks.secret is required when webhooks.enabled=true"
             raise ValueError(msg)
         return self
+
+    @field_validator("github_api_url", "github_graphql_url", mode="before")
+    @classmethod
+    def _validate_github_urls(cls, v: Any) -> str:
+        url = str(v).strip()
+        if any(ch.isspace() for ch in url):
+            msg = "GitHub URL must not contain whitespace"
+            raise ValueError(msg)
+        url = url.rstrip("/")
+        parsed = urlparse(url)
+        # Redact credentials/query/fragment from error messages
+        safe = f"{parsed.scheme}://{parsed.hostname or ''}{parsed.path or ''}"
+        if parsed.scheme not in {"http", "https"}:
+            msg = f"GitHub URL must use http or https scheme, got {parsed.scheme!r}: {safe}"
+            raise ValueError(msg)
+        if not parsed.netloc:
+            msg = f"GitHub URL must include a host (netloc), got: {safe!r}"
+            raise ValueError(msg)
+        if parsed.username is not None or parsed.password is not None:
+            msg = f"GitHub URL must not include embedded credentials: {safe!r}"
+            raise ValueError(msg)
+        if parsed.query or parsed.fragment:
+            msg = f"GitHub URL must not include query parameters or fragments: {safe!r}"
+            raise ValueError(msg)
+        # Restrict http to localhost/loopback to prevent credential leaks
+        if parsed.scheme == "http":
+            host = parsed.hostname or ""
+            if host not in ("localhost", "127.0.0.1", "::1"):
+                msg = f"GitHub URL with http scheme is only allowed for localhost, got host={host!r}: {safe}"
+                raise ValueError(msg)
+        return url
 
     @field_validator("human_reviewers")
     @classmethod

@@ -6,11 +6,15 @@ from typing import Literal
 import httpx
 import structlog
 
+from performer.config import get_settings
 from performer.models import Score
 
 log = structlog.get_logger(__name__)
 
-_GITHUB_API = "https://api.github.com"
+
+def _github_api() -> str:
+    """Return the GitHub REST API base URL from performer settings."""
+    return get_settings().GITHUB_API_URL.rstrip("/")
 
 
 class GitHubAPIError(RuntimeError):
@@ -32,7 +36,7 @@ def _pr_body(score: Score) -> str:
 async def get_default_branch(owner: str, repo: str, token: str) -> str:
     """Return the repository's default branch name."""
     _require_token(token, "get_default_branch")
-    url = f"{_GITHUB_API}/repos/{owner}/{repo}"
+    url = f"{_github_api()}/repos/{owner}/{repo}"
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.get(url, headers=headers)
@@ -49,7 +53,7 @@ async def get_existing_pull_request(
 ) -> tuple[str, str]:
     """Return ``(html_url, node_id)`` for an existing open PR on *branch*."""
     _require_token(token, "get_existing_pull_request")
-    url = f"{_GITHUB_API}/repos/{owner}/{repo}/pulls"
+    url = f"{_github_api()}/repos/{owner}/{repo}/pulls"
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.get(url, headers=headers, params={"head": f"{owner}:{branch}", "state": "open"})
@@ -80,7 +84,7 @@ def _require_token(token: str, operation: str) -> None:
 async def get_check_runs(owner: str, repo: str, ref: str, token: str) -> list[dict]:  # type: ignore[type-arg]
     """Return all check runs for a commit *ref* via the GitHub Checks API."""
     _require_token(token, "get_check_runs")
-    url = f"{_GITHUB_API}/repos/{owner}/{repo}/commits/{ref}/check-runs"
+    url = f"{_github_api()}/repos/{owner}/{repo}/commits/{ref}/check-runs"
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.get(url, headers=headers, params={"per_page": "100"})
@@ -131,7 +135,7 @@ async def create_pull_request(
     """
     _require_token(token, "create_pull_request")
     base = score.base_branch or await get_default_branch(owner, repo, token)
-    url = f"{_GITHUB_API}/repos/{owner}/{repo}/pulls"
+    url = f"{_github_api()}/repos/{owner}/{repo}/pulls"
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
     body = {
         "title": score.title,
@@ -194,7 +198,7 @@ async def post_pull_request_review(
         On non-2xx response.
     """
     _require_token(token, "post_pull_request_review")
-    url = f"{_GITHUB_API}/repos/{owner}/{repo}/pulls/{pr_number}/reviews"
+    url = f"{_github_api()}/repos/{owner}/{repo}/pulls/{pr_number}/reviews"
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github+json",
@@ -235,7 +239,7 @@ async def post_pr_comment(
     POST /repos/{owner}/{repo}/issues/{pr_number}/comments
     """
     _require_token(token, "post_pr_comment")
-    url = f"{_GITHUB_API}/repos/{owner}/{repo}/issues/{pr_number}/comments"
+    url = f"{_github_api()}/repos/{owner}/{repo}/issues/{pr_number}/comments"
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github+json",

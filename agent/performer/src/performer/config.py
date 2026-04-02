@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     AGENT_BACKEND: str = "opencode"
     # Supported values: "opencode" | "claude_code" | "codex" (stub)
     AGENT_TIMEOUT: int = 1800  # seconds — 30 minutes
+
+    # 036 — GitHub Enterprise: configurable REST API base URL
+    GITHUB_API_URL: str = "https://api.github.com"
     CHECK_MAX_ATTEMPTS: int = 3  # max CI fix cycles before blocking the card
 
     # 020 — Architect performer settings

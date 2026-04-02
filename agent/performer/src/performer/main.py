@@ -72,6 +72,34 @@ async def handle_dispatch(
     backend_name = raw_backend.replace("-", "_").lower()  # normalize kebab-case
     model_name = payload.get("model")
 
+    # 036: Apply GitHub API URL from dispatch payload so the performer's
+    # GitHub client connects to the same instance (e.g. GitHub Enterprise).
+    github_api_url = payload.get("github_api_url")
+    if github_api_url and isinstance(github_api_url, str) and github_api_url.strip():
+        from urllib.parse import urlparse
+        # Mirror coordinare-side validation: reject whitespace, restrict http to localhost
+        # Log only scheme+host (redacted) to avoid leaking credentials/query params
+        if any(ch.isspace() for ch in github_api_url.strip()):
+            log.warning("dispatch.invalid_github_api_url", reason="whitespace")
+        else:
+            cleaned = github_api_url.strip().rstrip("/")
+            parsed = urlparse(cleaned)
+            safe_host = f"{parsed.scheme}://{parsed.hostname or ''}"
+            if parsed.username is not None or parsed.password is not None:
+                log.warning("dispatch.invalid_github_api_url", reason="credentials", host=safe_host)
+            elif parsed.query or parsed.fragment:
+                log.warning("dispatch.invalid_github_api_url", reason="query_or_fragment", host=safe_host)
+            elif parsed.scheme == "https" and parsed.netloc:
+                settings.GITHUB_API_URL = cleaned
+            elif parsed.scheme == "http" and parsed.netloc:
+                hostname = parsed.hostname or ""
+                if hostname in ("localhost", "127.0.0.1", "::1"):
+                    settings.GITHUB_API_URL = cleaned
+                else:
+                    log.warning("dispatch.invalid_github_api_url", reason="http_non_localhost", host=safe_host)
+            else:
+                log.warning("dispatch.invalid_github_api_url", reason="invalid_scheme_or_host", host=safe_host)
+
     stand: Stand = await clone_repository(score)
     try:
         backend = get_backend(backend_name)

@@ -30,11 +30,12 @@ class TestScore:
         )
         assert s.repo_url == "https://github.com/org/repo.git"
 
-    def test_invalid_repo_url_not_github(self) -> None:
+    def test_invalid_repo_url_no_path(self) -> None:
+        """URL with no owner/repo path is rejected."""
         with pytest.raises(ValidationError, match="repo_url"):
             Score(
                 title="T",
-                repo_url="https://gitlab.com/org/repo",
+                repo_url="https://github.com",
                 branch="main",
                 github_token="tok",
             )

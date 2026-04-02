@@ -51,3 +51,28 @@ class TestGetSettings:
         monkeypatch.setenv("AGENT_BACKEND", "second-backend")
         second = get_settings()
         assert second.AGENT_BACKEND == "second-backend"
+
+
+# ---------------------------------------------------------------------------
+# 036 — GitHub Enterprise Support: GITHUB_API_URL setting
+# ---------------------------------------------------------------------------
+
+
+class TestGitHubAPIURLSetting:
+    """Tests for the GITHUB_API_URL performer setting (036)."""
+
+    def test_default_github_api_url(self) -> None:
+        s = Settings()
+        assert s.GITHUB_API_URL == "https://api.github.com"
+
+    def test_env_override_github_api_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("GITHUB_API_URL", "https://github.acme.corp/api/v3")
+        s = Settings()
+        assert s.GITHUB_API_URL == "https://github.acme.corp/api/v3"
+
+    def test_get_settings_picks_up_github_api_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        get_settings.cache_clear()
+        monkeypatch.setenv("GITHUB_API_URL", "https://ghes.internal/api/v3")
+        s = get_settings()
+        assert s.GITHUB_API_URL == "https://ghes.internal/api/v3"
+        get_settings.cache_clear()

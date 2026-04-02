@@ -960,6 +960,73 @@ class TestArchitectPerformer:
         assert perf.role == "implementing"
         assert resp.status == "accepted"
 
+    @pytest.mark.asyncio
+    async def test_dispatch_wires_github_api_url_to_settings(self) -> None:
+        """handle_dispatch applies github_api_url from payload to settings (036)."""
+        msg = _msg(
+            "dispatch",
+            title="Test",
+            repo_url="https://github.com/acme/repo",
+            branch="feat/test",
+            github_api_url="https://ghes.acme.corp/api/v3",
+        )
+
+        mock_backend = MagicMock()
+        mock_backend.start = AsyncMock()
+        settings = Settings(AGENT_BACKEND="opencode")
+
+        with patch("performer.main.clone_repository", new=AsyncMock(
+            return_value=Stand(path=Path("/tmp/test"), branch="feat/test")
+        )), patch("performer.main.get_backend", return_value=mock_backend):
+            resp, _perf = await handle_dispatch(msg, settings)
+
+        assert resp.status == "accepted"
+        assert settings.GITHUB_API_URL == "https://ghes.acme.corp/api/v3"
+
+    @pytest.mark.asyncio
+    async def test_dispatch_strips_trailing_slash_from_github_api_url(self) -> None:
+        """Trailing slash on github_api_url is stripped (036)."""
+        msg = _msg(
+            "dispatch",
+            title="Test",
+            repo_url="https://github.com/acme/repo",
+            branch="feat/test",
+            github_api_url="https://ghes.acme.corp/api/v3/",
+        )
+
+        mock_backend = MagicMock()
+        mock_backend.start = AsyncMock()
+        settings = Settings(AGENT_BACKEND="opencode")
+
+        with patch("performer.main.clone_repository", new=AsyncMock(
+            return_value=Stand(path=Path("/tmp/test"), branch="feat/test")
+        )), patch("performer.main.get_backend", return_value=mock_backend):
+            await handle_dispatch(msg, settings)
+
+        assert settings.GITHUB_API_URL == "https://ghes.acme.corp/api/v3"
+
+    @pytest.mark.asyncio
+    async def test_dispatch_ignores_empty_github_api_url(self) -> None:
+        """Empty github_api_url in payload does not override settings default (036)."""
+        msg = _msg(
+            "dispatch",
+            title="Test",
+            repo_url="https://github.com/acme/repo",
+            branch="feat/test",
+            github_api_url="",
+        )
+
+        mock_backend = MagicMock()
+        mock_backend.start = AsyncMock()
+        settings = Settings(AGENT_BACKEND="opencode")
+
+        with patch("performer.main.clone_repository", new=AsyncMock(
+            return_value=Stand(path=Path("/tmp/test"), branch="feat/test")
+        )), patch("performer.main.get_backend", return_value=mock_backend):
+            await handle_dispatch(msg, settings)
+
+        assert settings.GITHUB_API_URL == "https://api.github.com"
+
 
 # ---------------------------------------------------------------------------
 # 021 — Reviewer performer tests

@@ -417,6 +417,7 @@ async def _bootstrap_services(
         auth=_auth,
         org=config.github_org,
         project_number=config.github_project_number,
+        endpoint=config.github_graphql_url,
         circuit_breaker=circuit_breakers["github"],
         retry_kwargs=_retry_config_from(r.github_retry).to_stamina_kwargs(),
     )

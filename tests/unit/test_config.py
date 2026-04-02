@@ -671,3 +671,131 @@ class TestPriorityConfig:
         cfg = ProjectConfiguration.from_yaml(path)
         assert cfg.priority.field_name == "Urgency"
         assert cfg.priority.priority_order == ["Critical", "High"]
+
+
+# ---------------------------------------------------------------------------
+# 036 — GitHub Enterprise Support: configurable API URLs
+# ---------------------------------------------------------------------------
+
+
+class TestGitHubEnterpriseURLs:
+    """Tests for github_api_url and github_graphql_url config fields (036)."""
+
+    def test_default_api_url(self, tmp_path) -> None:
+        cfg = ProjectConfiguration.from_yaml(_write_config(tmp_path))
+        assert cfg.github_api_url == "https://api.github.com"
+
+    def test_default_graphql_url(self, tmp_path) -> None:
+        cfg = ProjectConfiguration.from_yaml(_write_config(tmp_path))
+        assert cfg.github_graphql_url == "https://api.github.com/graphql"
+
+    def test_custom_api_url(self, tmp_path) -> None:
+        path = tmp_path / "config.yaml"
+        path.write_text(yaml.dump({
+            "project_name": "Demo", "github_org": "acme",
+            "github_project_number": 1, "github_token": "tok",
+            "human_reviewers": ["alice"],
+            "github_api_url": "https://github.acme.corp/api/v3",
+        }))
+        cfg = ProjectConfiguration.from_yaml(path)
+        assert cfg.github_api_url == "https://github.acme.corp/api/v3"
+
+    def test_custom_graphql_url(self, tmp_path) -> None:
+        path = tmp_path / "config.yaml"
+        path.write_text(yaml.dump({
+            "project_name": "Demo", "github_org": "acme",
+            "github_project_number": 1, "github_token": "tok",
+            "human_reviewers": ["alice"],
+            "github_graphql_url": "https://github.acme.corp/api/graphql",
+        }))
+        cfg = ProjectConfiguration.from_yaml(path)
+        assert cfg.github_graphql_url == "https://github.acme.corp/api/graphql"
+
+    def test_trailing_slash_stripped(self) -> None:
+        cfg = ProjectConfiguration(
+            project_name="Demo", github_org="acme",
+            github_project_number=1, github_token="tok",
+            human_reviewers=["alice"],
+            github_api_url="https://github.acme.corp/api/v3/",
+            github_graphql_url="https://github.acme.corp/api/graphql/",
+        )
+        assert cfg.github_api_url == "https://github.acme.corp/api/v3"
+        assert cfg.github_graphql_url == "https://github.acme.corp/api/graphql"
+
+    def test_invalid_scheme_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="http or https"):
+            ProjectConfiguration(
+                project_name="Demo", github_org="acme",
+                github_project_number=1, github_token="tok",
+                human_reviewers=["alice"],
+                github_api_url="ftp://github.acme.corp/api/v3",
+            )
+
+    def test_http_scheme_accepted(self) -> None:
+        """http is allowed for local dev environments."""
+        cfg = ProjectConfiguration(
+            project_name="Demo", github_org="acme",
+            github_project_number=1, github_token="tok",
+            human_reviewers=["alice"],
+            github_api_url="http://localhost:8080/api/v3",
+        )
+        assert cfg.github_api_url == "http://localhost:8080/api/v3"
+
+    def test_env_var_override(self, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+        monkeypatch.setenv("COORDINARE_GITHUB_API_URL", "https://ghes.internal/api/v3")
+        cfg = ProjectConfiguration.from_yaml(_write_config(tmp_path))
+        assert cfg.github_api_url == "https://ghes.internal/api/v3"
+
+    def test_env_var_override_graphql(self, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+        monkeypatch.setenv("COORDINARE_GITHUB_GRAPHQL_URL", "https://ghes.internal/api/graphql")
+        cfg = ProjectConfiguration.from_yaml(_write_config(tmp_path))
+        assert cfg.github_graphql_url == "https://ghes.internal/api/graphql"
+
+    def test_missing_netloc_rejected(self) -> None:
+        """URLs like 'https:///api/v3' (no host) must be rejected."""
+        with pytest.raises(ValidationError, match="must include a host"):
+            ProjectConfiguration(
+                project_name="Demo", github_org="acme",
+                github_project_number=1, github_token="tok",
+                human_reviewers=["alice"],
+                github_api_url="https:///api/v3",
+            )
+
+    def test_whitespace_in_url_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="must not contain whitespace"):
+            ProjectConfiguration(
+                project_name="Demo", github_org="acme",
+                github_project_number=1, github_token="tok",
+                human_reviewers=["alice"],
+                github_api_url="https://github .com/api/v3",
+            )
+
+    def test_credentials_in_url_rejected(self) -> None:
+        """URLs with embedded credentials are rejected."""
+        with pytest.raises(ValidationError, match="credentials"):
+            ProjectConfiguration(
+                project_name="Demo", github_org="acme",
+                github_project_number=1, github_token="tok",
+                human_reviewers=["alice"],
+                github_api_url="https://user:pass@ghes.example.com/api/v3",
+            )
+
+    def test_query_string_in_url_rejected(self) -> None:
+        """URLs with query parameters are rejected."""
+        with pytest.raises(ValidationError, match="query"):
+            ProjectConfiguration(
+                project_name="Demo", github_org="acme",
+                github_project_number=1, github_token="tok",
+                human_reviewers=["alice"],
+                github_api_url="https://ghes.example.com/api/v3?debug=1",
+            )
+
+    def test_http_non_localhost_rejected(self) -> None:
+        """http scheme on non-localhost host is rejected."""
+        with pytest.raises(ValidationError, match="localhost"):
+            ProjectConfiguration(
+                project_name="Demo", github_org="acme",
+                github_project_number=1, github_token="tok",
+                human_reviewers=["alice"],
+                github_api_url="http://ghes.example.com/api/v3",
+            )
