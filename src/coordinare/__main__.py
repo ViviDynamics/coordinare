@@ -23,6 +23,8 @@ from coordinare.daemon import CoordinareDaemon, RuntimeExecutionError
 from coordinare.dashboard import DashboardStore, check_port_available, create_dashboard_app
 from coordinare.graph.builder import CoordinareGraphBuilder
 from coordinare.health import create_health_app
+from coordinare.lifecycle import CANONICAL_ORDER as _CANONICAL_ORDER
+from coordinare.lifecycle import ROLE_TO_STAGE as _ROLE_TO_STAGE
 from coordinare.metrics import METRICS, _coordinare_version
 from coordinare.models.notification import EventType, NotificationEvent, NotificationSeverity
 from coordinare.observability import HEALTH
@@ -92,9 +94,66 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Treat deprecated fields as errors (exit 1)",
     )
+    # Subcommand: `coordinare dry-run --card <card_id> [--config PATH]`
+    dry_run_parser = subparsers.add_parser(
+        "dry-run",
+        help="Preview what coordinare would do for a card without side effects",
+    )
+    dry_run_parser.add_argument(
+        "--card",
+        required=True,
+        help="Card/issue ID to preview",
+    )
+    dry_run_parser.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        dest="config",
+        help="Explicit path to config file",
+    )
+
     # Ensure attributes always exist on the namespace regardless of which path is taken
-    parser.set_defaults(command=None, config_action=None, strict=False)
+    parser.set_defaults(command=None, config_action=None, strict=False, card=None)
     return parser
+
+
+def _cmd_dry_run(args: argparse.Namespace) -> None:
+    """Handle ``coordinare dry-run --card <card_id>`` subcommand."""
+    from coordinare.dry_run import execute_dry_run
+
+    explicit_path: Path | None = getattr(args, "config", None)
+    result = validate_config(explicit_path)
+    if not result.passed:
+        for err in result.errors:
+            print(f"Config error: {err.field_path} — {err.fix_hint}", file=sys.stderr)
+        sys.exit(2)
+
+    try:
+        if result.config_file_path is not None:
+            raw = _load_raw_yaml(result.config_file_path)
+            config = ProjectConfiguration(**raw)
+        else:
+            config = ProjectConfiguration()
+    except Exception as exc:
+        print(f"Failed to load config: {exc}", file=sys.stderr)
+        sys.exit(2)
+
+    card_id: str = args.card
+    dry_result = asyncio.run(execute_dry_run(card_id, config))
+
+    # Print human-readable output to stdout
+    print(f"\n=== Dry-Run Preview for card {card_id} ===\n")
+    print(f"Assessment: {dry_result.assessment_result}")
+    print(f"\nLifecycle stages ({len(dry_result.lifecycle_stages)}):")
+    for i, stage in enumerate(dry_result.lifecycle_stages, 1):
+        print(f"  {i}. {stage}")
+    print(f"\nPlanned actions ({len(dry_result.planned_actions)}):")
+    for action in dry_result.planned_actions:
+        print(f"  - {action}")
+    print(f"\nBoard transitions ({len(dry_result.board_transitions)}):")
+    for t in dry_result.board_transitions:
+        print(f"  {t['stage']} -> {t['column']}")
+    print()
 
 
 def _searched_paths_lines(explicit_path: Path | None) -> list[str]:
@@ -260,25 +319,6 @@ def _build_circuit_breakers(config: ProjectConfiguration) -> dict[str, CircuitBr
 # ---------------------------------------------------------------------------
 # 019 — Performer Lifecycle: sequence derivation and service registry
 # ---------------------------------------------------------------------------
-
-# Canonical order of performer stages. Config field names map to stage names
-# via this table (see data-model.md for the full mapping).
-_ROLE_TO_STAGE: dict[str, str] = {
-    "advocate": "advocate",
-    "assessor": "assessing",
-    "architect": "architecting",
-    "implementer": "implementing",
-    "reviewer": "reviewing",
-    "security": "security",
-    "qa": "qa",
-    "tech_writer": "documenting",
-}
-
-_CANONICAL_ORDER: list[str] = [
-    "advocate", "assessor", "architect", "implementer",
-    "reviewer", "security", "qa", "tech_writer",
-]
-
 
 def _build_lifecycle_sequence(config: ProjectConfiguration) -> list[str]:
     """Derive the ordered lifecycle sequence from configured performer roles.
@@ -695,6 +735,11 @@ def main() -> None:
     if getattr(args, "command", None) == "config" and getattr(args, "config_action", None) == "validate":
         _cmd_config_validate(args)
         return  # _cmd_config_validate always calls sys.exit; this is belt-and-suspenders
+
+    # Dispatch dry-run subcommand before daemon startup
+    if getattr(args, "command", None) == "dry-run":
+        _cmd_dry_run(args)
+        return
 
     # --- Daemon startup path ---
     # Step 1: Validate config (discover + parse + env var merge) in one pass

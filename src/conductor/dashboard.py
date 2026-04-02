@@ -1345,6 +1345,31 @@ def create_dashboard_app(
         is_default = not getattr(personas, role).instructions.strip()
         return JSONResponse({"role": role, "instructions": effective, "is_default": is_default})
 
+    # -----------------------------------------------------------------------
+    # 038 — Dry-Run Mode API endpoint
+    # -----------------------------------------------------------------------
+
+    @app.post("/api/dry-run/{card_id}")
+    async def dry_run_card(card_id: str) -> JSONResponse:
+        """Run a dry-run preview for a card and return the result as JSON (038).
+
+        Builds the lifecycle plan without making any GitHub API calls or
+        spawning any performers.
+        """
+        from coordinare.dry_run import execute_dry_run
+
+        cfg = daemon.state.get("config")
+        if cfg is None:
+            return JSONResponse({"error": "Config not available"}, status_code=500)
+
+        try:
+            result = await execute_dry_run(card_id, cfg)
+        except Exception:
+            _log.exception("dry_run.api_error", card_id=card_id)
+            return JSONResponse({"error": "Internal error during dry-run"}, status_code=500)
+
+        return JSONResponse(result.model_dump())
+
     @app.delete("/api/personas/{role}", status_code=204)
     async def reset_persona_endpoint(role: str) -> Response:
         """Reset a role's persona to built-in defaults (clears custom instructions)."""
