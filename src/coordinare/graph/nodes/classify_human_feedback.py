@@ -158,11 +158,12 @@ async def _classify_with_ai(
 ) -> list[str] | None:
     """Classify PR comments using the AI assessment backend.
 
+    Uses ``assessment_backend.prompt()`` to send a classification prompt
+    and receive a structured JSON response (039).
+
     Returns a sorted list of concern names above the confidence threshold,
     or None if the AI backend is unavailable or returns an unusable response.
     """
-    import json
-
     # Build comment text from all reviews
     parts: list[str] = []
     for review in reviews:
@@ -179,19 +180,10 @@ async def _classify_with_ai(
     if not comment_text.strip():
         return None
 
-    prompt = CLASSIFICATION_PROMPT.format(comment_text=comment_text, threshold=CONFIDENCE_THRESHOLD)
-
-    # The assessment backend's assess() takes a card dict and builds a prompt
-    # internally. We pass a synthetic card with our classification prompt as
-    # the description so the backend sends it to the AI model.
-    synthetic_card = {
-        "title": "Classify PR feedback",
-        "description": prompt,
-        "acceptance_criteria": [],
-    }
+    prompt_text = CLASSIFICATION_PROMPT.format(comment_text=comment_text, threshold=CONFIDENCE_THRESHOLD)
 
     try:
-        result = await assessment_backend.assess(synthetic_card)
+        result = await assessment_backend.prompt(prompt_text, response_format="json")
     except Exception as exc:
         logger.warning("classify_human_feedback.ai_backend_error", error=str(exc))
         return None
@@ -200,20 +192,30 @@ async def _classify_with_ai(
         logger.warning("classify_human_feedback.ai_response_not_dict")
         return None
 
-    # Parse the response — the backend returns a sufficiency dict;
-    # we look for the AI's text response in "rationale" or "questions".
-    raw = result.get("rationale", result.get("response", result.get("text", "")))
-    if isinstance(raw, str):
-        try:
-            parsed = json.loads(raw)
-        except (ValueError, TypeError):
-            logger.warning("classify_human_feedback.ai_response_parse_failed")
-            return None
-    elif isinstance(raw, list):
-        parsed = raw
-    else:
-        return None
+    # prompt() returns {"text": str, "data": parsed_json | None}
+    parsed = result.get("data")
+    if parsed is None:
+        # Fall back to parsing the raw text if data wasn't auto-parsed
+        import json as _json
 
+        raw = result.get("text", "")
+        if isinstance(raw, str) and raw.strip():
+            try:
+                parsed = _json.loads(raw)
+            except (ValueError, TypeError):
+                logger.warning("classify_human_feedback.ai_response_parse_failed")
+                return None
+        else:
+            return None
+
+    if isinstance(parsed, dict):
+        # Some models wrap the array in a dict — unwrap the first list-valued key.
+        for v in parsed.values():
+            if isinstance(v, list):
+                parsed = v
+                break
+        else:
+            return None
     if not isinstance(parsed, list):
         return None
 

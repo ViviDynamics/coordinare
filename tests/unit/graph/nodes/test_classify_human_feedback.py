@@ -212,16 +212,16 @@ class TestAIClassification:
 
     @pytest.mark.asyncio
     async def test_ai_returns_valid_classification(self) -> None:
-        """AI backend returns valid classification → used."""
-        import json
+        """AI backend returns valid classification via prompt() → used."""
         from unittest.mock import AsyncMock
 
         backend = AsyncMock()
-        backend.assess = AsyncMock(return_value={
-            "rationale": json.dumps([
+        backend.prompt = AsyncMock(return_value={
+            "text": '[{"concern": "security", "confidence": 0.9}, {"concern": "implementation", "confidence": 0.8}]',
+            "data": [
                 {"concern": "security", "confidence": 0.9},
                 {"concern": "implementation", "confidence": 0.8},
-            ])
+            ],
         })
 
         reviews = [{"body": "There's a vulnerability in the auth flow"}]
@@ -234,15 +234,15 @@ class TestAIClassification:
     @pytest.mark.asyncio
     async def test_ai_low_confidence_returns_none(self) -> None:
         """AI returns all concerns below threshold → returns None (triggers keyword fallback)."""
-        import json
         from unittest.mock import AsyncMock
 
         backend = AsyncMock()
-        backend.assess = AsyncMock(return_value={
-            "rationale": json.dumps([
+        backend.prompt = AsyncMock(return_value={
+            "text": '[{"concern": "implementation", "confidence": 0.3}, {"concern": "review", "confidence": 0.2}]',
+            "data": [
                 {"concern": "implementation", "confidence": 0.3},
                 {"concern": "review", "confidence": 0.2},
-            ])
+            ],
         })
 
         reviews = [{"body": "minor style issue"}]
@@ -256,7 +256,7 @@ class TestAIClassification:
         from unittest.mock import AsyncMock
 
         backend = AsyncMock()
-        backend.assess.side_effect = ConnectionError("backend down")
+        backend.prompt.side_effect = ConnectionError("backend down")
 
         reviews = [{"body": "there's a bug"}]
         result = await _classify_with_ai(reviews, backend)
@@ -265,11 +265,11 @@ class TestAIClassification:
 
     @pytest.mark.asyncio
     async def test_ai_malformed_response_returns_none(self) -> None:
-        """AI returns non-JSON → returns None."""
+        """AI returns non-JSON (data=None) → falls back to parsing text, still fails → returns None."""
         from unittest.mock import AsyncMock
 
         backend = AsyncMock()
-        backend.assess.return_value = {"rationale": "not json at all"}
+        backend.prompt.return_value = {"text": "not json at all", "data": None}
 
         reviews = [{"body": "fix this"}]
         result = await _classify_with_ai(reviews, backend)
@@ -277,14 +277,30 @@ class TestAIClassification:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_classify_uses_ai_when_available(self) -> None:
-        """classify_human_feedback uses AI classification when backend is available."""
+    async def test_ai_data_none_text_parseable(self) -> None:
+        """When data is None but text is valid JSON, falls back to parsing text."""
         import json
         from unittest.mock import AsyncMock
 
+        data = [{"concern": "security", "confidence": 0.9}]
         backend = AsyncMock()
-        backend.assess = AsyncMock(return_value={
-            "rationale": json.dumps([{"concern": "security", "confidence": 0.95}])
+        backend.prompt.return_value = {"text": json.dumps(data), "data": None}
+
+        reviews = [{"body": "token vulnerability"}]
+        result = await _classify_with_ai(reviews, backend)
+
+        assert result is not None
+        assert "security" in result
+
+    @pytest.mark.asyncio
+    async def test_classify_uses_ai_when_available(self) -> None:
+        """classify_human_feedback uses AI classification via prompt() when backend is available."""
+        from unittest.mock import AsyncMock
+
+        backend = AsyncMock()
+        backend.prompt = AsyncMock(return_value={
+            "text": '[{"concern": "security", "confidence": 0.95}]',
+            "data": [{"concern": "security", "confidence": 0.95}],
         })
 
         state = initial_state()
@@ -298,7 +314,7 @@ class TestAIClassification:
         result = await classify_human_feedback(state)
 
         assert result["performer_stage"] == "security"
-        backend.assess.assert_called_once()
+        backend.prompt.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_classify_falls_back_to_keywords_on_ai_failure(self) -> None:
@@ -306,7 +322,7 @@ class TestAIClassification:
         from unittest.mock import AsyncMock
 
         backend = AsyncMock()
-        backend.assess.side_effect = ConnectionError("down")
+        backend.prompt.side_effect = ConnectionError("down")
 
         state = initial_state()
         state["lifecycle_sequence"] = ["implementing", "reviewing"]

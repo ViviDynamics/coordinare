@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import re
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
@@ -156,9 +157,38 @@ def _parse_assessment_response(text: str) -> dict[str, Any]:
     return {"sufficient": False, "questions": [], "rationale": text}
 
 
+_CODE_FENCE_RE = re.compile(r"```(?:json|JSON)?\s*\n?(.*?)\n?\s*```", re.DOTALL)
+
+
+def _parse_prompt_response(text: str, response_format: str | None) -> dict[str, Any]:
+    """Build a prompt response dict, optionally parsing JSON from the text.
+
+    When ``response_format="json"``, tries multiple strategies:
+    1. Parse the full text as JSON.
+    2. Extract the first code fence (labeled or unlabeled) and parse its contents.
+    3. Log a warning if all strategies fail.
+    """
+    text = text.strip() if text else ""
+    result: dict[str, Any] = {"text": text, "data": None}
+    if response_format == "json" and text:
+        # Strategy 1: full text is JSON
+        with contextlib.suppress(json.JSONDecodeError, ValueError):
+            result["data"] = json.loads(text)
+        # Strategy 2: extract JSON from code fence anywhere in text
+        if result["data"] is None:
+            match = _CODE_FENCE_RE.search(text)
+            if match:
+                with contextlib.suppress(json.JSONDecodeError, ValueError):
+                    result["data"] = json.loads(match.group(1).strip())
+        if result["data"] is None:
+            log.warning("prompt_response_json_parse_failed", text_length=len(text))
+    return result
+
+
 @runtime_checkable
 class AssessmentBackend(Protocol):
     async def assess(self, card: dict[str, Any]) -> dict[str, Any]: ...
+    async def prompt(self, text: str, response_format: str | None = None) -> dict[str, Any]: ...
 
 
 class AnthropicApiBackend:
@@ -169,6 +199,13 @@ class AnthropicApiBackend:
 
     async def assess(self, card: dict[str, Any]) -> dict[str, Any]:
         return await self._svc.assess_card_sufficiency(card)
+
+    async def prompt(self, text: str, response_format: str | None = None) -> dict[str, Any]:
+        """Send an arbitrary text prompt to the Anthropic API."""
+        if not text.strip():
+            return {"text": "", "data": None}
+        raw = await self._svc.prompt_text(text, response_format=response_format)
+        return _parse_prompt_response(raw, response_format)
 
 
 class ClaudeCliBackend:
@@ -201,6 +238,47 @@ class ClaudeCliBackend:
         if not text:
             return {"sufficient": False, "questions": [], "rationale": "empty cli response"}
         return _parse_assessment_response(text)
+
+    async def prompt(self, text: str, response_format: str | None = None) -> dict[str, Any]:
+        """Send an arbitrary text prompt via the Claude CLI.
+
+        Uses stdin (not argv) to avoid exposing potentially sensitive prompt
+        content in process listings.  This differs from ``assess()`` which
+        uses argv because its prompts are built internally from card data.
+        """
+        if not text.strip():
+            return {"text": "", "data": None}
+        proc = None
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                self._executable,
+                "--print",
+                "-p", "-",  # read prompt from stdin
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(input=text.encode()), timeout=self._TIMEOUT
+            )
+        except TimeoutError:
+            if proc is not None:
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(proc.wait(), timeout=2)
+            log.warning("prompt_cli_timeout", timeout=self._TIMEOUT)
+            return {"text": "", "data": None}
+        except OSError as exc:
+            log.error("prompt_cli_launch_failed", error=str(exc))
+            return {"text": "", "data": None}
+
+        if proc.returncode and proc.returncode != 0:
+            err = stderr.decode(errors="replace").strip() if stderr else ""
+            log.warning("prompt_cli_nonzero_exit", returncode=proc.returncode, stderr_length=len(err))
+
+        raw = stdout.decode(errors="replace").strip() if stdout else ""
+        return _parse_prompt_response(raw, response_format)
 
 
 class OpenCodeBackend:
@@ -237,12 +315,57 @@ class OpenCodeBackend:
             return {"sufficient": False, "questions": [], "rationale": "empty opencode response"}
         return _parse_assessment_response(text)
 
+    async def prompt(self, text: str, response_format: str | None = None) -> dict[str, Any]:
+        """Send an arbitrary text prompt via the opencode CLI.
+
+        Uses stdin (not argv) to avoid exposing potentially sensitive prompt
+        content in process listings.  This differs from ``assess()`` which
+        uses argv because its prompts are built internally from card data.
+        """
+        if not text.strip():
+            return {"text": "", "data": None}
+        proc = None
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                self._executable,
+                "run",
+                "-",  # read from stdin
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(input=text.encode()), timeout=self._TIMEOUT
+            )
+        except TimeoutError:
+            if proc is not None:
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(proc.wait(), timeout=2)
+            log.warning("prompt_opencode_timeout", timeout=self._TIMEOUT)
+            return {"text": "", "data": None}
+        except OSError as exc:
+            log.error("prompt_opencode_launch_failed", error=str(exc))
+            return {"text": "", "data": None}
+
+        if proc.returncode and proc.returncode != 0:
+            err = stderr.decode(errors="replace").strip() if stderr else ""
+            log.warning("prompt_opencode_nonzero_exit", returncode=proc.returncode, stderr_length=len(err))
+
+        raw = stdout.decode(errors="replace").strip() if stdout else ""
+        return _parse_prompt_response(raw, response_format)
+
 
 class NullBackend:
     """Skips assessment — assumes all cards are sufficient."""
 
     async def assess(self, card: dict[str, Any]) -> dict[str, Any]:
         return {"sufficient": True, "questions": [], "rationale": "assessment disabled"}
+
+    async def prompt(self, text: str, response_format: str | None = None) -> dict[str, Any]:
+        """No-op prompt — returns empty text."""
+        return {"text": "", "data": None}
 
 
 def build_assessment_backend(

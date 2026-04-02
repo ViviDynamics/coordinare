@@ -45,6 +45,7 @@ class ClaudeServiceProtocol(Protocol):
 
 class AssessmentBackendProtocol(Protocol):
     async def assess(self, card: dict[str, Any]) -> dict[str, Any]: ...
+    async def prompt(self, text: str, response_format: str | None = None) -> dict[str, Any]: ...
 
 
 class NotificationServiceProtocol(Protocol):

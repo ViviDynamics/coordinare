@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -12,6 +13,7 @@ from coordinare.services.assessment import (
     OpenCodeBackend,
     _build_assess_prompt,
     _parse_assessment_response,
+    _parse_prompt_response,
     build_assessment_backend,
 )
 
@@ -339,3 +341,211 @@ class TestBuildAssessmentBackend:
     def test_unknown_raises_value_error(self) -> None:
         with pytest.raises(ValueError, match="Unknown assessment_backend"):
             build_assessment_backend(_cfg("foobar"))
+
+
+# ---------------------------------------------------------------------------
+# _parse_prompt_response
+# ---------------------------------------------------------------------------
+
+class TestParsePromptResponse:
+    def test_plain_text_no_json(self) -> None:
+        result = _parse_prompt_response("hello world", None)
+        assert result == {"text": "hello world", "data": None}
+
+    def test_json_format_valid_json(self) -> None:
+        result = _parse_prompt_response('{"key": "value"}', "json")
+        assert result["text"] == '{"key": "value"}'
+        assert result["data"] == {"key": "value"}
+
+    def test_json_format_invalid_json(self) -> None:
+        result = _parse_prompt_response("not json", "json")
+        assert result["text"] == "not json"
+        assert result["data"] is None
+
+    def test_json_format_code_fenced_json(self) -> None:
+        text = '```json\n{"key": "value"}\n```'
+        result = _parse_prompt_response(text, "json")
+        assert result["data"] == {"key": "value"}
+
+    def test_json_format_empty_text(self) -> None:
+        result = _parse_prompt_response("", "json")
+        assert result == {"text": "", "data": None}
+
+    def test_json_format_array(self) -> None:
+        result = _parse_prompt_response('[1, 2, 3]', "json")
+        assert result["data"] == [1, 2, 3]
+
+    def test_no_format_skips_json_parse(self) -> None:
+        result = _parse_prompt_response('{"key": "value"}', None)
+        assert result["data"] is None
+
+
+# ---------------------------------------------------------------------------
+# NullBackend.prompt()
+# ---------------------------------------------------------------------------
+
+class TestNullBackendPrompt:
+    @pytest.mark.asyncio
+    async def test_returns_empty_text(self) -> None:
+        result = await NullBackend().prompt("anything")
+        assert result == {"text": "", "data": None}
+
+    @pytest.mark.asyncio
+    async def test_with_json_format(self) -> None:
+        result = await NullBackend().prompt("anything", response_format="json")
+        assert result == {"text": "", "data": None}
+
+
+# ---------------------------------------------------------------------------
+# AnthropicApiBackend.prompt()
+# ---------------------------------------------------------------------------
+
+class TestAnthropicApiBackendPrompt:
+    @pytest.mark.asyncio
+    async def test_delegates_to_prompt_text(self) -> None:
+        svc = MagicMock()
+        svc.prompt_text = AsyncMock(return_value="model says hello")
+        backend = AnthropicApiBackend(svc)
+
+        result = await backend.prompt("say hello")
+
+        svc.prompt_text.assert_awaited_once_with("say hello", response_format=None)
+        assert result["text"] == "model says hello"
+        assert result["data"] is None
+
+    @pytest.mark.asyncio
+    async def test_json_response_format(self) -> None:
+        svc = MagicMock()
+        svc.prompt_text = AsyncMock(return_value='{"answer": 42}')
+        backend = AnthropicApiBackend(svc)
+
+        result = await backend.prompt("what is the answer?", response_format="json")
+
+        svc.prompt_text.assert_awaited_once_with("what is the answer?", response_format="json")
+        assert result["data"] == {"answer": 42}
+
+    @pytest.mark.asyncio
+    async def test_empty_prompt_returns_immediately(self) -> None:
+        svc = MagicMock()
+        svc.prompt_text = AsyncMock()
+        backend = AnthropicApiBackend(svc)
+
+        result = await backend.prompt("")
+
+        svc.prompt_text.assert_not_awaited()
+        assert result == {"text": "", "data": None}
+
+    @pytest.mark.asyncio
+    async def test_whitespace_only_prompt_returns_immediately(self) -> None:
+        svc = MagicMock()
+        svc.prompt_text = AsyncMock()
+        backend = AnthropicApiBackend(svc)
+
+        result = await backend.prompt("   ")
+
+        svc.prompt_text.assert_not_awaited()
+        assert result == {"text": "", "data": None}
+
+    @pytest.mark.asyncio
+    async def test_propagates_exceptions(self) -> None:
+        svc = MagicMock()
+        svc.prompt_text = AsyncMock(side_effect=RuntimeError("api down"))
+        backend = AnthropicApiBackend(svc)
+
+        with pytest.raises(RuntimeError, match="api down"):
+            await backend.prompt("hello")
+
+
+# ---------------------------------------------------------------------------
+# ClaudeCliBackend.prompt()
+# ---------------------------------------------------------------------------
+
+class TestClaudeCliBackendPrompt:
+    @pytest.mark.asyncio
+    async def test_successful_prompt(self) -> None:
+        with patch("asyncio.create_subprocess_exec", return_value=_make_proc(b"hello from claude")):
+            result = await ClaudeCliBackend().prompt("say hello")
+        assert result["text"] == "hello from claude"
+        assert result["data"] is None
+
+    @pytest.mark.asyncio
+    async def test_json_response_format(self) -> None:
+        payload = b'{"answer": 42}'
+        with patch("asyncio.create_subprocess_exec", return_value=_make_proc(payload)):
+            result = await ClaudeCliBackend().prompt("what?", response_format="json")
+        assert result["data"] == {"answer": 42}
+
+    @pytest.mark.asyncio
+    async def test_empty_prompt_returns_immediately(self) -> None:
+        result = await ClaudeCliBackend().prompt("")
+        assert result == {"text": "", "data": None}
+
+    @pytest.mark.asyncio
+    async def test_timeout_returns_empty(self) -> None:
+        proc = _make_proc(b"")
+        proc.communicate = AsyncMock(side_effect=TimeoutError())
+        with patch("asyncio.create_subprocess_exec", return_value=proc):
+            result = await ClaudeCliBackend().prompt("hello")
+        assert result == {"text": "", "data": None}
+
+    @pytest.mark.asyncio
+    async def test_oserror_returns_empty(self) -> None:
+        with patch("asyncio.create_subprocess_exec", side_effect=OSError("not found")):
+            result = await ClaudeCliBackend().prompt("hello")
+        assert result == {"text": "", "data": None}
+
+    @pytest.mark.asyncio
+    async def test_prompt_uses_stdin(self) -> None:
+        """Prompt is passed via stdin (not argv) to avoid process listing exposure."""
+        with patch("asyncio.create_subprocess_exec", return_value=_make_proc(b"ok")) as mock_exec:
+            await ClaudeCliBackend(executable="claude").prompt("test prompt")
+        args = mock_exec.call_args[0]
+        assert args[0] == "claude"
+        assert args[1] == "--print"
+        assert "test prompt" not in args
+        kwargs = mock_exec.call_args[1]
+        assert kwargs.get("stdin") == asyncio.subprocess.PIPE
+
+
+# ---------------------------------------------------------------------------
+# OpenCodeBackend.prompt()
+# ---------------------------------------------------------------------------
+
+class TestOpenCodeBackendPrompt:
+    @pytest.mark.asyncio
+    async def test_successful_prompt(self) -> None:
+        with patch("asyncio.create_subprocess_exec", return_value=_make_proc(b"hello from opencode")):
+            result = await OpenCodeBackend().prompt("say hello")
+        assert result["text"] == "hello from opencode"
+
+    @pytest.mark.asyncio
+    async def test_json_response_format(self) -> None:
+        payload = b'[{"concern": "security", "confidence": 0.9}]'
+        with patch("asyncio.create_subprocess_exec", return_value=_make_proc(payload)):
+            result = await OpenCodeBackend().prompt("classify", response_format="json")
+        assert result["data"] == [{"concern": "security", "confidence": 0.9}]
+
+    @pytest.mark.asyncio
+    async def test_empty_prompt_returns_immediately(self) -> None:
+        result = await OpenCodeBackend().prompt("")
+        assert result == {"text": "", "data": None}
+
+    @pytest.mark.asyncio
+    async def test_prompt_uses_stdin(self) -> None:
+        """Prompt is passed via stdin (not argv) to avoid process listing exposure."""
+        with patch("asyncio.create_subprocess_exec", return_value=_make_proc(b"ok")) as mock_exec:
+            await OpenCodeBackend(executable="opencode").prompt("test prompt")
+        args = mock_exec.call_args[0]
+        assert args[0] == "opencode"
+        assert args[1] == "run"
+        assert "test prompt" not in args
+        kwargs = mock_exec.call_args[1]
+        assert kwargs.get("stdin") == asyncio.subprocess.PIPE
+
+    @pytest.mark.asyncio
+    async def test_timeout_returns_empty(self) -> None:
+        proc = _make_proc(b"")
+        proc.communicate = AsyncMock(side_effect=TimeoutError())
+        with patch("asyncio.create_subprocess_exec", return_value=proc):
+            result = await OpenCodeBackend().prompt("hello")
+        assert result == {"text": "", "data": None}

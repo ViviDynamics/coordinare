@@ -49,6 +49,57 @@ class ClaudeService:
         self._circuit_breaker = circuit_breaker
         self._retry_kwargs = retry_kwargs if retry_kwargs is not None else dict(self._DEFAULT_RETRY_KWARGS)
 
+    async def prompt_text(self, text: str, *, response_format: str | None = None) -> str:
+        """Send an arbitrary text prompt and return the model's raw text response.
+
+        When *response_format* is ``"json"``, a system instruction is added
+        asking the model to respond with valid JSON only.
+        """
+        system_msg: str | None = None
+        if response_format == "json":
+            system_msg = "Respond with valid JSON only."
+
+        @stamina.retry(on=TransientAnthropicError, **self._retry_kwargs)
+        async def _retried_create() -> Any:
+            try:
+                kwargs: dict[str, Any] = {
+                    "model": self._model,
+                    "max_tokens": 1024,
+                    "messages": [{"role": "user", "content": text}],
+                }
+                if system_msg:
+                    kwargs["system"] = system_msg
+                return await self._client.messages.create(**kwargs)
+            except (APIConnectionError, APITimeoutError) as exc:
+                raise TransientAnthropicError(str(exc)) from exc
+            except AuthenticationError as exc:
+                raise PermanentAnthropicError(str(exc)) from exc
+            except APIStatusError as exc:
+                if exc.status_code >= 500 or exc.status_code == 429:
+                    raise TransientAnthropicError(str(exc)) from exc
+                raise PermanentAnthropicError(str(exc)) from exc
+
+        try:
+            if self._circuit_breaker is not None:
+                async with self._circuit_breaker.guard():
+                    response = await _retried_create()
+            else:
+                response = await _retried_create()
+            METRICS.service_calls_total.labels(
+                service="anthropic", action="prompt", outcome="success",
+            ).inc()
+        except Exception:
+            METRICS.service_calls_total.labels(
+                service="anthropic", action="prompt", outcome="failure",
+            ).inc()
+            raise
+
+        if getattr(response, "content", None):
+            blocks = response.content
+            if blocks and hasattr(blocks[0], "text"):
+                return blocks[0].text
+        return ""
+
     async def assess_card_sufficiency(self, card: dict[str, Any]) -> dict[str, Any]:
         clarifications: list[dict] = card.get("clarifications", []) if isinstance(card, dict) else []
 
