@@ -235,6 +235,21 @@ class DashboardStore:
             with contextlib.suppress(Exception):
                 performer_logs = agent_service.get_agent_logs()
 
+        # 035: Multi-card parallelism — active session summaries
+        active_sessions_raw = daemon.state.get("active_sessions") or {}
+        active_session_count = len(active_sessions_raw)
+        active_session_summaries = []
+        for sid, sess in active_sessions_raw.items():
+            sess_card = sess.get("current_card") or {}
+            active_session_summaries.append({
+                "card_id": sid,
+                "card_title": str(sess_card.get("title", "")),
+                "phase": str(sess.get("phase", "idle")),
+                "performer_stage": str(sess.get("performer_stage", "")),
+                "card_tokens_total": sess.get("card_tokens_total", 0),
+                "card_cost_estimate": sess.get("card_cost_estimate", 0.0),
+            })
+
         return {
             "phase": phase,
             "phase_label": format_phase_label(phase),
@@ -256,6 +271,8 @@ class DashboardStore:
             "performer_logs": performer_logs,
             "card_tokens_total": daemon.state.get("card_tokens_total", 0),
             "card_cost_estimate": daemon.state.get("card_cost_estimate", 0.0),
+            "active_session_count": active_session_count,
+            "active_sessions": active_session_summaries,
             "subsystems": subsystems,
             "cycles_completed": cycles_completed,
             "last_cycle_duration_seconds": self.last_cycle_duration,

@@ -14,6 +14,7 @@ from coordinare.lib.runtime_events import build_runtime_event
 from coordinare.metrics import METRICS
 from coordinare.observability import HEALTH, HealthStatus, bind_cycle_id, clear_cycle_id
 from coordinare.resilience import CircuitOpenError
+from coordinare.session import session_to_state, state_to_session
 from coordinare.state_store import StateLoadError, WorkflowPhase, WorkflowSnapshot
 
 if TYPE_CHECKING:
@@ -247,6 +248,79 @@ class CoordinareDaemon:
         ):
             self._main_task.cancel()
 
+    def _max_concurrent_cards(self) -> int:
+        """Return the configured concurrency limit (defaults to 1)."""
+        config = self._state.get("config")
+        if config is not None and hasattr(config, "max_concurrent_cards"):
+            return max(1, int(config.max_concurrent_cards))
+        return 1
+
+    async def _invoke_multi_session(self) -> None:
+        """Process each active session through the graph independently.
+
+        Called only when max_concurrent_cards > 1 and there are active
+        sessions.  Each session's fields are copied into the flat state,
+        the graph is invoked, and the resulting state is copied back into
+        the session.  Completed sessions (phase=idle, current_card=None)
+        are removed to free capacity.
+
+        On error, session-scoped fields are restored from a pre-invocation
+        snapshot.  Non-session fields (board_snapshot, phase, caches) are
+        re-derived each cycle so transient leaks are self-correcting.
+        """
+        active_sessions: dict = self._state.get("active_sessions") or {}
+
+        # Always clear board cache at cycle start so check_board re-polls
+        self._state["_board_cache"] = None
+
+        if not active_sessions:
+            # No sessions yet — run one graph cycle to let check_board populate them
+            self._state = await self._graph.ainvoke(self._state)
+            return
+
+        # Cache was already cleared above; the first session's check_board
+        # will re-poll GitHub exactly once; subsequent sessions within
+        # this cycle reuse the cached result and skip the API call.
+
+        completed_ids: list[str] = []
+        for card_id, session in list(active_sessions.items()):
+            # Save the pre-invocation session fields so we can restore
+            # on error without deep-copying service objects.
+            pre_session = dict(session)
+
+            # Copy session → flat state
+            session_to_state(session, self._state)
+            try:
+                self._state = await self._graph.ainvoke(self._state)
+            except Exception:
+                logger.error(
+                    "session_graph_error",
+                    card_id=card_id,
+                    exc_info=True,
+                )
+                # Restore the original session fields so the partial
+                # mutation doesn't leak; the session can be retried next cycle.
+                session_to_state(pre_session, self._state)
+                active_sessions[card_id] = pre_session
+                continue
+
+            # Copy flat state → session
+            updated_session = state_to_session(self._state)
+            active_sessions[card_id] = updated_session
+
+            # Check if session completed
+            session_phase = updated_session.get("phase", "idle")
+            session_card = updated_session.get("current_card")
+            if session_phase == "idle" and session_card is None:
+                completed_ids.append(card_id)
+
+        # Remove completed sessions
+        for card_id in completed_ids:
+            del active_sessions[card_id]
+            logger.info("session_completed", card_id=card_id)
+
+        self._state["active_sessions"] = active_sessions
+
     def _install_signal_handlers(self) -> None:
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
@@ -358,12 +432,20 @@ class CoordinareDaemon:
                 bind_cycle_id(cycle_id)
                 _cycle_t0 = perf_counter()
 
-                self._state = await self._graph.ainvoke(self._state)
+                # 035: Multi-card parallelism — when concurrency > 1,
+                # iterate over active sessions independently.
+                if self._max_concurrent_cards() > 1:
+                    await self._invoke_multi_session()
+                else:
+                    self._state = await self._graph.ainvoke(self._state)
 
                 # US1: record cycle metrics
                 _cycle_elapsed = perf_counter() - _cycle_t0
                 METRICS.cycles_completed_total.inc()
                 METRICS.cycle_duration_seconds.observe(_cycle_elapsed)
+                # 035: Update active session gauge
+                _active = self._state.get("active_sessions") or {}
+                METRICS.active_sessions.set(len(_active))
                 # US3: mark external service subsystems healthy after a successful poll cycle
                 HEALTH.update("github", HealthStatus.healthy)
                 HEALTH.update("agent", HealthStatus.healthy)

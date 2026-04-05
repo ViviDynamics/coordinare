@@ -433,6 +433,9 @@ class ProjectConfiguration(BaseSettings):
     requirement_change_policy: RequirementChangePolicy = "warn"  # 030: ignore | warn | re-dispatch
     cost_tracking: CostTrackingConfig = Field(default_factory=CostTrackingConfig)
 
+    # 035 — Multi-Card Parallelism
+    max_concurrent_cards: int = Field(default=1, ge=1, le=20)
+
     # Card assessment backend — determines how assess_card evaluates card sufficiency.
     # "anthropic_api": direct Anthropic SDK call (requires ANTHROPIC_API_KEY)
     # "claude_cli":    subprocess `claude --print "..."` (uses local CLI auth)

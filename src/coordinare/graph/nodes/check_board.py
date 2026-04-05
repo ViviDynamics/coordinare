@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from coordinare.lib.acceptance_criteria import parse_acceptance_criteria
+from coordinare.session import create_session_from_card
 
 if TYPE_CHECKING:
     from coordinare.graph.state import CoordinareState
@@ -49,15 +50,29 @@ async def check_board(state: CoordinareState) -> CoordinareState:
         state["phase"] = "idle"
         return state
 
-    try:
-        board = await github.poll_board()
-    except Exception as exc:
-        logger.error("check_board.poll_failed", error=str(exc))
-        state["phase"] = "idle"
-        return state
+    # In multi-session mode the daemon invokes the graph once per active
+    # session within a single cycle.  Cache the board result to avoid
+    # redundant GitHub polls.  Only used when max_concurrent_cards > 1;
+    # single-card mode always polls fresh to avoid stale cache issues.
+    config = state.get("config")
+    _raw_max = getattr(config, "max_concurrent_cards", 1) if config else 1
+    max_cards = _raw_max if isinstance(_raw_max, int) else 1
+    cached_board = state.get("_board_cache") if max_cards > 1 else None
+    if cached_board:
+        board = cached_board
+    else:
+        try:
+            board = await github.poll_board()
+        except Exception as exc:
+            logger.error("check_board.poll_failed", error=str(exc))
+            state["phase"] = "idle"
+            return state
+        if max_cards > 1:
+            state["_board_cache"] = board
+        state["last_poll_at"] = datetime.now(UTC)
+
     snapshot = board.get("snapshot")
     state["board_snapshot"] = snapshot if isinstance(snapshot, dict) else {}
-    state["last_poll_at"] = datetime.now(UTC)
 
     in_progress = state["board_snapshot"].get("IN_PROGRESS", [])
     in_review = state["board_snapshot"].get("IN_REVIEW", [])
@@ -87,6 +102,11 @@ async def check_board(state: CoordinareState) -> CoordinareState:
             return state
 
     if in_review:
+        # NOTE (035): In multi-card mode, check_board runs once per daemon
+        # cycle (not per-session).  Per-session routing is handled by
+        # _invoke_multi_session in the daemon; this early-return for
+        # IN_REVIEW / IN_PROGRESS columns is correct for both modes.
+        #
         # Preserve dispatching phase from classify_human_feedback even if
         # the GitHub move to IN_PROGRESS failed and the card is still in
         # IN_REVIEW.  The dispatch will move it on the next attempt.
@@ -228,12 +248,64 @@ async def check_board(state: CoordinareState) -> CoordinareState:
                     )
 
         if eligible_todo:
-            item = eligible_todo[0]
             titles = board.get("titles", {})
             descriptions = board.get("descriptions", {})
             issue_numbers = board.get("issue_numbers", {})
             issue_urls = board.get("issue_urls", {})
             content_node_ids = board.get("content_node_ids", {})
+
+            # 035: Multi-card pickup — fill active_sessions up to concurrency limit
+            max_cards = 1
+            config = state.get("config")
+            if config is not None and hasattr(config, "max_concurrent_cards"):
+                max_cards = max(1, int(config.max_concurrent_cards))
+
+            active_sessions: dict = state.get("active_sessions") or {}
+            already_active_ids = set(active_sessions.keys())
+
+            if max_cards > 1:
+                # Multi-card mode: pick up cards into active_sessions
+                slots_available = max(0, max_cards - len(active_sessions))
+                picked = 0
+                for item in eligible_todo:
+                    if picked >= slots_available:
+                        break
+                    if item in already_active_ids:
+                        continue  # deduplicate — covers both pre-existing sessions
+                        # and duplicate IDs within eligible_todo
+                    description = str(descriptions.get(item, ""))
+                    card_dict = {
+                        "id": item,
+                        "issue_id": str(content_node_ids.get(item, "")),
+                        "issue_number": int(issue_numbers.get(item, 0)),
+                        "issue_url": str(issue_urls.get(item, "")),
+                        "title": str(titles.get(item, "")),
+                        "description": description,
+                        "acceptance_criteria": parse_acceptance_criteria(description),
+                        "status": "TODO",
+                        "previous_status": "TODO",
+                    }
+                    active_sessions[item] = create_session_from_card(card_dict)
+                    already_active_ids.add(item)
+                    picked += 1
+
+                state["active_sessions"] = active_sessions
+
+                # Only populate flat current_card when no session has already
+                # been loaded into state (i.e., the initial bootstrap call).
+                # In per-session invocations, _invoke_multi_session already
+                # set current_card via session_to_state before this runs, so
+                # overwriting it would clobber the active session's card.
+                if not state.get("current_card") and active_sessions:
+                    first_session = next(iter(active_sessions.values()))
+                    state["current_card"] = first_session.get("current_card")
+                    state["phase"] = "dispatching"
+                elif not active_sessions:
+                    state["phase"] = "idle"
+                return state
+
+            # Single-card mode (default): existing behavior unchanged
+            item = eligible_todo[0]
             description = str(descriptions.get(item, ""))
             # Only clear clarifications when picking up a genuinely fresh card.
             # If this is the same card returning from a re-queue (after Q&A),

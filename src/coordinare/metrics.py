@@ -194,6 +194,13 @@ class CoordinareMetrics:
             registry=self.registry,
         )
 
+        # --- Multi-card parallelism (spec 035) ---
+        self.active_sessions = Gauge(
+            "coordinare_active_sessions",
+            "Current number of active card sessions",
+            registry=self.registry,
+        )
+
         self._initialize_zero_values()
 
     def _initialize_zero_values(self) -> None:
