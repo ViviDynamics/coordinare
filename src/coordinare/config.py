@@ -318,6 +318,7 @@ class ServiceRetryConfig(BaseModel):
     wait_initial_seconds: float = Field(default=2.0, ge=0.1, le=60.0)
     wait_max_seconds: float = Field(default=30.0, ge=1.0, le=300.0)
     wait_jitter_seconds: float = Field(default=1.0, ge=0.0, le=30.0)
+    wait_exp_base: float = Field(default=1.618, ge=1.0, le=5.0)  # golden ratio ≈ fibonacci growth
 
 
 class ServiceCircuitConfig(BaseModel):
@@ -329,7 +330,7 @@ class ServiceCircuitConfig(BaseModel):
 class ResilienceConfig(BaseModel):
     github_retry: ServiceRetryConfig = Field(
         default_factory=lambda: ServiceRetryConfig(
-            attempts=4, wait_initial_seconds=2.0, wait_max_seconds=30.0, wait_jitter_seconds=2.0
+            attempts=5, wait_initial_seconds=3.0, wait_max_seconds=30.0, wait_jitter_seconds=2.0
         )
     )
     slack_retry: ServiceRetryConfig = Field(
@@ -354,7 +355,7 @@ class ResilienceConfig(BaseModel):
     )
     github_circuit: ServiceCircuitConfig = Field(
         default_factory=lambda: ServiceCircuitConfig(
-            failure_threshold=3, recovery_window_seconds=120.0, observation_window_seconds=300.0
+            failure_threshold=5, recovery_window_seconds=180.0, observation_window_seconds=300.0
         )
     )
     slack_circuit: ServiceCircuitConfig = Field(

@@ -264,6 +264,7 @@ def _retry_config_from(src: ServiceRetryConfig) -> RetryConfig:
         wait_initial=src.wait_initial_seconds,
         wait_max=src.wait_max_seconds,
         wait_jitter=src.wait_jitter_seconds,
+        wait_exp_base=src.wait_exp_base,
     )
 
 
