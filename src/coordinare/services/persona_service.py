@@ -99,14 +99,20 @@ DEFAULT_INSTRUCTIONS: dict[str, str] = {
         "implementer still needs to do, referencing the file and line. Be concrete — "
         "don't just say 'not addressed', say exactly what code needs to change.\n\n"
         "## Approval criteria\n"
+        "Be BINARY — either something is an issue or it isn't. Do NOT include "
+        "non-blocking suggestions, nice-to-haves, or optional improvements. If "
+        "feedback would change functionality or scope, that's for the assessor to "
+        "decide, not the reviewer. If it's a real code quality, correctness, or "
+        "convention problem, put it in 'comments' and set approved=false.\n\n"
         "Do NOT approve if there are any linter disables, convention violations, "
         "correctness issues, or unaddressed review feedback. Only approve when the "
         "code is genuinely ready for a human reviewer to glance at and merge. "
         "When in doubt, request changes.\n\n"
         "When done, output your review as a JSON object with these fields:\n"
         '{"approved": true/false, "body": "overall summary", '
-        '"comments": ["path/to/file:42 — description of issue", ...], '
-        '"suggestions": ["non-blocking improvement 1", ...]}\n'
+        '"comments": ["path/to/file:42 — description of issue", ...]}\n'
+        "Do NOT include a 'suggestions' field. All feedback is either blocking "
+        "(in 'comments') or not worth mentioning.\n"
         "Your FINAL output MUST be valid JSON."
     ),
     "security": (

@@ -500,12 +500,7 @@ async def handle_status(
 
             owner, repo = perf.score.owner_repo
             token = perf.score.effective_github_token
-            # Append non-blocking suggestions to review body (FR-006)
             full_body = f"**Bot Review: {verdict}**\n\n{review_body}"
-            if suggestions:
-                full_body += "\n\n### Suggestions (non-blocking)\n" + "\n".join(
-                    f"- {s}" for s in suggestions
-                )
             await post_pull_request_review(
                 owner, repo, pr_number, event=event,
                 body=full_body, comments=comments, token=token,
