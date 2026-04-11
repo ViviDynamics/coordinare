@@ -1050,12 +1050,12 @@ async def run_loop() -> None:
                     reason=f"unknown action: {msg.action}",
                 )
 
-        except Exception:  # pragma: no cover
+        except Exception as exc:  # pragma: no cover
             log.exception("unhandled error in run_loop")
             resp = PerformerResponse(
                 status="error",
                 session_id=msg.session_id,
-                reason="internal error",
+                reason=f"internal error: {type(exc).__name__}: {exc}",
             )
 
         _write_response(resp)
