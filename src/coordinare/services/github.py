@@ -169,6 +169,13 @@ query GetPRReviews($prId: ID!) {
           state
           body
           submittedAt
+          comments(first: 50) {
+            nodes {
+              body
+              path
+              line: originalLine
+            }
+          }
         }
       }
       reviewDecision
@@ -644,6 +651,17 @@ class GitHubService:
                 continue
             author = review.get("author", {})
             author_login = str(author.get("login", "")) if isinstance(author, dict) else ""
+            # Extract inline review comments (file-specific feedback)
+            inline_comments: list[dict[str, Any]] = []
+            raw_comments = review.get("comments", {})
+            if isinstance(raw_comments, dict):
+                for c in raw_comments.get("nodes", []):
+                    if isinstance(c, dict) and c.get("body"):
+                        inline_comments.append({
+                            "body": str(c["body"]),
+                            "path": str(c.get("path", "")),
+                            "line": c.get("line"),
+                        })
             parsed.append(
                 {
                     "id": str(review.get("id", "")),
@@ -651,6 +669,7 @@ class GitHubService:
                     "state": str(review.get("state", "")),
                     "body": str(review.get("body", "")),
                     "submitted_at": review.get("submittedAt"),
+                    "comments": inline_comments,
                 }
             )
         return parsed

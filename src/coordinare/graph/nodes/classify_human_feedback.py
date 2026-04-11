@@ -346,5 +346,8 @@ async def classify_human_feedback(state: CoordinareState) -> CoordinareState:
     state["phase"] = "dispatching"
     state["agent_dispatch"] = {}
     state["agent_dispatch_at"] = None
+    # Clear lifecycle_completed_at so the next lifecycle completion sets a
+    # fresh cutoff for monitor_pr review filtering.
+    state["lifecycle_completed_at"] = None
 
     return state

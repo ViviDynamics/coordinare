@@ -128,41 +128,77 @@ class TestCloneRepository:
                 await clone_repository(_score())
 
     async def test_checkout_fails_raises_workspace_error(self, tmp_path: Path) -> None:
-        """First call (clone) succeeds, second call (checkout) returns non-zero."""
+        """Clone succeeds, unshallow/fetch run, then checkout fails."""
         proc_ok = MagicMock()
         proc_ok.returncode = 0
         proc_ok.communicate = AsyncMock(return_value=(b"", b""))
 
+        proc_fetch_missing = MagicMock()
+        proc_fetch_missing.returncode = 128
+        proc_fetch_missing.communicate = AsyncMock(
+            return_value=(b"", b"fatal: couldn't find remote ref")
+        )
+
         proc_fail = MagicMock()
         proc_fail.returncode = 1
-        proc_fail.communicate = AsyncMock(return_value=(b"", b"error: branch already exists"))
+        proc_fail.communicate = AsyncMock(return_value=(b"", b"error: checkout failed"))
 
         with (
             patch(
                 "performer.workspace.asyncio.create_subprocess_exec",
-                side_effect=[proc_ok, proc_fail],
+                # clone ok, unshallow ok, fetch fail (missing ref), checkout -b fail
+                side_effect=[proc_ok, proc_ok, proc_fetch_missing, proc_fail],
             ),
             patch("performer.workspace.tempfile.mkdtemp", return_value=str(tmp_path)),
         ):
-            with pytest.raises(WorkspaceSetupError, match="git checkout -b failed"):
+            with pytest.raises(WorkspaceSetupError, match="git checkout failed"):
                 await clone_repository(_score())
 
     async def test_checkout_oserror_raises_workspace_error(self, tmp_path: Path) -> None:
-        """First call (clone) succeeds; second call (checkout) raises OSError."""
+        """Clone/unshallow/fetch succeed; checkout raises OSError."""
         proc_ok = MagicMock()
         proc_ok.returncode = 0
         proc_ok.communicate = AsyncMock(return_value=(b"", b""))
+
+        proc_fetch_missing = MagicMock()
+        proc_fetch_missing.returncode = 128
+        proc_fetch_missing.communicate = AsyncMock(
+            return_value=(b"", b"fatal: couldn't find remote ref")
+        )
 
         os_error = OSError(errno.EIO, "I/O error")
 
         with (
             patch(
                 "performer.workspace.asyncio.create_subprocess_exec",
-                side_effect=[proc_ok, os_error],
+                # clone ok, unshallow ok, fetch fail (missing ref), checkout OSError
+                side_effect=[proc_ok, proc_ok, proc_fetch_missing, os_error],
             ),
             patch("performer.workspace.tempfile.mkdtemp", return_value=str(tmp_path)),
         ):
             with pytest.raises(WorkspaceSetupError, match="git checkout failed"):
+                await clone_repository(_score())
+
+    async def test_fetch_unexpected_error_raises_workspace_error(self, tmp_path: Path) -> None:
+        """Fetch fails with unexpected error (not missing ref) — raises immediately."""
+        proc_ok = MagicMock()
+        proc_ok.returncode = 0
+        proc_ok.communicate = AsyncMock(return_value=(b"", b""))
+
+        proc_fetch_auth_fail = MagicMock()
+        proc_fetch_auth_fail.returncode = 128
+        proc_fetch_auth_fail.communicate = AsyncMock(
+            return_value=(b"", b"fatal: Authentication failed")
+        )
+
+        with (
+            patch(
+                "performer.workspace.asyncio.create_subprocess_exec",
+                side_effect=[proc_ok, proc_ok, proc_fetch_auth_fail],
+            ),
+            patch("performer.workspace.tempfile.mkdtemp", return_value=str(tmp_path)),
+        ):
+            with pytest.raises(WorkspaceSetupError, match="git fetch failed unexpectedly"):
                 await clone_repository(_score())
 
     async def test_clone_workspace_error_cleans_up_stand_path(self, tmp_path: Path) -> None:
@@ -188,12 +224,14 @@ class TestCloneRepository:
         stand_path = tmp_path / "stand"
         stand_path.mkdir()
 
-        # Clone succeeds, checkout times out
+        # Clone succeeds, unshallow ok, fetch fails (missing ref), checkout times out
         with (
             patch(
                 "performer.workspace._run_git",
                 new=AsyncMock(side_effect=[
-                    (0, ""),  # clone OK
+                    (0, ""),   # clone OK
+                    (0, ""),   # unshallow OK
+                    (128, "fatal: couldn't find remote ref"), # fetch fail (branch doesn't exist)
                     WorkspaceSetupError("git command timed out"),
                 ]),
             ),
@@ -231,23 +269,27 @@ class TestPushBranch:
         decoded = base64.b64decode(raw.removeprefix("Authorization: Basic ")).decode()
         assert "ghp_secret" in decoded
 
-    async def test_branch_conflict_raises(self, tmp_path: Path) -> None:
+    async def test_non_fast_forward_falls_back_to_force(self, tmp_path: Path) -> None:
+        """Non-fast-forward regular push triggers force-push fallback."""
         stand = Stand(path=tmp_path, branch="feat/x")
-        proc = MagicMock()
-        proc.returncode = 1
-        proc.communicate = AsyncMock(
+        proc_fail = MagicMock()
+        proc_fail.returncode = 1
+        proc_fail.communicate = AsyncMock(
             return_value=(b"", b"error: failed to push some refs\n [rejected] feat/x -> feat/x (non-fast-forward)")
         )
-        with patch("performer.workspace.asyncio.create_subprocess_exec", return_value=proc):
-            with pytest.raises(BranchConflictError):
-                await push_branch(stand, _score())
+        proc_ok = MagicMock()
+        proc_ok.returncode = 0
+        proc_ok.communicate = AsyncMock(return_value=(b"", b""))
+        with patch("performer.workspace.asyncio.create_subprocess_exec", side_effect=[proc_fail, proc_ok]):
+            await push_branch(stand, _score())  # should succeed via force fallback
 
-    async def test_generic_push_failure_raises_workspace_error(self, tmp_path: Path) -> None:
+    async def test_both_push_attempts_fail_raises_workspace_error(self, tmp_path: Path) -> None:
+        """When both regular and force push fail, raises WorkspaceSetupError."""
         stand = Stand(path=tmp_path, branch="feat/x")
-        proc = MagicMock()
-        proc.returncode = 1
-        proc.communicate = AsyncMock(return_value=(b"", b"error: network timeout"))
-        with patch("performer.workspace.asyncio.create_subprocess_exec", return_value=proc):
+        proc_fail = MagicMock()
+        proc_fail.returncode = 1
+        proc_fail.communicate = AsyncMock(return_value=(b"", b"error: network timeout"))
+        with patch("performer.workspace.asyncio.create_subprocess_exec", return_value=proc_fail):
             with pytest.raises(WorkspaceSetupError):
                 await push_branch(stand, _score())
 

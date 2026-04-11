@@ -274,6 +274,8 @@ class DashboardStore:
             "active_session_count": active_session_count,
             "active_sessions": active_session_summaries,
             "subsystems": subsystems,
+            "project_name": getattr(_cfg, "project_name", "") if (_cfg := daemon.state.get("config")) else "",
+            "project_board_url": f"https://github.com/orgs/{_cfg.github_org}/projects/{_cfg.github_project_number}" if _cfg else "",
             "cycles_completed": cycles_completed,
             "last_cycle_duration_seconds": self.last_cycle_duration,
             "consecutive_error_count": error_count,
@@ -388,7 +390,7 @@ td { padding: 4px 8px; border-bottom: 1px solid #21262d; }
 </head>
 <body>
 <div id="disconnected-banner">&#9888; Disconnected — reconnecting...</div>
-<h1>Coordinare Dashboard</h1>
+<h1>Coordinare Dashboard <span id="project-link" style="font-size:16px;font-weight:normal;color:#8b949e"></span></h1>
 <main class="grid">
 
 <div class="card">
@@ -734,6 +736,17 @@ function renderState(s) {
   document.getElementById('last-duration').textContent = fmtDuration(s.last_cycle_duration_seconds);
   document.getElementById('error-count').textContent = s.consecutive_error_count;
   document.getElementById('daemon-start-time').textContent = fmtTime(s.daemon_start_time);
+  if (s.project_board_url && s.project_name) {
+    var linkEl = document.getElementById('project-link');
+    linkEl.textContent = '— ';
+    var a = document.createElement('a');
+    a.href = s.project_board_url;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    a.style.cssText = 'color:#58a6ff;text-decoration:none';
+    a.textContent = s.project_name + ' Board';
+    linkEl.appendChild(a);
+  }
   document.getElementById('card-tokens-total').textContent =
     (s.card_tokens_total || 0).toLocaleString();
   document.getElementById('card-cost-estimate').textContent =

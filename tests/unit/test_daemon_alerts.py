@@ -55,7 +55,7 @@ async def test_daemon_restart_notification_dispatched() -> None:
     restart_events = [e for e in fake.dispatched if e.event_type == EventType.daemon_restart]
     assert len(restart_events) == 1
     assert restart_events[0].source == "daemon"
-    assert "Coordinare daemon started" in restart_events[0].payload["summary"]
+    assert "Coordinare restarted" in restart_events[0].payload["summary"]
 
 
 @pytest.mark.asyncio

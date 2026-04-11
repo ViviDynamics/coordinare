@@ -171,10 +171,11 @@ class WorkspaceManager:
     and injected into ``CoordinareState`` like other services.
     """
 
-    def __init__(self, config: ProjectConfiguration) -> None:
+    def __init__(self, config: ProjectConfiguration, auth: Any = None) -> None:
         self._github_org: str = config.github_org
         self._project_name: str = config.project_name
-        self._github_token = config.github_token
+        self._github_token = config.github_token  # static PAT (may be None in app mode)
+        self._auth = auth  # GitHubAuth protocol — used to get current token
         self._workspace_root: Path | None = config.workspace_root
         self._agent_transport: str = config.agent_transport
 
@@ -211,7 +212,13 @@ class WorkspaceManager:
         if self._agent_transport == "kubernetes":
             return WorkspaceInfo(path=None, branch=branch, repo_url=repo_url, github_token="")
 
-        token = self._github_token.get_secret_value()
+        # Get token: prefer auth protocol (supports App mode), fall back to static PAT
+        if self._auth is not None:
+            token = await self._auth.get_token()
+        elif self._github_token is not None:
+            token = self._github_token.get_secret_value()
+        else:
+            raise WorkspaceSetupError("No GitHub token available — configure github_token or github_auth=app")
         clone_url = f"https://x-access-token:{token}@github.com/{org}/{project}.git"
 
         container: Path | None = None

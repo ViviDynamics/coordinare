@@ -154,8 +154,31 @@ async def clone_repository(score: Score) -> Stand:
         shutil.rmtree(stand_path, ignore_errors=True)
         raise WorkspaceSetupError(f"git clone failed (exit {returncode}): {stderr}")
 
-    # Step 2: create and switch to the target branch
-    checkout_cmd = ["git", "checkout", "-b", score.branch]
+    # Step 2: try to fetch the existing remote branch (re-dispatch after feedback).
+    # If it exists, check it out to preserve previous work. If not, create fresh.
+    # Unshallow first so fetch can resolve the branch history.
+    # Tolerate failure — repo may already be complete (non-shallow clone).
+    unshallow_rc, unshallow_stderr = await _run_git(["git", "fetch", "--unshallow"], cwd=stand_path, env=env)
+    if unshallow_rc != 0 and "not a shallow repository" not in (unshallow_stderr or "").lower():
+        log.warning("clone_repository.unshallow_failed", exit_code=unshallow_rc, stderr=unshallow_stderr)
+    fetch_cmd = ["git", "fetch", "origin", f"{score.branch}:{score.branch}"]
+    fetch_rc, fetch_stderr = await _run_git(fetch_cmd, cwd=stand_path, env=env)
+
+    if fetch_rc == 0:
+        # Branch exists on remote — check it out (preserves previous commits)
+        checkout_cmd = ["git", "checkout", score.branch]
+        log.info("clone_repository.existing_branch", branch=score.branch)
+    elif "couldn't find remote ref" in (fetch_stderr or "").lower():
+        # Branch doesn't exist yet — create from main
+        checkout_cmd = ["git", "checkout", "-b", score.branch]
+        log.info("clone_repository.new_branch", branch=score.branch)
+    else:
+        # Unexpected fetch error (auth, DNS, etc.) — don't silently create a new branch
+        shutil.rmtree(stand_path, ignore_errors=True)
+        raise WorkspaceSetupError(
+            f"git fetch failed unexpectedly (exit {fetch_rc}): {fetch_stderr}"
+        )
+
     try:
         returncode, stderr = await _run_git(checkout_cmd, cwd=stand_path, env=env)
     except (OSError, WorkspaceSetupError) as exc:
@@ -166,7 +189,14 @@ async def clone_repository(score: Score) -> Stand:
 
     if returncode != 0:
         shutil.rmtree(stand_path, ignore_errors=True)
-        raise WorkspaceSetupError(f"git checkout -b failed (exit {returncode}): {stderr}")
+        raise WorkspaceSetupError(f"git checkout failed (exit {returncode}): {stderr}")
+
+    # Set git identity so commits show as the bot, not the host user
+    for cfg_cmd in [
+        ["git", "config", "user.name", "vivi-coordinare[bot]"],
+        ["git", "config", "user.email", "coordinare@users.noreply.github.com"],
+    ]:
+        await _run_git(cfg_cmd, cwd=stand_path, env=env)
 
     log.info("cloned repository", repo_url=score.repo_url, branch=score.branch)
     stand = Stand(path=stand_path, branch=score.branch)
@@ -175,14 +205,11 @@ async def clone_repository(score: Score) -> Stand:
 
 
 async def push_branch(stand: Stand, score: Score) -> None:
-    """Push *stand.branch* to the remote with ``--force``.
+    """Push *stand.branch* to the remote.
 
-    Coordinare-managed branches (``coordinare/<id>/<slug>``) are exclusively
-    owned by the coordinare — no human ever pushes to them — so ``--force``
-    is safe and correct.  ``--force-with-lease`` does not work here because
-    we push directly to the URL (not a named remote), meaning git has no
-    remote-tracking ref to evaluate the lease against; if the branch already
-    exists on the remote git rejects the push with "(stale info)".
+    Tries a regular push first to preserve PR history. Falls back to
+    ``--force`` only if the regular push fails (e.g., first push to a
+    new branch, or history has diverged).
 
     Raises WorkspaceSetupError on push failure.
     """
@@ -190,7 +217,8 @@ async def push_branch(stand: Stand, score: Score) -> None:
     remote_url = score.repo_url.rstrip("/")
     if not remote_url.endswith(".git"):
         remote_url += ".git"
-    cmd = ["git", "-C", str(stand.path), "push", "--force", remote_url, f"HEAD:{stand.branch}"]
+    # Try regular push first to preserve commit history for existing PRs
+    cmd = ["git", "-C", str(stand.path), "push", remote_url, f"HEAD:{stand.branch}"]
     env = _git_credential_env(score.effective_github_token)
     try:
         returncode, err = await _run_git(cmd, cwd=None, env=env)
@@ -200,15 +228,16 @@ async def push_branch(stand: Stand, score: Score) -> None:
         raise WorkspaceSetupError(f"git push failed: {exc}") from exc
 
     if returncode != 0:
-        # Detect branch-already-exists / non-fast-forward patterns
-        if any(
-            phrase in err.lower()
-            for phrase in ("rejected", "already exists", "non-fast-forward", "[remote rejected]")
-        ):
-            raise BranchConflictError(
-                f"branch {stand.branch!r} was rejected by the remote: {err}"
-            )
-        raise WorkspaceSetupError(f"git push failed (exit {returncode}): {err}")
+        # Regular push failed — fall back to force push for new branches
+        # or when history has diverged (e.g., first push after fresh clone)
+        log.info("push_branch.regular_push_failed_trying_force", branch=stand.branch, error=err[:200])
+        force_cmd = ["git", "-C", str(stand.path), "push", "--force", remote_url, f"HEAD:{stand.branch}"]
+        try:
+            returncode, err = await _run_git(force_cmd, cwd=None, env=env)
+        except OSError as exc:
+            raise WorkspaceSetupError(f"git force-push failed: {exc}") from exc
+        if returncode != 0:
+            raise WorkspaceSetupError(f"git push failed (exit {returncode}): {err}")
 
     log.info("pushed branch", branch=stand.branch, remote_url=remote_url)
 

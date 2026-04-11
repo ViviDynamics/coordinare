@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import aiohttp
 import pytest
 
 from performer.backends.codex import CodexBackend, _build_task_prompt, _find_free_port
@@ -43,24 +44,26 @@ def _fake_proc(pid: int = 42) -> MagicMock:
     return proc
 
 
+def _make_ws_msg(data: str) -> MagicMock:
+    """Create a mock aiohttp WSMessage with TEXT type."""
+    msg = MagicMock()
+    msg.type = aiohttp.WSMsgType.TEXT
+    msg.data = data
+    return msg
+
+
 def _make_ws(responses: list[dict] | None = None) -> MagicMock:
-    """Create a mock WebSocket that yields the given response dicts."""
+    """Create a mock aiohttp WebSocket that yields the given response dicts."""
     ws = MagicMock()
 
-    async def _send(data: str) -> None:
-        pass
-
-    ws.send = AsyncMock(side_effect=_send)
-
-    async def _close() -> None:
-        pass
-
-    ws.close = AsyncMock(side_effect=_close)
+    ws.send_str = AsyncMock()
+    ws.send_json = AsyncMock()
+    ws.close = AsyncMock()
 
     if responses is not None:
         async def _iter():
             for r in responses:
-                yield json.dumps(r)
+                yield _make_ws_msg(json.dumps(r))
 
         ws.__aiter__ = lambda self: _iter()
     else:
@@ -252,8 +255,8 @@ class TestHandleServerRequest:
             "params": {},
         })
 
-        ws.send.assert_awaited_once()
-        sent = json.loads(ws.send.call_args[0][0])
+        ws.send_str.assert_awaited_once()
+        sent = json.loads(ws.send_str.call_args[0][0])
         assert sent["id"] == 10
         assert sent["result"]["decision"] == "approved"
 
@@ -268,7 +271,7 @@ class TestHandleServerRequest:
             "params": {},
         })
 
-        ws.send.assert_awaited_once()
+        ws.send_str.assert_awaited_once()
 
     async def test_approves_apply_patch(self) -> None:
         adapter = CodexBackend()
@@ -276,7 +279,7 @@ class TestHandleServerRequest:
         adapter._ws = ws
 
         await adapter._handle_server_request({"id": 12, "method": "applyPatchApproval", "params": {}})
-        ws.send.assert_awaited_once()
+        ws.send_str.assert_awaited_once()
 
     async def test_approves_exec_command(self) -> None:
         adapter = CodexBackend()
@@ -284,7 +287,7 @@ class TestHandleServerRequest:
         adapter._ws = ws
 
         await adapter._handle_server_request({"id": 13, "method": "execCommandApproval", "params": {}})
-        ws.send.assert_awaited_once()
+        ws.send_str.assert_awaited_once()
 
     async def test_returns_empty_input_for_user_input_request(self) -> None:
         adapter = CodexBackend()
@@ -293,8 +296,8 @@ class TestHandleServerRequest:
 
         await adapter._handle_server_request({"id": 14, "method": "item/tool/requestUserInput", "params": {}})
 
-        ws.send.assert_awaited_once()
-        sent = json.loads(ws.send.call_args[0][0])
+        ws.send_str.assert_awaited_once()
+        sent = json.loads(ws.send_str.call_args[0][0])
         assert sent["result"]["input"] == ""
 
     async def test_unknown_server_request_sends_empty_result(self) -> None:
@@ -303,7 +306,7 @@ class TestHandleServerRequest:
         adapter._ws = ws
 
         await adapter._handle_server_request({"id": 15, "method": "unknownMethod", "params": {}})
-        ws.send.assert_awaited_once()
+        ws.send_str.assert_awaited_once()
 
     async def test_noop_when_no_id(self) -> None:
         adapter = CodexBackend()
@@ -311,7 +314,7 @@ class TestHandleServerRequest:
         adapter._ws = ws
 
         await adapter._handle_server_request({"method": "item/commandExecution/requestApproval"})
-        ws.send.assert_not_awaited()
+        ws.send_str.assert_not_awaited()
 
     async def test_noop_when_no_ws(self) -> None:
         adapter = CodexBackend()
@@ -322,7 +325,7 @@ class TestHandleServerRequest:
     async def test_send_error_is_swallowed(self) -> None:
         adapter = CodexBackend()
         ws = _make_ws()
-        ws.send = AsyncMock(side_effect=RuntimeError("closed"))
+        ws.send_str = AsyncMock(side_effect=RuntimeError("closed"))
         adapter._ws = ws
 
         await adapter._handle_server_request({"id": 16, "method": "applyPatchApproval", "params": {}})
@@ -376,8 +379,6 @@ class TestRecvLoop:
         ])
         adapter._ws = ws
 
-        # Need an inner ws to receive the approval response
-        ws.send = AsyncMock()
         await adapter._recv_loop()
         # Give spawned task a chance to run
         await asyncio.sleep(0)
@@ -386,7 +387,7 @@ class TestRecvLoop:
         adapter = CodexBackend()
 
         async def _iter():
-            yield "not json at all"
+            yield _make_ws_msg("not json at all")
 
         ws = MagicMock()
         ws.__aiter__ = lambda self: _iter()
@@ -553,7 +554,6 @@ class TestRelayFeedback:
         mock_rpc.assert_called_once_with("turn/start", {
             "threadId": "thread-001",
             "input": [{"type": "text", "text": "fix the tests", "text_elements": []}],
-            "approvalPolicy": "never",
         })
         assert adapter._current_turn_id == "turn-002"
         assert adapter.get_status().state == "working"
@@ -660,6 +660,9 @@ class TestStart:
         ])
 
         ws = _make_ws()
+        mock_session = MagicMock()
+        mock_session.ws_connect = AsyncMock(return_value=ws)
+
         rpc_responses = {
             "initialize": {},
             "thread/start": {"thread": {"id": "thread-start-001"}},
@@ -676,8 +679,8 @@ class TestStart:
             "performer.backends.codex.asyncio.create_subprocess_exec",
             new=AsyncMock(return_value=proc),
         ), patch(
-            "performer.backends.codex._ws_connect",
-            new=AsyncMock(return_value=ws),
+            "performer.backends.codex.aiohttp.ClientSession",
+            return_value=mock_session,
         ):
             adapter = CodexBackend()
             with patch.object(adapter, "_rpc", side_effect=_mock_rpc):
@@ -694,13 +697,15 @@ class TestStart:
         ])
 
         ws = _make_ws()
+        mock_session = MagicMock()
+        mock_session.ws_connect = AsyncMock(return_value=ws)
 
         with patch(
             "performer.backends.codex.asyncio.create_subprocess_exec",
             new=AsyncMock(return_value=proc),
         ) as mock_exec, patch(
-            "performer.backends.codex._ws_connect",
-            new=AsyncMock(return_value=ws),
+            "performer.backends.codex.aiohttp.ClientSession",
+            return_value=mock_session,
         ):
             adapter = CodexBackend()
             rpc_resp = {
@@ -724,7 +729,7 @@ class TestRpcAndNotify:
         adapter = CodexBackend()
         ws = _make_ws()
 
-        # Manually resolve the future after send
+        # Manually resolve the future after send_str
         async def _send_and_resolve(data: str) -> None:
             msg = json.loads(data)
             req_id = msg["id"]
@@ -733,7 +738,7 @@ class TestRpcAndNotify:
                 if not fut.done():
                     fut.set_result({"ok": True})
 
-        ws.send = AsyncMock(side_effect=_send_and_resolve)
+        ws.send_str = AsyncMock(side_effect=_send_and_resolve)
         adapter._ws = ws
 
         result = await adapter._rpc("some/method", {"param": 1})
@@ -753,8 +758,8 @@ class TestRpcAndNotify:
 
         await adapter._notify("initialized")
 
-        ws.send.assert_awaited_once()
-        sent = json.loads(ws.send.call_args[0][0])
+        ws.send_str.assert_awaited_once()
+        sent = json.loads(ws.send_str.call_args[0][0])
         assert sent["method"] == "initialized"
         assert "params" not in sent
 
@@ -765,7 +770,7 @@ class TestRpcAndNotify:
 
         await adapter._notify("some/method", {"key": "val"})
 
-        sent = json.loads(ws.send.call_args[0][0])
+        sent = json.loads(ws.send_str.call_args[0][0])
         assert sent["params"] == {"key": "val"}
 
     async def test_notify_noop_when_no_ws(self) -> None:

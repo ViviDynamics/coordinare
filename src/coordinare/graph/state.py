@@ -111,6 +111,7 @@ class CoordinareState(TypedDict, total=False):
     requirements_changed: bool  # 030: True if card requirements changed during monitoring
     requirements_changed_details: dict[str, Any]  # 030: diff details
     pending_override: dict[str, Any] | None  # 031: human override queued via dashboard or PR comment
+    lifecycle_completed_at: datetime | None  # Cutoff for filtering old PR reviews after lifecycle completion
     card_tokens_total: int  # 034: accumulated token count for current card
     card_cost_estimate: float  # 034: estimated cost in dollars
     card_budget_alert_sent: bool  # 034: True if budget exceeded notification was sent

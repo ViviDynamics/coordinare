@@ -1,0 +1,2 @@
+#!/bin/bash
+exec ~/Workspaces/ViviDynamics/coordinare/.venv/bin/python -m performer "$@"

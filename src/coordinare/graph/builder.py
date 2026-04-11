@@ -84,7 +84,8 @@ class CoordinareGraphBuilder:
             "check_board",
             route_from_board_check,
             {
-                "dispatch": "assess_card",
+                "assess": "assess_card",       # legacy: no assessor performer configured
+                "dispatch": "dispatch_card",   # assessor in lifecycle → skip assess_card
                 "monitor_pr": "monitor_pr",
                 "monitor_agent": "monitor_agent",
                 "blocked": "handle_blocked",

@@ -22,9 +22,9 @@ import socket
 from collections import deque
 from typing import Any
 
+import aiohttp
 import psutil
 import structlog
-from websockets.asyncio.client import connect as _ws_connect
 
 from performer.backends.base import BackendStatus
 from performer.models import BackendEvent, BackendEventType, Score, Stand
@@ -54,7 +54,8 @@ class CodexBackend:
 
     def __init__(self) -> None:
         self._proc: asyncio.subprocess.Process | None = None
-        self._ws: Any = None  # websockets.asyncio.client.ClientConnection
+        self._ws: Any = None  # aiohttp.ClientWebSocketResponse
+        self._ws_session: aiohttp.ClientSession | None = None
         self._port: int | None = None
         self._thread_id: str | None = None
         self._current_turn_id: str | None = None
@@ -63,6 +64,7 @@ class CodexBackend:
         self._log_drain_task: asyncio.Task[None] | None = None
         self._event_buffer: deque[BackendEvent] = deque(maxlen=200)
         self._log_buffer: deque[str] = deque(maxlen=200)
+        self._output_accumulator: list[str] = []  # accumulate agent message text
         # Pending RPC response futures keyed by request id
         self._pending: dict[int, asyncio.Future[Any]] = {}
         self._next_id: int = 1
@@ -93,8 +95,9 @@ class CodexBackend:
             self._drain_logs(), name="codex-log-drain"
         )
 
-        # Open WebSocket connection
-        self._ws = await _ws_connect(f"ws://127.0.0.1:{port}")
+        # Open WebSocket connection via aiohttp (compatible with codex app-server)
+        self._ws_session = aiohttp.ClientSession()
+        self._ws = await self._ws_session.ws_connect(f"http://127.0.0.1:{port}")
 
         # Start background message router before any RPC calls
         self._recv_task = asyncio.create_task(
@@ -107,12 +110,19 @@ class CodexBackend:
         })
         await self._notify("initialized")
 
-        # Create thread in the workspace
-        thread_resp = await self._rpc("thread/start", {
+        # Create thread in the workspace (v2 protocol)
+        thread_params: dict[str, Any] = {
             "cwd": str(stand.path),
             "approvalPolicy": "never",
-            "sandbox": {"type": "dangerFullAccess"},
-        })
+            "sandbox": "danger-full-access",
+        }
+        # Pass persona instructions as developer instructions
+        if score.persona_instructions:
+            thread_params["developerInstructions"] = score.persona_instructions
+        # Pass model override if specified
+        if model:
+            thread_params["model"] = model
+        thread_resp = await self._rpc("thread/start", thread_params)
         self._thread_id = thread_resp["thread"]["id"]
         log.info("codex thread started", thread_id=self._thread_id, port=port)
 
@@ -121,7 +131,6 @@ class CodexBackend:
         turn_resp = await self._rpc("turn/start", {
             "threadId": self._thread_id,
             "input": [{"type": "text", "text": task_text, "text_elements": []}],
-            "approvalPolicy": "never",
         })
         self._current_turn_id = turn_resp["turn"]["id"]
         log.info("codex turn started", turn_id=self._current_turn_id)
@@ -142,7 +151,6 @@ class CodexBackend:
         turn_resp = await self._rpc("turn/start", {
             "threadId": self._thread_id,
             "input": [{"type": "text", "text": feedback, "text_elements": []}],
-            "approvalPolicy": "never",
         })
         self._current_turn_id = turn_resp["turn"]["id"]
         self._status = BackendStatus(state="working")
@@ -163,6 +171,13 @@ class CodexBackend:
             except Exception:
                 pass
             self._ws = None
+
+        if self._ws_session is not None:
+            try:
+                await self._ws_session.close()
+            except Exception:
+                pass
+            self._ws_session = None
 
         # Reject any pending RPC futures
         for fut in self._pending.values():
@@ -237,7 +252,13 @@ class CodexBackend:
         if self._ws is None:
             return
         try:
-            async for raw in self._ws:
+            async for ws_msg in self._ws:
+                if ws_msg.type == aiohttp.WSMsgType.TEXT:
+                    raw = ws_msg.data
+                elif ws_msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                    break
+                else:
+                    continue
                 try:
                     msg = json.loads(raw)
                 except json.JSONDecodeError:
@@ -287,7 +308,7 @@ class CodexBackend:
         loop = asyncio.get_event_loop()
         fut: asyncio.Future[Any] = loop.create_future()
         self._pending[req_id] = fut
-        await self._ws.send(json.dumps({"id": req_id, "method": method, "params": params}))
+        await self._ws.send_str(json.dumps({"id": req_id, "method": method, "params": params}))
         return await asyncio.wait_for(fut, timeout=_RPC_TIMEOUT)
 
     async def _notify(self, method: str, params: dict[str, Any] | None = None) -> None:
@@ -297,7 +318,7 @@ class CodexBackend:
         msg: dict[str, Any] = {"method": method}
         if params is not None:
             msg["params"] = params
-        await self._ws.send(json.dumps(msg))
+        await self._ws.send_str(json.dumps(msg))
 
     # ------------------------------------------------------------------
     # Internal: message handlers
@@ -327,7 +348,7 @@ class CodexBackend:
             response = {"id": req_id, "result": {}}
 
         try:
-            await self._ws.send(json.dumps(response))
+            await self._ws.send_str(json.dumps(response))
         except Exception as exc:
             log.debug("codex approval send error", error=str(exc))
 
@@ -337,7 +358,26 @@ class CodexBackend:
             turn = params.get("turn", {})
             status = turn.get("status", "")
             if status == "completed":
-                self._status = BackendStatus(state="done")
+                # Capture the final assistant message as output for role-specific handling
+                output_text = ""
+                for item in turn.get("items", []):
+                    if item.get("type") == "message" and item.get("role") == "assistant":
+                        for part in item.get("content", []):
+                            if part.get("type") == "text":
+                                output_text += part.get("text", "")
+                # Fallback: accumulated agent message deltas
+                if not output_text and self._output_accumulator:
+                    output_text = "".join(self._output_accumulator)
+                # Fallback: turn summary
+                if not output_text:
+                    output_text = turn.get("summary", "")
+                self._output_accumulator.clear()
+                tokens = turn.get("usage", {}).get("totalTokens", 0)
+                self._status = BackendStatus(
+                    state="done",
+                    output=output_text or None,
+                    tokens_processed=tokens or None,
+                )
             elif status in ("interrupted", "failed"):
                 error = (turn.get("error") or {}).get("message", status)
                 self._status = BackendStatus(state="error", error_reason=error)
@@ -346,6 +386,7 @@ class CodexBackend:
         elif method == "item/agentMessage/delta":
             delta = params.get("delta", "")
             if delta:
+                self._output_accumulator.append(delta)
                 self._status = BackendStatus(state="working", progress=delta[:_MAX_TEXT])
                 self._emit(BackendEventType.progress, delta)
 
@@ -391,7 +432,13 @@ class CodexBackend:
 
 def _build_task_prompt(score: Score) -> str:
     """Construct the task description for the initial Codex turn."""
-    parts = [f"# Task: {score.title}", ""]
+    parts = []
+
+    # Persona instructions (role-specific behavior)
+    if score.persona_instructions:
+        parts += ["## Role Instructions", "", score.persona_instructions, ""]
+
+    parts += [f"# Task: {score.title}", ""]
     if score.description:
         parts += [score.description, ""]
     if score.acceptance_criteria:
@@ -407,6 +454,34 @@ def _build_task_prompt(score: Score) -> str:
                 parts.extend(f"- {q}" for q in questions)
             if answer:
                 parts += [f"**Answer:** {answer}", ""]
+
+    # Relay feedback (human review comments from previous cycle)
+    if score.relay_feedback:
+        parts += [
+            "", "## Human Feedback (address ALL of these issues)", "",
+            "IMPORTANT: These comments may only tag a few examples. Search the entire "
+            "codebase for ALL similar occurrences of the same pattern and fix them all.",
+            "",
+        ]
+        for item in score.relay_feedback:
+            if isinstance(item, dict):
+                body = item.get("body", "")
+                if body:
+                    parts.append(f"- {body}")
+                # Include inline review comments with file/line references
+                inline = item.get("comments", [])
+                if isinstance(inline, list):
+                    for c in inline:
+                        if isinstance(c, dict):
+                            c_body = c.get("body", "")
+                            c_path = c.get("path", "")
+                            c_line = c.get("line")
+                            if c_body:
+                                loc = f"`{c_path}:{c_line}`" if c_path and c_line else (f"`{c_path}`" if c_path else "")
+                                parts.append(f"  - {loc} — {c_body}" if loc else f"  - {c_body}")
+            elif isinstance(item, str):
+                parts.append(f"- {item}")
+
     parts += [
         "",
         "---",

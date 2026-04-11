@@ -51,6 +51,7 @@ class WorkflowSnapshot(BaseModel):
     card_clarifications: list[dict] = Field(default_factory=list)
     active_card_issue_id: str | None = None
     last_blocked_notified_at: datetime | None = None
+    lifecycle_completed_at: datetime | None = None
 
 
 class StateLoadError(ValueError):

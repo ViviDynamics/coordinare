@@ -53,15 +53,16 @@ async def assess_card(state: CoordinareState) -> CoordinareState:
     questions = assessment.get("questions") or []
     sufficient = assessment.get("sufficient", True)
 
-    # If the model returned insufficient with no new questions but the user
-    # has already answered at least one round, the LLM has run out of things
-    # to ask — treat this as sufficient so we don't loop forever.
-    if not sufficient and not questions and answered_rounds:
+    # If the model returned insufficient with no new questions, the assessor
+    # had nothing concrete to ask — treat as sufficient rather than blocking
+    # indefinitely. This covers both: (a) first assessment where the assessor
+    # found no issues, and (b) follow-up rounds where all questions are answered.
+    if not sufficient and not questions:
         logger.info(
-            "assess_card.no_new_questions_after_answers",
+            "assess_card.no_questions_treating_as_sufficient",
             card_id=str(card.get("id", "")),
             answered_rounds=len(answered_rounds),
-            msg="No follow-up questions after answered rounds — proceeding to dispatch",
+            msg="Assessor returned insufficient but asked no questions — proceeding to dispatch",
         )
         sufficient = True
 

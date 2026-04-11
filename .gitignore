@@ -225,7 +225,8 @@ Thumbs.db
 .env*
 !.env.example
 config.yaml
-config.local.yaml
+config.*.yaml
+!config.example.yaml
 
 # Codex local/sensitive artifacts
 .codex/auth.json

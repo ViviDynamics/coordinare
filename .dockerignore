@@ -34,7 +34,8 @@ htmlcov/
 *.log*
 .env*
 config.yaml
-config.local.yaml
+config.*.yaml
+!config.example.yaml
 .codex
 .claude
 

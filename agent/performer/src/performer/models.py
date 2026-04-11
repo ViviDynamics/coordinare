@@ -86,6 +86,17 @@ class Score(BaseModel):
     # GitHub API helpers raise GitHubAPIError(401) rather than sending a
     # malformed ``Authorization: Bearer `` header.
     base_branch: str = ""
+    persona_instructions: str = ""  # role-specific behavior instructions
+    relay_feedback: list[dict] = Field(default_factory=list)  # human review comments to address
+    role: str = "implementing"  # performer stage (implementing, reviewing, security, etc.)
+    pr_url: str = ""  # existing PR URL (for reviewer/security/QA roles)
+    pr_node_id: str = ""  # existing PR node ID (for terminal status)
+    backend: str = ""  # AI backend override (037)
+    model: str = ""  # AI model override (037)
+    github_api_url: str = ""  # GitHub API URL override (036)
+    architecture_plan_path: str = ""  # path to architect's plan on branch
+
+    model_config = {"extra": "ignore"}  # silently drop unknown fields from coordinare
 
     @field_validator("repo_url")
     @classmethod
@@ -138,6 +149,7 @@ PerformanceState = Literal[
     "security_passed", "security_failed",
     "qa_passed", "qa_failed",
     "docs_committed",
+    "assessment_complete",
     "error", "session_expired", "waiting_for_checks",
 ]
 
@@ -181,6 +193,7 @@ class Performance:
     qa_report: dict | None = None  # 023: pass report {criteria_checked, criteria_passed, new_tests_added}
     qa_cycle: int = 0  # 023: number of QA fix cycles
     docs_files_modified: list[str] = field(default_factory=list)  # 024: doc files committed
+    assessment_questions: list[str] = field(default_factory=list)  # assessor: questions when insufficient
     open_questions: list[str] = field(default_factory=list)
     error_reason: str | None = None
     started_at: datetime = field(default_factory=lambda: datetime.now(UTC))

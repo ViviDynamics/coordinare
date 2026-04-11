@@ -53,9 +53,10 @@ async def test_handle_blocked_returns_blocked_when_no_card() -> None:
 class _GitHubFallback:
     def __init__(self) -> None:
         self.comment_body: str | None = None
+        self.moved_to: str | None = None
 
     async def move_card(self, item_id: str, status: str) -> None:
-        pass
+        self.moved_to = status
 
     async def add_comment(self, subject_id: str, body: str):
         self.comment_body = body
@@ -63,7 +64,7 @@ class _GitHubFallback:
 
 
 @pytest.mark.asyncio
-async def test_handle_blocked_uses_fallback_when_no_open_questions() -> None:
+async def test_handle_blocked_requeues_when_no_open_questions() -> None:
     github = _GitHubFallback()
     state = initial_state()
     state["github_service"] = github
@@ -72,11 +73,10 @@ async def test_handle_blocked_uses_fallback_when_no_open_questions() -> None:
 
     result = await handle_blocked(state)
 
-    assert result["phase"] == "blocked"
-    # When no questions are provided and no assessment backend is configured,
-    # the fallback question should reference the card title (not a static generic string).
-    assert "Needs input" in github.comment_body
-    assert github.comment_body  # something was posted
+    # When no questions are generated, re-queue the card for dispatch
+    # instead of posting generic "clarify" questions.
+    assert result["phase"] == "idle"
+    assert github.moved_to == "TODO"
 
 
 class _GitHubRequeue:
@@ -108,8 +108,8 @@ async def test_handle_blocked_requeues_when_no_questions_and_answered_rounds() -
 
 
 @pytest.mark.asyncio
-async def test_handle_blocked_assessment_failure_falls_back_to_title_questions() -> None:
-    """Assessment backend raising an exception → falls back to title-derived questions."""
+async def test_handle_blocked_assessment_failure_requeues() -> None:
+    """Assessment backend raising an exception → no questions → re-queue to TODO."""
     class _FailingBackend:
         async def assess(self, card):
             raise RuntimeError("Anthropic API down")
@@ -123,9 +123,9 @@ async def test_handle_blocked_assessment_failure_falls_back_to_title_questions()
 
     result = await handle_blocked(state)
 
-    assert result["phase"] == "blocked"
-    assert github.comment_body is not None
-    assert "Needs input" in github.comment_body
+    # Assessment failure with no questions → re-queue for dispatch
+    assert result["phase"] == "idle"
+    assert github.moved_to == "TODO"
 
 
 @pytest.mark.asyncio

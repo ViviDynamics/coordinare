@@ -1071,8 +1071,8 @@ class TestReviewerPerformer:
         assert perf.state == "approved"
 
     @pytest.mark.asyncio
-    async def test_reviewer_posts_approve_review_to_github(self) -> None:
-        """Reviewer calls post_pull_request_review with APPROVE event."""
+    async def test_reviewer_posts_comment_review_to_github(self) -> None:
+        """Reviewer always posts as COMMENT (human handles formal approval)."""
         import json
         perf = self._make_perf()
         output = json.dumps({"approved": True, "body": "Looks good"})
@@ -1084,7 +1084,7 @@ class TestReviewerPerformer:
             await handle_status(_msg("status", session_id="sid"), perf, settings)
 
         mock_post.assert_called_once()
-        assert mock_post.call_args.kwargs.get("event") == "APPROVE"
+        assert mock_post.call_args.kwargs.get("event") == "COMMENT"
 
     @pytest.mark.asyncio
     async def test_reviewer_changes_requested_returns_comments(self) -> None:
@@ -1122,8 +1122,8 @@ class TestReviewerPerformer:
         assert any("cycle limit" in q.lower() for q in resp.questions)
 
     @pytest.mark.asyncio
-    async def test_reviewer_posts_request_changes_to_github(self) -> None:
-        """Reviewer calls post_pull_request_review with REQUEST_CHANGES event."""
+    async def test_reviewer_posts_comment_for_changes_requested(self) -> None:
+        """Reviewer always posts as COMMENT even when requesting changes."""
         import json
         perf = self._make_perf()
         output = json.dumps({"approved": False, "comments": [{"file": "a.py", "line": 5, "body": "bug"}], "body": "Fix needed"})
@@ -1135,7 +1135,7 @@ class TestReviewerPerformer:
             await handle_status(_msg("status", session_id="sid"), perf, settings)
 
         mock_post.assert_called_once()
-        assert mock_post.call_args.kwargs.get("event") == "REQUEST_CHANGES"
+        assert mock_post.call_args.kwargs.get("event") == "COMMENT"
 
     @pytest.mark.asyncio
     async def test_approved_is_terminal(self) -> None:
@@ -1464,3 +1464,115 @@ class TestTechWriterPerformer:
             resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
         assert resp.status == "docs_committed"
         assert resp.files_modified == ["README.md"]  # still reported as processed
+
+
+# ---------------------------------------------------------------------------
+# Assessor role — handle_status for role="assessing"
+# ---------------------------------------------------------------------------
+
+
+class TestAssessorRole:
+    """Tests for the assessor performer role in handle_status."""
+
+    def _make_perf(self, *, state: str = "working") -> Performance:
+        perf = _make_perf(session_id="sid", state=state)
+        perf.role = "assessing"
+        return perf
+
+    @pytest.mark.asyncio
+    async def test_sufficient_returns_assessment_complete(self) -> None:
+        """When backend says sufficient=True, report assessment_complete."""
+        import json
+        perf = self._make_perf()
+        output = json.dumps({"sufficient": True, "questions": []})
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+
+        resp = await handle_status(_msg("status", session_id="sid"), perf)
+
+        assert resp.status == "assessment_complete"
+        assert perf.state == "assessment_complete"
+
+    @pytest.mark.asyncio
+    async def test_insufficient_with_questions_returns_blocked(self) -> None:
+        """When backend says sufficient=False with questions, report blocked."""
+        import json
+        perf = self._make_perf()
+        output = json.dumps({"sufficient": False, "questions": ["Q1?", "Q2?"]})
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+
+        resp = await handle_status(_msg("status", session_id="sid"), perf)
+
+        assert resp.status == "blocked"
+        assert resp.questions == ["Q1?", "Q2?"]
+        assert perf.state == "blocked"
+
+    @pytest.mark.asyncio
+    async def test_insufficient_no_questions_treated_as_sufficient(self) -> None:
+        """When backend says insufficient but no questions, treat as sufficient."""
+        import json
+        perf = self._make_perf()
+        output = json.dumps({"sufficient": False, "questions": []})
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+
+        resp = await handle_status(_msg("status", session_id="sid"), perf)
+
+        assert resp.status == "assessment_complete"
+        assert perf.state == "assessment_complete"
+
+    @pytest.mark.asyncio
+    async def test_empty_output_returns_error(self) -> None:
+        """Empty backend output returns error."""
+        perf = self._make_perf()
+        perf.backend.get_status.return_value = BackendStatus(state="done", output="")
+
+        resp = await handle_status(_msg("status", session_id="sid"), perf)
+
+        assert resp.status == "error"
+        assert "empty" in (resp.reason or "").lower()
+        assert perf.state == "error"
+
+    @pytest.mark.asyncio
+    async def test_invalid_json_returns_error(self) -> None:
+        """Invalid JSON backend output returns error."""
+        perf = self._make_perf()
+        perf.backend.get_status.return_value = BackendStatus(state="done", output="not json")
+
+        resp = await handle_status(_msg("status", session_id="sid"), perf)
+
+        assert resp.status == "error"
+        assert "invalid json" in (resp.reason or "").lower()
+        assert perf.state == "error"
+
+    @pytest.mark.asyncio
+    async def test_non_object_json_returns_error(self) -> None:
+        """JSON that's not an object returns error."""
+        perf = self._make_perf()
+        perf.backend.get_status.return_value = BackendStatus(state="done", output="[1,2,3]")
+
+        resp = await handle_status(_msg("status", session_id="sid"), perf)
+
+        assert resp.status == "error"
+        assert "not a json object" in (resp.reason or "").lower()
+        assert perf.state == "error"
+
+    @pytest.mark.asyncio
+    async def test_stable_response_for_assessment_complete_state(self) -> None:
+        """Re-polling after assessment_complete returns the same status."""
+        perf = self._make_perf(state="assessment_complete")
+
+        resp = await handle_status(_msg("status", session_id="sid"), perf)
+
+        assert resp.status == "assessment_complete"
+        assert perf.state == "assessment_complete"
+
+    @pytest.mark.asyncio
+    async def test_default_sufficient_when_missing(self) -> None:
+        """When 'sufficient' key is missing, defaults to True."""
+        import json
+        perf = self._make_perf()
+        output = json.dumps({"questions": []})
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+
+        resp = await handle_status(_msg("status", session_id="sid"), perf)
+
+        assert resp.status == "assessment_complete"

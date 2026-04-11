@@ -32,6 +32,7 @@ TERMINAL_SUCCESS_STATES: frozenset[str] = frozenset({
     "security_passed",
     "qa_passed",
     "docs_committed",
+    "assessment_complete",
 })
 
 def _reset_token_counters(state: CoordinareState) -> None:
@@ -282,6 +283,10 @@ def _advance_stage(state: CoordinareState, status: dict[str, Any] | None = None)
         "system_error_last_at": None,
         "system_error_notified": False,
         "system_error_reason": None,
+        # Record when the lifecycle completed so monitor_pr can ignore
+        # reviews submitted before this point (they were already addressed
+        # by the lifecycle roles).
+        "lifecycle_completed_at": datetime.now(UTC),
     }
 
 

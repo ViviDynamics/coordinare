@@ -69,8 +69,8 @@ class TestDispatchCard:
         assert payload["title"] == "Fix bug"
         assert payload["description"] == "Details here"
         assert payload["acceptance_criteria"] == ["Test passes"]
-        assert payload["board_card_id"] == "ITEM_1"
-        assert payload["column"] == "TODO"
+        assert payload["id"] == "ITEM_1"
+        assert payload["status"] == "TODO"
 
     @pytest.mark.asyncio
     async def test_dispatch_card_transport_error_returns_error_status(self) -> None:
@@ -93,8 +93,8 @@ class TestDispatchCard:
 
         assert result["status"] == "accepted"
         payload = transport.last_message.payload
-        assert payload["title"] == ""
-        assert payload["board_card_id"] == ""
+        # Empty card_context passed through as-is
+        assert payload == {}
 
 
 class TestCheckHealth:

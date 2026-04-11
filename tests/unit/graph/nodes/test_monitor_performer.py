@@ -221,6 +221,7 @@ def test_terminal_success_states_contains_expected_members() -> None:
         "security_passed",
         "qa_passed",
         "docs_committed",
+        "assessment_complete",
     }
     assert expected == TERMINAL_SUCCESS_STATES
 
@@ -1489,3 +1490,54 @@ async def test_non_numeric_tokens_ignored() -> None:
 
     result = await monitor_performer(state)
     assert result["card_tokens_total"] == 500  # unchanged
+
+
+# ---------------------------------------------------------------------------
+# Assessor performer — assessment_complete advances lifecycle
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_assessment_complete_advances_to_next_stage() -> None:
+    """assessment_complete on first stage advances to the next performer role."""
+    service = _Performer({
+        "status": "assessment_complete",
+    })
+    state = _make_state(
+        service=service,
+        stage="assessing",
+        sequence=["assessing", "implementing"],
+    )
+
+    result = await monitor_performer(state)
+
+    assert result["performer_stage"] == "implementing"
+    assert result["phase"] == "dispatching"
+    assert result["agent_dispatch"] == {}
+    assert result["agent_dispatch_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_assessment_complete_is_in_terminal_success_states() -> None:
+    """Confirm assessment_complete is recognised as a terminal success status."""
+    assert "assessment_complete" in TERMINAL_SUCCESS_STATES
+
+
+@pytest.mark.asyncio
+async def test_assessor_blocked_routes_to_blocked() -> None:
+    """When the assessor performer reports blocked, phase should be 'blocked'."""
+    service = _Performer({
+        "status": "blocked",
+        "questions": ["What is the acceptance criteria?"],
+    })
+    state = _make_state(
+        service=service,
+        stage="assessing",
+        sequence=["assessing", "implementing"],
+    )
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "blocked"
+    assert result["performer_stage"] == "assessing"  # NOT advanced
+    assert "What is the acceptance criteria?" in result["open_questions"]

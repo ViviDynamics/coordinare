@@ -30,7 +30,7 @@ class TestSchemaContractValidation:
             "approved", "changes_requested",
             "security_passed", "security_failed",
             "qa_passed", "qa_failed",
-            "docs_committed",
+            "docs_committed", "assessment_complete",
             "blocked", "error", "unknown", "busy", "acknowledged",
             "session_expired", "healthy", "unhealthy",
         }

@@ -186,9 +186,24 @@ class _GitHubInProgress:
 
 
 @pytest.mark.asyncio
-async def test_check_board_routes_to_monitoring_agent_for_in_progress() -> None:
+async def test_check_board_readopts_in_progress_card_after_restart() -> None:
+    """When current_card is None (fresh restart) and a card is IN_PROGRESS, re-adopt it."""
     state = initial_state()
     state["github_service"] = _GitHubInProgress()
+
+    result = await check_board(state)
+
+    assert result["phase"] == "dispatching"
+    assert result["current_card"] is not None
+    assert result["current_card"]["id"] == "ITEM_P"
+
+
+@pytest.mark.asyncio
+async def test_check_board_routes_to_monitoring_agent_for_in_progress_with_card() -> None:
+    """When current_card is set and card is IN_PROGRESS, monitor it."""
+    state = initial_state()
+    state["github_service"] = _GitHubInProgress()
+    state["current_card"] = {"id": "ITEM_P", "status": "IN_PROGRESS"}
 
     result = await check_board(state)
 

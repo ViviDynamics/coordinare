@@ -23,11 +23,13 @@
         "idle",
         "dispatching",
         "monitoring_agent",
+        "monitoring_performer",
         "monitoring_pr",
         "merging",
         "relay_feedback",
         "blocked",
-        "recovery"
+        "recovery",
+        "system_error"
       ],
       "description": "Current workflow phase at the time the snapshot was written."
     },
@@ -97,6 +99,12 @@
       "type": ["string", "null"],
       "format": "date-time",
       "description": "UTC timestamp of the last blocked notification posted. Persisted so restarts do not re-post duplicate questions.",
+      "default": null
+    },
+    "lifecycle_completed_at": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "UTC timestamp when the performer lifecycle last completed all stages. Used by monitor_pr to filter out old reviews that were already addressed.",
       "default": null
     }
   }

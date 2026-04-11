@@ -287,7 +287,7 @@ def _make_trip_callback(
                 "event_type": EventType.circuit_breaker_trip.value,
                 "severity": NotificationSeverity.critical.value,
                 "source": "resilience",
-                "summary": f"Circuit breaker OPEN: {service_name} ({reason})",
+                "summary": f"🔴 {service_name} service is down — circuit breaker tripped ({reason})",
                 "service_name": service_name,
                 "reason": reason,
             },
@@ -498,7 +498,7 @@ async def _bootstrap_services(
         retry_kwargs=_retry_config_from(r.anthropic_retry).to_stamina_kwargs(),
     )
 
-    workspace_manager = WorkspaceManager(config)
+    workspace_manager = WorkspaceManager(config, auth=_auth)
 
     # 019 — Build performer lifecycle registry
     lifecycle_sequence = _build_lifecycle_sequence(config)

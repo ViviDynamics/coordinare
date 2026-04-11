@@ -22,29 +22,15 @@ class AgentService:
         card_context: dict[str, Any],
         workspace_info: WorkspaceInfo | None = None,
     ) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "title": card_context.get("title", ""),
-            "description": card_context.get("description", ""),
-            "acceptance_criteria": card_context.get("acceptance_criteria", []),
-            "board_card_id": str(card_context.get("id", "")),
-            "column": card_context.get("status", ""),
-        }
-        issue_url = card_context.get("issue_url", "")
-        if issue_url:
-            payload["issue_url"] = issue_url
-        issue_number = card_context.get("issue_number")
-        if issue_number:
-            payload["issue_number"] = issue_number
-        clarifications = card_context.get("clarifications")
-        if clarifications:
-            payload["clarifications"] = [
-                {"questions": c.get("questions", []), "answer": c.get("answer", "")}
-                for c in clarifications
-                if isinstance(c, dict)
-            ]
-        persona_instructions = card_context.get("persona_instructions")
-        if persona_instructions:
-            payload["persona_instructions"] = persona_instructions
+        # Pass through ALL card_context fields to the performer.
+        # Previous code selectively allowlisted fields, which silently dropped
+        # role, relay_feedback, pr_url, pr_node_id, backend, model, github_api_url,
+        # and architecture_plan_path — breaking feedback loops, role routing,
+        # and features 036/037.
+        # Ensure all values are JSON-serializable (card_context may contain
+        # datetime, Path, or other non-serializable types from state)
+        import json
+        payload: dict[str, Any] = json.loads(json.dumps(dict(card_context), default=str))
         if workspace_info is not None:
             payload["repo_url"] = workspace_info.repo_url
             payload["branch"] = workspace_info.branch

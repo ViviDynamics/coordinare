@@ -2,14 +2,15 @@
 from __future__ import annotations
 
 import asyncio
+import json as _json_module
 import os
+import re
 import sys
 import uuid
 from datetime import UTC, datetime
 
 import psutil
 import structlog
-
 from pydantic import ValidationError
 
 from performer.backends import UnsupportedBackendError, get_backend
@@ -29,6 +30,37 @@ from performer.workspace import (
 )
 
 log = structlog.get_logger(__name__)
+
+_CODE_FENCE_RE = re.compile(r"```(?:json)?\s*\n?(.*?)\n?\s*```", re.DOTALL | re.IGNORECASE)
+
+
+def _extract_json(text: str) -> dict | list | None:
+    """Try to extract a JSON object from text that may contain prose.
+
+    Strategies: (1) parse full text, (2) find ```json``` code fence,
+    (3) find first { ... } or [ ... ] substring.
+    """
+    try:
+        return _json_module.loads(text)
+    except (ValueError, TypeError):
+        pass
+    match = _CODE_FENCE_RE.search(text)
+    if match:
+        try:
+            return _json_module.loads(match.group(1).strip())
+        except (ValueError, TypeError):
+            pass
+    for start_char, end_char in [('{', '}'), ('[', ']')]:
+        start = text.find(start_char)
+        if start >= 0:
+            end = text.rfind(end_char)
+            if end > start:
+                try:
+                    return _json_module.loads(text[start:end + 1])
+                except (ValueError, TypeError):
+                    pass
+    return None
+
 
 # ---------------------------------------------------------------------------
 # Process-level CPU sampler — must be initialised once at startup
@@ -64,17 +96,15 @@ async def handle_dispatch(
 ) -> tuple[PerformerResponse, Performance]:
     """Clone the repo, start the backend, and return accepted + session_id."""
     score = Score(**msg.payload)
-    # 020: read performer role before backend.start so the backend can adapt prompting
-    role = msg.payload.get("role", "implementing") if isinstance(msg.payload, dict) else "implementing"
-    # 037: Read backend/model override from dispatch payload
-    payload = msg.payload if isinstance(msg.payload, dict) else {}
-    raw_backend = payload.get("backend") or settings.AGENT_BACKEND
+    # All fields now come from Score (proper pydantic fields, not raw payload)
+    role = score.role
+    raw_backend = score.backend or settings.AGENT_BACKEND
     backend_name = raw_backend.replace("-", "_").lower()  # normalize kebab-case
-    model_name = payload.get("model")
+    model_name = score.model or None
 
     # 036: Apply GitHub API URL from dispatch payload so the performer's
     # GitHub client connects to the same instance (e.g. GitHub Enterprise).
-    github_api_url = payload.get("github_api_url")
+    github_api_url = score.github_api_url
     if github_api_url and isinstance(github_api_url, str) and github_api_url.strip():
         from urllib.parse import urlparse
         # Mirror coordinare-side validation: reject whitespace, restrict http to localhost
@@ -108,9 +138,9 @@ async def handle_dispatch(
         cleanup_stand(stand)
         raise
     session_id = str(uuid.uuid4())
-    # 021: read pr_url from dispatch payload (set on card by implementer)
-    pr_url = payload.get("pr_url")
-    pr_node_id = payload.get("pr_node_id")
+    # 021: read pr_url from Score (set on card by implementer)
+    pr_url = score.pr_url or None
+    pr_node_id = score.pr_node_id or None
     perf = Performance(
         session_id=session_id,
         stand=stand,
@@ -272,6 +302,11 @@ async def handle_status(
             session_id=perf.session_id,
             plan_path=perf.plan_path,
         )
+    if perf.state == "assessment_complete":
+        return PerformerResponse(
+            status="assessment_complete",
+            session_id=perf.session_id,
+        )
     if perf.state == "approved":
         return PerformerResponse(
             status="approved",
@@ -352,12 +387,71 @@ async def handle_status(
                 plan_path=plan_path,
             )
 
+        # Assessor path — evaluate whether the card specification is sufficient.
+        # Backend output is expected to be JSON with: sufficient (bool),
+        # questions (list[str]).  When sufficient, reports assessment_complete
+        # (a terminal success status that advances the lifecycle).  When
+        # insufficient, reports blocked with the generated questions.
+        if perf.role == "assessing":
+            assess_raw = backend_status.output or ""
+            if not assess_raw.strip():
+                perf.state = "error"
+                perf.error_reason = "Backend produced empty assessment output"
+                return PerformerResponse(
+                    status="error", session_id=perf.session_id,
+                    reason="Backend produced empty assessment output",
+                )
+            assess_output = _extract_json(assess_raw) if isinstance(assess_raw, str) else assess_raw
+            if assess_output is None:
+                perf.state = "error"
+                perf.error_reason = "Backend produced invalid JSON assessment output"
+                return PerformerResponse(
+                    status="error", session_id=perf.session_id,
+                    reason="Backend produced invalid JSON assessment output",
+                )
+            if not isinstance(assess_output, dict):
+                perf.state = "error"
+                perf.error_reason = "Backend assessment output is not a JSON object"
+                return PerformerResponse(
+                    status="error", session_id=perf.session_id,
+                    reason="Backend assessment output is not a JSON object",
+                )
+
+            sufficient = assess_output.get("sufficient", True)
+            raw_questions = assess_output.get("questions", [])
+            questions = raw_questions if isinstance(raw_questions, list) else []
+
+            # If insufficient but no questions were generated, treat as sufficient
+            # (mirrors the legacy assess_card behaviour).
+            if not sufficient and not questions:
+                log.info(
+                    "assessor.no_questions_treating_as_sufficient",
+                    session_id=perf.session_id,
+                )
+                sufficient = True
+
+            if sufficient:
+                perf.state = "assessment_complete"
+                return PerformerResponse(
+                    status="assessment_complete",
+                    session_id=perf.session_id,
+                )
+
+            # Insufficient — block with questions
+            perf.assessment_questions = [str(q) for q in questions]
+            perf.state = "blocked"
+            perf.open_questions = perf.assessment_questions
+            return PerformerResponse(
+                status="blocked",
+                session_id=perf.session_id,
+                questions=perf.assessment_questions,
+            )
+
         # 021: Reviewer path — post review to GitHub PR, return approved or changes_requested.
         # Backend output is expected to be JSON with: approved (bool), comments (list),
         # suggestions (list), body (str). Existing backends don't produce this yet —
         # the reviewer backend adapter will be implemented separately.
         if perf.role == "reviewing":
-            import json as _json
             review_raw = backend_status.output or ""
             if not review_raw.strip():
                 perf.state = "error"
@@ -366,21 +460,14 @@ async def handle_status(
                     status="error", session_id=perf.session_id,
                     reason="Backend produced empty review output",
                 )
-            try:
-                review_output = _json.loads(review_raw) if isinstance(review_raw, str) else review_raw
-            except (ValueError, TypeError):
-                perf.state = "error"
-                perf.error_reason = "Backend produced invalid JSON review output"
-                return PerformerResponse(
-                    status="error", session_id=perf.session_id,
-                    reason="Backend produced invalid JSON review output",
-                )
+            review_output = _extract_json(review_raw) if isinstance(review_raw, str) else review_raw
             if not isinstance(review_output, dict):
                 perf.state = "error"
-                perf.error_reason = "Backend review output is not a JSON object"
+                perf.error_reason = "Backend review output could not be parsed as JSON object"
+                log.warning("reviewer.invalid_output", output_preview=review_raw[:200] if review_raw else "")
                 return PerformerResponse(
                     status="error", session_id=perf.session_id,
-                    reason="Backend review output is not a JSON object",
+                    reason="Backend review output could not be parsed as JSON object",
                 )
 
             is_approved = review_output.get("approved") is True  # strict bool check
@@ -389,7 +476,10 @@ async def handle_status(
             raw_suggestions = review_output.get("suggestions", [])
             suggestions = raw_suggestions if isinstance(raw_suggestions, list) else []
             review_body = str(review_output.get("body", ""))
-            event = "APPROVE" if is_approved else "REQUEST_CHANGES"
+            # Always post as COMMENT — the human reviewer handles formal
+            # approval.  Bot reviews provide feedback for the implementer.
+            verdict = "APPROVED" if is_approved else "CHANGES REQUESTED"
+            event = "COMMENT"
 
             # Extract PR number from pr_url (set by implementer earlier in lifecycle)
             pr_number = 0
@@ -411,7 +501,7 @@ async def handle_status(
             owner, repo = perf.score.owner_repo
             token = perf.score.effective_github_token
             # Append non-blocking suggestions to review body (FR-006)
-            full_body = review_body
+            full_body = f"**Bot Review: {verdict}**\n\n{review_body}"
             if suggestions:
                 full_body += "\n\n### Suggestions (non-blocking)\n" + "\n".join(
                     f"- {s}" for s in suggestions
@@ -452,7 +542,6 @@ async def handle_status(
 
         # 022: Security performer path — analyse findings, post advisories, pass or fail.
         if perf.role == "security":
-            import json as _json_sec
             sec_raw = backend_status.output or ""
             if not sec_raw.strip():
                 perf.state = "error"
@@ -461,9 +550,8 @@ async def handle_status(
                     status="error", session_id=perf.session_id,
                     reason="Backend produced empty security output",
                 )
-            try:
-                sec_output = _json_sec.loads(sec_raw) if isinstance(sec_raw, str) else sec_raw
-            except (ValueError, TypeError):
+            sec_output = _extract_json(sec_raw) if isinstance(sec_raw, str) else sec_raw
+            if sec_output is None:
                 perf.state = "error"
                 perf.error_reason = "Backend produced invalid JSON security output"
                 return PerformerResponse(
@@ -542,7 +630,6 @@ async def handle_status(
 
         # 023: QA performer path — validate acceptance criteria, commit new tests, pass or fail.
         if perf.role == "qa":
-            import json as _json_qa
             qa_raw = backend_status.output or ""
             if not qa_raw.strip():
                 perf.state = "error"
@@ -551,9 +638,8 @@ async def handle_status(
                     status="error", session_id=perf.session_id,
                     reason="Backend produced empty QA output",
                 )
-            try:
-                qa_output = _json_qa.loads(qa_raw) if isinstance(qa_raw, str) else qa_raw
-            except (ValueError, TypeError):
+            qa_output = _extract_json(qa_raw) if isinstance(qa_raw, str) else qa_raw
+            if qa_output is None:
                 perf.state = "error"
                 perf.error_reason = "Backend produced invalid JSON QA output"
                 return PerformerResponse(
@@ -702,6 +788,13 @@ async def handle_status(
         perf.pr_url = pr_url
         perf.pr_node_id = pr_node_id
         perf.pr_head_sha = await get_head_sha(perf.stand)
+
+        # Only resolve review threads if the implementer actually pushed new
+        # commits that address the feedback.  Never resolve threads without
+        # corresponding code changes — that hides unresolved issues.
+        # Note: thread resolution is intentionally removed.  Human reviewers
+        # should verify fixes and resolve their own threads.
+
         perf.state = "waiting_for_checks"
         return PerformerResponse(
             status="working",

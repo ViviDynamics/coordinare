@@ -125,6 +125,37 @@ async def check_board(state: CoordinareState) -> CoordinareState:
         current_phase = state.get("phase")
         if current_phase in ("dispatching", "monitoring_performer", "blocked"):
             return state
+
+        # Re-adopt orphaned IN_PROGRESS card after restart with no state.
+        # Without this, a card left in IN_PROGRESS after a state-less restart
+        # would never be picked up because current_card is None.
+        if state.get("current_card") is None:
+            item = in_progress[0]
+            titles = board.get("titles", {})
+            descriptions = board.get("descriptions", {})
+            issue_numbers = board.get("issue_numbers", {})
+            issue_urls = board.get("issue_urls", {})
+            content_node_ids = board.get("content_node_ids", {})
+            description = str(descriptions.get(item, ""))
+            state["current_card"] = {
+                "id": item,
+                "issue_id": str(content_node_ids.get(item, "")),
+                "issue_number": int(issue_numbers.get(item, 0)),
+                "issue_url": str(issue_urls.get(item, "")),
+                "title": str(titles.get(item, "")),
+                "description": description,
+                "acceptance_criteria": parse_acceptance_criteria(description),
+                "status": "IN_PROGRESS",
+                "previous_status": "IN_PROGRESS",
+            }
+            logger.info(
+                "check_board.readopted_in_progress_card",
+                card_id=item,
+                title=str(titles.get(item, "")),
+            )
+            state["phase"] = "dispatching"
+            return state
+
         state["phase"] = "monitoring_agent"
         return state
     if blocked:
@@ -153,7 +184,12 @@ async def check_board(state: CoordinareState) -> CoordinareState:
         last_notified = state.get("last_blocked_notified_at")
         issue_node_id = str(content_node_ids.get(item, ""))
         if last_notified is not None and isinstance(last_notified, datetime):
-            details = await github.get_issue_details(issue_node_id or item)
+            try:
+                details = await github.get_issue_details(issue_node_id or item)
+            except Exception as exc:
+                logger.warning("check_board.get_issue_details_failed", card_id=item, error=str(exc))
+                state["phase"] = "blocked"
+                return state
             comments_node = details.get("comments")
             comments = (
                 comments_node.get("nodes", [])

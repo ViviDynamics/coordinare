@@ -125,6 +125,7 @@ class CoordinareDaemon:
             open_questions=questions,
             card_clarifications=clarifications,
             last_blocked_notified_at=last_notified if isinstance(last_notified, datetime) else None,
+            lifecycle_completed_at=self._state.get("lifecycle_completed_at") if isinstance(self._state.get("lifecycle_completed_at"), datetime) else None,
         )
 
     def _restore_from_snapshot(self, snapshot: WorkflowSnapshot) -> None:
@@ -132,6 +133,7 @@ class CoordinareDaemon:
         self._state["open_questions"] = list(snapshot.open_questions)
         self._state["card_clarifications"] = list(snapshot.card_clarifications)
         self._state["last_blocked_notified_at"] = snapshot.last_blocked_notified_at
+        self._state["lifecycle_completed_at"] = snapshot.lifecycle_completed_at
         if snapshot.active_card_id:
             self._state["current_card"] = {
                 "id": snapshot.active_card_id,
@@ -410,7 +412,7 @@ class CoordinareDaemon:
                             "severity": "info",
                             "source": "daemon",
                             "run_mode": self._run_mode,
-                            "summary": "Coordinare daemon started",
+                            "summary": f"🔄 Coordinare restarted (mode: {self._run_mode})",
                         },
                     )
                 )
@@ -527,7 +529,7 @@ class CoordinareDaemon:
                                         "severity": "warning",
                                         "source": "daemon",
                                         "idle_seconds": str(int(idle_seconds)),
-                                        "summary": f"Coordinare idle for {int(idle_seconds)}s",
+                                        "summary": f"💤 Coordinare has been idle for {int(idle_seconds // 60)} minutes — no cards to process",
                                     },
                                     dedup_key="prolonged_idle",
                                 )
@@ -553,7 +555,10 @@ class CoordinareDaemon:
                                     NotificationSeverity,
                                 )
                                 _card = self._state.get("current_card") or {}
-                                _summary = f"Card stuck in {_stuck_phase} for {round(_elapsed)}s (limit: {_threshold}s)"
+                                _card_title = str(_card.get("title", ""))[:50]
+                                _card_num = _card.get("issue_number", "")
+                                _card_ref = f"#{_card_num} " if _card_num else ""
+                                _summary = f"⏰ {_card_ref}{_card_title} — stuck in {_stuck_phase} for {round(_elapsed // 60)} min"
                                 try:
                                     await notification_service.dispatch(
                                         NotificationEvent(

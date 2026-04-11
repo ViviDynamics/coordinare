@@ -50,10 +50,16 @@ async def handle_blocked(state: CoordinareState) -> CoordinareState:
         backend = state.get("assessment_backend")
         if backend is not None:
             try:
+                from coordinare.services.persona_service import (
+                    get_effective_instructions,
+                    load_personas_hot,
+                )
+                personas = load_personas_hot(state.get("config_path"), state.get("config"))
                 card_data: dict = {
                     "title": card.get("title", ""),
                     "body": card.get("description", ""),
                     "clarifications": clarifications,
+                    "persona_instructions": get_effective_instructions("assessor", personas),
                 }
                 assessment = await backend.assess(card_data)
                 generated = assessment.get("questions") or []
@@ -61,33 +67,46 @@ async def handle_blocked(state: CoordinareState) -> CoordinareState:
             except Exception as exc:
                 logger.warning("handle_blocked_assessment_failed", card_id=card_id, error=str(exc))
         if not questions:
-            if answered_rounds:
-                # The user has answered all clarification questions and the assessment
-                # has no further questions — the card is sufficiently specified.
-                # Re-queue for dispatch by moving the card back to TODO so the next
-                # check_board cycle picks it up through assess_card → dispatch_card.
-                logger.info(
-                    "handle_blocked_requeue_for_dispatch",
-                    card_id=card_id,
-                    answered_rounds=len(answered_rounds),
-                    msg="Sufficient Q&A history — re-queuing card for dispatch",
-                )
+            # No questions from assessment — the card is sufficiently specified.
+            # Re-queue for dispatch instead of posting generic "clarify" questions.
+            logger.info(
+                "handle_blocked_requeue_for_dispatch",
+                card_id=card_id,
+                answered_rounds=len(answered_rounds),
+                msg="No questions generated — re-queuing card for dispatch",
+            )
+            try:
                 await github.move_card(card_id, "TODO")
-                state["phase"] = "idle"
-                state["last_blocked_notified_at"] = None
-                return state
-            else:
-                logger.warning("handle_blocked_fallback", card_id=card_id,
-                               msg="Assessment generated no questions — deriving from card title")
-                questions = _questions_from_card(
-                    title=card.get("title", ""),
-                    description=card.get("description", ""),
-                )
+            except Exception as exc:
+                logger.warning("handle_blocked.move_card_todo_failed", card_id=card_id, error=str(exc))
+            state["phase"] = "idle"
+            state["last_blocked_notified_at"] = None
+            return state
 
-    await github.move_card(card_id, "BLOCKED")
+    try:
+        await github.move_card(card_id, "BLOCKED")
+    except Exception as exc:
+        logger.warning("handle_blocked.move_card_blocked_failed", card_id=card_id, error=str(exc))
     question_lines = "\n".join(f"- {q}" for q in questions)
+
+    # Identify which role is blocking so humans know who's talking
+    role_labels: dict[str, str] = {
+        "assessing": "🔍 Assessor",
+        "architecting": "📐 Architect",
+        "implementing": "💻 Implementer",
+        "reviewing": "👀 Reviewer",
+        "security": "🔒 Security",
+        "qa": "🧪 QA",
+        "documenting": "📝 Tech Writer",
+    }
+    stage = state.get("performer_stage", "assessing")
+    role_label = role_labels.get(stage, f"🤖 {stage}")
+
     if issue_id:
-        await github.add_comment(issue_id, f"Needs input:\n{question_lines}")
+        try:
+            await github.add_comment(issue_id, f"**{role_label}** — Needs input:\n{question_lines}")
+        except Exception as exc:
+            logger.warning("handle_blocked.add_comment_failed", card_id=card_id, error=str(exc))
     else:
         logger.warning(
             "handle_blocked.no_issue_id",

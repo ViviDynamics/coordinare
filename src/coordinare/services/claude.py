@@ -40,7 +40,7 @@ class ClaudeService:
     def __init__(
         self,
         api_key: str | None = None,
-        model: str = "claude-3-5-sonnet-latest",
+        model: str = "claude-sonnet-4-20250514",
         circuit_breaker: Any = None,
         retry_kwargs: dict[str, Any] | None = None,
     ) -> None:

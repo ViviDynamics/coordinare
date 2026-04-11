@@ -33,6 +33,7 @@ PerformerStatusType = Literal[
     "qa_passed",
     "qa_failed",
     "docs_committed",
+    "assessment_complete",
     "healthy",
     "unhealthy",
 ]

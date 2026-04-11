@@ -13,7 +13,7 @@ class TestSettings:
 
     def test_default_agent_timeout(self) -> None:
         s = Settings()
-        assert s.AGENT_TIMEOUT == 1800
+        assert s.AGENT_TIMEOUT == 7200
 
     def test_env_override_agent_backend(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("AGENT_BACKEND", "claude-code")

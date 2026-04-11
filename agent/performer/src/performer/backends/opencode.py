@@ -319,7 +319,13 @@ class OpenCodeAdapter:
 
 def _build_task_prompt(score: Score) -> str:
     """Construct the task description sent to opencode as the initial message."""
-    parts = [f"# Task: {score.title}", ""]
+    parts = []
+
+    # Persona instructions (role-specific behavior)
+    if score.persona_instructions:
+        parts += ["## Role Instructions", "", score.persona_instructions, ""]
+
+    parts += [f"# Task: {score.title}", ""]
     if score.description:
         parts += [score.description, ""]
     if score.acceptance_criteria:
@@ -335,6 +341,33 @@ def _build_task_prompt(score: Score) -> str:
                 parts.extend(f"- {q}" for q in questions)
             if answer:
                 parts += [f"**Answer:** {answer}", ""]
+
+    # Relay feedback (human review comments from previous cycle)
+    if score.relay_feedback:
+        parts += [
+            "", "## Human Feedback (address ALL of these issues)", "",
+            "IMPORTANT: These comments may only tag a few examples. Search the entire "
+            "codebase for ALL similar occurrences of the same pattern and fix them all.",
+            "",
+        ]
+        for item in score.relay_feedback:
+            if isinstance(item, dict):
+                body = item.get("body", "")
+                if body:
+                    parts.append(f"- {body}")
+                inline = item.get("comments", [])
+                if isinstance(inline, list):
+                    for c in inline:
+                        if isinstance(c, dict):
+                            c_body = c.get("body", "")
+                            c_path = c.get("path", "")
+                            c_line = c.get("line")
+                            if c_body:
+                                loc = f"`{c_path}:{c_line}`" if c_path and c_line else (f"`{c_path}`" if c_path else "")
+                                parts.append(f"  - {loc} — {c_body}" if loc else f"  - {c_body}")
+            elif isinstance(item, str):
+                parts.append(f"- {item}")
+
     parts += [
         "",
         "---",

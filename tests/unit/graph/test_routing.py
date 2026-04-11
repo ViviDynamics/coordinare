@@ -11,7 +11,11 @@ from coordinare.graph.routing import (
 
 
 def test_route_from_board_check_paths() -> None:
-    assert route_from_board_check({"phase": "dispatching"}) == "dispatch"
+    # Legacy path: no assessor in lifecycle → route to assess_card
+    assert route_from_board_check({"phase": "dispatching"}) == "assess"
+    assert route_from_board_check({"phase": "dispatching", "lifecycle_sequence": ["implementing"]}) == "assess"
+    # Assessor performer in lifecycle → skip assess_card, go to dispatch
+    assert route_from_board_check({"phase": "dispatching", "lifecycle_sequence": ["assessing", "implementing"]}) == "dispatch"
     assert route_from_board_check({"phase": "monitoring_pr"}) == "monitor_pr"
     assert route_from_board_check({"phase": "monitoring_agent"}) == "monitor_agent"
     assert route_from_board_check({"phase": "monitoring_performer"}) == "monitor_agent"  # 019
