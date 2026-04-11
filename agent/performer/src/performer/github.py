@@ -252,3 +252,70 @@ async def post_pr_comment(
     return resp.json()
 
 
+async def resolve_pr_review_threads(
+    owner: str,
+    repo: str,
+    pr_number: int,
+    token: str,
+) -> int:
+    """Resolve all unresolved review threads on a PR.
+
+    Called by the reviewer after verifying that implementer fixes address
+    the feedback. Returns the number of threads resolved.
+    """
+    _require_token(token, "resolve_pr_review_threads")
+    graphql_url = "https://api.github.com/graphql"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+    }
+
+    query = """
+    query($owner: String!, $repo: String!, $pr: Int!) {
+      repository(owner: $owner, name: $repo) {
+        pullRequest(number: $pr) {
+          reviewThreads(first: 100) {
+            nodes { id isResolved }
+          }
+        }
+      }
+    }
+    """
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(graphql_url, headers=headers, json={
+            "query": query,
+            "variables": {"owner": owner, "repo": repo, "pr": pr_number},
+        })
+    if not resp.is_success:
+        log.warning("resolve_threads.fetch_failed", status=resp.status_code)
+        return 0
+
+    data = resp.json().get("data", {})
+    threads = (
+        data.get("repository", {})
+        .get("pullRequest", {})
+        .get("reviewThreads", {})
+        .get("nodes", [])
+    )
+    unresolved = [t for t in threads if not t.get("isResolved")]
+    if not unresolved:
+        return 0
+
+    resolved = 0
+    mutation = "mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { isResolved } } }"
+    async with httpx.AsyncClient(timeout=30) as client:
+        for thread in unresolved:
+            try:
+                resp = await client.post(graphql_url, headers=headers, json={
+                    "query": mutation,
+                    "variables": {"id": thread["id"]},
+                })
+                if resp.is_success:
+                    resolved += 1
+            except Exception:
+                pass
+
+    log.info("resolve_threads.done", owner=owner, repo=repo, pr_number=pr_number, resolved=resolved)
+    return resolved
+
+

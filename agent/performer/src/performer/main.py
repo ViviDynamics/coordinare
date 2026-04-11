@@ -16,7 +16,7 @@ from pydantic import ValidationError
 from performer.backends import UnsupportedBackendError, get_backend
 from performer.backends.base import BackendAdapter, BackendStatus
 from performer.config import Settings, get_settings
-from performer.github import GitHubAPIError, create_pull_request, get_check_runs, post_pr_comment, post_pull_request_review, summarise_check_runs
+from performer.github import GitHubAPIError, create_pull_request, get_check_runs, post_pr_comment, post_pull_request_review, resolve_pr_review_threads, summarise_check_runs
 from performer.models import Performance, Score, Stand
 from performer.protocol import PerformerMessage, PerformerMetrics, PerformerResponse
 from performer.workspace import commit_file
@@ -512,6 +512,17 @@ async def handle_status(
             )
 
             if is_approved:
+                # Resolve all open review threads — the reviewer has verified
+                # that the implementer's fixes address the feedback.
+                try:
+                    resolved = await resolve_pr_review_threads(
+                        owner, repo, pr_number, token,
+                    )
+                    if resolved:
+                        log.info("reviewer.resolved_threads", pr_number=pr_number, count=resolved)
+                except Exception as exc:
+                    log.warning("reviewer.resolve_threads_failed", error=str(exc))
+
                 perf.state = "approved"
                 perf.review_suggestions = suggestions
                 return PerformerResponse(
