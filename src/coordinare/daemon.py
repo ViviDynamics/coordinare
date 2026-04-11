@@ -537,7 +537,7 @@ class CoordinareDaemon:
                         except Exception as exc:
                             logger.warning("prolonged_idle_notification_failed", error=str(exc))
 
-                # 028: Stuck card detection
+                # 028: Stuck card detection (with cooldown to avoid alert spam)
                 _stuck_phase = self._state.get("phase")
                 _stuck_excluded = {"idle", "system_error"}
                 if _stuck_phase and _stuck_phase not in _stuck_excluded and notification_service is not None:
@@ -546,9 +546,13 @@ class CoordinareDaemon:
                     if _config is not None and _phase_entered is not None and hasattr(_config, "stuck_alerts"):
                         _stuck_cfg = _config.stuck_alerts
                         _threshold = _stuck_cfg.per_phase_thresholds.get(_stuck_phase, _stuck_cfg.threshold_seconds)
+                        _raw_cooldown = getattr(_stuck_cfg, "cooldown_seconds", None)
+                        _cooldown = _raw_cooldown if _raw_cooldown is not None else _threshold
                         if _threshold > 0:
                             _elapsed = (datetime.now(UTC) - _phase_entered).total_seconds()
-                            if _elapsed > _threshold:
+                            _last_stuck = getattr(self, "_last_stuck_alert_at", None)
+                            _cooldown_ok = _last_stuck is None or (monotonic() - _last_stuck) >= _cooldown
+                            if _elapsed > _threshold and _cooldown_ok:
                                 from coordinare.models.notification import (
                                     EventType,
                                     NotificationEvent,
@@ -576,6 +580,7 @@ class CoordinareDaemon:
                                             dedup_key=f"stuck:{_card.get('id', '')}:{_stuck_phase}",
                                         )
                                     )
+                                    self._last_stuck_alert_at = monotonic()
                                 except Exception as _exc:
                                     logger.warning("stuck_card_notification_failed", error=str(_exc))
 

@@ -210,7 +210,13 @@ class StuckAlertConfig(BaseModel):
     """Configuration for stuck card detection and alerting."""
 
     threshold_seconds: int = Field(default=1800, ge=0)  # 30 min default; 0 = disabled
-    per_phase_thresholds: dict[str, int] = Field(default_factory=dict)  # phase → seconds; 0 = disabled
+    per_phase_thresholds: dict[str, int] = Field(
+        default_factory=lambda: {
+            "monitoring_performer": 3600,  # 60 min — codex sessions routinely run 30-40 min
+            "monitoring_agent": 3600,      # 60 min — same rationale
+        },
+    )  # phase → seconds; 0 = disabled
+    cooldown_seconds: int = Field(default=1800, ge=0)  # min interval between repeated stuck alerts
 
 
 # ---------------------------------------------------------------------------

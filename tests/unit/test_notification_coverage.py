@@ -207,6 +207,8 @@ async def test_email_sender_send_calls_aiosmtplib_with_correct_args() -> None:
     assert kwargs["port"] == 587
     assert kwargs["username"] == "user@example.com"
     assert kwargs["password"] == "s3cr3t"
+    assert kwargs["start_tls"] is True
+    assert kwargs["timeout"] == 10
     # verify the EmailMessage was built correctly
     msg_arg = mock_send.call_args[0][0]
     assert msg_arg["From"] == "coordinare@example.com"

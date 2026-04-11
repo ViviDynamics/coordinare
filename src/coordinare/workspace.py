@@ -219,7 +219,9 @@ class WorkspaceManager:
             token = self._github_token.get_secret_value()
         else:
             raise WorkspaceSetupError("No GitHub token available — configure github_token or github_auth=app")
-        clone_url = f"https://x-access-token:{token}@github.com/{org}/{project}.git"
+        # Use plain HTTPS URL — token is passed via http.extraHeader env var
+        # so it never appears in process argv or /proc/*/cmdline.
+        clone_url = f"https://github.com/{org}/{project}.git"
 
         container: Path | None = None
         try:
@@ -232,8 +234,21 @@ class WorkspaceManager:
             clone_dir = container / "repo"
             env = self._make_git_env()
 
-            # Clone with authenticated URL (required for private repos).
-            # NOTE: clone_url contains the token — do NOT log it.
+            # Inject token via environment-based http.extraHeader (same
+            # pattern as performer workspace — avoids token in argv).
+            import base64 as _b64
+            _encoded = _b64.b64encode(f"x-access-token:{token}".encode()).decode()
+            env["GIT_CONFIG_COUNT"] = "1"
+            env["GIT_CONFIG_KEY_0"] = "http.extraHeader"
+            env["GIT_CONFIG_VALUE_0"] = f"Authorization: Basic {_encoded}"
+            # Suppress git tracing to prevent auth header leakage in logs
+            for _trace_var in (
+                "GIT_TRACE", "GIT_TRACE_PACKET", "GIT_CURL_VERBOSE",
+                "GIT_TRACE2", "GIT_TRACE_CURL",
+            ):
+                env.pop(_trace_var, None)
+
+            # Clone with auth via env (required for private repos).
             await _run_git(
                 "clone", "--depth=1", clone_url, str(clone_dir),
                 env=env,

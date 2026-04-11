@@ -136,8 +136,12 @@ async def test_prepare_calls_git_in_order(tmp_path: Path) -> None:
     """prepare() calls git ops in order: clone -> config x2 -> remote set-url -> checkout -b."""
     calls: list[tuple[str, ...]] = []
 
+    envs: list[dict] = []
+
     async def _fake_run_git(*args: str, **kwargs: object) -> None:
         calls.append(args)
+        if kwargs.get("env"):
+            envs.append(dict(kwargs["env"]))
 
     cfg = _make_config(workspace_root=tmp_path)
     mgr = WorkspaceManager(cfg)
@@ -152,12 +156,20 @@ async def test_prepare_calls_git_in_order(tmp_path: Path) -> None:
     assert calls[3][0] == "remote"  # remote set-url
     assert calls[4] == ("checkout", "-b", "coordinare/CARD_1/add-retry-logic")
 
-    # Clone must use authenticated URL (with token)
+    # Clone URL must be plain (no embedded token) — auth is via env vars
     clone_url_arg = calls[0][2]
-    assert "x-access-token" in clone_url_arg
-    assert "ghp_test" in clone_url_arg
+    assert "x-access-token" not in clone_url_arg
+    assert "ghp_test" not in clone_url_arg
+    assert clone_url_arg == "https://github.com/acme/myrepo.git"
 
-    # Returned repo_url must be plain (no token)
+    # Verify env-based auth was passed to git clone
+    assert len(envs) > 0, "env should be passed to _run_git"
+    clone_env = envs[0]
+    assert clone_env.get("GIT_CONFIG_COUNT") == "1"
+    assert clone_env.get("GIT_CONFIG_KEY_0") == "http.extraHeader"
+    assert "Authorization: Basic" in clone_env.get("GIT_CONFIG_VALUE_0", "")
+
+    # Returned repo_url must also be plain
     assert "ghp_test" not in info.repo_url
 
 

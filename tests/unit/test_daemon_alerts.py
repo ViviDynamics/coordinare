@@ -129,3 +129,48 @@ async def test_no_notification_when_service_missing() -> None:
 
     # Should complete without errors
     await daemon.start()
+
+
+class _StuckGraph:
+    """Graph that keeps phase in monitoring_performer with a past phase_entered_at."""
+    def __init__(self) -> None:
+        self._call_count = 0
+
+    async def ainvoke(self, state):
+        from datetime import UTC, datetime, timedelta
+
+        from coordinare.config import StuckAlertConfig
+        state["phase"] = "monitoring_performer"
+        # Set phase_entered_at far in the past so threshold is always exceeded
+        state["phase_entered_at"] = datetime.now(UTC) - timedelta(hours=2)
+        if state.get("config") is None:
+            from unittest.mock import MagicMock
+            cfg = MagicMock()
+            cfg.stuck_alerts = StuckAlertConfig(
+                threshold_seconds=60,
+                per_phase_thresholds={"monitoring_performer": 60},
+                cooldown_seconds=9999,  # very high so second cycle is suppressed
+            )
+            state["config"] = cfg
+        state["current_card"] = {"id": "CARD_1", "title": "Test", "issue_number": 1}
+        self._call_count += 1
+        return state
+
+
+@pytest.mark.asyncio
+async def test_stuck_alert_cooldown_suppresses_repeat() -> None:
+    """Stuck alert fires once then is suppressed by cooldown on the next cycle."""
+    fake = FakeNotificationService()
+    daemon = CoordinareDaemon(
+        _StuckGraph(),
+        max_cycles=3,
+        sleep_func=AsyncMock(),
+        idle_threshold_seconds=9999,
+    )
+    daemon.state["notification_service"] = fake
+
+    await daemon.start()
+
+    stuck_events = [e for e in fake.dispatched if e.event_type == EventType.card_stuck]
+    # Should fire only once despite 3 cycles — cooldown suppresses repeats
+    assert len(stuck_events) == 1

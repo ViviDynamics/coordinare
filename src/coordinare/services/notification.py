@@ -99,6 +99,8 @@ class EmailChannelSender:
             port=self._smtp_port,
             username=self._smtp_username,
             password=self._smtp_password,
+            start_tls=True,
+            timeout=10,
         )
 
 
