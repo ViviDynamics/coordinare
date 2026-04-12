@@ -730,6 +730,24 @@ class GitHubService:
             self._logger.warning("link_to_project_failed", content_id=content_id, error=str(exc))
             return None
 
+    async def request_reviewers(self, owner: str, repo: str, pr_number: int, reviewers: list[str]) -> None:
+        """Request reviews from the given GitHub usernames on a PR."""
+        if not reviewers:
+            return
+        token = await self._current_token()
+        url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}/requested_reviewers"
+        headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+        import httpx
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.post(url, json={"reviewers": reviewers}, headers=headers)
+            if resp.is_success:
+                self._logger.info("reviewers_requested", pr_number=pr_number, reviewers=reviewers)
+            else:
+                self._logger.warning("request_reviewers_failed", pr_number=pr_number, status=resp.status_code, body=resp.text[:200])
+        except Exception as exc:
+            self._logger.warning("request_reviewers_error", pr_number=pr_number, error=str(exc))
+
     async def add_comment(self, subject_id: str, body: str) -> dict[str, Any]:
         result = await self._guarded_execute(ADD_COMMENT_MUTATION, {"subjectId": subject_id, "body": body})
         node = result.get("addComment", {}).get("commentEdge", {}).get("node", {})

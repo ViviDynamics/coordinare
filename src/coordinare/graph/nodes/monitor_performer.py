@@ -633,6 +633,19 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
                             await github.link_to_project(pr_node_id)
                         except Exception:
                             logger.warning("link_pr_to_project_failed", pr_node_id=pr_node_id)
+                    # Request human reviewers configured on the project
+                    human_reviewers = state.get("human_reviewers")
+                    if pr_url and isinstance(human_reviewers, list) and human_reviewers:
+                        try:
+                            pr_num = int(pr_url.rstrip("/").rsplit("/", 1)[-1])
+                            updated_card = updates.get("current_card", card)
+                            # Extract owner/repo from pr_url
+                            parts = pr_url.rstrip("/").split("/")
+                            owner = parts[-4]
+                            repo = parts[-3]
+                            await github.request_reviewers(owner, repo, pr_num, human_reviewers)
+                        except Exception as exc:
+                            logger.warning("request_human_reviewers_failed", error=str(exc))
 
             # Apply the computed state updates.
             for key, value in updates.items():
