@@ -153,12 +153,21 @@ async def create_pull_request(
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(url, json=body, headers=headers)
     if resp.status_code == 422:
-        # PR already exists — fetch and return it instead of erroring.
+        # PR already exists — fetch it and update body/title to keep linkage current.
         error_data = resp.json()
         errors = error_data.get("errors", [])
         if any("already exists" in (e.get("message") or "") for e in errors):
-            log.info("pull request already exists, fetching existing PR", branch=branch)
-            return await get_existing_pull_request(owner, repo, branch, token)
+            log.info("pull request already exists, updating and fetching", branch=branch)
+            html_url, node_id = await get_existing_pull_request(owner, repo, branch, token)
+            # Update the existing PR body so issue linkage and description stay current
+            pr_number = html_url.rstrip("/").rsplit("/", 1)[-1]
+            update_url = f"{_github_api()}/repos/{owner}/{repo}/pulls/{pr_number}"
+            try:
+                async with httpx.AsyncClient(timeout=30) as client:
+                    await client.patch(update_url, json={"body": _pr_body(score)}, headers=headers)
+            except Exception as exc:
+                log.warning("update_existing_pr_body_failed", error=str(exc))
+            return html_url, node_id
     if not resp.is_success:
         raise GitHubAPIError(resp.status_code, resp.text)
     data = resp.json()
