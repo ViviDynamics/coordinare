@@ -700,6 +700,31 @@ class GitHubService:
             "merge_commit": node.get("mergeCommit"),
         }
 
+    async def link_to_project(self, content_id: str) -> str | None:
+        """Add an item (PR or issue) to the project board by its node ID.
+
+        Returns the project item ID on success, or None on failure.
+        """
+        if not self.project_id:
+            return None
+        mutation = """
+        mutation($projectId: ID!, $contentId: ID!) {
+          addProjectV2ItemById(input: {projectId: $projectId, contentId: $contentId}) {
+            item { id }
+          }
+        }
+        """
+        try:
+            result = await self._guarded_execute(mutation, {
+                "projectId": self.project_id,
+                "contentId": content_id,
+            })
+            item = result.get("addProjectV2ItemById", {}).get("item", {})
+            return str(item.get("id", "")) or None
+        except Exception as exc:
+            self._logger.warning("link_to_project_failed", content_id=content_id, error=str(exc))
+            return None
+
     async def add_comment(self, subject_id: str, body: str) -> dict[str, Any]:
         result = await self._guarded_execute(ADD_COMMENT_MUTATION, {"subjectId": subject_id, "body": body})
         node = result.get("addComment", {}).get("commentEdge", {}).get("node", {})

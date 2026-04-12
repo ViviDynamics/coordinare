@@ -627,6 +627,12 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
                         await github.move_card(card_id, "IN_REVIEW")
                     except Exception:
                         logger.warning("move_card_to_in_review_failed", card_id=card_id)
+                    # Link PR to the project board so it's visible alongside the card
+                    if pr_node_id:
+                        try:
+                            await github.link_to_project(pr_node_id)
+                        except Exception:
+                            logger.warning("link_pr_to_project_failed", pr_node_id=pr_node_id)
 
             # Apply the computed state updates.
             for key, value in updates.items():
