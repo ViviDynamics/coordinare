@@ -700,8 +700,8 @@ class GitHubService:
             "merge_commit": node.get("mergeCommit"),
         }
 
-    async def link_to_project(self, content_id: str) -> str | None:
-        """Add an item (PR or issue) to the project board by its node ID.
+    async def link_to_project(self, content_id: str, status: str = "IN_REVIEW") -> str | None:
+        """Add an item (PR or issue) to the project board and set its status.
 
         Returns the project item ID on success, or None on failure.
         """
@@ -720,7 +720,12 @@ class GitHubService:
                 "contentId": content_id,
             })
             item = result.get("addProjectV2ItemById", {}).get("item", {})
-            return str(item.get("id", "")) or None
+            item_id = str(item.get("id", "")) or None
+            if not item_id:
+                return None
+            # Set the status field on the new project item
+            await self.move_card(item_id, status)
+            return item_id
         except Exception as exc:
             self._logger.warning("link_to_project_failed", content_id=content_id, error=str(exc))
             return None
