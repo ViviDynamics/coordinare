@@ -95,6 +95,8 @@ class Score(BaseModel):
     model: str = ""  # AI model override (037)
     github_api_url: str = ""  # GitHub API URL override (036)
     architecture_plan_path: str = ""  # path to architect's plan on branch
+    issue_number: int = 0  # GitHub issue number for PR linkage
+    issue_url: str = ""  # GitHub issue URL for PR body reference
 
     model_config = {"extra": "ignore"}  # silently drop unknown fields from coordinare
 

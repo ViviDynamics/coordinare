@@ -26,7 +26,14 @@ class GitHubAPIError(RuntimeError):
 
 
 def _pr_body(score: Score) -> str:
-    parts = [score.description] if score.description else []
+    parts = []
+    # Link to the issue so GitHub auto-links the PR to the project board
+    if score.issue_number:
+        owner, repo = score.owner_repo
+        parts.append(f"Closes #{score.issue_number}")
+        parts.append("")
+    if score.description:
+        parts.append(score.description)
     if score.acceptance_criteria:
         parts.append("\n## Acceptance Criteria\n")
         parts.extend(f"- {c}" for c in score.acceptance_criteria)
