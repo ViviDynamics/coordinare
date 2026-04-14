@@ -235,6 +235,7 @@ class CoordinareMetrics:
         for role in (
             "implementing", "reviewing", "security", "qa",
             "documenting", "architecting", "advocate", "assessing",
+            "closing_review",
         ):
             self.card_tokens_total.labels(role=role)
 

@@ -12,6 +12,7 @@ from performer.github import (
     get_default_branch,
     get_existing_pull_request,
     post_pull_request_review,
+    resolve_pr_review_threads,
     summarise_check_runs,
 )
 from performer.models import Score
@@ -355,6 +356,22 @@ class TestGitHubAPIURLConfigurable:
         get_settings.cache_clear()
 
 
+class TestPrBody:
+    """Tests for _pr_body() — PR body linkage to issues."""
+
+    def test_pr_body_includes_closes_when_issue_number_set(self) -> None:
+        from performer.github import _pr_body
+        score = _score(issue_number=71)
+        body = _pr_body(score)
+        assert body.startswith("Closes #71")
+
+    def test_pr_body_omits_closes_when_no_issue_number(self) -> None:
+        from performer.github import _pr_body
+        score = _score(issue_number=0)
+        body = _pr_body(score)
+        assert "Closes" not in body
+
+
 class TestPostPullRequestReview:
     @respx.mock
     async def test_post_review_approve_sends_correct_payload(self) -> None:
@@ -458,3 +475,172 @@ class TestPostPullRequestReview:
         )
         assert result["id"] == 3
         assert result["state"] == "COMMENTED"
+
+
+class TestResolvePrReviewThreads:
+    """resolve_pr_review_threads must close every unresolved thread regardless
+    of who authored the comment, and must surface GraphQL errors instead of
+    silently counting them as success."""
+
+    _GRAPHQL = "https://api.github.com/graphql"
+
+    def _query_response(self, threads: list[dict]) -> httpx.Response:  # type: ignore[type-arg]
+        return httpx.Response(
+            200,
+            json={
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "reviewThreads": {"nodes": threads}
+                        }
+                    }
+                }
+            },
+        )
+
+    def _mutation_success(self, thread_id: str) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "data": {
+                    "resolveReviewThread": {
+                        "thread": {"id": thread_id, "isResolved": True}
+                    }
+                }
+            },
+        )
+
+    def _mutation_graphql_error(self, message: str) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "data": {"resolveReviewThread": None},
+                "errors": [{"message": message}],
+            },
+        )
+
+    @respx.mock
+    async def test_resolves_threads_from_any_author(self) -> None:
+        """Threads from humans, the coordinare bot, and other bots like
+        Copilot are all targeted equally."""
+        threads = [
+            {
+                "id": "T_human", "isResolved": False, "isOutdated": False,
+                "comments": {"nodes": [{"author": {"login": "alice"}}]},
+            },
+            {
+                "id": "T_copilot", "isResolved": False, "isOutdated": True,
+                "comments": {"nodes": [{"author": {"login": "copilot-pull-request-reviewer"}}]},
+            },
+            {
+                "id": "T_self", "isResolved": False, "isOutdated": False,
+                "comments": {"nodes": [{"author": {"login": "vivi-coordinare"}}]},
+            },
+            {
+                "id": "T_done", "isResolved": True, "isOutdated": False,
+                "comments": {"nodes": [{"author": {"login": "alice"}}]},
+            },
+        ]
+
+        call_count = {"n": 0}
+        attempted: list[str] = []
+
+        def _route(request: httpx.Request) -> httpx.Response:
+            call_count["n"] += 1
+            body = request.read().decode()
+            if "reviewThreads" in body and "resolveReviewThread" not in body:
+                return self._query_response(threads)
+            # mutation — capture the thread id and respond success
+            import json as _json
+            payload = _json.loads(body)
+            tid = payload["variables"]["id"]
+            attempted.append(tid)
+            return self._mutation_success(tid)
+
+        respx.post(self._GRAPHQL).mock(side_effect=_route)
+
+        resolved = await resolve_pr_review_threads("org", "repo", 88, "tok")
+
+        assert resolved == 3
+        # All three unresolved threads attempted, regardless of author
+        assert set(attempted) == {"T_human", "T_copilot", "T_self"}
+
+    @respx.mock
+    async def test_returns_zero_when_no_unresolved(self) -> None:
+        threads = [
+            {
+                "id": "T1", "isResolved": True, "isOutdated": False,
+                "comments": {"nodes": [{"author": {"login": "alice"}}]},
+            }
+        ]
+        respx.post(self._GRAPHQL).mock(return_value=self._query_response(threads))
+        resolved = await resolve_pr_review_threads("org", "repo", 88, "tok")
+        assert resolved == 0
+
+    @respx.mock
+    async def test_graphql_errors_are_not_counted_as_success(self) -> None:
+        """A 200 response with errors in the body must not be counted as
+        a successful resolve — that was the silent-failure bug."""
+        threads = [
+            {
+                "id": "T_fail", "isResolved": False, "isOutdated": True,
+                "comments": {"nodes": [{"author": {"login": "copilot-pull-request-reviewer"}}]},
+            }
+        ]
+
+        def _route(request: httpx.Request) -> httpx.Response:
+            body = request.read().decode()
+            if "resolveReviewThread" not in body:
+                return self._query_response(threads)
+            return self._mutation_graphql_error("Resource not accessible by integration")
+
+        respx.post(self._GRAPHQL).mock(side_effect=_route)
+        resolved = await resolve_pr_review_threads("org", "repo", 88, "tok")
+        assert resolved == 0  # NOT 1 — the silent-failure bug
+
+    @respx.mock
+    async def test_partial_success_counts_only_resolved(self) -> None:
+        threads = [
+            {
+                "id": "T_ok", "isResolved": False, "isOutdated": False,
+                "comments": {"nodes": [{"author": {"login": "alice"}}]},
+            },
+            {
+                "id": "T_fail", "isResolved": False, "isOutdated": True,
+                "comments": {"nodes": [{"author": {"login": "copilot-pull-request-reviewer"}}]},
+            },
+        ]
+
+        def _route(request: httpx.Request) -> httpx.Response:
+            body = request.read().decode()
+            if "resolveReviewThread" not in body:
+                return self._query_response(threads)
+            import json as _json
+            payload = _json.loads(body)
+            tid = payload["variables"]["id"]
+            if tid == "T_fail":
+                return self._mutation_graphql_error("permission denied")
+            return self._mutation_success(tid)
+
+        respx.post(self._GRAPHQL).mock(side_effect=_route)
+        resolved = await resolve_pr_review_threads("org", "repo", 88, "tok")
+        assert resolved == 1
+
+    @respx.mock
+    async def test_query_graphql_errors_return_zero(self) -> None:
+        respx.post(self._GRAPHQL).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "data": None,
+                    "errors": [{"message": "rate limited"}],
+                },
+            )
+        )
+        resolved = await resolve_pr_review_threads("org", "repo", 88, "tok")
+        assert resolved == 0
+
+    async def test_empty_token_raises_401(self) -> None:
+        with pytest.raises(GitHubAPIError) as exc_info:
+            await resolve_pr_review_threads("org", "repo", 88, "")
+        assert exc_info.value.status_code == 401

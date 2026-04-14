@@ -30,7 +30,7 @@ class _Agent:
     def __init__(self, response: dict) -> None:
         self._response = response
 
-    async def check_status(self, session_id: str) -> dict:
+    async def check_status(self, session_id: str, **kwargs: object) -> dict:
         _ = session_id
         return self._response
 
@@ -38,21 +38,21 @@ class _Agent:
 class _AgentTransportError:
     """Raises TransportError from check_status."""
 
-    async def check_status(self, session_id: str) -> dict:
+    async def check_status(self, session_id: str, **kwargs: object) -> dict:
         raise TransportError("SSH tunnel collapsed")
 
 
 class _AgentPermanentGitHubError:
     """Raises PermanentGitHubError from check_status."""
 
-    async def check_status(self, session_id: str) -> dict:
+    async def check_status(self, session_id: str, **kwargs: object) -> dict:
         raise PermanentGitHubError("Token revoked")
 
 
 class _AgentUnexpectedError:
     """Raises an unexpected RuntimeError from check_status (not a known transport error)."""
 
-    async def check_status(self, session_id: str) -> dict:
+    async def check_status(self, session_id: str, **kwargs: object) -> dict:
         raise RuntimeError("unexpected internal error")
 
 

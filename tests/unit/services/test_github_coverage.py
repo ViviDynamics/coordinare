@@ -335,7 +335,7 @@ async def test_poll_board_item_without_id_is_skipped() -> None:
     svc = _initialized_svc(_poll_response([{"id": "", "fieldValues": {"nodes": []}}]))
     result = await svc.poll_board()
     assert result["snapshot"] == {
-        "TODO": [], "BLOCKED": [], "IN_PROGRESS": [], "IN_REVIEW": [], "DONE": []
+        "BACKLOG": [], "TODO": [], "BLOCKED": [], "IN_PROGRESS": [], "IN_REVIEW": [], "DONE": []
     }
 
 
@@ -349,12 +349,13 @@ async def test_poll_board_non_dict_item_is_skipped() -> None:
 
 @pytest.mark.asyncio
 async def test_poll_board_field_values_not_a_list() -> None:
-    """When fieldValues.nodes is not a list, status defaults to TODO."""
+    """When fieldValues.nodes is not a list, item has unknown status and is skipped."""
     svc = _initialized_svc(
         _poll_response([{"id": "ITEM_1", "fieldValues": {"nodes": "bad"}, "content": {}}])
     )
     result = await svc.poll_board()
-    assert "ITEM_1" in result["snapshot"]["TODO"]
+    # Unknown status — not in any column
+    assert "ITEM_1" not in result["snapshot"]["TODO"]
 
 
 @pytest.mark.asyncio
@@ -391,8 +392,8 @@ async def test_poll_board_all_status_values() -> None:
 
 
 @pytest.mark.asyncio
-async def test_poll_board_unknown_status_name_leaves_todo() -> None:
-    """A field value with an unrecognized name falls through all elif branches (status stays TODO)."""
+async def test_poll_board_unknown_status_name_is_skipped() -> None:
+    """A field value with an unrecognized name is skipped (not defaulted to TODO)."""
     svc = _initialized_svc(
         _poll_response([
             {
@@ -403,17 +404,40 @@ async def test_poll_board_unknown_status_name_leaves_todo() -> None:
         ])
     )
     result = await svc.poll_board()
-    assert "ITEM_1" in result["snapshot"]["TODO"]
+    assert "ITEM_1" not in result["snapshot"]["TODO"]
+
+
+@pytest.mark.asyncio
+async def test_poll_board_backlog_is_separate_from_todo() -> None:
+    """BACKLOG items must NOT be treated as TODO."""
+    svc = _initialized_svc(
+        _poll_response([
+            {
+                "id": "ITEM_1",
+                "fieldValues": {"nodes": [{"name": "BACKLOG"}]},
+                "content": {"title": "Backlog item"},
+            },
+            {
+                "id": "ITEM_2",
+                "fieldValues": {"nodes": [{"name": "Todo"}]},
+                "content": {"title": "Todo item"},
+            },
+        ])
+    )
+    result = await svc.poll_board()
+    assert "ITEM_1" in result["snapshot"]["BACKLOG"]
+    assert "ITEM_1" not in result["snapshot"]["TODO"]
+    assert "ITEM_2" in result["snapshot"]["TODO"]
 
 
 @pytest.mark.asyncio
 async def test_poll_board_content_not_dict() -> None:
-    """Non-dict content is gracefully ignored."""
+    """Non-dict content is gracefully ignored; item has unknown status and is skipped."""
     svc = _initialized_svc(
         _poll_response([{"id": "ITEM_1", "fieldValues": {"nodes": []}, "content": "bad"}])
     )
     result = await svc.poll_board()
-    assert "ITEM_1" in result["snapshot"]["TODO"]
+    assert "ITEM_1" not in result["snapshot"]["TODO"]
     assert "ITEM_1" not in result.get("titles", {})
 
 
@@ -646,3 +670,233 @@ async def test_poll_board_populates_issue_url_when_present() -> None:
     svc = _initialized_svc(_poll_response([item]))
     result = await svc.poll_board()
     assert result.get("issue_urls", {}).get("ITEM_U") == "https://github.com/acme/repo/issues/7"
+
+
+# ---------------------------------------------------------------------------
+# 042 — find_pr_for_issue (recovery for missing pr_node_id)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_find_pr_for_issue_returns_open_pr() -> None:
+    """find_pr_for_issue returns the open PR linked to the issue via Closes #N."""
+    svc = _initialized_svc({
+        "node": {
+            "closedByPullRequestsReferences": {
+                "nodes": [
+                    {"id": "PR_kwDO_1", "url": "https://github.com/acme/repo/pull/42", "state": "OPEN"},
+                ]
+            }
+        }
+    })
+    result = await svc.find_pr_for_issue("I_kwDO_issue")
+    assert result == {
+        "pr_node_id": "PR_kwDO_1",
+        "pr_url": "https://github.com/acme/repo/pull/42",
+    }
+
+
+@pytest.mark.asyncio
+async def test_find_pr_for_issue_skips_closed_prs() -> None:
+    """Closed PRs must not be returned — only OPEN PRs are recovery targets."""
+    svc = _initialized_svc({
+        "node": {
+            "closedByPullRequestsReferences": {
+                "nodes": [
+                    {"id": "PR_old", "url": "https://github.com/acme/repo/pull/1", "state": "MERGED"},
+                    {"id": "PR_new", "url": "https://github.com/acme/repo/pull/2", "state": "OPEN"},
+                ]
+            }
+        }
+    })
+    result = await svc.find_pr_for_issue("I_kwDO_issue")
+    assert result == {"pr_node_id": "PR_new", "pr_url": "https://github.com/acme/repo/pull/2"}
+
+
+@pytest.mark.asyncio
+async def test_find_pr_for_issue_returns_none_when_no_open_pr() -> None:
+    svc = _initialized_svc({
+        "node": {
+            "closedByPullRequestsReferences": {
+                "nodes": [
+                    {"id": "PR_old", "url": "https://github.com/acme/repo/pull/1", "state": "MERGED"},
+                ]
+            }
+        }
+    })
+    assert await svc.find_pr_for_issue("I_kwDO_issue") is None
+
+
+@pytest.mark.asyncio
+async def test_find_pr_for_issue_returns_none_when_no_references() -> None:
+    """Issue with no associated PRs → returns None, never raises."""
+    svc = _initialized_svc({"node": {"closedByPullRequestsReferences": {"nodes": []}}})
+    assert await svc.find_pr_for_issue("I_kwDO_issue") is None
+
+
+@pytest.mark.asyncio
+async def test_find_pr_for_issue_returns_none_when_node_missing() -> None:
+    svc = _initialized_svc({"node": None})
+    assert await svc.find_pr_for_issue("I_kwDO_issue") is None
+
+
+@pytest.mark.asyncio
+async def test_find_pr_for_issue_returns_none_for_empty_issue_id() -> None:
+    """Defensive: empty issue_node_id short-circuits without an API call —
+    avoids sending malformed queries during recovery."""
+    svc = _initialized_svc()  # no responses queued; would fail if called
+    assert await svc.find_pr_for_issue("") is None
+
+
+@pytest.mark.asyncio
+async def test_find_pr_for_issue_swallows_query_errors() -> None:
+    """Recovery is best-effort — a transient GraphQL error must return None,
+    not propagate, so the caller can decide how to handle absence."""
+    class _Failing:
+        def execute(self, _q, variable_values):
+            raise RuntimeError("graphql transient")
+    svc = GitHubService(token="tok", org="acme", project_number=1)
+    svc.project_id = "PVT_1"
+    svc._client = _Failing()
+    svc._last_token = "tok"
+    assert await svc.find_pr_for_issue("I_kwDO_issue") is None
+
+
+# ---------------------------------------------------------------------------
+# 042 — GraphQL error → permanent vs transient classification
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_unprocessable_graphql_error_classified_as_permanent() -> None:
+    """042 regression: a GraphQL UNPROCESSABLE error (e.g. branch ruleset
+    rejection on mergePullRequest) is an application-layer issue.  It
+    must be raised as PermanentGitHubError so callers can route to
+    blocked rather than retry forever."""
+    from gql.transport.exceptions import TransportQueryError
+
+    class _ErroringClient:
+        def execute(self, _q, variable_values):
+            raise TransportQueryError(
+                "merge rejected",
+                errors=[{
+                    "type": "UNPROCESSABLE",
+                    "path": ["mergePullRequest"],
+                    "message": "You're not authorized to push to this branch.",
+                }],
+            )
+
+    svc = GitHubService(token="tok", org="acme", project_number=1)
+    svc.project_id = "PVT_1"
+    svc._client = _ErroringClient()
+    svc._last_token = "tok"
+
+    with pytest.raises(PermanentGitHubError):
+        await svc._execute("query { x }", {})
+
+
+@pytest.mark.asyncio
+async def test_not_found_graphql_error_classified_as_permanent() -> None:
+    """042: NOT_FOUND errors (e.g. stale pr_node_id) won't resolve on
+    retry — classify as permanent."""
+    from gql.transport.exceptions import TransportQueryError
+
+    class _ErroringClient:
+        def execute(self, _q, variable_values):
+            raise TransportQueryError(
+                "not found",
+                errors=[{
+                    "type": "NOT_FOUND",
+                    "message": "Could not resolve to a node",
+                }],
+            )
+
+    svc = GitHubService(token="tok", org="acme", project_number=1)
+    svc.project_id = "PVT_1"
+    svc._client = _ErroringClient()
+    svc._last_token = "tok"
+
+    with pytest.raises(PermanentGitHubError):
+        await svc._execute("query { x }", {})
+
+
+@pytest.mark.asyncio
+async def test_forbidden_graphql_error_classified_as_permanent() -> None:
+    from gql.transport.exceptions import TransportQueryError
+
+    class _ErroringClient:
+        def execute(self, _q, variable_values):
+            raise TransportQueryError(
+                "forbidden",
+                errors=[{"type": "FORBIDDEN", "message": "missing scope"}],
+            )
+
+    svc = GitHubService(token="tok", org="acme", project_number=1)
+    svc.project_id = "PVT_1"
+    svc._client = _ErroringClient()
+    svc._last_token = "tok"
+
+    with pytest.raises(PermanentGitHubError):
+        await svc._execute("query { x }", {})
+
+
+@pytest.mark.asyncio
+async def test_unknown_graphql_error_type_classified_as_transient() -> None:
+    """042: GraphQL errors without a recognised permanent type (or with
+    server-side error indicators) should be transient — retry might help."""
+    from gql.transport.exceptions import TransportQueryError
+
+    class _ErroringClient:
+        def execute(self, _q, variable_values):
+            raise TransportQueryError(
+                "transient",
+                errors=[{"type": "INTERNAL", "message": "server flaked"}],
+            )
+
+    svc = GitHubService(token="tok", org="acme", project_number=1)
+    svc.project_id = "PVT_1"
+    svc._client = _ErroringClient()
+    svc._last_token = "tok"
+
+    with pytest.raises(TransientGitHubError):
+        await svc._execute("query { x }", {})
+
+
+@pytest.mark.asyncio
+async def test_permanent_error_does_not_trip_circuit_breaker() -> None:
+    """042 end-to-end regression: a permanent GraphQL error must propagate
+    through the breaker without counting as a failure — otherwise repeated
+    permanent errors (e.g., the same blocked PR being re-attempted) starve
+    every other GitHub call.  This is the actual symptom we hit on PR #88."""
+    from gql.transport.exceptions import TransportQueryError
+
+    from coordinare.resilience import CircuitBreaker, CircuitState
+
+    cb = CircuitBreaker(
+        service_name="github",
+        failure_threshold=2,
+        recovery_window=60.0,
+        observation_window=300.0,
+    )
+
+    class _ErroringClient:
+        def execute(self, _q, variable_values):
+            raise TransportQueryError(
+                "merge rejected",
+                errors=[{"type": "UNPROCESSABLE", "message": "no auth"}],
+            )
+
+    svc = GitHubService(
+        token="tok", org="acme", project_number=1, circuit_breaker=cb,
+    )
+    svc.project_id = "PVT_1"
+    svc._client = _ErroringClient()
+    svc._last_token = "tok"
+
+    # Fire 5 permanent errors — would normally trip a 2-failure breaker
+    for _ in range(5):
+        with pytest.raises(PermanentGitHubError):
+            await svc._guarded_execute("query { x }", {})
+
+    # Breaker is still CLOSED because permanent errors don't count
+    assert cb.state == CircuitState.CLOSED

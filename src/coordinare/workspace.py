@@ -179,6 +179,21 @@ class WorkspaceManager:
         self._workspace_root: Path | None = config.workspace_root
         self._agent_transport: str = config.agent_transport
 
+    async def get_fresh_github_token(self) -> str | None:
+        """Return a current GitHub token suitable for API calls.
+
+        Public accessor used by monitor_performer to push a refreshed
+        token into each check_status payload so performers don't hit
+        401s when their 1-hour App installation token expires mid-
+        session.  Prefer this over reaching into ``_auth`` directly.
+        Returns None when no credential source is configured.
+        """
+        if self._auth is not None:
+            return await self._auth.get_token()
+        if self._github_token is not None:
+            return self._github_token.get_secret_value()
+        return None
+
     def _make_git_env(self) -> dict[str, str]:
         """Return an env dict for git subprocesses.
 

@@ -384,3 +384,56 @@ async def test_prepare_raises_when_mkdtemp_fails() -> None:
 
     with patch("coordinare.workspace.tempfile.mkdtemp", side_effect=OSError("disk full")), pytest.raises(WorkspaceSetupError):
         await mgr.prepare({"id": "CARD_X", "title": "Test"})
+
+
+# ---------------------------------------------------------------------------
+# 042 — public get_fresh_github_token accessor
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_fresh_github_token_prefers_auth() -> None:
+    """The public token accessor prefers the GitHubAuth protocol when
+    configured (which supports App token refresh), falling back to the
+    static PAT only when auth is absent.  This lets monitor_performer
+    push refreshed tokens to performers without reaching into private
+    attributes."""
+    class _FakeAuth:
+        def __init__(self) -> None:
+            self.calls = 0
+        async def get_token(self) -> str:
+            self.calls += 1
+            return f"fresh-token-{self.calls}"
+
+    auth = _FakeAuth()
+    cfg = _make_config(github_token="static-pat")
+    mgr = WorkspaceManager(cfg, auth=auth)
+
+    t1 = await mgr.get_fresh_github_token()
+    t2 = await mgr.get_fresh_github_token()
+
+    # Each call goes through the auth protocol (fresh every time)
+    assert t1 == "fresh-token-1"
+    assert t2 == "fresh-token-2"
+    assert auth.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_get_fresh_github_token_falls_back_to_static_pat() -> None:
+    """When no auth protocol is configured, use the static token."""
+    cfg = _make_config(github_token="static-pat")
+    mgr = WorkspaceManager(cfg)  # no auth=
+
+    token = await mgr.get_fresh_github_token()
+    assert token == "static-pat"
+
+
+@pytest.mark.asyncio
+async def test_get_fresh_github_token_returns_none_when_no_credential() -> None:
+    """With neither auth nor static token, return None (not raise) — the
+    caller decides whether a missing credential is fatal."""
+    cfg = _make_config(github_token=None)
+    mgr = WorkspaceManager(cfg)
+
+    token = await mgr.get_fresh_github_token()
+    assert token is None

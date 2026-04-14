@@ -39,7 +39,7 @@ class _Performer:
     def __init__(self, response: dict) -> None:
         self._response = response
 
-    async def check_status(self, session_id: str) -> dict:
+    async def check_status(self, session_id: str, **kwargs: object) -> dict:
         _ = session_id
         return self._response
 
@@ -47,7 +47,7 @@ class _Performer:
 class _PerformerTransportError:
     """Raises TransportError from check_status."""
 
-    async def check_status(self, session_id: str) -> dict:
+    async def check_status(self, session_id: str, **kwargs: object) -> dict:
         raise TransportError("connection refused")
 
 

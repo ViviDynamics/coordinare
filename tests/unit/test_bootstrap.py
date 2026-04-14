@@ -47,12 +47,27 @@ class TestBuildLifecycleSequence:
             security=PerformerRoleConfig(),
             qa=PerformerRoleConfig(),
             tech_writer=PerformerRoleConfig(),
+            closer=PerformerRoleConfig(),
         )
         seq = _build_lifecycle_sequence(config)
         assert seq == [
             "advocate", "assessing", "architecting", "implementing",
-            "reviewing", "security", "qa", "documenting",
+            "reviewing", "security", "qa", "documenting", "closing_review",
         ]
+
+    def test_closer_runs_last_when_configured(self) -> None:
+        """042: The closer must always be the final stage when configured —
+        its job is the final sweep after every other performer."""
+        from coordinare.__main__ import _build_lifecycle_sequence
+
+        config = _make_config(
+            implementer=PerformerRoleConfig(),
+            qa=PerformerRoleConfig(),
+            closer=PerformerRoleConfig(),
+        )
+        seq = _build_lifecycle_sequence(config)
+        assert seq[-1] == "closing_review"
+        assert seq == ["implementing", "qa", "closing_review"]
 
     def test_roles_absent_from_config_are_excluded(self) -> None:
         from coordinare.__main__ import _build_lifecycle_sequence

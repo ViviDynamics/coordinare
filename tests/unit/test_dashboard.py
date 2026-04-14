@@ -279,6 +279,50 @@ def test_build_snapshot_active_card() -> None:
     assert snap["phase_label"] == "Monitoring Agent"
 
 
+def test_build_snapshot_performer_stage_none_coerces_to_empty_string() -> None:
+    """Copilot review: if daemon.state["performer_stage"] is explicitly
+    None (not missing), ``str(...)`` returns the literal "None" and
+    leaks into the dashboard UI as a bogus stage label.  Same bug class
+    as the notify and _build_snapshot coercion fixes earlier in this PR."""
+    store = DashboardStore()
+    daemon = _make_mock_daemon()
+    # Explicit None — the default "" in .get() does NOT fire for this.
+    daemon.state["performer_stage"] = None
+    daemon.state["active_sessions"] = {}
+    metrics = _make_mock_metrics()
+    health = _make_mock_health()
+
+    snap = store.build_snapshot(daemon, metrics, health)
+
+    assert snap["performer_stage"] == ""
+    # And NOT the literal string "None"
+    assert snap["performer_stage"] != "None"
+
+
+def test_build_snapshot_session_performer_stage_none_coerces_to_empty_string() -> None:
+    """042: Multi-card active_sessions each carry their own
+    performer_stage.  A None value there also must coerce to "" so the
+    per-session UI doesn't show "None" as an actual stage."""
+    store = DashboardStore()
+    daemon = _make_mock_daemon()
+    daemon.state["active_sessions"] = {
+        "CARD_A": {
+            "phase": "dispatching",
+            "performer_stage": None,  # explicit None
+            "current_card": {"title": "Card A"},
+        },
+    }
+    metrics = _make_mock_metrics()
+    health = _make_mock_health()
+
+    snap = store.build_snapshot(daemon, metrics, health)
+
+    sessions = snap.get("active_sessions", [])
+    assert len(sessions) == 1
+    assert sessions[0]["performer_stage"] == ""
+    assert sessions[0]["performer_stage"] != "None"
+
+
 # ---------------------------------------------------------------------------
 # T028 — record_cycle and history
 # ---------------------------------------------------------------------------
@@ -781,18 +825,18 @@ def _make_personas_app(tmp_path, config_path=None):
     return TestClient(app)
 
 
-def test_get_personas_returns_list_of_eight_roles(tmp_path) -> None:
-    """T016: GET /api/personas returns 8 roles."""
+def test_get_personas_returns_list_of_nine_roles(tmp_path) -> None:
+    """GET /api/personas returns 9 roles (042: added closer)."""
     client = _make_personas_app(tmp_path)
     res = client.get("/api/personas")
     assert res.status_code == 200
     data = res.json()
     assert isinstance(data, list)
-    assert len(data) == 8
+    assert len(data) == 9
     roles = {p["role"] for p in data}
     assert roles == {
         "advocate", "assessor", "architect", "implementer",
-        "reviewer", "security", "qa", "tech_writer",
+        "reviewer", "security", "qa", "tech_writer", "closer",
     }
 
 

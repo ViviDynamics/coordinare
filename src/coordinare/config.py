@@ -151,7 +151,7 @@ class PersonaConfig(BaseModel):
 
 
 class PersonasConfig(BaseModel):
-    """Container for all eight role personas."""
+    """Container for all nine role personas."""
 
     advocate: PersonaConfig = Field(default_factory=PersonaConfig)
     assessor: PersonaConfig = Field(default_factory=PersonaConfig)
@@ -161,6 +161,7 @@ class PersonasConfig(BaseModel):
     security: PersonaConfig = Field(default_factory=PersonaConfig)
     qa: PersonaConfig = Field(default_factory=PersonaConfig)
     tech_writer: PersonaConfig = Field(default_factory=PersonaConfig)
+    closer: PersonaConfig = Field(default_factory=PersonaConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -256,6 +257,7 @@ class PerformersConfig(BaseModel):
     security: PerformerRoleConfig | None = None
     qa: PerformerRoleConfig | None = None
     tech_writer: PerformerRoleConfig | None = None
+    closer: PerformerRoleConfig | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -415,6 +417,7 @@ class ProjectConfiguration(BaseSettings):
     performer_image: str = "coordinare-performer:full"
 
     human_reviewers: list[str]
+    trusted_bot_reviewers: list[str] = Field(default_factory=list)  # bot logins whose reviews are actionable
 
     poll_interval_seconds: int = Field(default=30, ge=0, le=3600)
     webhooks: WebhookConfig = Field(default_factory=WebhookConfig)

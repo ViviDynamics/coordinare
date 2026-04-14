@@ -239,13 +239,20 @@ class DashboardStore:
         active_sessions_raw = daemon.state.get("active_sessions") or {}
         active_session_count = len(active_sessions_raw)
         active_session_summaries = []
+        # Coerce performer_stage to "" when None / non-string before
+        # stringifying — ``str(None)`` returns the literal "None" which
+        # would then show up as a real stage label in the UI and break
+        # the stage-progress calculation. Same bug class as the notify
+        # and _build_snapshot fixes in this PR.
         for sid, sess in active_sessions_raw.items():
             sess_card = sess.get("current_card") or {}
+            _sess_raw_stage = sess.get("performer_stage")
+            _sess_stage = _sess_raw_stage if isinstance(_sess_raw_stage, str) else ""
             active_session_summaries.append({
                 "card_id": sid,
                 "card_title": str(sess_card.get("title", "")),
                 "phase": str(sess.get("phase", "idle")),
-                "performer_stage": str(sess.get("performer_stage", "")),
+                "performer_stage": _sess_stage,
                 "card_tokens_total": sess.get("card_tokens_total", 0),
                 "card_cost_estimate": sess.get("card_cost_estimate", 0.0),
             })
@@ -267,6 +274,12 @@ class DashboardStore:
             "card_clarifications": card_clarifications,
             "performer_events": performer_events,
             "performer_metrics": performer_metrics,
+            "performer_stage": (
+                _top_performer_stage
+                if isinstance((_top_performer_stage := daemon.state.get("performer_stage")), str)
+                else ""
+            ),
+            "lifecycle_sequence": list(daemon.state.get("lifecycle_sequence") or []),
             "performer_backend": performer_backend,
             "performer_logs": performer_logs,
             "card_tokens_total": daemon.state.get("card_tokens_total", 0),
@@ -929,12 +942,16 @@ function updatePerformers(s) {
   var dotCls = isActive ? 'perf-dot perf-running' : 'perf-dot perf-idle';
   var age = (isActive && s.agent_dispatch_at) ? fmtAge(s.agent_dispatch_at) : '—';
   var sessionShort = s.agent_session_id ? s.agent_session_id.slice(0, 8) + '…' : '—';
+  var stage = s.performer_stage || '';
+  var lifecycle = s.lifecycle_sequence || [];
+  var stageIdx = lifecycle.indexOf(stage);
+  var stageLabel = stage ? (stage + (stageIdx >= 0 ? ' (' + (stageIdx + 1) + '/' + lifecycle.length + ')' : '')) : '—';
   var listEl = document.getElementById('perf-list');
   listEl.innerHTML =
     '<div class="perf-list-row" onclick="showPerfDetail()">' +
       '<span class="' + dotCls + '"></span>' +
-      '<span class="badge badge-required">' + esc(backend) + '</span>' +
-      '<span style="font-size:12px;color:#8b949e">' + esc(sessionShort) + '</span>' +
+      '<span class="badge badge-required">' + esc(stageLabel) + '</span>' +
+      '<span style="font-size:12px;color:#8b949e">' + esc(backend) + '</span>' +
       '<span style="font-size:12px;color:#58a6ff">' + esc(age) + '</span>' +
       '<span class="perf-list-chevron">&#8250;</span>' +
     '</div>';
@@ -949,9 +966,9 @@ function updatePerformers(s) {
   var dot = document.getElementById('perf-dot');
   dot.className = 'perf-dot ' + (isActive ? 'perf-running' : 'perf-idle');
 
-  // Backend badge + session + uptime
+  // Stage + Backend badge + session + uptime
   var backend = s.performer_backend || 'performer';
-  document.getElementById('perf-backend').textContent = backend;
+  document.getElementById('perf-backend').textContent = stageLabel + ' — ' + backend;
   document.getElementById('perf-session').textContent = s.agent_session_id || '—';
   document.getElementById('perf-age').textContent =
     (isActive && s.agent_dispatch_at) ? (fmtAge(s.agent_dispatch_at) || '—') : '—';

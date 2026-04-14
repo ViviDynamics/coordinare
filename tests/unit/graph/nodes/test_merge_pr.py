@@ -105,3 +105,81 @@ async def test_merge_pr_blocks_when_not_mergeable() -> None:
 
     assert result["phase"] == "blocked"
     assert any("merge conflicts" in q for q in result["open_questions"])
+
+
+# ---------------------------------------------------------------------------
+# 042 — PermanentGitHubError must NOT loop; surface to operator via blocked
+# ---------------------------------------------------------------------------
+
+
+class _GitHubSquashMergePermanent:
+    """Simulates a 422 UNPROCESSABLE from GitHub on squash_merge — e.g.,
+    the App lacks ruleset bypass permission ("not authorized to push")."""
+
+    async def check_mergeability(self, pr_id: str):
+        return {"mergeable": True}
+
+    async def squash_merge(self, pr_id: str):
+        from coordinare.services.github import PermanentGitHubError
+        raise PermanentGitHubError("You're not authorized to push to this branch.")
+
+
+@pytest.mark.asyncio
+async def test_merge_pr_blocks_on_squash_permanent_error() -> None:
+    """042 regression: a permanent error from squash_merge must transition
+    to ``blocked`` (not loop back to ``merging``).  Otherwise the coordinare
+    retries the same call every cycle until the breaker trips, blocking
+    every other GitHub call in the process."""
+    state = initial_state()
+    state["github_service"] = _GitHubSquashMergePermanent()
+    state["current_card"] = {"id": "ITEM_1", "pr_node_id": "PR_1", "status": "IN_REVIEW"}
+
+    result = await merge_pr(state)
+
+    assert result["phase"] == "blocked"
+    assert result["open_questions"]
+    # The actual GitHub error message must surface so the operator can act
+    assert any("authorized" in q.lower() for q in result["open_questions"])
+
+
+class _GitHubMergeabilityPermanent:
+    async def check_mergeability(self, pr_id: str):
+        from coordinare.services.github import PermanentGitHubError
+        raise PermanentGitHubError("Could not resolve to a node with the global id of 'PR_bad'")
+
+
+@pytest.mark.asyncio
+async def test_merge_pr_blocks_on_check_mergeability_permanent_error() -> None:
+    """042: A permanent error from check_mergeability (e.g. NOT_FOUND from
+    a stale pr_node_id) must also transition to blocked, not loop."""
+    state = initial_state()
+    state["github_service"] = _GitHubMergeabilityPermanent()
+    state["current_card"] = {"id": "ITEM_1", "pr_node_id": "PR_bad", "status": "IN_REVIEW"}
+
+    result = await merge_pr(state)
+
+    assert result["phase"] == "blocked"
+    assert result["open_questions"]
+
+
+class _GitHubSquashMergeTransient:
+    async def check_mergeability(self, pr_id: str):
+        return {"mergeable": True}
+
+    async def squash_merge(self, pr_id: str):
+        raise RuntimeError("network blip")
+
+
+@pytest.mark.asyncio
+async def test_merge_pr_loops_on_transient_squash_error() -> None:
+    """042: Transient errors (network blips, 5xx) STILL retry — only
+    PermanentGitHubError exits the loop.  This protects us from short
+    GitHub outages while preventing infinite loops on auth issues."""
+    state = initial_state()
+    state["github_service"] = _GitHubSquashMergeTransient()
+    state["current_card"] = {"id": "ITEM_1", "pr_node_id": "PR_1", "status": "IN_REVIEW"}
+
+    result = await merge_pr(state)
+
+    # Stays in merging to retry on the next cycle
+    assert result["phase"] == "merging"

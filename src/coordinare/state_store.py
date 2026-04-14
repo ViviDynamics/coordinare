@@ -52,6 +52,7 @@ class WorkflowSnapshot(BaseModel):
     active_card_issue_id: str | None = None
     last_blocked_notified_at: datetime | None = None
     lifecycle_completed_at: datetime | None = None
+    processed_review_ids: list[str] = Field(default_factory=list)  # stored as list, used as set
 
 
 class StateLoadError(ValueError):

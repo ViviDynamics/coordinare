@@ -17,7 +17,12 @@ from coordinare.models.notification import NotificationEvent
 
 @pytest.mark.asyncio
 async def test_notify_includes_pr_url_in_payload_when_set() -> None:
-    """pr_url on the card is forwarded into the notification payload."""
+    """pr_url on the card is forwarded into the notification payload.
+
+    Uses a card_dispatched scenario rather than the merging phase because
+    042 fixed the bug where merging phase fired notifications without a
+    real merge — see test_notify_merging_phase_without_commit_summary_does_not_fire.
+    """
     state = initial_state()
     state["current_card"] = {
         "id": "card-42",
@@ -26,7 +31,7 @@ async def test_notify_includes_pr_url_in_payload_when_set() -> None:
         "previous_status": "TODO",
         "pr_url": "https://github.com/org/repo/pull/99",
     }
-    state["phase"] = "merging"
+    state["phase"] = "dispatching"
 
     dispatched: list[NotificationEvent] = []
 

@@ -138,6 +138,17 @@ class TestScore:
         assert s.acceptance_criteria == []
         assert s.base_branch == ""
 
+    def test_score_accepts_issue_number_and_issue_url(self) -> None:
+        s = Score(
+            title="T",
+            repo_url="https://github.com/org/repo",
+            branch="main",
+            issue_number=42,
+            issue_url="https://github.com/org/repo/issues/42",
+        )
+        assert s.issue_number == 42
+        assert s.issue_url == "https://github.com/org/repo/issues/42"
+
 
 class TestStand:
     def test_holds_fields(self) -> None:

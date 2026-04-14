@@ -112,20 +112,32 @@ class CoordinareDaemon:
         raw_clarifications = self._state.get("card_clarifications")
         clarifications = list(raw_clarifications) if isinstance(raw_clarifications, list) else []
         last_notified = self._state.get("last_blocked_notified_at")
+
+        # Coerce a value to a non-empty string or None.  Critical: ``str(None)``
+        # returns the literal string ``"None"`` which then survives the
+        # ``or None`` guard because it's truthy — that bug previously wrote
+        # ``"pr_url": "None"`` into the snapshot, breaking PR lookups on
+        # restart.  Convert None/empty to None FIRST, then stringify.
+        def _str_or_none(value: Any) -> str | None:
+            if value is None or value == "":
+                return None
+            return str(value)
+
         return WorkflowSnapshot(
             snapshot_at=datetime.now(UTC),
             phase=self._state.get("phase", "idle"),
-            active_card_id=str(card_dict.get("id", "")) or None if card_dict else None,
-            active_card_title=str(card_dict.get("title", "")) or None if card_dict else None,
-            active_card_column=str(card_dict.get("status", "")) or None if card_dict else None,
-            active_card_issue_id=str(card_dict.get("issue_id", "")) or None if card_dict else None,
-            pr_url=str(card_dict.get("pr_url", "")) or None if card_dict else None,
-            pr_node_id=str(card_dict.get("pr_node_id", "")) or None if card_dict else None,
-            agent_session_id=str(dispatch_dict.get("session_id", "")) or None if dispatch_dict else None,
+            active_card_id=_str_or_none(card_dict.get("id")) if card_dict else None,
+            active_card_title=_str_or_none(card_dict.get("title")) if card_dict else None,
+            active_card_column=_str_or_none(card_dict.get("status")) if card_dict else None,
+            active_card_issue_id=_str_or_none(card_dict.get("issue_id")) if card_dict else None,
+            pr_url=_str_or_none(card_dict.get("pr_url")) if card_dict else None,
+            pr_node_id=_str_or_none(card_dict.get("pr_node_id")) if card_dict else None,
+            agent_session_id=_str_or_none(dispatch_dict.get("session_id")) if dispatch_dict else None,
             open_questions=questions,
             card_clarifications=clarifications,
             last_blocked_notified_at=last_notified if isinstance(last_notified, datetime) else None,
             lifecycle_completed_at=self._state.get("lifecycle_completed_at") if isinstance(self._state.get("lifecycle_completed_at"), datetime) else None,
+            processed_review_ids=sorted(self._state.get("processed_review_ids") or set()),
         )
 
     def _restore_from_snapshot(self, snapshot: WorkflowSnapshot) -> None:
@@ -134,6 +146,7 @@ class CoordinareDaemon:
         self._state["card_clarifications"] = list(snapshot.card_clarifications)
         self._state["last_blocked_notified_at"] = snapshot.last_blocked_notified_at
         self._state["lifecycle_completed_at"] = snapshot.lifecycle_completed_at
+        self._state["processed_review_ids"] = set(snapshot.processed_review_ids)
         if snapshot.active_card_id:
             self._state["current_card"] = {
                 "id": snapshot.active_card_id,

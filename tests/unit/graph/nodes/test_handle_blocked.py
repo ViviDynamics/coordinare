@@ -178,8 +178,17 @@ async def test_handle_blocked_uses_assessment_questions_when_provided() -> None:
 
 
 @pytest.mark.asyncio
-async def test_handle_blocked_does_not_update_notification_time_if_recent() -> None:
-    """If last_blocked_notified_at is recent, it is NOT updated again."""
+async def test_handle_blocked_does_not_repost_comment_if_recent() -> None:
+    """042: If last_blocked_notified_at is recent (within reminder window),
+    we MUST NOT re-post the reminder comment (avoid spam) — but the
+    cutoff timestamp itself is still advanced to ``now`` so check_board
+    won't mistake old comments for fresh user answers and trigger an
+    infinite blocked → dispatch loop.
+
+    This used to assert the timestamp was NOT updated; that turned out to
+    be the source of the dispatch-loop bug surfaced on PR #88's blocked
+    state.  See handle_blocked.py docstring for the full reasoning.
+    """
     from datetime import UTC, datetime, timedelta
 
     recent = datetime.now(UTC) - timedelta(hours=1)
@@ -194,5 +203,63 @@ async def test_handle_blocked_does_not_update_notification_time_if_recent() -> N
     result = await handle_blocked(state)
 
     assert result["phase"] == "blocked"
-    # Notification time should NOT have been advanced (it was recent)
-    assert result["last_blocked_notified_at"] == recent
+    # Reminder comment NOT re-posted (within 24h window)
+    assert github.comment_body is None
+    # But cutoff timestamp DID advance — this is what breaks the loop
+    assert result["last_blocked_notified_at"] is not None
+    assert result["last_blocked_notified_at"] > recent
+
+
+@pytest.mark.asyncio
+async def test_handle_blocked_advances_cutoff_even_on_stale_state() -> None:
+    """042 regression: a stale ``last_blocked_notified_at`` from a saved
+    snapshot (e.g., daemon restarted hours after blocking) must still
+    advance to ``now`` so check_board doesn't treat the bot's own old
+    reminder comments as fresh user answers and dispatch the card.
+
+    Direct reproduction of the PR #88 dispatch loop:
+      - Saved state had last_blocked_notified_at = 12:52
+      - merge_pr permanent error re-entered blocked at 14:16
+      - handle_blocked posted a new reminder at 14:16
+      - Without advancing the cutoff, check_board saw the 14:16 bot
+        comment as "newer than 12:52" → dispatched
+    """
+    from datetime import UTC, datetime, timedelta
+
+    stale = datetime.now(UTC) - timedelta(hours=2)  # > reminder window? still
+    github = _GitHubFallback()
+    state = initial_state()
+    state["github_service"] = github
+    state["current_card"] = {"id": "ITEM_1", "issue_id": "ISSUE_1"}
+    state["open_questions"] = ["Cannot merge — ruleset blocks the App"]
+    state["last_blocked_notified_at"] = stale
+    state["blocked_reminder_hours"] = 24  # 2h < 24h, so no re-post
+
+    result = await handle_blocked(state)
+
+    # Cutoff advanced → check_board won't mis-detect old bot comments as answers
+    assert result["last_blocked_notified_at"] > stale
+    # And no spam comment posted
+    assert github.comment_body is None
+
+
+@pytest.mark.asyncio
+async def test_handle_blocked_reposts_comment_after_reminder_window() -> None:
+    """042: After the reminder window elapses, the comment IS re-posted
+    (so users get a nudge if they've forgotten about the blocked card)."""
+    from datetime import UTC, datetime, timedelta
+
+    very_old = datetime.now(UTC) - timedelta(hours=48)  # > 24h
+    github = _GitHubFallback()
+    state = initial_state()
+    state["github_service"] = github
+    state["current_card"] = {"id": "ITEM_1", "issue_id": "ISSUE_1"}
+    state["open_questions"] = ["Clarify scope"]
+    state["last_blocked_notified_at"] = very_old
+    state["blocked_reminder_hours"] = 24
+
+    result = await handle_blocked(state)
+
+    assert github.comment_body is not None
+    assert "Needs input" in github.comment_body
+    assert result["last_blocked_notified_at"] > very_old

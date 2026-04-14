@@ -15,6 +15,7 @@ from performer.backends.base import BackendStatus
 from performer.config import Settings, get_settings
 from performer.github import GitHubAPIError
 from performer.main import (
+    _doc_folder,
     collect_metrics,
     handle_dispatch,
     handle_health,
@@ -829,16 +830,17 @@ class TestArchitectPerformer:
             resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
 
         assert resp.status == "plan_committed"
-        assert resp.plan_path == "docs/coordinare-architecture.md"
+        assert resp.plan_path == "docs/cards/test-card/plan.md"
         assert perf.state == "plan_committed"
-        assert perf.plan_path == "docs/coordinare-architecture.md"
+        assert perf.plan_path == "docs/cards/test-card/plan.md"
 
     @pytest.mark.asyncio
     async def test_architect_commits_plan_to_correct_path(self) -> None:
-        """commit_file is called with the configured plan path."""
+        """commit_file is called with the issue-specific plan path."""
         perf = self._make_perf(role="architecting")
+        perf.score.issue_number = 42
         perf.backend.get_status.return_value = BackendStatus(state="done", output="plan content")
-        settings = Settings(AGENT_BACKEND="opencode", AGENT_TIMEOUT=1800, PLAN_FILE_PATH="docs/my-plan.md")
+        settings = Settings(AGENT_BACKEND="opencode", AGENT_TIMEOUT=1800)
 
         mock_commit = AsyncMock()
         with patch("performer.main.commit_file", new=mock_commit):
@@ -846,8 +848,8 @@ class TestArchitectPerformer:
 
         mock_commit.assert_called_once()
         call_args = mock_commit.call_args
-        assert call_args[0][1] == "docs/my-plan.md"  # path argument
-        assert call_args[0][2] == "plan content"  # content argument
+        assert call_args[0][1] == "docs/cards/42-test-card/plan.md"
+        assert call_args[0][2] == "plan content"
 
     @pytest.mark.asyncio
     async def test_implementer_still_produces_pr_opened(self) -> None:
@@ -1087,6 +1089,26 @@ class TestReviewerPerformer:
         assert mock_post.call_args.kwargs.get("event") == "COMMENT"
 
     @pytest.mark.asyncio
+    async def test_reviewer_approved_body_has_no_suggestions(self) -> None:
+        """When approved with suggestions, the posted review body must NOT contain suggestions."""
+        import json
+        perf = self._make_perf()
+        output = json.dumps({"approved": True, "body": "Looks good", "suggestions": ["do X"]})
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+        settings = Settings(AGENT_BACKEND="opencode", AGENT_TIMEOUT=1800)
+
+        mock_post = AsyncMock(return_value={})
+        with patch("performer.main.post_pull_request_review", new=mock_post), \
+             patch("performer.main.resolve_pr_review_threads", new=AsyncMock(return_value=0)):
+            await handle_status(_msg("status", session_id="sid"), perf, settings)
+
+        mock_post.assert_called_once()
+        posted_body = mock_post.call_args.kwargs.get("body", "")
+        assert "Suggestions" not in posted_body
+        assert "non-blocking" not in posted_body
+        assert posted_body == "**Bot Review: APPROVED**\n\nLooks good"
+
+    @pytest.mark.asyncio
     async def test_reviewer_changes_requested_returns_comments(self) -> None:
         """Reviewer with changes returns changes_requested with comments."""
         import json
@@ -1145,6 +1167,57 @@ class TestReviewerPerformer:
 
         resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
         assert resp.status == "approved"
+
+    @pytest.mark.asyncio
+    async def test_closing_review_role_uses_reviewer_path(self) -> None:
+        """042: The 'closing_review' role flows through the same code as
+        'reviewing' — same JSON parsing, same review post, same thread
+        resolution on approval. Only the persona instructions differ."""
+        import json
+        perf = self._make_perf(role="closing_review")
+        output = json.dumps({
+            "approved": True,
+            "body": "All prior threads addressed by subsequent commits.",
+            "comments": [],
+        })
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+        settings = Settings(AGENT_BACKEND="opencode", AGENT_TIMEOUT=1800)
+
+        mock_post = AsyncMock(return_value={})
+        mock_resolve = AsyncMock(return_value=2)
+        with patch("performer.main.post_pull_request_review", new=mock_post), \
+             patch("performer.main.resolve_pr_review_threads", new=mock_resolve):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
+
+        assert resp.status == "approved"
+        mock_post.assert_called_once()
+        # Closer must resolve threads on approval — that's its core purpose.
+        mock_resolve.assert_called_once()
+        assert perf.state == "approved"
+
+    @pytest.mark.asyncio
+    async def test_closing_review_changes_requested_does_not_resolve_threads(self) -> None:
+        """042: When the closer determines prior feedback is unresolved,
+        it must NOT resolve threads — that would mask the unaddressed work."""
+        import json
+        perf = self._make_perf(role="closing_review")
+        output = json.dumps({
+            "approved": False,
+            "comments": [{"file": "a.py", "line": 5, "body": "Copilot's concern about sizes still unaddressed"}],
+            "body": "One prior thread remains unfixed.",
+        })
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+        settings = Settings(AGENT_BACKEND="opencode", AGENT_TIMEOUT=1800, REVIEWER_MAX_CYCLES=3)
+
+        mock_post = AsyncMock(return_value={})
+        mock_resolve = AsyncMock(return_value=0)
+        with patch("performer.main.post_pull_request_review", new=mock_post), \
+             patch("performer.main.resolve_pr_review_threads", new=mock_resolve):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
+
+        assert resp.status == "changes_requested"
+        mock_post.assert_called_once()
+        mock_resolve.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_changes_requested_is_terminal(self) -> None:
@@ -1324,7 +1397,10 @@ class TestQAPerformer:
         with patch("performer.main.commit_file", new=mock_commit):
             resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
         assert resp.status == "qa_passed"
-        mock_commit.assert_called_once()
+        # commit_file called twice: once for the test file, once for the QA report
+        assert mock_commit.call_count == 2
+        assert mock_commit.call_args_list[0][0][1] == "tests/test_new.py"
+        assert "qa.md" in mock_commit.call_args_list[1][0][1]
         assert resp.report["new_tests_added"] == 1
 
     @pytest.mark.asyncio
@@ -1352,7 +1428,8 @@ class TestQAPerformer:
         with patch("performer.main.commit_file", new=mock_commit):
             resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
         assert resp.status == "qa_passed"
-        mock_commit.assert_called_once()
+        # commit_file called twice: once for the test file, once for the QA report
+        assert mock_commit.call_count == 2
         assert perf.qa_new_tests == ["tests/test_empty.py"]
 
     @pytest.mark.asyncio
@@ -1576,3 +1653,146 @@ class TestAssessorRole:
         resp = await handle_status(_msg("status", session_id="sid"), perf)
 
         assert resp.status == "assessment_complete"
+
+
+# ---------------------------------------------------------------------------
+# _doc_folder unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestDocFolder:
+    def test_doc_folder_with_issue_number(self) -> None:
+        score = Score(
+            title="My Feature",
+            issue_number=42,
+            repo_url="https://github.com/org/repo",
+            branch="main",
+        )
+        assert _doc_folder(score) == "docs/cards/42-my-feature"
+
+    def test_doc_folder_empty_slug_fallback(self) -> None:
+        score = Score(
+            title="!!!",
+            issue_number=0,
+            repo_url="https://github.com/org/repo",
+            branch="main",
+        )
+        assert _doc_folder(score) == "docs/cards/untitled"
+
+    def test_doc_folder_long_title_truncated(self) -> None:
+        score = Score(
+            title="A very long title that exceeds twenty characters",
+            issue_number=5,
+            repo_url="https://github.com/org/repo",
+            branch="main",
+        )
+        result = _doc_folder(score)
+        # Folder format: docs/cards/{issue_number}-{slug}
+        slug = result.split("/")[-1].split("-", 1)[1]  # remove issue number prefix
+        assert len(slug) <= 20
+
+
+# ---------------------------------------------------------------------------
+# Architect — plan/tasks split
+# ---------------------------------------------------------------------------
+
+
+class TestArchitectSplitPlanAndTasks:
+    @pytest.mark.asyncio
+    async def test_architect_splits_plan_and_tasks(self) -> None:
+        """When backend output contains ---TASKS--- separator, commit_file is called twice."""
+        stand = Stand(path=Path("/tmp/fake"), branch="feat/test")
+        stand.git_env = {}
+        score = Score(
+            title="Test card",
+            repo_url="https://github.com/acme/repo",
+            branch="feat/test",
+            issue_number=10,
+        )
+        perf = Performance(
+            session_id="sid",
+            stand=stand,
+            score=score,
+            backend=MagicMock(),
+            role="architecting",
+        )
+        backend_output = "# Plan\nThis is the plan content.\n---TASKS---\n# Tasks\n- [ ] Do thing"
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=backend_output)
+        settings = Settings(AGENT_BACKEND="opencode", AGENT_TIMEOUT=1800)
+
+        mock_commit = AsyncMock()
+        with patch("performer.main.commit_file", new=mock_commit):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
+
+        assert resp.status == "plan_committed"
+        assert mock_commit.call_count == 2
+
+        # First call: plan.md
+        plan_path = mock_commit.call_args_list[0][0][1]
+        plan_content = mock_commit.call_args_list[0][0][2]
+        assert plan_path.endswith("plan.md")
+        assert "---TASKS---" not in plan_content
+        assert "# Plan" in plan_content
+
+        # Second call: tasks.md
+        tasks_path = mock_commit.call_args_list[1][0][1]
+        tasks_content = mock_commit.call_args_list[1][0][2]
+        assert tasks_path.endswith("tasks.md")
+        assert "# Tasks" in tasks_content
+
+
+# ---------------------------------------------------------------------------
+# Assessor — commits assessment.md
+# ---------------------------------------------------------------------------
+
+
+class TestAssessorCommitsAssessment:
+    @pytest.mark.asyncio
+    async def test_assessor_commits_assessment(self) -> None:
+        """When assessment is sufficient, commit_file is called with assessment.md."""
+        perf = _make_perf(session_id="sid")
+        perf.role = "assessing"
+        output = json.dumps({"sufficient": True, "questions": []})
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+
+        mock_commit = AsyncMock()
+        with patch("performer.main.commit_file", new=mock_commit):
+            resp = await handle_status(_msg("status", session_id="sid"), perf)
+
+        assert resp.status == "assessment_complete"
+        assert mock_commit.call_count == 1
+        committed_path = mock_commit.call_args[0][1]
+        assert "assessment.md" in committed_path
+
+
+# ---------------------------------------------------------------------------
+# Tech writer — extract JSON from prose with code fence
+# ---------------------------------------------------------------------------
+
+
+class TestTechWriterExtractJson:
+    @pytest.mark.asyncio
+    async def test_tech_writer_extract_json(self) -> None:
+        """Backend output with prose and embedded JSON code block is parsed correctly."""
+        stand = Stand(path=Path("/tmp/fake"), branch="feat/test")
+        stand.git_env = {}
+        score = Score(
+            title="Test card",
+            repo_url="https://github.com/acme/repo",
+            branch="feat/test",
+        )
+        perf = Performance(
+            session_id="sid",
+            stand=stand,
+            score=score,
+            backend=MagicMock(),
+            role="documenting",
+        )
+        backend_output = 'Here is the doc output:\n```json\n{"files": []}\n```'
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=backend_output)
+        settings = Settings(AGENT_BACKEND="opencode", AGENT_TIMEOUT=1800)
+
+        with patch("performer.main.commit_file", new=AsyncMock()):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
+
+        assert resp.status == "docs_committed"

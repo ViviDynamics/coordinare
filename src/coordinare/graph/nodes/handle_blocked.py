@@ -98,27 +98,52 @@ async def handle_blocked(state: CoordinareState) -> CoordinareState:
         "security": "🔒 Security",
         "qa": "🧪 QA",
         "documenting": "📝 Tech Writer",
+        "closing_review": "✅ Closer",
     }
     stage = state.get("performer_stage", "assessing")
     role_label = role_labels.get(stage, f"🤖 {stage}")
-
-    if issue_id:
-        try:
-            await github.add_comment(issue_id, f"**{role_label}** — Needs input:\n{question_lines}")
-        except Exception as exc:
-            logger.warning("handle_blocked.add_comment_failed", card_id=card_id, error=str(exc))
-    else:
-        logger.warning(
-            "handle_blocked.no_issue_id",
-            card_id=card_id,
-            msg="Card has no linked issue (draft item?) — skipping comment",
-        )
 
     raw_hours = state.get("blocked_reminder_hours", 24)
     hours = raw_hours if isinstance(raw_hours, int) else 24
     now = datetime.now(UTC)
     last = state.get("last_blocked_notified_at")
-    if last is None or (isinstance(last, datetime) and now - last >= timedelta(hours=hours)):
-        state["last_blocked_notified_at"] = now
+
+    # 042: ``last_blocked_notified_at`` does double duty as (1) the cutoff
+    # check_board uses to detect new user answers ("any comment newer than
+    # this is an answer") and (2) the gate for re-posting the reminder
+    # comment every 24h.  We must update (1) on EVERY pass through this
+    # node so check_board doesn't mistake old comments — including the
+    # bot's own previous reminders — for fresh user answers and trigger
+    # a dispatch loop.  Comment posting (2) is independently gated so we
+    # don't spam the issue.
+    should_repost_reminder = last is None or (
+        isinstance(last, datetime) and now - last >= timedelta(hours=hours)
+    )
+
+    if should_repost_reminder:
+        if issue_id:
+            try:
+                await github.add_comment(
+                    issue_id, f"**{role_label}** — Needs input:\n{question_lines}",
+                )
+            except Exception as exc:
+                logger.warning(
+                    "handle_blocked.add_comment_failed",
+                    card_id=card_id, error=str(exc),
+                )
+        else:
+            logger.warning(
+                "handle_blocked.no_issue_id",
+                card_id=card_id,
+                msg="Card has no linked issue (draft item?) — skipping comment",
+            )
+
+    # Always advance the cutoff timestamp — see comment above.  Stale
+    # cutoffs from a previous blocked round (or from a saved snapshot
+    # restored after restart) cause check_board to re-dispatch the card
+    # on the bot's own comments, producing an infinite blocked → dispatch
+    # → blocked loop.
+    state["last_blocked_notified_at"] = now
+
     state["phase"] = "blocked"
     return state

@@ -551,6 +551,7 @@ async def _bootstrap_services(
         "assessment_backend": assessment_backend,
         "notification_service": notification_service,
         "human_reviewers": config.human_reviewers,
+        "trusted_bot_reviewers": config.trusted_bot_reviewers,
         "blocked_reminder_hours": config.blocked_reminder_hours,
         "workspace_manager": workspace_manager,
         "performer_services": performer_services,

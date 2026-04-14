@@ -340,6 +340,11 @@ async def classify_human_feedback(state: CoordinareState) -> CoordinareState:
         state["current_card"] = card
 
     # Store feedback for the dispatch node to relay (FR-010).
+    # Mark review IDs as processed NOW (after relay is committed to state),
+    # not in monitor_pr (where a crash before dispatch would skip them).
+    processed_ids: set[str] = state.get("processed_review_ids") or set()
+    new_ids = {str(r.get("id", "")) for r in pending_reviews if isinstance(r, dict) and r.get("id")}
+    state["processed_review_ids"] = processed_ids | new_ids
     state["relay_feedback"] = pending_reviews  # type: ignore[typeddict-unknown-key]
     state["pending_reviews"] = []
     state["performer_stage"] = target_stage

@@ -60,8 +60,8 @@ class AgentService:
             logger.warning("check_health_transport_error", error=str(exc))
             return {"status": "unknown", "reason": str(exc)}
 
-    async def check_status(self, session_id: str) -> dict[str, Any]:
-        message = ProtocolMessage(action="status", session_id=session_id)
+    async def check_status(self, session_id: str, *, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        message = ProtocolMessage(action="status", session_id=session_id, payload=payload or {})
         try:
             response: ProtocolResponse = await self._transport.send(message)
             return response.model_dump()

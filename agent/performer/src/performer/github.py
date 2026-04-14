@@ -274,10 +274,16 @@ async def resolve_pr_review_threads(
     pr_number: int,
     token: str,
 ) -> int:
-    """Resolve all unresolved review threads on a PR.
+    """Resolve all unresolved review threads on a PR, regardless of comment author.
 
     Called by the reviewer after verifying that implementer fixes address
-    the feedback. Returns the number of threads resolved.
+    the feedback. Outdated threads (where the referenced code has changed)
+    are treated identically to live threads. Threads from any author —
+    humans, the coordinare bot, or other bots like Copilot — are all closed.
+
+    Returns the number of threads successfully resolved. GraphQL errors are
+    logged with the thread ID and first comment author so silent failures
+    are visible in operations.
     """
     _require_token(token, "resolve_pr_review_threads")
     graphql_url = "https://api.github.com/graphql"
@@ -291,7 +297,12 @@ async def resolve_pr_review_threads(
       repository(owner: $owner, name: $repo) {
         pullRequest(number: $pr) {
           reviewThreads(first: 100) {
-            nodes { id isResolved }
+            nodes {
+              id
+              isResolved
+              isOutdated
+              comments(first: 1) { nodes { author { login } } }
+            }
           }
         }
       }
@@ -303,12 +314,17 @@ async def resolve_pr_review_threads(
             "variables": {"owner": owner, "repo": repo, "pr": pr_number},
         })
     if not resp.is_success:
-        log.warning("resolve_threads.fetch_failed", status=resp.status_code)
+        log.warning("resolve_threads.fetch_failed", status=resp.status_code, body=resp.text[:200])
         return 0
 
-    data = resp.json().get("data", {})
+    payload = resp.json()
+    if payload.get("errors"):
+        log.warning("resolve_threads.fetch_graphql_errors", errors=payload["errors"])
+        return 0
+
     threads = (
-        data.get("repository", {})
+        payload.get("data", {})
+        .get("repository", {})
         .get("pullRequest", {})
         .get("reviewThreads", {})
         .get("nodes", [])
@@ -317,21 +333,67 @@ async def resolve_pr_review_threads(
     if not unresolved:
         return 0
 
+    def _first_author(thread: dict) -> str:  # type: ignore[type-arg]
+        nodes = (thread.get("comments") or {}).get("nodes") or []
+        if nodes and isinstance(nodes[0], dict):
+            author = nodes[0].get("author") or {}
+            return str(author.get("login", "unknown"))
+        return "unknown"
+
     resolved = 0
-    mutation = "mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { isResolved } } }"
+    failed: list[dict] = []  # type: ignore[type-arg]
+    mutation = (
+        "mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) "
+        "{ thread { id isResolved } } }"
+    )
     async with httpx.AsyncClient(timeout=30) as client:
         for thread in unresolved:
+            tid = thread.get("id", "")
+            author = _first_author(thread)
+            outdated = bool(thread.get("isOutdated"))
             try:
                 resp = await client.post(graphql_url, headers=headers, json={
                     "query": mutation,
-                    "variables": {"id": thread["id"]},
+                    "variables": {"id": tid},
                 })
-                if resp.is_success:
-                    resolved += 1
-            except Exception:
-                pass
+            except Exception as exc:
+                failed.append({"id": tid, "author": author, "outdated": outdated, "error": str(exc)})
+                continue
 
-    log.info("resolve_threads.done", owner=owner, repo=repo, pr_number=pr_number, resolved=resolved)
+            if not resp.is_success:
+                failed.append({
+                    "id": tid, "author": author, "outdated": outdated,
+                    "status": resp.status_code, "body": resp.text[:200],
+                })
+                continue
+
+            try:
+                body = resp.json()
+            except Exception as exc:
+                failed.append({"id": tid, "author": author, "outdated": outdated, "error": f"non-json: {exc}"})
+                continue
+
+            errors = body.get("errors") or []
+            thread_data = ((body.get("data") or {}).get("resolveReviewThread") or {}).get("thread") or {}
+            if errors or not thread_data.get("isResolved"):
+                failed.append({
+                    "id": tid, "author": author, "outdated": outdated,
+                    "errors": errors, "thread": thread_data,
+                })
+                continue
+
+            resolved += 1
+
+    log.info(
+        "resolve_threads.done",
+        owner=owner, repo=repo, pr_number=pr_number,
+        attempted=len(unresolved), resolved=resolved, failed=len(failed),
+    )
+    if failed:
+        log.warning(
+            "resolve_threads.partial_failure",
+            pr_number=pr_number, failed=failed,
+        )
     return resolved
 
 

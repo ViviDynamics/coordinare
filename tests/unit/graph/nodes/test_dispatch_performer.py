@@ -304,6 +304,34 @@ async def test_persona_instructions_for_reviewer_stage() -> None:
     assert card_ctx["persona_instructions"] == "Be thorough in reviews."
 
 
+@pytest.mark.asyncio
+async def test_persona_instructions_for_closing_review_stage() -> None:
+    """042: Verify that the 'closing_review' stage maps to the 'closer'
+    persona role — distinct from 'reviewing'/'reviewer' so the closing pass
+    can carry its own instructions."""
+    svc = _Service()
+    config = _make_config_with_persona(
+        "closer", "Verify prior threads were addressed; resolve and approve.",
+    )
+
+    state = _base_state(
+        performer_services={"closing_review": svc},
+        performer_stage="closing_review",
+        lifecycle_sequence=["closing_review"],
+        config=config,
+    )
+
+    await dispatch_performer(state)
+
+    assert len(svc.dispatched) == 1
+    card_ctx = svc.dispatched[0]
+    assert card_ctx["role"] == "closing_review"
+    assert (
+        card_ctx["persona_instructions"]
+        == "Verify prior threads were addressed; resolve and approve."
+    )
+
+
 # ---------------------------------------------------------------------------
 # T014-5: backward-compat with implementer-only lifecycle
 # ---------------------------------------------------------------------------

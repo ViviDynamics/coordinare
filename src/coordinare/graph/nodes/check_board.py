@@ -199,6 +199,19 @@ async def check_board(state: CoordinareState) -> CoordinareState:
             for comment in comments:
                 if not isinstance(comment, dict):
                     continue
+                # 042: Skip comments authored by the coordinare bot itself.
+                # GitHub's ``createdAt`` is second-precision while our local
+                # ``last_blocked_notified_at`` is sub-second — so the bot's
+                # own freshly-posted reminder comment can appear "newer than
+                # the cutoff" due to rounding, get misread as a user answer,
+                # and trigger an infinite blocked → dispatch loop.  Filtering
+                # by author is the correct primary check (only humans can
+                # supply answers); the timestamp remains a secondary guard
+                # so very old human comments from prior rounds don't count.
+                author = comment.get("author") or {}
+                author_login = str(author.get("login", "")) if isinstance(author, dict) else ""
+                if author_login.endswith("[bot]") or author_login == "vivi-coordinare":
+                    continue
                 created_raw = comment.get("createdAt", "")
                 if not isinstance(created_raw, str) or not created_raw:
                     continue
@@ -350,6 +363,13 @@ async def check_board(state: CoordinareState) -> CoordinareState:
             prev_card = state.get("current_card") or {}
             if str(prev_card.get("id", "")) != item:
                 state["card_clarifications"] = []
+                state["processed_review_ids"] = set()  # new card — reset review tracking
+                # 042: Clear commit_summary so the next card's dispatch
+                # doesn't fire a stale ``card_merged`` notification.  The
+                # notify node detects merge success via commit_summary —
+                # leaving it set from the previous card causes every
+                # subsequent stage notification to misfire as "merged!".
+                state["commit_summary"] = None
             state["current_card"] = {
                 "id": item,
                 "issue_id": str(content_node_ids.get(item, "")),

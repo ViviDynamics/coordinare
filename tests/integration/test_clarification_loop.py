@@ -121,7 +121,7 @@ class _Agent:
             return {"status": "error", "reason": "validation failed: missing github_token"}
         return {"status": "accepted", "session_id": "sess_1"}
 
-    async def check_status(self, session_id: str) -> dict:
+    async def check_status(self, session_id: str, **kwargs: object) -> dict:
         return {"status": self._status_marker, "questions": []}
 
     async def relay_feedback(self, review_payload: dict) -> dict:

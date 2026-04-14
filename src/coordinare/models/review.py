@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, model_validator
 
 class ReviewerType(StrEnum):
     HUMAN = "HUMAN"
+    TRUSTED_BOT = "TRUSTED_BOT"
     BOT = "BOT"
 
 
@@ -29,12 +30,20 @@ class Review(BaseModel):
 
     @model_validator(mode="after")
     def _set_actionable(self) -> Review:
-        self.is_actionable = self.author_type == ReviewerType.HUMAN
+        self.is_actionable = self.author_type in (ReviewerType.HUMAN, ReviewerType.TRUSTED_BOT)
         return self
 
 
-def classify_reviewer(author_login: str, human_reviewers: list[str]) -> ReviewerType:
-    normalized = {login.strip().lower() for login in human_reviewers}
-    if author_login.strip().lower() in normalized:
+def classify_reviewer(
+    author_login: str,
+    human_reviewers: list[str],
+    trusted_bot_reviewers: list[str] | None = None,
+) -> ReviewerType:
+    normalized_humans = {login.strip().lower() for login in human_reviewers}
+    if author_login.strip().lower() in normalized_humans:
         return ReviewerType.HUMAN
+    if trusted_bot_reviewers:
+        normalized_bots = {login.strip().lower() for login in trusted_bot_reviewers}
+        if author_login.strip().lower() in normalized_bots:
+            return ReviewerType.TRUSTED_BOT
     return ReviewerType.BOT

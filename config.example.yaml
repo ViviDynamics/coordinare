@@ -23,50 +23,71 @@
 #   are supplied via COORDINARE_* environment variables (useful for CI/CD).
 #
 # Required fields: project_name, github_org, github_project_number,
-#                  github_token, human_reviewers
+#                  github_token (or github_auth: app), human_reviewers
 # =============================================================================
 
-project_name: "Coordinare"
+project_name: "my-project"
 github_org: "your-org"
 github_project_number: 1
 
-# github_token: use COORDINARE_GITHUB_TOKEN env var to avoid storing secrets
-github_token: "${COORDINARE_GITHUB_TOKEN}"
+# --- Authentication ---
+# Option A: Personal Access Token (PAT)
+# github_token: "${COORDINARE_GITHUB_TOKEN}"
 
-# Agent transport: "subprocess" (default), "ssh", or "kubernetes"
+# Option B: GitHub App (recommended for production)
+# github_auth: app
+# github_app_id: 12345
+# github_private_key_path: /path/to/private-key.pem
+# github_installation_id: 67890
+
+# --- Agent Transport ---
 agent_transport: "subprocess"
-agent_executable: "/usr/local/bin/agent"
+agent_executable: "/usr/local/bin/performer"
 # transport_timeout_seconds: 30  # default
 
+# --- Reviewers ---
 human_reviewers:
-  - "reviewer-login"
+  - "your-github-login"
 
-# Performer lifecycle (019) — configure which roles run and their backends.
+# Trusted bot reviewers whose feedback triggers the performer lifecycle
+# (same as human reviews — implementer will address their comments)
+trusted_bot_reviewers:
+  - "copilot-pull-request-reviewer[bot]"
+
+# --- Performer Lifecycle ---
+# Configure which roles run and their AI backends.
+# Roles execute in canonical order: assessor → architect → implementer →
+# reviewer → security → qa → tech_writer → closer.
 # Unconfigured roles are skipped. With no performers section, coordinare
 # falls back to implementer-only mode (backward compatible).
 #
-# performers:
-#   architect:
-#     backend: opencode
-#     transport: subprocess
-#   implementer:
-#     backend: opencode
-#     transport: subprocess
-#   reviewer:
-#     backend: opencode
-#     transport: subprocess
-#   security:
-#     backend: opencode
-#     transport: subprocess
-#   qa:
-#     backend: opencode
-#     transport: subprocess
-#   tech_writer:
-#     backend: opencode
-#     transport: subprocess
+# The closer is the closing-review pass: after all other roles have run,
+# it verifies that prior PR feedback (from earlier reviewers, Copilot, or
+# humans) was actually addressed by subsequent commits, then resolves all
+# open review threads so the PR can clear merge gates that require
+# "all conversations resolved" (a common ruleset requirement).
+#
+# Available backends: codex, opencode, claude_code
+performers:
+  assessor:
+    backend: codex
+  architect:
+    backend: codex
+  implementer:
+    backend: codex
+  reviewer:
+    backend: codex
+  security:
+    backend: codex
+  qa:
+    backend: codex
+  tech_writer:
+    backend: codex
+  closer:
+    backend: codex
 
-# Persona instructions (018) — customise per-role AI prompts.
-# Omitted roles use built-in default instructions.
+# --- Persona Instructions (018) ---
+# Customise per-role AI prompts. Omitted roles use built-in defaults.
 #
 # personas:
 #   implementer:
@@ -74,12 +95,15 @@ human_reviewers:
 #   reviewer:
 #     instructions: "Focus on correctness and test coverage."
 
+# --- Polling & Health ---
 poll_interval_seconds: 30
 heartbeat_interval_seconds: 30
 health_check_port: 8080
+dashboard_port: 8090  # default; change if another service holds this port
 output_mode: "human"   # "human" or "structured" (JSON)
 log_level: "info"
 
+# --- Notifications ---
 notifications:
   history_max_age_hours: 24
   prolonged_idle_threshold_seconds: 1800
@@ -93,13 +117,17 @@ notifications:
       dedup_window_seconds: 600
       retry_count: 5
       retry_delay_seconds: 2
-      message_template: "[{severity}] {event_type} | {source} | {summary}"
+      message_template: "{summary}"
 
     - name: email-team
       type: email
-      smtp_host: "smtp.example.com"
+      # Mailgun SMTP example — confirmed working with port 587 + STARTTLS.
+      # For Mailgun EU use "smtp.eu.mailgun.org".  Username must be the full
+      # SMTP credential email (e.g. postmaster@mail.yourdomain.com) created
+      # in the Mailgun dashboard under "SMTP credentials".
+      smtp_host: "smtp.mailgun.org"
       smtp_port: 587
-      smtp_username: "smtp-user"
+      smtp_username: "postmaster@mail.example.com"
       smtp_password: "${COORDINARE_SMTP_PASSWORD}"
       smtp_recipient: "team@example.com"
       rate_limit: 5
@@ -107,7 +135,6 @@ notifications:
       dedup_window_seconds: 3600
       retry_count: 3
       retry_delay_seconds: 5
-      message_template: "Coordinare [{severity}] {event_type}\n\nSource: {source}\n{summary}"
 
   routing:
     - event_type: card_transition

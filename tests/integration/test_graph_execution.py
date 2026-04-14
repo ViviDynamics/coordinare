@@ -58,7 +58,7 @@ class _Agent:
         _ = review_payload
         return {"status": "acknowledged"}
 
-    async def check_status(self, session_id: str):
+    async def check_status(self, session_id: str, **kwargs: object):
         _ = session_id
         return {"status": "working"}
 
@@ -104,7 +104,7 @@ class _ArchitectAgent:
     async def relay_feedback(self, review_payload):
         return {"status": "acknowledged"}
 
-    async def check_status(self, session_id: str):
+    async def check_status(self, session_id: str, **kwargs: object):
         return {
             "status": "plan_committed",
             "plan_path": "docs/coordinare-architecture.md",
@@ -128,7 +128,7 @@ class _ImplementerAgent:
     async def relay_feedback(self, review_payload):
         return {"status": "acknowledged"}
 
-    async def check_status(self, session_id: str):
+    async def check_status(self, session_id: str, **kwargs: object):
         return {"status": "working", "session_id": session_id}
 
 

@@ -62,6 +62,15 @@ def _extract_json(text: str) -> dict | list | None:
     return None
 
 
+def _doc_folder(score: Score) -> str:
+    """Return the docs/cards/{issue}-{slug} path for this card."""
+    title_slug = re.sub(r"[^a-z0-9]+", "-", score.title.lower()).strip("-")[:20] or "untitled"
+    issue_num = score.issue_number
+    if issue_num:
+        return f"docs/cards/{issue_num}-{title_slug}"
+    return f"docs/cards/{title_slug}"
+
+
 # ---------------------------------------------------------------------------
 # Process-level CPU sampler — must be initialised once at startup
 # ---------------------------------------------------------------------------
@@ -377,8 +386,27 @@ async def handle_status(
                     session_id=perf.session_id,
                     reason="Backend produced an empty architecture plan",
                 )
-            plan_path = settings.PLAN_FILE_PATH if settings else "docs/coordinare-architecture.md"
-            await commit_file(perf.stand, plan_path, plan_content, "chore: add architecture plan")
+            folder = _doc_folder(perf.score)
+            issue_num = perf.score.issue_number
+
+            # Split plan and tasks if the separator is present
+            tasks_content = ""
+            if "---TASKS---" in plan_content:
+                parts = plan_content.split("---TASKS---", 1)
+                plan_content = parts[0].strip()
+                tasks_content = parts[1].strip()
+
+            plan_path = f"{folder}/plan.md"
+            commit_msg = f"chore: add architecture plan for #{issue_num}" if issue_num else "chore: add architecture plan"
+            await commit_file(perf.stand, plan_path, plan_content, commit_msg)
+
+            if tasks_content:
+                tasks_path = f"{folder}/tasks.md"
+                tasks_msg = f"chore: add implementation tasks for #{issue_num}" if issue_num else "chore: add implementation tasks"
+                try:
+                    await commit_file(perf.stand, tasks_path, tasks_content, tasks_msg)
+                except Exception as exc:
+                    log.warning("architect.commit_tasks_failed", error=str(exc))
             perf.plan_path = plan_path
             perf.state = "plan_committed"
             return PerformerResponse(
@@ -431,6 +459,22 @@ async def handle_status(
                 sufficient = True
 
             if sufficient:
+                # Write assessment report for the architect and human readers
+                folder = _doc_folder(perf.score)
+                assessment_path = f"{folder}/assessment.md"
+                assess_issue_num = perf.score.issue_number
+                # Build structured assessment content from the raw output
+                assessment_content = f"# Assessment: {perf.score.title}\n\n"
+                assessment_content += assess_raw if isinstance(assess_raw, str) else str(assess_output)
+                try:
+                    await commit_file(
+                        perf.stand, assessment_path, assessment_content,
+                        f"chore: add assessment for #{assess_issue_num}" if assess_issue_num else "chore: add assessment",
+                    )
+                    log.info("assessor.assessment_committed", path=assessment_path)
+                except Exception as exc:
+                    log.warning("assessor.commit_assessment_failed", error=str(exc))
+
                 perf.state = "assessment_complete"
                 return PerformerResponse(
                     status="assessment_complete",
@@ -451,7 +495,12 @@ async def handle_status(
         # Backend output is expected to be JSON with: approved (bool), comments (list),
         # suggestions (list), body (str). Existing backends don't produce this yet —
         # the reviewer backend adapter will be implemented separately.
-        if perf.role == "reviewing":
+        #
+        # 042: The "closing_review" stage shares the same code path — its only
+        # difference is the persona instructions injected by the coordinare.
+        # The closer posts a verdict and, on approval, resolves every open
+        # thread so the PR can clear the "all comments resolved" merge gate.
+        if perf.role in ("reviewing", "closing_review"):
             review_raw = backend_status.output or ""
             if not review_raw.strip():
                 perf.state = "error"
@@ -472,7 +521,14 @@ async def handle_status(
 
             is_approved = review_output.get("approved") is True  # strict bool check
             raw_comments = review_output.get("comments", [])
-            comments = raw_comments if isinstance(raw_comments, list) else []
+            # Normalize comments: strings become {"body": str}, dicts pass through
+            comments = []
+            if isinstance(raw_comments, list):
+                for c in raw_comments:
+                    if isinstance(c, dict):
+                        comments.append(c)
+                    elif isinstance(c, str):
+                        comments.append({"body": c})
             raw_suggestions = review_output.get("suggestions", [])
             suggestions = raw_suggestions if isinstance(raw_suggestions, list) else []
             review_body = str(review_output.get("body", ""))
@@ -574,6 +630,34 @@ async def handle_status(
 
             raw_findings = sec_output.get("findings", [])
             findings = raw_findings if isinstance(raw_findings, list) else []
+
+            # Commit security report to the architecture folder
+            folder = _doc_folder(perf.score)
+            sec_report = f"# Security Report: {perf.score.title}\n\n"
+            passed = sec_output.get("passed", len(findings) == 0)
+            sec_report += f"**Result: {'PASSED' if passed else 'FAILED'}**\n\n"
+            if findings:
+                sec_report += "## Findings\n\n"
+                for f in findings:
+                    if isinstance(f, dict):
+                        sev = str(f.get("severity", "unknown"))
+                        cat = str(f.get("category", "unknown"))
+                        desc = str(f.get("description", ""))
+                        fpath = str(f.get("file", ""))
+                        sec_report += f"- **[{sev.upper()}]** {cat}"
+                        if fpath:
+                            sec_report += f" (`{fpath}`)"
+                        sec_report += f"\n  {desc}\n\n"
+            else:
+                sec_report += "No security findings.\n"
+            try:
+                issue_num = perf.score.issue_number
+                await commit_file(
+                    perf.stand, f"{folder}/security.md", sec_report,
+                    f"chore: add security report for #{issue_num}" if issue_num else "chore: add security report",
+                )
+            except Exception as exc:
+                log.warning("security.commit_report_failed", error=str(exc))
 
             # Extract PR number for advisory comments
             pr_number = 0
@@ -678,6 +762,37 @@ async def handle_status(
                                 reason=perf.error_reason,
                             )
 
+            # Commit QA report to the architecture folder
+            folder = _doc_folder(perf.score)
+            qa_report_content = f"# QA Report: {perf.score.title}\n\n"
+            qa_passed_flag = qa_output.get("passed", True)
+            criteria_checked = qa_output.get("criteria_checked", 0)
+            criteria_passed = qa_output.get("criteria_passed", 0)
+            qa_report_content += f"**Result: {'PASSED' if qa_passed_flag else 'FAILED'}**\n\n"
+            qa_report_content += f"- Criteria checked: {criteria_checked}\n"
+            qa_report_content += f"- Criteria passed: {criteria_passed}\n"
+            if perf.qa_new_tests:
+                qa_report_content += f"- New tests added: {len(perf.qa_new_tests)}\n"
+                for tp in perf.qa_new_tests:
+                    qa_report_content += f"  - `{tp}`\n"
+            qa_failures = qa_output.get("failures", [])
+            if isinstance(qa_failures, list) and qa_failures:
+                qa_report_content += "\n## Failures\n\n"
+                for f in qa_failures:
+                    if isinstance(f, dict):
+                        criterion = f.get("criterion", "")
+                        expected = f.get("expected", "")
+                        actual = f.get("actual", "")
+                        qa_report_content += f"- **{criterion}**\n  Expected: {expected}\n  Actual: {actual}\n\n"
+            try:
+                issue_num = perf.score.issue_number
+                await commit_file(
+                    perf.stand, f"{folder}/qa.md", qa_report_content,
+                    f"chore: add QA report for #{issue_num}" if issue_num else "chore: add QA report",
+                )
+            except Exception as exc:
+                log.warning("qa.commit_report_failed", error=str(exc))
+
             # Check for environment failure before acceptance criteria
             env_error = qa_output.get("environment_error")
             if env_error:
@@ -728,7 +843,6 @@ async def handle_status(
 
         # 024: Tech writer path — commit documentation files, return docs_committed.
         if perf.role == "documenting":
-            import json as _json_docs
             docs_raw = backend_status.output or ""
             if not docs_raw.strip():
                 # Empty diff or config-only changes — return docs_committed with empty list (FR-010)
@@ -739,9 +853,8 @@ async def handle_status(
                     session_id=perf.session_id,
                     files_modified=[],
                 )
-            try:
-                docs_output = _json_docs.loads(docs_raw) if isinstance(docs_raw, str) else docs_raw
-            except (ValueError, TypeError):
+            docs_output = _extract_json(docs_raw) if isinstance(docs_raw, str) else docs_raw
+            if docs_output is None:
                 perf.state = "error"
                 perf.error_reason = "Backend produced invalid JSON docs output"
                 return PerformerResponse(
@@ -1023,6 +1136,11 @@ async def run_loop() -> None:
                     )
 
             elif msg.action == "status":
+                # Refresh GitHub token if the coordinare sent a fresh one
+                refreshed_token = msg.payload.get("github_token")
+                if refreshed_token and perf is not None and perf.score is not None:
+                    perf.score.github_token = refreshed_token
+                    log.debug("token_refreshed", session_id=perf.session_id)
                 try:
                     resp = await handle_status(msg, perf, settings)
                 except (BranchConflictError, GitHubAPIError, WorkspaceSetupError) as exc:

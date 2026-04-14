@@ -107,3 +107,246 @@ async def test_monitor_pr_stays_monitoring_when_no_reviews() -> None:
     result = await monitor_pr(state)
 
     assert result["phase"] == "monitoring_pr"
+
+
+# ---------------------------------------------------------------------------
+# Processed review ID filtering
+# ---------------------------------------------------------------------------
+
+
+class _GitHubTwoReviews:
+    async def get_pr_reviews(self, pr_id: str):
+        return [
+            {"id": "R1", "author_login": "Jason733i", "state": "CHANGES_REQUESTED", "body": "fix", "submitted_at": "2026-04-11T00:00:00Z"},
+            {"id": "R2", "author_login": "Jason733i", "state": "CHANGES_REQUESTED", "body": "more fixes", "submitted_at": "2026-04-11T00:00:00Z"},
+        ]
+
+
+@pytest.mark.asyncio
+async def test_monitor_pr_filters_processed_review_ids() -> None:
+    """Reviews already in processed_review_ids must not appear as actionable."""
+    state = initial_state()
+    state["current_card"] = {"pr_node_id": "PR_123"}
+    state["human_reviewers"] = ["Jason733i"]
+    state["github_service"] = _GitHubTwoReviews()
+    state["processed_review_ids"] = {"R1"}
+
+    result = await monitor_pr(state)
+
+    # Only R2 should be actionable
+    assert result["phase"] == "relay_feedback"
+    actionable_ids = {str(r.get("id")) for r in result["pending_reviews"]}
+    assert "R1" not in actionable_ids
+    assert "R2" in actionable_ids
+
+
+class _GitHubOneActionableReview:
+    async def get_pr_reviews(self, pr_id: str):
+        return [
+            {"id": "R_new", "author_login": "Jason733i", "state": "COMMENTED", "body": "please fix", "submitted_at": "2026-04-11T00:00:00Z"},
+        ]
+
+
+@pytest.mark.asyncio
+async def test_monitor_pr_does_not_mark_processed_before_relay() -> None:
+    """monitor_pr sets relay_feedback phase but does NOT mark IDs as processed.
+
+    IDs are marked processed in classify_human_feedback (after relay succeeds)
+    to avoid permanently skipping reviews if a crash happens between monitor_pr
+    and the actual dispatch.
+    """
+    state = initial_state()
+    state["current_card"] = {"pr_node_id": "PR_123"}
+    state["human_reviewers"] = ["Jason733i"]
+    state["github_service"] = _GitHubOneActionableReview()
+    state["processed_review_ids"] = set()
+
+    result = await monitor_pr(state)
+
+    assert result["phase"] == "relay_feedback"
+    # IDs should NOT be in processed_review_ids yet — that happens in classify_human_feedback
+    assert result.get("processed_review_ids") == set()
+
+
+# ---------------------------------------------------------------------------
+# Trusted bot approval must NOT trigger merge
+# ---------------------------------------------------------------------------
+
+
+class _GitHubTrustedBotApproval:
+    async def get_pr_reviews(self, pr_id: str):
+        return [
+            {
+                "id": "R1",
+                "author_login": "copilot-pull-request-reviewer[bot]",
+                "state": "APPROVED",
+                "body": "Looks good",
+                "submitted_at": "2026-04-12T00:00:00Z",
+            },
+        ]
+
+
+@pytest.mark.asyncio
+async def test_trusted_bot_approval_does_not_trigger_merge() -> None:
+    """A trusted bot APPROVED review must not trigger the merge phase.
+
+    Only HUMAN approvals trigger merge.  Trusted bots can provide feedback
+    (COMMENTED / CHANGES_REQUESTED) but their APPROVED state is ignored for
+    the merge decision.
+    """
+    state = initial_state()
+    state["current_card"] = {"pr_node_id": "PR_123"}
+    state["human_reviewers"] = ["Jason733i"]
+    state["trusted_bot_reviewers"] = ["copilot-pull-request-reviewer[bot]"]
+    state["github_service"] = _GitHubTrustedBotApproval()
+
+    result = await monitor_pr(state)
+
+    assert result["phase"] == "monitoring_pr"
+
+
+# ---------------------------------------------------------------------------
+# 042 — pr_node_id recovery from issue→PR linkage
+# ---------------------------------------------------------------------------
+
+
+class _GitHubWithRecovery:
+    """GitHub mock that supports find_pr_for_issue + records calls."""
+
+    def __init__(self, recovered: dict[str, str] | None = None):
+        self._recovered = recovered
+        self.find_called_with: list[str] = []
+        self.get_reviews_called_with: list[str] = []
+
+    async def find_pr_for_issue(self, issue_node_id: str):
+        self.find_called_with.append(issue_node_id)
+        return self._recovered
+
+    async def get_pr_reviews(self, pr_id: str):
+        self.get_reviews_called_with.append(pr_id)
+        return []
+
+
+@pytest.mark.asyncio
+async def test_monitor_pr_recovers_pr_node_id_from_issue_linkage() -> None:
+    """042 regression: when state lacks pr_node_id but the card has an
+    issue_id, monitor_pr must recover the PR via the issue→PR linkage and
+    rehydrate the card so monitoring continues.  Without recovery, every
+    poll fails with "Could not resolve to a node with the global id of 'None'"
+    and trips the GitHub circuit breaker (as happened on PR #88)."""
+    state = initial_state()
+    state["current_card"] = {
+        "id": "card-1",
+        "issue_id": "I_kwDO_issue",
+        "pr_node_id": None,  # missing — must be recovered
+    }
+    state["human_reviewers"] = ["alice"]
+    gh = _GitHubWithRecovery(recovered={
+        "pr_node_id": "PR_kwDO_recovered",
+        "pr_url": "https://github.com/org/repo/pull/42",
+    })
+    state["github_service"] = gh
+
+    result = await monitor_pr(state)
+
+    assert gh.find_called_with == ["I_kwDO_issue"]
+    # Recovery populated the card with both fields
+    card = result["current_card"]
+    assert card["pr_node_id"] == "PR_kwDO_recovered"
+    assert card["pr_url"] == "https://github.com/org/repo/pull/42"
+    # And then get_pr_reviews ran with the recovered ID, not "None"
+    assert gh.get_reviews_called_with == ["PR_kwDO_recovered"]
+
+
+@pytest.mark.asyncio
+async def test_monitor_pr_recovers_when_pr_node_id_is_literal_string_none() -> None:
+    """042: Snapshots written by the buggy serialiser may carry the literal
+    string "None" for pr_node_id.  monitor_pr must treat that as missing
+    (not as a valid node ID) and trigger recovery, otherwise we'd query
+    GitHub with the string "None" and fail every cycle."""
+    state = initial_state()
+    state["current_card"] = {
+        "id": "card-1",
+        "issue_id": "I_kwDO_issue",
+        "pr_node_id": "None",  # literal "None" from buggy snapshot
+        "pr_url": "None",
+    }
+    state["human_reviewers"] = ["alice"]
+    gh = _GitHubWithRecovery(recovered={
+        "pr_node_id": "PR_kwDO_recovered",
+        "pr_url": "https://github.com/org/repo/pull/42",
+    })
+    state["github_service"] = gh
+
+    result = await monitor_pr(state)
+
+    assert gh.find_called_with == ["I_kwDO_issue"]
+    card = result["current_card"]
+    assert card["pr_node_id"] == "PR_kwDO_recovered"
+    # Crucially, get_pr_reviews must NOT have been called with "None"
+    assert "None" not in gh.get_reviews_called_with
+
+
+@pytest.mark.asyncio
+async def test_monitor_pr_falls_back_to_idle_when_recovery_finds_no_pr() -> None:
+    """042: If recovery can't find an OPEN PR for the issue, monitor_pr
+    must go idle gracefully — never call get_pr_reviews with a bad ID."""
+    state = initial_state()
+    state["current_card"] = {
+        "id": "card-1",
+        "issue_id": "I_kwDO_issue",
+        "pr_node_id": None,
+    }
+    state["human_reviewers"] = ["alice"]
+    gh = _GitHubWithRecovery(recovered=None)  # nothing found
+    state["github_service"] = gh
+
+    result = await monitor_pr(state)
+
+    assert gh.find_called_with == ["I_kwDO_issue"]
+    assert gh.get_reviews_called_with == []
+    assert result["phase"] == "idle"
+
+
+@pytest.mark.asyncio
+async def test_monitor_pr_skips_recovery_when_no_issue_id() -> None:
+    """042: Without an issue_id we have nothing to look the PR up by — go
+    idle without attempting recovery (don't call find_pr_for_issue with empty)."""
+    state = initial_state()
+    state["current_card"] = {
+        "id": "card-1",
+        "pr_node_id": None,
+        # no issue_id
+    }
+    state["human_reviewers"] = ["alice"]
+    gh = _GitHubWithRecovery(recovered={"pr_node_id": "PR_x", "pr_url": "u"})
+    state["github_service"] = gh
+
+    result = await monitor_pr(state)
+
+    assert gh.find_called_with == []  # never called
+    assert result["phase"] == "idle"
+
+
+@pytest.mark.asyncio
+async def test_monitor_pr_recovery_swallows_github_errors() -> None:
+    """042: If find_pr_for_issue raises, we must log and go idle — not
+    crash the daemon."""
+    class _Failing:
+        async def find_pr_for_issue(self, issue_node_id: str):
+            raise RuntimeError("github transient")
+        async def get_pr_reviews(self, pr_id: str):
+            raise AssertionError("must not be called when recovery failed")
+
+    state = initial_state()
+    state["current_card"] = {
+        "id": "card-1",
+        "issue_id": "I_kwDO_issue",
+        "pr_node_id": None,
+    }
+    state["human_reviewers"] = ["alice"]
+    state["github_service"] = _Failing()
+
+    result = await monitor_pr(state)
+
+    assert result["phase"] == "idle"

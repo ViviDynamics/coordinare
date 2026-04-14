@@ -121,6 +121,29 @@ class TestDryRunAgentService:
         assert "pr_url" in result
         assert "pr_node_id" in result
 
+    def test_check_status_accepts_payload_kwarg(self) -> None:
+        """042: monitor_performer now pushes a refreshed token through
+        check_status via the ``payload`` kwarg.  DryRunAgentService must
+        accept and record it, or dry-run mode crashes with
+        ``TypeError: unexpected keyword argument 'payload'``."""
+        svc = DryRunAgentService()
+        payload = {"github_token": "refreshed-token-abc"}
+        result = asyncio.run(
+            svc.check_status("dry-run-session", payload=payload)
+        )
+        assert result["status"] == "pr_opened"
+        # Payload must be captured in recorded_actions for auditability
+        status_calls = [a for a in svc.recorded_actions if a.get("method") == "check_status"]
+        assert status_calls
+        assert status_calls[-1].get("payload") == payload
+
+    def test_check_status_default_payload_is_none(self) -> None:
+        """Backward compat: existing callers that don't pass payload still work."""
+        svc = DryRunAgentService()
+        asyncio.run(svc.check_status("sid"))
+        status_calls = [a for a in svc.recorded_actions if a.get("method") == "check_status"]
+        assert status_calls[-1].get("payload") is None
+
     def test_check_health_returns_healthy(self) -> None:
         svc = DryRunAgentService()
         result = asyncio.run(svc.check_health())

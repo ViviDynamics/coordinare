@@ -111,8 +111,18 @@ class DryRunAgentService:
         })
         return {"status": "accepted", "session_id": "dry-run-session"}
 
-    async def check_status(self, session_id: str) -> dict[str, Any]:
-        self.recorded_actions.append({"method": "check_status", "session_id": session_id})
+    async def check_status(
+        self, session_id: str, *, payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        # 042: ``payload`` was added to AgentServiceProtocol for token
+        # refresh mid-session.  Accept and record it so dry-run mode
+        # doesn't break with TypeError("unexpected keyword argument
+        # 'payload'") when monitor_performer pushes a fresh token through.
+        self.recorded_actions.append({
+            "method": "check_status",
+            "session_id": session_id,
+            "payload": payload,
+        })
         return {
             "status": "pr_opened",
             "pr_url": "https://github.com/dry-run/repo/pull/0",

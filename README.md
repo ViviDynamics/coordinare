@@ -70,13 +70,39 @@ cp .env.example .env
 #   ANTHROPIC_API_KEY=sk-ant-...  (for AI-powered assessment)
 ```
 
-### 4. Validate config
+### 4. Authorize the GitHub App (or PAT) on branch protection
+
+For coordinare to squash-merge PRs on your behalf, the identity it uses
+(GitHub App recommended; PAT supported) must be allowed to push to the
+protected branch.  Live testing has repeatedly surfaced this gotcha:
+**rulesets and classic branch protection rules are TWO separate
+systems** on the same branch, and the App has to be authorised in
+whichever one is active (or both, if both exist).
+
+**If you use a Ruleset** (`Settings → Rules → Rulesets`):
+- Edit the ruleset covering `main`
+- **Bypass list** → add the coordinare GitHub App (search by app name)
+
+**If you use classic Branch Protection** (`Settings → Branches`):
+- Edit the rule for `main`
+- **"Restrict who can push to matching branches"** → add the coordinare
+  app (required — the App literally cannot push otherwise)
+- The "Allow specified actors to bypass required pull requests" list
+  is NOT needed if a human is approving before coordinare merges
+
+If both systems are configured on the same branch, both must allow
+the App — GitHub enforces them independently.  When coordinare hits
+this, it logs a permanent error `"You're not authorized to push to
+this branch"` and surfaces the card as blocked with the GitHub error
+message in `open_questions` so you can act on it directly.
+
+### 5. Validate config
 
 ```bash
 .venv/bin/python -m coordinare config validate
 ```
 
-### 5. Run
+### 6. Run
 
 ```bash
 # Local (no Docker)
@@ -86,7 +112,7 @@ bin/run-coordinare
 docker-compose up
 ```
 
-### 6. Monitor
+### 7. Monitor
 
 - **Dashboard**: http://localhost:8090 — live SSE dashboard with phase, card, health, and performer status
 - **Health**: http://localhost:8080/health — JSON health check for load balancers

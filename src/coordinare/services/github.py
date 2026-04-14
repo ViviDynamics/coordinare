@@ -6,8 +6,12 @@ from typing import Any, ClassVar
 
 import aiohttp
 import stamina
+import structlog
 from gql import Client, gql
 from gql.transport.aiohttp import AIOHTTPTransport
+from gql.transport.exceptions import TransportQueryError
+
+logger = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Exception taxonomy (T008)
@@ -422,6 +426,29 @@ class GitHubService:
             if exc.status >= 500:
                 raise TransientGitHubError(str(exc)) from exc
             raise PermanentGitHubError(str(exc)) from exc
+        except TransportQueryError as exc:
+            # 042: GraphQL response-level errors. Classify by the GitHub
+            # error type so application-layer issues (auth, ruleset rejection,
+            # missing nodes) don't get retried forever and don't trip the
+            # service-health circuit breaker.  Only true transport problems
+            # (5xx, timeouts) should count as service failures.
+            errors = exc.errors or []
+            err_types: set[str] = set()
+            for e in errors:
+                if isinstance(e, dict):
+                    t = e.get("type")
+                    if t:
+                        err_types.add(str(t))
+            permanent_types = {
+                "UNPROCESSABLE",   # branch protection / ruleset rejection
+                "FORBIDDEN",       # missing scope / installation perms
+                "NOT_FOUND",       # bad node id (e.g. stale pr_node_id)
+                "UNAUTHORIZED",    # bad token
+            }
+            if err_types & permanent_types:
+                raise PermanentGitHubError(str(exc)) from exc
+            # Anything else (server-side transient, rate limit) is retryable
+            raise TransientGitHubError(str(exc)) from exc
         except (TimeoutError, aiohttp.ClientError, OSError) as exc:
             raise TransientGitHubError(str(exc)) from exc
         except ValueError as exc:
@@ -443,7 +470,12 @@ class GitHubService:
 
         try:
             if self._circuit_breaker is not None:
-                async with self._circuit_breaker.guard():
+                # 042: PermanentGitHubError is an application-layer error
+                # (auth, ruleset rejection, missing node) — not a service
+                # health issue.  Don't count it against the breaker; otherwise
+                # a single misconfigured ruleset trips the breaker every cycle
+                # and starves all other GitHub calls.
+                async with self._circuit_breaker.guard(ignore=PermanentGitHubError):
                     result = await self._retried_execute(query, variables)
             else:
                 result = await self._retried_execute(query, variables)
@@ -520,6 +552,7 @@ class GitHubService:
             return {"snapshot": {}}
 
         snapshot: dict[str, list[str]] = {
+            "BACKLOG": [],
             "TODO": [],
             "BLOCKED": [],
             "IN_PROGRESS": [],
@@ -542,15 +575,17 @@ class GitHubService:
             if not item_id:
                 continue
 
-            status_name = "TODO"
+            status_name = ""  # unknown until we read the field
             field_values = item.get("fieldValues", {}).get("nodes", [])
             if isinstance(field_values, list):
                 for field_value in field_values:
                     if not isinstance(field_value, dict):
                         continue
                     raw_name = str(field_value.get("name", "")).strip().lower()
-                    if raw_name in {"todo / backlog", "todo", "backlog"}:
+                    if raw_name in {"todo / backlog", "todo"}:
                         status_name = "TODO"
+                    elif raw_name == "backlog":
+                        status_name = "BACKLOG"
                     elif raw_name == "blocked":
                         status_name = "BLOCKED"
                     elif raw_name in {"in progress", "in_progress"}:
@@ -580,7 +615,8 @@ class GitHubService:
                         if isinstance(n, dict)
                     ]
 
-            snapshot.setdefault(status_name, []).append(item_id)
+            if status_name:  # skip items with unknown/unmapped status
+                snapshot.setdefault(status_name, []).append(item_id)
 
         return {
             "snapshot": snapshot,
@@ -639,6 +675,49 @@ class GitHubService:
                 "optionId": option_id,
             },
         )
+
+    async def find_pr_for_issue(self, issue_node_id: str) -> dict[str, str] | None:
+        """Find the open PR linked to an issue via "Closes #N" or GitHub linkage.
+
+        Used as a recovery mechanism when state-store loses pr_node_id (e.g.,
+        after a snapshot bug or daemon crash mid-lifecycle).  Returns
+        ``{"pr_node_id": ..., "pr_url": ...}`` for the most recent OPEN PR
+        that closes this issue, or None if no such PR exists.
+        """
+        if not issue_node_id:
+            return None
+        query = """
+        query($issueId: ID!) {
+          node(id: $issueId) {
+            ... on Issue {
+              closedByPullRequestsReferences(first: 5, includeClosedPrs: false) {
+                nodes { id url state }
+              }
+            }
+          }
+        }
+        """
+        try:
+            result = await self._guarded_execute(query, {"issueId": issue_node_id})
+        except Exception as exc:
+            logger.warning(
+                "find_pr_for_issue.query_failed",
+                issue_node_id=issue_node_id,
+                error=str(exc),
+            )
+            return None
+        node = result.get("node") or {}
+        prs = (node.get("closedByPullRequestsReferences") or {}).get("nodes") or []
+        for pr in prs:
+            if not isinstance(pr, dict):
+                continue
+            if pr.get("state") != "OPEN":
+                continue
+            pr_id = str(pr.get("id") or "")
+            pr_url = str(pr.get("url") or "")
+            if pr_id and pr_url:
+                return {"pr_node_id": pr_id, "pr_url": pr_url}
+        return None
 
     async def get_pr_reviews(self, pr_id: str) -> list[dict[str, Any]]:
         result = await self._guarded_execute(GET_PR_REVIEWS_QUERY, {"prId": pr_id})
@@ -727,7 +806,7 @@ class GitHubService:
             await self.move_card(item_id, status)
             return item_id
         except Exception as exc:
-            self._logger.warning("link_to_project_failed", content_id=content_id, error=str(exc))
+            logger.warning("link_to_project_failed", content_id=content_id, error=str(exc))
             return None
 
     async def request_reviewers(self, owner: str, repo: str, pr_number: int, reviewers: list[str]) -> None:
@@ -742,11 +821,11 @@ class GitHubService:
             async with httpx.AsyncClient(timeout=30) as client:
                 resp = await client.post(url, json={"reviewers": reviewers}, headers=headers)
             if resp.is_success:
-                self._logger.info("reviewers_requested", pr_number=pr_number, reviewers=reviewers)
+                logger.info("reviewers_requested", pr_number=pr_number, reviewers=reviewers)
             else:
-                self._logger.warning("request_reviewers_failed", pr_number=pr_number, status=resp.status_code, body=resp.text[:200])
+                logger.warning("request_reviewers_failed", pr_number=pr_number, status=resp.status_code, body=resp.text[:200])
         except Exception as exc:
-            self._logger.warning("request_reviewers_error", pr_number=pr_number, error=str(exc))
+            logger.warning("request_reviewers_error", pr_number=pr_number, error=str(exc))
 
     async def add_comment(self, subject_id: str, body: str) -> dict[str, Any]:
         result = await self._guarded_execute(ADD_COMMENT_MUTATION, {"subjectId": subject_id, "body": body})

@@ -153,12 +153,35 @@ class CircuitBreaker:
             self._transition(CircuitState.OPEN, "failure_threshold_exceeded")
 
     @asynccontextmanager
-    async def guard(self) -> AsyncGenerator[None, None]:
+    async def guard(
+        self,
+        ignore: type[BaseException] | tuple[type[BaseException], ...] = (),
+    ) -> AsyncGenerator[None, None]:
+        """Wrap a call with circuit-breaker accounting.
+
+        ``ignore`` is a class or tuple of classes; exceptions matching it
+        bypass failure recording (still propagated to the caller). Use this
+        for application-layer errors that aren't service-health signals —
+        e.g., a GraphQL UNPROCESSABLE response from a branch ruleset
+        rejection should not trip the GitHub breaker, because GitHub itself
+        is healthy and the call would fail identically on retry.
+        """
         if not self.allow_request():
             raise CircuitOpenError(self.service_name)
         try:
             yield
-        except Exception:
+        except Exception as exc:
+            if ignore and isinstance(exc, ignore):
+                # Application-layer error: propagate without counting against
+                # the breaker AND without recording success (the call did
+                # neither succeed nor indicate the service is unhealthy).
+                # Must still clear the HALF_OPEN probe-in-flight reservation
+                # that allow_request() set above — otherwise an ignored
+                # exception during a probe leaves the breaker permanently
+                # stuck (the flag blocks all subsequent probes).
+                if self._state == CircuitState.HALF_OPEN:
+                    self._half_open_probe_in_flight = False
+                raise
             self.record_failure()
             raise
         else:
@@ -250,7 +273,7 @@ class ResilientAgentService:
     async def check_health(self) -> dict[str, Any]:
         return await self._inner.check_health()
 
-    async def check_status(self, session_id: str) -> dict[str, Any]:
+    async def check_status(self, session_id: str, *, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         from coordinare.metrics import METRICS
         from coordinare.transport.base import TransportTimeoutError
 
@@ -261,7 +284,7 @@ class ResilientAgentService:
 
         @retry
         async def _retried() -> dict[str, Any]:
-            return await self._inner.check_status(session_id)
+            return await self._inner.check_status(session_id, payload=payload)
 
         try:
             async with self._circuit_breaker.guard():

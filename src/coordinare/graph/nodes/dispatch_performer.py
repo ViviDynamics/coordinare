@@ -39,6 +39,9 @@ _STAGE_TO_ROLE: dict[str, str] = {
     "architecting": "architect",
     "assessing": "assessor",
     "advocate": "advocate",
+    # 042: Closing pass — same persona shape as reviewer but distinct stage
+    # so _advance_stage doesn't loop back to the substantive reviewer.
+    "closing_review": "closer",
 }
 
 

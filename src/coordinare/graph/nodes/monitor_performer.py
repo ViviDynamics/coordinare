@@ -412,8 +412,31 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
                 ]
                 return state
 
+        # Include a fresh GitHub token in the status check so the performer
+        # can refresh its credentials mid-session (App tokens expire after 1 hour).
+        # Use the public ``get_fresh_github_token`` accessor rather than
+        # reaching into the workspace manager's private ``_auth`` — keeps
+        # the coupling narrow and testable.  Log failures at warning level
+        # with exc_type so repeated silent refresh failures (which would
+        # eventually produce 401 cascades from the performer) are visible.
+        status_payload: dict[str, Any] = {}
+        workspace_manager = state.get("workspace_manager")
+        if workspace_manager is not None and hasattr(workspace_manager, "get_fresh_github_token"):
+            try:
+                fresh_token = await workspace_manager.get_fresh_github_token()
+                if fresh_token:
+                    status_payload["github_token"] = fresh_token
+            except Exception as exc:
+                logger.warning(
+                    "monitor_performer.token_refresh_failed",
+                    error=str(exc),
+                    exc_type=type(exc).__name__,
+                    card_id=card_id,
+                    performer_stage=stage,
+                )
+
         try:
-            status = await service.check_status(str(session_id))
+            status = await service.check_status(str(session_id), payload=status_payload)
         except (TransportError, ConnectionError, TimeoutError) as exc:
             # Network / transport failure — transient, route through retry logic.
             # ResilientAgentService re-raises TransportError after exhausting
@@ -632,14 +655,46 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
                     if pr_url and isinstance(human_reviewers, list) and human_reviewers:
                         try:
                             pr_num = int(pr_url.rstrip("/").rsplit("/", 1)[-1])
-                            updated_card = updates.get("current_card", card)
-                            # Extract owner/repo from pr_url
                             parts = pr_url.rstrip("/").split("/")
                             owner = parts[-4]
                             repo = parts[-3]
                             await github.request_reviewers(owner, repo, pr_num, human_reviewers)
                         except Exception as exc:
                             logger.warning("request_human_reviewers_failed", error=str(exc))
+
+                # Notify that the card is ready for human review
+                notification_service = state.get("notification_service")
+                if notification_service is not None:
+                    from coordinare.models.notification import (
+                        EventType,
+                        NotificationEvent,
+                        NotificationSeverity,
+                    )
+                    card_title = str(card.get("title", ""))[:50]
+                    card_num = card.get("issue_number", "")
+                    card_ref = f"#{card_num} " if card_num else ""
+                    summary = f"👀 {card_ref}{card_title} — ready for human review"
+                    if pr_url:
+                        summary += f"\n   PR: {pr_url}"
+                    try:
+                        await notification_service.dispatch(
+                            NotificationEvent(
+                                event_type=EventType.card_transition,
+                                severity=NotificationSeverity.info,
+                                payload={
+                                    "event_type": "card_ready_for_review",
+                                    "severity": "info",
+                                    "source": "lifecycle",
+                                    "summary": summary,
+                                    "card_title": str(card.get("title", "")),
+                                    "card_id": card_id,
+                                },
+                                source="lifecycle",
+                                dedup_key=f"ready_for_review:{card_id}",
+                            )
+                        )
+                    except Exception as exc:
+                        logger.warning("ready_for_review_notification_failed", error=str(exc))
 
             # Apply the computed state updates.
             for key, value in updates.items():

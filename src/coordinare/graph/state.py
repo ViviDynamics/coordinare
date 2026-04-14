@@ -36,7 +36,7 @@ class AgentServiceProtocol(Protocol):
     ) -> dict[str, Any]: ...
     async def check_health(self) -> dict[str, Any]: ...
     async def relay_feedback(self, review_payload: dict[str, Any]) -> dict[str, Any]: ...
-    async def check_status(self, session_id: str) -> dict[str, Any]: ...
+    async def check_status(self, session_id: str, *, payload: dict[str, Any] | None = None) -> dict[str, Any]: ...
 
 
 class ClaudeServiceProtocol(Protocol):
@@ -85,6 +85,7 @@ class CoordinareState(TypedDict, total=False):
     config_path: Path | None
 
     human_reviewers: list[str]
+    trusted_bot_reviewers: list[str]
     blocked_reminder_hours: int
 
     open_questions: list[str]
@@ -112,6 +113,7 @@ class CoordinareState(TypedDict, total=False):
     requirements_changed_details: dict[str, Any]  # 030: diff details
     pending_override: dict[str, Any] | None  # 031: human override queued via dashboard or PR comment
     lifecycle_completed_at: datetime | None  # Cutoff for filtering old PR reviews after lifecycle completion
+    processed_review_ids: set[str]  # Review node IDs already processed — prevents re-dispatch loops
     card_tokens_total: int  # 034: accumulated token count for current card
     card_cost_estimate: float  # 034: estimated cost in dollars
     card_budget_alert_sent: bool  # 034: True if budget exceeded notification was sent

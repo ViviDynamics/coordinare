@@ -64,6 +64,127 @@ def test_build_snapshot_with_no_dispatch_has_no_session_id() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 042 — pr_url / pr_node_id None coercion (regression: writes literal "None")
+# ---------------------------------------------------------------------------
+
+
+def test_build_snapshot_none_pr_fields_serialize_to_null_not_string() -> None:
+    """042: A card with pr_url=None must serialize to JSON null in the
+    snapshot — NOT to the literal string "None". The previous bug used
+    str(card_dict.get("pr_url", "")) which returns "None" when the value
+    is None (because the default "" only fires on missing keys), and the
+    string "None" is truthy so the ``or None`` guard didn't help.
+    Restored snapshots then carried "pr_node_id": "None" into monitor_pr,
+    which queried GitHub with "None" and tripped the circuit breaker."""
+    daemon = _make_daemon()
+    daemon._state["current_card"] = {
+        "id": "card-1",
+        "title": "Test",
+        "status": "IN_REVIEW",
+        "pr_url": None,
+        "pr_node_id": None,
+    }
+    snapshot = daemon._build_snapshot()
+    assert snapshot.pr_url is None
+    assert snapshot.pr_node_id is None
+    # Crucially: when serialized to JSON, these come out as null not "None"
+    json_payload = snapshot.model_dump_json()
+    assert '"pr_url":null' in json_payload
+    assert '"pr_node_id":null' in json_payload
+    assert '"None"' not in json_payload
+
+
+def test_build_snapshot_empty_string_pr_fields_serialize_to_null() -> None:
+    """042: Empty-string pr_url/pr_node_id (e.g. from a freshly-created
+    card before the implementer opens the PR) also serialize to null,
+    not to empty string."""
+    daemon = _make_daemon()
+    daemon._state["current_card"] = {
+        "id": "card-1",
+        "title": "Test",
+        "pr_url": "",
+        "pr_node_id": "",
+    }
+    snapshot = daemon._build_snapshot()
+    assert snapshot.pr_url is None
+    assert snapshot.pr_node_id is None
+
+
+def test_build_snapshot_real_pr_fields_preserved() -> None:
+    """042: When pr_url/pr_node_id are real strings, they must round-trip
+    unchanged — the None-coercion fix must not strip valid values."""
+    daemon = _make_daemon()
+    daemon._state["current_card"] = {
+        "id": "card-1",
+        "title": "Test",
+        "pr_url": "https://github.com/org/repo/pull/42",
+        "pr_node_id": "PR_kwDO_real",
+    }
+    snapshot = daemon._build_snapshot()
+    assert snapshot.pr_url == "https://github.com/org/repo/pull/42"
+    assert snapshot.pr_node_id == "PR_kwDO_real"
+
+
+def test_build_snapshot_none_card_fields_all_serialize_to_null() -> None:
+    """042: Every card field that goes through _str_or_none must serialize
+    to null when the underlying value is None — not just pr_url/pr_node_id.
+    This catches future fields that could regress to str(None) → "None"."""
+    daemon = _make_daemon()
+    daemon._state["current_card"] = {
+        "id": None,
+        "title": None,
+        "status": None,
+        "issue_id": None,
+        "pr_url": None,
+        "pr_node_id": None,
+    }
+    snapshot = daemon._build_snapshot()
+    assert snapshot.active_card_id is None
+    assert snapshot.active_card_title is None
+    assert snapshot.active_card_column is None
+    assert snapshot.active_card_issue_id is None
+    assert snapshot.pr_url is None
+    assert snapshot.pr_node_id is None
+    json_payload = snapshot.model_dump_json()
+    assert '"None"' not in json_payload
+
+
+def test_build_snapshot_none_session_id_serializes_to_null() -> None:
+    """042: Same coercion applies to agent_session_id from the dispatch dict."""
+    daemon = _make_daemon()
+    daemon._state["agent_dispatch"] = {"session_id": None}
+    snapshot = daemon._build_snapshot()
+    assert snapshot.agent_session_id is None
+
+
+def test_build_snapshot_round_trip_through_disk() -> None:
+    """042: End-to-end regression — _build_snapshot followed by
+    model_validate_json must round-trip None values cleanly without the
+    literal "None" string corrupting the restored state."""
+    daemon = _make_daemon()
+    daemon._state["current_card"] = {
+        "id": "card-1",
+        "title": "Test card",
+        "status": "BLOCKED",
+        "pr_url": None,
+        "pr_node_id": None,
+    }
+    snapshot = daemon._build_snapshot()
+    payload = snapshot.model_dump_json()
+    restored = WorkflowSnapshot.model_validate_json(payload)
+    assert restored.pr_url is None
+    assert restored.pr_node_id is None
+    # And after restoring into a fresh daemon, the card must not carry
+    # the string "None" forward — that was the symptom that broke
+    # monitor_pr's get_pr_reviews call.
+    new_daemon = _make_daemon()
+    new_daemon._restore_from_snapshot(restored)
+    card = new_daemon._state.get("current_card") or {}
+    assert card.get("pr_node_id") in (None, "")
+    assert card.get("pr_url") in (None, "")
+
+
+# ---------------------------------------------------------------------------
 # _restore_from_snapshot
 # ---------------------------------------------------------------------------
 

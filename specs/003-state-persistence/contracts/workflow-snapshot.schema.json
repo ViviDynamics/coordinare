@@ -106,6 +106,12 @@
       "format": "date-time",
       "description": "UTC timestamp when the performer lifecycle last completed all stages. Used by monitor_pr to filter out old reviews that were already addressed.",
       "default": null
+    },
+    "processed_review_ids": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Review node IDs recorded by classify_human_feedback after staging relay feedback. Used by monitor_pr to filter already-processed reviews and prevent re-dispatch loops.",
+      "default": []
     }
   }
 }

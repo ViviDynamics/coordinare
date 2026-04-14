@@ -360,3 +360,144 @@ def test_half_open_probe_flag_reset_on_failure():
     assert cb.state == CircuitState.OPEN
     # The internal flag is cleared so the next HALF_OPEN probe can proceed
     assert cb._half_open_probe_in_flight is False
+
+
+# ---------------------------------------------------------------------------
+# 042 — guard(ignore=...) skips failure accounting for application-layer errors
+# ---------------------------------------------------------------------------
+
+
+class _AppError(Exception):
+    """Stand-in for PermanentGitHubError in tests — represents an error
+    that's logically the application's fault, not the service being down."""
+
+
+@pytest.mark.asyncio
+async def test_guard_ignore_does_not_record_failure():
+    """guard(ignore=AppError) must not count toward the failure threshold —
+    otherwise a misconfigured downstream (e.g., branch ruleset rejection)
+    trips the breaker and starves all other healthy traffic."""
+    cb = _make_cb(threshold=2, recovery=10.0)
+
+    # Fire 5 ignored exceptions — should NOT trip the breaker
+    for _ in range(5):
+        with pytest.raises(_AppError):
+            async with cb.guard(ignore=_AppError):
+                raise _AppError("rejected by app layer")
+
+    assert cb.state == CircuitState.CLOSED
+
+
+@pytest.mark.asyncio
+async def test_guard_ignore_still_propagates_exception():
+    """Ignored exceptions must still propagate to the caller — only the
+    failure accounting is skipped, not the error itself."""
+    cb = _make_cb(threshold=2, recovery=10.0)
+
+    with pytest.raises(_AppError, match="boom"):
+        async with cb.guard(ignore=_AppError):
+            raise _AppError("boom")
+
+
+@pytest.mark.asyncio
+async def test_guard_ignore_does_not_record_success():
+    """Ignored exceptions are neither failures nor successes — they leave
+    the breaker state unchanged.  This matters in HALF_OPEN: an app-layer
+    error during a probe must not flip the breaker to CLOSED prematurely."""
+    cb = _make_cb(threshold=1, recovery=5.0)
+
+    base = 1000.0
+    with patch.object(time, "monotonic", return_value=base):
+        cb.record_failure()
+    assert cb.state == CircuitState.OPEN
+
+    # Move to HALF_OPEN
+    with patch.object(time, "monotonic", return_value=base + 5.0):
+        cb.allow_request()
+    assert cb.state == CircuitState.HALF_OPEN
+
+    # Probe call hits an app-layer error — must NOT close the breaker
+    # (the service is still considered untrusted; we haven't proven recovery).
+    with patch.object(time, "monotonic", return_value=base + 6.0), pytest.raises(_AppError):
+        async with cb.guard(ignore=_AppError):
+            raise _AppError("app-level rejection")
+
+    # Still HALF_OPEN — the probe was inconclusive, neither success nor failure
+    assert cb.state == CircuitState.HALF_OPEN
+
+
+@pytest.mark.asyncio
+async def test_guard_non_ignored_exception_still_records_failure():
+    """Defensive: ignore= only matches the listed types.  Other exceptions
+    must still count as failures so genuine outages still trip the breaker."""
+    cb = _make_cb(threshold=2, recovery=10.0)
+
+    for _ in range(2):
+        with pytest.raises(RuntimeError):
+            async with cb.guard(ignore=_AppError):
+                raise RuntimeError("real network error")
+
+    assert cb.state == CircuitState.OPEN
+
+
+@pytest.mark.asyncio
+async def test_guard_ignore_accepts_tuple_of_types():
+    """ignore= takes either a single class or a tuple — same semantics as
+    `except`.  Verifies both shapes work."""
+    cb = _make_cb(threshold=2, recovery=10.0)
+
+    class _OtherAppError(Exception): ...
+
+    for exc in (_AppError("a"), _OtherAppError("b")):
+        with pytest.raises(type(exc)):
+            async with cb.guard(ignore=(_AppError, _OtherAppError)):
+                raise exc
+
+    assert cb.state == CircuitState.CLOSED
+
+
+@pytest.mark.asyncio
+async def test_guard_ignore_default_is_empty_tuple():
+    """Without ignore=, behaviour is identical to before — every exception
+    counts as a failure (backward compatibility)."""
+    cb = _make_cb(threshold=2, recovery=10.0)
+
+    for _ in range(2):
+        with pytest.raises(_AppError):
+            async with cb.guard():  # no ignore=
+                raise _AppError("counts as failure")
+
+    assert cb.state == CircuitState.OPEN
+
+
+@pytest.mark.asyncio
+async def test_guard_ignore_in_half_open_clears_probe_flag():
+    """Copilot review: when an ignored exception fires during a HALF_OPEN
+    probe, the probe-in-flight flag MUST be cleared — otherwise later
+    callers see the flag still set and get blocked indefinitely.
+    The ignore path doesn't flip state (inconclusive probe), but it
+    must release the reservation allow_request() acquired."""
+    cb = _make_cb(threshold=1, recovery=5.0)
+
+    base = 1000.0
+    # Trip to OPEN
+    with patch.object(time, "monotonic", return_value=base):
+        cb.record_failure()
+    assert cb.state == CircuitState.OPEN
+
+    # Probe #1 — transitions to HALF_OPEN, raises ignored exception
+    with patch.object(time, "monotonic", return_value=base + 6.0), pytest.raises(_AppError):
+        async with cb.guard(ignore=_AppError):
+            raise _AppError("ignored during probe")
+
+    # Still HALF_OPEN — the probe was inconclusive
+    assert cb.state == CircuitState.HALF_OPEN
+    # But the probe-in-flight flag must be cleared so a later call can probe
+    assert cb._half_open_probe_in_flight is False
+
+    # Probe #2 — must be allowed (not blocked by stale flag)
+    with patch.object(time, "monotonic", return_value=base + 7.0):
+        async with cb.guard(ignore=_AppError):
+            pass  # success
+    # Success closed the breaker
+    assert cb.state == CircuitState.CLOSED
