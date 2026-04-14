@@ -10,6 +10,7 @@ import pytest
 from performer.models import Score, Stand
 from performer.workspace import (
     BranchConflictError,
+    CIRunResult,
     WorkspaceSetupError,
     _git_credential_env,
     _redact_auth_headers,
@@ -17,6 +18,7 @@ from performer.workspace import (
     clone_repository,
     get_head_sha,
     push_branch,
+    run_command,
 )
 
 
@@ -601,3 +603,51 @@ class TestCommitFile:
         with patch("performer.workspace._run_git", side_effect=mock_run_git):
             with pytest.raises(WorkspaceSetupError, match="git push failed"):
                 await commit_file(stand, "docs/plan.md", "content", "chore: test")
+
+
+# ---------------------------------------------------------------------------
+# 043 — run_command tests
+# ---------------------------------------------------------------------------
+
+
+class TestRunCommand:
+    @pytest.mark.asyncio
+    async def test_success_returns_zero_exit(self, tmp_path: Path) -> None:
+        result = await run_command("echo hello", tmp_path)
+        assert result.success is True
+        assert result.exit_code == 0
+        assert "hello" in result.stdout
+        assert result.command == "echo hello"
+        assert result.duration_seconds >= 0
+
+    @pytest.mark.asyncio
+    async def test_failure_returns_nonzero_exit(self, tmp_path: Path) -> None:
+        result = await run_command("exit 1", tmp_path)
+        assert result.success is False
+        assert result.exit_code == 1
+
+    @pytest.mark.asyncio
+    async def test_timeout_returns_failure(self, tmp_path: Path) -> None:
+        result = await run_command("sleep 10", tmp_path, timeout=1)
+        assert result.success is False
+        assert result.exit_code == -1
+        assert "timed out" in result.stderr.lower()
+
+    @pytest.mark.asyncio
+    async def test_stdout_truncated(self, tmp_path: Path) -> None:
+        # Generate output longer than _MAX_OUTPUT (2000 chars)
+        result = await run_command("python3 -c \"print('x' * 5000)\"", tmp_path)
+        assert result.success is True
+        assert len(result.stdout) <= 2000
+
+    @pytest.mark.asyncio
+    async def test_stderr_captured(self, tmp_path: Path) -> None:
+        result = await run_command("python3 -c \"import sys; sys.stderr.write('err')\"", tmp_path)
+        assert "err" in result.stderr
+
+    @pytest.mark.asyncio
+    async def test_result_is_frozen_dataclass(self, tmp_path: Path) -> None:
+        result = await run_command("echo ok", tmp_path)
+        assert isinstance(result, CIRunResult)
+        with pytest.raises(AttributeError):
+            result.success = False  # type: ignore[misc]

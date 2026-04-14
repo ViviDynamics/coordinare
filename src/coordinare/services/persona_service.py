@@ -19,6 +19,20 @@ if TYPE_CHECKING:
 
 _logger = structlog.get_logger(__name__)
 
+# 043: Shared CI-ownership directives — DRY across all code-touching personas.
+_CI_COMMITTER_DIRECTIVE = (
+    "**CI ownership (043)**: Before committing, run the project's CI-equivalent "
+    "commands. For Ruby: `bundle exec rubocop` (lint) and `bundle exec rspec` (tests). "
+    "For Python: `ruff check .` and `pytest`. For Node: `npm run lint` and `npm test`. "
+    "If any check fails, fix the issue before committing. Do NOT commit code that "
+    "fails lint or tests.\n\n"
+)
+_CI_REVIEWER_DIRECTIVE = (
+    "**CI ownership (043)**: Run the project's linter (`rubocop`, `eslint`, "
+    "`ruff`, etc.) against the PR's changed files as part of your review. "
+    "Include any offenses in your comments. Do not approve if lint fails.\n\n"
+)
+
 DEFAULT_INSTRUCTIONS: dict[str, str] = {
     "advocate": (
         "Scan GitHub issues and identify the highest-value, well-specified items "
@@ -94,6 +108,7 @@ DEFAULT_INSTRUCTIONS: dict[str, str] = {
         "Before pushing, run the full test suite locally and fix any failures — "
         "do NOT push code that breaks existing tests or leaves new code untested. "
         "Open a pull request with a clear description referencing the issue when done.\n\n"
+        + _CI_COMMITTER_DIRECTIVE +
         "When addressing review feedback:\n"
         "1. Read ALL comments carefully and identify the PATTERN behind them — reviewers "
         "often tag a few examples but expect you to fix every similar instance across the "
@@ -147,6 +162,7 @@ DEFAULT_INSTRUCTIONS: dict[str, str] = {
         "feedback would change functionality or scope, that's for the assessor to "
         "decide, not the reviewer. If it's a real code quality, correctness, or "
         "convention problem, put it in 'comments' and set approved=false.\n\n"
+        + _CI_REVIEWER_DIRECTIVE +
         "Do NOT approve if there are any linter disables, convention violations, "
         "correctness issues, or unaddressed review feedback. Only approve when the "
         "code is genuinely ready for a human reviewer to glance at and merge. "
@@ -161,6 +177,7 @@ DEFAULT_INSTRUCTIONS: dict[str, str] = {
     "security": (
         "Analyse the changes for OWASP Top 10 vulnerabilities, secret leakage, and "
         "insecure patterns. "
+        + _CI_COMMITTER_DIRECTIVE +
         "When done, output your findings as a JSON object with these fields:\n"
         '{"passed": true/false, "findings": [{"severity": "critical|high|medium|low", '
         '"category": "...", "description": "...", "file": "...", "routing": "implementer|architect"}]}\n'
@@ -170,6 +187,7 @@ DEFAULT_INSTRUCTIONS: dict[str, str] = {
     "qa": (
         "Validate that the implementation satisfies every acceptance criterion by running "
         "the test suite and writing new tests for uncovered paths. "
+        + _CI_COMMITTER_DIRECTIVE +
         "When done, output your QA report as a JSON object with these fields:\n"
         '{"passed": true/false, "criteria_checked": 5, "criteria_passed": 4, '
         '"failures": [{"criterion": "...", "expected": "...", "actual": "...", "test": "..."}], '
@@ -181,6 +199,7 @@ DEFAULT_INSTRUCTIONS: dict[str, str] = {
         "preceding lifecycle stage — implementer, reviewer, security, qa, "
         "and tech_writer have already run. Your job is the final sweep "
         "before the PR goes to a human reviewer.\n\n"
+        + _CI_REVIEWER_DIRECTIVE +
         "## What to do\n"
         "1. Read the PR's open review threads (from any author — humans, the "
         "coordinare bot, Copilot, other bots).\n"
@@ -211,6 +230,7 @@ DEFAULT_INSTRUCTIONS: dict[str, str] = {
     ),
     "tech_writer": (
         "You are responsible for documentation quality and the project wiki. "
+        + _CI_COMMITTER_DIRECTIVE +
         "Your tasks, in order of priority:\n\n"
         "## 1. Clean up docs/cards/ for this card\n"
         "Check that assessment.md, plan.md, tasks.md, security.md, and qa.md in "

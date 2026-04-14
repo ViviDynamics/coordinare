@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "coordinare/ci-detection-result/v1",
+  "title": "CIDetectionResult",
+  "description": "Result of convention-based CI command detection for a workspace.",
+  "type": "object",
+  "required": ["stack"],
+  "additionalProperties": false,
+  "properties": {
+    "lint_command": {
+      "type": ["string", "null"],
+      "description": "Shell command to run lint/style checks. Null when no linter detected."
+    },
+    "test_command": {
+      "type": ["string", "null"],
+      "description": "Shell command to run tests. Null when no test runner detected."
+    },
+    "stack": {
+      "type": "string",
+      "enum": ["ruby", "python", "node", "make", "unknown"],
+      "description": "Detected technology stack."
+    },
+    "detected_from": {
+      "type": "string",
+      "description": "File or convention that triggered detection (e.g. '.rubocop.yml', 'pyproject.toml')."
+    }
+  }
+}

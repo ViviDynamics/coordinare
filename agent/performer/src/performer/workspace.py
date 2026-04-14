@@ -8,6 +8,8 @@ import os
 import re
 import shutil
 import tempfile
+import time as _time
+from dataclasses import dataclass
 from pathlib import Path
 
 import structlog
@@ -332,3 +334,83 @@ def cleanup_stand(stand: Stand) -> None:
     """Remove the stand directory unconditionally."""
     shutil.rmtree(stand.path, ignore_errors=True)
     log.info("cleaned up stand", path=str(stand.path))
+
+
+# ---------------------------------------------------------------------------
+# 043 — CI command execution helper
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class CIRunResult:
+    """Result of running a CI command in the workspace."""
+
+    success: bool
+    exit_code: int
+    stdout: str
+    stderr: str
+    command: str
+    duration_seconds: float
+
+
+_MAX_OUTPUT = 2000  # truncate stdout/stderr to this many chars
+
+
+def _fail_result(cmd: str, start: float, stderr_msg: str) -> CIRunResult:
+    """Build a failure CIRunResult — shared by timeout and exception paths."""
+    return CIRunResult(
+        success=False,
+        exit_code=-1,
+        stdout="",
+        stderr=stderr_msg[:_MAX_OUTPUT],
+        command=cmd,
+        duration_seconds=_time.monotonic() - start,
+    )
+
+
+async def _kill_proc(proc: asyncio.subprocess.Process | None) -> None:
+    """Kill a subprocess and wait for it to exit (if it's still running)."""
+    if proc is not None and proc.returncode is None:
+        proc.kill()
+        await proc.wait()
+
+
+async def run_command(
+    cmd: str,
+    cwd: Path,
+    timeout: int = 120,
+) -> CIRunResult:
+    """Run a shell command in *cwd* and return a structured result.
+
+    Used by the performer to execute lint/test commands before committing.
+    Truncates stdout/stderr to ``_MAX_OUTPUT`` chars to prevent oversized
+    payloads in error reports.
+    """
+    start = _time.monotonic()
+    proc: asyncio.subprocess.Process | None = None
+    try:
+        proc = await asyncio.create_subprocess_shell(
+            cmd,
+            cwd=str(cwd),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout_bytes, stderr_bytes = await asyncio.wait_for(
+            proc.communicate(), timeout=timeout,
+        )
+    except asyncio.CancelledError:
+        await _kill_proc(proc)
+        raise
+    except asyncio.TimeoutError:
+        await _kill_proc(proc)
+        return _fail_result(cmd, start, f"Command timed out after {timeout}s")
+    except Exception as exc:
+        await _kill_proc(proc)
+        return _fail_result(cmd, start, str(exc))
+    return CIRunResult(
+        success=proc.returncode == 0,
+        exit_code=proc.returncode if proc.returncode is not None else -1,
+        stdout=(stdout_bytes.decode("utf-8", errors="replace"))[:_MAX_OUTPUT],
+        stderr=(stderr_bytes.decode("utf-8", errors="replace"))[:_MAX_OUTPUT],
+        command=cmd,
+        duration_seconds=_time.monotonic() - start,
+    )

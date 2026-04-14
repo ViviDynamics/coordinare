@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json as _json_module
+from pathlib import Path
 import os
 import re
 import sys
@@ -27,11 +28,55 @@ from performer.workspace import (
     clone_repository,
     get_head_sha,
     push_branch,
+    run_command,
 )
 
 log = structlog.get_logger(__name__)
 
 _CODE_FENCE_RE = re.compile(r"```(?:json)?\s*\n?(.*?)\n?\s*```", re.DOTALL | re.IGNORECASE)
+
+
+# ---------------------------------------------------------------------------
+# 043 — Pre-commit CI check
+# ---------------------------------------------------------------------------
+
+
+async def _run_ci_check(stand_path: Path, label: str = "performer") -> tuple[bool, str]:
+    """Run the detected lint command in the workspace before committing.
+
+    Returns ``(True, "")`` if lint passes or no linter detected, or
+    ``(False, error_output)`` if lint fails.  The performer should either
+    fix the issue or bail with an error.
+    """
+    try:
+        from coordinare.services.ci_detection import detect
+    except ImportError:
+        # Performer may be deployed without the coordinare package installed
+        # (standalone mode).  Fall back gracefully — the coordinare-side gate
+        # provides the backstop.
+        log.info("ci_check.coordinare_not_available", label=label)
+        return True, ""
+
+    result = detect(stand_path)
+    if result.lint_command is None:
+        log.info("ci_check.no_lint_detected", label=label, stack=result.stack)
+        return True, ""
+
+    log.info("ci_check.running", label=label, command=result.lint_command, stack=result.stack)
+    run_result = await run_command(result.lint_command, stand_path, timeout=120)
+    if run_result.success:
+        log.info("ci_check.passed", label=label, command=result.lint_command, duration=run_result.duration_seconds)
+        return True, ""
+
+    error_output = (run_result.stderr + "\n" + run_result.stdout).strip()
+    log.warning(
+        "ci_check.failed",
+        label=label,
+        command=result.lint_command,
+        exit_code=run_result.exit_code,
+        output_preview=error_output[:200],
+    )
+    return False, error_output
 
 
 def _extract_json(text: str) -> dict | list | None:
@@ -896,6 +941,19 @@ async def handle_status(
                 status="docs_committed",
                 session_id=perf.session_id,
                 files_modified=perf.docs_files_modified,
+            )
+
+        # 043: Run lint before pushing — catch CI violations at the source
+        # rather than discovering them post-push when the PR is already in review.
+        ci_ok, ci_error = await _run_ci_check(perf.stand.path, label=perf.role)
+        if not ci_ok:
+            log.warning("pre_push_ci_failed", role=perf.role, error_preview=ci_error[:200])
+            perf.state = "changes_requested"
+            perf.review_comments = [{"body": f"Lint failed before push:\n{ci_error[:500]}"}]
+            return PerformerResponse(
+                status="changes_requested",
+                session_id=perf.session_id,
+                comments=[{"body": f"Lint failed before push:\n{ci_error[:500]}"}],
             )
 
         # Default path: push branch and open PR

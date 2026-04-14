@@ -273,6 +273,58 @@ def _advance_stage(state: CoordinareState, status: dict[str, Any] | None = None)
         if plan_path:
             card["plan_path"] = plan_path
 
+    # 043: CI lint gate — defence-in-depth before transitioning to
+    # monitoring_pr.  Run the detected lint command on the workspace if
+    # it's still available (performer may have already torn it down).
+    # If lint fails, route back to the implementer with the failure output.
+    # Note: _advance_stage is a sync function, so we use subprocess.run.
+    workspace_path = state.get("workspace_path")
+    if workspace_path is not None:
+        from pathlib import Path as _Path
+
+        ws = _Path(workspace_path) if not isinstance(workspace_path, _Path) else workspace_path
+        if ws.is_dir():
+            from coordinare.services.ci_detection import detect
+
+            ci_result = detect(ws)
+            if ci_result.lint_command:
+                import shlex
+                import subprocess
+
+                try:
+                    proc = subprocess.run(
+                        shlex.split(ci_result.lint_command),
+                        cwd=str(ws),
+                        capture_output=True,
+                        timeout=60,
+                    )
+                    if proc.returncode != 0:
+                        lint_output = ((proc.stderr or b"") + (proc.stdout or b"")).decode("utf-8", errors="replace")[:2000]
+                        logger.warning(
+                            "ci_gate.lint_failed",
+                            command=ci_result.lint_command,
+                            exit_code=proc.returncode,
+                            output_preview=lint_output[:200],
+                        )
+                        return {
+                            "performer_stage": "implementing",
+                            "phase": "dispatching",
+                            "agent_dispatch": {},
+                            "agent_dispatch_at": None,
+                            "current_card": card,
+                            "relay_feedback": [{"body": f"CI lint gate failed:\n```\n{lint_output}\n```", "author_login": "coordinare"}],
+                        }
+                    logger.info("ci_gate.lint_passed", command=ci_result.lint_command)
+                except (subprocess.TimeoutExpired, OSError) as exc:
+                    logger.warning("ci_gate.lint_error", command=ci_result.lint_command, error=str(exc))
+                    # Don't block on gate execution errors — proceed to monitoring_pr
+            else:
+                logger.info("ci_gate.no_lint_detected", stack=ci_result.stack)
+        else:
+            logger.info("ci_gate.workspace_gone", workspace_path=str(workspace_path))
+    else:
+        logger.info("ci_gate.no_workspace_path")
+
     card["previous_status"] = card.get("status", "IN_PROGRESS")
     card["status"] = "IN_REVIEW"
 
