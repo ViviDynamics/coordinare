@@ -25,7 +25,10 @@ _CI_COMMITTER_DIRECTIVE = (
     "commands. For Ruby: `bundle exec rubocop` (lint) and `bundle exec rspec` (tests). "
     "For Python: `ruff check .` and `pytest`. For Node: `npm run lint` and `npm test`. "
     "If any check fails, fix the issue before committing. Do NOT commit code that "
-    "fails lint or tests.\n\n"
+    "fails lint or tests. "
+    "Do NOT run lint or test commands yourself via tool-use — the coordinare runs "
+    "CI checks automatically before and after your work. Focus only on reading "
+    "and fixing code.\n\n"
 )
 _CI_REVIEWER_DIRECTIVE = (
     "**CI ownership (043)**: Run the project's linter (`rubocop`, `eslint`, "

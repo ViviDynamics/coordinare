@@ -3,8 +3,19 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import patch
+
+import pytest
 
 from coordinare.services.ci_detection import detect
+
+
+# 044: Mock _verify_tool to always return True in detection tests.
+# These tests verify file-convention detection logic, not tool installation.
+@pytest.fixture(autouse=True)
+def _mock_verify_tool():
+    with patch("coordinare.services.ci_detection._verify_tool", return_value=True):
+        yield
 
 # ---------------------------------------------------------------------------
 # T010 — Ruby detection

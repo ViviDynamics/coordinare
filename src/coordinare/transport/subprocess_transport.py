@@ -198,7 +198,38 @@ class SubprocessTransport:
             raise TransportError(f"Agent process exited with code {returncode}")
         if not data or not data.strip():
             raise TransportError("Agent process produced no output")
-        try:
-            return ProtocolResponse.model_validate_json(data.strip())
-        except Exception as exc:
-            raise TransportError(f"Invalid agent response: {exc}") from exc
+
+        # 044: Resilient line-by-line parsing.  Performer subprocesses can
+        # emit non-JSON lines (ANSI log output, bundler diagnostics, bare
+        # strings) that share stdout with the protocol channel.  Skip non-
+        # JSON lines and accept the first valid JSON response.  Valid JSON
+        # with wrong schema (Pydantic validation error) raises immediately.
+        # If no valid JSON found after all lines, raise TransportError.
+        import json as _json
+
+        lines = data.strip().split(b"\n")
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            # First check: is this even valid JSON?  If not, skip it
+            # (diagnostic noise from subprocesses).  If it IS valid JSON
+            # but fails Pydantic validation (wrong schema), that's a real
+            # protocol error — raise immediately rather than skipping.
+            try:
+                _json.loads(stripped)
+            except (ValueError, TypeError):
+                logger.debug(
+                    "transport.skipping_non_json_line",
+                    line_preview=stripped[:120].decode("utf-8", errors="replace"),
+                )
+                continue
+            # Valid JSON — try Pydantic parse.  If this fails, it's a
+            # schema error (real problem), not noise.
+            try:
+                return ProtocolResponse.model_validate_json(stripped)
+            except Exception as exc:
+                raise TransportError(f"Valid JSON but invalid protocol response: {exc}") from exc
+        raise TransportError(
+            f"No valid JSON response in output ({len(lines)} lines checked)",
+        )

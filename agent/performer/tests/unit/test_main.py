@@ -1465,6 +1465,7 @@ class TestTechWriterPerformer:
 
     @pytest.mark.asyncio
     async def test_docs_committed_with_files(self) -> None:
+        """044: Tech writer uses batch commit — single call for all files."""
         import json
         perf = self._make_perf()
         output = json.dumps({"files": [
@@ -1472,12 +1473,12 @@ class TestTechWriterPerformer:
             {"path": "README.md", "content": "# Updated README"},
         ]})
         perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
-        mock_commit = AsyncMock()
-        with patch("performer.main.commit_file", new=mock_commit):
+        mock_batch = AsyncMock(return_value=["CHANGELOG.md", "README.md"])
+        with patch("performer.main.commit_files", new=mock_batch):
             resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
         assert resp.status == "docs_committed"
         assert resp.files_modified == ["CHANGELOG.md", "README.md"]
-        assert mock_commit.call_count == 2
+        mock_batch.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_docs_committed_empty_diff(self) -> None:
@@ -1499,19 +1500,20 @@ class TestTechWriterPerformer:
 
     @pytest.mark.asyncio
     async def test_docs_commit_failure_returns_error(self) -> None:
+        """044: Batch commit failure returns error with diagnostic."""
         import json
         perf = self._make_perf()
         output = json.dumps({"files": [{"path": "README.md", "content": "new content"}]})
         perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
-        mock_commit = AsyncMock(side_effect=Exception("git push failed"))
-        with patch("performer.main.commit_file", new=mock_commit):
+        mock_batch = AsyncMock(side_effect=Exception("git push failed"))
+        with patch("performer.main.commit_files", new=mock_batch):
             resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
         assert resp.status == "error"
-        assert "README.md" in (resp.reason or "")
+        assert "batch-commit" in (resp.reason or "").lower() or "git push" in (resp.reason or "")
 
     @pytest.mark.asyncio
     async def test_docs_malformed_files_skipped(self) -> None:
-        """Malformed file entries are skipped; valid ones still committed."""
+        """044: Malformed file entries are filtered before batch commit."""
         import json
         perf = self._make_perf()
         output = json.dumps({"files": [
@@ -1521,26 +1523,29 @@ class TestTechWriterPerformer:
             {"no_path_key": True},
         ]})
         perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
-        mock_commit = AsyncMock()
-        with patch("performer.main.commit_file", new=mock_commit):
+        mock_batch = AsyncMock(return_value=["CHANGELOG.md"])
+        with patch("performer.main.commit_files", new=mock_batch):
             resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
         assert resp.status == "docs_committed"
         assert resp.files_modified == ["CHANGELOG.md"]
-        mock_commit.assert_called_once()
+        mock_batch.assert_called_once()
+        # Only the valid file should be in the batch
+        call_files = mock_batch.call_args[0][1]
+        assert len(call_files) == 1
+        assert call_files[0]["path"] == "CHANGELOG.md"
 
     @pytest.mark.asyncio
     async def test_docs_idempotent_commit_still_reports_file(self) -> None:
-        """When commit_file is a no-op (identical content), file is still reported as processed."""
+        """044: When batch commit returns empty (no changes), files list is empty."""
         import json
         perf = self._make_perf()
         output = json.dumps({"files": [{"path": "README.md", "content": "same content"}]})
         perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
-        # commit_file succeeds but doesn't actually commit (no-op)
-        mock_commit = AsyncMock()
-        with patch("performer.main.commit_file", new=mock_commit):
+        mock_batch = AsyncMock(return_value=[])  # no-op: no actual changes
+        with patch("performer.main.commit_files", new=mock_batch):
             resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
         assert resp.status == "docs_committed"
-        assert resp.files_modified == ["README.md"]  # still reported as processed
+        assert resp.files_modified == []
 
 
 # ---------------------------------------------------------------------------

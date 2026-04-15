@@ -31,6 +31,47 @@ class CIDetectionResult:
 
 
 # ---------------------------------------------------------------------------
+# 044: Tool verification — check tool is installed before returning command
+# ---------------------------------------------------------------------------
+
+
+def _verify_tool(command: str, cwd: Path) -> bool:
+    """Check that the first word of *command* is an executable tool.
+
+    Runs ``{tool} --version`` with a 5s timeout.  Returns True if it
+    exits 0, False otherwise.  Used to avoid returning lint commands
+    for tools that aren't installed (which would produce confusing
+    errors and stdout contamination).
+    """
+    import shlex
+    import subprocess
+
+    parts = shlex.split(command)
+    if not parts:
+        return False
+    # Extract just the tool binary for --version check.
+    # "bundle exec rubocop" → ["bundle", "exec", "rubocop", "--version"]
+    # "ruff check ." → ["ruff", "--version"] (drop subcommand args)
+    # "npm run lint" → ["npm", "--version"]
+    if parts[0] == "bundle" and len(parts) >= 3:
+        # Keep "bundle exec <tool>" for Ruby tools
+        verify_cmd = [*parts[:3], "--version"]
+    else:
+        # Just the first word (the binary itself)
+        verify_cmd = [parts[0], "--version"]
+    try:
+        result = subprocess.run(
+            verify_cmd,
+            cwd=str(cwd),
+            capture_output=True,
+            timeout=5,
+        )
+        return result.returncode == 0
+    except (subprocess.TimeoutExpired, OSError, FileNotFoundError):
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Detection logic — first match wins (priority order)
 # ---------------------------------------------------------------------------
 
@@ -156,6 +197,22 @@ def detect(workspace_path: Path) -> CIDetectionResult:
     for detector in (_detect_ruby, _detect_python, _detect_node, _detect_make):
         result = detector(workspace_path)
         if result is not None:
+            # 044: Verify lint tool is installed before returning the command.
+            # Skip verification for make targets (no --version support).
+            lint_cmd = result.lint_command
+            if lint_cmd and result.stack != "make" and not _verify_tool(lint_cmd, workspace_path):
+                    logger.warning(
+                        "ci_detection.tool_not_available",
+                        lint_command=lint_cmd,
+                        stack=result.stack,
+                        workspace=str(workspace_path),
+                    )
+                    result = CIDetectionResult(
+                        lint_command=None,
+                        test_command=result.test_command,
+                        stack=result.stack,
+                        detected_from=result.detected_from,
+                    )
             logger.info(
                 "ci_detection.detected",
                 stack=result.stack,

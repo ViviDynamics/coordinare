@@ -210,7 +210,7 @@ async def test_malformed_json_raises_transport_error() -> None:
         mock_asyncio.subprocess = asyncio.subprocess
         mock_asyncio.wait_for = _await_coro
 
-        with pytest.raises(TransportError, match="Invalid agent response"):
+        with pytest.raises(TransportError, match="No valid JSON response"):
             await transport.send(_make_msg("dispatch"))
 
 
@@ -226,7 +226,7 @@ async def test_invalid_status_in_response_raises_transport_error() -> None:
         mock_asyncio.subprocess = asyncio.subprocess
         mock_asyncio.wait_for = _await_coro
 
-        with pytest.raises(TransportError, match="Invalid agent response"):
+        with pytest.raises(TransportError, match="Valid JSON but invalid protocol response"):
             await transport.send(_make_msg("dispatch"))
 
 
@@ -499,3 +499,52 @@ async def test_stderr_task_cancelled_on_proc_restart() -> None:
         await transport.send(_make_msg("dispatch"))
 
     old_task.cancel.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# 044 — Transport resilience: skip non-JSON lines
+# ---------------------------------------------------------------------------
+
+
+def test_parse_response_valid_json_unchanged() -> None:
+    """044: Valid single-line JSON parses exactly as before."""
+    data = b'{"status":"accepted","session_id":"s1"}\n'
+    resp = SubprocessTransport._parse_response(data, one_shot=False, returncode=None)
+    assert resp.status == "accepted"
+
+
+def test_parse_response_skips_ansi_prefix() -> None:
+    """044: ANSI log line + valid JSON — the JSON line is accepted."""
+    ansi_line = b"\x1b[2m2026-04-14T15:26:43Z\x1b[0m info performer started\n"
+    json_line = b'{"status":"working","session_id":"s1"}\n'
+    data = ansi_line + json_line
+    resp = SubprocessTransport._parse_response(data, one_shot=False, returncode=None)
+    assert resp.status == "working"
+
+
+def test_parse_response_skips_multiple_noise_lines() -> None:
+    """044: Multiple non-JSON lines before the valid response."""
+    data = (
+        b"ruby 3.2.0\n"
+        b"\x1b[2mlog line\x1b[0m\n"
+        b"Fetching gem metadata...\n"
+        b'{"status":"accepted","session_id":"s1"}\n'
+    )
+    resp = SubprocessTransport._parse_response(data, one_shot=False, returncode=None)
+    assert resp.status == "accepted"
+
+
+def test_parse_response_only_noise_raises() -> None:
+    """044: If no valid JSON found after all lines, raise TransportError."""
+    data = b"ruby 3.2.0\nnot json\n\x1b[2mlog\x1b[0m\n"
+    with pytest.raises(TransportError, match="No valid JSON response"):
+        SubprocessTransport._parse_response(data, one_shot=False, returncode=None)
+
+
+def test_parse_response_empty_raises() -> None:
+    """044: Empty input still raises TransportError (unchanged)."""
+    with pytest.raises(TransportError, match="no output"):
+        SubprocessTransport._parse_response(b"", one_shot=False, returncode=None)
+
+    with pytest.raises(TransportError, match="no output"):
+        SubprocessTransport._parse_response(b"   \n  \n", one_shot=False, returncode=None)

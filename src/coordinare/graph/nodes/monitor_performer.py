@@ -853,11 +853,33 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
             # rather than re-queuing the card to TODO (which would trigger a
             # duplicate dispatch and a GitHub 422 error).
             if card.get("pr_node_id"):
+                # 044: Relay retry budget.  If session keeps expiring on the
+                # same relay (e.g., performer stdout contaminated by CI tool
+                # output), stop the loop after 3 consecutive failures and
+                # block with a diagnostic so a human can investigate.
+                error_count = state.get("system_error_count", 0)
+                if error_count >= 3:
+                    reason = str(status.get("reason", "unknown"))
+                    logger.warning(
+                        "monitor_performer.relay_retry_budget_exceeded",
+                        card_id=card_id,
+                        performer_stage=stage,
+                        system_error_count=error_count,
+                        reason=reason,
+                    )
+                    state["phase"] = "blocked"
+                    state["open_questions"] = [
+                        f"Relay failed {error_count} consecutive times on stage '{stage}'. "
+                        f"Last error: {reason}. Check performer logs for transport errors.",
+                    ]
+                    return state
+
                 logger.info(
                     "monitor_performer.session_expired_resume_monitoring_pr",
                     card_id=card_id,
                     performer_stage=stage,
                     pr_node_id=card["pr_node_id"],
+                    system_error_count=error_count,
                     msg="Session expired but PR already open — resuming monitoring_pr",
                 )
                 state["agent_dispatch"] = {}

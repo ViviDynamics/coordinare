@@ -330,6 +330,87 @@ async def commit_file(stand: Stand, path: str, content: str, message: str) -> No
     log.info("commit_file.committed", path=path, branch=stand.branch)
 
 
+async def commit_files(
+    stand: Stand,
+    files: list[dict[str, str]],
+    message: str,
+) -> list[str]:
+    """Batch-commit multiple files in a single git commit + push.
+
+    Each entry in *files* must have ``path`` (relative to workspace) and
+    ``content`` (full file content).  All files are written to disk, staged
+    with a single ``git add``, committed with *message*, and pushed once.
+    Returns the list of committed file paths.
+
+    044: Replaces the per-file ``commit_file`` loop in the tech writer
+    handler to produce 1 commit instead of N.
+    """
+    if not files:
+        return []
+
+    env = {**os.environ, **stand.git_env} if stand.git_env else {**os.environ}
+    committed: list[str] = []
+
+    # Write all files to disk
+    for f in files:
+        path = f.get("path", "")
+        content = f.get("content", "")
+        if not path or not isinstance(path, str):
+            continue
+        if os.path.isabs(path) or ".." in Path(path).parts:
+            log.warning("commit_files.unsafe_path_skipped", path=path)
+            continue
+        abs_path = stand.path / path
+        abs_path.parent.mkdir(parents=True, exist_ok=True)
+        abs_path.write_text(content, encoding="utf-8")
+        committed.append(path)
+
+    if not committed:
+        return []
+
+    # Stage all files
+    returncode, stderr = await _run_git(
+        ["git", "add", "--"] + committed, cwd=stand.path, env=env,
+    )
+    if returncode != 0:
+        raise WorkspaceSetupError(f"git add (batch) failed (exit {returncode}): {stderr}")
+
+    # Check for staged changes (exit 0 = no changes, 1 = changes, >1 = error)
+    returncode, stderr = await _run_git(
+        ["git", "diff", "--cached", "--quiet"], cwd=stand.path, env=env,
+    )
+    if returncode == 0:
+        log.info("commit_files.no_changes", file_count=len(committed))
+        return []
+    if returncode > 1:
+        raise WorkspaceSetupError(f"git diff --cached failed (exit {returncode}): {stderr}")
+
+    # Set git identity
+    for cfg_cmd in [
+        ["git", "config", "user.name", "coordinare-performer"],
+        ["git", "config", "user.email", "coordinare@noreply"],
+    ]:
+        await _run_git(cfg_cmd, cwd=stand.path, env=env)
+
+    # Single commit
+    returncode, stderr = await _run_git(
+        ["git", "commit", "-m", message], cwd=stand.path, env=env,
+    )
+    if returncode != 0:
+        raise WorkspaceSetupError(f"git commit (batch) failed (exit {returncode}): {stderr}")
+
+    # Single push
+    returncode, stderr = await _run_git(
+        ["git", "push", "--force", "origin", f"HEAD:{stand.branch}"],
+        cwd=stand.path, env=env,
+    )
+    if returncode != 0:
+        raise WorkspaceSetupError(f"git push (batch) failed (exit {returncode}): {stderr}")
+
+    log.info("commit_files.committed", file_count=len(committed), branch=stand.branch)
+    return committed
+
+
 def cleanup_stand(stand: Stand) -> None:
     """Remove the stand directory unconditionally."""
     shutil.rmtree(stand.path, ignore_errors=True)

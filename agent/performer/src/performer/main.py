@@ -26,6 +26,7 @@ from performer.workspace import (
     WorkspaceSetupError,
     cleanup_stand,
     clone_repository,
+    commit_files,
     get_head_sha,
     push_branch,
     run_command,
@@ -914,27 +915,35 @@ async def handle_status(
                     reason="Backend docs output is not a JSON object",
                 )
 
-            # Commit each documentation file
+            # 044: Batch-commit all documentation files in a single commit
+            # instead of per-file commits (which produced 14+ "docs: update
+            # documentation" commits on PR #94).
             doc_files = docs_output.get("files", [])
             if not isinstance(doc_files, list):
                 log.warning("docs.files_not_a_list", files_type=type(doc_files).__name__)
                 doc_files = []
-            for df in doc_files:
-                if not isinstance(df, dict) or not df.get("path") or "content" not in df:
-                    log.warning("docs.skipping_invalid_file_entry", entry=str(df)[:100])
-                    continue
+            valid_files = [
+                df for df in doc_files
+                if isinstance(df, dict) and df.get("path") and isinstance(df.get("content"), str)
+            ]
+            if valid_files:
+                issue_num = perf.score.issue_number
+                batch_msg = (
+                    f"docs(#{issue_num}): update wiki and card documentation"
+                    if issue_num
+                    else "docs: update wiki and card documentation"
+                )
                 try:
-                    await commit_file(perf.stand, df["path"], df["content"],
-                                      "docs: update documentation")
-                    perf.docs_files_modified.append(df["path"])
+                    committed = await commit_files(perf.stand, valid_files, batch_msg)
+                    perf.docs_files_modified.extend(committed)
                 except Exception as exc:
-                    log.error("docs_commit_failed", path=df.get("path"), error=str(exc))
+                    log.error("docs_batch_commit_failed", error=str(exc))
                     perf.state = "error"
-                    perf.error_reason = f"Failed to commit doc file {df.get('path')}: {exc}"
+                    perf.error_reason = f"Failed to batch-commit doc files: {exc}"
                     return PerformerResponse(
                         status="error", session_id=perf.session_id,
-                                reason=perf.error_reason,
-                            )
+                        reason=perf.error_reason,
+                    )
 
             perf.state = "docs_committed"
             return PerformerResponse(
