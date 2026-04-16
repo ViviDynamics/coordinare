@@ -62,12 +62,21 @@ class AgentService:
 
     async def check_status(self, session_id: str, *, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         message = ProtocolMessage(action="status", session_id=session_id, payload=payload or {})
+        # 045: Don't swallow TransportError here.  Returning {"status": "unknown"}
+        # hid transport failures from monitor_performer's error-counting logic,
+        # making the retry budget (044) dead code.  Let the error propagate so
+        # monitor_performer can increment system_error_count and eventually
+        # escalate to blocked.  Also log here so this service records its own
+        # method-specific context (``check_status_transport_error``); the
+        # downstream ``monitor_performer.transport_error`` log captures the
+        # same error=str(exc) under a different event key, which is useful
+        # for filtering by which surface surfaced the failure.
         try:
             response: ProtocolResponse = await self._transport.send(message)
-            return response.model_dump()
         except TransportError as exc:
             logger.warning("check_status_transport_error", error=str(exc))
-            return {"status": "unknown", "reason": str(exc)}
+            raise
+        return response.model_dump()
 
     def get_agent_logs(self) -> list[str]:
         """Return buffered stderr lines from the active performer process.

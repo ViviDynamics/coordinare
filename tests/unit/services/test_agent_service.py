@@ -138,13 +138,16 @@ class TestCheckStatus:
         assert transport.last_message.session_id == "s1"
 
     @pytest.mark.asyncio
-    async def test_check_status_transport_error_returns_unknown(self) -> None:
+    async def test_check_status_transport_error_propagates(self) -> None:
+        """045: TransportError must propagate to the caller (monitor_performer)
+        so system_error_count is incremented and the retry budget can fire.
+        Previously this was swallowed and returned as {"status": "unknown"},
+        making the 044 retry budget dead code."""
         transport = _MockTransport(error=TransportError("timeout"))
         service = AgentService(transport)
 
-        result = await service.check_status("s1")
-
-        assert result["status"] == "unknown"
+        with pytest.raises(TransportError, match="timeout"):
+            await service.check_status("s1")
 
 
 class TestRelayFeedback:

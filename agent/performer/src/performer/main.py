@@ -18,7 +18,7 @@ from performer.backends import UnsupportedBackendError, get_backend
 from performer.backends.base import BackendAdapter, BackendStatus
 from performer.config import Settings, get_settings
 from performer.github import GitHubAPIError, create_pull_request, get_check_runs, post_pr_comment, post_pull_request_review, resolve_pr_review_threads, summarise_check_runs
-from performer.models import Performance, Score, Stand
+from performer.models import Performance, Score, Stand, _redact_secrets
 from performer.protocol import PerformerMessage, PerformerMetrics, PerformerResponse
 from performer.workspace import commit_file
 from performer.workspace import (
@@ -106,6 +106,77 @@ def _extract_json(text: str) -> dict | list | None:
                 except (ValueError, TypeError):
                     pass
     return None
+
+
+async def _handle_backend_parse_failure(
+    perf: Performance,
+    raw: str,
+    stage_label: str,
+    settings: Settings | None,
+    failure_reason: str,
+) -> PerformerResponse:
+    """Retry the backend up to ``settings.BACKEND_PARSE_RETRIES`` times, or bubble
+    up the error with an output preview.
+
+    The caller must ``return`` the result of this helper directly.  When a retry
+    is scheduled the response is ``status="working"`` (so the coordinare keeps
+    polling while the backend re-runs); when the budget is exhausted it's
+    ``status="error"`` with a reason that includes up to 300 chars of the last
+    failed output.  (045)
+    """
+    max_retries = settings.BACKEND_PARSE_RETRIES if settings else get_settings().BACKEND_PARSE_RETRIES
+    # Copilot round 4: ``raw`` is untrusted backend output; run it through
+    # the existing secret-pattern redactor before logging it or embedding
+    # it in perf.error_reason (which propagates to coordinare-side logs,
+    # Slack/email notifications, and persisted snapshots).  Coordinare-side
+    # redaction is key-based only, so tokens inside arbitrary text values
+    # would otherwise survive into operator-facing surfaces.
+    redacted_short = _redact_secrets(raw[:200]) if raw else ""
+    if perf.parse_retry_count < max_retries:
+        perf.parse_retry_count += 1
+        log.warning(
+            "backend.invalid_output.retrying",
+            stage=stage_label,
+            attempt=perf.parse_retry_count,
+            max_retries=max_retries,
+            failure_reason=failure_reason,
+            output_preview=redacted_short,
+        )
+        # Copilot round 5: backends like OpenCodeAdapter launch long-lived
+        # ``opencode serve`` processes and start() doesn't tear down previous
+        # instances.  Stop the current backend (best-effort) before launching
+        # a fresh run so repeated parse failures don't leak subprocesses or
+        # background tasks.  Swallow stop() failures — the backend may be
+        # already dead, and start() is what matters.
+        try:
+            await perf.backend.stop()
+        except Exception as exc:
+            log.warning(
+                "backend.parse_retry_stop_failed",
+                stage=stage_label,
+                error=str(exc),
+            )
+        model_name = perf.score.model or None
+        await perf.backend.start(perf.stand, perf.score, model=model_name)
+        return PerformerResponse(
+            status="working",
+            session_id=perf.session_id,
+            progress=(
+                f"Backend {stage_label} output {failure_reason} — "
+                f"retrying ({perf.parse_retry_count}/{max_retries})"
+            ),
+        )
+    redacted_long = _redact_secrets((raw or "")[:300])
+    perf.state = "error"
+    perf.error_reason = (
+        f"Backend {stage_label} output {failure_reason} after "
+        f"{perf.parse_retry_count + 1} attempts. Last output: {redacted_long!r}"
+    )
+    return PerformerResponse(
+        status="error",
+        session_id=perf.session_id,
+        reason=perf.error_reason,
+    )
 
 
 def _doc_folder(score: Score) -> str:
@@ -469,26 +540,14 @@ async def handle_status(
         if perf.role == "assessing":
             assess_raw = backend_status.output or ""
             if not assess_raw.strip():
-                perf.state = "error"
-                perf.error_reason = "Backend produced empty assessment output"
-                return PerformerResponse(
-                    status="error", session_id=perf.session_id,
-                    reason="Backend produced empty assessment output",
+                return await _handle_backend_parse_failure(
+                    perf, assess_raw, "assessment", settings, "was empty",
                 )
             assess_output = _extract_json(assess_raw) if isinstance(assess_raw, str) else assess_raw
-            if assess_output is None:
-                perf.state = "error"
-                perf.error_reason = "Backend produced invalid JSON assessment output"
-                return PerformerResponse(
-                    status="error", session_id=perf.session_id,
-                    reason="Backend produced invalid JSON assessment output",
-                )
             if not isinstance(assess_output, dict):
-                perf.state = "error"
-                perf.error_reason = "Backend assessment output is not a JSON object"
-                return PerformerResponse(
-                    status="error", session_id=perf.session_id,
-                    reason="Backend assessment output is not a JSON object",
+                return await _handle_backend_parse_failure(
+                    perf, assess_raw, "assessment", settings,
+                    "could not be parsed as a JSON object",
                 )
 
             sufficient = assess_output.get("sufficient", True)
@@ -549,20 +608,14 @@ async def handle_status(
         if perf.role in ("reviewing", "closing_review"):
             review_raw = backend_status.output or ""
             if not review_raw.strip():
-                perf.state = "error"
-                perf.error_reason = "Backend produced empty review output"
-                return PerformerResponse(
-                    status="error", session_id=perf.session_id,
-                    reason="Backend produced empty review output",
+                return await _handle_backend_parse_failure(
+                    perf, review_raw, "review", settings, "was empty",
                 )
             review_output = _extract_json(review_raw) if isinstance(review_raw, str) else review_raw
             if not isinstance(review_output, dict):
-                perf.state = "error"
-                perf.error_reason = "Backend review output could not be parsed as JSON object"
-                log.warning("reviewer.invalid_output", output_preview=review_raw[:200] if review_raw else "")
-                return PerformerResponse(
-                    status="error", session_id=perf.session_id,
-                    reason="Backend review output could not be parsed as JSON object",
+                return await _handle_backend_parse_failure(
+                    perf, review_raw, "review", settings,
+                    "could not be parsed as a JSON object",
                 )
 
             is_approved = review_output.get("approved") is True  # strict bool check
@@ -652,26 +705,14 @@ async def handle_status(
         if perf.role == "security":
             sec_raw = backend_status.output or ""
             if not sec_raw.strip():
-                perf.state = "error"
-                perf.error_reason = "Backend produced empty security output"
-                return PerformerResponse(
-                    status="error", session_id=perf.session_id,
-                    reason="Backend produced empty security output",
+                return await _handle_backend_parse_failure(
+                    perf, sec_raw, "security", settings, "was empty",
                 )
             sec_output = _extract_json(sec_raw) if isinstance(sec_raw, str) else sec_raw
-            if sec_output is None:
-                perf.state = "error"
-                perf.error_reason = "Backend produced invalid JSON security output"
-                return PerformerResponse(
-                    status="error", session_id=perf.session_id,
-                    reason="Backend produced invalid JSON security output",
-                )
             if not isinstance(sec_output, dict):
-                perf.state = "error"
-                perf.error_reason = "Backend security output is not a JSON object"
-                return PerformerResponse(
-                    status="error", session_id=perf.session_id,
-                    reason="Backend security output is not a JSON object",
+                return await _handle_backend_parse_failure(
+                    perf, sec_raw, "security", settings,
+                    "could not be parsed as a JSON object",
                 )
 
             raw_findings = sec_output.get("findings", [])
@@ -768,26 +809,14 @@ async def handle_status(
         if perf.role == "qa":
             qa_raw = backend_status.output or ""
             if not qa_raw.strip():
-                perf.state = "error"
-                perf.error_reason = "Backend produced empty QA output"
-                return PerformerResponse(
-                    status="error", session_id=perf.session_id,
-                    reason="Backend produced empty QA output",
+                return await _handle_backend_parse_failure(
+                    perf, qa_raw, "QA", settings, "was empty",
                 )
             qa_output = _extract_json(qa_raw) if isinstance(qa_raw, str) else qa_raw
-            if qa_output is None:
-                perf.state = "error"
-                perf.error_reason = "Backend produced invalid JSON QA output"
-                return PerformerResponse(
-                    status="error", session_id=perf.session_id,
-                    reason="Backend produced invalid JSON QA output",
-                )
             if not isinstance(qa_output, dict):
-                perf.state = "error"
-                perf.error_reason = "Backend QA output is not a JSON object"
-                return PerformerResponse(
-                    status="error", session_id=perf.session_id,
-                    reason="Backend QA output is not a JSON object",
+                return await _handle_backend_parse_failure(
+                    perf, qa_raw, "QA", settings,
+                    "could not be parsed as a JSON object",
                 )
 
             # Commit new test files written by the backend (FR-005)
@@ -900,19 +929,10 @@ async def handle_status(
                     files_modified=[],
                 )
             docs_output = _extract_json(docs_raw) if isinstance(docs_raw, str) else docs_raw
-            if docs_output is None:
-                perf.state = "error"
-                perf.error_reason = "Backend produced invalid JSON docs output"
-                return PerformerResponse(
-                    status="error", session_id=perf.session_id,
-                    reason="Backend produced invalid JSON docs output",
-                )
             if not isinstance(docs_output, dict):
-                perf.state = "error"
-                perf.error_reason = "Backend docs output is not a JSON object"
-                return PerformerResponse(
-                    status="error", session_id=perf.session_id,
-                    reason="Backend docs output is not a JSON object",
+                return await _handle_backend_parse_failure(
+                    perf, docs_raw, "docs", settings,
+                    "could not be parsed as a JSON object",
                 )
 
             # 044: Batch-commit all documentation files in a single commit

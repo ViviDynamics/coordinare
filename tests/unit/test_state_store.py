@@ -111,6 +111,55 @@ async def test_save_load_round_trip_monitoring_pr(tmp_path: Path) -> None:
     assert loaded.pr_node_id == "PR_NODE_1"
 
 
+# --- 045: card metadata (issue_number etc.) persists across save/load ---
+
+
+@pytest.mark.asyncio
+async def test_save_load_round_trip_card_issue_metadata(tmp_path: Path) -> None:
+    """045: issue_number, issue_url, description, and acceptance_criteria
+    must round-trip so restart doesn't dispatch with issue_number=0 (which
+    previously produced PRs with null bodies — no ``Closes #N`` linkage)."""
+    metrics = CoordinareMetrics()
+    store = StateStore(path=tmp_path / "state.json", metrics=metrics)
+    snapshot = _make_snapshot(
+        phase="monitoring_agent",
+        active_card_id="PVT_4",
+        active_card_title="Linked Card",
+        active_card_column="In Progress",
+        active_card_issue_id="I_kwDO_issue",
+        active_card_issue_number=89,
+        active_card_issue_url="https://github.com/org/repo/issues/89",
+        active_card_description="Fix the bug.",
+        active_card_acceptance_criteria=["Tests pass", "Lint clean"],
+    )
+
+    await store.save(snapshot)
+    loaded = await store.load()
+
+    assert loaded is not None
+    assert loaded.active_card_issue_number == 89
+    assert loaded.active_card_issue_url == "https://github.com/org/repo/issues/89"
+    assert loaded.active_card_description == "Fix the bug."
+    assert loaded.active_card_acceptance_criteria == ["Tests pass", "Lint clean"]
+
+
+def test_snapshot_rejects_non_positive_issue_number() -> None:
+    """045: ``active_card_issue_number`` must be >= 1 to match the JSON-schema
+    contract.  A snapshot that somehow contains ``0`` or a negative value
+    must fail validation loudly rather than round-tripping and
+    re-introducing the null-PR-body bug.
+    """
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        _make_snapshot(active_card_issue_number=0)
+    with pytest.raises(ValidationError):
+        _make_snapshot(active_card_issue_number=-5)
+    # None remains valid (idle / unknown).
+    snap = _make_snapshot(active_card_issue_number=None)
+    assert snap.active_card_issue_number is None
+
+
 # --- T011: load returns None when absent; verify_writable passes ---
 
 

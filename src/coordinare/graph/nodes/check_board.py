@@ -74,6 +74,40 @@ async def check_board(state: CoordinareState) -> CoordinareState:
     snapshot = board.get("snapshot")
     state["board_snapshot"] = snapshot if isinstance(snapshot, dict) else {}
 
+    # 045: Refresh current_card metadata from the fresh board snapshot whenever
+    # we have an active card.  Without this, fields that aren't persisted in
+    # WorkflowSnapshot (or that change between restarts — title edits, label
+    # tweaks) stay stale.  The concrete failure this repairs: after a restart
+    # the restore path used to rebuild current_card with issue_number=0, so the
+    # next dispatch opened a PR whose body lacked ``Closes #N``.  Refreshing
+    # here also keeps title/description in sync when the human edits the issue
+    # mid-flight.  Skip when the card is mid-cancellation (``active_card
+    # disappeared`` handler below has its own logic).
+    active_card = state.get("current_card")
+    if isinstance(active_card, dict):
+        active_id = str(active_card.get("id", ""))
+        if active_id:
+            titles = board.get("titles", {})
+            descriptions = board.get("descriptions", {})
+            issue_numbers = board.get("issue_numbers", {})
+            issue_urls = board.get("issue_urls", {})
+            content_node_ids = board.get("content_node_ids", {})
+            if active_id in titles or active_id in issue_numbers:
+                refreshed_description = str(descriptions.get(active_id, active_card.get("description", "")))
+                active_card["title"] = str(titles.get(active_id, active_card.get("title", "")))
+                active_card["description"] = refreshed_description
+                active_card["acceptance_criteria"] = parse_acceptance_criteria(refreshed_description)
+                fresh_number = int(issue_numbers.get(active_id, 0))
+                if fresh_number:
+                    active_card["issue_number"] = fresh_number
+                fresh_url = str(issue_urls.get(active_id, ""))
+                if fresh_url:
+                    active_card["issue_url"] = fresh_url
+                fresh_content_id = str(content_node_ids.get(active_id, ""))
+                if fresh_content_id:
+                    active_card["issue_id"] = fresh_content_id
+                state["current_card"] = active_card
+
     in_progress = state["board_snapshot"].get("IN_PROGRESS", [])
     in_review = state["board_snapshot"].get("IN_REVIEW", [])
     blocked = state["board_snapshot"].get("BLOCKED", [])
@@ -370,6 +404,23 @@ async def check_board(state: CoordinareState) -> CoordinareState:
                 # leaving it set from the previous card causes every
                 # subsequent stage notification to misfire as "merged!".
                 state["commit_summary"] = None
+                # 045: Reset performer_stage to the first stage in the
+                # lifecycle.  Without this the stale stage from a prior
+                # card's terminal state (e.g. "closing_review" after the
+                # previous card blocked) leaks into the fresh card and
+                # jumps the pipeline straight to the closer — which has
+                # no pr_url to work with and immediately errors the card
+                # back to BLOCKED.
+                lifecycle_seq = state.get("lifecycle_sequence") or ["implementing"]
+                state["performer_stage"] = lifecycle_seq[0] if lifecycle_seq else "implementing"
+                # Reset the other per-card counters so stale feedback /
+                # retry budget from the previous card doesn't bleed in.
+                state["system_error_count"] = 0
+                state["system_error_reason"] = None
+                state["system_error_notified"] = False
+                state["relay_feedback"] = []
+                state["open_questions"] = []
+                state["feedback_cycle_count"] = 0  # type: ignore[typeddict-unknown-key]
             state["current_card"] = {
                 "id": item,
                 "issue_id": str(content_node_ids.get(item, "")),

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from typing import Any
 
@@ -11,6 +12,32 @@ SENSITIVE_KEYS = {
     "webhook_url",
     "authorization",
 }
+
+# Value-based redaction.  Used when untrusted text (e.g. performer stdout
+# bleeding into transport logs) may contain credentials.  Mirrors the
+# performer-side patterns in ``agent/performer/src/performer/models.py`` —
+# keep these lists in sync when adding new token formats.
+_SECRET_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"github_pat_[A-Za-z0-9_]{82,}"),      # fine-grained PAT
+    re.compile(r"ghp_[A-Za-z0-9]{36}"),               # classic PAT
+    re.compile(r"gho_[A-Za-z0-9]{36}"),               # OAuth app token
+    re.compile(r"ghs_[A-Za-z0-9]{36}"),               # App installation token
+    re.compile(r"sk-ant-[A-Za-z0-9\-_]{90,}"),        # Anthropic API key
+    re.compile(r"Bearer\s+[A-Za-z0-9\-._~+/]{20,}"),  # Bearer header value
+    re.compile(r"AKIA[0-9A-Z]{16}"),                   # AWS access key
+]
+
+
+def redact_secrets(text: str) -> str:
+    """Replace any recognised token/credential substrings with ``[REDACTED]``.
+
+    Complements ``redact_mapping`` (key-based) for the case where secrets
+    appear inside arbitrary text values rather than in fields with known
+    sensitive keys — e.g. a non-JSON stdout line from a subprocess.
+    """
+    for pattern in _SECRET_PATTERNS:
+        text = pattern.sub("[REDACTED]", text)
+    return text
 
 
 def _is_sensitive_key(key: str) -> bool:

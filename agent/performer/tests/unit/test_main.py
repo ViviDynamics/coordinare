@@ -1603,11 +1603,12 @@ class TestAssessorRole:
 
     @pytest.mark.asyncio
     async def test_empty_output_returns_error(self) -> None:
-        """Empty backend output returns error."""
+        """Empty backend output returns error when retry budget is 0."""
         perf = self._make_perf()
         perf.backend.get_status.return_value = BackendStatus(state="done", output="")
+        settings = Settings(AGENT_BACKEND="opencode", AGENT_TIMEOUT=1800, BACKEND_PARSE_RETRIES=0)
 
-        resp = await handle_status(_msg("status", session_id="sid"), perf)
+        resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
 
         assert resp.status == "error"
         assert "empty" in (resp.reason or "").lower()
@@ -1615,27 +1616,83 @@ class TestAssessorRole:
 
     @pytest.mark.asyncio
     async def test_invalid_json_returns_error(self) -> None:
-        """Invalid JSON backend output returns error."""
+        """Invalid JSON backend output returns error when retry budget is 0."""
         perf = self._make_perf()
         perf.backend.get_status.return_value = BackendStatus(state="done", output="not json")
+        settings = Settings(AGENT_BACKEND="opencode", AGENT_TIMEOUT=1800, BACKEND_PARSE_RETRIES=0)
 
-        resp = await handle_status(_msg("status", session_id="sid"), perf)
+        resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
 
         assert resp.status == "error"
-        assert "invalid json" in (resp.reason or "").lower()
+        assert "could not be parsed" in (resp.reason or "").lower()
         assert perf.state == "error"
 
     @pytest.mark.asyncio
     async def test_non_object_json_returns_error(self) -> None:
-        """JSON that's not an object returns error."""
+        """JSON that's not an object returns error when retry budget is 0."""
         perf = self._make_perf()
         perf.backend.get_status.return_value = BackendStatus(state="done", output="[1,2,3]")
+        settings = Settings(AGENT_BACKEND="opencode", AGENT_TIMEOUT=1800, BACKEND_PARSE_RETRIES=0)
 
-        resp = await handle_status(_msg("status", session_id="sid"), perf)
+        resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
 
         assert resp.status == "error"
-        assert "not a json object" in (resp.reason or "").lower()
+        assert "could not be parsed" in (resp.reason or "").lower()
         assert perf.state == "error"
+
+    @pytest.mark.asyncio
+    async def test_invalid_json_retries_before_error(self) -> None:
+        """045: With BACKEND_PARSE_RETRIES=1, a first parse failure schedules a
+        backend re-run (status=working).  A second failure on the retry
+        exhausts the budget and surfaces status=error with the output
+        preview embedded in the reason.
+        """
+        from unittest.mock import AsyncMock
+
+        perf = self._make_perf()
+        perf.backend.get_status.return_value = BackendStatus(state="done", output="prose, not json")
+        perf.backend.start = AsyncMock()
+        settings = Settings(AGENT_BACKEND="opencode", AGENT_TIMEOUT=1800, BACKEND_PARSE_RETRIES=1)
+
+        # First call: parse fails, retry scheduled → working.
+        resp1 = await handle_status(_msg("status", session_id="sid"), perf, settings)
+        assert resp1.status == "working"
+        assert perf.parse_retry_count == 1
+        assert perf.backend.start.await_count == 1  # backend re-started
+
+        # Second call: parse fails again, budget exhausted → error with preview.
+        resp2 = await handle_status(_msg("status", session_id="sid"), perf, settings)
+        assert resp2.status == "error"
+        reason = resp2.reason or ""
+        assert "could not be parsed" in reason.lower()
+        assert "prose, not json" in reason  # preview carried into reason
+        assert perf.state == "error"
+
+    @pytest.mark.asyncio
+    async def test_invalid_json_redacts_secrets_in_preview_and_reason(self) -> None:
+        """045 + Copilot round 4: the raw backend output is untrusted and may
+        contain credentials.  Both the ``output_preview`` log field and the
+        ``reason`` string embedded in ``PerformerResponse`` must be passed
+        through ``_redact_secrets`` before surfacing anywhere — coordinare-side
+        redaction is key-based only and would pass arbitrary text through.
+        """
+        from unittest.mock import AsyncMock
+
+        # Use a concrete token that matches _SECRET_PATTERNS (classic PAT).
+        fake_pat = "ghp_" + "A" * 36
+        perf = self._make_perf()
+        perf.backend.get_status.return_value = BackendStatus(
+            state="done", output=f"oops, leaked {fake_pat} while parsing",
+        )
+        perf.backend.start = AsyncMock()
+        settings = Settings(AGENT_BACKEND="opencode", AGENT_TIMEOUT=1800, BACKEND_PARSE_RETRIES=0)
+
+        resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
+        reason = resp.reason or ""
+
+        assert resp.status == "error"
+        assert fake_pat not in reason
+        assert "[REDACTED]" in reason
 
     @pytest.mark.asyncio
     async def test_stable_response_for_assessment_complete_state(self) -> None:

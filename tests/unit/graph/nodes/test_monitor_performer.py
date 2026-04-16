@@ -361,6 +361,45 @@ async def test_session_expired_with_pr_resumes_monitoring_pr() -> None:
     assert result["agent_dispatch_at"] is None
     # Should NOT move to TODO when PR exists
     assert ("ITEM_1", "TODO") not in gh.move_calls
+    # 045: Must move card to IN_REVIEW on the board AND update local status
+    # so check_board doesn't keep routing the card back to monitoring_agent
+    # and reintroduce the session_expired loop.
+    assert ("ITEM_1", "IN_REVIEW") in gh.move_calls
+    assert result["current_card"]["status"] == "IN_REVIEW"
+    assert result["current_card"]["previous_status"] == "IN_PROGRESS"
+
+
+@pytest.mark.asyncio
+async def test_session_expired_with_pr_blocks_on_move_card_failure() -> None:
+    """045: When ``move_card(IN_REVIEW)`` fails after session_expired we log
+    the exception details and transition to ``blocked`` with a diagnostic
+    question — not silently stay in ``monitoring_pr`` with a stale board.
+
+    The local ``current_card["status"]`` still flips to IN_REVIEW so
+    ``check_board`` doesn't reintroduce the loop while the operator
+    investigates.
+    """
+    class _FailingGitHub(_GitHub):
+        async def move_card(self, item_id: str, status: str) -> None:
+            # Record intent so we know the code at least tried.
+            self.move_calls.append((item_id, status))
+            raise RuntimeError("GraphQL 503")
+
+    gh = _FailingGitHub()
+    service = _Performer({"status": "session_expired"})
+    state = _make_state(
+        service=service,
+        card={"id": "ITEM_1", "pr_node_id": "PR_NODE_1"},
+        github=gh,
+    )
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "blocked"
+    assert ("ITEM_1", "IN_REVIEW") in gh.move_calls
+    assert result["current_card"]["status"] == "IN_REVIEW"
+    questions = result.get("open_questions") or []
+    assert any("IN_REVIEW" in q and "GraphQL 503" in q for q in questions)
 
 
 @pytest.mark.asyncio
@@ -703,6 +742,84 @@ async def test_changes_requested_does_not_advance_lifecycle() -> None:
     # Should route back to implementing, NOT advance to security
     assert result["performer_stage"] == "implementing"
     assert result["phase"] == "dispatching"
+
+
+@pytest.mark.asyncio
+async def test_feedback_cycle_limit_blocks_loop() -> None:
+    """045: reviewer/security/qa → implementer loops are bounded by
+    config.max_feedback_cycles.  On the Nth ``changes_requested`` we
+    block the card instead of re-dispatching indefinitely.
+
+    Observed failure mode (card #89, 2026-04-15): 5 review→security→qa
+    →implement cycles in a row before a backend-parse failure finally
+    broke the loop.  Per-Performance cycle counters reset on every
+    dispatch, so the bound has to live on the coordinare side.
+    """
+    from types import SimpleNamespace
+
+    state = initial_state()
+    svc = _Performer(response={"status": "changes_requested", "comments": [
+        {"file": "app/views/posts/show.html.erb", "line": 42, "body": "Copy button still not keyboard-accessible."},
+        {"file": "spec/features/copy_spec.rb", "line": 88, "body": "Regression test is missing for the iOS tap case."},
+    ]})
+    state["performer_services"] = {"reviewing": svc}
+    state["performer_stage"] = "reviewing"
+    state["lifecycle_sequence"] = ["implementing", "reviewing"]
+    state["current_card"] = {
+        "id": "ITEM_1",
+        "status": "IN_PROGRESS",
+        "title": "Copy code blocks on blog posts",
+        "issue_number": 89,
+        "pr_url": "https://github.com/o/r/pull/94",
+    }
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["config"] = SimpleNamespace(max_feedback_cycles=2)
+    state["human_reviewers"] = ["alice", "bob"]
+    # Simulate one prior cycle already used.
+    state["feedback_cycle_count"] = 2  # type: ignore[typeddict-unknown-key]
+
+    result = await monitor_performer(state)
+
+    # Hit the limit — don't loop again.
+    assert result["phase"] == "blocked"
+    assert result["feedback_cycle_count"] == 3
+    questions = result.get("open_questions") or []
+    assert len(questions) == 1
+    msg = questions[0]
+    # Break-case notifies configured human reviewers by @-mention.
+    assert "@alice" in msg and "@bob" in msg
+    # Actionable context: PR link, card title, issue number, cycle count,
+    # and the most recent feedback items that weren't getting resolved.
+    assert "pull/94" in msg
+    assert "#89" in msg
+    assert "Copy code blocks on blog posts" in msg
+    assert "Copy button still not keyboard-accessible." in msg
+    assert "Regression test is missing" in msg
+    assert "2" in msg  # max cycles appears
+    # Must NOT have staged relay_feedback for another implementer run.
+    assert result.get("performer_stage") != "implementing"
+
+
+@pytest.mark.asyncio
+async def test_feedback_cycle_zero_disables_bound() -> None:
+    """045: ``max_feedback_cycles=0`` disables the bound (escape hatch)."""
+    from types import SimpleNamespace
+
+    state = initial_state()
+    svc = _Performer(response={"status": "changes_requested", "comments": []})
+    state["performer_services"] = {"reviewing": svc}
+    state["performer_stage"] = "reviewing"
+    state["lifecycle_sequence"] = ["implementing", "reviewing"]
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["config"] = SimpleNamespace(max_feedback_cycles=0)
+    state["feedback_cycle_count"] = 99  # type: ignore[typeddict-unknown-key]
+
+    result = await monitor_performer(state)
+
+    # Bound disabled — should re-dispatch normally even at high counts.
+    assert result["phase"] == "dispatching"
+    assert result["performer_stage"] == "implementing"
 
 
 # ---------------------------------------------------------------------------

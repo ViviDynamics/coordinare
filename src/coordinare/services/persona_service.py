@@ -19,16 +19,19 @@ if TYPE_CHECKING:
 
 _logger = structlog.get_logger(__name__)
 
-# 043: Shared CI-ownership directives — DRY across all code-touching personas.
+# 043 + 045: Shared CI-ownership directive.  The coordinare runs the project's
+# lint + test commands automatically (``_run_ci_check`` + the post-push
+# coordinare-side gate) before anything is pushed, and bounces the work back
+# as ``changes_requested`` with the failure output if anything fails.  Tell
+# the backend plainly — no "run lint then don't run lint" contradiction,
+# which previously made models announce compliance ("I'm not running tests
+# per your CI ownership instruction") in their progress output instead of
+# just getting on with the work.
 _CI_COMMITTER_DIRECTIVE = (
-    "**CI ownership (043)**: Before committing, run the project's CI-equivalent "
-    "commands. For Ruby: `bundle exec rubocop` (lint) and `bundle exec rspec` (tests). "
-    "For Python: `ruff check .` and `pytest`. For Node: `npm run lint` and `npm test`. "
-    "If any check fails, fix the issue before committing. Do NOT commit code that "
-    "fails lint or tests. "
-    "Do NOT run lint or test commands yourself via tool-use — the coordinare runs "
-    "CI checks automatically before and after your work. Focus only on reading "
-    "and fixing code.\n\n"
+    "**CI (handled automatically)**: The coordinare runs the project's lint and "
+    "test commands before your changes are pushed.  If anything fails you will "
+    "be re-dispatched with the failure output and asked to fix it.  Do not run "
+    "lint or tests yourself — focus tool-use on reading and editing code.\n\n"
 )
 _CI_REVIEWER_DIRECTIVE = (
     "**CI ownership (043)**: Run the project's linter (`rubocop`, `eslint`, "

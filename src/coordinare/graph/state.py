@@ -118,6 +118,15 @@ class CoordinareState(TypedDict, total=False):
     card_cost_estimate: float  # 034: estimated cost in dollars
     card_budget_alert_sent: bool  # 034: True if budget exceeded notification was sent
     active_sessions: dict[str, Any]  # 035: card-ID → CardSession for multi-card parallelism
+    # 045: Number of times reviewer/security/qa has returned a non-terminal
+    # "changes_requested" / "_failed" marker for this card, routing back to
+    # an earlier stage (usually implementer).  Bounded by
+    # config.max_feedback_cycles — when the limit is hit the card is blocked
+    # with a diagnostic question instead of looping indefinitely.  Performance-
+    # local REVIEWER_MAX_CYCLES / SECURITY_MAX_CYCLES / QA_MAX_CYCLES reset
+    # on every dispatch (fresh Performance instance), so the bound has to
+    # live on the coordinare side per-card.
+    feedback_cycle_count: int
 
 
 def initial_state() -> CoordinareState:
@@ -150,4 +159,5 @@ def initial_state() -> CoordinareState:
         "card_cost_estimate": 0.0,
         "card_budget_alert_sent": False,
         "active_sessions": {},
+        "feedback_cycle_count": 0,
     }

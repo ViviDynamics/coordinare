@@ -50,6 +50,16 @@ class WorkflowSnapshot(BaseModel):
     open_questions: list[str] = Field(default_factory=list)
     card_clarifications: list[dict] = Field(default_factory=list)
     active_card_issue_id: str | None = None
+    # 045: Persist the rest of the card fields so restore-from-snapshot doesn't
+    # dispatch with ``issue_number=0`` / empty description after a restart —
+    # that was producing PRs with null bodies (no ``Closes #N`` linkage).
+    # ``ge=1`` matches the JSON-schema contract (``minimum: 1``) so corrupted
+    # or pre-045 snapshots with ``issue_number: 0`` fail validation loudly
+    # rather than round-tripping and re-introducing the null-body bug.
+    active_card_issue_number: int | None = Field(default=None, ge=1)
+    active_card_issue_url: str | None = None
+    active_card_description: str | None = None
+    active_card_acceptance_criteria: list[str] = Field(default_factory=list)
     last_blocked_notified_at: datetime | None = None
     lifecycle_completed_at: datetime | None = None
     processed_review_ids: list[str] = Field(default_factory=list)  # stored as list, used as set

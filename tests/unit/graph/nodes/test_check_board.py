@@ -690,3 +690,127 @@ async def test_check_board_selects_highest_priority_card() -> None:
     result = await check_board(state)
 
     assert result["current_card"]["id"] == "HIGH"  # P0 is highest priority
+
+
+# --- 045: check_board must refresh card metadata from the fresh board snapshot
+# so a stale current_card (restored after restart without issue_number) gets
+# repopulated before dispatch.  Without this, the implementer opened PRs whose
+# body lacked ``Closes #N`` because score.issue_number was 0.
+
+
+class _GitHubActiveCardWithMetadata:
+    """Board has the active card in IN_PROGRESS with full metadata."""
+
+    async def poll_board(self):
+        return {
+            "snapshot": {"TODO": [], "IN_PROGRESS": ["PVT_ACTIVE"], "IN_REVIEW": []},
+            "titles": {"PVT_ACTIVE": "Refreshed Title"},
+            "descriptions": {
+                "PVT_ACTIVE": "Refreshed description\n- [ ] criterion one\n- [ ] criterion two"
+            },
+            "issue_numbers": {"PVT_ACTIVE": 89},
+            "issue_urls": {"PVT_ACTIVE": "https://github.com/o/r/issues/89"},
+            "content_node_ids": {"PVT_ACTIVE": "I_kwDO_abc"},
+        }
+
+
+@pytest.mark.asyncio
+async def test_check_board_refreshes_stale_card_metadata_after_restore() -> None:
+    """045: When the snapshot restore rehydrates current_card without
+    issue_number (pre-045 snapshots, or fields we forgot to persist),
+    check_board must repopulate issue_number/url/description from the fresh
+    board poll so the next dispatch payload carries ``issue_number: 89``
+    instead of ``0``.
+    """
+    state = initial_state()
+    state["github_service"] = _GitHubActiveCardWithMetadata()
+    # Stale card — what _restore_from_snapshot would produce before 045.
+    state["current_card"] = {
+        "id": "PVT_ACTIVE",
+        "issue_id": "",
+        "title": "Stale Title",
+        "status": "IN_PROGRESS",
+        "pr_url": None,
+        "pr_node_id": None,
+    }
+
+    result = await check_board(state)
+
+    card = result["current_card"]
+    assert card["issue_number"] == 89
+    assert card["issue_url"] == "https://github.com/o/r/issues/89"
+    assert card["issue_id"] == "I_kwDO_abc"
+    assert card["title"] == "Refreshed Title"
+    assert card["acceptance_criteria"] == ["criterion one", "criterion two"]
+
+
+@pytest.mark.asyncio
+async def test_check_board_resets_performer_stage_on_new_card_pickup() -> None:
+    """045: When picking up a fresh TODO card after a previous card left
+    the pipeline in a non-initial stage (e.g., a prior card blocked at
+    ``closing_review``), ``performer_stage`` must reset to
+    ``lifecycle_sequence[0]``.  Without this reset the fresh card skips
+    past the implementer directly to the closer, which then errors with
+    ``pr_url is missing`` because the card never had a PR opened.
+    """
+    state = initial_state()
+    state["github_service"] = _GitHub()
+    # Simulate residue from a prior card that blocked at closing_review
+    state["performer_stage"] = "closing_review"
+    state["lifecycle_sequence"] = [
+        "assessing", "architecting", "implementing", "reviewing",
+        "security", "qa", "documenting", "closing_review",
+    ]
+    state["current_card"] = None  # new-card pickup path
+    state["system_error_count"] = 2
+    state["relay_feedback"] = [{"body": "stale"}]
+
+    result = await check_board(state)
+
+    assert result["current_card"]["id"] == "ITEM_1"
+    # Stage MUST rewind to the first configured role.
+    assert result["performer_stage"] == "assessing"
+    # Stale per-card counters are cleared too.
+    assert result["system_error_count"] == 0
+    assert result["relay_feedback"] == []
+
+
+@pytest.mark.asyncio
+async def test_check_board_preserves_stage_when_same_card_repicked() -> None:
+    """Defensive: the stage reset only fires on a genuine card transition
+    (prev_card.id != item).  If check_board is called with the same card
+    id already present we must NOT rewind — a re-entry after a Q&A round
+    should resume at the current stage, not re-run prior stages.
+    """
+    state = initial_state()
+    state["github_service"] = _GitHub()
+    state["current_card"] = {"id": "ITEM_1", "status": "TODO"}
+    state["performer_stage"] = "reviewing"
+
+    result = await check_board(state)
+
+    assert result["performer_stage"] == "reviewing"
+
+
+@pytest.mark.asyncio
+async def test_check_board_refresh_preserves_pr_fields() -> None:
+    """The refresh path only touches board-derived fields — pr_url/pr_node_id
+    live on the card via _advance_stage and must survive the refresh.
+    """
+    state = initial_state()
+    state["github_service"] = _GitHubActiveCardWithMetadata()
+    state["current_card"] = {
+        "id": "PVT_ACTIVE",
+        "issue_id": "",
+        "title": "Stale Title",
+        "status": "IN_PROGRESS",
+        "pr_url": "https://github.com/o/r/pull/94",
+        "pr_node_id": "PR_NODE_94",
+    }
+
+    result = await check_board(state)
+
+    card = result["current_card"]
+    assert card["pr_url"] == "https://github.com/o/r/pull/94"
+    assert card["pr_node_id"] == "PR_NODE_94"
+    assert card["issue_number"] == 89  # refresh still ran

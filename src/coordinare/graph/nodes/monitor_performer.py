@@ -212,6 +212,138 @@ def _apply_pending_override(state: CoordinareState) -> CoordinareState | None:
     return state
 
 
+def _feedback_cycle_budget(state: CoordinareState) -> int:
+    """Return ``config.max_feedback_cycles`` or the default (5).
+
+    Helper so the monitor_performer callers don't each have to re-implement
+    the config-may-be-None / attribute-may-be-missing guards.
+    """
+    config = state.get("config")
+    raw = getattr(config, "max_feedback_cycles", 5) if config else 5
+    return raw if isinstance(raw, int) else 5
+
+
+def _summarise_feedback_items(
+    items: list[dict[str, Any]], *, max_items: int = 5, max_chars_each: int = 220,
+) -> list[str]:
+    """Render the most recent feedback list (review comments, security
+    findings, or QA failures) as a truncated bullet list for the block
+    message.  Different roles stuff different fields into their items,
+    so we try ``body`` (reviewer), ``description`` (security), ``actual``
+    (QA), and finally ``str(item)``.  Empty strings are skipped.
+    """
+    out: list[str] = []
+    for item in items[:max_items]:
+        if not isinstance(item, dict):
+            out.append(str(item)[:max_chars_each])
+            continue
+        parts: list[str] = []
+        path = item.get("file") or item.get("path")
+        line = item.get("line")
+        if path:
+            parts.append(f"`{path}{':' + str(line) if line else ''}`")
+        body = (
+            item.get("body")
+            or item.get("description")
+            or item.get("actual")
+            or item.get("message")
+            or ""
+        )
+        if not isinstance(body, str):
+            body = str(body)
+        body = body.strip().replace("\n", " ")
+        if body:
+            parts.append(body[:max_chars_each])
+        if parts:
+            out.append(" — ".join(parts))
+    remaining = len(items) - max_items
+    if remaining > 0:
+        out.append(f"_…and {remaining} more_")
+    return out
+
+
+def _feedback_cycle_exhausted(
+    state: CoordinareState,
+    card_id: str,
+    source_stage: str,
+    reason_label: str,
+    feedback_items: list[dict[str, Any]],
+) -> CoordinareState | None:
+    """Increment the card's feedback-cycle counter and block the card if
+    we've exceeded the budget.
+
+    Returns an updated ``state`` dict (to be returned by the caller) when
+    the cycle limit has been reached, or ``None`` when the caller should
+    proceed with the normal re-dispatch.  (045)
+
+    The block message is Markdown with PR link, cycle count, the last
+    round of feedback that wasn't getting addressed, and suggested
+    actions — so the @-mentioned reviewer has everything they need to
+    triage without digging through logs or cross-referencing the PR
+    timeline.
+    """
+    max_cycles = _feedback_cycle_budget(state)
+    if max_cycles <= 0:
+        return None  # 0 disables the bound
+    current = int(state.get("feedback_cycle_count") or 0) + 1
+    state["feedback_cycle_count"] = current  # type: ignore[typeddict-unknown-key]
+    if current <= max_cycles:
+        return None
+    logger.warning(
+        "monitor_performer.feedback_cycle_exhausted",
+        card_id=card_id,
+        source_stage=source_stage,
+        cycle_count=current,
+        max_feedback_cycles=max_cycles,
+        feedback_item_count=len(feedback_items),
+    )
+
+    card = state.get("current_card") or {}
+    raw_reviewers = state.get("human_reviewers") or []
+    mentions = " ".join(
+        f"@{login}" for login in raw_reviewers if isinstance(login, str) and login.strip()
+    )
+    card_title = str(card.get("title") or "").strip()
+    issue_number = card.get("issue_number") or 0
+    pr_url = str(card.get("pr_url") or "").strip()
+
+    header_bits: list[str] = []
+    if mentions:
+        header_bits.append(mentions)
+    header_bits.append(
+        f"**Triage needed — feedback loop hit {max_cycles}-cycle limit.**"
+    )
+    lines: list[str] = [" ".join(header_bits), ""]
+
+    if card_title:
+        label = f"#{issue_number} {card_title}" if issue_number else card_title
+        lines.append(f"- **Card**: {label}")
+    if pr_url:
+        lines.append(f"- **PR**: {pr_url}")
+    lines.append(f"- **Last stage requesting changes**: `{source_stage}` ({reason_label})")
+    lines.append(f"- **Cycles used**: {current} (limit {max_cycles})")
+
+    summary = _summarise_feedback_items(feedback_items)
+    if summary:
+        lines.append("")
+        lines.append(f"**Latest {source_stage} feedback the implementer didn't resolve:**")
+        lines.extend(f"- {s}" for s in summary)
+
+    lines.extend([
+        "",
+        "The review → implement loop isn't converging. Options:",
+        "1. Review the PR, accept as-is, and merge (if the remaining complaints are bogus).",
+        "2. Leave a concrete comment on the PR telling the implementer exactly what to change, then move the card back to `IN_PROGRESS` to resume.",
+        "3. Move the card to `BACKLOG` / `DONE` to abandon this attempt.",
+    ])
+
+    state["phase"] = "blocked"
+    state["open_questions"] = ["\n".join(lines)]
+    state["agent_dispatch"] = {}
+    state["agent_dispatch_at"] = None
+    return state
+
+
 def _advance_stage(state: CoordinareState, status: dict[str, Any] | None = None) -> dict[str, Any]:
     """Compute the state update to advance the lifecycle to the next role.
 
@@ -498,6 +630,7 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
                 card_id=card_id,
                 performer_stage=stage,
                 exc_type=type(exc).__name__,
+                error=str(exc),
             )
             # If system_error_notified is True we're inheriting stale state from
             # a previous card's exhausted retry cycle (that card was BLOCKED and
@@ -764,6 +897,9 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
                 card_id=card_id,
                 comment_count=len(comments),
             )
+            exhausted = _feedback_cycle_exhausted(state, card_id, stage, "changes_requested", comments)
+            if exhausted is not None:
+                return exhausted
             state["relay_feedback"] = comments  # type: ignore[typeddict-unknown-key]
             state["performer_stage"] = "implementing"
             state["phase"] = "dispatching"
@@ -802,6 +938,9 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
                 routed_count=len(relevant_findings),
                 routing_target=target_stage,
             )
+            exhausted = _feedback_cycle_exhausted(state, card_id, stage, "security_failed", relevant_findings)
+            if exhausted is not None:
+                return exhausted
             state["relay_feedback"] = relevant_findings  # type: ignore[typeddict-unknown-key]
             state["performer_stage"] = target_stage
             state["phase"] = "dispatching"
@@ -820,6 +959,9 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
                 card_id=card_id,
                 failure_count=len(failures),
             )
+            exhausted = _feedback_cycle_exhausted(state, card_id, stage, "qa_failed", failures)
+            if exhausted is not None:
+                return exhausted
             state["relay_feedback"] = failures  # type: ignore[typeddict-unknown-key]
             state["performer_stage"] = "implementing"
             state["phase"] = "dispatching"
@@ -885,6 +1027,35 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
                 state["agent_dispatch"] = {}
                 state["agent_dispatch_at"] = None
                 state["phase"] = "monitoring_pr"
+                # Update local card state immediately so check_board doesn't
+                # keep seeing IN_PROGRESS and re-route to monitoring_agent
+                # next cycle, which would create an infinite session_expired
+                # loop.  The GitHub board move is a best-effort side effect;
+                # if it fails, the local IN_REVIEW status still breaks the
+                # loop, but we block the card so the operator can resolve the
+                # board-state mismatch manually rather than letting it silently
+                # drift.
+                card["previous_status"] = card.get("status", "IN_PROGRESS")
+                card["status"] = "IN_REVIEW"
+                state["current_card"] = card
+                if github is not None:
+                    try:
+                        await github.move_card(card_id, "IN_REVIEW")
+                    except Exception as exc:
+                        logger.warning(
+                            "session_expired.move_card_in_review_failed",
+                            card_id=card_id,
+                            performer_stage=stage,
+                            pr_node_id=card.get("pr_node_id"),
+                            error=str(exc),
+                            exc_type=type(exc).__name__,
+                        )
+                        state["phase"] = "blocked"
+                        state["open_questions"] = [
+                            f"Failed to move card {card_id!r} to IN_REVIEW after session "
+                            f"expiry for stage {stage!r}: {exc}. Blocking to avoid an "
+                            "infinite monitoring loop on stale board state."
+                        ]
             else:
                 # Transient failure with no open PR — auto-requeue to TODO.
                 reason = str(status.get("reason", ""))

@@ -197,5 +197,8 @@ class Performance:
     docs_files_modified: list[str] = field(default_factory=list)  # 024: doc files committed
     assessment_questions: list[str] = field(default_factory=list)  # assessor: questions when insufficient
     open_questions: list[str] = field(default_factory=list)
+    # 045: Count of backend-output parse retries used in this session (across
+    # assess/review/security/qa/docs).  Bounded by Settings.BACKEND_PARSE_RETRIES.
+    parse_retry_count: int = 0
     error_reason: str | None = None
     started_at: datetime = field(default_factory=lambda: datetime.now(UTC))

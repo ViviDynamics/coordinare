@@ -548,3 +548,47 @@ def test_parse_response_empty_raises() -> None:
 
     with pytest.raises(TransportError, match="no output"):
         SubprocessTransport._parse_response(b"   \n  \n", one_shot=False, returncode=None)
+
+
+def test_parse_response_aggregates_non_json_warnings() -> None:
+    """045 + Copilot round 2: emit ONE transport.skipping_non_json_line
+    warning per ``_parse_response`` call with a skipped_count and the
+    first preview, rather than one warning per noise line.  Prevents the
+    log storm that used to fire on multi-line backend stack traces.
+    """
+    from structlog.testing import capture_logs
+
+    data = (
+        b"ruby 3.2.0\n"
+        b"\x1b[2mlog line one\x1b[0m\n"
+        b"Fetching gem metadata...\n"
+        b'{"status":"accepted","session_id":"s1"}\n'
+    )
+    with capture_logs() as cap:
+        resp = SubprocessTransport._parse_response(data, one_shot=False, returncode=None)
+    assert resp.status == "accepted"
+
+    skips = [e for e in cap if e.get("event") == "transport.skipping_non_json_line"]
+    assert len(skips) == 1, f"expected one aggregated warning, got {skips}"
+    assert skips[0]["skipped_count"] == 3
+
+
+def test_parse_response_redacts_tokens_in_preview() -> None:
+    """045 + Copilot round 1: secret-looking substrings in the first
+    skipped line (preview) are redacted before the warning goes out so
+    tokens that leak onto performer stdout can't land in log files."""
+    from structlog.testing import capture_logs
+
+    fake_pat = "ghp_" + "A" * 36
+    data = (
+        f"performer startup: using token {fake_pat}\n".encode()
+        + b'{"status":"accepted","session_id":"s1"}\n'
+    )
+    with capture_logs() as cap:
+        SubprocessTransport._parse_response(data, one_shot=False, returncode=None)
+
+    skips = [e for e in cap if e.get("event") == "transport.skipping_non_json_line"]
+    assert len(skips) == 1
+    preview = skips[0]["line_preview"]
+    assert fake_pat not in preview
+    assert "[REDACTED]" in preview

@@ -78,6 +78,29 @@
       "description": "GitHub issue node ID linked to the active card. Used to post comments during blocked phase.",
       "default": null
     },
+    "active_card_issue_number": {
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "description": "GitHub issue number linked to the active card. Persisted so restart-from-snapshot can dispatch with issue_number set, ensuring PRs open with 'Closes #N' linkage. (045)",
+      "default": null
+    },
+    "active_card_issue_url": {
+      "type": ["string", "null"],
+      "format": "uri",
+      "description": "GitHub issue URL linked to the active card. Persisted alongside issue_number for restore-from-snapshot fidelity. (045)",
+      "default": null
+    },
+    "active_card_description": {
+      "type": ["string", "null"],
+      "description": "Active card description body. Persisted so restart-from-snapshot can dispatch with the original card context. (045)",
+      "default": null
+    },
+    "active_card_acceptance_criteria": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Active card acceptance criteria parsed from the issue body. Persisted so restart-from-snapshot doesn't dispatch with an empty list. (045)",
+      "default": []
+    },
     "card_clarifications": {
       "type": "array",
       "items": {

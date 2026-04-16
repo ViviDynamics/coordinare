@@ -446,6 +446,16 @@ class ProjectConfiguration(BaseSettings):
     # 035 — Multi-Card Parallelism
     max_concurrent_cards: int = Field(default=1, ge=1, le=20)
 
+    # 045 — Maximum number of reviewer/security/qa → implementer feedback
+    # cycles before blocking the card for human intervention.  Each
+    # ``changes_requested`` / ``security_failed`` / ``qa_failed`` that routes
+    # back to the implementer counts as one cycle.  Replaces the per-
+    # Performance REVIEWER_MAX_CYCLES etc. which reset on every dispatch
+    # and never actually bounded anything.  Set to 0 to disable the bound
+    # (not recommended — a flaky reviewer can loop until token budget is
+    # exhausted).
+    max_feedback_cycles: int = Field(default=5, ge=0, le=50)
+
     # Card assessment backend — determines how assess_card evaluates card sufficiency.
     # "anthropic_api": direct Anthropic SDK call (requires ANTHROPIC_API_KEY)
     # "claude_cli":    subprocess `claude --print "..."` (uses local CLI auth)

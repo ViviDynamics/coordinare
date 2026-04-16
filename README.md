@@ -14,7 +14,7 @@ An autonomous software development orchestrator that manages a full-cycle develo
 
 ## Performer Lifecycle
 
-Cards progress through up to 8 configurable roles (unconfigured roles are skipped):
+Cards progress through up to 9 configurable roles (unconfigured roles are skipped):
 
 | Role | Stage | What it does | Terminal state |
 |------|-------|-------------|---------------|
@@ -26,8 +26,9 @@ Cards progress through up to 8 configurable roles (unconfigured roles are skippe
 | Security | `security` | Scans for vulnerabilities, posts advisory comments | `security_passed` |
 | QA | `qa` | Validates acceptance criteria, writes tests | `qa_passed` |
 | Tech Writer | `documenting` | Commits CHANGELOG, README updates, docstrings | `docs_committed` |
+| Closer | `closing_review` | Final pass: verifies prior feedback was addressed, resolves review threads | `approved` |
 
-When a role finds issues (reviewer requests changes, security finds vulnerabilities, QA fails criteria), the coordinare routes feedback back to the implementer or architect and re-runs the affected roles.
+When a role finds issues (reviewer requests changes, security finds vulnerabilities, QA fails criteria), the coordinare routes feedback back to the implementer or architect and re-runs the affected roles. The review → implement loop is bounded by `max_feedback_cycles` (default `5`); when exceeded, the card is blocked with an actionable break-case comment that `@`-mentions `human_reviewers` so they can triage.
 
 ## Quick Start
 
@@ -133,10 +134,16 @@ Any scalar field can be overridden via environment variable: `COORDINARE_<FIELD_
 
 ### Performer Roles
 
-To enable the multi-role lifecycle, add a `performers:` section to config.yaml:
+To enable the multi-role lifecycle, add a `performers:` section to config.yaml (roles run in the canonical order shown — unlisted roles are silently skipped):
 
 ```yaml
 performers:
+  assessor:
+    backend: opencode
+    transport: subprocess
+  architect:
+    backend: opencode
+    transport: subprocess
   implementer:
     backend: opencode
     transport: subprocess
@@ -152,9 +159,12 @@ performers:
   tech_writer:
     backend: opencode
     transport: subprocess
+  closer:
+    backend: opencode
+    transport: subprocess
 ```
 
-Roles not listed are silently skipped. With no `performers:` section, coordinare falls back to implementer-only mode (backward compatible).
+With no `performers:` section, coordinare falls back to implementer-only mode (backward compatible). See `config.example.yaml` for per-role `backend` / `model` / `transport` overrides.
 
 ### Persona Instructions
 

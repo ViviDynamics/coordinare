@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from collections.abc import Mapping, MutableMapping
 from typing import Any
 
@@ -45,7 +46,14 @@ def configure_logging(log_level: str | None = None, *, structured: bool | None =
             renderer,
         ],
         wrapper_class=structlog.make_filtering_bound_logger(level),
-        logger_factory=structlog.PrintLoggerFactory(),
+        # Route to stderr so the coordinare's log config doesn't contaminate
+        # subprocess stdout when coordinare modules are imported by performers
+        # (e.g. ``from coordinare.services.ci_detection import detect``).  The
+        # performer's stdout is the JSON protocol channel; logs MUST stay on
+        # stderr.  coordinare's own logging is unaffected — its supervisor
+        # captures both streams (``> /tmp/coordinare.log 2>&1``) and Unix
+        # convention is logs → stderr regardless.
+        logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
         cache_logger_on_first_use=True,
     )
 

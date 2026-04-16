@@ -123,6 +123,14 @@ class CoordinareDaemon:
                 return None
             return str(value)
 
+        # 045: Persist issue_number/url/description/acceptance_criteria so
+        # restore after a restart doesn't dispatch with issue_number=0 (which
+        # caused PRs to open without ``Closes #N`` linkage).
+        raw_issue_number = card_dict.get("issue_number") if card_dict else None
+        issue_number = raw_issue_number if isinstance(raw_issue_number, int) and raw_issue_number > 0 else None
+        raw_ac = card_dict.get("acceptance_criteria") if card_dict else None
+        acceptance_criteria = [str(c) for c in raw_ac] if isinstance(raw_ac, list) else []
+
         return WorkflowSnapshot(
             snapshot_at=datetime.now(UTC),
             phase=self._state.get("phase", "idle"),
@@ -130,6 +138,10 @@ class CoordinareDaemon:
             active_card_title=_str_or_none(card_dict.get("title")) if card_dict else None,
             active_card_column=_str_or_none(card_dict.get("status")) if card_dict else None,
             active_card_issue_id=_str_or_none(card_dict.get("issue_id")) if card_dict else None,
+            active_card_issue_number=issue_number,
+            active_card_issue_url=_str_or_none(card_dict.get("issue_url")) if card_dict else None,
+            active_card_description=_str_or_none(card_dict.get("description")) if card_dict else None,
+            active_card_acceptance_criteria=acceptance_criteria,
             pr_url=_str_or_none(card_dict.get("pr_url")) if card_dict else None,
             pr_node_id=_str_or_none(card_dict.get("pr_node_id")) if card_dict else None,
             agent_session_id=_str_or_none(dispatch_dict.get("session_id")) if dispatch_dict else None,
@@ -151,7 +163,11 @@ class CoordinareDaemon:
             self._state["current_card"] = {
                 "id": snapshot.active_card_id,
                 "issue_id": snapshot.active_card_issue_id or "",
+                "issue_number": snapshot.active_card_issue_number or 0,
+                "issue_url": snapshot.active_card_issue_url or "",
                 "title": snapshot.active_card_title or "",
+                "description": snapshot.active_card_description or "",
+                "acceptance_criteria": list(snapshot.active_card_acceptance_criteria),
                 "status": snapshot.active_card_column or "",
                 "pr_url": snapshot.pr_url,
                 "pr_node_id": snapshot.pr_node_id,

@@ -6,6 +6,7 @@ from collections import deque
 
 import structlog
 
+from coordinare.lib.redaction import redact_secrets
 from coordinare.protocol import ProtocolMessage, ProtocolResponse
 from coordinare.transport.base import TransportError, TransportTimeoutError
 
@@ -208,6 +209,24 @@ class SubprocessTransport:
         import json as _json
 
         lines = data.strip().split(b"\n")
+        skipped_count = 0
+        first_skipped_preview: str | None = None
+
+        def _log_skipped() -> None:
+            """Emit a single aggregated warning for all non-JSON lines seen.
+
+            045 + Copilot round 2: logging every skipped line at warning
+            inside the loop created a log storm on backend crashes that
+            dumped multi-line stack traces to stdout.  Collect the count
+            and the first redacted preview and emit once per response.
+            """
+            if skipped_count > 0 and first_skipped_preview is not None:
+                logger.warning(
+                    "transport.skipping_non_json_line",
+                    skipped_count=skipped_count,
+                    line_preview=first_skipped_preview,
+                )
+
         for line in lines:
             stripped = line.strip()
             if not stripped:
@@ -218,18 +237,26 @@ class SubprocessTransport:
             # protocol error — raise immediately rather than skipping.
             try:
                 _json.loads(stripped)
-            except (ValueError, TypeError):
-                logger.debug(
-                    "transport.skipping_non_json_line",
-                    line_preview=stripped[:120].decode("utf-8", errors="replace"),
-                )
+            except (ValueError, TypeError, UnicodeDecodeError):
+                # 045: ``UnicodeDecodeError`` covers binary/garbled bytes
+                # that ``json.loads`` would otherwise raise on implicit
+                # UTF-8 decoding — treat them as non-JSON noise.  The
+                # preview goes through ``redact_secrets`` so tokens that
+                # leak onto the performer's stdout don't land in log files.
+                skipped_count += 1
+                if first_skipped_preview is None:
+                    first_skipped_preview = redact_secrets(
+                        stripped[:200].decode("utf-8", errors="replace"),
+                    )
                 continue
             # Valid JSON — try Pydantic parse.  If this fails, it's a
             # schema error (real problem), not noise.
+            _log_skipped()
             try:
                 return ProtocolResponse.model_validate_json(stripped)
             except Exception as exc:
                 raise TransportError(f"Valid JSON but invalid protocol response: {exc}") from exc
+        _log_skipped()
         raise TransportError(
             f"No valid JSON response in output ({len(lines)} lines checked)",
         )

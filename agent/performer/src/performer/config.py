@@ -31,6 +31,13 @@ class Settings(BaseSettings):
     # 023 — QA performer settings
     QA_MAX_CYCLES: int = 3  # max QA fix cycles before blocking for human
 
+    # 045 — Backend output parse retry budget
+    # When the backend (assessor, reviewer, security, QA, docs) returns output
+    # that isn't parseable as a JSON object, retry the backend run up to this
+    # many times before bubbling the error to the coordinare.  Each retry is a
+    # fresh LLM call (tokens, minutes), so keep this low.  0 disables retry.
+    BACKEND_PARSE_RETRIES: int = 1
+
 
 @functools.lru_cache(maxsize=1)
 def get_settings() -> Settings:
