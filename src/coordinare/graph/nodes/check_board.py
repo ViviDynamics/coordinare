@@ -6,6 +6,9 @@ from typing import TYPE_CHECKING
 import structlog
 
 from coordinare.lib.acceptance_criteria import parse_acceptance_criteria
+from coordinare.models.dependency import DependencyStatus
+from coordinare.services.dependency import build_graph, resolve_off_board_dependencies
+from coordinare.services.dependency import filter_eligible_todo as _dep_filter
 from coordinare.session import create_session_from_card
 
 if TYPE_CHECKING:
@@ -73,6 +76,11 @@ async def check_board(state: CoordinareState) -> CoordinareState:
 
     snapshot = board.get("snapshot")
     state["board_snapshot"] = snapshot if isinstance(snapshot, dict) else {}
+    # 046: Stash titles and issue_numbers so assess_card can inject active-card
+    # context into the assessor's prompt for implicit dependency detection.
+    state["_board_titles"] = board.get("titles", {})  # type: ignore[typeddict-unknown-key]
+    state["_board_issue_numbers"] = board.get("issue_numbers", {})  # type: ignore[typeddict-unknown-key]
+    state["_board_issue_urls"] = board.get("issue_urls", {})  # type: ignore[typeddict-unknown-key]
 
     # 045: Refresh current_card metadata from the fresh board snapshot whenever
     # we have an active card.  Without this, fields that aren't persisted in
@@ -330,6 +338,142 @@ async def check_board(state: CoordinareState) -> CoordinareState:
                         field_name=prio_cfg.field_name,
                     )
 
+        # 046: Filter out cards whose explicit dependencies haven't reached DONE.
+        # Build the dependency graph from the full board (not just TODO) so we
+        # can resolve blocker statuses across all columns.  Circular deps are
+        # detected here too; cycle members are handled after filtering.
+        # Clear blocked_by_dependencies here (not at cycle top) so early-return
+        # paths for in_progress / in_review / blocked cards don't lose the
+        # dependency context that was set on a previous cycle.
+        state["blocked_by_dependencies"] = []  # type: ignore[typeddict-unknown-key]
+        if eligible_todo:
+            dep_graph = build_graph(board)
+            # 046: Resolve off-board dependencies by checking GitHub issue state.
+            # This upgrades UNRESOLVABLE → SATISFIED for closed issues that
+            # were removed from the project board after completion.
+            github = state.get("github_service")
+            config = state.get("config")
+            repo_slug = ""
+            if config is not None:
+                org = getattr(config, "github_org", "")
+                project = getattr(config, "project_name", "")
+                if org and project:
+                    repo_slug = f"{org}/{project}"
+            await resolve_off_board_dependencies(dep_graph, github, repo_slug)
+            pre_filter_list = list(eligible_todo)  # preserve priority-sorted order
+            eligible_todo = _dep_filter(eligible_todo, dep_graph)
+            post_filter_set = set(eligible_todo)
+            # Keep insertion order from pre_filter_list so the first filtered
+            # card is the highest-priority one (not an arbitrary set member).
+            filtered_ids = [iid for iid in pre_filter_list if iid not in post_filter_set]
+            if filtered_ids:
+                logger.info(
+                    "check_board.dependency_filtered",
+                    filtered_count=len(filtered_ids),
+                    remaining_count=len(eligible_todo),
+                )
+                # Populate blocked_by_dependencies for the first filtered card
+                # (in the priority-sorted eligible_todo order, not raw board
+                # order) so the operator sees the highest-priority blocker.
+                titles_map = board.get("titles", {})
+                issue_urls_map = board.get("issue_urls", {})
+                content_node_ids = board.get("content_node_ids", {})
+                blocked_deps_for_state: list[dict] = []
+                for item_id in filtered_ids:
+                    deps = dep_graph.by_dependent.get(item_id, [])
+                    for d in deps:
+                        if d.status != DependencyStatus.SATISFIED:
+                            blocker_item = dep_graph.issue_to_item.get(d.blocker_issue_number)
+                            raw_url = issue_urls_map.get(blocker_item, "") if blocker_item else ""
+                            blocked_deps_for_state.append({
+                                "issue_number": d.blocker_issue_number,
+                                "title": titles_map.get(blocker_item, "") if blocker_item else None,
+                                "column": dep_graph.issue_to_column.get(d.blocker_issue_number),
+                                "issue_url": raw_url if raw_url else None,
+                                "source": d.source.value,
+                            })
+                    if blocked_deps_for_state:
+                        break  # show deps for first blocked card only
+                state["blocked_by_dependencies"] = blocked_deps_for_state  # type: ignore[typeddict-unknown-key]
+
+                # FR-010: Cards with UNRESOLVABLE deps (off-board issue not
+                # closed) must be blocked with a comment, not silently left
+                # in TODO.  Move them to BLOCKED and post a diagnostic.
+                github_svc = state.get("github_service")
+                if github_svc is not None:
+                    for item_id in filtered_ids:
+                        unresolvable = [
+                            d for d in dep_graph.by_dependent.get(item_id, [])
+                            if d.status == DependencyStatus.UNRESOLVABLE
+                        ]
+                        if unresolvable:
+                            import contextlib
+                            dep_labels = ", ".join(f"#{d.blocker_issue_number}" for d in unresolvable)
+                            with contextlib.suppress(Exception):
+                                await github_svc.move_card(item_id, "BLOCKED")
+                            issue_node = content_node_ids.get(item_id)
+                            if issue_node:
+                                with contextlib.suppress(Exception):
+                                    await github_svc.add_comment(
+                                        issue_node,
+                                        f"🔗 **Unresolvable dependency**: {dep_labels}\n\n"
+                                        "The referenced issue(s) are not on the project board "
+                                        "and could not be verified as closed (the issue may be "
+                                        "open, missing, or the API check failed).  Add them to "
+                                        "the board or close them to unblock this card.",
+                                    )
+            # (No else needed — blocked_by_dependencies is reset at the top
+            # of every poll cycle; it's only populated when cards are filtered.)
+
+            # Block cards involved in circular dependencies — move them to
+            # BLOCKED on the board and post a diagnostic comment so operators
+            # know which cards are deadlocked.
+            if dep_graph.cycles:
+                cycle_item_ids = {iid for cycle in dep_graph.cycles for iid in cycle}
+                issue_numbers_map = board.get("issue_numbers", {})
+                cycle_issues = [
+                    f"#{issue_numbers_map.get(iid, '?')}" for iid in sorted(cycle_item_ids)
+                ]
+                cycle_desc = ", ".join(cycle_issues)
+                logger.warning(
+                    "check_board.circular_dependency_detected",
+                    cycle_item_ids=sorted(cycle_item_ids),
+                    cycle_description=cycle_desc,
+                )
+                # Remove cycle members from eligible (they can't be dispatched)
+                eligible_todo = [
+                    iid for iid in eligible_todo if iid not in cycle_item_ids
+                ]
+                # Best-effort: move cycle members to BLOCKED on the board and
+                # post a comment.  This is a fire-and-forget — if it fails,
+                # the cards stay in TODO but still won't be dispatched (the
+                # filter already removed them).
+                github = state.get("github_service")
+                content_node_ids = board.get("content_node_ids", {})
+                import contextlib
+
+                # Only move TODO cards to BLOCKED — DONE/IN_PROGRESS/etc. cards
+                # may appear in cycle_item_ids because build_graph parses all
+                # descriptions, but moving a DONE card back to BLOCKED would be
+                # destructive.
+                todo_set = set(todo)
+                if github is not None:
+                    for iid in cycle_item_ids:
+                        if iid not in todo_set:
+                            continue
+                        with contextlib.suppress(Exception):
+                            await github.move_card(iid, "BLOCKED")
+                        issue_node_id = content_node_ids.get(iid)
+                        if issue_node_id:
+                            with contextlib.suppress(Exception):
+                                await github.add_comment(
+                                    issue_node_id,
+                                    f"🔄 **Circular dependency detected** involving: {cycle_desc}\n\n"
+                                    "These cards form a dependency cycle — none can "
+                                    "proceed.  Resolve by removing or reordering the "
+                                    "dependency declarations in one of the issue bodies.",
+                                )
+
         if eligible_todo:
             titles = board.get("titles", {})
             descriptions = board.get("descriptions", {})
@@ -421,6 +565,7 @@ async def check_board(state: CoordinareState) -> CoordinareState:
                 state["relay_feedback"] = []
                 state["open_questions"] = []
                 state["feedback_cycle_count"] = 0  # type: ignore[typeddict-unknown-key]
+                state["blocked_by_dependencies"] = []  # type: ignore[typeddict-unknown-key]
             state["current_card"] = {
                 "id": item,
                 "issue_id": str(content_node_ids.get(item, "")),
@@ -435,8 +580,17 @@ async def check_board(state: CoordinareState) -> CoordinareState:
             state["phase"] = "dispatching"
             return state
 
-        # All TODO items are filtered by advocate labels — clear any stale current_card
-        # so persisted snapshots don't carry forward a card that's no longer eligible.
+        # All TODO items filtered (by advocate labels or dependencies).
+        # If blocked_by_dependencies is non-empty, some cards are waiting on
+        # blockers — log it so operators know the board isn't truly empty.
+        if state.get("blocked_by_dependencies"):
+            logger.info(
+                "check_board.all_todo_dependency_blocked",
+                blocked_dep_count=len(state["blocked_by_dependencies"]),
+                todo_count=len(todo),
+            )
+        # Clear stale current_card so persisted snapshots don't carry
+        # forward a card that's no longer eligible.
         state["current_card"] = None
 
     state["phase"] = "idle"

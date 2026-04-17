@@ -814,3 +814,198 @@ async def test_check_board_refresh_preserves_pr_fields() -> None:
     assert card["pr_url"] == "https://github.com/o/r/pull/94"
     assert card["pr_node_id"] == "PR_NODE_94"
     assert card["issue_number"] == 89  # refresh still ran
+
+
+# --- 046: Card dependency detection ---
+
+
+class _GitHubDependency:
+    """Board with two TODO cards where B depends on A."""
+
+    async def poll_board(self):
+        return {
+            "snapshot": {"TODO": ["ITEM_A", "ITEM_B"], "IN_PROGRESS": [], "IN_REVIEW": [], "DONE": []},
+            "titles": {"ITEM_A": "Set up theming", "ITEM_B": "Add dark mode"},
+            "descriptions": {"ITEM_A": "", "ITEM_B": "Depends on #1"},
+            "issue_numbers": {"ITEM_A": 1, "ITEM_B": 2},
+            "issue_urls": {},
+            "content_node_ids": {},
+        }
+
+
+class _GitHubDependencySatisfied:
+    """Board where A is DONE, so B's dependency is satisfied."""
+
+    async def poll_board(self):
+        return {
+            "snapshot": {"TODO": ["ITEM_B"], "DONE": ["ITEM_A"], "IN_PROGRESS": [], "IN_REVIEW": []},
+            "titles": {"ITEM_A": "Set up theming", "ITEM_B": "Add dark mode"},
+            "descriptions": {"ITEM_A": "", "ITEM_B": "Depends on #1"},
+            "issue_numbers": {"ITEM_A": 1, "ITEM_B": 2},
+            "issue_urls": {},
+            "content_node_ids": {},
+        }
+
+
+class _GitHubCircularDeps:
+    """Board where A depends on B and B depends on A."""
+
+    async def poll_board(self):
+        return {
+            "snapshot": {"TODO": ["ITEM_A", "ITEM_B"], "IN_PROGRESS": [], "IN_REVIEW": [], "DONE": []},
+            "titles": {"ITEM_A": "Module A", "ITEM_B": "Module B"},
+            "descriptions": {"ITEM_A": "Depends on #2", "ITEM_B": "Depends on #1"},
+            "issue_numbers": {"ITEM_A": 1, "ITEM_B": 2},
+            "issue_urls": {},
+            "content_node_ids": {},
+        }
+
+
+@pytest.mark.asyncio
+async def test_check_board_filters_dependent_todo_cards() -> None:
+    """046: Card B depends on card A (both TODO). Only A should be dispatched."""
+    state = initial_state()
+    state["github_service"] = _GitHubDependency()
+
+    result = await check_board(state)
+
+    assert result["phase"] == "dispatching"
+    card = result["current_card"]
+    assert card["id"] == "ITEM_A"
+    assert card["title"] == "Set up theming"
+
+
+@pytest.mark.asyncio
+async def test_check_board_dispatches_when_dependency_satisfied() -> None:
+    """046: Card A is DONE → B's dependency is satisfied → B dispatched."""
+    state = initial_state()
+    state["github_service"] = _GitHubDependencySatisfied()
+
+    result = await check_board(state)
+
+    assert result["phase"] == "dispatching"
+    assert result["current_card"]["id"] == "ITEM_B"
+
+
+@pytest.mark.asyncio
+async def test_check_board_blocks_circular_dependencies() -> None:
+    """046: A depends on B, B depends on A → neither dispatched (both
+    filtered out). Board ends up idle since no eligible TODO remains."""
+    state = initial_state()
+    state["github_service"] = _GitHubCircularDeps()
+
+    result = await check_board(state)
+
+    # Both filtered — no card dispatched
+    assert result.get("phase") != "dispatching" or result.get("current_card") is None
+
+
+@pytest.mark.asyncio
+async def test_check_board_off_board_dep_treated_as_unresolvable() -> None:
+    """046: Card depends on #999 which isn't on the board → UNRESOLVABLE
+    → card filtered out of eligible TODO."""
+
+    class _GitHubOffBoard:
+        async def poll_board(self):
+            return {
+                "snapshot": {"TODO": ["ITEM_X"], "IN_PROGRESS": [], "IN_REVIEW": [], "DONE": []},
+                "titles": {"ITEM_X": "Some feature"},
+                "descriptions": {"ITEM_X": "Depends on #999"},
+                "issue_numbers": {"ITEM_X": 50},
+                "issue_urls": {},
+                "content_node_ids": {},
+            }
+
+    state = initial_state()
+    state["github_service"] = _GitHubOffBoard()
+
+    result = await check_board(state)
+
+    # Card filtered — idle since no eligible TODO
+    assert result.get("phase") != "dispatching" or result.get("current_card") is None
+
+
+@pytest.mark.asyncio
+async def test_check_board_unresolvable_dep_moves_card_to_blocked() -> None:
+    """046 FR-010: Cards with UNRESOLVABLE deps (off-board, not closed)
+    must be moved to BLOCKED with a diagnostic comment — not silently
+    left in TODO.  Verify move_card + add_comment are called."""
+
+    class _GitHubUnresolvable:
+        def __init__(self):
+            self.move_calls: list[tuple[str, str]] = []
+            self.comments: list[tuple[str, str]] = []
+
+        async def poll_board(self):
+            return {
+                "snapshot": {"TODO": ["ITEM_X"], "IN_PROGRESS": [], "IN_REVIEW": [], "DONE": []},
+                "titles": {"ITEM_X": "Some feature"},
+                "descriptions": {"ITEM_X": "Depends on #999"},
+                "issue_numbers": {"ITEM_X": 50},
+                "issue_urls": {},
+                "content_node_ids": {"ITEM_X": "I_kwDO_X"},
+            }
+
+        async def check_issue_state(self, repo, issue_number):
+            return "open"  # not closed → UNRESOLVABLE
+
+        async def move_card(self, item_id, status):
+            self.move_calls.append((item_id, status))
+
+        async def add_comment(self, subject_id, body):
+            self.comments.append((subject_id, body))
+
+    from types import SimpleNamespace
+
+    gh = _GitHubUnresolvable()
+    state = initial_state()
+    state["github_service"] = gh
+    state["config"] = SimpleNamespace(
+        github_org="TestOrg", project_name="test-repo",
+        max_concurrent_cards=1, priority=SimpleNamespace(field_name=""),
+    )
+
+    await check_board(state)
+
+    assert ("ITEM_X", "BLOCKED") in gh.move_calls
+    assert len(gh.comments) == 1
+    assert gh.comments[0][0] == "I_kwDO_X"
+    assert "#999" in gh.comments[0][1]
+    assert "not on the project board" in gh.comments[0][1]
+
+
+@pytest.mark.asyncio
+async def test_check_board_off_board_closed_blocker_satisfies_dependency() -> None:
+    """046: Card depends on #999 (not on board), but github reports the
+    issue as closed → dependency SATISFIED → card dispatched normally.
+
+    This exercises the resolve_off_board_dependencies path that calls
+    github.check_issue_state and upgrades UNRESOLVABLE → SATISFIED.
+    """
+    from types import SimpleNamespace
+
+    class _GitHubOffBoardClosed:
+        async def poll_board(self):
+            return {
+                "snapshot": {"TODO": ["ITEM_X"], "IN_PROGRESS": [], "IN_REVIEW": [], "DONE": []},
+                "titles": {"ITEM_X": "Some feature"},
+                "descriptions": {"ITEM_X": "Depends on #999"},
+                "issue_numbers": {"ITEM_X": 50},
+                "issue_urls": {},
+                "content_node_ids": {},
+            }
+
+        async def check_issue_state(self, repo: str, issue_number: int) -> str:
+            return "closed"
+
+    state = initial_state()
+    state["github_service"] = _GitHubOffBoardClosed()
+    state["config"] = SimpleNamespace(
+        github_org="TestOrg", project_name="test-repo",
+        max_concurrent_cards=1, priority=SimpleNamespace(field_name=""),
+    )
+
+    result = await check_board(state)
+
+    assert result["phase"] == "dispatching"
+    assert result["current_card"]["id"] == "ITEM_X"

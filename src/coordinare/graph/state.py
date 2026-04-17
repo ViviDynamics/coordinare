@@ -127,6 +127,10 @@ class CoordinareState(TypedDict, total=False):
     # on every dispatch (fresh Performance instance), so the bound has to
     # live on the coordinare side per-card.
     feedback_cycle_count: int
+    # 046: Dependency state for the current card — list of unsatisfied blocker
+    # dicts [{issue_number, title, column, issue_url, source}].  Populated by
+    # check_board's dependency filtering and consumed by dashboard + notifications.
+    blocked_by_dependencies: list[dict[str, Any]]
 
 
 def initial_state() -> CoordinareState:
@@ -160,4 +164,5 @@ def initial_state() -> CoordinareState:
         "card_budget_alert_sent": False,
         "active_sessions": {},
         "feedback_cycle_count": 0,
+        "blocked_by_dependencies": [],
     }

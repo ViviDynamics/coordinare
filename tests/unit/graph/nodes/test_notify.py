@@ -262,3 +262,61 @@ async def test_notify_performer_stage_none_does_not_leak_string_none() -> None:
     assert "None" not in (event.dedup_key or "")
     # Human-readable summary must NOT say "dispatched to None"
     assert "None" not in event.payload["summary"]
+
+
+# --- 046: Dependency state in blocked notifications ---
+
+
+@pytest.mark.asyncio
+async def test_blocked_notification_includes_dependency_context() -> None:
+    """046 T028: When blocked_by_dependencies is non-empty, the Slack
+    summary should show blocker issue numbers and columns instead of
+    the generic open_questions preview."""
+    fake = FakeNotificationService()
+    state = initial_state()
+    state["current_card"] = {
+        "id": "CARD_1",
+        "title": "Add dark mode",
+        "issue_number": 91,
+        "status": "BLOCKED",
+        "previous_status": "TODO",
+    }
+    state["notification_service"] = fake
+    state["phase"] = "blocked"
+    state["open_questions"] = ["Depends on #90"]
+    state["blocked_by_dependencies"] = [
+        {"issue_number": 90, "column": "IN_PROGRESS"},
+    ]
+
+    await notify(state)
+
+    assert len(fake.dispatched) == 1
+    summary = fake.dispatched[0].payload["summary"]
+    assert "#90" in summary
+    assert "IN_PROGRESS" in summary
+    assert "waiting on" in summary
+
+
+@pytest.mark.asyncio
+async def test_blocked_notification_without_dependencies_uses_questions() -> None:
+    """046: When blocked_by_dependencies is empty, fall back to the
+    standard open_questions preview in the summary."""
+    fake = FakeNotificationService()
+    state = initial_state()
+    state["current_card"] = {
+        "id": "CARD_2",
+        "title": "Some feature",
+        "status": "BLOCKED",
+        "previous_status": "TODO",
+    }
+    state["notification_service"] = fake
+    state["phase"] = "blocked"
+    state["open_questions"] = ["What API should we use?"]
+    state["blocked_by_dependencies"] = []
+
+    await notify(state)
+
+    assert len(fake.dispatched) == 1
+    summary = fake.dispatched[0].payload["summary"]
+    assert "What API" in summary
+    assert "waiting on" not in summary

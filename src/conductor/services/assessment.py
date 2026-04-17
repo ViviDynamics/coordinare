@@ -136,11 +136,17 @@ def _parse_assessment_response(text: str) -> dict[str, Any]:
         try:
             parsed = json.loads(candidate)
             if isinstance(parsed, dict) and "sufficient" in parsed:
-                return {
+                result: dict[str, Any] = {
                     "sufficient": bool(parsed.get("sufficient", False)),
                     "questions": list(parsed.get("questions", [])),
                     "rationale": str(parsed.get("rationale", text)),
                 }
+                # 046: Pass through assessor-detected dependencies so
+                # assess_card can block cards with implicit blockers.
+                raw_deps = parsed.get("dependencies")
+                if isinstance(raw_deps, list) and raw_deps:
+                    result["dependencies"] = raw_deps
+                return result
         except (json.JSONDecodeError, AttributeError, ValueError):
             continue
 

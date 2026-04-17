@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "coordinare/dashboard-snapshot-extension/046",
+  "title": "Dashboard Snapshot Extension — Dependency State",
+  "description": "New fields added to the dashboard SSE snapshot payload for card dependency visibility (spec 046).",
+  "type": "object",
+  "properties": {
+    "blocked_by_dependencies": {
+      "type": "array",
+      "description": "List of unsatisfied blocker cards for the current active card. Empty array when the card has no pending dependencies or when no card is active.",
+      "items": {
+        "type": "object",
+        "required": ["issue_number", "column"],
+        "properties": {
+          "issue_number": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "GitHub issue number of the blocking card."
+          },
+          "title": {
+            "type": ["string", "null"],
+            "description": "Title of the blocking card. Null if the issue is not on the board."
+          },
+          "column": {
+            "type": ["string", "null"],
+            "description": "Current board column of the blocking card (e.g. 'IN_PROGRESS', 'TODO'). Null if the issue is not on the board.",
+            "enum": ["BACKLOG", "TODO", "BLOCKED", "IN_PROGRESS", "IN_REVIEW", "DONE", null]
+          },
+          "issue_url": {
+            "type": ["string", "null"],
+            "format": "uri",
+            "description": "GitHub issue URL for the blocker. Null if unavailable."
+          },
+          "source": {
+            "type": "string",
+            "enum": ["explicit", "assessor"],
+            "description": "How the dependency was detected: 'explicit' (parsed from issue body) or 'assessor' (flagged by the assessor role)."
+          }
+        }
+      },
+      "default": []
+    }
+  }
+}

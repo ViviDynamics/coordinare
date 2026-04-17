@@ -89,7 +89,18 @@ async def notify(state: CoordinareState) -> CoordinareState:
         summary = f"🚀 {display_title} — dispatched to {role}"
     elif event_type == EventType.card_blocked:
         questions_preview = open_questions[0][:80] if open_questions else "needs input"
-        summary = f"🚫 {display_title} — blocked: {questions_preview}"
+        # 046: If the card is blocked due to dependencies, include blocker
+        # issue numbers and columns in the summary so the Slack message
+        # is actionable without cross-referencing the board.
+        blocked_deps = state.get("blocked_by_dependencies") or []
+        if blocked_deps:
+            dep_labels = ", ".join(
+                f"#{d.get('issue_number', '?')} ({d.get('column') or 'off-board'})"
+                for d in blocked_deps[:3]
+            )
+            summary = f"🚫 {display_title} — blocked: waiting on {dep_labels}"
+        else:
+            summary = f"🚫 {display_title} — blocked: {questions_preview}"
     elif event_type == EventType.card_merged:
         summary = f"✅ {display_title} — merged!"
     elif prev_status and status and prev_status != status:

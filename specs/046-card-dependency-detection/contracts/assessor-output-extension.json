@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "coordinare/assessor-output-extension/046",
+  "title": "Assessor Output Extension — Dependency Detection",
+  "description": "Optional 'dependencies' field in the assessor's JSON response for implicit dependency detection (spec 046).",
+  "type": "object",
+  "properties": {
+    "sufficient": {
+      "type": "boolean",
+      "description": "Whether the card has enough context to proceed to implementation."
+    },
+    "questions": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Clarification questions when insufficient."
+    },
+    "dependencies": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "description": "Issue numbers the assessor identifies as blockers for this card. Empty array or absent if no dependencies detected. Each number refers to a same-repo GitHub issue.",
+      "default": []
+    }
+  },
+  "required": ["sufficient"]
+}

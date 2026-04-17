@@ -635,6 +635,73 @@ class GitHubService:
             return issue
         return {}
 
+    async def check_issue_state(self, repo: str, issue_number: int) -> str:
+        """Return the state of a GitHub issue by number.
+
+        ``repo`` is the ``owner/name`` slug (e.g. ``"ViviDynamics/website"``).
+        Returns one of: ``"open"``, ``"closed"``, ``"not_found"``,
+        ``"auth_error"``, or ``"api_error"``.  Uses a lightweight REST call
+        (not GraphQL) so we don't need the node ID.  Used by the dependency
+        service (046) to resolve off-board blockers.
+        """
+        from urllib.parse import urlparse
+
+        import httpx
+
+        # Derive the REST base from the configured GraphQL endpoint.
+        # Standard: "https://api.github.com/graphql" → "https://api.github.com"
+        # GHE:      "https://github.mycorp.com/api/graphql" → "https://github.mycorp.com/api/v3"
+        raw = str(self._endpoint).rstrip("/")
+        raw = raw.removesuffix("/graphql")
+        parsed = urlparse(raw)
+        if parsed.path.rstrip("/") == "/api" or parsed.path.rstrip("/") == "":
+            # GHE pattern: host/api/graphql → host/api/v3
+            # Standard: api.github.com → api.github.com (path is empty)
+            if parsed.path.rstrip("/") == "/api":
+                api_url = f"{parsed.scheme}://{parsed.netloc}/api/v3"
+            else:
+                api_url = f"{parsed.scheme}://{parsed.netloc}"
+        else:
+            api_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+
+        url = f"{api_url}/repos/{repo}/issues/{issue_number}"
+        try:
+            token = await self._current_token()
+        except Exception as exc:
+            logger.warning(
+                "check_issue_state.auth_failed",
+                issue_number=issue_number,
+                error=str(exc),
+            )
+            return "auth_error"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+        }
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(url, headers=headers)
+            if resp.status_code == 404:
+                return "not_found"
+            if resp.is_success:
+                data = resp.json()
+                return str(data.get("state", "open"))
+            logger.warning(
+                "check_issue_state.api_error",
+                issue_number=issue_number,
+                status_code=resp.status_code,
+                body_preview=resp.text[:200],
+            )
+            return "api_error"
+        except Exception as exc:
+            logger.warning(
+                "check_issue_state.request_failed",
+                issue_number=issue_number,
+                error=str(exc),
+                exc_type=type(exc).__name__,
+            )
+            return "api_error"
+
     async def move_card(self, item_id: str, status: str) -> None:
         self._ensure_initialized()
         status_field_id = str(self.field_cache.get("status_field_id", ""))

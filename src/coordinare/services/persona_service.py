@@ -65,10 +65,20 @@ DEFAULT_INSTRUCTIONS: dict[str, str] = {
         "Whether the card has enough context for a developer to start work.\n\n"
         "## Clarifications\n"
         "Any Q&A from previous rounds, or 'None' if the card was clear.\n\n"
+        "## Dependencies (046)\n"
+        "You may receive an `active_cards` list showing other cards currently "
+        "on the board (TODO / IN_PROGRESS / IN_REVIEW). If this card's work "
+        "logically requires another active card to complete first — for example, "
+        "'Add dark mode toggle' depends on 'Implement theming system' — include "
+        "a `dependencies` field in your JSON output listing the blocker issue "
+        "numbers. Only flag dependencies when the ordering is unambiguous and "
+        "starting this card before the other would clearly fail or waste effort. "
+        "Do NOT flag incidental overlap or stylistic similarity.\n\n"
         "Then, at the END of your response, include a JSON code block:\n"
         "```json\n"
-        '{"sufficient": true/false, "questions": ["question 1", "question 2"]}\n'
+        '{"sufficient": true/false, "questions": ["..."], "dependencies": [42]}\n'
         "```\n\n"
+        "Omit `dependencies` entirely (or use `[]`) if no dependency exists.\n\n"
         "Do NOT commit any files yourself — just output the content. "
         "File commits are handled automatically."
     ),

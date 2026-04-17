@@ -1097,3 +1097,38 @@ def test_dashboard_html_includes_token_elements() -> None:
     assert "card-cost-estimate" in res.text
     assert "Card Tokens" in res.text
     assert "Estimated Cost" in res.text
+
+
+# --- 046: Dependency state in dashboard snapshot ---
+
+
+def test_build_snapshot_contains_blocked_by_dependencies() -> None:
+    """046 T027: The dashboard snapshot includes blocked_by_dependencies
+    so the frontend can render blocker badges with issue links."""
+    store = DashboardStore()
+    daemon = _make_mock_daemon()
+    daemon.state["blocked_by_dependencies"] = [
+        {"issue_number": 42, "title": "Set up theming", "column": "IN_PROGRESS",
+         "issue_url": "https://github.com/o/r/issues/42", "source": "explicit"},
+    ]
+    metrics = _make_mock_metrics()
+    health = _make_mock_health()
+    snap = store.build_snapshot(daemon, metrics, health)
+
+    assert "blocked_by_dependencies" in snap
+    deps = snap["blocked_by_dependencies"]
+    assert len(deps) == 1
+    assert deps[0]["issue_number"] == 42
+    assert deps[0]["column"] == "IN_PROGRESS"
+    assert deps[0]["source"] == "explicit"
+
+
+def test_build_snapshot_blocked_by_dependencies_empty_when_none() -> None:
+    """046: When no dependencies are blocking, the field is an empty list."""
+    store = DashboardStore()
+    daemon = _make_mock_daemon()
+    metrics = _make_mock_metrics()
+    health = _make_mock_health()
+    snap = store.build_snapshot(daemon, metrics, health)
+
+    assert snap["blocked_by_dependencies"] == []

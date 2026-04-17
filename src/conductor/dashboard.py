@@ -296,6 +296,9 @@ class DashboardStore:
             "cycle_history": list(self.history),
             "cycle_active": daemon._cycle_active,
             "daemon_running": daemon.running,
+            # 046: Dependency state for the current card — list of blocker dicts
+            # consumed by the dashboard JS to render "Blocked by #N (COLUMN)" badges.
+            "blocked_by_dependencies": list(daemon.state.get("blocked_by_dependencies") or []),
         }
 
 
@@ -707,6 +710,35 @@ function renderState(s) {
   } else {
     cardContainer.classList.remove('card-warning');
     cardEl.innerHTML = '<span class="empty-state">No active card</span>';
+  }
+
+  // 046: Dependency blockers
+  var depCard = document.getElementById('dependency-blockers-card');
+  if (!depCard) {
+    depCard = document.createElement('div');
+    depCard.id = 'dependency-blockers-card';
+    depCard.className = 'card';
+    depCard.style.display = 'none';
+    depCard.innerHTML = '<h3>Blocked by Dependencies</h3><ul id="dependency-blockers-list"></ul>';
+    var questionsCard = document.getElementById('questions-card');
+    if (questionsCard && questionsCard.parentNode) {
+      questionsCard.parentNode.insertBefore(depCard, questionsCard);
+    }
+  }
+  var depList = document.getElementById('dependency-blockers-list');
+  if (s.blocked_by_dependencies && s.blocked_by_dependencies.length > 0) {
+    depCard.style.display = '';
+    depList.innerHTML = s.blocked_by_dependencies.map(function(d) {
+      var label = '#' + d.issue_number;
+      if (d.title) label += ' — ' + esc(d.title);
+      var col = d.column || 'off-board';
+      var link = d.issue_url && /^https?:\\/\\//i.test(d.issue_url)
+        ? '<a href="' + esc(d.issue_url) + '" target="_blank" rel="noopener">' + esc(label) + '</a>'
+        : esc(label);
+      return '<li>' + link + ' <span style="opacity:0.7">(' + esc(col) + ')</span></li>';
+    }).join('');
+  } else {
+    depCard.style.display = 'none';
   }
 
   // Open questions (blocked phase)

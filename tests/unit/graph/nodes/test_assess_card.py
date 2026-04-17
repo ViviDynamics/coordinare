@@ -218,3 +218,76 @@ def test_assess_prompt_unchanged_when_persona_instructions_absent() -> None:
     prompt = _build_assess_prompt(card)
     assert not prompt.startswith("## Assessor Instructions")
     assert "You are reviewing" in prompt
+
+
+# --- 046: Assessor dependency detection ---
+
+
+class _DepBackend:
+    """Backend that returns a dependency verdict."""
+    def __init__(self, deps: list[int]):
+        self._deps = deps
+
+    async def assess(self, card):
+        return {"sufficient": False, "dependencies": self._deps, "questions": []}
+
+
+@pytest.mark.asyncio
+async def test_assessor_receives_active_card_titles() -> None:
+    """046 T023: The assessor backend receives an active_cards list
+    containing titles of other board cards for implicit dep detection."""
+    received = {}
+
+    class _CapturingBackend:
+        async def assess(self, card):
+            received.update(card)
+            return {"sufficient": True}
+
+    state = initial_state()
+    state["current_card"] = {"id": "CARD_B", "issue_id": "ISSUE_B"}
+    state["github_service"] = _GitHub()
+    state["assessment_backend"] = _CapturingBackend()
+    state["board_snapshot"] = {"TODO": [], "IN_PROGRESS": ["CARD_A"], "IN_REVIEW": []}
+    state["_board_titles"] = {"CARD_A": "Implement theming"}
+    state["_board_issue_numbers"] = {"CARD_A": 42}
+
+    await assess_card(state)
+
+    assert "active_cards" in received
+    titles = [c["title"] for c in received["active_cards"]]
+    assert "Implement theming" in titles
+
+
+@pytest.mark.asyncio
+async def test_assessor_dependency_blocks_card() -> None:
+    """046 T024: When the assessor returns dependencies=[42], the card
+    is blocked with a question explaining the dependency."""
+    state = initial_state()
+    state["current_card"] = {"id": "CARD_B", "issue_id": "ISSUE_B"}
+    state["github_service"] = _GitHub()
+    state["assessment_backend"] = _DepBackend([42])
+    state["board_snapshot"] = {}
+
+    result = await assess_card(state)
+
+    assert result["phase"] == "blocked"
+    questions = result.get("open_questions", [])
+    assert any("#42" in q for q in questions)
+
+
+@pytest.mark.asyncio
+async def test_assessor_no_dependency_proceeds() -> None:
+    """046: Assessor returns no dependencies → card proceeds normally."""
+    class _NoDepsBackend:
+        async def assess(self, card):
+            return {"sufficient": True, "dependencies": []}
+
+    state = initial_state()
+    state["current_card"] = {"id": "CARD_B", "issue_id": "ISSUE_B"}
+    state["github_service"] = _GitHub()
+    state["assessment_backend"] = _NoDepsBackend()
+    state["board_snapshot"] = {}
+
+    result = await assess_card(state)
+
+    assert result["phase"] == "dispatching"
