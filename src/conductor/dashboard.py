@@ -299,6 +299,8 @@ class DashboardStore:
             # 046: Dependency state for the current card — list of blocker dicts
             # consumed by the dashboard JS to render "Blocked by #N (COLUMN)" badges.
             "blocked_by_dependencies": list(daemon.state.get("blocked_by_dependencies") or []),
+            # 047: Last rebase round for per-card rebase status display.
+            "last_rebase_round": daemon.state.get("last_rebase_round"),
         }
 
 
@@ -751,6 +753,37 @@ function renderState(s) {
     }).join('');
   } else {
     qCard.style.display = 'none';
+  }
+
+  // 047: Rebase status
+  var rebaseCard = document.getElementById('rebase-status-card');
+  if (!rebaseCard) {
+    rebaseCard = document.createElement('div');
+    rebaseCard.id = 'rebase-status-card';
+    rebaseCard.className = 'card';
+    rebaseCard.style.display = 'none';
+    rebaseCard.innerHTML = '<h3>Last Rebase Round</h3><ul id="rebase-status-list"></ul>';
+    var performersCard = document.getElementById('performers-card');
+    if (performersCard && performersCard.parentNode) {
+      performersCard.parentNode.insertBefore(rebaseCard, performersCard);
+    }
+  }
+  var rebaseList = document.getElementById('rebase-status-list');
+  if (s.last_rebase_round && s.last_rebase_round.jobs && s.last_rebase_round.jobs.length > 0) {
+    rebaseCard.style.display = '';
+    var outcomeEmoji = {clean: '\\u2705', performer_resolved: '\\ud83d\\udee0', blocked: '\\ud83d\\udeab', skipped: '\\u23e9', failed: '\\u274c'};
+    rebaseList.innerHTML = s.last_rebase_round.jobs.map(function(j) {
+      var emoji = outcomeEmoji[j.outcome] || '\\u2753';
+      var sha = j.post_rebase_sha ? j.post_rebase_sha.substring(0, 8) : '';
+      var label = emoji + ' ' + esc(j.branch.split('/').pop() || j.branch) + ' — ' + esc(j.outcome);
+      if (sha) label += ' (' + esc(sha) + ')';
+      if (j.conflicted_files && j.conflicted_files.length > 0) {
+        label += ' [' + j.conflicted_files.map(esc).join(', ') + ']';
+      }
+      return '<li>' + label + '</li>';
+    }).join('');
+  } else {
+    rebaseCard.style.display = 'none';
   }
 
   // Performers card

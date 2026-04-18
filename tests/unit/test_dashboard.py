@@ -1132,3 +1132,41 @@ def test_build_snapshot_blocked_by_dependencies_empty_when_none() -> None:
     snap = store.build_snapshot(daemon, metrics, health)
 
     assert snap["blocked_by_dependencies"] == []
+
+
+# --- 047: Rebase status in dashboard snapshot ---
+
+
+def test_build_snapshot_contains_last_rebase_round() -> None:
+    """047 T032: Dashboard snapshot includes last_rebase_round."""
+    store = DashboardStore()
+    daemon = _make_mock_daemon()
+    daemon.state["last_rebase_round"] = {
+        "trigger_pr_number": 42,
+        "trigger_sha": "abc123",
+        "timestamp": "2026-04-17T12:00:00Z",
+        "jobs": [
+            {"card_id": "CARD_A", "branch": "coordinare/PVTI_A/feat", "outcome": "clean",
+             "post_rebase_sha": "def456", "conflicted_files": [], "duration_seconds": 5.0},
+        ],
+    }
+    metrics = _make_mock_metrics()
+    health = _make_mock_health()
+    snap = store.build_snapshot(daemon, metrics, health)
+
+    assert "last_rebase_round" in snap
+    rr = snap["last_rebase_round"]
+    assert rr["trigger_pr_number"] == 42
+    assert len(rr["jobs"]) == 1
+    assert rr["jobs"][0]["outcome"] == "clean"
+
+
+def test_build_snapshot_last_rebase_round_none_when_absent() -> None:
+    """047: When no rebase has occurred, the field is None."""
+    store = DashboardStore()
+    daemon = _make_mock_daemon()
+    metrics = _make_mock_metrics()
+    health = _make_mock_health()
+    snap = store.build_snapshot(daemon, metrics, health)
+
+    assert snap["last_rebase_round"] is None

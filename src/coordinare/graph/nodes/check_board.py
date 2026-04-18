@@ -82,6 +82,74 @@ async def check_board(state: CoordinareState) -> CoordinareState:
     state["_board_issue_numbers"] = board.get("issue_numbers", {})  # type: ignore[typeddict-unknown-key]
     state["_board_issue_urls"] = board.get("issue_urls", {})  # type: ignore[typeddict-unknown-key]
 
+    # 047: Detect external merges (non-coordinare PRs merged by humans) by
+    # comparing last_known_main_sha against the current main HEAD.  If
+    # changed, trigger a rebase round for all active sessions.
+    active_sessions = state.get("active_sessions") or {}
+    if active_sessions and config is not None:
+        # Derive repo URL from config (not WorkspaceManager internals)
+        _org = getattr(config, "github_org", "") or ""
+        _project = getattr(config, "project_name", "") or ""
+        _org = str(_org) if isinstance(_org, str) else ""
+        _project = str(_project) if isinstance(_project, str) else ""
+        _api_url = getattr(config, "github_api_url", "") or ""
+        _host = "github.com"
+        if isinstance(_api_url, str) and _api_url and "github.com" not in _api_url:
+            from urllib.parse import urlparse as _urlparse
+            _host = _urlparse(_api_url).hostname or "github.com"
+        repo_url = f"https://{_host}/{_org}/{_project}.git" if _org and _project else ""
+        # Get token from github_service (which owns the auth)
+        token = ""
+        if github is not None and hasattr(github, "_current_token"):
+            import contextlib
+            with contextlib.suppress(Exception):
+                token = await github._current_token()
+        if repo_url and token:
+            from coordinare.services.rebase import fetch_main_sha, run_rebase_round
+            # Cache the fetched main SHA per cycle to avoid N ls-remote
+            # calls in multi-session mode (check_board runs once per
+            # active session within a single daemon cycle).
+            cached_main = state.get("_main_sha_cache")
+            if cached_main and max_cards > 1:
+                current_main = cached_main
+            else:
+                current_main = await fetch_main_sha(repo_url, token)
+                if current_main and max_cards > 1:
+                    state["_main_sha_cache"] = current_main  # type: ignore[typeddict-unknown-key]
+            if current_main:
+                prev_main = state.get("last_known_main_sha")
+                if prev_main is None:
+                    # First cycle — initialize without triggering rebase
+                    state["last_known_main_sha"] = current_main  # type: ignore[typeddict-unknown-key]
+                elif current_main != prev_main:
+                    logger.info(
+                        "check_board.main_head_changed",
+                        old_sha=prev_main[:8] if prev_main else "?",
+                        new_sha=current_main[:8],
+                    )
+                    state["last_known_main_sha"] = current_main  # type: ignore[typeddict-unknown-key]
+                    try:
+                        notification_svc = state.get("notification_service")
+                        rr = await run_rebase_round(
+                            active_sessions, current_main, repo_url, token,
+                            notification_service=notification_svc,
+                            github=github,
+                            human_reviewers=state.get("human_reviewers"),
+                        )
+                        state["last_rebase_round"] = rr.to_dict()  # type: ignore[typeddict-unknown-key]
+                        # US2: attempt performer conflict resolution for
+                        # the first BLOCKED job (same as merge_pr path).
+                        from coordinare.models.rebase import RebaseOutcome
+                        from coordinare.services.rebase import prepare_conflict_resolution
+                        for _job in rr.jobs:
+                            if _job.outcome == RebaseOutcome.BLOCKED:
+                                _sess = active_sessions.get(_job.card_id)
+                                if isinstance(_sess, dict):
+                                    prepare_conflict_resolution(_job, _sess, human_reviewers=state.get("human_reviewers"))
+                                break
+                    except Exception as exc:
+                        logger.warning("check_board.rebase_round_failed", error=str(exc))
+
     # 045: Refresh current_card metadata from the fresh board snapshot whenever
     # we have an active card.  Without this, fields that aren't persisted in
     # WorkflowSnapshot (or that change between restarts — title edits, label

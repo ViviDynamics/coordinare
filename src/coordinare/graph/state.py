@@ -131,6 +131,10 @@ class CoordinareState(TypedDict, total=False):
     # dicts [{issue_number, title, column, issue_url, source}].  Populated by
     # check_board's dependency filtering and consumed by dashboard + notifications.
     blocked_by_dependencies: list[dict[str, Any]]
+    # 047: Auto-rebase — track main HEAD SHA to detect external merges, and
+    # store the last rebase round for dashboard display.
+    last_known_main_sha: str | None
+    last_rebase_round: dict | None
 
 
 def initial_state() -> CoordinareState:
@@ -165,4 +169,6 @@ def initial_state() -> CoordinareState:
         "active_sessions": {},
         "feedback_cycle_count": 0,
         "blocked_by_dependencies": [],
+        "last_known_main_sha": None,
+        "last_rebase_round": None,
     }

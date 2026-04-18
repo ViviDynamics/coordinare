@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "coordinare/dashboard-rebase-status/047",
+  "title": "Dashboard Snapshot Extension — Rebase Status",
+  "description": "New fields added to the dashboard SSE snapshot for per-card rebase visibility (spec 047).",
+  "type": "object",
+  "properties": {
+    "last_rebase_round": {
+      "type": ["object", "null"],
+      "description": "Most recent rebase round triggered by a merge. Null when no rebase has occurred.",
+      "properties": {
+        "trigger_pr_number": {
+          "type": "integer",
+          "description": "PR number that was merged to trigger this round."
+        },
+        "trigger_sha": {
+          "type": "string",
+          "description": "Main HEAD SHA after the merge."
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "jobs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "card_id": { "type": "string" },
+              "branch": { "type": "string" },
+              "pr_number": { "type": "integer" },
+              "outcome": {
+                "type": "string",
+                "enum": ["clean", "performer_resolved", "blocked", "skipped", "failed"]
+              },
+              "post_rebase_sha": { "type": "string" },
+              "conflicted_files": {
+                "type": "array",
+                "items": { "type": "string" }
+              },
+              "duration_seconds": { "type": "number" }
+            },
+            "required": ["card_id", "outcome"]
+          }
+        }
+      }
+    }
+  }
+}

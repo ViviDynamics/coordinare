@@ -74,5 +74,80 @@ async def merge_pr(state: CoordinareState) -> CoordinareState:
     card["previous_status"] = card.get("status", "IN_REVIEW")
     card["status"] = "DONE"
     state["current_card"] = card
+
+    # 047: Trigger rebase round for all other in-flight branches after merge.
+    # The new main HEAD is the merge commit OID we just received.
+    merge_sha = ""
+    if isinstance(merge_commit, dict):
+        merge_sha = str(merge_commit.get("oid", ""))
+    if merge_sha:
+        state["last_known_main_sha"] = merge_sha
+        all_sessions = state.get("active_sessions") or {}
+        # Exclude the just-merged card so we don't rebase/force-push its
+        # (now-merged) branch or fail on a deleted branch ref.
+        merged_card_id = str(card.get("id", ""))
+        active_sessions = {k: v for k, v in all_sessions.items() if k != merged_card_id}
+        config = state.get("config")
+        if active_sessions and config is not None:
+            try:
+                from coordinare.services.rebase import run_rebase_round
+                # Derive repo URL from config (not WorkspaceManager internals)
+                org = getattr(config, "github_org", "") or ""
+                project = getattr(config, "project_name", "") or ""
+                org = str(org) if isinstance(org, str) else ""
+                project = str(project) if isinstance(project, str) else ""
+                api_url = getattr(config, "github_api_url", "") or ""
+                host = "github.com"
+                if isinstance(api_url, str) and api_url and "github.com" not in api_url:
+                    from urllib.parse import urlparse
+                    host = urlparse(api_url).hostname or "github.com"
+                repo_url = f"https://{host}/{org}/{project}.git" if org and project else ""
+                # Get token from github_service (which owns the auth)
+                import contextlib
+                token = ""
+                if github is not None and hasattr(github, "_current_token"):
+                    with contextlib.suppress(Exception):
+                        token = await github._current_token()
+                if repo_url and token:
+                    import contextlib
+                    pr_number = 0
+                    pr_url = str(card.get("pr_url") or "")
+                    if pr_url and "/" in pr_url:
+                        with contextlib.suppress(ValueError, IndexError):
+                            pr_number = int(pr_url.rstrip("/").rsplit("/", 1)[-1])
+                    notification_svc = state.get("notification_service")
+                    rr = await run_rebase_round(
+                        active_sessions, merge_sha, repo_url, token,
+                        trigger_pr_number=pr_number,
+                        notification_service=notification_svc,
+                        github=github,
+                        human_reviewers=state.get("human_reviewers"),
+                    )
+                    state["last_rebase_round"] = rr.to_dict()
+                    # US2: For any BLOCKED jobs (conflicts), set up the
+                    # first one for performer-driven resolution.  The
+                    # coordinare's normal dispatch_performer → monitor_performer
+                    # pipeline handles the rest asynchronously.
+                    from coordinare.models.rebase import RebaseOutcome
+                    from coordinare.services.rebase import prepare_conflict_resolution
+                    for job in rr.jobs:
+                        if job.outcome == RebaseOutcome.BLOCKED:
+                            # Route the BLOCKED card's session to the
+                            # implementer with conflict details in relay_feedback.
+                            session = active_sessions.get(job.card_id)
+                            if isinstance(session, dict):
+                                prepare_conflict_resolution(
+                                    job, session,
+                                    human_reviewers=state.get("human_reviewers"),
+                                )
+                            break  # one at a time — next round handles the rest
+                    logger.info(
+                        "merge_pr.rebase_round_complete",
+                        summary=rr.summary,
+                        job_count=len(rr.jobs),
+                    )
+            except Exception as exc:
+                logger.warning("merge_pr.rebase_round_failed", error=str(exc))
+
     state["phase"] = "idle"
     return state
