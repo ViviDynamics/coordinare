@@ -130,6 +130,11 @@ filterwarnings = [
 [tool.coverage.run]
 source = ["src/coordinare"]
 branch = true
+# __main__.py is the CLI entry point — its async main() function (daemon
+# bootstrap, service wiring, argparse) can't be reached by unit tests.
+# Helper functions extracted from it ARE tested via test_main_coverage.py
+# and test_bootstrap.py.
+omit = ["src/coordinare/__main__.py"]
 
 [tool.coverage.report]
 show_missing = true

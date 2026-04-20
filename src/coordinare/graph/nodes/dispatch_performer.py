@@ -122,13 +122,41 @@ async def dispatch_performer(state: CoordinareState) -> CoordinareState:
         state["phase"] = "idle"
         return state
 
-    # Resolve the service for this stage.
-    service: AgentServiceProtocol | None = performer_services.get(performer_stage)
+    # 048: Resolve the service for this stage via SlotManager if available.
+    # The SlotManager enforces per-role max_concurrency and returns a free
+    # service instance, or None if at capacity (card retries next cycle).
+    slot_manager = state.get("slot_manager")
+    card_id = str(card.get("id", ""))
+    service: AgentServiceProtocol | None = None
+    if slot_manager is not None and hasattr(slot_manager, "acquire"):
+        service = slot_manager.acquire(
+            performer_stage, card_id, config=state.get("config"),
+        )
+        if service is None and hasattr(slot_manager, "is_at_capacity") and slot_manager.is_at_capacity(performer_stage):
+            # At capacity — card waits. Return without changing phase so
+            # the next poll cycle retries.
+            logger.info(
+                "dispatch_performer.at_capacity",
+                performer_stage=performer_stage,
+                card_id=card_id,
+            )
+            return state
+        # If slot_manager returned None but NOT at capacity:
+        # - Stage has no pool (unknown) → fall through to legacy
+        # - Stage has pool with max=0 (disabled) → don't fall through
+        #   (skip the role, same as if not configured)
+        if service is None:
+            pool = slot_manager.pools.get(performer_stage) if hasattr(slot_manager, "pools") else None
+            if pool is not None and pool.max_concurrency <= 0:
+                service = None  # disabled — will be skipped below
+            else:
+                service = performer_services.get(performer_stage)
+    else:
+        # Legacy path: single service per stage (backward compatible)
+        service = performer_services.get(performer_stage)
 
     # Fallback to legacy agent_service only when performer_services is empty
-    # (backward compatibility with pre-019 configurations).  When
-    # performer_services is populated, a missing entry means the role should
-    # be skipped — not silently run on the legacy service.
+    # (backward compatibility with pre-019 configurations).
     if service is None and not performer_services:
         service = state.get("agent_service")
 
@@ -142,6 +170,19 @@ async def dispatch_performer(state: CoordinareState) -> CoordinareState:
         for key, value in updates.items():
             state[key] = value  # type: ignore[literal-required]
         return state
+
+    # 048: If we acquired a slot from the SlotManager, we must release it
+    # on any early error return (health check, workspace, transport failure)
+    # to prevent slot leaks.
+    _acquired_via_slot_mgr = (
+        slot_manager is not None
+        and hasattr(slot_manager, "release")
+        and service is not None
+    )
+
+    def _release_slot_on_error() -> None:
+        if _acquired_via_slot_mgr:
+            slot_manager.release(performer_stage, card_id)
 
     # --- Health check with retry (033) ---
     card_id = str(card.get("id", ""))
@@ -191,6 +232,7 @@ async def dispatch_performer(state: CoordinareState) -> CoordinareState:
             attempts=max_attempts,
             elapsed_seconds=round(_monotonic() - _t0, 1),
         )
+        _release_slot_on_error()
         state["phase"] = "idle"
         return state
 
@@ -203,6 +245,7 @@ async def dispatch_performer(state: CoordinareState) -> CoordinareState:
             + (f"Reason: {health_reason}" if health_reason else
                "Check performer logs for details.")
         ]
+        _release_slot_on_error()
         return state
 
     # --- Workspace setup (011) ---
@@ -227,6 +270,7 @@ async def dispatch_performer(state: CoordinareState) -> CoordinareState:
                 logger.warning("move_card_to_blocked_failed", card_id=card_id)
             state["workspace_path"] = None
             state["workspace_branch"] = None
+            _release_slot_on_error()
             state["phase"] = "blocked"
             state["open_questions"] = [str(exc)]
             return state
@@ -249,6 +293,7 @@ async def dispatch_performer(state: CoordinareState) -> CoordinareState:
                 logger.warning("move_card_to_blocked_failed", card_id=card_id)
             state["workspace_path"] = None
             state["workspace_branch"] = None
+            _release_slot_on_error()
             state["phase"] = "blocked"
             state["open_questions"] = [reason]
             return state
@@ -287,6 +332,7 @@ async def dispatch_performer(state: CoordinareState) -> CoordinareState:
                         )
                 state["workspace_path"] = None
                 state["workspace_branch"] = None
+                _release_slot_on_error()
                 state["phase"] = "blocked"
                 state["open_questions"] = [reason]
                 return state
@@ -348,6 +394,7 @@ async def dispatch_performer(state: CoordinareState) -> CoordinareState:
         state["system_error_count"] = state.get("system_error_count", 0) + 1
         state["system_error_last_at"] = datetime.now(UTC)
         state["system_error_reason"] = reason
+        _release_slot_on_error()
         state["phase"] = "system_error"
         card["previous_status"] = card.get("status", "TODO")
         card["status"] = "IN_PROGRESS"
@@ -383,6 +430,7 @@ async def dispatch_performer(state: CoordinareState) -> CoordinareState:
                 logger.warning("workspace_teardown_failed.after_permanent_error", card_id=card_id)
         state["workspace_path"] = None
         state["workspace_branch"] = None
+        _release_slot_on_error()
         state["phase"] = "blocked"
         state["open_questions"] = [f"Permanent service failure: {exc}"]
         return state
@@ -410,6 +458,7 @@ async def dispatch_performer(state: CoordinareState) -> CoordinareState:
         state["system_error_count"] = state.get("system_error_count", 0) + 1
         state["system_error_last_at"] = datetime.now(UTC)
         state["system_error_reason"] = f"Performer dispatch failed ({performer_stage}): {reason}"
+        _release_slot_on_error()
         state["phase"] = "system_error"
         return state
 

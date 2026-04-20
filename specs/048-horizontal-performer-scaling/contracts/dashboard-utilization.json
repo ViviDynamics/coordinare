@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "coordinare/dashboard-utilization/048",
+  "title": "Dashboard Snapshot Extension — Role Utilization",
+  "description": "New field added to the dashboard SSE snapshot for per-role performer utilization (spec 048).",
+  "type": "object",
+  "properties": {
+    "role_utilization": {
+      "type": "array",
+      "description": "Per-role utilization data for the dashboard.",
+      "items": {
+        "type": "object",
+        "required": ["role", "active", "max"],
+        "properties": {
+          "role": {
+            "type": "string",
+            "description": "Performer stage name (e.g. 'implementing', 'reviewing')."
+          },
+          "active": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of currently active performer instances for this role."
+          },
+          "max": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Configured max_concurrency for this role (clamped to 1 for singletons)."
+          },
+          "queued": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of cards waiting for a free slot in this role. 0 when not at capacity.",
+            "default": 0
+          }
+        }
+      },
+      "default": []
+    }
+  }
+}

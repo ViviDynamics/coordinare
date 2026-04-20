@@ -538,21 +538,37 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
 
     stage: str = state.get("performer_stage", "implementing")
     performer_services: dict[str, Any] = state.get("performer_services") or {}
-    service = performer_services.get(stage)
+
+    # card_id must be extracted before SlotManager lookup.
+    # Also guards against missing/invalid current_card — if card is not a
+    # dict we can't acquire a meaningful slot and should bail early.
+    if not isinstance(card, dict):
+        state["phase"] = "idle"
+        return state
+    card_id = str(card.get("id", ""))
+
+    # 048: Resolve the card's specific service instance via SlotManager so
+    # status polls go to the correct transport (not just the primary).
+    slot_manager = state.get("slot_manager")
+    service = None
+    if slot_manager is not None and hasattr(slot_manager, "acquire") and card_id:
+        # acquire() returns the already-allocated service for this card
+        # (idempotent — doesn't consume a new slot).
+        service = slot_manager.acquire(stage, card_id, config=state.get("config"))
+    if service is None:
+        service = performer_services.get(stage)
 
     # Fallback to legacy agent_service only when performer_services is empty
-    # (backward compatibility with pre-019 configurations).  When
-    # performer_services is populated, a missing entry means the role was
-    # not configured — do not silently monitor with the legacy service.
+    # (backward compatibility with pre-019 configurations).
     if service is None and not performer_services:
         service = state.get("agent_service")
 
-    if service is None or not isinstance(card, dict):
+    if service is None:
         state["phase"] = "idle"
         return state
 
     session_id = state.get("agent_dispatch", {}).get("session_id", "")
-    card_id = str(card.get("id", ""))
+    card_id = str(card.get("id", ""))  # re-extract with confirmed dict type
 
     # 027: Enforce per-role session timeout at coordinare level
     # Only enforced when explicitly configured (role_timeouts[stage] > 0).
@@ -589,6 +605,10 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
                     elapsed_seconds=round(elapsed),
                     timeout_seconds=timeout_secs,
                 )
+                # 048: release slot on timeout
+                _sm = state.get("slot_manager")
+                if _sm is not None and hasattr(_sm, "release"):
+                    _sm.release(stage, card_id)
                 state["phase"] = "blocked"
                 state["open_questions"] = [
                     f"Performer ({stage}) timed out after {round(elapsed)}s "
@@ -647,6 +667,10 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
             state["agent_dispatch"] = {}
             state["agent_dispatch_at"] = None
             state["phase"] = "system_error"
+            # 048: release slot on transport error
+            _sm = state.get("slot_manager")
+            if _sm is not None and hasattr(_sm, "release"):
+                _sm.release(stage, card_id)
             return state
         except PermanentGitHubError as exc:
             logger.error(
@@ -662,6 +686,10 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
                     logger.warning("move_card_to_blocked_failed", card_id=card_id)
             state["phase"] = "blocked"
             state["open_questions"] = [f"Permanent service failure: {exc}"]
+            # 048: release slot on permanent error
+            _sm = state.get("slot_manager")
+            if _sm is not None and hasattr(_sm, "release"):
+                _sm.release(stage, card_id)
             return state
 
         # Accumulate backend events (capped at 100 entries).
@@ -797,6 +825,20 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
                         error=str(exc),
                         exc_info=True,
                     )
+
+        # 048: Release the performer slot on ANY terminal marker (success,
+        # changes_requested, failed, error, blocked, session_expired) so
+        # the next queued card can use the freed slot.  Must happen before
+        # any branching because non-success paths (changes_requested,
+        # security_failed, qa_failed, error) return early.
+        _terminal_markers = TERMINAL_SUCCESS_STATES | {
+            "changes_requested", "security_failed", "qa_failed",
+            "error", "blocked", "session_expired",
+        }
+        if marker in _terminal_markers:
+            _slot_mgr = state.get("slot_manager")
+            if _slot_mgr is not None and hasattr(_slot_mgr, "release"):
+                _slot_mgr.release(stage, card_id)
 
         # --- Terminal success states ---
         if marker in TERMINAL_SUCCESS_STATES:

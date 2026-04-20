@@ -25,3 +25,12 @@ CANONICAL_ORDER: list[str] = [
     "advocate", "assessor", "architect", "implementer",
     "reviewer", "security", "qa", "tech_writer", "closer",
 ]
+
+# 048: Stages (not role names) that must run at most one instance
+# regardless of max_concurrency configuration.  Uses stage names
+# (matching ROLE_TO_STAGE values) because SlotManager and
+# dispatch_performer operate on stages, not role names.
+# The assessor needs a consistent board view for dependency detection
+# (046), and the closer needs exclusive merge access to avoid race
+# conditions on the default branch.
+SINGLETON_STAGES: frozenset[str] = frozenset({"assessing", "closing_review"})

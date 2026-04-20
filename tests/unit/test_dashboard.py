@@ -1170,3 +1170,46 @@ def test_build_snapshot_last_rebase_round_none_when_absent() -> None:
     snap = store.build_snapshot(daemon, metrics, health)
 
     assert snap["last_rebase_round"] is None
+
+
+# --- 048: Role utilization in dashboard snapshot ---
+
+
+def test_build_snapshot_role_utilization_with_slot_manager() -> None:
+    """048: Dashboard snapshot includes role_utilization from SlotManager."""
+    from unittest.mock import MagicMock
+
+    from coordinare.services.slot_manager import SlotManager
+
+    sm = SlotManager()
+    sm.register_pool("implementing", [MagicMock(), MagicMock()], max_concurrency=2)
+    sm.acquire("implementing", "CARD_A")
+
+    store = DashboardStore()
+    daemon = _make_mock_daemon()
+    daemon.state["slot_manager"] = sm
+    daemon.state["active_sessions"] = {
+        "CARD_B": {"phase": "dispatching", "performer_stage": "implementing"},
+    }
+    metrics = _make_mock_metrics()
+    health = _make_mock_health()
+    snap = store.build_snapshot(daemon, metrics, health)
+
+    assert "role_utilization" in snap
+    util = snap["role_utilization"]
+    assert len(util) == 1
+    assert util[0]["role"] == "implementing"
+    assert util[0]["active"] == 1
+    assert util[0]["max"] == 2
+    assert util[0]["queued"] == 1  # CARD_B is in dispatching phase
+
+
+def test_build_snapshot_role_utilization_empty_without_slot_manager() -> None:
+    """048: No SlotManager → empty utilization list."""
+    store = DashboardStore()
+    daemon = _make_mock_daemon()
+    metrics = _make_mock_metrics()
+    health = _make_mock_health()
+    snap = store.build_snapshot(daemon, metrics, health)
+
+    assert snap["role_utilization"] == []

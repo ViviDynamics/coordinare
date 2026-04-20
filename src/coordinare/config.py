@@ -240,6 +240,9 @@ class PerformerRoleConfig(BaseModel):
     host: str | None = None
     port: int | None = None
     timeout_seconds: int | None = None
+    # 048: Maximum concurrent instances of this role.  Clamped to 1 for
+    # assessor/closer (SINGLETON_STAGES).  0 disables the role entirely.
+    max_concurrency: int = Field(default=1, ge=0)
 
 
 class PerformersConfig(BaseModel):

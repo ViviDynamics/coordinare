@@ -301,7 +301,24 @@ class DashboardStore:
             "blocked_by_dependencies": list(daemon.state.get("blocked_by_dependencies") or []),
             # 047: Last rebase round for per-card rebase status display.
             "last_rebase_round": daemon.state.get("last_rebase_round"),
+            # 048: Per-role performer utilization for scaling visibility.
+            "role_utilization": self._build_role_utilization(daemon),
         }
+
+    @staticmethod
+    def _build_role_utilization(daemon: Any) -> list[dict]:
+        """Build per-role utilization with queued counts from active_sessions."""
+        slot_mgr = daemon.state.get("slot_manager")
+        if slot_mgr is None or not hasattr(slot_mgr, "utilization"):
+            return []
+        # Count cards in dispatching phase per performer_stage
+        queued: dict[str, int] = {}
+        for session in (daemon.state.get("active_sessions") or {}).values():
+            if isinstance(session, dict) and session.get("phase") == "dispatching":
+                stage = session.get("performer_stage", "")
+                if stage:
+                    queued[stage] = queued.get(stage, 0) + 1
+        return slot_mgr.utilization(queued_by_stage=queued)
 
 
 # ---------------------------------------------------------------------------
@@ -741,6 +758,29 @@ function renderState(s) {
     }).join('');
   } else {
     depCard.style.display = 'none';
+  }
+
+  // 048: Performer utilization
+  var utilCard = document.getElementById('role-utilization-card');
+  if (!utilCard) {
+    utilCard = document.createElement('div');
+    utilCard.id = 'role-utilization-card';
+    utilCard.className = 'card';
+    utilCard.style.display = 'none';
+    utilCard.innerHTML = '<h3>Performer Utilization</h3><table id="role-utilization-table" style="width:100%;border-collapse:collapse"><thead><tr><th style="text-align:left">Role</th><th>Active / Max</th><th>Queued</th></tr></thead><tbody></tbody></table>';
+    var qCardRef = document.getElementById('questions-card');
+    if (qCardRef && qCardRef.parentNode) { qCardRef.parentNode.insertBefore(utilCard, qCardRef); }
+  }
+  var utilTbody = utilCard.querySelector('tbody');
+  if (s.role_utilization && s.role_utilization.length > 0) {
+    utilCard.style.display = '';
+    utilTbody.innerHTML = s.role_utilization.map(function(r) {
+      var pct = r.max > 0 ? Math.min(100, Math.round(r.active / r.max * 100)) : 0;
+      var bar = '<div style="background:#ddd;border-radius:3px;height:8px;width:60px;display:inline-block;vertical-align:middle"><div style="background:' + (pct >= 100 ? '#e74c3c' : '#27ae60') + ';height:100%;width:' + pct + '%;border-radius:3px"></div></div>';
+      return '<tr><td>' + esc(r.role) + '</td><td>' + bar + ' ' + r.active + ' / ' + r.max + '</td><td>' + (r.queued || 0) + '</td></tr>';
+    }).join('');
+  } else {
+    utilCard.style.display = 'none';
   }
 
   // Open questions (blocked phase)

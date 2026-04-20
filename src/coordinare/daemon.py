@@ -301,6 +301,12 @@ class CoordinareDaemon:
         """
         active_sessions: dict = self._state.get("active_sessions") or {}
 
+        # 048: Sync SlotManager with current sessions to free stale slots
+        # from crashed/expired performers before dispatching new ones.
+        slot_mgr = self._state.get("slot_manager")
+        if slot_mgr is not None and hasattr(slot_mgr, "sync_from_sessions"):
+            slot_mgr.sync_from_sessions(active_sessions)
+
         # Always clear board cache at cycle start so check_board re-polls
         self._state["_board_cache"] = None
 

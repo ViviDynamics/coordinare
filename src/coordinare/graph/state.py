@@ -135,6 +135,10 @@ class CoordinareState(TypedDict, total=False):
     # store the last rebase round for dashboard display.
     last_known_main_sha: str | None
     last_rebase_round: dict | None
+    # 048: Per-role performer slot manager.  Typed as Any because LangGraph's
+    # get_type_hints() resolves annotations at runtime — a TYPE_CHECKING
+    # import of SlotManager would cause NameError.
+    slot_manager: Any
 
 
 def initial_state() -> CoordinareState:
@@ -171,4 +175,5 @@ def initial_state() -> CoordinareState:
         "blocked_by_dependencies": [],
         "last_known_main_sha": None,
         "last_rebase_round": None,
+        "slot_manager": None,
     }

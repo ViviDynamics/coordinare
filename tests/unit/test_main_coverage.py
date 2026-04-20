@@ -255,3 +255,155 @@ def test_main_exits_2_on_generic_exception(monkeypatch: pytest.MonkeyPatch) -> N
         app_main.main()
 
     assert exc_info.value.code == 2
+
+
+# ---------------------------------------------------------------------------
+# 048: _build_performer_services with max_concurrency
+# ---------------------------------------------------------------------------
+
+
+def test_build_performer_services_creates_multiple_transports() -> None:
+    """048: When max_concurrency > 1, _build_performer_services creates
+    multiple service instances per role and stashes the full lists."""
+    from unittest.mock import patch
+
+    from coordinare.__main__ import _build_performer_services
+
+    config = MagicMock()
+    config.resilience = MagicMock()
+    config.resilience.agent_retry = MagicMock()
+    config.resilience.agent_retry.max_attempts = 1
+    config.resilience.agent_retry.initial_backoff_seconds = 0.1
+    config.resilience.agent_retry.max_backoff_seconds = 1.0
+    config.resilience.agent_retry.backoff_multiplier = 1.0
+    config.resilience.agent_retry.jitter_seconds = 0.0
+    config.agent_transport = "subprocess"
+    config.agent_executable = "/bin/echo"
+    config.transport_timeout_seconds = 30
+
+    # Configure implementer with max_concurrency=2
+    impl_config = MagicMock()
+    impl_config.transport = None
+    impl_config.executable = None
+    impl_config.host = None
+    impl_config.port = None
+    impl_config.timeout_seconds = None
+    impl_config.max_concurrency = 2
+    config.performers = MagicMock()
+    config.performers.implementer = impl_config
+    # All other roles return None
+    for role in ["advocate", "assessor", "architect", "reviewer", "security", "qa", "tech_writer", "closer"]:
+        setattr(config.performers, role, None)
+
+    cbs = _build_circuit_breakers(config)
+
+    with patch("coordinare.__main__._build_transport_for_role") as mock_build:
+        mock_build.return_value = MagicMock()
+        services = _build_performer_services(config, cbs)
+
+    # Should have created 2 transports for implementer
+    assert mock_build.call_count == 2
+    assert "implementing" in services
+    # Full lists stashed for SlotManager
+    lists = getattr(_build_performer_services, "_service_lists", {})
+    assert "implementing" in lists
+    assert len(lists["implementing"]) == 2
+
+
+def test_build_performer_services_singleton_clamped() -> None:
+    """048: Assessor max_concurrency is clamped to 1 (singleton)."""
+    from unittest.mock import patch
+
+    from coordinare.__main__ import _build_performer_services
+
+    config = MagicMock()
+    config.resilience = MagicMock()
+    config.resilience.agent_retry = MagicMock()
+    config.resilience.agent_retry.max_attempts = 1
+    config.resilience.agent_retry.initial_backoff_seconds = 0.1
+    config.resilience.agent_retry.max_backoff_seconds = 1.0
+    config.resilience.agent_retry.backoff_multiplier = 1.0
+    config.resilience.agent_retry.jitter_seconds = 0.0
+    config.agent_transport = "subprocess"
+    config.agent_executable = "/bin/echo"
+    config.transport_timeout_seconds = 30
+
+    assessor_config = MagicMock()
+    assessor_config.transport = None
+    assessor_config.executable = None
+    assessor_config.host = None
+    assessor_config.port = None
+    assessor_config.timeout_seconds = None
+    assessor_config.max_concurrency = 5  # should be clamped to 1
+    config.performers = MagicMock()
+    config.performers.assessor = assessor_config
+    for role in ["advocate", "architect", "implementer", "reviewer", "security", "qa", "tech_writer", "closer"]:
+        setattr(config.performers, role, None)
+
+    cbs = _build_circuit_breakers(config)
+
+    with patch("coordinare.__main__._build_transport_for_role") as mock_build:
+        mock_build.return_value = MagicMock()
+        _build_performer_services(config, cbs)
+
+    # Singleton: only 1 transport despite max_concurrency=5
+    assert mock_build.call_count == 1
+
+
+def test_build_performer_services_max_concurrency_zero_skips() -> None:
+    """048: max_concurrency=0 disables the role entirely."""
+    from unittest.mock import patch
+
+    from coordinare.__main__ import _build_performer_services
+
+    config = MagicMock()
+    config.resilience = MagicMock()
+    config.resilience.agent_retry = MagicMock()
+    config.resilience.agent_retry.max_attempts = 1
+    config.resilience.agent_retry.initial_backoff_seconds = 0.1
+    config.resilience.agent_retry.max_backoff_seconds = 1.0
+    config.resilience.agent_retry.backoff_multiplier = 1.0
+    config.resilience.agent_retry.jitter_seconds = 0.0
+    config.agent_transport = "subprocess"
+    config.agent_executable = "/bin/echo"
+    config.transport_timeout_seconds = 30
+
+    impl_config = MagicMock()
+    impl_config.max_concurrency = 0  # disabled
+    config.performers = MagicMock()
+    config.performers.implementer = impl_config
+    for role in ["advocate", "assessor", "architect", "reviewer", "security", "qa", "tech_writer", "closer"]:
+        setattr(config.performers, role, None)
+
+    cbs = _build_circuit_breakers(config)
+
+    with patch("coordinare.__main__._build_transport_for_role") as mock_build:
+        services = _build_performer_services(config, cbs)
+
+    # max_concurrency=0 → no transport created, role skipped
+    assert mock_build.call_count == 0
+    assert "implementing" not in services
+
+
+def test_slot_manager_construction_from_service_lists() -> None:
+    """048: SlotManager can be built from _service_lists stashed by
+    _build_performer_services."""
+    from coordinare.services.slot_manager import SlotManager
+
+    # Simulate what main() does after _build_performer_services
+    service_lists = {
+        "implementing": [MagicMock(), MagicMock()],
+        "reviewing": [MagicMock()],
+    }
+    sm = SlotManager()
+    for stage, svc_list in service_lists.items():
+        sm.register_pool(stage, svc_list, max_concurrency=len(svc_list))
+
+    assert sm.active_count("implementing") == 0
+    assert len(sm.pools["implementing"].services) == 2
+    assert len(sm.pools["reviewing"].services) == 1
+
+    # Acquire works
+    svc = sm.acquire("implementing", "CARD_A")
+    assert svc is not None
+    assert sm.active_count("implementing") == 1

@@ -1658,3 +1658,42 @@ async def test_assessor_blocked_routes_to_blocked() -> None:
     assert result["phase"] == "blocked"
     assert result["performer_stage"] == "assessing"  # NOT advanced
     assert "What is the acceptance criteria?" in result["open_questions"]
+
+
+# --- 048: SlotManager service resolution in monitor_performer ---
+
+
+@pytest.mark.asyncio
+async def test_monitor_performer_uses_slot_manager_service() -> None:
+    """048: monitor_performer resolves the card's specific transport via
+    SlotManager.acquire (idempotent) so status polls go to the correct
+    subprocess, not just the primary service."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from coordinare.services.slot_manager import SlotManager
+
+    # Build a SlotManager with a specific service allocated to the card
+    specific_service = MagicMock()
+    primary_service = MagicMock()
+    specific_service.check_status = AsyncMock(
+        return_value={"status": "working", "session_id": "sess_A"}
+    )
+    primary_service.check_status = AsyncMock(
+        return_value={"status": "working", "session_id": "sess_A"}
+    )
+
+    sm = SlotManager()
+    sm.register_pool("implementing", [primary_service, specific_service], max_concurrency=2)
+    sm.acquire("implementing", "OTHER_CARD")  # allocates primary (index 0)
+    sm.acquire("implementing", "CARD_A")       # allocates specific (index 1)
+
+    state = _make_state(service=primary_service, stage="implementing")
+    state["slot_manager"] = sm
+    state["current_card"] = {"id": "CARD_A", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "sess_A"}
+
+    await monitor_performer(state)
+
+    # SlotManager should have returned specific_service for CARD_A
+    specific_service.check_status.assert_called_once()
+    primary_service.check_status.assert_not_called()

@@ -393,7 +393,14 @@ def _build_performer_services(
     """Build the performer_services registry from config.
 
     Returns a mapping of stage name → ResilientAgentService for each
-    configured performer role.
+    configured performer role.  The first service instance per role is
+    used as the primary for backward-compatible single-service lookup.
+
+    048: Also builds ``max_concurrency`` transport instances per role for
+    the SlotManager.  The full list is stashed on
+    ``_build_performer_services._service_lists`` (stage →
+    list[ResilientAgentService]) so the caller can read it after the
+    function returns and register pools on the SlotManager.
 
     Note: ``PerformerRoleConfig.backend`` and ``image``/``host``/``port``
     are stored in config for operator documentation and future use.
@@ -401,8 +408,13 @@ def _build_performer_services(
     additional fields will be wired in when provider-specific transport
     constructors are added (e.g. a Claude-Code-specific subprocess mode).
     """
+    from coordinare.lifecycle import SINGLETON_STAGES
+
     r = config.resilience
     services: dict[str, Any] = {}
+    # 048: full service lists for SlotManager — stashed as a function
+    # attribute so the caller can build SlotManager pools after return.
+    service_lists: dict[str, list[Any]] = {}
 
     for role in _CANONICAL_ORDER:
         role_config = getattr(config.performers, role, None)
@@ -410,25 +422,58 @@ def _build_performer_services(
             continue
 
         stage = _ROLE_TO_STAGE[role]
-        try:
-            transport = _build_transport_for_role(role_config, config)
-        except (NotImplementedError, ValueError) as exc:
-            logger.warning(
-                "performer_transport_build_failed.role_skipped",
+        max_concurrency = getattr(role_config, "max_concurrency", 1)
+        if stage in SINGLETON_STAGES:
+            max_concurrency = min(max_concurrency, 1)
+        if max_concurrency <= 0:
+            logger.info(
+                "performer_role_disabled",
                 role=role,
                 stage=stage,
-                transport=getattr(role_config, "transport", None),
-                error=str(exc),
-                msg=f"Skipping performer role {role!r} — transport is not available",
+                msg=f"Role {role!r} disabled (max_concurrency=0)",
             )
             continue
-        agent_svc = AgentService(transport)
-        resilient = ResilientAgentService(
-            inner=agent_svc,
-            retry_config=_retry_config_from(r.agent_retry),
-            circuit_breaker=circuit_breakers["agent"],
-        )
-        services[stage] = resilient
+
+        role_services: list[Any] = []
+        for i in range(max_concurrency):
+            try:
+                transport = _build_transport_for_role(role_config, config)
+            except (NotImplementedError, ValueError) as exc:
+                if i == 0:
+                    logger.warning(
+                        "performer_transport_build_failed.role_skipped",
+                        role=role,
+                        stage=stage,
+                        transport=getattr(role_config, "transport", None),
+                        error=str(exc),
+                        msg=f"Skipping performer role {role!r} — transport is not available",
+                    )
+                else:
+                    logger.warning(
+                        "performer_transport_build_failed.partial_concurrency",
+                        role=role,
+                        stage=stage,
+                        instance=i,
+                        max_concurrency=max_concurrency,
+                        built=len(role_services),
+                        error=str(exc),
+                        msg=f"Role {role!r} built only {len(role_services)}/{max_concurrency} transport(s)",
+                    )
+                break
+            agent_svc = AgentService(transport)
+            resilient = ResilientAgentService(
+                inner=agent_svc,
+                retry_config=_retry_config_from(r.agent_retry),
+                circuit_breaker=circuit_breakers["agent"],
+            )
+            role_services.append(resilient)
+
+        if role_services:
+            services[stage] = role_services[0]  # primary for backward compat
+            service_lists[stage] = role_services
+
+    # Stash the full lists for SlotManager construction
+    _build_performer_services._service_lists = service_lists  # type: ignore[attr-defined]
 
     return services
 
@@ -505,6 +550,25 @@ async def _bootstrap_services(
     lifecycle_sequence = _build_lifecycle_sequence(config)
     performer_services = _build_performer_services(config, circuit_breakers)
 
+    # 048 — Build SlotManager from the per-role service lists
+    from coordinare.services.slot_manager import SlotManager
+    slot_manager = SlotManager()
+    service_lists: dict[str, list] = getattr(
+        _build_performer_services, "_service_lists", {},
+    )
+    for stage, svc_list in service_lists.items():
+        role_name = None
+        for r_name, s_name in _ROLE_TO_STAGE.items():
+            if s_name == stage:
+                role_name = r_name
+                break
+        max_c = 1
+        if role_name is not None:
+            rc = getattr(config.performers, role_name, None)
+            if rc is not None:
+                max_c = getattr(rc, "max_concurrency", 1)
+        slot_manager.register_pool(stage, svc_list, max_c)
+
     # If no explicit performer roles are configured but legacy agent_service exists,
     # register it as the implementer service for backward compatibility.
     if not performer_services and "implementing" in lifecycle_sequence:
@@ -558,6 +622,7 @@ async def _bootstrap_services(
         "lifecycle_sequence": lifecycle_sequence,
         "performer_stage": lifecycle_sequence[0] if lifecycle_sequence else "implementing",
         "role_timeouts": role_timeouts,
+        "slot_manager": slot_manager,
     }
 
     if config.advocate.enabled:
