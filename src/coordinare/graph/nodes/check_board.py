@@ -385,8 +385,26 @@ async def check_board(state: CoordinareState) -> CoordinareState:
             if not (set(item_labels.get(item_id, [])) & advocate_labels)
         ]
 
-        # 025: Sort by priority field if configured
+        # 050: Filter by assignee when assignee_filter is configured
         config = state.get("config")
+        assignee_filter = getattr(config, "assignee_filter", None) if config is not None else None
+        filter_login = str(assignee_filter).strip().lower() if isinstance(assignee_filter, str) else ""
+        if filter_login:
+            item_assignees = board.get("item_assignees", {})
+            pre_assignee_count = len(eligible_todo)
+            eligible_todo = [
+                item_id for item_id in eligible_todo
+                if filter_login in item_assignees.get(item_id, [])
+            ]
+            skipped = pre_assignee_count - len(eligible_todo)
+            if skipped:
+                logger.info(
+                    "check_board.assignee_filtered",
+                    skipped=skipped,
+                    assignee_filter=filter_login,
+                )
+
+        # 025: Sort by priority field if configured
         if config is not None and hasattr(config, "priority"):
             prio_cfg = config.priority
             if prio_cfg.field_name:

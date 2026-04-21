@@ -90,6 +90,11 @@ query PollBoard($projectId: ID!) {
                   name
                 }
               }
+              assignees(first: 10) {
+                nodes {
+                  login
+                }
+              }
             }
             ... on PullRequest {
               id
@@ -564,6 +569,7 @@ class GitHubService:
         issue_numbers: dict[str, int] = {}
         issue_urls: dict[str, str] = {}
         item_labels: dict[str, list[str]] = {}
+        item_assignees: dict[str, list[str]] = {}
         # Maps project item ID (PVTI_…) → underlying issue/PR node ID (I_… / PR_…)
         # Required for API calls that target issues/PRs (addComment, addLabels, etc.)
         content_node_ids: dict[str, str] = {}
@@ -595,6 +601,7 @@ class GitHubService:
                     elif raw_name == "done":
                         status_name = "DONE"
 
+            item_assignees[item_id] = []  # default empty; overwritten below if content has assignees
             content = item.get("content", {})
             if isinstance(content, dict):
                 titles[item_id] = str(content.get("title", ""))
@@ -614,6 +621,12 @@ class GitHubService:
                         for n in label_nodes.get("nodes", [])
                         if isinstance(n, dict)
                     ]
+                assignee_nodes = content.get("assignees", {})
+                item_assignees[item_id] = [
+                    str(n.get("login", "")).lower()
+                    for n in (assignee_nodes.get("nodes", []) if isinstance(assignee_nodes, dict) else [])
+                    if isinstance(n, dict) and n.get("login")
+                ]
 
             if status_name:  # skip items with unknown/unmapped status
                 snapshot.setdefault(status_name, []).append(item_id)
@@ -625,6 +638,7 @@ class GitHubService:
             "issue_numbers": issue_numbers,
             "issue_urls": issue_urls,
             "item_labels": item_labels,
+            "item_assignees": item_assignees,
             "content_node_ids": content_node_ids,
         }
 

@@ -27,6 +27,20 @@ Auto-generated from all feature plans. Last updated: 2026-02-16
 - Existing `config.yaml` YAML file — extended with a `personas:` top-level key; no new persistence backend (018-performer-personas)
 - Python 3.12+ + LangGraph ≥ 0.2 (existing), pydantic-settings (existing), structlog (existing), asyncio (stdlib) — **no new dependencies required** (019-performer-lifecycle)
 - N/A — `CoordinareState` is in-memory; `performers:` key added to existing `config.yaml` (019-performer-lifecycle)
+- Python 3.12+ + structlog, pydantic-settings, asyncio (all existing) (043-performer-ci-ownership)
+- N/A — no persistence (CI detection is stateless) (043-performer-ci-ownership)
+- Python 3.12+ + structlog, pydantic, asyncio (all existing) (044-transport-resilience-and-relay-recovery)
+- N/A — state fields only (in-memory) (044-transport-resilience-and-relay-recovery)
+- Python 3.12+ + structlog (logging), pydantic (models), asyncio (stdlib), gql[aiohttp] (GitHub GraphQL — existing) (046-card-dependency-detection)
+- N/A — dependency graph is rebuilt from board state + issue bodies on each poll cycle. No new persistence. (046-card-dependency-detection)
+- Python 3.12+ + structlog (logging), asyncio (stdlib), subprocess (git CLI via async wrapper), httpx (GitHub REST for force-push-with-lease) (047-auto-rebase-on-merge)
+- N/A — rebase state is transient per merge event. `last_known_main_sha` added to CoordinareState for merge detection. (047-auto-rebase-on-merge)
+- Python 3.12+ + structlog (logging), asyncio (stdlib), pydantic-settings (config) (048-horizontal-performer-scaling)
+- N/A — slot state is in-memory, derived from active_sessions on each cycle (048-horizontal-performer-scaling)
+- Python 3.12+ (backend), vanilla JavaScript + HTML/CSS (frontend) + FastAPI + Starlette (existing), asyncio (stdlib), structlog (existing) (049-dashboard-redesign)
+- N/A — dashboard is a read-only view of existing state; personas already persisted (049-dashboard-redesign)
+- Python 3.12+ + pydantic-settings (existing), gql[aiohttp] (existing), structlog (existing) (050-card-assignment-filtering)
+- N/A — filter applied in-memory per poll cycle (050-card-assignment-filtering)
 
 - Python 3.12+ + LangGraph (>=0.2), anthropic (>=0.40), gql[aiohttp], FastAPI, structlog, slack-sdk, aiosmtplib, prometheus-client, pydantic-settings (001-board-orchestrator)
 - Python 3.12+ + Pydantic v2 (existing), `asyncio.create_subprocess_exec` (stdlib), `structlog` (existing); `asyncssh` removed — replaced by pluggable transport architecture (004-agent-protocol)
@@ -47,9 +61,9 @@ cd src [ONLY COMMANDS FOR ACTIVE TECHNOLOGIES][ONLY COMMANDS FOR ACTIVE TECHNOLO
 Python 3.12+: Follow standard conventions
 
 ## Recent Changes
-- 019-performer-lifecycle: Added Python 3.12+ + LangGraph ≥ 0.2 (existing), pydantic-settings (existing), structlog (existing), asyncio (stdlib) — **no new dependencies required**
-- 018-performer-personas: Added Python 3.12+ + `pydantic>=2.9`, `pydantic-settings>=2.6`, `structlog>=24.1`, FastAPI (existing) — **no new dependencies required**
-- 017-fix-post-pr-workflow: Added Python 3.12+ + structlog (existing), asyncio (stdlib) — no new dependencies required
+- 050-card-assignment-filtering: Added Python 3.12+ + pydantic-settings (existing), gql[aiohttp] (existing), structlog (existing)
+- 049-dashboard-redesign: Added Python 3.12+ (backend), vanilla JavaScript + HTML/CSS (frontend) + FastAPI + Starlette (existing), asyncio (stdlib), structlog (existing)
+- 048-horizontal-performer-scaling: Added Python 3.12+ + structlog (logging), asyncio (stdlib), pydantic-settings (config)
 
 
 <!-- MANUAL ADDITIONS START -->

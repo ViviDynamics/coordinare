@@ -66,6 +66,8 @@ def _full_snapshot(**overrides: Any) -> dict:
         "last_rebase_round": None,
         # 048
         "role_utilization": [],
+        # 050
+        "assignee_filter": None,
     }
     base.update(overrides)
     return base
@@ -544,6 +546,40 @@ def test_idle_state_shows_no_active_performers_message(
     expect(page.locator("#active-performer-tiles")).to_contain_text(
         "No active performers", timeout=_WAIT_LIVE
     )
+
+
+@pytest.mark.e2e
+def test_idle_state_shows_assignee_filter_hint(
+    page: Page, live_server_url: str, store: DashboardStore
+) -> None:
+    """050: when assignee_filter is set, idle tile shows 'Filter: <login>'."""
+    page.goto(live_server_url)
+    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+
+    store.broadcaster.broadcast(
+        _full_snapshot(active_sessions=[], assignee_filter="coordinare-bot")
+    )
+
+    expect(page.locator("#active-performer-tiles")).to_contain_text(
+        "Filter: coordinare-bot", timeout=_WAIT_LIVE
+    )
+
+
+@pytest.mark.e2e
+def test_idle_state_no_filter_hint_when_unset(
+    page: Page, live_server_url: str, store: DashboardStore
+) -> None:
+    """050: when assignee_filter is None, idle tile does not show a filter hint."""
+    page.goto(live_server_url)
+    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+
+    store.broadcaster.broadcast(
+        _full_snapshot(active_sessions=[], assignee_filter=None)
+    )
+
+    tiles = page.locator("#active-performer-tiles")
+    expect(tiles).to_contain_text("No active performers", timeout=_WAIT_LIVE)
+    expect(tiles).not_to_contain_text("Filter:", timeout=_WAIT_LIVE)
 
 
 @pytest.mark.e2e

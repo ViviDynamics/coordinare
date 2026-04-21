@@ -441,6 +441,8 @@ class ProjectConfiguration(BaseSettings):
     personas: PersonasConfig = Field(default_factory=PersonasConfig)
     performers: PerformersConfig = Field(default_factory=PerformersConfig)
     priority: PriorityConfig = Field(default_factory=PriorityConfig)
+    # 050 — Only dispatch cards assigned to this GitHub login. None = no filter.
+    assignee_filter: str | None = Field(default=None)
     stuck_alerts: StuckAlertConfig = Field(default_factory=StuckAlertConfig)
     health_check: HealthCheckConfig = Field(default_factory=HealthCheckConfig)
     requirement_change_policy: RequirementChangePolicy = "warn"  # 030: ignore | warn | re-dispatch

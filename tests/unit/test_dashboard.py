@@ -1225,3 +1225,44 @@ def test_build_snapshot_role_utilization_empty_without_slot_manager() -> None:
     snap = store.build_snapshot(daemon, metrics, health)
 
     assert snap["role_utilization"] == []
+
+
+# --- 050: assignee_filter snapshot tests ---
+
+
+def test_build_snapshot_assignee_filter_present() -> None:
+    """050: assignee_filter is included in snapshot when configured."""
+    from types import SimpleNamespace
+    store = DashboardStore()
+    daemon = _make_mock_daemon()
+    daemon.state["config"] = SimpleNamespace(
+        assignee_filter="coordinare-bot",
+        project_name="Demo",
+        github_org="acme",
+        github_project_number=1,
+    )
+    metrics = _make_mock_metrics()
+    health = _make_mock_health()
+
+    snap = store.build_snapshot(daemon, metrics, health)
+
+    assert snap["assignee_filter"] == "coordinare-bot"
+
+
+def test_build_snapshot_assignee_filter_none_when_not_configured() -> None:
+    """050: assignee_filter is null in snapshot when not configured."""
+    from types import SimpleNamespace
+    store = DashboardStore()
+    daemon = _make_mock_daemon()
+    daemon.state["config"] = SimpleNamespace(
+        assignee_filter=None,
+        project_name="Demo",
+        github_org="acme",
+        github_project_number=1,
+    )
+    metrics = _make_mock_metrics()
+    health = _make_mock_health()
+
+    snap = store.build_snapshot(daemon, metrics, health)
+
+    assert snap["assignee_filter"] is None

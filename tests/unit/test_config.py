@@ -799,3 +799,33 @@ class TestGitHubEnterpriseURLs:
                 human_reviewers=["alice"],
                 github_api_url="http://ghes.example.com/api/v3",
             )
+
+
+# --- 050: assignee_filter tests ---
+
+def test_assignee_filter_default_is_none(tmp_path) -> None:
+    config = ProjectConfiguration.from_yaml(_write_config(tmp_path))
+    assert config.assignee_filter is None
+
+
+def test_assignee_filter_parsed_from_yaml(tmp_path) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "\n".join([
+            'project_name: "Demo"',
+            'github_org: "acme"',
+            "github_project_number: 12",
+            'github_token: "tok"',
+            'agent_executable: "/usr/bin/agent"',
+            'human_reviewers: ["alice"]',
+            'assignee_filter: "coordinare-bot"',
+        ])
+    )
+    config = ProjectConfiguration.from_yaml(path)
+    assert config.assignee_filter == "coordinare-bot"
+
+
+def test_assignee_filter_env_var_override(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    monkeypatch.setenv("COORDINARE_ASSIGNEE_FILTER", "my-bot")
+    config = ProjectConfiguration.from_yaml(_write_config(tmp_path))
+    assert config.assignee_filter == "my-bot"

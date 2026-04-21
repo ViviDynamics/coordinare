@@ -309,6 +309,8 @@ class DashboardStore:
             "last_rebase_round": daemon.state.get("last_rebase_round"),
             # 048: Per-role performer utilization for scaling visibility.
             "role_utilization": self._build_role_utilization(daemon),
+            # 050: Active assignee filter for dashboard idle-state hint.
+            "assignee_filter": getattr(daemon.state.get("config"), "assignee_filter", None),
         }
 
     @staticmethod
@@ -1273,7 +1275,8 @@ function renderActivePerformers(s) {
     // Use fields that are actually in the snapshot
     var cycleCount = s.cycles_completed != null ? ' &nbsp;&#183;&nbsp; Cycles: ' + s.cycles_completed : '';
     var activeCardCol = s.active_card_column ? ' &nbsp;&#183;&nbsp; Board: ' + esc(s.active_card_column) : '';
-    container.innerHTML = '<div class="ap-idle">No active performers &nbsp;&#183;&nbsp; Phase: <strong>' + esc(phase) + '</strong>' + cycleCount + activeCardCol + '</div>';
+    var filterHint = s.assignee_filter ? ' &nbsp;&#183;&nbsp; Filter: ' + esc(s.assignee_filter) : '';
+    container.innerHTML = '<div class="ap-idle">No active performers &nbsp;&#183;&nbsp; Phase: <strong>' + esc(phase) + '</strong>' + cycleCount + activeCardCol + filterHint + '</div>';
     return;
   }
   section.style.display = '';

@@ -87,6 +87,79 @@ async def test_check_board_preserves_commit_summary_when_same_card() -> None:
     assert result.get("commit_summary") == "abc1234 Same card"
 
 
+# --- 050: Assignee filter tests ---
+
+
+def _make_assignee_board(assignees_by_item: dict) -> object:
+    class _GitHubAssignee:
+        async def poll_board(self):
+            return {
+                "snapshot": {"TODO": list(assignees_by_item.keys()), "IN_PROGRESS": [], "IN_REVIEW": []},
+                "titles": {k: f"Card {k}" for k in assignees_by_item},
+                "descriptions": {k: "" for k in assignees_by_item},
+                "issue_numbers": {k: i + 1 for i, k in enumerate(assignees_by_item)},
+                "item_assignees": assignees_by_item,
+            }
+    return _GitHubAssignee()
+
+
+class _SimpleConfig:
+    assignee_filter: str | None = None
+
+    def __init__(self, assignee_filter=None):
+        self.assignee_filter = assignee_filter
+
+
+@pytest.mark.asyncio
+async def test_assignee_filter_dispatches_matching_card() -> None:
+    """Filter set + card assigned to filter login → dispatched."""
+    state = initial_state()
+    state["github_service"] = _make_assignee_board({"ITEM_1": ["coordinare-bot"]})
+    state["config"] = _SimpleConfig(assignee_filter="coordinare-bot")
+
+    result = await check_board(state)
+
+    assert result["phase"] == "dispatching"
+    assert result["current_card"]["id"] == "ITEM_1"
+
+
+@pytest.mark.asyncio
+async def test_assignee_filter_skips_different_login() -> None:
+    """Filter set + card assigned to different login → idle (no dispatch)."""
+    state = initial_state()
+    state["github_service"] = _make_assignee_board({"ITEM_1": ["human-engineer"]})
+    state["config"] = _SimpleConfig(assignee_filter="coordinare-bot")
+
+    result = await check_board(state)
+
+    assert result["phase"] == "idle"
+
+
+@pytest.mark.asyncio
+async def test_assignee_filter_skips_unassigned_card() -> None:
+    """Filter set + card with no assignees → idle (no dispatch)."""
+    state = initial_state()
+    state["github_service"] = _make_assignee_board({"ITEM_1": []})
+    state["config"] = _SimpleConfig(assignee_filter="coordinare-bot")
+
+    result = await check_board(state)
+
+    assert result["phase"] == "idle"
+
+
+@pytest.mark.asyncio
+async def test_no_assignee_filter_dispatches_any_card() -> None:
+    """No filter set → dispatches any TODO card regardless of assignees."""
+    state = initial_state()
+    state["github_service"] = _make_assignee_board({"ITEM_1": ["human-engineer"]})
+    state["config"] = _SimpleConfig(assignee_filter=None)
+
+    result = await check_board(state)
+
+    assert result["phase"] == "dispatching"
+    assert result["current_card"]["id"] == "ITEM_1"
+
+
 # --- Blocked card resume and reminder tests ---
 
 

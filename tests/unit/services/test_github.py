@@ -319,3 +319,94 @@ async def test_ensure_initialized_raises_when_not_initialized() -> None:
 
     with pytest.raises(RuntimeError, match="not initialized"):
         service._ensure_initialized()
+
+
+def _poll_board_response_with_assignees(assignee_logins: list[str]) -> list[dict]:
+    return [
+        {"organization": {"projectV2": {"id": "P1", "title": "Board"}}},
+        {
+            "node": {
+                "fields": {
+                    "nodes": [
+                        {
+                            "id": "status-field",
+                            "name": "Status",
+                            "options": [{"id": "todo-opt", "name": "ToDo"}],
+                        }
+                    ]
+                }
+            }
+        },
+        {
+            "node": {
+                "items": {
+                    "nodes": [
+                        {
+                            "id": "ITEM_1",
+                            "fieldValues": {"nodes": [{"name": "ToDo"}]},
+                            "content": {
+                                "id": "ISSUE_1",
+                                "number": 1,
+                                "title": "Fix bug",
+                                "body": "",
+                                "url": "https://github.com/acme/repo/issues/1",
+                                "labels": {"nodes": []},
+                                "assignees": {
+                                    "nodes": [{"login": login} for login in assignee_logins]
+                                },
+                            },
+                        }
+                    ]
+                }
+            }
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_poll_board_item_assignees_populated() -> None:
+    """issue with assignees returns lowercase logins in item_assignees."""
+    service = _TestGitHubService(_poll_board_response_with_assignees(["Coordinare-Bot", "JSmith"]))
+    await service.initialize()
+
+    board = await service.poll_board()
+
+    assert board["item_assignees"]["ITEM_1"] == ["coordinare-bot", "jsmith"]
+
+
+@pytest.mark.asyncio
+async def test_poll_board_item_assignees_empty_for_unassigned() -> None:
+    """issue with no assignees returns empty list in item_assignees."""
+    service = _TestGitHubService(_poll_board_response_with_assignees([]))
+    await service.initialize()
+
+    board = await service.poll_board()
+
+    assert board["item_assignees"]["ITEM_1"] == []
+
+
+@pytest.mark.asyncio
+async def test_poll_board_item_assignees_empty_for_draft_issue() -> None:
+    """DraftIssue content has no assignees field — returns empty list."""
+    service = _TestGitHubService([
+        {"organization": {"projectV2": {"id": "P1", "title": "Board"}}},
+        {"node": {"fields": {"nodes": [{"id": "sf", "name": "Status", "options": [{"id": "t", "name": "ToDo"}]}]}}},
+        {
+            "node": {
+                "items": {
+                    "nodes": [
+                        {
+                            "id": "DRAFT_1",
+                            "fieldValues": {"nodes": [{"name": "ToDo"}]},
+                            "content": {"title": "Draft card", "body": ""},
+                        }
+                    ]
+                }
+            }
+        },
+    ])
+    await service.initialize()
+
+    board = await service.poll_board()
+
+    assert board["item_assignees"].get("DRAFT_1", []) == []
