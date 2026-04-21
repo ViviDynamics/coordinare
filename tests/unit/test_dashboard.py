@@ -94,10 +94,22 @@ def _make_app(
 # ---------------------------------------------------------------------------
 
 
-def test_dashboard_html_under_40kb() -> None:
-    """T036: _DASHBOARD_HTML must not exceed the 40 KB size budget (raised to accommodate personas panel, 018)."""
+def test_dashboard_multi_page_routes_return_html_shell() -> None:
+    """049 T007: /performers, /personas, /history all return 200 with the same HTML shell as /."""
+    client = _make_app()
+    root_html = client.get("/").text
+    for path in ["/performers", "/personas", "/history"]:
+        res = client.get(path)
+        assert res.status_code == 200, f"{path} returned {res.status_code}"
+        assert res.headers["content-type"].startswith("text/html"), f"{path} wrong content-type"
+        assert res.text == root_html, f"{path} returned different HTML than /"
+
+
+def test_dashboard_html_under_80kb() -> None:
+    """T036: _DASHBOARD_HTML must not exceed the 80 KB size budget (raised to accommodate
+    multi-page layout, navbar, active-performer tiles, performers/personas/history pages — 049)."""
     size = len(_DASHBOARD_HTML.encode())
-    assert size < 40 * 1024, f"_DASHBOARD_HTML is {size} bytes (limit: {40 * 1024})"
+    assert size < 80 * 1024, f"_DASHBOARD_HTML is {size} bytes (limit: {80 * 1024})"
 
 
 # ---------------------------------------------------------------------------

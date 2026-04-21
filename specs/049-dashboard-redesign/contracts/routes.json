@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "coordinare/dashboard-routes/049",
+  "title": "Dashboard Routes",
+  "description": "All routes return the same HTML shell. JS renders the correct page based on location.pathname.",
+  "type": "object",
+  "properties": {
+    "routes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "title", "status"],
+        "properties": {
+          "path": { "type": "string" },
+          "title": { "type": "string" },
+          "status": { "type": "string", "enum": ["implemented", "stub"] },
+          "description": { "type": "string" }
+        }
+      },
+      "examples": [
+        [
+          { "path": "/", "title": "Dashboard", "status": "implemented", "description": "Main view with active performers and metrics" },
+          { "path": "/performers", "title": "Performers", "status": "implemented", "description": "Per-role status, utilization, and event history" },
+          { "path": "/personas", "title": "Personas", "status": "implemented", "description": "Persona editor moved from main dashboard" },
+          { "path": "/history", "title": "History", "status": "stub", "description": "Coming soon placeholder" }
+        ]
+      ]
+    }
+  }
+}

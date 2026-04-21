@@ -248,6 +248,7 @@ class DashboardStore:
             sess_card = sess.get("current_card") or {}
             _sess_raw_stage = sess.get("performer_stage")
             _sess_stage = _sess_raw_stage if isinstance(_sess_raw_stage, str) else ""
+            _sess_dispatch = sess.get("agent_dispatch_at")
             active_session_summaries.append({
                 "card_id": sid,
                 "card_title": str(sess_card.get("title", "")),
@@ -255,6 +256,11 @@ class DashboardStore:
                 "performer_stage": _sess_stage,
                 "card_tokens_total": sess.get("card_tokens_total", 0),
                 "card_cost_estimate": sess.get("card_cost_estimate", 0.0),
+                "agent_dispatch_at": (
+                    _sess_dispatch.isoformat()
+                    if isinstance(_sess_dispatch, datetime)
+                    else None
+                ),
             })
 
         return {
@@ -421,11 +427,67 @@ td { padding: 4px 8px; border-bottom: 1px solid #21262d; }
 .perf-list-row:hover { border-color: #58a6ff; }
 .perf-list-chevron { margin-left: auto; color: #8b949e; font-size: 14px; }
 .perf-back-btn { background: none; border: none; color: #58a6ff; cursor: pointer; font-size: 13px; font-family: monospace; padding: 0; margin-bottom: 10px; display: flex; align-items: center; gap: 4px; }
+/* 049: Navbar */
+#navbar { display: flex; align-items: center; gap: 0; background: #161b22; border-bottom: 1px solid #30363d; padding: 0 16px; margin: -16px -16px 16px -16px; position: sticky; top: 0; z-index: 100; }
+#navbar .nav-brand { color: #58a6ff; font-weight: bold; font-size: 15px; padding: 12px 16px 12px 0; margin-right: 8px; border-right: 1px solid #30363d; white-space: nowrap; }
+#navbar a.nav-link { color: #8b949e; text-decoration: none; padding: 12px 14px; font-size: 13px; border-bottom: 2px solid transparent; transition: color .15s, border-color .15s; display: inline-block; }
+#navbar a.nav-link:hover { color: #c9d1d9; text-decoration: none; }
+#navbar a.nav-link.nav-active { color: #58a6ff; border-bottom-color: #58a6ff; }
+#navbar .nav-spacer { flex: 1; }
+#navbar .nav-status-dot { width: 8px; height: 8px; border-radius: 50%; background: #3fb950; display: inline-block; margin-right: 6px; }
+#navbar .nav-status-dot.disconnected { background: #f85149; }
+#navbar-hamburger { display: none; background: none; border: none; color: #8b949e; cursor: pointer; font-size: 20px; padding: 10px; margin-left: auto; }
+#navbar-menu { display: flex; align-items: center; gap: 0; }
+@media (max-width: 767px) {
+  #navbar { flex-wrap: wrap; }
+  #navbar-hamburger { display: block; }
+  #navbar-menu { display: none; width: 100%; flex-direction: column; align-items: flex-start; padding: 8px 0; }
+  #navbar-menu.open { display: flex; }
+  #navbar a.nav-link { padding: 10px 16px; width: 100%; }
+}
+/* 049: Active-performer tiles */
+#active-performers { margin-bottom: 4px; }
+.ap-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
+.ap-tile { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 12px; transition: border-color .15s; }
+.ap-tile:hover { border-color: #58a6ff33; }
+.ap-tile-role { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: #8b949e; margin-bottom: 4px; display: flex; align-items: center; gap: 6px; }
+.ap-tile-title { font-size: 14px; font-weight: bold; color: #c9d1d9; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ap-tile-meta { font-size: 12px; color: #8b949e; display: flex; gap: 10px; flex-wrap: wrap; }
+.ap-tile-elapsed { color: #58a6ff; }
+.ap-idle { color: #8b949e; padding: 12px; font-style: italic; text-align: center; }
+/* 049: Diagram reduction */
+#flow-chart { max-height: 25vh; overflow: hidden; cursor: pointer; position: relative; }
+#flow-chart.expanded { max-height: none; }
+#flow-chart-toggle { font-size: 11px; color: #58a6ff; cursor: pointer; margin-top: 4px; display: inline-block; }
+/* 049: Performers page */
+#performers-page-content table { table-layout: fixed; }
+.role-status-badge { display: inline-block; padding: 1px 7px; border-radius: 3px; font-size: 11px; font-weight: bold; }
+.role-active { background: #1f4a1f; color: #3fb950; }
+.role-idle { background: #1e1e2e; color: #8b949e; }
+.perf-page-events { max-height: 120px; overflow-y: auto; font-size: 11px; color: #8b949e; }
 </style>
 </head>
 <body>
 <div id="disconnected-banner">&#9888; Disconnected — reconnecting...</div>
-<h1>Coordinare Dashboard <span id="project-link" style="font-size:16px;font-weight:normal;color:#8b949e"></span></h1>
+<nav id="navbar">
+  <span class="nav-brand">&#9670; Coordinare</span>
+  <button id="navbar-hamburger" onclick="toggleNavMenu()" aria-label="Menu">&#9776;</button>
+  <div id="navbar-menu">
+    <a href="/" class="nav-link" onclick="navigate(event,'/')">Dashboard</a>
+    <a href="/performers" class="nav-link" onclick="navigate(event,'/performers')">Performers</a>
+    <a href="/personas" class="nav-link" onclick="navigate(event,'/personas')">Personas</a>
+    <a href="/history" class="nav-link" onclick="navigate(event,'/history')">History</a>
+  </div>
+  <span class="nav-spacer"></span>
+  <span><span id="nav-sse-dot" class="nav-status-dot"></span><span id="project-link" style="font-size:12px;color:#8b949e"></span></span>
+</nav>
+<div id="main-content">
+<!-- 049: Dashboard page -->
+<div id="dashboard-page">
+<div id="active-performers" class="card full" style="display:none">
+  <h2>Active Performers</h2>
+  <div id="active-performer-tiles" class="ap-tiles"></div>
+</div>
 <main class="grid">
 
 <div class="card">
@@ -540,12 +602,43 @@ td { padding: 4px 8px; border-bottom: 1px solid #21262d; }
   <div id="history-section"><span class="empty-state">Loading...</span></div>
 </div>
 
-<div class="card full">
+<!-- 049: Persona editor moved to /personas page — hidden on main dashboard -->
+<div class="card full" id="personas-main-card" style="display:none">
   <h2>Personas</h2>
   <div id="personas-section"><span class="empty-state">Loading...</span></div>
 </div>
 
 </main>
+</div><!-- /#dashboard-page -->
+
+<!-- 049: Performers page -->
+<div id="performers-page" style="display:none">
+  <div id="performers-page-content">
+    <h2 style="margin-bottom:12px">Performers</h2>
+    <table>
+      <thead><tr><th>Role</th><th>Status</th><th>Card</th><th>Active/Max</th></tr></thead>
+      <tbody id="performers-page-tbody"><tr><td colspan="4" class="empty-state">Loading...</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- 049: Personas page -->
+<div id="personas-page" style="display:none">
+  <div class="card">
+    <h2>Personas</h2>
+    <div id="personas-page-section"><span class="empty-state">Loading...</span></div>
+  </div>
+</div>
+
+<!-- 049: History page -->
+<div id="history-page" style="display:none">
+  <div class="card">
+    <h2>History</h2>
+    <p class="empty-state" style="padding:24px 0;text-align:center">&#128336; Coming soon</p>
+  </div>
+</div>
+
+</div><!-- /#main-content -->
 
 <script>
 mermaid.initialize({
@@ -1111,6 +1204,175 @@ function updatePerformers(s) {
 
 // Refresh session age counter every 10s while monitoring_agent
 var _lastState = null;
+
+// 049: Client-side router
+function showPage(pageId) {
+  var pages = ['dashboard-page','performers-page','personas-page','history-page'];
+  pages.forEach(function(id) {
+    var el = document.getElementById(id);
+    if (el) el.style.display = id === pageId ? '' : 'none';
+  });
+}
+
+function updateNavActive(path) {
+  var links = document.querySelectorAll('.nav-link');
+  links.forEach(function(link) {
+    var href = link.getAttribute('href');
+    var active = (path === '/' && href === '/') || (path !== '/' && href !== '/' && path.startsWith(href));
+    link.classList.toggle('nav-active', active);
+  });
+  var titles = {'/':'Dashboard — Coordinare','/performers':'Performers — Coordinare','/personas':'Personas — Coordinare','/history':'History — Coordinare'};
+  document.title = titles[path] || 'Coordinare';
+}
+
+function router() {
+  var path = location.pathname;
+  updateNavActive(path);
+  if (path === '/performers') {
+    showPage('performers-page');
+    if (_lastState) renderPerformersPage(_lastState);
+  } else if (path === '/personas') {
+    showPage('personas-page');
+    loadPersonasPage();
+  } else if (path === '/history') {
+    showPage('history-page');
+  } else {
+    showPage('dashboard-page');
+    if (_lastState) renderDashboardExtras(_lastState);
+  }
+}
+
+function navigate(e, path) {
+  // Only intercept plain left-clicks; let ctrl/cmd/middle-click open new tabs normally
+  if (e && (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button !== 0)) return;
+  if (e) { e.preventDefault(); }
+  history.pushState(null, '', path);
+  router();
+}
+
+function toggleNavMenu() {
+  var menu = document.getElementById('navbar-menu');
+  menu.classList.toggle('open');
+}
+
+window.addEventListener('popstate', function() { router(); });
+
+// 049: Active-performer tiles
+function renderActivePerformers(s) {
+  var container = document.getElementById('active-performer-tiles');
+  var section = document.getElementById('active-performers');
+  if (!container || !section) return;
+  // active_sessions is a list of {card_id, card_title, phase, performer_stage, ...}
+  var sessions = Array.isArray(s.active_sessions) ? s.active_sessions : [];
+  var activeSessions = sessions.filter(function(sess) {
+    return sess.phase === 'monitoring_performer' || sess.phase === 'monitoring_agent';
+  });
+  if (activeSessions.length === 0) {
+    section.style.display = '';
+    var phase = s.phase_label || s.phase || 'idle';
+    // Use fields that are actually in the snapshot
+    var cycleCount = s.cycles_completed != null ? ' &nbsp;&#183;&nbsp; Cycles: ' + s.cycles_completed : '';
+    var activeCardCol = s.active_card_column ? ' &nbsp;&#183;&nbsp; Board: ' + esc(s.active_card_column) : '';
+    container.innerHTML = '<div class="ap-idle">No active performers &nbsp;&#183;&nbsp; Phase: <strong>' + esc(phase) + '</strong>' + cycleCount + activeCardCol + '</div>';
+    return;
+  }
+  section.style.display = '';
+  var html = '';
+  activeSessions.forEach(function(sess) {
+    var stage = sess.performer_stage || '—';
+    var title = sess.card_title || sess.card_id || '—';
+    var dispatchAt = sess.agent_dispatch_at || s.agent_dispatch_at;
+    var elapsed = dispatchAt ? (fmtAge(dispatchAt) || '—') : '—';
+    html += '<div class="ap-tile">' +
+      '<div class="ap-tile-role"><span class="perf-dot perf-running"></span>' + esc(stage) + '</div>' +
+      '<div class="ap-tile-title">' + esc(title) + '</div>' +
+      '<div class="ap-tile-meta"><span class="ap-tile-elapsed">&#9201; ' + esc(elapsed) + '</span></div>' +
+      '</div>';
+  });
+  container.innerHTML = html;
+}
+
+function renderDashboardExtras(s) {
+  renderActivePerformers(s);
+}
+
+// 049: Performers page
+function renderPerformersPage(s) {
+  var tbody = document.getElementById('performers-page-tbody');
+  if (!tbody) return;
+  var util = s.role_utilization || [];
+  if (util.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="4" class="empty-state">No performer roles configured</td></tr>';
+    return;
+  }
+  // active_sessions is a list of {card_id, card_title, phase, performer_stage, ...}
+  var sessions = Array.isArray(s.active_sessions) ? s.active_sessions : [];
+  var activeByStage = {};
+  sessions.forEach(function(sess) {
+    var stage = sess.performer_stage || '';
+    var phase = sess.phase || '';
+    if ((phase === 'monitoring_performer' || phase === 'monitoring_agent') && stage) {
+      activeByStage[stage] = activeByStage[stage] || [];
+      activeByStage[stage].push((sess.card_title || sess.card_id || '').substring(0,40));
+    }
+  });
+  tbody.innerHTML = util.map(function(r) {
+    var isActive = r.active > 0;
+    var badge = '<span class="role-status-badge ' + (isActive ? 'role-active' : 'role-idle') + '">' + (isActive ? 'active' : 'idle') + '</span>';
+    var cards = (activeByStage[r.role] || []).map(esc).join('<br>') || '<span class="empty-state">—</span>';
+    var utilStr = r.max > 1 ? r.active + ' / ' + r.max : (isActive ? '1 / 1' : '0 / 1');
+    var queued = r.queued > 0 ? ' <span style="color:#d29922">(+' + r.queued + ' queued)</span>' : '';
+    return '<tr><td style="font-weight:bold">' + esc(r.role) + '</td><td>' + badge + '</td><td style="font-size:12px">' + cards + '</td><td>' + utilStr + queued + '</td></tr>';
+  }).join('');
+}
+
+// 049: Personas page
+var _personasPageLoaded = false;
+function loadPersonasPage(force) {
+  var section = document.getElementById('personas-page-section');
+  if (!section) return;
+  if (_personasPageLoaded && !force) return;  // skip if already loaded
+  _personasPageLoaded = true;
+  section.innerHTML = '<span class="empty-state">Loading...</span>';
+  fetch('/api/personas').then(function(r){ return r.json(); }).then(function(data) {
+    var html = data.map(function(p, idx) {
+      return '<div style="margin-bottom:16px" data-persona-idx="' + idx + '">' +
+        '<label style="font-weight:bold;color:#c9d1d9;display:block;margin-bottom:4px">' + esc(p.role) + '</label>' +
+        '<textarea class="persona-page-ta" rows="4" style="width:100%;font-family:monospace;font-size:12px;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:8px;resize:vertical">' + esc(p.instructions || '') + '</textarea>' +
+        '<div style="margin-top:4px;display:flex;gap:8px">' +
+        '<button class="action-btn persona-save-btn">Save</button>' +
+        '<button class="action-btn persona-reset-btn">Reset</button>' +
+        '</div><div class="persona-page-msg action-msg"></div></div>';
+    }).join('');
+    section.innerHTML = html || '<span class="empty-state">No personas configured</span>';
+    // Wire save/reset via event delegation (safe for all role names)
+    section.querySelectorAll('[data-persona-idx]').forEach(function(el, i) {
+      var role = data[i] && data[i].role;
+      if (!role) return;
+      var ta = el.querySelector('.persona-page-ta');
+      var msg = el.querySelector('.persona-page-msg');
+      el.querySelector('.persona-save-btn').addEventListener('click', async function() {
+        if (!ta || !msg) return;
+        try {
+          var res = await fetch('/api/personas/' + encodeURIComponent(role), { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({instructions: ta.value}) });
+          msg.textContent = res.ok ? 'Saved' : 'Error saving';
+          setTimeout(function(){ msg.textContent=''; }, 3000);
+        } catch(e) { msg.textContent = 'Error'; }
+      });
+      el.querySelector('.persona-reset-btn').addEventListener('click', async function() {
+        if (!confirm('Reset ' + role + ' instructions to default?')) return;
+        try {
+          var res = await fetch('/api/personas/' + encodeURIComponent(role), { method: 'DELETE' });
+          if (res.ok) { loadPersonasPage(true); }
+          else if (msg) msg.textContent = 'Error resetting';
+        } catch(e) { if (msg) msg.textContent = 'Error'; }
+      });
+    });
+  }).catch(function() { section.innerHTML = '<span class="empty-state">Failed to load personas</span>'; });
+}
+
+// resetPersonaPage wired inline via event delegation in loadPersonasPage()
+
 setInterval(function() {
   if (!_lastState) return;
   if ((_lastState.phase === 'monitoring_agent' || _lastState.phase === 'monitoring_performer') && _lastState.agent_dispatch_at) {
@@ -1248,8 +1510,9 @@ async function resetPersona(role) {
   btn.disabled = false;
 }
 
-// Load personas on page load
-loadPersonas();
+// 049: Personas load lazily on /personas page visit via loadPersonasPage().
+// The original loadPersonas() targets #personas-section on the main page (now hidden).
+// The new loadPersonasPage() targets #personas-page-section and uses event delegation.
 
 var banner = document.getElementById('disconnected-banner');
 var es = new EventSource('events');
@@ -1257,14 +1520,40 @@ es.addEventListener('state_update', function(e) {
   try {
     _lastState = JSON.parse(e.data);
     renderState(_lastState);
+    // 049: re-render current page with new state
+    var path = location.pathname;
+    if (path === '/performers') renderPerformersPage(_lastState);
+    else renderDashboardExtras(_lastState);
   } catch(err) { console.error('parse error', err); }
 });
 es.onerror = function() {
   banner.style.display = 'block';
+  var dot = document.getElementById('nav-sse-dot');
+  if (dot) dot.classList.add('disconnected');
   var fpBtn = document.getElementById('force-poll-btn');
   if (fpBtn) fpBtn.disabled = true;
 };
-es.onopen = function() { banner.style.display = 'none'; };
+es.onopen = function() {
+  banner.style.display = 'none';
+  var dot = document.getElementById('nav-sse-dot');
+  if (dot) dot.classList.remove('disconnected');
+};
+
+// 049: Add flow-chart expand toggle
+document.addEventListener('DOMContentLoaded', function() {
+  router(); // initial route
+  var fc = document.getElementById('flow-chart');
+  if (fc) {
+    var toggle = document.createElement('span');
+    toggle.id = 'flow-chart-toggle';
+    toggle.textContent = 'expand diagram';
+    toggle.onclick = function() {
+      fc.classList.toggle('expanded');
+      toggle.textContent = fc.classList.contains('expanded') ? 'collapse diagram' : 'expand diagram';
+    };
+    fc.parentNode && fc.parentNode.insertBefore(toggle, fc.nextSibling);
+  }
+});
 </script>
 </body>
 </html>"""
@@ -1317,6 +1606,19 @@ def create_dashboard_app(
 
     @app.get("/", response_class=HTMLResponse)
     async def dashboard() -> HTMLResponse:
+        return HTMLResponse(_DASHBOARD_HTML)
+
+    # 049: Multi-page routes — same HTML shell, JS router handles rendering
+    @app.get("/performers", response_class=HTMLResponse)
+    async def dashboard_performers() -> HTMLResponse:
+        return HTMLResponse(_DASHBOARD_HTML)
+
+    @app.get("/personas", response_class=HTMLResponse)
+    async def dashboard_personas() -> HTMLResponse:
+        return HTMLResponse(_DASHBOARD_HTML)
+
+    @app.get("/history", response_class=HTMLResponse)
+    async def dashboard_history() -> HTMLResponse:
         return HTMLResponse(_DASHBOARD_HTML)
 
     @app.get("/api/performer-logs")
