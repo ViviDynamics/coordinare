@@ -10,6 +10,7 @@ Provides:
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import shutil
 import tempfile
@@ -32,6 +33,48 @@ _TOKEN_RE = re.compile(r"x-access-token:[^@]*@")
 def _redact_tokens(text: str) -> str:
     """Replace ``x-access-token:<value>@`` with ``x-access-token:[REDACTED]@``."""
     return _TOKEN_RE.sub("x-access-token:[REDACTED]@", text)
+
+
+# ---------------------------------------------------------------------------
+# 051 — Minimal subprocess environment
+# ---------------------------------------------------------------------------
+
+_ENV_ALLOWLIST = ("PATH", "HOME", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL", "LC_CTYPE")
+
+
+def _build_minimal_env(config: Any) -> dict[str, str]:
+    """Return a minimal env dict for git subprocesses.
+
+    Only copies a fixed allowlist of vars from the host env.  Sets
+    GIT_TERMINAL_PROMPT=0 and injects GIT_AUTHOR/COMMITTER identity
+    from ``config.bot_identity`` (falls back to defaults when config is None).
+    Any var names listed in ``config.env_passthrough`` are also copied if
+    present on the host.
+
+    Note: GITHUB_TOKEN is intentionally absent here — workspace git ops
+    authenticate via GIT_CONFIG_KEY_* (http.extraHeader), not an env var.
+    The performer subprocess uses _build_subprocess_env() which does inject
+    GITHUB_TOKEN for the performer's own git/API calls.
+    """
+    env: dict[str, str] = {}
+    for key in _ENV_ALLOWLIST:
+        if key in os.environ:
+            env[key] = os.environ[key]
+    env["GIT_TERMINAL_PROMPT"] = "0"
+
+    identity = getattr(config, "bot_identity", None) if config is not None else None
+    name = (identity.name if identity is not None else None) or "Coordinare Bot"
+    email = (identity.email if identity is not None else None) or "coordinare@localhost"
+    env["GIT_AUTHOR_NAME"] = name
+    env["GIT_AUTHOR_EMAIL"] = email
+    env["GIT_COMMITTER_NAME"] = name
+    env["GIT_COMMITTER_EMAIL"] = email
+
+    for var in list(getattr(config, "env_passthrough", None) or []):
+        if isinstance(var, str) and var in os.environ:
+            env[var] = os.environ[var]
+
+    return env
 
 
 # ---------------------------------------------------------------------------
@@ -172,6 +215,7 @@ class WorkspaceManager:
     """
 
     def __init__(self, config: ProjectConfiguration, auth: Any = None) -> None:
+        self._config = config
         self._github_org: str = config.github_org
         self._project_name: str = config.project_name
         self._github_token = config.github_token  # static PAT (may be None in app mode)
@@ -195,16 +239,12 @@ class WorkspaceManager:
         return None
 
     def _make_git_env(self) -> dict[str, str]:
-        """Return an env dict for git subprocesses.
+        """Return a minimal env dict for git subprocesses (051).
 
-        Sets GIT_TERMINAL_PROMPT=0 so git fails rather than prompting for
-        credentials interactively.
+        Uses _build_minimal_env so only an allowlisted set of host vars
+        is passed through and the bot git identity is always set.
         """
-        import os
-
-        env = dict(os.environ)
-        env["GIT_TERMINAL_PROMPT"] = "0"
-        return env
+        return _build_minimal_env(self._config)
 
     async def prepare(self, card: dict[str, Any]) -> WorkspaceInfo:
         """Clone the target repo, create a card-specific branch, configure credentials.
@@ -270,13 +310,18 @@ class WorkspaceManager:
                 timeout=120.0,
             )
 
-            # Configure local identity for commits.
+            # Configure local identity for commits, derived from bot_identity config
+            # so tools that read git config (rather than GIT_AUTHOR env vars) see the
+            # same identity as the env-var path.
+            _identity = getattr(self._config, "bot_identity", None)
+            _git_name = ((_identity.name if _identity is not None else None) or "Coordinare Bot")
+            _git_email = ((_identity.email if _identity is not None else None) or "coordinare@localhost")
             await _run_git(
-                "config", "--local", "user.name", "Coordinare Bot",
+                "config", "--local", "user.name", _git_name,
                 cwd=clone_dir, env=env,
             )
             await _run_git(
-                "config", "--local", "user.email", "coordinare@localhost",
+                "config", "--local", "user.email", _git_email,
                 cwd=clone_dir, env=env,
             )
 

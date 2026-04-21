@@ -829,3 +829,54 @@ def test_assignee_filter_env_var_override(monkeypatch: pytest.MonkeyPatch, tmp_p
     monkeypatch.setenv("COORDINARE_ASSIGNEE_FILTER", "my-bot")
     config = ProjectConfiguration.from_yaml(_write_config(tmp_path))
     assert config.assignee_filter == "my-bot"
+
+
+# --- 051: bot_identity and env_passthrough tests ---
+
+def test_bot_identity_default_name(tmp_path) -> None:
+    config = ProjectConfiguration.from_yaml(_write_config(tmp_path))
+    assert config.bot_identity.name == "Coordinare Bot"
+
+
+def test_bot_identity_default_email(tmp_path) -> None:
+    config = ProjectConfiguration.from_yaml(_write_config(tmp_path))
+    assert config.bot_identity.email == "coordinare@localhost"
+
+
+def test_bot_identity_parsed_from_yaml(tmp_path) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "\n".join([
+            'project_name: "Demo"',
+            'github_org: "acme"',
+            "github_project_number: 12",
+            'github_token: "tok"',
+            'agent_executable: "/usr/bin/agent"',
+            'human_reviewers: ["alice"]',
+            "bot_identity:",
+            '  name: "my-bot"',
+            '  email: "my-bot@company.com"',
+        ])
+    )
+    config = ProjectConfiguration.from_yaml(path)
+    assert config.bot_identity.name == "my-bot"
+    assert config.bot_identity.email == "my-bot@company.com"
+
+
+def test_env_passthrough_parsed_from_yaml(tmp_path) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "\n".join([
+            'project_name: "Demo"',
+            'github_org: "acme"',
+            "github_project_number: 12",
+            'github_token: "tok"',
+            'agent_executable: "/usr/bin/agent"',
+            'human_reviewers: ["alice"]',
+            "env_passthrough:",
+            "  - ANTHROPIC_API_KEY",
+            "  - OPENCODE_MODEL",
+        ])
+    )
+    config = ProjectConfiguration.from_yaml(path)
+    assert config.env_passthrough == ["ANTHROPIC_API_KEY", "OPENCODE_MODEL"]

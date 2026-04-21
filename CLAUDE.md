@@ -1,6 +1,6 @@
 # coordinare Development Guidelines
 
-Auto-generated from all feature plans. Last updated: 2026-02-16
+Auto-generated from all feature plans. Last updated: 2026-04-21
 
 ## Active Technologies
 - Python 3.12+ + `stamina>=24.2.0` (NEW — add to pyproject.toml), `tenacity` (already installed via langgraph), `prometheus-client>=0.21`, `structlog>=24.1`, `pydantic>=2.9`, `pydantic-settings>=2.6` (005-resilience)
@@ -41,6 +41,7 @@ Auto-generated from all feature plans. Last updated: 2026-02-16
 - N/A — dashboard is a read-only view of existing state; personas already persisted (049-dashboard-redesign)
 - Python 3.12+ + pydantic-settings (existing), gql[aiohttp] (existing), structlog (existing) (050-card-assignment-filtering)
 - N/A — filter applied in-memory per poll cycle (050-card-assignment-filtering)
+- Python 3.12+ + pydantic-settings (existing), asyncio (stdlib), os (stdlib) (051-performer-env-isolation)
 
 - Python 3.12+ + LangGraph (>=0.2), anthropic (>=0.40), gql[aiohttp], FastAPI, structlog, slack-sdk, aiosmtplib, prometheus-client, pydantic-settings (001-board-orchestrator)
 - Python 3.12+ + Pydantic v2 (existing), `asyncio.create_subprocess_exec` (stdlib), `structlog` (existing); `asyncssh` removed — replaced by pluggable transport architecture (004-agent-protocol)
@@ -61,9 +62,9 @@ cd src [ONLY COMMANDS FOR ACTIVE TECHNOLOGIES][ONLY COMMANDS FOR ACTIVE TECHNOLO
 Python 3.12+: Follow standard conventions
 
 ## Recent Changes
+- 051-performer-env-isolation: Added Python 3.12+ + pydantic-settings (existing), asyncio (stdlib), os (stdlib)
 - 050-card-assignment-filtering: Added Python 3.12+ + pydantic-settings (existing), gql[aiohttp] (existing), structlog (existing)
 - 049-dashboard-redesign: Added Python 3.12+ (backend), vanilla JavaScript + HTML/CSS (frontend) + FastAPI + Starlette (existing), asyncio (stdlib), structlog (existing)
-- 048-horizontal-performer-scaling: Added Python 3.12+ + structlog (logging), asyncio (stdlib), pydantic-settings (config)
 
 
 <!-- MANUAL ADDITIONS START -->

@@ -385,6 +385,18 @@ class ResilienceConfig(BaseModel):
     )
 
 
+# ---------------------------------------------------------------------------
+# 051 — Performer environment isolation
+# ---------------------------------------------------------------------------
+
+
+class BotIdentityConfig(BaseModel):
+    """Git author/committer identity used for all performer commits."""
+
+    name: str = "Coordinare Bot"
+    email: str = "coordinare@localhost"
+
+
 class ProjectConfiguration(BaseSettings):
     """Application configuration loaded from YAML and COORDINARE_* env vars."""
 
@@ -443,6 +455,9 @@ class ProjectConfiguration(BaseSettings):
     priority: PriorityConfig = Field(default_factory=PriorityConfig)
     # 050 — Only dispatch cards assigned to this GitHub login. None = no filter.
     assignee_filter: str | None = Field(default=None)
+    # 051 — Git commit identity and subprocess env pass-through
+    bot_identity: BotIdentityConfig = Field(default_factory=BotIdentityConfig)
+    env_passthrough: list[str] = Field(default_factory=list)
     stuck_alerts: StuckAlertConfig = Field(default_factory=StuckAlertConfig)
     health_check: HealthCheckConfig = Field(default_factory=HealthCheckConfig)
     requirement_change_policy: RequirementChangePolicy = "warn"  # 030: ignore | warn | re-dispatch

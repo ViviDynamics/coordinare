@@ -374,9 +374,12 @@ def _build_transport_for_role(
     executable = role_config.executable or config.agent_executable
     timeout = role_config.timeout_seconds or config.transport_timeout_seconds
 
+    github_token = (
+        config.github_token.get_secret_value() if config.github_token is not None else None
+    )
     match transport_type:
         case "subprocess":
-            return SubprocessTransport(executable, timeout)
+            return SubprocessTransport(executable, timeout, config=config, github_token=github_token)
         case "ssh":
             return SshTransport()
         case "kubernetes":
@@ -479,9 +482,17 @@ def _build_performer_services(
 
 
 def _build_transport(config: ProjectConfiguration) -> AgentTransport:
+    github_token = (
+        config.github_token.get_secret_value() if config.github_token is not None else None
+    )
     match config.agent_transport:
         case "subprocess":
-            return SubprocessTransport(config.agent_executable, config.transport_timeout_seconds)
+            return SubprocessTransport(
+                config.agent_executable,
+                config.transport_timeout_seconds,
+                config=config,
+                github_token=github_token,
+            )
         case "ssh":
             return SshTransport()
         case "kubernetes":

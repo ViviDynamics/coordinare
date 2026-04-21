@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from collections import deque
+from typing import Any
 
 import structlog
 
@@ -35,9 +37,17 @@ class SubprocessTransport:
     and buffers the last _STDERR_MAXLEN lines for dashboard visibility.
     """
 
-    def __init__(self, executable: str, timeout: int) -> None:
+    def __init__(
+        self,
+        executable: str,
+        timeout: int,
+        config: Any = None,
+        github_token: str | None = None,
+    ) -> None:
         self._executable = executable
         self._timeout = timeout
+        self._config = config
+        self._github_token = github_token
         self._proc: asyncio.subprocess.Process | None = None
         self._agent_logs: deque[str] = deque(maxlen=_STDERR_MAXLEN)
         self._stderr_task: asyncio.Task[None] | None = None
@@ -84,13 +94,55 @@ class SubprocessTransport:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def _build_subprocess_env(self) -> dict[str, str]:
+        """Build a minimal, isolated env dict for the performer subprocess (051).
+
+        Only an allowlisted set of host vars is inherited. The GitHub token
+        and git identity are injected explicitly so the performer never picks
+        up the host user's credentials or git config.
+        """
+        allowlist = ("PATH", "HOME", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL", "LC_CTYPE")
+        env: dict[str, str] = {}
+        for key in allowlist:
+            if key in os.environ:
+                env[key] = os.environ[key]
+        env["GIT_TERMINAL_PROMPT"] = "0"
+
+        # self._github_token is the static PAT captured at construction time (None
+        # in App mode).  In App mode the performer receives a fresh installation
+        # token via the dispatch_card protocol message, so no GITHUB_TOKEN env
+        # var is needed here.  Never fall back to the host's GITHUB_TOKEN — that
+        # would reintroduce the credential leakage this feature is designed to
+        # prevent (spec 051, acceptance scenario 2).
+        if self._github_token:
+            env["GITHUB_TOKEN"] = self._github_token
+
+        identity = getattr(self._config, "bot_identity", None) if self._config is not None else None
+        name = (identity.name if identity is not None else None) or "Coordinare Bot"
+        email = (identity.email if identity is not None else None) or "coordinare@localhost"
+        env["GIT_AUTHOR_NAME"] = name
+        env["GIT_AUTHOR_EMAIL"] = email
+        env["GIT_COMMITTER_NAME"] = name
+        env["GIT_COMMITTER_EMAIL"] = email
+
+        for var in list(getattr(self._config, "env_passthrough", None) or []):
+            if isinstance(var, str) and var in os.environ:
+                env[var] = os.environ[var]
+
+        logger.debug("subprocess_transport.env_constructed", var_names=sorted(env.keys()))
+        return env
+
     async def _start(self, *, drain_stderr: bool = False) -> asyncio.subprocess.Process:
+        # Only apply isolated env when config is provided (production path).
+        # Without config (test fixtures, health checks) inherit the parent env.
+        env = self._build_subprocess_env() if self._config is not None else None
         try:
             proc = await asyncio.create_subprocess_exec(
                 self._executable,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=env,
             )
         except OSError as exc:
             raise TransportError(f"Failed to start agent process: {exc}") from exc

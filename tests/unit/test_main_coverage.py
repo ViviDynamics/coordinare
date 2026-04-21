@@ -198,21 +198,21 @@ def test_build_circuit_breakers_returns_all_five_keys() -> None:
 
 def test_build_transport_ssh_raises_not_implemented() -> None:
     """Line 265: 'ssh' transport → SshTransport() raises NotImplementedError (stub transport)."""
-    cfg = SimpleNamespace(agent_transport="ssh", agent_executable="", transport_timeout_seconds=30)
+    cfg = SimpleNamespace(agent_transport="ssh", agent_executable="", transport_timeout_seconds=30, github_token=None)
     with pytest.raises(NotImplementedError, match="SSH transport"):
         _build_transport(cfg)
 
 
 def test_build_transport_kubernetes_raises_not_implemented() -> None:
     """Line 267: 'kubernetes' transport → KubernetesTransport() raises NotImplementedError (stub transport)."""
-    cfg = SimpleNamespace(agent_transport="kubernetes", agent_executable="", transport_timeout_seconds=30)
+    cfg = SimpleNamespace(agent_transport="kubernetes", agent_executable="", transport_timeout_seconds=30, github_token=None)
     with pytest.raises(NotImplementedError, match="Kubernetes transport"):
         _build_transport(cfg)
 
 
 def test_build_transport_unknown_raises_value_error() -> None:
     """Line 269: unknown transport → ValueError raised."""
-    cfg = SimpleNamespace(agent_transport="unknown_xyz", agent_executable="", transport_timeout_seconds=30)
+    cfg = SimpleNamespace(agent_transport="unknown_xyz", agent_executable="", transport_timeout_seconds=30, github_token=None)
     with pytest.raises(ValueError, match="Unknown transport"):
         _build_transport(cfg)
 

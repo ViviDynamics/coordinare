@@ -6,6 +6,7 @@ tests/integration/test_workspace_integration.py.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import ClassVar
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -13,6 +14,7 @@ import pytest
 from coordinare.workspace import (
     WorkspaceManager,
     WorkspaceSetupError,
+    _build_minimal_env,
     _GitCommandError,
     _redact_tokens,
     _run_git,
@@ -68,6 +70,8 @@ def _make_config(
     cfg.github_token.get_secret_value.return_value = github_token
     cfg.workspace_root = workspace_root
     cfg.agent_transport = agent_transport
+    cfg.bot_identity = None  # use defaults ("Coordinare Bot" / "coordinare@localhost")
+    cfg.env_passthrough = []
     return cfg
 
 
@@ -437,3 +441,62 @@ async def test_get_fresh_github_token_returns_none_when_no_credential() -> None:
 
     token = await mgr.get_fresh_github_token()
     assert token is None
+
+
+# ---------------------------------------------------------------------------
+# 051 — _build_minimal_env tests
+# ---------------------------------------------------------------------------
+
+
+class _NoConfig:
+    pass
+
+
+class _MinEnvIdentity:
+    name = "my-bot"
+    email = "my-bot@example.com"
+
+
+class _FullConfig:
+    bot_identity = _MinEnvIdentity()
+    env_passthrough: ClassVar[list[str]] = ["CUSTOM_VAR"]
+
+
+def test_build_minimal_env_defaults_when_no_config() -> None:
+    """No config → uses defaults 'Coordinare Bot' / 'coordinare@localhost'."""
+    env = _build_minimal_env(None)
+    assert env["GIT_AUTHOR_NAME"] == "Coordinare Bot"
+    assert env["GIT_AUTHOR_EMAIL"] == "coordinare@localhost"
+    assert env["GIT_COMMITTER_NAME"] == "Coordinare Bot"
+    assert env["GIT_COMMITTER_EMAIL"] == "coordinare@localhost"
+    assert env["GIT_TERMINAL_PROMPT"] == "0"
+
+
+def test_build_minimal_env_uses_config_identity() -> None:
+    """Config with custom identity → custom name/email in env."""
+    env = _build_minimal_env(_FullConfig())
+    assert env["GIT_AUTHOR_NAME"] == "my-bot"
+    assert env["GIT_AUTHOR_EMAIL"] == "my-bot@example.com"
+    assert env["GIT_COMMITTER_NAME"] == "my-bot"
+    assert env["GIT_COMMITTER_EMAIL"] == "my-bot@example.com"
+
+
+def test_build_minimal_env_passthrough_copies_present_var(monkeypatch: pytest.MonkeyPatch) -> None:
+    """env_passthrough copies the named var when it is present on the host."""
+    monkeypatch.setenv("CUSTOM_VAR", "hello")
+    env = _build_minimal_env(_FullConfig())
+    assert env["CUSTOM_VAR"] == "hello"
+
+
+def test_build_minimal_env_passthrough_skips_absent_var(monkeypatch: pytest.MonkeyPatch) -> None:
+    """env_passthrough silently skips a named var when it is absent on the host."""
+    monkeypatch.delenv("CUSTOM_VAR", raising=False)
+    env = _build_minimal_env(_FullConfig())
+    assert "CUSTOM_VAR" not in env
+
+
+def test_build_minimal_env_excludes_arbitrary_host_var(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Arbitrary host vars (not in allowlist/passthrough) are never included."""
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "supersecret")
+    env = _build_minimal_env(_NoConfig())
+    assert "AWS_SECRET_ACCESS_KEY" not in env
