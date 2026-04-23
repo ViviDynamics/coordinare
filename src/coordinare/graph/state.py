@@ -139,6 +139,9 @@ class CoordinareState(TypedDict, total=False):
     # get_type_hints() resolves annotations at runtime — a TYPE_CHECKING
     # import of SlotManager would cause NameError.
     slot_manager: Any
+    # 052: Backend transparency — live URL and session stats from the performer backend.
+    backend_ui_url: str | None
+    session_stats: Any  # SessionStats | None; typed Any — LangGraph resolves annotations at runtime
 
 
 def initial_state() -> CoordinareState:
@@ -176,4 +179,6 @@ def initial_state() -> CoordinareState:
         "last_known_main_sha": None,
         "last_rebase_round": None,
         "slot_manager": None,
+        "backend_ui_url": None,
+        "session_stats": None,
     }

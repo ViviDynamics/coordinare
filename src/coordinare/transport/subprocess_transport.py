@@ -2,20 +2,81 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import time
 from collections import deque
 from typing import Any
 
+import httpx
 import structlog
 
 from coordinare.lib.redaction import redact_secrets
 from coordinare.protocol import ProtocolMessage, ProtocolResponse
+from coordinare.session import SessionStats
 from coordinare.transport.base import TransportError, TransportTimeoutError
 
 logger = structlog.get_logger(__name__)
 
 # Statuses after which the performer process has exited and must not be reused.
 _TERMINAL_STATUSES = frozenset({"pr_opened", "error", "blocked"})
+
+# Pattern opencode emits to stderr when its HTTP server starts:
+# e.g. {"server":"http://127.0.0.1:34567"}
+_OPENCODE_SERVER_RE = re.compile(r'"server"\s*:\s*"(https?://[^"]+)"')
+
+
+def _discover_backend_ui_url(agent_logs: list[str]) -> str | None:
+    """Scan buffered stderr lines for opencode's port announcement.
+
+    Returns the full URL when found, or None. Trailing slash stripped intentionally.
+    """
+    for line in reversed(agent_logs):
+        m = _OPENCODE_SERVER_RE.search(line)
+        if m:
+            url = m.group(1).rstrip("/")
+            logger.debug("transport.backend_ui_discovered", url=url)
+            return url
+    return None
+
+
+def _is_local_url(url: str) -> bool:
+    """Return True only for http://127.0.0.1:PORT or http://localhost:PORT."""
+    from urllib.parse import urlparse
+
+    try:
+        p = urlparse(url)
+        if p.scheme != "http" or p.hostname not in ("127.0.0.1", "localhost"):
+            return False
+        port = p.port
+        return port is not None and 1 <= port <= 65535
+    except ValueError:
+        return False
+
+
+async def _fetch_session_stats(ui_url: str) -> SessionStats | None:
+    """Poll the backend's /api/session endpoint and map to SessionStats.
+
+    Returns None on any error without raising.
+    """
+    if not _is_local_url(ui_url):
+        logger.warning("transport.session_stats_ssrf_blocked", url=ui_url)
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{ui_url}/api/session")
+        if not resp.is_success:
+            logger.debug("transport.session_stats_error", status=resp.status_code, url=ui_url)
+            return None
+        data = resp.json()
+        return SessionStats(
+            title=data.get("title") or None,
+            files_changed=int(data.get("filesChanged") or data.get("files_changed") or 0),
+            lines_added=int(data.get("linesAdded") or data.get("lines_added") or 0),
+            lines_removed=int(data.get("linesRemoved") or data.get("lines_removed") or 0),
+        )
+    except Exception as exc:
+        logger.debug("transport.session_stats_error", error=str(exc), url=ui_url)
+        return None
 
 # Max stderr lines buffered per session — older lines are dropped automatically.
 _STDERR_MAXLEN = 200

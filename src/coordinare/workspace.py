@@ -214,7 +214,7 @@ class WorkspaceManager:
     and injected into ``CoordinareState`` like other services.
     """
 
-    def __init__(self, config: ProjectConfiguration, auth: Any = None) -> None:
+    def __init__(self, config: ProjectConfiguration, auth: Any = None, github_service: Any = None) -> None:
         self._config = config
         self._github_org: str = config.github_org
         self._project_name: str = config.project_name
@@ -222,6 +222,7 @@ class WorkspaceManager:
         self._auth = auth  # GitHubAuth protocol — used to get current token
         self._workspace_root: Path | None = config.workspace_root
         self._agent_transport: str = config.agent_transport
+        self._github_service = github_service  # GitHubService — for stale branch checks (052)
 
     async def get_fresh_github_token(self) -> str | None:
         """Return a current GitHub token suitable for API calls.
@@ -261,6 +262,10 @@ class WorkspaceManager:
         project = self._project_name
         repo_url = f"https://github.com/{org}/{project}.git"
         branch = make_branch_name(str(card.get("id", "")), str(card.get("title", "")))
+
+        # 052: Stale branch cleanup — detect and handle pre-existing remote branch
+        # before any transport path so the performer always starts from a clean state.
+        branch = await self._resolve_branch(branch, card)
 
         # For Kubernetes transport, the performer container handles its own workspace
         # setup via K8s Secrets — no local git ops, no token access needed here.
@@ -350,6 +355,46 @@ class WorkspaceManager:
             repo_url=repo_url,
         )
         return WorkspaceInfo(path=clone_dir, branch=branch, repo_url=repo_url, github_token=token)
+
+    async def _resolve_branch(self, branch: str, card: dict[str, Any]) -> str:
+        """Apply stale branch cleanup or suffix strategy before workspace creation.
+
+        Returns the final branch name to use (may differ from the input when
+        suffix strategy finds the original branch taken).  Silently skips when
+        github_service is not set (test/health paths) or cleanup is disabled.
+        """
+        from coordinare.config import BranchCollisionStrategy
+
+        cleanup_enabled = getattr(self._config, "stale_branch_cleanup", True)
+        if not cleanup_enabled or self._github_service is None:
+            return branch
+
+        card_id = str(card.get("id", ""))
+        strategy = getattr(self._config, "branch_collision_strategy", BranchCollisionStrategy.delete)
+
+        if not await self._github_service.branch_exists(branch):
+            return branch
+
+        if strategy == BranchCollisionStrategy.suffix:
+            for i in range(2, 10):
+                candidate = f"{branch}-{i}"
+                if not await self._github_service.branch_exists(candidate):
+                    logger.info(
+                        "workspace.branch_suffix_applied",
+                        original_branch=branch,
+                        final_branch=candidate,
+                        card_id=card_id,
+                    )
+                    return candidate
+            # All suffixes taken — fall back to delete
+            logger.warning("workspace.suffix_exhausted_delete_attempted", branch=branch, card_id=card_id)
+            await self._github_service.delete_branch(branch)
+            return branch
+
+        # Default: delete strategy
+        await self._github_service.delete_branch(branch)
+        logger.info("workspace.stale_branch_delete_attempted", branch=branch, card_id=card_id)
+        return branch
 
     async def teardown(self, path: Path) -> None:
         """Remove the workspace directory.

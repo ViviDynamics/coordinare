@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
 import pytest
@@ -215,3 +216,85 @@ class TestGitHubServiceCustomEndpoint:
         client = service._build_client("test-token")
         transport = client.transport
         assert transport.url == "https://ghes.example.com/api/graphql"
+
+
+# ---------------------------------------------------------------------------
+# T014 — branch_exists and delete_branch (052 stale branch cleanup)
+# ---------------------------------------------------------------------------
+
+
+def _make_branch_service(endpoint: str = "https://api.github.com/graphql") -> GitHubService:
+    svc = GitHubService(token="tok", org="acme", project_number=1, endpoint=endpoint)
+    svc._project_name = "myrepo"
+    return svc
+
+
+class TestBranchExists:
+    @pytest.mark.asyncio
+    async def test_returns_true_on_200(self) -> None:
+        svc = _make_branch_service()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client.get = AsyncMock(return_value=mock_resp)
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            result = await svc.branch_exists("coordinare/CARD-89/add-auth")
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_returns_false_on_404(self) -> None:
+        svc = _make_branch_service()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 404
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client.get = AsyncMock(return_value=mock_resp)
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            result = await svc.branch_exists("coordinare/CARD-99/no-such-branch")
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_rest_base_standard(self) -> None:
+        svc = _make_branch_service("https://api.github.com/graphql")
+        assert svc._rest_api_base() == "https://api.github.com"
+
+    @pytest.mark.asyncio
+    async def test_rest_base_ghe(self) -> None:
+        svc = _make_branch_service("https://github.corp.com/api/graphql")
+        assert svc._rest_api_base() == "https://github.corp.com/api/v3"
+
+
+class TestDeleteBranch:
+    @pytest.mark.asyncio
+    async def test_delete_204_success(self) -> None:
+        svc = _make_branch_service()
+        mock_resp = MagicMock()
+        mock_resp.is_success = True
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client.delete = AsyncMock(return_value=mock_resp)
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            await svc.delete_branch("coordinare/CARD-89/add-auth")
+        mock_client.delete.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_delete_422_logs_warning_does_not_raise(self) -> None:
+        from structlog.testing import capture_logs
+
+        svc = _make_branch_service()
+        mock_resp = MagicMock()
+        mock_resp.is_success = False
+        mock_resp.status_code = 422
+        mock_resp.text = "Unprocessable Entity"
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client.delete = AsyncMock(return_value=mock_resp)
+        with capture_logs() as cap, patch("httpx.AsyncClient", return_value=mock_client):
+            await svc.delete_branch("coordinare/CARD-89/add-auth")
+        events = [e.get("event") for e in cap]
+        assert "workspace.stale_branch_delete_failed" in events

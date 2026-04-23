@@ -95,6 +95,33 @@ Integration tests that verify the full pipeline:
 
 These tests MUST assert that every field in this registry survives the journey.
 
+## How to use
+
+### Field Registry format
+
+The `## Field Registry` section contains one or more markdown tables. Each table row registers a payload field that crosses the coordinare → performer boundary. The first column of each table is the **field name** (wrapped in backticks in the raw table source, e.g. `` `field_name` ``).
+
+`speckit.analyze` reads this registry automatically when it runs. If a spec or plan adds a new field to the dispatch payload but does not register it here, `speckit.analyze` will emit a `[CONTRACT MISMATCH]` warning.
+
+### Adding a new field
+
+1. Add a row to the appropriate section in `## Field Registry`:
+   ```
+   | `new_field` | str | no | your_node | what it's used for |
+   ```
+2. Follow the **Change Protocol** below to propagate the field through the codebase.
+3. Run `speckit.analyze` after updating the spec and plan to confirm no mismatch warnings remain.
+
+### How speckit.analyze uses this file
+
+During the **Contract Check** detection pass, `speckit.analyze`:
+1. Reads all `specs/contracts/*.md` files.
+2. Parses every `## Field Registry` section's markdown tables to extract field names (first column values).
+3. Scans the feature's `spec.md` and `plan.md` for field names mentioned in payload-change context.
+4. Emits `[CONTRACT MISMATCH] Field '{field}' referenced in spec/plan but not registered in {contract_file}` for each unregistered field.
+
+The check is **skipped silently** when no contract files exist or when the spec/plan contains no payload-change language.
+
 ## Change Protocol
 
 When adding a new field to the dispatch payload:

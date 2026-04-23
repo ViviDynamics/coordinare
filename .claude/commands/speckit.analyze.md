@@ -111,6 +111,18 @@ Focus on high-signal findings. Limit to 50 findings total; aggregate remainder i
 - Task ordering contradictions (e.g., integration tasks before foundational setup tasks without dependency note)
 - Conflicting requirements (e.g., one requires Next.js while other specifies Vue)
 
+#### G. Contract Check
+
+For each `.md` file in `specs/contracts/`:
+1. Parse the `## Field Registry` section's markdown table — extract field names in the first column
+2. Scan the feature's `spec.md` and `plan.md` for field names appearing in **payload-change context** (e.g., sentences containing "add", "new field", "payload", "dispatch", "schema", "body")
+3. For each candidate field name found in spec/plan but **absent from the contract registry**, emit:
+   `[CONTRACT MISMATCH] Field '{field}' referenced in spec/plan but not registered in {contract_file}`
+4. **Skip this check silently** if no `specs/contracts/` directory exists or it contains no `.md` files
+5. **Skip this check** if spec/plan contain no payload-change language
+
+This check catches cross-boundary API changes (e.g., coordinare → performer dispatch payload) that are described in the spec but not registered in the contract, preventing silent field-filtering bugs.
+
 ### 5. Severity Assignment
 
 Use this heuristic to prioritize findings:

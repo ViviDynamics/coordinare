@@ -8,7 +8,11 @@ import pytest
 
 from coordinare.protocol import ProtocolMessage
 from coordinare.transport.base import TransportError, TransportTimeoutError
-from coordinare.transport.subprocess_transport import SubprocessTransport
+from coordinare.transport.subprocess_transport import (
+    SubprocessTransport,
+    _discover_backend_ui_url,
+    _fetch_session_stats,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -592,3 +596,78 @@ def test_parse_response_redacts_tokens_in_preview() -> None:
     preview = skips[0]["line_preview"]
     assert fake_pat not in preview
     assert "[REDACTED]" in preview
+
+
+# ---------------------------------------------------------------------------
+# T009 — _discover_backend_ui_url and _fetch_session_stats (052)
+# ---------------------------------------------------------------------------
+
+
+def test_discover_backend_ui_url_returns_url_from_matching_line() -> None:
+    """T009a: _discover_backend_ui_url returns URL when opencode log line matches."""
+    logs = [
+        "starting server...",
+        '{"level":"info","server":"http://127.0.0.1:34567","message":"ready"}',
+    ]
+    url = _discover_backend_ui_url(logs)
+    assert url == "http://127.0.0.1:34567"
+
+
+def test_discover_backend_ui_url_returns_none_when_no_match() -> None:
+    """T009b: _discover_backend_ui_url returns None when no matching log line."""
+    logs = ["startup complete", "loading config", "no port announcement here"]
+    assert _discover_backend_ui_url(logs) is None
+
+
+def test_discover_backend_ui_url_returns_none_for_empty_logs() -> None:
+    assert _discover_backend_ui_url([]) is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_session_stats_returns_stats_on_success() -> None:
+    """T009c: _fetch_session_stats returns SessionStats on successful HTTP response."""
+    mock_resp = MagicMock()
+    mock_resp.is_success = True
+    mock_resp.json.return_value = {
+        "title": "Add auth flow",
+        "filesChanged": 3,
+        "linesAdded": 42,
+        "linesRemoved": 7,
+    }
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+    mock_client.get = AsyncMock(return_value=mock_resp)
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        stats = await _fetch_session_stats("http://127.0.0.1:34567")
+    assert stats is not None
+    assert stats.title == "Add auth flow"
+    assert stats.files_changed == 3
+    assert stats.lines_added == 42
+    assert stats.lines_removed == 7
+
+
+@pytest.mark.asyncio
+async def test_fetch_session_stats_returns_none_on_http_error() -> None:
+    """T009d: _fetch_session_stats returns None on HTTP error without raising."""
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+    mock_client.get = AsyncMock(side_effect=Exception("connection refused"))
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        stats = await _fetch_session_stats("http://127.0.0.1:34567")
+    assert stats is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_session_stats_returns_none_on_non_200() -> None:
+    mock_resp = MagicMock()
+    mock_resp.is_success = False
+    mock_resp.status_code = 503
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+    mock_client.get = AsyncMock(return_value=mock_resp)
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        stats = await _fetch_session_stats("http://127.0.0.1:34567")
+    assert stats is None

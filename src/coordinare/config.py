@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import string
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlparse
@@ -10,6 +11,16 @@ from pydantic import BaseModel, Field, SecretStr, field_validator, model_validat
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 from coordinare.models.notification import ChannelType, EventType
+
+# ---------------------------------------------------------------------------
+# 052 — Branch collision strategy
+# ---------------------------------------------------------------------------
+
+
+class BranchCollisionStrategy(StrEnum):
+    delete = "delete"
+    suffix = "suffix"
+
 
 # ---------------------------------------------------------------------------
 # 015 — Webhook config model
@@ -487,6 +498,10 @@ class ProjectConfiguration(BaseSettings):
     # mount) under which all workspace containers are created. When unset, falls back
     # to the system temporary directory (tempfile.gettempdir()).
     workspace_root: Path | None = Field(default=None)
+
+    # 052 — Stale Branch Cleanup
+    stale_branch_cleanup: bool = True
+    branch_collision_strategy: BranchCollisionStrategy = BranchCollisionStrategy.delete
 
     @classmethod
     def settings_customise_sources(

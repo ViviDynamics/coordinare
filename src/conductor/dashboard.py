@@ -311,7 +311,25 @@ class DashboardStore:
             "role_utilization": self._build_role_utilization(daemon),
             # 050: Active assignee filter for dashboard idle-state hint.
             "assignee_filter": getattr(daemon.state.get("config"), "assignee_filter", None),
+            # 052: Backend transparency — live URL and session stats.
+            "backend_ui_url": daemon.state.get("backend_ui_url"),
+            "session_stats": self._serialise_session_stats(daemon.state.get("session_stats")),
         }
+
+    @staticmethod
+    def _serialise_session_stats(stats: Any) -> dict | None:
+        """Convert a SessionStats dataclass to a JSON-serialisable dict, or None."""
+        if stats is None:
+            return None
+        try:
+            return {
+                "title": getattr(stats, "title", None),
+                "files_changed": getattr(stats, "files_changed", 0),
+                "lines_added": getattr(stats, "lines_added", 0),
+                "lines_removed": getattr(stats, "lines_removed", 0),
+            }
+        except Exception:
+            return None
 
     @staticmethod
     def _build_role_utilization(daemon: Any) -> list[dict]:
@@ -528,6 +546,12 @@ td { padding: 4px 8px; border-bottom: 1px solid #21262d; }
       <span id="perf-backend" class="badge badge-required">performer</span>
       <span class="label">Session:</span><code id="perf-session" style="font-size:12px;color:#c9d1d9">—</code>
       <span class="label" style="margin-left:8px">Uptime:</span><span id="perf-age" style="color:#58a6ff;font-size:12px">—</span>
+    </div>
+    <div style="padding:4px 0 2px 0;min-height:1.4em">
+      <span id="perf-backend-url" style="font-size:12px"></span>
+    </div>
+    <div style="padding:2px 0 4px 0;min-height:1.2em;font-size:12px;color:#8b949e">
+      <span id="perf-session-stats"></span>
     </div>
     <div class="perf-metrics">
       <div class="perf-metric"><span class="perf-metric-value" id="perf-mem">—</span><span class="perf-metric-label">Memory</span></div>
@@ -1172,6 +1196,41 @@ function updatePerformers(s) {
   document.getElementById('perf-session').textContent = s.agent_session_id || '—';
   document.getElementById('perf-age').textContent =
     (isActive && s.agent_dispatch_at) ? (fmtAge(s.agent_dispatch_at) || '—') : '—';
+
+  // 052: Backend UI URL and session stats
+  var backendUrlEl = document.getElementById('perf-backend-url');
+  if (backendUrlEl) {
+    backendUrlEl.textContent = '';
+    if (s.backend_ui_url) {
+      try {
+        var parsedBackendUrl = new URL(s.backend_ui_url);
+        var isAllowedBackendUrl =
+          parsedBackendUrl.protocol === 'http:' &&
+          (parsedBackendUrl.hostname === '127.0.0.1' || parsedBackendUrl.hostname === 'localhost');
+        if (isAllowedBackendUrl) {
+          var backendLink = document.createElement('a');
+          backendLink.href = parsedBackendUrl.href;
+          backendLink.target = '_blank';
+          backendLink.rel = 'noopener noreferrer';
+          backendLink.style.color = '#58a6ff';
+          backendLink.textContent = 'Open in browser ↗';
+          backendUrlEl.appendChild(backendLink);
+        }
+      } catch (_err) {}
+    }
+  }
+  var statsEl = document.getElementById('perf-session-stats');
+  if (statsEl) {
+    var ss = s.session_stats;
+    if (ss) {
+      var title = ss.title || '';
+      var statsText = (title ? esc(title) + ' &middot; ' : '') +
+        ss.files_changed + ' files &middot; +' + ss.lines_added + '/-' + ss.lines_removed + ' lines';
+      statsEl.innerHTML = statsText;
+    } else {
+      statsEl.innerHTML = '';
+    }
+  }
 
   // Metrics
   var m = s.performer_metrics || {};

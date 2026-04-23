@@ -5,6 +5,7 @@ import yaml
 from pydantic import ValidationError
 
 from coordinare.config import (
+    BranchCollisionStrategy,
     PerformerRoleConfig,
     PerformersConfig,
     PersonaConfig,
@@ -880,3 +881,48 @@ def test_env_passthrough_parsed_from_yaml(tmp_path) -> None:
     )
     config = ProjectConfiguration.from_yaml(path)
     assert config.env_passthrough == ["ANTHROPIC_API_KEY", "OPENCODE_MODEL"]
+
+
+# ---------------------------------------------------------------------------
+# 052 — Stale Branch Cleanup config fields
+# ---------------------------------------------------------------------------
+
+
+class TestStaleBranchCleanupConfig:
+    """T002: Unit tests for stale_branch_cleanup and branch_collision_strategy fields."""
+
+    def _base_cfg(self, **extra):
+        return ProjectConfiguration(
+            project_name="Demo",
+            github_org="acme",
+            github_project_number=1,
+            github_token="tok",
+            human_reviewers=["alice"],
+            **extra,
+        )
+
+    def test_defaults_parse_correctly(self) -> None:
+        cfg = self._base_cfg()
+        assert cfg.stale_branch_cleanup is True
+        assert cfg.branch_collision_strategy == BranchCollisionStrategy.delete
+
+    def test_stale_branch_cleanup_false_disables_feature(self) -> None:
+        cfg = self._base_cfg(stale_branch_cleanup=False)
+        assert cfg.stale_branch_cleanup is False
+
+    def test_branch_collision_strategy_suffix_parses_as_enum(self) -> None:
+        cfg = self._base_cfg(branch_collision_strategy="suffix")
+        assert cfg.branch_collision_strategy == BranchCollisionStrategy.suffix
+
+    def test_env_var_override_disables_cleanup(self, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+        monkeypatch.setenv("COORDINARE_STALE_BRANCH_CLEANUP", "false")
+        path = tmp_path / "config.yaml"
+        path.write_text(yaml.dump({
+            "project_name": "Demo",
+            "github_org": "acme",
+            "github_project_number": 1,
+            "github_token": "tok",
+            "human_reviewers": ["alice"],
+        }))
+        cfg = ProjectConfiguration.from_yaml(path)
+        assert cfg.stale_branch_cleanup is False

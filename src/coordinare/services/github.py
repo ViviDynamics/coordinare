@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 import inspect
 from typing import Any, ClassVar
+from urllib.parse import quote
 
 import aiohttp
+import httpx
 import stamina
 import structlog
 from gql import Client, gql
@@ -387,6 +389,7 @@ class GitHubService:
         self._endpoint = endpoint
         self._circuit_breaker = circuit_breaker
         self._retry_kwargs = retry_kwargs if retry_kwargs is not None else dict(self._DEFAULT_RETRY_KWARGS)
+        self._project_name: str = ""  # set externally by __main__ for REST branch operations
 
         self._client: Client | None = None
         self._last_token: str | None = None
@@ -658,27 +661,7 @@ class GitHubService:
         (not GraphQL) so we don't need the node ID.  Used by the dependency
         service (046) to resolve off-board blockers.
         """
-        from urllib.parse import urlparse
-
-        import httpx
-
-        # Derive the REST base from the configured GraphQL endpoint.
-        # Standard: "https://api.github.com/graphql" → "https://api.github.com"
-        # GHE:      "https://github.mycorp.com/api/graphql" → "https://github.mycorp.com/api/v3"
-        raw = str(self._endpoint).rstrip("/")
-        raw = raw.removesuffix("/graphql")
-        parsed = urlparse(raw)
-        if parsed.path.rstrip("/") == "/api" or parsed.path.rstrip("/") == "":
-            # GHE pattern: host/api/graphql → host/api/v3
-            # Standard: api.github.com → api.github.com (path is empty)
-            if parsed.path.rstrip("/") == "/api":
-                api_url = f"{parsed.scheme}://{parsed.netloc}/api/v3"
-            else:
-                api_url = f"{parsed.scheme}://{parsed.netloc}"
-        else:
-            api_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
-
-        url = f"{api_url}/repos/{repo}/issues/{issue_number}"
+        url = f"{self._rest_api_base()}/repos/{repo}/issues/{issue_number}"
         try:
             token = await self._current_token()
         except Exception as exc:
@@ -715,6 +698,86 @@ class GitHubService:
                 exc_type=type(exc).__name__,
             )
             return "api_error"
+
+    def _rest_api_base(self) -> str:
+        """Derive the REST API base URL from the configured GraphQL endpoint.
+
+        Standard: https://api.github.com/graphql → https://api.github.com
+        GHE:      https://github.corp.com/api/graphql → https://github.corp.com/api/v3
+        """
+        from urllib.parse import urlparse
+
+        raw = str(self._endpoint).rstrip("/").removesuffix("/graphql")
+        parsed = urlparse(raw)
+        path = parsed.path.rstrip("/")
+        if path.endswith("/api"):
+            return f"{parsed.scheme}://{parsed.netloc}{path}/v3"
+        if path:
+            return f"{parsed.scheme}://{parsed.netloc}{path}"
+        return f"{parsed.scheme}://{parsed.netloc}"
+
+    async def branch_exists(self, branch_name: str) -> bool:
+        """Return True if a remote branch exists, False if 404.
+
+        Uses the REST branches endpoint so no GraphQL node ID is needed.
+        GHE-compatible: derives the REST base from self._endpoint.
+        Requires self._project_name to be set (done by __main__ after init).
+        """
+        if not self._project_name:
+            logger.warning("branch_exists.no_project_name", branch=branch_name)
+            return False
+        url = f"{self._rest_api_base()}/repos/{self._org}/{self._project_name}/branches/{quote(branch_name, safe='')}"
+        try:
+            token = await self._current_token()
+        except Exception as exc:
+            logger.warning("branch_exists.token_failed", branch=branch_name, error=str(exc))
+            return False
+        headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(url, headers=headers)
+            if resp.status_code == 200:
+                return True
+            if resp.status_code == 404:
+                return False
+            logger.warning(
+                "branch_exists.unexpected_status",
+                branch=branch_name,
+                status_code=resp.status_code,
+                error=resp.text[:200],
+            )
+            return False
+        except Exception as exc:
+            logger.warning("branch_exists.request_failed", branch=branch_name, error=str(exc))
+            return False
+
+    async def delete_branch(self, branch_name: str) -> None:
+        """Delete a remote branch via REST.
+
+        Logs a warning on failure but never raises — deletion is best-effort.
+        Requires self._project_name to be set (done by __main__ after init).
+        """
+        if not self._project_name:
+            logger.warning("delete_branch.no_project_name", branch=branch_name)
+            return
+        url = f"{self._rest_api_base()}/repos/{self._org}/{self._project_name}/git/refs/heads/{quote(branch_name, safe='')}"
+        try:
+            token = await self._current_token()
+        except Exception as exc:
+            logger.warning("workspace.stale_branch_delete_failed", branch=branch_name, error=str(exc))
+            return
+        headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.delete(url, headers=headers)
+            if not resp.is_success:
+                logger.warning(
+                    "workspace.stale_branch_delete_failed",
+                    branch=branch_name,
+                    error=f"HTTP {resp.status_code}: {resp.text[:200]}",
+                )
+        except Exception as exc:
+            logger.warning("workspace.stale_branch_delete_failed", branch=branch_name, error=str(exc))
 
     async def move_card(self, item_id: str, status: str) -> None:
         self._ensure_initialized()
@@ -897,7 +960,6 @@ class GitHubService:
         token = await self._current_token()
         url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}/requested_reviewers"
         headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
-        import httpx
         try:
             async with httpx.AsyncClient(timeout=30) as client:
                 resp = await client.post(url, json={"reviewers": reviewers}, headers=headers)

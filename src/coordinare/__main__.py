@@ -518,6 +518,7 @@ async def _bootstrap_services(
         circuit_breaker=circuit_breakers["github"],
         retry_kwargs=_retry_config_from(r.github_retry).to_stamina_kwargs(),
     )
+    github._project_name = config.project_name
     await github.initialize()
 
     try:
@@ -555,7 +556,7 @@ async def _bootstrap_services(
         retry_kwargs=_retry_config_from(r.anthropic_retry).to_stamina_kwargs(),
     )
 
-    workspace_manager = WorkspaceManager(config, auth=_auth)
+    workspace_manager = WorkspaceManager(config, auth=_auth, github_service=github)
 
     # 019 — Build performer lifecycle registry
     lifecycle_sequence = _build_lifecycle_sequence(config)

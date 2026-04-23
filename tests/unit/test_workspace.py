@@ -61,8 +61,12 @@ def _make_config(
     github_token: str = "ghp_test",
     workspace_root: Path | None = None,
     agent_transport: str = "subprocess",
+    stale_branch_cleanup: bool = True,
+    branch_collision_strategy: str = "delete",
 ) -> MagicMock:
     """Return a minimal ProjectConfiguration mock."""
+    from coordinare.config import BranchCollisionStrategy
+
     cfg = MagicMock()
     cfg.github_org = github_org
     cfg.project_name = project_name
@@ -70,6 +74,8 @@ def _make_config(
     cfg.github_token.get_secret_value.return_value = github_token
     cfg.workspace_root = workspace_root
     cfg.agent_transport = agent_transport
+    cfg.stale_branch_cleanup = stale_branch_cleanup
+    cfg.branch_collision_strategy = BranchCollisionStrategy(branch_collision_strategy)
     cfg.bot_identity = None  # use defaults ("Coordinare Bot" / "coordinare@localhost")
     cfg.env_passthrough = []
     return cfg
@@ -500,3 +506,129 @@ def test_build_minimal_env_excludes_arbitrary_host_var(monkeypatch: pytest.Monke
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "supersecret")
     env = _build_minimal_env(_NoConfig())
     assert "AWS_SECRET_ACCESS_KEY" not in env
+
+
+# ---------------------------------------------------------------------------
+# T015 + T017 — Stale branch detection (US2) and suffix strategy (US3)
+# ---------------------------------------------------------------------------
+
+
+def _make_github_service(*, exists_responses: list[bool]) -> MagicMock:
+    """Minimal GitHubService mock for stale branch tests."""
+    svc = MagicMock()
+    # branch_exists returns successive values from the list
+    svc.branch_exists = AsyncMock(side_effect=exists_responses)
+    svc.delete_branch = AsyncMock()
+    return svc
+
+
+@pytest.mark.asyncio
+async def test_stale_branch_delete_strategy_calls_delete_branch() -> None:
+    """T015a: stale branch exists + strategy delete → delete_branch called before clone."""
+    card = {"id": "89", "title": "add auth"}
+    cfg = _make_config(stale_branch_cleanup=True, branch_collision_strategy="delete")
+    github_svc = _make_github_service(exists_responses=[True])
+    mgr = WorkspaceManager(cfg, github_service=github_svc)
+
+    branch = await mgr._resolve_branch("coordinare/89/add-auth", card)
+    github_svc.delete_branch.assert_awaited_once_with("coordinare/89/add-auth")
+    assert branch == "coordinare/89/add-auth"
+
+
+@pytest.mark.asyncio
+async def test_no_stale_branch_skips_delete() -> None:
+    """T015b: no stale branch → workspace created normally (delete_branch not called)."""
+    card = {"id": "89", "title": "add auth"}
+    cfg = _make_config(stale_branch_cleanup=True, branch_collision_strategy="delete")
+    github_svc = _make_github_service(exists_responses=[False])
+    mgr = WorkspaceManager(cfg, github_service=github_svc)
+
+    branch = await mgr._resolve_branch("coordinare/89/add-auth", card)
+    github_svc.delete_branch.assert_not_awaited()
+    assert branch == "coordinare/89/add-auth"
+
+
+@pytest.mark.asyncio
+async def test_stale_branch_cleanup_disabled_skips_check() -> None:
+    """T015c: stale_branch_cleanup=false → no branch check performed."""
+    card = {"id": "89", "title": "add auth"}
+    cfg = _make_config(stale_branch_cleanup=False)
+    github_svc = _make_github_service(exists_responses=[])
+    mgr = WorkspaceManager(cfg, github_service=github_svc)
+
+    branch = await mgr._resolve_branch("coordinare/89/add-auth", card)
+    github_svc.branch_exists.assert_not_awaited()
+    assert branch == "coordinare/89/add-auth"
+
+
+@pytest.mark.asyncio
+async def test_stale_branch_deletion_failure_continues() -> None:
+    """T015d: deletion failure (delete_branch swallows errors) → resolve_branch still returns branch.
+
+    delete_branch is contractually non-raising (logs warning internally).
+    _resolve_branch trusts that contract and proceeds after the call.
+    """
+    card = {"id": "89", "title": "add auth"}
+    cfg = _make_config(stale_branch_cleanup=True, branch_collision_strategy="delete")
+    github_svc = _make_github_service(exists_responses=[True])
+    # delete_branch returns None (success or swallowed failure) — test normal no-error path
+    github_svc.delete_branch = AsyncMock(return_value=None)
+    mgr = WorkspaceManager(cfg, github_service=github_svc)
+
+    branch = await mgr._resolve_branch("coordinare/89/add-auth", card)
+    github_svc.delete_branch.assert_awaited_once_with("coordinare/89/add-auth")
+    assert branch == "coordinare/89/add-auth"
+
+
+@pytest.mark.asyncio
+async def test_no_github_service_skips_stale_check() -> None:
+    """Stale branch check is silently skipped when no github_service is configured."""
+    card = {"id": "89", "title": "add auth"}
+    cfg = _make_config(stale_branch_cleanup=True)
+    mgr = WorkspaceManager(cfg, github_service=None)
+
+    branch = await mgr._resolve_branch("coordinare/89/add-auth", card)
+    assert branch == "coordinare/89/add-auth"
+
+
+# T017 — Suffix strategy
+
+@pytest.mark.asyncio
+async def test_suffix_applied_when_minus2_is_free() -> None:
+    """T017a: suffix applied when -2 is free."""
+    card = {"id": "89", "title": "add auth"}
+    cfg = _make_config(stale_branch_cleanup=True, branch_collision_strategy="suffix")
+    # original branch exists, -2 does not
+    github_svc = _make_github_service(exists_responses=[True, False])
+    mgr = WorkspaceManager(cfg, github_service=github_svc)
+
+    branch = await mgr._resolve_branch("coordinare/89/add-auth", card)
+    assert branch == "coordinare/89/add-auth-2"
+    github_svc.delete_branch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_suffix_skips_taken_candidates() -> None:
+    """T017b: suffix skips taken candidates and uses first free slot."""
+    card = {"id": "89", "title": "add auth"}
+    cfg = _make_config(stale_branch_cleanup=True, branch_collision_strategy="suffix")
+    # original + -2 + -3 taken; -4 free
+    github_svc = _make_github_service(exists_responses=[True, True, True, False])
+    mgr = WorkspaceManager(cfg, github_service=github_svc)
+
+    branch = await mgr._resolve_branch("coordinare/89/add-auth", card)
+    assert branch == "coordinare/89/add-auth-4"
+
+
+@pytest.mark.asyncio
+async def test_suffix_exhausted_falls_back_to_delete() -> None:
+    """T017c: all suffixes taken → falls back to delete + warning."""
+    card = {"id": "89", "title": "add auth"}
+    cfg = _make_config(stale_branch_cleanup=True, branch_collision_strategy="suffix")
+    # original exists; -2 through -9 all exist
+    github_svc = _make_github_service(exists_responses=[True, True, True, True, True, True, True, True, True])
+    mgr = WorkspaceManager(cfg, github_service=github_svc)
+
+    branch = await mgr._resolve_branch("coordinare/89/add-auth", card)
+    github_svc.delete_branch.assert_awaited_once_with("coordinare/89/add-auth")
+    assert branch == "coordinare/89/add-auth"

@@ -167,6 +167,10 @@ async def _teardown_workspace(state: CoordinareState) -> None:
     finally:
         state["workspace_path"] = None
         state["workspace_branch"] = None
+        # 052: Clear backend transparency fields when session ends.
+        state["backend_ui_url"] = None
+        state["session_stats"] = None
+        state.pop("_backend_stats_fetched_at", None)  # type: ignore[typeddict-unknown-key]
 
 
 def _apply_pending_override(state: CoordinareState) -> CoordinareState | None:
@@ -472,6 +476,58 @@ def _advance_stage(state: CoordinareState, status: dict[str, Any] | None = None)
         # by the lifecycle roles).
         "lifecycle_completed_at": datetime.now(UTC),
     }
+
+
+_STATS_POLL_INTERVAL_SECONDS = 30
+
+
+async def _refresh_backend_ui(
+    state: dict[str, Any],
+    service: Any,
+    card_id: str,
+) -> None:
+    """Discover the backend UI URL from stderr logs and optionally poll session stats.
+
+    Best-effort: any error is swallowed and logged at DEBUG so the performer
+    session is never interrupted.  Stats polling is throttled to at most once
+    per _STATS_POLL_INTERVAL_SECONDS to avoid hammering the local HTTP server.
+    """
+    from coordinare.transport.subprocess_transport import (
+        _discover_backend_ui_url,
+        _fetch_session_stats,
+    )
+
+    try:
+        getter = getattr(service, "get_agent_logs", None)
+        if not callable(getter):
+            return
+        logs = getter()
+        if not isinstance(logs, list):
+            return
+
+        # Prefer fresh discovery; fall back to stored URL so stats keep updating
+        # even after the opencode server line scrolls out of the log buffer.
+        url = _discover_backend_ui_url(logs) or state.get("backend_ui_url")
+        if not url:
+            return
+
+        state["backend_ui_url"] = url
+
+        # Throttle stats polling to at most once per 30 seconds.
+        last_fetched = state.get("_backend_stats_fetched_at")
+        now = datetime.now(UTC)
+        if last_fetched is not None:
+            elapsed = (now - last_fetched).total_seconds()
+            if elapsed < _STATS_POLL_INTERVAL_SECONDS:
+                return
+
+        # Record the attempt time before fetching so failed polls are also throttled.
+        state["_backend_stats_fetched_at"] = now  # type: ignore[typeddict-unknown-key]
+        stats = await _fetch_session_stats(url)
+        if stats is not None:
+            state["session_stats"] = stats
+    except Exception as exc:
+        logger.debug("monitor_performer.backend_ui_refresh_failed", card_id=card_id, error=str(exc))
 
 
 async def monitor_performer(state: CoordinareState) -> CoordinareState:
@@ -1132,6 +1188,10 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
         # --- In-progress (working) ---
         _teardown_on_exit = False  # still working — workspace stays active
         state["phase"] = "monitoring_performer"
+
+        # 052: Backend transparency — discover UI URL and poll session stats.
+        await _refresh_backend_ui(state, service, card_id)
+
         return state
     finally:
         if _teardown_on_exit:

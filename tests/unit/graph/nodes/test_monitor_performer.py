@@ -1697,3 +1697,69 @@ async def test_monitor_performer_uses_slot_manager_service() -> None:
     # SlotManager should have returned specific_service for CARD_A
     specific_service.check_status.assert_called_once()
     primary_service.check_status.assert_not_called()
+
+
+# --- 052: T006a — _refresh_backend_ui wiring ---
+
+
+@pytest.mark.asyncio
+async def test_refresh_backend_ui_writes_url_to_state() -> None:
+    """T006a-a: URL discovered from agent logs is written to state."""
+    from unittest.mock import AsyncMock, patch
+
+    from coordinare.graph.nodes.monitor_performer import _refresh_backend_ui
+
+    service = _Performer({"status": "working"})
+    service.get_agent_logs = lambda: ['{"server":"http://127.0.0.1:3000"}']  # type: ignore[attr-defined]
+
+    state: dict = {}
+
+    with patch(
+        "coordinare.transport.subprocess_transport._fetch_session_stats",
+        new=AsyncMock(return_value=None),
+    ):
+        await _refresh_backend_ui(state, service, "CARD_1")
+
+    assert state.get("backend_ui_url") == "http://127.0.0.1:3000"
+
+
+@pytest.mark.asyncio
+async def test_refresh_backend_ui_throttles_stats_polling() -> None:
+    """T006a-b: Second call within 30 s skips the HTTP stats request."""
+    from datetime import UTC, datetime
+    from unittest.mock import AsyncMock, patch
+
+    from coordinare.graph.nodes.monitor_performer import _refresh_backend_ui
+
+    service = _Performer({"status": "working"})
+    service.get_agent_logs = lambda: ['{"server":"http://127.0.0.1:3000"}']  # type: ignore[attr-defined]
+
+    mock_stats = AsyncMock(return_value=None)
+    state: dict = {"_backend_stats_fetched_at": datetime.now(UTC)}
+
+    with patch(
+        "coordinare.transport.subprocess_transport._fetch_session_stats",
+        new=mock_stats,
+    ):
+        await _refresh_backend_ui(state, service, "CARD_1")
+
+    mock_stats.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_teardown_workspace_clears_backend_ui_fields() -> None:
+    """T006a-c: _teardown_workspace sets backend_ui_url and session_stats to None."""
+    from coordinare.graph.nodes.monitor_performer import _teardown_workspace
+
+    state: dict = {
+        "workspace_manager": None,
+        "workspace_path": None,
+        "workspace_branch": "coordinare/ITEM-1/test",
+        "backend_ui_url": "http://127.0.0.1:3000",
+        "session_stats": {"title": "fix bug", "files_changed": 2, "lines_added": 5, "lines_removed": 1},
+    }
+
+    await _teardown_workspace(state)  # type: ignore[arg-type]
+
+    assert state["backend_ui_url"] is None
+    assert state["session_stats"] is None

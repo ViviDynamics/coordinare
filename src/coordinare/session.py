@@ -7,11 +7,22 @@ CoordinareState -- work identically regardless of concurrency mode.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, TypedDict
 
 if TYPE_CHECKING:
     from datetime import datetime
     from pathlib import Path
+
+
+@dataclass
+class SessionStats:
+    """052: Live session stats polled from the performer backend's HTTP API."""
+
+    title: str | None
+    files_changed: int
+    lines_added: int
+    lines_removed: int
 
 
 class CardSession(TypedDict, total=False):
@@ -47,6 +58,8 @@ class CardSession(TypedDict, total=False):
     requirements_changed_details: dict[str, Any]
     last_blocked_notified_at: datetime | None
     phase_entered_at: datetime | None
+    backend_ui_url: str | None
+    session_stats: SessionStats | None
 
 
 # Fields that live on both CardSession and CoordinareState (flat).
@@ -79,6 +92,8 @@ _SESSION_FIELDS: tuple[str, ...] = (
     "requirements_changed_details",
     "last_blocked_notified_at",
     "phase_entered_at",
+    "backend_ui_url",
+    "session_stats",
 )
 
 
@@ -112,6 +127,8 @@ def create_session_from_card(card: dict[str, Any]) -> CardSession:
         requirements_changed_details={},
         last_blocked_notified_at=None,
         phase_entered_at=None,
+        backend_ui_url=None,
+        session_stats=None,
     )
 
 
