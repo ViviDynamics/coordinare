@@ -710,6 +710,26 @@ class TestBuildTaskPrompt:
         assert "Commit your changes" in prompt
         assert "Do not push or open a pull request — this will be handled automatically" in prompt
 
+    def test_reviewer_role_uses_json_only_footer(self) -> None:
+        prompt = _build_task_prompt(_score(role="reviewing"))
+        assert "Return ONLY a valid JSON object" in prompt
+        assert "Do not include markdown, prose, or code fences." in prompt
+        assert "Commit your changes" not in prompt
+
+    def test_reviewer_noun_role_uses_json_only_footer(self) -> None:
+        prompt = _build_task_prompt(_score(role="reviewer"))
+        assert "Return ONLY a valid JSON object" in prompt
+        assert "Commit your changes" not in prompt
+
+    def test_qa_role_includes_verification_contract_hints(self) -> None:
+        prompt = _build_task_prompt(_score(role="qa"))
+        assert "verification_steps" in prompt
+        assert "visual_evidence" in prompt
+        assert "visual_validation_required" in prompt
+        assert "demo_setup_steps" in prompt
+        assert "visual_capture_commands" in prompt
+        assert "visual_capture_blockers" in prompt
+
     def test_clarifications_without_answer(self) -> None:
         score = _score(clarifications=[{"questions": ["Q?"], "answer": ""}])
         prompt = _build_task_prompt(score)

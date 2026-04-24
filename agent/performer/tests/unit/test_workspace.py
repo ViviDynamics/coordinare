@@ -9,7 +9,6 @@ import pytest
 
 from performer.models import Score, Stand
 from performer.workspace import (
-    BranchConflictError,
     CIRunResult,
     WorkspaceSetupError,
     _git_credential_env,
@@ -294,6 +293,33 @@ class TestPushBranch:
         with patch("performer.workspace.asyncio.create_subprocess_exec", return_value=proc_fail):
             with pytest.raises(WorkspaceSetupError):
                 await push_branch(stand, _score())
+
+    async def test_workflow_permission_push_error_is_summarized(self, tmp_path: Path) -> None:
+        """Workflow-permission push rejections should be concise/actionable."""
+        stand = Stand(path=tmp_path, branch="feat/x")
+        verbose = (
+            "17:26:10.642523 http.c:889 == Info: Request completely sent off\n"
+            "To https://github.com/ViviDynamics/website.git\n"
+            "! [remote rejected] HEAD -> feat/x "
+            "(refusing to allow a GitHub App to create or update workflow "
+            "`.github/workflows/main-branch-build.yml` without `workflows` permission)\n"
+            "error: failed to push some refs to 'https://github.com/ViviDynamics/website.git'\n"
+        )
+        proc_fail = MagicMock()
+        proc_fail.returncode = 1
+        proc_fail.communicate = AsyncMock(return_value=(b"", verbose.encode()))
+        with (
+            patch(
+                "performer.workspace.asyncio.create_subprocess_exec",
+                side_effect=[proc_fail, proc_fail],
+            ),
+            pytest.raises(WorkspaceSetupError) as excinfo,
+        ):
+            await push_branch(stand, _score())
+        msg = str(excinfo.value)
+        assert "lacks `workflows` permission" in msg
+        assert "Revert workflow-file changes and retry" in msg
+        assert "http.c:889" not in msg
 
     async def test_push_non_enospc_oserror_raises_workspace_error(self, tmp_path: Path) -> None:
         stand = Stand(path=tmp_path, branch="feat/x")

@@ -763,6 +763,46 @@ async def test_find_pr_for_issue_swallows_query_errors() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 053 — count_closed_prs_for_issue
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_count_closed_prs_for_issue_counts_closed_only() -> None:
+    svc = _initialized_svc({
+        "node": {
+            "closedByPullRequestsReferences": {
+                "nodes": [
+                    {"state": "OPEN"},
+                    {"state": "CLOSED"},
+                    {"state": "MERGED"},
+                    {"state": "CLOSED"},
+                ]
+            }
+        }
+    })
+    assert await svc.count_closed_prs_for_issue("I_kwDO_issue") == 2
+
+
+@pytest.mark.asyncio
+async def test_count_closed_prs_for_issue_empty_issue_id_returns_zero() -> None:
+    svc = _initialized_svc()  # no query should run
+    assert await svc.count_closed_prs_for_issue("") == 0
+
+
+@pytest.mark.asyncio
+async def test_count_closed_prs_for_issue_swallows_query_errors() -> None:
+    class _Failing:
+        def execute(self, _q, variable_values):
+            raise RuntimeError("graphql transient")
+    svc = GitHubService(token="tok", org="acme", project_number=1)
+    svc.project_id = "PVT_1"
+    svc._client = _Failing()
+    svc._last_token = "tok"
+    assert await svc.count_closed_prs_for_issue("I_kwDO_issue") == 0
+
+
+# ---------------------------------------------------------------------------
 # 042 — GraphQL error → permanent vs transient classification
 # ---------------------------------------------------------------------------
 

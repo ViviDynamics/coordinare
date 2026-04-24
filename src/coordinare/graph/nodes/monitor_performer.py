@@ -34,6 +34,11 @@ TERMINAL_SUCCESS_STATES: frozenset[str] = frozenset({
     "docs_committed",
     "assessment_complete",
 })
+_FORMAT_ERROR_PREFIX = "BACKEND_FORMAT_ERROR:"
+_WORKFLOW_PUSH_REJECTION_MARKERS: tuple[str, ...] = (
+    "refusing to allow a github app to create or update workflow",
+    "lacks `workflows` permission",
+)
 
 def _reset_token_counters(state: CoordinareState) -> None:
     """034: Clear token/cost counters when card is no longer active."""
@@ -346,6 +351,15 @@ def _feedback_cycle_exhausted(
     state["agent_dispatch"] = {}
     state["agent_dispatch_at"] = None
     return state
+
+
+def _is_workflow_push_permission_error(reason: str) -> bool:
+    """True when git push was rejected because workflow writes are disallowed."""
+    lowered = reason.lower()
+    return (
+        "git push failed" in lowered
+        and any(marker in lowered for marker in _WORKFLOW_PUSH_REJECTION_MARKERS)
+    )
 
 
 def _advance_stage(state: CoordinareState, status: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -1069,8 +1083,56 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
 
         # --- Error status (FR-006) ---
         if marker == "error":
-            state["phase"] = "blocked"
             reason = str(status.get("reason", ""))
+            if reason.startswith(_FORMAT_ERROR_PREFIX):
+                # Treat backend format-contract failures as retryable system
+                # errors first; handle_system_error controls backoff + budget.
+                if state.get("system_error_notified"):
+                    state["system_error_count"] = 0
+                    state["system_error_notified"] = False
+                state["system_error_count"] = state.get("system_error_count", 0) + 1
+                state["system_error_last_at"] = datetime.now(UTC)
+                state["system_error_reason"] = reason
+                state["open_questions"] = []
+                state["relay_feedback"] = []  # type: ignore[typeddict-unknown-key]
+                state["phase"] = "system_error"
+                return state
+            if _is_workflow_push_permission_error(reason):
+                logger.warning(
+                    "monitor_performer.workflow_push_permission_error",
+                    performer_stage=stage,
+                    card_id=card_id,
+                )
+                feedback = [{
+                    "body": (
+                        "Git push was rejected because the branch attempted to modify "
+                        "a GitHub Actions workflow file under `.github/workflows`, "
+                        "but the coordinare app token does not have `workflows` write "
+                        "permission. Revert workflow-file changes and continue with "
+                        "task-related code changes only."
+                    ),
+                }]
+                exhausted = _feedback_cycle_exhausted(
+                    state, card_id, stage, "workflow_push_permission", feedback,
+                )
+                if exhausted is not None:
+                    return exhausted
+                lifecycle = list(state.get("lifecycle_sequence") or [])
+                if "implementing" in lifecycle:
+                    state["relay_feedback"] = feedback  # type: ignore[typeddict-unknown-key]
+                    state["performer_stage"] = "implementing"
+                    state["phase"] = "dispatching"
+                    state["agent_dispatch"] = {}
+                    state["agent_dispatch_at"] = None
+                    state["open_questions"] = []
+                    return state
+                logger.info(
+                    "monitor_performer.workflow_push_permission_no_implementing_stage",
+                    performer_stage=stage,
+                    card_id=card_id,
+                    lifecycle_sequence=lifecycle,
+                )
+            state["phase"] = "blocked"
             state["open_questions"] = [
                 f"Performer ({stage}) encountered an error: {reason}" if reason
                 else f"Performer ({stage}) encountered an error."

@@ -6,8 +6,8 @@ Run with:
 Skipped in the standard pytest run (requires Playwright browser binaries).
 Each test is marked @pytest.mark.e2e; the default addopts excludes that marker.
 
-049 additions: navbar, multi-page routing (pushState), active-performer tiles,
-/performers page, /personas page, /history stub.
+049/053 additions: navbar, multi-page routing (pushState), active-performer tiles,
+/performers drilldown, /personas page, /history live rendering.
 """
 from __future__ import annotations
 
@@ -68,6 +68,18 @@ def _full_snapshot(**overrides: Any) -> dict:
         "role_utilization": [],
         # 050
         "assignee_filter": None,
+        # 053
+        "board_summary": {
+            "TODO": 0,
+            "IN_PROGRESS": 0,
+            "IN_REVIEW": 0,
+            "DONE": 0,
+            "BLOCKED": 0,
+            "BACKLOG": 0,
+        },
+        "last_poll_at": None,
+        "backend_ui_url": None,
+        "session_stats": None,
     }
     base.update(overrides)
     return base
@@ -438,8 +450,8 @@ def test_navigate_to_personas_shows_personas_page(page: Page, live_server_url: s
 
 
 @pytest.mark.e2e
-def test_navigate_to_history_shows_coming_soon(page: Page, live_server_url: str) -> None:
-    """Clicking History nav link must show the Coming soon stub."""
+def test_navigate_to_history_shows_live_empty_state(page: Page, live_server_url: str) -> None:
+    """Clicking History nav link must show the real history container empty-state."""
     page.goto(live_server_url)
     expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
 
@@ -447,7 +459,30 @@ def test_navigate_to_history_shows_coming_soon(page: Page, live_server_url: str)
 
     expect(page).to_have_url(f"{live_server_url}/history", timeout=_WAIT_NAV)
     expect(page.locator("#history-page")).to_be_visible(timeout=_WAIT_NAV)
-    expect(page.locator("#history-page")).to_contain_text("Coming soon", timeout=_WAIT_NAV)
+    expect(page.locator("#history-page")).to_contain_text("No cycles completed yet", timeout=_WAIT_NAV)
+
+
+@pytest.mark.e2e
+def test_history_page_renders_cycle_rows_from_sse(
+    page: Page, live_server_url: str, store: DashboardStore
+) -> None:
+    """053: /history must render cycle rows and live-update from SSE."""
+    page.goto(f"{live_server_url}/history")
+    expect(page.locator("#history-page")).to_be_visible(timeout=_WAIT_NAV)
+    expect(page.locator("#history-page-section")).to_contain_text("No cycles completed yet", timeout=_WAIT_NAV)
+
+    store.broadcaster.broadcast(
+        _full_snapshot(
+            cycle_history=[
+                {"timestamp": "2026-03-02T10:05:00+00:00", "phase": "monitoring_pr", "duration_seconds": 0.45, "outcome": "success"},
+                {"timestamp": "2026-03-02T10:04:30+00:00", "phase": "recovery", "duration_seconds": 0.0, "outcome": "error"},
+            ]
+        )
+    )
+
+    expect(page.locator("#history-page-section table")).to_be_visible(timeout=_WAIT_LIVE)
+    expect(page.locator("#history-page-section")).to_contain_text("Monitoring Pr", timeout=_WAIT_LIVE)
+    expect(page.locator("#history-page-section")).to_contain_text("error", timeout=_WAIT_LIVE)
 
 
 @pytest.mark.e2e
@@ -541,11 +576,21 @@ def test_idle_state_shows_no_active_performers_message(
     page.goto(live_server_url)
     expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
 
-    store.broadcaster.broadcast(_full_snapshot(active_sessions=[], cycles_completed=5))
+    store.broadcaster.broadcast(
+        _full_snapshot(
+            active_sessions=[],
+            cycles_completed=5,
+            board_summary={"TODO": 3, "IN_PROGRESS": 1, "IN_REVIEW": 2, "DONE": 4, "BLOCKED": 0, "BACKLOG": 0},
+            last_poll_at="2026-04-22T22:40:00+00:00",
+        )
+    )
 
     expect(page.locator("#active-performer-tiles")).to_contain_text(
         "No active performers", timeout=_WAIT_LIVE
     )
+    expect(page.locator("#active-performer-tiles")).to_contain_text("TODO 3", timeout=_WAIT_LIVE)
+    expect(page.locator("#active-performer-tiles")).to_contain_text("IN_PROGRESS 1", timeout=_WAIT_LIVE)
+    expect(page.locator("#active-performer-tiles")).to_contain_text("Last poll:", timeout=_WAIT_LIVE)
 
 
 @pytest.mark.e2e
@@ -583,19 +628,133 @@ def test_idle_state_no_filter_hint_when_unset(
 
 
 @pytest.mark.e2e
-def test_workflow_diagram_visible_but_bounded(page: Page, live_server_url: str) -> None:
-    """Workflow diagram must be visible and bounded to ≤25vh on the main page."""
+def test_workflow_diagram_visible_without_expand_toggle(page: Page, live_server_url: str) -> None:
+    """053: Workflow should be readable without expand/collapse controls."""
     page.goto(live_server_url)
     expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
     fc = page.locator("#flow-chart")
     expect(fc).to_be_visible()
-    # getComputedStyle resolves vh to px, so check the rendered height against
-    # 25% of the viewport height instead of comparing the string "25vh".
-    ratio = page.evaluate(
-        "() => document.getElementById('flow-chart').getBoundingClientRect().height"
-        " / window.innerHeight"
+    expect(page.locator("#flow-chart-toggle")).to_have_count(0)
+
+
+@pytest.mark.e2e
+def test_desktop_layout_workflow_and_performers_are_single_column_cards(
+    page: Page, live_server_url: str, store: DashboardStore
+) -> None:
+    """053: Workflow and Performers cards should be single-column grid cards."""
+    page.set_viewport_size({"width": 1200, "height": 900})
+    page.goto(live_server_url)
+    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+
+    store.broadcaster.broadcast(
+        _full_snapshot(
+            phase="monitoring_performer",
+            phase_label="Monitoring Performer",
+            active_sessions=[_active_session("PVTI_1", "Fix layout", "implementing")],
+            performer_events=[{"type": "progress", "text": "Working"}],
+            role_utilization=[{"role": "implementing", "active": 1, "max": 1, "queued": 0}],
+        )
     )
-    assert ratio <= 0.25, f"flow-chart height ratio {ratio:.2f} exceeds 25vh limit"
+
+    expect(page.locator("#performers-card")).to_be_visible(timeout=_WAIT_LIVE)
+    layout = page.evaluate(
+        """() => {
+          const workflowCard = document.getElementById('flow-chart').closest('.card');
+          const performersCard = document.getElementById('performers-card');
+          const metricsCard = document.getElementById('cycles-completed').closest('.card');
+          const wf = workflowCard.getBoundingClientRect();
+          const pf = performersCard.getBoundingClientRect();
+          const mt = metricsCard.getBoundingClientRect();
+          return {
+            wfWidth: wf.width,
+            pfWidth: pf.width,
+            mtWidth: mt.width,
+            viewportWidth: window.innerWidth,
+          };
+        }"""
+    )
+    assert layout["wfWidth"] < layout["viewportWidth"] * 0.75
+    assert layout["pfWidth"] < layout["viewportWidth"] * 0.75
+    assert abs(layout["wfWidth"] - layout["mtWidth"]) < 120
+    assert abs(layout["pfWidth"] - layout["mtWidth"]) < 120
+
+
+@pytest.mark.e2e
+def test_desktop_layout_active_performers_is_single_column(
+    page: Page, live_server_url: str, store: DashboardStore
+) -> None:
+    """053: Active Performers card should be a single-column grid item (not full-width)."""
+    page.set_viewport_size({"width": 1200, "height": 900})
+    page.goto(live_server_url)
+    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+
+    store.broadcaster.broadcast(
+        _full_snapshot(
+            phase="monitoring_performer",
+            phase_label="Monitoring Performer",
+            active_sessions=[_active_session("PVTI_1", "Fix layout", "implementing")],
+        )
+    )
+
+    expect(page.locator("#active-performers")).to_be_visible(timeout=_WAIT_LIVE)
+    layout = page.evaluate(
+        """() => {
+          const apCard = document.getElementById('active-performers');
+          const phaseCard = document.getElementById('phase').closest('.card');
+          const ap = apCard.getBoundingClientRect();
+          const ph = phaseCard.getBoundingClientRect();
+          return {apWidth: ap.width, phWidth: ph.width, viewportWidth: window.innerWidth};
+        }"""
+    )
+    assert layout["apWidth"] < layout["viewportWidth"] * 0.75
+    assert abs(layout["apWidth"] - layout["phWidth"]) < 120
+
+
+@pytest.mark.e2e
+def test_desktop_layout_clarifications_and_recent_cycles_are_single_column(
+    page: Page, live_server_url: str, store: DashboardStore
+) -> None:
+    """053: Clarification History and Recent Cycles should be single-column grid cards."""
+    page.set_viewport_size({"width": 1200, "height": 900})
+    page.goto(live_server_url)
+    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+
+    store.broadcaster.broadcast(
+        _full_snapshot(
+            card_clarifications=[{"questions": ["Need API shape?"], "answer": "Use v2 payload."}],
+            cycle_history=[
+                {
+                    "timestamp": "2026-04-22T22:40:00+00:00",
+                    "phase": "monitoring_performer",
+                    "duration_seconds": 12.3,
+                    "outcome": "success",
+                }
+            ],
+        )
+    )
+
+    expect(page.locator("#clarifications-card")).to_be_visible(timeout=_WAIT_LIVE)
+    expect(page.locator("#history-section")).to_contain_text("success", timeout=_WAIT_LIVE)
+    layout = page.evaluate(
+        """() => {
+          const clCard = document.getElementById('clarifications-card');
+          const historyCard = document.getElementById('history-section').closest('.card');
+          const metricsCard = document.getElementById('cycles-completed').closest('.card');
+          const cl = clCard.getBoundingClientRect();
+          const hs = historyCard.getBoundingClientRect();
+          const mt = metricsCard.getBoundingClientRect();
+          return {
+            clWidth: cl.width,
+            hsWidth: hs.width,
+            mtWidth: mt.width,
+            viewportWidth: window.innerWidth,
+          };
+        }"""
+    )
+    assert layout["clWidth"] < layout["viewportWidth"] * 0.75
+    assert layout["hsWidth"] < layout["viewportWidth"] * 0.75
+    assert abs(layout["clWidth"] - layout["mtWidth"]) < 120
+    assert abs(layout["hsWidth"] - layout["mtWidth"]) < 120
 
 
 # ---------------------------------------------------------------------------
@@ -644,6 +803,75 @@ def test_performers_page_shows_active_badge(
 
     page.locator("#navbar a[href='/performers']").click()
     expect(page.locator("#performers-page .role-active")).to_be_visible(timeout=_WAIT_LIVE)
+
+
+@pytest.mark.e2e
+def test_performers_page_row_click_opens_detail_and_back_restores_list(
+    page: Page, live_server_url: str, store: DashboardStore
+) -> None:
+    """053: clicking a performers row opens detail view; back returns to list."""
+    page.goto(f"{live_server_url}/performers")
+    expect(page.locator("#performers-page")).to_be_visible(timeout=_WAIT_NAV)
+
+    store.broadcaster.broadcast(
+        _full_snapshot(
+            role_utilization=[
+                {"role": "implementing", "active": 1, "max": 1, "queued": 0},
+                {"role": "reviewing", "active": 0, "max": 1, "queued": 1},
+            ],
+            active_sessions=[_active_session("PVTI_1", "Big feature", "implementing")],
+            performer_events=[{"type": "progress", "text": "Running tests"}],
+            performer_logs=["line one", "line two"],
+            performer_metrics={"pid": 111, "cpu_percent": 2.5, "memory_bytes": 2048},
+            performer_backend="opencode",
+            backend_ui_url="http://127.0.0.1:4040",
+            agent_session_id="sess-xyz",
+            agent_dispatch_at="2026-04-22T22:40:00+00:00",
+            session_stats={"title": "Big feature", "files_changed": 2, "lines_added": 20, "lines_removed": 5},
+        )
+    )
+
+    row = page.locator("#performers-page-tbody tr[data-role='implementing']")
+    expect(row).to_be_visible(timeout=_WAIT_LIVE)
+    row.click()
+    expect(page.locator("#performers-page-detail-view")).to_be_visible(timeout=_WAIT_LIVE)
+    expect(page.locator("#performers-page-detail")).to_contain_text("Card Context", timeout=_WAIT_LIVE)
+    expect(page.locator("#performers-page-detail")).to_contain_text("Live Events", timeout=_WAIT_LIVE)
+    page.locator("#performers-page-back").click()
+    expect(page.locator("#performers-page-list-view")).to_be_visible(timeout=_WAIT_LIVE)
+    expect(page.locator("#performers-page-detail-view")).to_be_hidden(timeout=_WAIT_LIVE)
+
+
+@pytest.mark.e2e
+def test_performers_page_keyboard_drilldown_stays_open_during_sse_updates(
+    page: Page, live_server_url: str, store: DashboardStore
+) -> None:
+    """053: Enter/Space should open detail, and SSE updates should not collapse it."""
+    page.goto(f"{live_server_url}/performers")
+    expect(page.locator("#performers-page")).to_be_visible(timeout=_WAIT_NAV)
+
+    store.broadcaster.broadcast(
+        _full_snapshot(
+            role_utilization=[{"role": "implementing", "active": 1, "max": 1, "queued": 0}],
+            active_sessions=[_active_session("PVTI_1", "Keyboard flow", "implementing")],
+            performer_events=[{"type": "progress", "text": "Initial"}],
+        )
+    )
+    row = page.locator("#performers-page-tbody tr[data-role='implementing']")
+    expect(row).to_be_visible(timeout=_WAIT_LIVE)
+    row.focus()
+    page.keyboard.press("Enter")
+    expect(page.locator("#performers-page-detail-view")).to_be_visible(timeout=_WAIT_LIVE)
+
+    store.broadcaster.broadcast(
+        _full_snapshot(
+            role_utilization=[{"role": "implementing", "active": 1, "max": 1, "queued": 0}],
+            active_sessions=[_active_session("PVTI_1", "Keyboard flow", "implementing")],
+            performer_events=[{"type": "progress", "text": "Updated"}],
+        )
+    )
+    expect(page.locator("#performers-page-detail-view")).to_be_visible(timeout=_WAIT_LIVE)
+    expect(page.locator("#performers-page-detail")).to_contain_text("Updated", timeout=_WAIT_LIVE)
 
 
 # ---------------------------------------------------------------------------

@@ -56,7 +56,7 @@ authoritative schema — any field not on `Score` is silently dropped by pydanti
 
 | Field | Type | Required | Set by | Used by |
 |-------|------|----------|--------|---------|
-| `backend` | str | no | dispatch_performer | select AI backend (opencode, claude_code, codex) |
+| `backend` | str | no | dispatch_performer | select AI backend (opencode, junie, cursor, claude_code, codex) |
 | `model` | str | no | dispatch_performer | select model within backend |
 
 ### GitHub Enterprise (set by dispatch_performer, feature 036)

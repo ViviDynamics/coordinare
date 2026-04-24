@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import socket
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -112,6 +113,30 @@ def test_dashboard_html_under_80kb() -> None:
     assert size < 80 * 1024, f"_DASHBOARD_HTML is {size} bytes (limit: {80 * 1024})"
 
 
+def test_history_page_is_live_container_not_coming_soon_stub() -> None:
+    """053: /history should render live history containers, not placeholder copy."""
+    assert "Coming soon" not in _DASHBOARD_HTML
+    assert 'id="history-page-section"' in _DASHBOARD_HTML
+
+
+def test_performers_page_includes_drilldown_detail_container() -> None:
+    """053: /performers must include list/detail view containers for drilldown."""
+    assert 'id="performers-page-list-view"' in _DASHBOARD_HTML
+    assert 'id="performers-page-detail-view"' in _DASHBOARD_HTML
+    assert 'id="performers-page-back"' in _DASHBOARD_HTML
+
+
+def test_dashboard_cards_use_single_column_layout_where_expected() -> None:
+    """053: Key dashboard cards should occupy single grid columns on desktop."""
+    assert '<div class="card full">\n  <h2>Workflow</h2>' not in _DASHBOARD_HTML
+    assert 'id="performers-card" class="card full"' not in _DASHBOARD_HTML
+    assert 'id="active-performers" class="card full"' not in _DASHBOARD_HTML
+    assert 'id="active-performers" class="card"' in _DASHBOARD_HTML
+    assert 'id="clarifications-card" class="card full"' not in _DASHBOARD_HTML
+    assert 'id="clarifications-card" class="card"' in _DASHBOARD_HTML
+    assert '<div class="card full">\n  <h2>Recent Cycles</h2>' not in _DASHBOARD_HTML
+
+
 # ---------------------------------------------------------------------------
 # T014 — format_phase_label
 # ---------------------------------------------------------------------------
@@ -167,7 +192,15 @@ def test_sse_initial_event_is_state_update() -> None:
     assert first_chunk.startswith("event: state_update\n"), repr(first_chunk)
     data_line = next(line for line in first_chunk.splitlines() if line.startswith("data:"))
     payload = _json.loads(data_line[len("data:"):].strip())
-    for key in ("phase", "phase_label", "subsystems", "cycles_completed", "cycle_history"):
+    for key in (
+        "phase",
+        "phase_label",
+        "subsystems",
+        "cycles_completed",
+        "cycle_history",
+        "board_summary",
+        "last_poll_at",
+    ):
         assert key in payload, f"Missing key {key!r} in SSE payload"
 
 
@@ -258,6 +291,44 @@ def test_build_snapshot_metrics_fields() -> None:
     assert snap["daemon_start_time"] == "2026-03-02T09:30:00+00:00"
 
 
+def test_build_snapshot_includes_board_summary_and_last_poll() -> None:
+    store = DashboardStore()
+    daemon = _make_mock_daemon()
+    daemon.state["board_snapshot"] = {
+        "TODO": ["1", "2"],
+        "IN_PROGRESS": ["3"],
+        "IN_REVIEW": [],
+        "DONE": ["4"],
+    }
+    daemon.state["last_poll_at"] = "2026-04-22T22:40:00+00:00"
+    metrics = _make_mock_metrics()
+    health = _make_mock_health()
+
+    snap = store.build_snapshot(daemon, metrics, health)
+
+    assert snap["board_summary"]["TODO"] == 2
+    assert snap["board_summary"]["IN_PROGRESS"] == 1
+    assert snap["board_summary"]["IN_REVIEW"] == 0
+    assert snap["board_summary"]["DONE"] == 1
+    assert snap["last_poll_at"] == "2026-04-22T22:40:00+00:00"
+
+
+def test_build_snapshot_board_summary_defaults_missing_columns_to_zero() -> None:
+    store = DashboardStore()
+    daemon = _make_mock_daemon()
+    daemon.state["board_snapshot"] = {"BLOCKED": ["x"]}
+    metrics = _make_mock_metrics()
+    health = _make_mock_health()
+
+    snap = store.build_snapshot(daemon, metrics, health)
+
+    assert snap["board_summary"]["TODO"] == 0
+    assert snap["board_summary"]["IN_PROGRESS"] == 0
+    assert snap["board_summary"]["IN_REVIEW"] == 0
+    assert snap["board_summary"]["DONE"] == 0
+    assert snap["board_summary"]["BLOCKED"] == 1
+
+
 def test_build_snapshot_idle_nulls() -> None:
     """When no snapshot in state_store, card fields must be null."""
     store = DashboardStore()
@@ -333,6 +404,30 @@ def test_build_snapshot_session_performer_stage_none_coerces_to_empty_string() -
     assert len(sessions) == 1
     assert sessions[0]["performer_stage"] == ""
     assert sessions[0]["performer_stage"] != "None"
+
+
+def test_build_snapshot_synthesizes_active_session_in_single_session_mode() -> None:
+    """When top-level phase is monitoring but active_sessions is empty,
+    snapshot should include a synthetic active session row for dashboard tiles."""
+    store = DashboardStore()
+    daemon = _make_mock_daemon(phase="monitoring_performer")
+    daemon.state["active_sessions"] = {}
+    daemon.state["current_card"] = {"id": "PVTI_123", "title": "Fix performer tile"}
+    daemon.state["performer_stage"] = "implementing"
+    daemon.state["agent_dispatch"] = {"session_id": "sid-123"}
+    daemon.state["agent_dispatch_at"] = datetime.now(UTC)
+    metrics = _make_mock_metrics()
+    health = _make_mock_health()
+
+    snap = store.build_snapshot(daemon, metrics, health)
+
+    sessions = snap.get("active_sessions", [])
+    assert snap["active_session_count"] == 1
+    assert len(sessions) == 1
+    assert sessions[0]["card_id"] == "PVTI_123"
+    assert sessions[0]["card_title"] == "Fix performer tile"
+    assert sessions[0]["phase"] == "monitoring_performer"
+    assert sessions[0]["performer_stage"] == "implementing"
 
 
 # ---------------------------------------------------------------------------

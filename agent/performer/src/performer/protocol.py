@@ -68,6 +68,7 @@ class PerformerResponse(BaseModel):
     pr_node_id: str | None = None
     progress: str | None = None
     backend: str | None = None  # AGENT_BACKEND name returned on dispatch
+    model: str | None = None  # model override returned on dispatch (if configured)
     plan_path: str | None = None  # 020: path to committed architecture plan
     comments: list[dict] = Field(default_factory=list)  # 021: review comments [{file, line, body}]
     suggestions: list[str] = Field(default_factory=list)  # 021: non-blocking suggestions

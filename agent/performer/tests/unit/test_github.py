@@ -11,6 +11,7 @@ from performer.github import (
     get_check_runs,
     get_default_branch,
     get_existing_pull_request,
+    post_issue_comment,
     post_pull_request_review,
     resolve_pr_review_threads,
     summarise_check_runs,
@@ -475,6 +476,39 @@ class TestPostPullRequestReview:
         )
         assert result["id"] == 3
         assert result["state"] == "COMMENTED"
+
+
+class TestPostIssueComment:
+    _COMMENT_URL = "https://api.github.com/repos/org/repo/issues/89/comments"
+
+    @respx.mock
+    async def test_post_issue_comment_sends_body(self) -> None:
+        route = respx.post(self._COMMENT_URL).mock(
+            return_value=httpx.Response(201, json={"id": 123})
+        )
+        result = await post_issue_comment(
+            owner="org",
+            repo="repo",
+            issue_number=89,
+            body="QA Evidence",
+            token="tok",
+        )
+        assert result == {"id": 123}
+        import json as _json
+
+        payload = _json.loads(route.calls[0].request.content)
+        assert payload["body"] == "QA Evidence"
+
+    async def test_post_issue_comment_empty_token_raises_401(self) -> None:
+        with pytest.raises(GitHubAPIError) as exc_info:
+            await post_issue_comment(
+                owner="org",
+                repo="repo",
+                issue_number=89,
+                body="QA Evidence",
+                token="",
+            )
+        assert exc_info.value.status_code == 401
 
 
 class TestResolvePrReviewThreads:

@@ -239,6 +239,13 @@ class DashboardStore:
         active_sessions_raw = daemon.state.get("active_sessions") or {}
         active_session_count = len(active_sessions_raw)
         active_session_summaries = []
+        board_summary = self._build_board_summary(daemon.state.get("board_snapshot"))
+        last_poll_at_raw = daemon.state.get("last_poll_at")
+        last_poll_at = (
+            last_poll_at_raw.isoformat()
+            if isinstance(last_poll_at_raw, datetime)
+            else (str(last_poll_at_raw) if last_poll_at_raw else None)
+        )
         # Coerce performer_stage to "" when None / non-string before
         # stringifying — ``str(None)`` returns the literal "None" which
         # would then show up as a real stage label in the UI and break
@@ -262,6 +269,35 @@ class DashboardStore:
                     else None
                 ),
             })
+        # Single-session mode compatibility: when multi-card ``active_sessions``
+        # is empty but we're actively monitoring a performer, synthesize one
+        # summary row from top-level state so the dashboard doesn't show
+        # "No active performers" during in-flight work.
+        if not active_session_summaries and phase in {
+            "monitoring_agent",
+            "monitoring_performer",
+            "relay_feedback",
+        }:
+            _top_stage_raw = daemon.state.get("performer_stage")
+            _top_stage = _top_stage_raw if isinstance(_top_stage_raw, str) else ""
+            _top_dispatch = daemon.state.get("agent_dispatch_at")
+            _dispatch = daemon.state.get("agent_dispatch") or {}
+            _top_card_id = str(card_dict.get("id") or _dispatch.get("session_id") or "active")
+            _top_card_title = str(card_dict.get("title") or (snapshot.active_card_title if snapshot else "") or "")
+            active_session_summaries.append({
+                "card_id": _top_card_id,
+                "card_title": _top_card_title,
+                "phase": phase,
+                "performer_stage": _top_stage,
+                "card_tokens_total": daemon.state.get("card_tokens_total", 0),
+                "card_cost_estimate": daemon.state.get("card_cost_estimate", 0.0),
+                "agent_dispatch_at": (
+                    _top_dispatch.isoformat()
+                    if isinstance(_top_dispatch, datetime)
+                    else None
+                ),
+            })
+        active_session_count = len(active_session_summaries)
 
         return {
             "phase": phase,
@@ -311,6 +347,9 @@ class DashboardStore:
             "role_utilization": self._build_role_utilization(daemon),
             # 050: Active assignee filter for dashboard idle-state hint.
             "assignee_filter": getattr(daemon.state.get("config"), "assignee_filter", None),
+            # 053: Idle observability summary from board snapshot + poll timing.
+            "board_summary": board_summary,
+            "last_poll_at": last_poll_at,
             # 052: Backend transparency — live URL and session stats.
             "backend_ui_url": daemon.state.get("backend_ui_url"),
             "session_stats": self._serialise_session_stats(daemon.state.get("session_stats")),
@@ -345,6 +384,17 @@ class DashboardStore:
                 if stage:
                     queued[stage] = queued.get(stage, 0) + 1
         return slot_mgr.utilization(queued_by_stage=queued)
+
+    @staticmethod
+    def _build_board_summary(board_snapshot: Any) -> dict[str, int]:
+        """Derive stable board column counts from state.board_snapshot."""
+        snapshot = board_snapshot if isinstance(board_snapshot, dict) else {}
+        columns = ("TODO", "IN_PROGRESS", "IN_REVIEW", "DONE", "BLOCKED", "BACKLOG")
+        summary: dict[str, int] = {}
+        for column in columns:
+            value = snapshot.get(column)
+            summary[column] = len(value) if isinstance(value, list) else 0
+        return summary
 
 
 # ---------------------------------------------------------------------------
@@ -467,20 +517,37 @@ td { padding: 4px 8px; border-bottom: 1px solid #21262d; }
 }
 /* 049: Active-performer tiles */
 #active-performers { margin-bottom: 4px; }
-.ap-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
+.ap-tiles { display: grid; grid-template-columns: 1fr; gap: 10px; }
 .ap-tile { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 12px; transition: border-color .15s; }
 .ap-tile:hover { border-color: #58a6ff33; }
-.ap-tile-role { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: #8b949e; margin-bottom: 4px; display: flex; align-items: center; gap: 6px; }
-.ap-tile-title { font-size: 14px; font-weight: bold; color: #c9d1d9; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ap-tile-meta { font-size: 12px; color: #8b949e; display: flex; gap: 10px; flex-wrap: wrap; }
+.ap-tile-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.ap-tile-role { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: #8b949e; display: flex; align-items: center; gap: 6px; }
+.ap-tile-phase { font-size: 11px; color: #8b949e; background: #161b22; border: 1px solid #30363d; border-radius: 999px; padding: 2px 8px; }
+.ap-tile-title { font-size: 14px; font-weight: bold; color: #c9d1d9; margin-bottom: 8px; line-height: 1.35; word-break: break-word; }
+.ap-tile-meta { display: flex; gap: 8px; flex-wrap: wrap; }
+.ap-pill { display: inline-flex; align-items: center; gap: 4px; border: 1px solid #30363d; border-radius: 999px; padding: 2px 8px; font-size: 11px; color: #8b949e; background: #111827; }
+.ap-pill strong { color: #c9d1d9; font-weight: 600; }
 .ap-tile-elapsed { color: #58a6ff; }
-.ap-idle { color: #8b949e; padding: 12px; font-style: italic; text-align: center; }
-/* 049: Diagram reduction */
-#flow-chart { max-height: 25vh; overflow: hidden; cursor: pointer; position: relative; }
-#flow-chart.expanded { max-height: none; }
-#flow-chart-toggle { font-size: 11px; color: #58a6ff; cursor: pointer; margin-top: 4px; display: inline-block; }
-/* 049: Performers page */
+.ap-idle { background: #0d1117; border: 1px dashed #30363d; border-radius: 6px; padding: 12px; }
+.ap-idle-title { color: #c9d1d9; font-size: 13px; font-weight: bold; margin-bottom: 8px; }
+.ap-idle-rows { display: flex; flex-direction: column; gap: 8px; }
+.ap-idle-row { display: flex; gap: 8px; flex-wrap: wrap; }
+/* 053: Workflow card readability without expand/collapse controls */
+#flow-chart { max-height: none; overflow-x: auto; overflow-y: hidden; cursor: default; position: relative; }
+/* 053: Performers page list/detail drilldown */
 #performers-page-content table { table-layout: fixed; }
+#performers-page tbody tr.performers-row { cursor: pointer; }
+#performers-page tbody tr.performers-row:hover { background: #132035; }
+#performers-page tbody tr.performers-row.row-selected { background: #1b2940; }
+#performers-page tbody tr.performers-row:focus-visible { outline: 2px solid #58a6ff; outline-offset: -2px; }
+#performers-page-detail-view { margin-top: 12px; border-top: 1px solid #30363d; padding-top: 12px; }
+#performers-page-detail { font-size: 12px; line-height: 1.5; }
+#performers-page-back:focus-visible { outline: 2px solid #58a6ff; outline-offset: 2px; border-radius: 3px; }
+#performers-page .muted { color: #8b949e; }
+#performers-page .detail-badge { display: inline-block; margin-left: 8px; }
+#performers-page .detail-block { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 10px; margin-top: 10px; }
+#performers-page .detail-log { max-height: 160px; overflow-y: auto; font-family: monospace; font-size: 11px; }
+#performers-page .detail-list { margin: 6px 0 0 0; padding-left: 18px; }
 .role-status-badge { display: inline-block; padding: 1px 7px; border-radius: 3px; font-size: 11px; font-weight: bold; }
 .role-active { background: #1f4a1f; color: #3fb950; }
 .role-idle { background: #1e1e2e; color: #8b949e; }
@@ -504,11 +571,12 @@ td { padding: 4px 8px; border-bottom: 1px solid #21262d; }
 <div id="main-content">
 <!-- 049: Dashboard page -->
 <div id="dashboard-page">
-<div id="active-performers" class="card full" style="display:none">
+<main class="grid">
+
+<div id="active-performers" class="card" style="display:none">
   <h2>Active Performers</h2>
   <div id="active-performer-tiles" class="ap-tiles"></div>
 </div>
-<main class="grid">
 
 <div class="card">
   <h2>Phase</h2>
@@ -527,12 +595,12 @@ td { padding: 4px 8px; border-bottom: 1px solid #21262d; }
   </div>
 </div>
 
-<div class="card full">
+<div class="card">
   <h2>Workflow</h2>
   <div id="flow-chart"><span class="empty-state">Loading flowchart...</span></div>
 </div>
 
-<div id="performers-card" class="card full" style="display:none">
+<div id="performers-card" class="card" style="display:none">
   <!-- List view: one row per active performer -->
   <div id="perf-list-view">
     <h2>Performers</h2>
@@ -579,7 +647,7 @@ td { padding: 4px 8px; border-bottom: 1px solid #21262d; }
   <ul id="questions-list" style="padding-left:20px;line-height:1.8"></ul>
 </div>
 
-<div id="clarifications-card" class="card full" style="display:none">
+<div id="clarifications-card" class="card" style="display:none">
   <h2>Clarification History</h2>
   <div id="clarifications-list"></div>
 </div>
@@ -623,7 +691,7 @@ td { padding: 4px 8px; border-bottom: 1px solid #21262d; }
   <div id="subsystems-section"><span class="empty-state">Loading...</span></div>
 </div>
 
-<div class="card full">
+<div class="card">
   <h2>Recent Cycles</h2>
   <div id="history-section"><span class="empty-state">Loading...</span></div>
 </div>
@@ -641,10 +709,16 @@ td { padding: 4px 8px; border-bottom: 1px solid #21262d; }
 <div id="performers-page" style="display:none">
   <div id="performers-page-content">
     <h2 style="margin-bottom:12px">Performers</h2>
-    <table>
-      <thead><tr><th>Role</th><th>Status</th><th>Card</th><th>Active/Max</th></tr></thead>
-      <tbody id="performers-page-tbody"><tr><td colspan="4" class="empty-state">Loading...</td></tr></tbody>
-    </table>
+    <div id="performers-page-list-view">
+      <table>
+        <thead><tr><th>Role</th><th>Status</th><th>Card</th><th>Active/Max</th></tr></thead>
+        <tbody id="performers-page-tbody"><tr><td colspan="4" class="empty-state">Loading...</td></tr></tbody>
+      </table>
+    </div>
+    <div id="performers-page-detail-view" style="display:none">
+      <button id="performers-page-back" class="perf-back-btn" onclick="hidePerformerRoleDetail()">&#8592; Back to performers</button>
+      <div id="performers-page-detail"><span class="empty-state">Select a role to view details.</span></div>
+    </div>
   </div>
 </div>
 
@@ -660,7 +734,7 @@ td { padding: 4px 8px; border-bottom: 1px solid #21262d; }
 <div id="history-page" style="display:none">
   <div class="card">
     <h2>History</h2>
-    <p class="empty-state" style="padding:24px 0;text-align:center">&#128336; Coming soon</p>
+    <div id="history-page-section"><span class="empty-state">Loading...</span></div>
   </div>
 </div>
 
@@ -794,6 +868,31 @@ function fmtAge(iso) {
   var mins = Math.floor(secs / 60);
   if (mins < 60) return mins + 'm ' + (secs % 60) + 's';
   return Math.floor(mins / 60) + 'h ' + (mins % 60) + 'm';
+}
+
+function humanPhase(phase) {
+  return esc(String(phase || '').replace(/_/g, ' ').replace(/\\b\\w/g, function(c) { return c.toUpperCase(); }));
+}
+
+function renderCycleHistoryInto(container, cycleHistory) {
+  if (!container) return;
+  var history = Array.isArray(cycleHistory) ? cycleHistory : [];
+  if (history.length === 0) {
+    container.innerHTML = '<span class="empty-state">No cycles completed yet</span>';
+    return;
+  }
+  container.innerHTML = '<table><thead><tr>' +
+    '<th>Time</th><th>Phase</th><th>Duration</th><th>Outcome</th>' +
+    '</tr></thead><tbody>' +
+    history.map(function(e) {
+      return '<tr>' +
+        '<td>' + fmtTime(e.timestamp) + '</td>' +
+        '<td>' + humanPhase(e.phase) + '</td>' +
+        '<td>' + fmtDuration(e.duration_seconds) + '</td>' +
+        '<td><span class="badge badge-' + esc(e.outcome || 'success') + '">' + esc(e.outcome || 'success') + '</span></td>' +
+        '</tr>';
+    }).join('') +
+    '</tbody></table>';
 }
 
 function renderState(s) {
@@ -984,8 +1083,13 @@ function renderState(s) {
     a.textContent = s.project_name + ' Board';
     linkEl.appendChild(a);
   }
+  var cardTokensTotal = (s.card_tokens_total || 0);
+  if (!(cardTokensTotal > 0)) {
+    var fallbackTokens = derivePerformerTokenTotal(s);
+    if (fallbackTokens != null) cardTokensTotal = fallbackTokens;
+  }
   document.getElementById('card-tokens-total').textContent =
-    (s.card_tokens_total || 0).toLocaleString();
+    cardTokensTotal.toLocaleString();
   document.getElementById('card-cost-estimate').textContent =
     '$' + (s.card_cost_estimate || 0).toFixed(2);
 
@@ -1027,24 +1131,7 @@ function renderState(s) {
     if (!shouldDisable) fpMsg.textContent = '';
   }
 
-  // Cycle history
-  var histEl = document.getElementById('history-section');
-  if (!s.cycle_history || s.cycle_history.length === 0) {
-    histEl.innerHTML = '<span class="empty-state">No cycles completed yet</span>';
-  } else {
-    histEl.innerHTML = '<table><thead><tr>' +
-      '<th>Time</th><th>Phase</th><th>Duration</th><th>Outcome</th>' +
-      '</tr></thead><tbody>' +
-      s.cycle_history.map(function(e) {
-        return '<tr>' +
-          '<td>' + fmtTime(e.timestamp) + '</td>' +
-          '<td>' + esc(e.phase.replace(/_/g,' ').replace(/\\b\\w/g,function(c){return c.toUpperCase();})) + '</td>' +
-          '<td>' + fmtDuration(e.duration_seconds) + '</td>' +
-          '<td><span class="badge badge-' + e.outcome + '">' + e.outcome + '</span></td>' +
-          '</tr>';
-      }).join('') +
-      '</tbody></table>';
-  }
+  renderCycleHistoryInto(document.getElementById('history-section'), s.cycle_history);
 }
 
 function esc(s) {
@@ -1065,9 +1152,11 @@ var _perfEventCount = 0;
 var _perfAutoScroll = true;
 var _perfDetailOpen = false;  // true when the detail view is visible
 
-function showPerfList() {
+function showPerfList(clearPreference) {
   _perfDetailOpen = false;
-  sessionStorage.removeItem('perfDetailOpen');
+  if (clearPreference !== false) {
+    sessionStorage.removeItem('perfDetailOpen');
+  }
   document.getElementById('perf-list-view').style.display = '';
   document.getElementById('perf-detail-view').style.display = 'none';
 }
@@ -1077,6 +1166,45 @@ function showPerfDetail() {
   sessionStorage.setItem('perfDetailOpen', '1');
   document.getElementById('perf-list-view').style.display = 'none';
   document.getElementById('perf-detail-view').style.display = '';
+  // Render detail content immediately rather than waiting for the next SSE tick.
+  if (_lastState) updatePerformers(_lastState);
+}
+
+function parseTokenCount(text) {
+  var msg = String(text || '');
+  var tagged = msg.match(/([\\d,]+)\\s+tokens\\s+total/i);
+  if (tagged && tagged[1]) {
+    var taggedNum = parseInt(tagged[1].replace(/,/g, ''), 10);
+    if (!isNaN(taggedNum)) return taggedNum;
+  }
+  var generic = msg.match(/([\\d,]+)/);
+  if (generic && generic[1]) {
+    var genericNum = parseInt(generic[1].replace(/,/g, ''), 10);
+    if (!isNaN(genericNum)) return genericNum;
+  }
+  return null;
+}
+
+function derivePerformerTokenTotal(s) {
+  var m = s.performer_metrics || {};
+  if (typeof m.tokens_processed === 'number' && isFinite(m.tokens_processed) && m.tokens_processed >= 0) {
+    return Math.floor(m.tokens_processed);
+  }
+  var ss = s.session_stats || {};
+  if (typeof ss.total_tokens === 'number' && isFinite(ss.total_tokens) && ss.total_tokens >= 0) {
+    return Math.floor(ss.total_tokens);
+  }
+  var events = Array.isArray(s.performer_events) ? s.performer_events : [];
+  for (var i = events.length - 1; i >= 0; i--) {
+    var ev = events[i] || {};
+    if ((ev.type || '') !== 'cost') continue;
+    var parsed = parseTokenCount(ev.text || '');
+    if (parsed != null) return parsed;
+  }
+  if (typeof s.card_tokens_total === 'number' && isFinite(s.card_tokens_total) && s.card_tokens_total > 0) {
+    return Math.floor(s.card_tokens_total);
+  }
+  return null;
 }
 
 document.getElementById('perf-log').addEventListener('scroll', function() {
@@ -1137,7 +1265,9 @@ function updatePerformers(s) {
 
   if (!isActive && events.length === 0 && logs.length === 0) {
     card.style.display = 'none';
-    showPerfList();
+    // Keep the user's prior detail/list preference across idle gaps so the
+    // panel can restore itself on the next performer session.
+    showPerfList(false);
     return;
   }
   card.style.display = '';
@@ -1234,11 +1364,12 @@ function updatePerformers(s) {
 
   // Metrics
   var m = s.performer_metrics || {};
+  var tokenTotal = derivePerformerTokenTotal(s);
   document.getElementById('perf-mem').textContent = fmtBytes(m.memory_bytes);
   document.getElementById('perf-cpu').textContent =
     m.cpu_percent != null ? m.cpu_percent.toFixed(1) + '%' : '—';
   document.getElementById('perf-tokens').textContent =
-    m.tokens_processed != null ? m.tokens_processed.toLocaleString() : '—';
+    tokenTotal != null ? tokenTotal.toLocaleString() : '—';
   document.getElementById('perf-pid').textContent = m.pid != null ? String(m.pid) : '—';
 
   // Append only new events (incremental)
@@ -1265,6 +1396,8 @@ function updatePerformers(s) {
 
 // Refresh session age counter every 10s while monitoring_agent
 var _lastState = null;
+var _performersSelectedRole = null;
+var _performersDetailOpen = false;
 
 // 049: Client-side router
 function showPage(pageId) {
@@ -1297,6 +1430,7 @@ function router() {
     loadPersonasPage();
   } else if (path === '/history') {
     showPage('history-page');
+    if (_lastState) renderHistoryPage(_lastState);
   } else {
     showPage('dashboard-page');
     if (_lastState) renderDashboardExtras(_lastState);
@@ -1331,11 +1465,32 @@ function renderActivePerformers(s) {
   if (activeSessions.length === 0) {
     section.style.display = '';
     var phase = s.phase_label || s.phase || 'idle';
-    // Use fields that are actually in the snapshot
-    var cycleCount = s.cycles_completed != null ? ' &nbsp;&#183;&nbsp; Cycles: ' + s.cycles_completed : '';
-    var activeCardCol = s.active_card_column ? ' &nbsp;&#183;&nbsp; Board: ' + esc(s.active_card_column) : '';
-    var filterHint = s.assignee_filter ? ' &nbsp;&#183;&nbsp; Filter: ' + esc(s.assignee_filter) : '';
-    container.innerHTML = '<div class="ap-idle">No active performers &nbsp;&#183;&nbsp; Phase: <strong>' + esc(phase) + '</strong>' + cycleCount + activeCardCol + filterHint + '</div>';
+    var cycleCount = s.cycles_completed != null ? s.cycles_completed : '—';
+    var summary = (s.board_summary && typeof s.board_summary === 'object') ? s.board_summary : {};
+    function count(key) {
+      var value = summary[key];
+      return Number.isFinite(value) ? value : 0;
+    }
+    var pollHint = s.last_poll_at ? esc(fmtTime(s.last_poll_at)) : '—';
+    var filterHint = s.assignee_filter ? esc(s.assignee_filter) : '';
+    container.innerHTML =
+      '<div class="ap-idle">' +
+        '<div class="ap-idle-title">No active performers</div>' +
+        '<div class="ap-idle-rows">' +
+          '<div class="ap-idle-row">' +
+            '<span class="ap-pill">Phase: <strong>' + esc(phase) + '</strong></span>' +
+            '<span class="ap-pill">Cycles: <strong>' + esc(String(cycleCount)) + '</strong></span>' +
+            '<span class="ap-pill">Last poll: <strong>' + pollHint + '</strong></span>' +
+            (filterHint ? '<span class="ap-pill">Filter: <strong>' + filterHint + '</strong></span>' : '') +
+          '</div>' +
+          '<div class="ap-idle-row">' +
+            '<span class="ap-pill">TODO <strong>' + String(count('TODO')) + '</strong></span>' +
+            '<span class="ap-pill">IN_PROGRESS <strong>' + String(count('IN_PROGRESS')) + '</strong></span>' +
+            '<span class="ap-pill">IN_REVIEW <strong>' + String(count('IN_REVIEW')) + '</strong></span>' +
+            '<span class="ap-pill">DONE <strong>' + String(count('DONE')) + '</strong></span>' +
+          '</div>' +
+        '</div>' +
+      '</div>';
     return;
   }
   section.style.display = '';
@@ -1345,10 +1500,18 @@ function renderActivePerformers(s) {
     var title = sess.card_title || sess.card_id || '—';
     var dispatchAt = sess.agent_dispatch_at || s.agent_dispatch_at;
     var elapsed = dispatchAt ? (fmtAge(dispatchAt) || '—') : '—';
+    var phaseLabel = (sess.phase || '').replace(/_/g, ' ').toUpperCase();
+    var cardId = sess.card_id || '—';
     html += '<div class="ap-tile">' +
-      '<div class="ap-tile-role"><span class="perf-dot perf-running"></span>' + esc(stage) + '</div>' +
+      '<div class="ap-tile-header">' +
+        '<div class="ap-tile-role"><span class="perf-dot perf-running"></span>' + esc(stage) + '</div>' +
+        '<div class="ap-tile-phase">' + esc(phaseLabel || 'ACTIVE') + '</div>' +
+      '</div>' +
       '<div class="ap-tile-title">' + esc(title) + '</div>' +
-      '<div class="ap-tile-meta"><span class="ap-tile-elapsed">&#9201; ' + esc(elapsed) + '</span></div>' +
+      '<div class="ap-tile-meta">' +
+        '<span class="ap-pill ap-tile-elapsed">&#9201; <strong>' + esc(elapsed) + '</strong></span>' +
+        '<span class="ap-pill">Card: <strong>' + esc(cardId) + '</strong></span>' +
+      '</div>' +
       '</div>';
   });
   container.innerHTML = html;
@@ -1358,15 +1521,35 @@ function renderDashboardExtras(s) {
   renderActivePerformers(s);
 }
 
-// 049: Performers page
+function hidePerformerRoleDetail() {
+  _performersDetailOpen = false;
+  var listView = document.getElementById('performers-page-list-view');
+  var detailView = document.getElementById('performers-page-detail-view');
+  if (listView) listView.style.display = '';
+  if (detailView) detailView.style.display = 'none';
+}
+
+function showPerformerRoleDetail(role) {
+  _performersSelectedRole = role;
+  _performersDetailOpen = true;
+  if (_lastState) renderPerformersPage(_lastState);
+}
+
+// 049 + 053: Performers page list + drilldown detail
 function renderPerformersPage(s) {
   var tbody = document.getElementById('performers-page-tbody');
   if (!tbody) return;
   var util = s.role_utilization || [];
+  var listView = document.getElementById('performers-page-list-view');
+  var detailView = document.getElementById('performers-page-detail-view');
+  var detailEl = document.getElementById('performers-page-detail');
   if (util.length === 0) {
     tbody.innerHTML = '<tr><td colspan="4" class="empty-state">No performer roles configured</td></tr>';
+    if (listView) listView.style.display = '';
+    if (detailView) detailView.style.display = 'none';
     return;
   }
+
   // active_sessions is a list of {card_id, card_title, phase, performer_stage, ...}
   var sessions = Array.isArray(s.active_sessions) ? s.active_sessions : [];
   var activeByStage = {};
@@ -1375,17 +1558,108 @@ function renderPerformersPage(s) {
     var phase = sess.phase || '';
     if ((phase === 'monitoring_performer' || phase === 'monitoring_agent') && stage) {
       activeByStage[stage] = activeByStage[stage] || [];
-      activeByStage[stage].push((sess.card_title || sess.card_id || '').substring(0,40));
+      activeByStage[stage].push(sess);
     }
   });
+  var utilByRole = {};
+  util.forEach(function(r) { utilByRole[r.role] = r; });
+  if (_performersSelectedRole == null && util.length > 0) {
+    _performersSelectedRole = util[0].role;
+  }
+
   tbody.innerHTML = util.map(function(r) {
     var isActive = r.active > 0;
+    var isSelected = _performersDetailOpen && _performersSelectedRole === r.role;
     var badge = '<span class="role-status-badge ' + (isActive ? 'role-active' : 'role-idle') + '">' + (isActive ? 'active' : 'idle') + '</span>';
-    var cards = (activeByStage[r.role] || []).map(esc).join('<br>') || '<span class="empty-state">—</span>';
+    var cards = (activeByStage[r.role] || []).map(function(sess) {
+      return esc((sess.card_title || sess.card_id || '').substring(0, 40));
+    }).join('<br>') || '<span class="empty-state">—</span>';
     var utilStr = r.max > 1 ? r.active + ' / ' + r.max : (isActive ? '1 / 1' : '0 / 1');
     var queued = r.queued > 0 ? ' <span style="color:#d29922">(+' + r.queued + ' queued)</span>' : '';
-    return '<tr><td style="font-weight:bold">' + esc(r.role) + '</td><td>' + badge + '</td><td style="font-size:12px">' + cards + '</td><td>' + utilStr + queued + '</td></tr>';
+    return '<tr class="performers-row' + (isSelected ? ' row-selected' : '') + '" data-role="' + esc(r.role) + '" tabindex="0" role="button" aria-label="Open details for ' + esc(r.role) + '">' +
+      '<td style="font-weight:bold">' + esc(r.role) + '</td><td>' + badge + '</td><td style="font-size:12px">' + cards + '</td><td>' + utilStr + queued + '</td></tr>';
   }).join('');
+
+  tbody.querySelectorAll('tr[data-role]').forEach(function(row) {
+    row.addEventListener('click', function() {
+      var role = row.getAttribute('data-role') || '';
+      showPerformerRoleDetail(role);
+    });
+    row.addEventListener('keydown', function(event) {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        var role = row.getAttribute('data-role') || '';
+        showPerformerRoleDetail(role);
+      }
+    });
+  });
+
+  if (!_performersDetailOpen || !_performersSelectedRole) {
+    if (listView) listView.style.display = '';
+    if (detailView) detailView.style.display = 'none';
+    return;
+  }
+  if (!listView || !detailView || !detailEl) return;
+
+  var selectedRole = _performersSelectedRole;
+  var row = utilByRole[selectedRole] || {role: selectedRole, active: 0, max: 0, queued: 0};
+  var selectedSessions = activeByStage[selectedRole] || [];
+  var isSelectedRoleActive = selectedSessions.length > 0;
+  var statusBadge = '<span class="role-status-badge ' + (isSelectedRoleActive ? 'role-active' : 'role-idle') + ' detail-badge">' + (isSelectedRoleActive ? 'active' : 'idle') + '</span>';
+  var roleCardsHtml = selectedSessions.length
+    ? '<ul class="detail-list">' + selectedSessions.map(function(sess) {
+      return '<li>' + esc(sess.card_title || sess.card_id || '—') + '</li>';
+    }).join('') + '</ul>'
+    : '<div class="muted">No active session currently running for this role.</div>';
+  var sessionStats = s.session_stats;
+  var statsLine = sessionStats
+    ? esc((sessionStats.title || '') + (sessionStats.title ? ' · ' : '') + sessionStats.files_changed + ' files · +' + sessionStats.lines_added + '/-' + sessionStats.lines_removed + ' lines')
+    : 'No session stats available yet.';
+  var metrics = s.performer_metrics || {};
+  var tokenTotal = derivePerformerTokenTotal(s);
+  var metricsLine = (metrics && metrics.pid != null)
+    ? (
+      'PID ' + String(metrics.pid) +
+      ' · CPU ' + esc(metrics.cpu_percent != null ? metrics.cpu_percent.toFixed(1) + '%' : '—') +
+      ' · Memory ' + esc(fmtBytes(metrics.memory_bytes)) +
+      ' · Tokens ' + esc(tokenTotal != null ? tokenTotal.toLocaleString() : '—')
+    )
+    : 'No live metrics available yet.';
+  var events = Array.isArray(s.performer_events) ? s.performer_events.slice(-12) : [];
+  var eventsHtml = events.length
+    ? '<ul class="detail-list">' + events.map(function(ev) {
+      return '<li><strong>' + esc(ev.type || 'event') + ':</strong> ' + esc(ev.text || '') + '</li>';
+    }).join('') + '</ul>'
+    : '<div class="muted">No live events yet.</div>';
+  var logs = Array.isArray(s.performer_logs) ? s.performer_logs.slice(-20) : [];
+  var logsHtml = logs.length
+    ? '<div class="detail-log">' + logs.map(function(line) { return '<div>' + esc(line) + '</div>'; }).join('') + '</div>'
+    : '<div class="muted">No stderr logs yet.</div>';
+
+  var backendLine = esc(s.performer_backend || 'performer');
+  if (s.backend_ui_url) {
+    try {
+      var parsed = new URL(s.backend_ui_url);
+      if (parsed.protocol === 'http:' && (parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost')) {
+        backendLine += ' &middot; <a href="' + esc(parsed.href) + '" target="_blank" rel="noopener noreferrer">Open in browser &#8599;</a>';
+      }
+    } catch (_ignore) {}
+  }
+
+  detailEl.innerHTML =
+    '<div><strong>' + humanPhase(selectedRole) + '</strong>' + statusBadge + '</div>' +
+    '<div class="muted" style="margin-top:4px">Active/Max: ' + String(row.active != null ? row.active : 0) + ' / ' + String(row.max != null ? row.max : 0) + ' &middot; Queued: ' + String(row.queued != null ? row.queued : 0) + '</div>' +
+    '<div class="detail-block"><strong>Card Context</strong>' + roleCardsHtml + '</div>' +
+    '<div class="detail-block"><strong>Session</strong><div class="muted" style="margin-top:4px">Session: ' + esc(s.agent_session_id || '—') + ' &middot; Uptime: ' + esc(fmtAge(s.agent_dispatch_at) || '—') + '</div><div class="muted" style="margin-top:4px">' + backendLine + '</div><div class="muted" style="margin-top:4px">' + statsLine + '</div></div>' +
+    '<div class="detail-block"><strong>Metrics</strong><div class="muted" style="margin-top:4px">' + metricsLine + '</div></div>' +
+    '<div class="detail-block"><strong>Live Events</strong>' + eventsHtml + '</div>' +
+    '<div class="detail-block"><strong>Process Logs (stderr)</strong>' + logsHtml + '</div>';
+  listView.style.display = 'none';
+  detailView.style.display = '';
+}
+
+function renderHistoryPage(s) {
+  renderCycleHistoryInto(document.getElementById('history-page-section'), s.cycle_history);
 }
 
 // 049: Personas page
@@ -1585,6 +1859,7 @@ es.addEventListener('state_update', function(e) {
     // 049: re-render current page with new state
     var path = location.pathname;
     if (path === '/performers') renderPerformersPage(_lastState);
+    else if (path === '/history') renderHistoryPage(_lastState);
     else renderDashboardExtras(_lastState);
   } catch(err) { console.error('parse error', err); }
 });
@@ -1601,20 +1876,8 @@ es.onopen = function() {
   if (dot) dot.classList.remove('disconnected');
 };
 
-// 049: Add flow-chart expand toggle
 document.addEventListener('DOMContentLoaded', function() {
   router(); // initial route
-  var fc = document.getElementById('flow-chart');
-  if (fc) {
-    var toggle = document.createElement('span');
-    toggle.id = 'flow-chart-toggle';
-    toggle.textContent = 'expand diagram';
-    toggle.onclick = function() {
-      fc.classList.toggle('expanded');
-      toggle.textContent = fc.classList.contains('expanded') ? 'collapse diagram' : 'expand diagram';
-    };
-    fc.parentNode && fc.parentNode.insertBefore(toggle, fc.nextSibling);
-  }
 });
 </script>
 </body>

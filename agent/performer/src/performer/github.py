@@ -268,6 +268,32 @@ async def post_pr_comment(
     return resp.json()
 
 
+async def post_issue_comment(
+    owner: str,
+    repo: str,
+    issue_number: int,
+    body: str,
+    token: str,
+) -> dict:  # type: ignore[type-arg]
+    """Post a general comment to a GitHub issue card.
+
+    Uses the same issues comments API endpoint as PR comments:
+    POST /repos/{owner}/{repo}/issues/{issue_number}/comments
+    """
+    _require_token(token, "post_issue_comment")
+    url = f"{_github_api()}/repos/{owner}/{repo}/issues/{issue_number}/comments"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+    }
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(url, headers=headers, json={"body": body})
+    if not resp.is_success:
+        raise GitHubAPIError(resp.status_code, resp.text)
+    log.info("issue comment posted", owner=owner, repo=repo, issue_number=issue_number)
+    return resp.json()
+
+
 async def resolve_pr_review_threads(
     owner: str,
     repo: str,
@@ -395,5 +421,4 @@ async def resolve_pr_review_threads(
             pr_number=pr_number, failed=failed,
         )
     return resolved
-
 

@@ -1,7 +1,7 @@
-"""OpenCodeAdapter — integrates opencode via its HTTP server API.
+"""OpenCodeAdapter — integrates OpenCode-compatible CLIs via HTTP server API.
 
 Lifecycle:
-    start()          → launches ``opencode serve``, waits for /global/health,
+    start()          → launches ``<executable> serve``, waits for /global/health,
                        creates a session, sends initial task via prompt_async,
                        starts background SSE event reader
     get_status()     → returns current BackendStatus (non-blocking)
@@ -29,7 +29,19 @@ log = structlog.get_logger(__name__)
 
 _MAX_TEXT = 200  # max chars kept in BackendEvent.text
 _READY_POLL_INTERVAL = 0.2  # seconds between health-check polls
-_READY_TIMEOUT = 30.0  # seconds to wait for opencode serve to be ready
+_READY_TIMEOUT = 30.0  # seconds to wait for backend serve process to be ready
+_JSON_ONLY_ROLES = {
+    "assessing",
+    "assessor",
+    "reviewing",
+    "reviewer",
+    "closing_review",
+    "closer",
+    "security",
+    "qa",
+    "documenting",
+    "tech_writer",
+}
 
 
 def _find_free_port() -> int:
@@ -40,13 +52,20 @@ def _find_free_port() -> int:
 
 
 class OpenCodeAdapter:
-    """Backend adapter that drives ``opencode serve`` over its HTTP API.
+    """Backend adapter that drives an OpenCode-compatible ``serve`` HTTP API.
 
     The adapter starts a headless opencode server, creates a session,
     and streams events from the per-instance SSE endpoint.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        executable: str = "opencode",
+        adapter_name: str | None = None,
+    ) -> None:
+        self._executable = executable
+        self._adapter_name = adapter_name or executable
         self._proc: asyncio.subprocess.Process | None = None
         self._port: int | None = None
         self._session_id: str | None = None
@@ -63,13 +82,13 @@ class OpenCodeAdapter:
     # ------------------------------------------------------------------
 
     async def start(self, stand: Stand, score: Score, *, model: str | None = None) -> None:
-        """Launch ``opencode serve`` in *stand.path* and send the initial task."""
+        """Launch ``<executable> serve`` in *stand.path* and send the initial task."""
         port = _find_free_port()
         self._port = port
         self._workspace_dir = str(stand.path)
 
         self._proc = await asyncio.create_subprocess_exec(
-            "opencode", "serve",
+            self._executable, "serve",
             "--port", str(port),
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
@@ -81,7 +100,7 @@ class OpenCodeAdapter:
 
         # Drain server logs in background (prevents pipe buffer fill)
         self._log_drain_task = asyncio.create_task(
-            self._drain_logs(), name="opencode-log-drain"
+            self._drain_logs(), name=f"{self._adapter_name}-log-drain"
         )
 
         # Wait for HTTP server to be accepting requests
@@ -98,7 +117,12 @@ class OpenCodeAdapter:
         resp = await self._client.post("/session")
         resp.raise_for_status()
         self._session_id = resp.json()["id"]
-        log.info("opencode session created", session_id=self._session_id, port=port)
+        log.info(
+            "backend.session_created",
+            backend=self._adapter_name,
+            session_id=self._session_id,
+            port=port,
+        )
 
         # Send initial task message (fire-and-forget — server processes asynchronously)
         task_text = _build_task_prompt(score)
@@ -106,11 +130,15 @@ class OpenCodeAdapter:
             f"/session/{self._session_id}/prompt_async",
             json={"parts": [{"type": "text", "text": task_text}]},
         )
-        log.info("opencode task dispatched", session_id=self._session_id)
+        log.info(
+            "backend.task_dispatched",
+            backend=self._adapter_name,
+            session_id=self._session_id,
+        )
 
         # Start SSE event reader
         self._reader_task = asyncio.create_task(
-            self._event_reader_loop(), name="opencode-event-reader"
+            self._event_reader_loop(), name=f"{self._adapter_name}-event-reader"
         )
 
     def get_status(self) -> BackendStatus:
@@ -136,7 +164,7 @@ class OpenCodeAdapter:
         # Restart the SSE reader if it exited after the previous turn completed
         if self._reader_task is None or self._reader_task.done():
             self._reader_task = asyncio.create_task(
-                self._event_reader_loop(), name="opencode-event-reader"
+                self._event_reader_loop(), name=f"{self._adapter_name}-event-reader"
             )
 
     async def stop(self) -> None:
@@ -172,7 +200,7 @@ class OpenCodeAdapter:
                 await asyncio.wait_for(self._proc.wait(), timeout=5.0)
             except asyncio.TimeoutError:
                 pass
-        log.info("opencode serve stopped")
+        log.info("backend.serve_stopped", backend=self._adapter_name)
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -186,12 +214,14 @@ class OpenCodeAdapter:
                 try:
                     resp = await probe.get(f"http://127.0.0.1:{port}/global/health")
                     if resp.status_code == 200:
-                        log.debug("opencode serve ready", port=port)
+                        log.debug("backend.serve_ready", backend=self._adapter_name, port=port)
                         return
                 except Exception:
                     pass
                 await asyncio.sleep(_READY_POLL_INTERVAL)
-        raise RuntimeError(f"opencode serve did not become ready within {_READY_TIMEOUT}s")
+        raise RuntimeError(
+            f"{self._adapter_name} serve did not become ready within {_READY_TIMEOUT}s"
+        )
 
     async def _drain_logs(self) -> None:
         """Read opencode serve stdout continuously, buffering for the dashboard."""
@@ -205,7 +235,7 @@ class OpenCodeAdapter:
         except asyncio.CancelledError:
             pass
         except Exception as exc:
-            log.debug("opencode log drain error", error=str(exc))
+            log.debug("backend.log_drain_error", backend=self._adapter_name, error=str(exc))
 
     async def _event_reader_loop(self) -> None:
         """Stream SSE events from /event and update internal status."""
@@ -222,10 +252,15 @@ class OpenCodeAdapter:
                     try:
                         event = json.loads(data_str)
                     except json.JSONDecodeError:
-                        log.debug("opencode non-json SSE data", raw=data_str[:120])
+                        log.debug(
+                            "backend.non_json_sse_data",
+                            backend=self._adapter_name,
+                            raw=data_str[:120],
+                        )
                         continue
                     log.debug(
-                        "opencode event",
+                        "backend.event",
+                        backend=self._adapter_name,
                         type=event.get("type", event.get("payload", {}).get("type", "?")),
                     )
                     self._handle_event(event)
@@ -368,10 +403,24 @@ def _build_task_prompt(score: Score) -> str:
             elif isinstance(item, str):
                 parts.append(f"- {item}")
 
-    parts += [
-        "",
-        "---",
-        "Complete the task above. Commit your changes with a clear, descriptive commit message.",
-        "Do not push or open a pull request — this will be handled automatically after you finish.",
-    ]
+    parts += ["", "---"]
+    if score.role in _JSON_ONLY_ROLES:
+        parts += [
+            "Return ONLY a valid JSON object for your role contract.",
+            "Do not include markdown, prose, or code fences.",
+        ]
+        if score.role == "qa":
+            parts += [
+                "QA contract reminder: include a non-empty `verification_steps` array.",
+                "For bug fixes, label steps as verification (not reproduction) unless explicitly asked.",
+                "Set `visual_validation_required=true` for UI/UX/visual changes and capture at least one artifact in `visual_evidence` for those tasks.",
+                "Include `visual_evidence` entries when screenshots/GIFs/videos/artifacts are available.",
+                "Include exact capture attempts in `visual_capture_commands` (commands/scripts you ran).",
+                "If visual evidence cannot be captured, include `demo_setup_steps` and `visual_capture_blockers` with concrete details.",
+            ]
+    else:
+        parts += [
+            "Complete the task above. Commit your changes with a clear, descriptive commit message.",
+            "Do not push or open a pull request — this will be handled automatically after you finish.",
+        ]
     return "\n".join(parts)

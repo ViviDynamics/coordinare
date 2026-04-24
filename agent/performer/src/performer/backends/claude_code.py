@@ -28,6 +28,18 @@ from performer.models import BackendEvent, BackendEventType, Score, Stand
 log = structlog.get_logger(__name__)
 
 _MAX_TEXT = 200
+_JSON_ONLY_ROLES = {
+    "assessing",
+    "assessor",
+    "reviewing",
+    "reviewer",
+    "closing_review",
+    "closer",
+    "security",
+    "qa",
+    "documenting",
+    "tech_writer",
+}
 
 
 class ClaudeCodeBackend:
@@ -301,10 +313,24 @@ def _build_task_prompt(score: Score) -> str:
             elif isinstance(item, str):
                 parts.append(f"- {item}")
 
-    parts += [
-        "",
-        "---",
-        "Complete the task above. Commit your changes with a clear, descriptive commit message.",
-        "Do not push or open a pull request — this will be handled automatically after you finish.",
-    ]
+    parts += ["", "---"]
+    if score.role in _JSON_ONLY_ROLES:
+        parts += [
+            "Return ONLY a valid JSON object for your role contract.",
+            "Do not include markdown, prose, or code fences.",
+        ]
+        if score.role == "qa":
+            parts += [
+                "QA contract reminder: include a non-empty `verification_steps` array.",
+                "For bug fixes, label steps as verification (not reproduction) unless explicitly asked.",
+                "Set `visual_validation_required=true` for UI/UX/visual changes and capture at least one artifact in `visual_evidence` for those tasks.",
+                "Include `visual_evidence` entries when screenshots/GIFs/videos/artifacts are available.",
+                "Include exact capture attempts in `visual_capture_commands` (commands/scripts you ran).",
+                "If visual evidence cannot be captured, include `demo_setup_steps` and `visual_capture_blockers` with concrete details.",
+            ]
+    else:
+        parts += [
+            "Complete the task above. Commit your changes with a clear, descriptive commit message.",
+            "Do not push or open a pull request — this will be handled automatically after you finish.",
+        ]
     return "\n".join(parts)

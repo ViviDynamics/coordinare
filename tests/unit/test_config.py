@@ -905,6 +905,7 @@ class TestStaleBranchCleanupConfig:
         cfg = self._base_cfg()
         assert cfg.stale_branch_cleanup is True
         assert cfg.branch_collision_strategy == BranchCollisionStrategy.delete
+        assert cfg.max_closed_pr_attempts_per_issue == 0
 
     def test_stale_branch_cleanup_false_disables_feature(self) -> None:
         cfg = self._base_cfg(stale_branch_cleanup=False)
@@ -913,6 +914,10 @@ class TestStaleBranchCleanupConfig:
     def test_branch_collision_strategy_suffix_parses_as_enum(self) -> None:
         cfg = self._base_cfg(branch_collision_strategy="suffix")
         assert cfg.branch_collision_strategy == BranchCollisionStrategy.suffix
+
+    def test_closed_pr_attempt_limit_parses(self) -> None:
+        cfg = self._base_cfg(max_closed_pr_attempts_per_issue=3)
+        assert cfg.max_closed_pr_attempts_per_issue == 3
 
     def test_env_var_override_disables_cleanup(self, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
         monkeypatch.setenv("COORDINARE_STALE_BRANCH_CLEANUP", "false")

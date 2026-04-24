@@ -503,6 +503,11 @@ class ProjectConfiguration(BaseSettings):
     stale_branch_cleanup: bool = True
     branch_collision_strategy: BranchCollisionStrategy = BranchCollisionStrategy.delete
 
+    # 053 — PR churn guard
+    # Maximum number of CLOSED (unmerged) PRs linked to a card's issue before
+    # coordinare blocks fresh implementer dispatches. 0 disables this guard.
+    max_closed_pr_attempts_per_issue: int = Field(default=0, ge=0, le=100)
+
     @classmethod
     def settings_customise_sources(
         cls,
@@ -620,5 +625,4 @@ class ProjectConfiguration(BaseSettings):
             msg = "human_reviewers must contain at least one entry"
             raise ValueError(msg)
         return value
-
 

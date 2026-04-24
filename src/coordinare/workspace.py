@@ -375,6 +375,35 @@ class WorkspaceManager:
         if not await self._github_service.branch_exists(branch):
             return branch
 
+        # Preserve in-flight branches so stage transitions keep prior commits
+        # and don't tear down active PRs by deleting their head branch.
+        card_status = str(card.get("status", "") or "").upper()
+        if card_status and card_status not in {"TODO", "BACKLOG"}:
+            logger.info(
+                "workspace.branch_preserved_in_flight",
+                branch=branch,
+                card_id=card_id,
+                status=card_status,
+            )
+            return branch
+
+        if hasattr(self._github_service, "branch_has_open_pr"):
+            open_pr_state = await self._github_service.branch_has_open_pr(branch)
+            if open_pr_state is True:
+                logger.info(
+                    "workspace.branch_preserved_open_pr",
+                    branch=branch,
+                    card_id=card_id,
+                )
+                return branch
+            if open_pr_state is None:
+                logger.warning(
+                    "workspace.branch_open_pr_state_unknown_preserved",
+                    branch=branch,
+                    card_id=card_id,
+                )
+                return branch
+
         if strategy == BranchCollisionStrategy.suffix:
             for i in range(2, 10):
                 candidate = f"{branch}-{i}"

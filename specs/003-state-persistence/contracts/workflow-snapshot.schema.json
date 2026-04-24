@@ -101,6 +101,17 @@
       "description": "Active card acceptance criteria parsed from the issue body. Persisted so restart-from-snapshot doesn't dispatch with an empty list. (045)",
       "default": []
     },
+    "performer_stage": {
+      "type": ["string", "null"],
+      "description": "Current lifecycle stage (for example: assessing, architecting, implementing). Persisted so daemon restarts resume at the active performer role instead of restarting lifecycle from stage 1.",
+      "default": null
+    },
+    "lifecycle_sequence": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Configured ordered performer lifecycle for the active card. Persisted with performer_stage so restart resumes the same multi-role workflow path.",
+      "default": []
+    },
     "card_clarifications": {
       "type": "array",
       "items": {

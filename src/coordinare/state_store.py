@@ -60,6 +60,10 @@ class WorkflowSnapshot(BaseModel):
     active_card_issue_url: str | None = None
     active_card_description: str | None = None
     active_card_acceptance_criteria: list[str] = Field(default_factory=list)
+    # 053: Preserve lifecycle position across daemon restarts so an in-flight
+    # card does not restart from stage 1 (e.g., assessing) every time.
+    performer_stage: str | None = None
+    lifecycle_sequence: list[str] = Field(default_factory=list)
     last_blocked_notified_at: datetime | None = None
     lifecycle_completed_at: datetime | None = None
     processed_review_ids: list[str] = Field(default_factory=list)  # stored as list, used as set

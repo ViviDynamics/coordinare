@@ -21,11 +21,33 @@ log = structlog.get_logger(__name__)
 # Matches "Authorization: Basic <token>" or "Authorization: Bearer <token>"
 # in git stderr output so credentials are never surfaced in error messages.
 _AUTH_HEADER_RE = re.compile(r"Authorization:\s+\S+\s+\S+", re.IGNORECASE)
+_WORKFLOW_PERMISSION_MARKER = "refusing to allow a github app to create or update workflow"
+_WORKFLOW_PATH_RE = re.compile(r"workflow `([^`]+)`", re.IGNORECASE)
 
 
 def _redact_auth_headers(text: str) -> str:
     """Replace any Authorization header values in *text* with a placeholder."""
     return _AUTH_HEADER_RE.sub("Authorization: <redacted>", text)
+
+
+def _summarise_git_push_error(stderr: str) -> str:
+    """Return a concise, actionable push error message.
+
+    Git can emit extremely verbose HTTP/TLS traces on failures.  For known
+    permission failures we collapse that output into a short remediation hint
+    so coordinare can route/retry cleanly without flooding dashboard/Slack logs.
+    """
+    text = (stderr or "").strip()
+    lower = text.lower()
+    if _WORKFLOW_PERMISSION_MARKER in lower:
+        match = _WORKFLOW_PATH_RE.search(text)
+        workflow_path = match.group(1) if match else ".github/workflows/*"
+        return (
+            f"Push rejected: attempted to modify workflow file `{workflow_path}` "
+            "but the GitHub App token lacks `workflows` permission. Revert "
+            "workflow-file changes and retry, or grant the app workflows permission."
+        )
+    return text
 
 
 class WorkspaceSetupError(RuntimeError):
@@ -239,7 +261,9 @@ async def push_branch(stand: Stand, score: Score) -> None:
         except OSError as exc:
             raise WorkspaceSetupError(f"git force-push failed: {exc}") from exc
         if returncode != 0:
-            raise WorkspaceSetupError(f"git push failed (exit {returncode}): {err}")
+            raise WorkspaceSetupError(
+                f"git push failed (exit {returncode}): {_summarise_git_push_error(err)}",
+            )
 
     log.info("pushed branch", branch=stand.branch, remote_url=remote_url)
 
@@ -325,7 +349,9 @@ async def commit_file(stand: Stand, path: str, content: str, message: str) -> No
         cwd=stand.path, env=env,
     )
     if returncode != 0:
-        raise WorkspaceSetupError(f"git push failed (exit {returncode}): {stderr}")
+        raise WorkspaceSetupError(
+            f"git push failed (exit {returncode}): {_summarise_git_push_error(stderr)}",
+        )
 
     log.info("commit_file.committed", path=path, branch=stand.branch)
 
@@ -405,7 +431,9 @@ async def commit_files(
         cwd=stand.path, env=env,
     )
     if returncode != 0:
-        raise WorkspaceSetupError(f"git push (batch) failed (exit {returncode}): {stderr}")
+        raise WorkspaceSetupError(
+            f"git push (batch) failed (exit {returncode}): {_summarise_git_push_error(stderr)}",
+        )
 
     log.info("commit_files.committed", file_count=len(committed), branch=stand.branch)
     return committed

@@ -61,6 +61,18 @@ def test_all_eight_roles_return_non_empty_default() -> None:
         assert result, f"Role {role!r} returned empty default instructions"
 
 
+def test_qa_default_mentions_verification_and_visual_evidence() -> None:
+    personas = PersonasConfig()
+    qa_text = get_effective_instructions("qa", personas)
+    assert "verification_steps" in qa_text
+    assert "visual_evidence" in qa_text
+    assert "visual_validation_required" in qa_text
+    assert "demo_setup_steps" in qa_text
+    assert "visual_capture_commands" in qa_text
+    assert "visual_capture_blockers" in qa_text
+    assert "reproduction steps" in qa_text.lower()
+
+
 # ---------------------------------------------------------------------------
 # save_persona / reset_persona
 # ---------------------------------------------------------------------------

@@ -6,6 +6,7 @@ import pytest
 
 from coordinare.graph.nodes.check_board import _sort_by_priority, check_board
 from coordinare.graph.state import initial_state
+from coordinare.services.github import TransientGitHubError
 
 
 class _GitHub:
@@ -494,6 +495,48 @@ async def test_check_board_readopts_in_progress_card_after_restart() -> None:
     assert result["current_card"]["id"] == "ITEM_P"
 
 
+class _GitHubInProgressDirty:
+    async def poll_board(self):
+        return {
+            "snapshot": {"IN_PROGRESS": ["ITEM_DIRTY"], "TODO": ["ITEM_TODO"], "IN_REVIEW": [], "BLOCKED": []},
+            "titles": {"ITEM_DIRTY": "Dirty Active Card", "ITEM_TODO": "Fresh TODO"},
+            "descriptions": {"ITEM_DIRTY": "Has churn history", "ITEM_TODO": ""},
+            "issue_numbers": {"ITEM_DIRTY": 89, "ITEM_TODO": 90},
+        }
+
+
+@pytest.mark.asyncio
+async def test_check_board_readopts_dirty_in_progress_card_resets_context() -> None:
+    """053: Fresh-start with no snapshot + dirty IN_PROGRESS card should
+    re-adopt the active card, resume from implementing, and clear stale
+    retry/feedback context before dispatch.
+    """
+    state = initial_state()
+    state["github_service"] = _GitHubInProgressDirty()
+    state["lifecycle_sequence"] = ["assessing", "architecting", "implementing", "reviewing"]
+    state["performer_stage"] = "closing_review"  # stale residue from a prior run
+    state["system_error_count"] = 3
+    state["system_error_reason"] = "old failure"
+    state["system_error_notified"] = True
+    state["relay_feedback"] = [{"body": "stale"}]
+    state["open_questions"] = ["stale question"]
+    state["feedback_cycle_count"] = 4
+    state["blocked_by_dependencies"] = [{"issue_number": 1}]
+
+    result = await check_board(state)
+
+    assert result["phase"] == "dispatching"
+    assert result["current_card"]["id"] == "ITEM_DIRTY"
+    assert result["performer_stage"] == "implementing"
+    assert result["system_error_count"] == 0
+    assert result["system_error_reason"] is None
+    assert result["system_error_notified"] is False
+    assert result["relay_feedback"] == []
+    assert result["open_questions"] == []
+    assert result["feedback_cycle_count"] == 0
+    assert result["blocked_by_dependencies"] == []
+
+
 @pytest.mark.asyncio
 async def test_check_board_routes_to_monitoring_agent_for_in_progress_with_card() -> None:
     """When current_card is set and card is IN_PROGRESS, monitor it."""
@@ -553,6 +596,37 @@ class _GitHubBlockedBadComments:
         pass
 
 
+class _GitHubBlockedAndTodo:
+    async def poll_board(self):
+        return {
+            "snapshot": {"BLOCKED": ["ITEM_B"], "TODO": ["ITEM_T"], "IN_PROGRESS": [], "IN_REVIEW": []},
+            "titles": {"ITEM_B": "Dirty Blocked Card", "ITEM_T": "New TODO"},
+            "descriptions": {"ITEM_B": "Needs input", "ITEM_T": ""},
+            "issue_numbers": {"ITEM_B": 2, "ITEM_T": 3},
+        }
+
+    async def get_issue_details(self, issue_id: str):
+        return {"comments": {"nodes": []}}
+
+    async def move_card(self, item_id: str, status: str) -> None:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_check_board_fresh_start_prioritizes_blocked_over_todo() -> None:
+    """053: With no snapshot/current_card, an existing BLOCKED card should
+    remain the active focus (not replaced by TODO pickup).
+    """
+    state = initial_state()
+    state["github_service"] = _GitHubBlockedAndTodo()
+
+    result = await check_board(state)
+
+    assert result["phase"] == "blocked"
+    assert result["current_card"]["id"] == "ITEM_B"
+    assert result["current_card"]["status"] == "BLOCKED"
+
+
 @pytest.mark.asyncio
 async def test_check_board_blocked_with_bad_comment_data_sends_reminder() -> None:
     """Non-dict comments, empty dates, invalid dates should be skipped."""
@@ -574,6 +648,15 @@ class _GitHubPollFails:
         raise RuntimeError("GitHub API is down")
 
 
+class _GitHubTransientPollFails:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def poll_board(self):
+        self.calls += 1
+        raise TransientGitHubError("temporary failure in name resolution")
+
+
 @pytest.mark.asyncio
 async def test_check_board_idle_when_poll_board_raises() -> None:
     """poll_board() exception → phase='idle' (don't crash the loop)."""
@@ -586,10 +669,60 @@ async def test_check_board_idle_when_poll_board_raises() -> None:
 
 
 @pytest.mark.asyncio
+async def test_check_board_defers_transient_poll_failure_with_retry_queue() -> None:
+    state = initial_state()
+    github = _GitHubTransientPollFails()
+    state["github_service"] = github
+    state["phase"] = "monitoring_pr"
+    state["current_card"] = {"id": "ITEM_1", "pr_node_id": "PR_1"}
+
+    result = await check_board(state)
+
+    assert result["phase"] == "monitoring_pr"
+    queue = result.get("github_retry_queue") or []
+    assert any(entry.get("operation") == "poll_board" for entry in queue if isinstance(entry, dict))
+    assert result.get("github_retry_after") is not None
+    assert github.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_check_board_skips_poll_until_deferred_retry_is_due() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    class _GitHubShouldNotBeCalled:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def poll_board(self):
+            self.calls += 1
+            raise AssertionError("poll_board should be deferred and not called")
+
+    state = initial_state()
+    github = _GitHubShouldNotBeCalled()
+    state["github_service"] = github
+    state["phase"] = "monitoring_pr"
+    state["github_retry_queue"] = [
+        {
+            "operation": "poll_board",
+            "attempt": 2,
+            "retry_at": datetime.now(UTC) + timedelta(seconds=120),
+            "error": "dns outage",
+            "deferred_at": datetime.now(UTC),
+        },
+    ]
+
+    result = await check_board(state)
+
+    assert result["phase"] == "monitoring_pr"
+    assert github.calls == 0
+
+
+@pytest.mark.asyncio
 async def test_check_board_system_error_when_in_progress_with_error_count() -> None:
-    """in_progress card + system_error_count > 0 → phase='system_error' (retry path)."""
+    """Tracked in-progress card + system_error_count > 0 → phase='system_error'."""
     state = initial_state()
     state["github_service"] = _GitHubInProgress()
+    state["current_card"] = {"id": "ITEM_P", "status": "IN_PROGRESS"}
     state["system_error_count"] = 1
 
     result = await check_board(state)

@@ -18,11 +18,35 @@ from coordinare.workspace import WorkspaceInfo
 
 
 class _GitHub:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        recovered_pr: dict[str, str] | None = None,
+        closed_pr_count: int = 0,
+        closed_pr_delay_seconds: float = 0.0,
+        move_blocked_error: Exception | None = None,
+    ) -> None:
         self.move_calls: list[tuple[str, str]] = []
+        self.find_pr_calls: list[str] = []
+        self._recovered_pr = recovered_pr
+        self._closed_pr_count = closed_pr_count
+        self._closed_pr_delay_seconds = closed_pr_delay_seconds
+        self._move_blocked_error = move_blocked_error
 
     async def move_card(self, item_id: str, status: str) -> None:
         self.move_calls.append((item_id, status))
+        if status == "BLOCKED" and self._move_blocked_error is not None:
+            raise self._move_blocked_error
+
+    async def find_pr_for_issue(self, issue_id: str) -> dict[str, str] | None:
+        self.find_pr_calls.append(issue_id)
+        return self._recovered_pr
+
+    async def count_closed_prs_for_issue(self, issue_id: str) -> int:
+        if self._closed_pr_delay_seconds > 0:
+            import asyncio as _aio
+            await _aio.sleep(self._closed_pr_delay_seconds)
+        return self._closed_pr_count
 
 
 class _Service:
@@ -162,6 +186,195 @@ async def test_dispatch_resolves_first_stage_service() -> None:
     assert result["phase"] == "monitoring_performer"
     assert len(implementing_svc.dispatched) == 1
     assert len(reviewing_svc.dispatched) == 0
+
+
+@pytest.mark.asyncio
+async def test_reviewing_stage_recovers_missing_pr_context_from_issue() -> None:
+    """Reviewer dispatch recovers pr_url/pr_node_id from linked issue when missing."""
+    reviewing_svc = _Service()
+    github = _GitHub(recovered_pr={
+        "pr_url": "https://github.com/acme/repo/pull/42",
+        "pr_node_id": "PR_kwDO_42",
+    })
+    state = _base_state(
+        current_card={"id": "ITEM_1", "status": "IN_PROGRESS", "issue_id": "ISSUE_NODE_1"},
+        github_service=github,
+        performer_services={"reviewing": reviewing_svc},
+        performer_stage="reviewing",
+        lifecycle_sequence=["implementing", "reviewing"],
+    )
+
+    result = await dispatch_performer(state)
+
+    assert result["phase"] == "monitoring_performer"
+    assert len(reviewing_svc.dispatched) == 1
+    assert reviewing_svc.dispatched[0]["pr_url"] == "https://github.com/acme/repo/pull/42"
+    assert reviewing_svc.dispatched[0]["pr_node_id"] == "PR_kwDO_42"
+    assert github.find_pr_calls == ["ISSUE_NODE_1"]
+
+
+@pytest.mark.asyncio
+async def test_reviewing_stage_missing_pr_context_falls_back_to_implementing() -> None:
+    """When PR recovery fails, reroute PR-dependent stage to implementing."""
+    implementing_svc = _Service()
+    reviewing_svc = _Service()
+    github = _GitHub(recovered_pr=None)
+    state = _base_state(
+        current_card={"id": "ITEM_1", "status": "IN_PROGRESS", "issue_id": "ISSUE_NODE_1"},
+        github_service=github,
+        performer_services={"implementing": implementing_svc, "reviewing": reviewing_svc},
+        performer_stage="reviewing",
+        lifecycle_sequence=["implementing", "reviewing"],
+    )
+
+    result = await dispatch_performer(state)
+
+    assert result["phase"] == "dispatching"
+    assert result["performer_stage"] == "implementing"
+    assert result["agent_dispatch"] == {}
+    assert len(reviewing_svc.dispatched) == 0
+    assert len(implementing_svc.dispatched) == 0
+
+
+@pytest.mark.asyncio
+async def test_implementing_stage_blocks_when_closed_pr_limit_reached() -> None:
+    """Configurable PR-attempt limit blocks fresh implementer dispatches."""
+    from coordinare.config import ProjectConfiguration
+
+    implementing_svc = _Service()
+    github = _GitHub(closed_pr_count=4)
+    config = ProjectConfiguration(
+        project_name="Test",
+        github_org="acme",
+        github_project_number=1,
+        github_token="tok",
+        human_reviewers=["alice"],
+        max_closed_pr_attempts_per_issue=3,
+    )
+    state = _base_state(
+        current_card={"id": "ITEM_1", "status": "TODO", "issue_id": "ISSUE_NODE_1"},
+        github_service=github,
+        performer_services={"implementing": implementing_svc},
+        performer_stage="implementing",
+        lifecycle_sequence=["implementing"],
+        config=config,
+    )
+
+    result = await dispatch_performer(state)
+
+    assert result["phase"] == "blocked"
+    assert ("ITEM_1", "BLOCKED") in github.move_calls
+    assert any("closed PR attempts" in q for q in result.get("open_questions", []))
+    assert len(implementing_svc.dispatched) == 0
+
+
+@pytest.mark.asyncio
+async def test_closed_pr_limit_logs_move_card_blocked_error_details() -> None:
+    """BLOCKED move failures should log structured error details for triage."""
+    from unittest.mock import patch
+
+    from coordinare.config import ProjectConfiguration
+
+    implementing_svc = _Service()
+    github = _GitHub(closed_pr_count=4, move_blocked_error=RuntimeError("permission denied"))
+    config = ProjectConfiguration(
+        project_name="Test",
+        github_org="acme",
+        github_project_number=1,
+        github_token="tok",
+        human_reviewers=["alice"],
+        max_closed_pr_attempts_per_issue=3,
+    )
+    state = _base_state(
+        current_card={"id": "ITEM_1", "status": "TODO", "issue_id": "ISSUE_NODE_1"},
+        github_service=github,
+        performer_services={"implementing": implementing_svc},
+        performer_stage="implementing",
+        lifecycle_sequence=["implementing"],
+        config=config,
+    )
+
+    with patch("coordinare.graph.nodes.dispatch_performer.logger.warning") as warning_mock:
+        result = await dispatch_performer(state)
+
+    assert result["phase"] == "blocked"
+    assert any("closed PR attempts" in q for q in result.get("open_questions", []))
+    assert any(
+        call.args and call.args[0] == "dispatch_performer.move_card_to_blocked_failed"
+        and call.kwargs.get("card_id") == "ITEM_1"
+        and "permission denied" in str(call.kwargs.get("error"))
+        for call in warning_mock.call_args_list
+    )
+
+
+@pytest.mark.asyncio
+async def test_implementing_stage_not_blocked_when_open_pr_recovered() -> None:
+    """Open PR recovery bypasses closed-PR limit guard."""
+    from coordinare.config import ProjectConfiguration
+
+    implementing_svc = _Service()
+    github = _GitHub(
+        recovered_pr={
+            "pr_url": "https://github.com/acme/repo/pull/42",
+            "pr_node_id": "PR_kwDO_42",
+        },
+        closed_pr_count=99,
+    )
+    config = ProjectConfiguration(
+        project_name="Test",
+        github_org="acme",
+        github_project_number=1,
+        github_token="tok",
+        human_reviewers=["alice"],
+        max_closed_pr_attempts_per_issue=3,
+    )
+    state = _base_state(
+        current_card={"id": "ITEM_1", "status": "TODO", "issue_id": "ISSUE_NODE_1"},
+        github_service=github,
+        performer_services={"implementing": implementing_svc},
+        performer_stage="implementing",
+        lifecycle_sequence=["implementing"],
+        config=config,
+    )
+
+    result = await dispatch_performer(state)
+
+    assert result["phase"] == "monitoring_performer"
+    assert len(implementing_svc.dispatched) == 1
+    assert implementing_svc.dispatched[0]["pr_url"] == "https://github.com/acme/repo/pull/42"
+    assert implementing_svc.dispatched[0]["pr_node_id"] == "PR_kwDO_42"
+
+
+@pytest.mark.asyncio
+async def test_implementing_stage_closed_pr_count_timeout_does_not_block_dispatch() -> None:
+    """Timeout counting closed PRs should not hang or block implementer dispatch."""
+    from coordinare.config import ProjectConfiguration
+
+    implementing_svc = _Service()
+    github = _GitHub(closed_pr_count=99, closed_pr_delay_seconds=2.0)
+    config = ProjectConfiguration(
+        project_name="Test",
+        github_org="acme",
+        github_project_number=1,
+        github_token="tok",
+        human_reviewers=["alice"],
+        transport_timeout_seconds=1,
+        max_closed_pr_attempts_per_issue=3,
+    )
+    state = _base_state(
+        current_card={"id": "ITEM_1", "status": "TODO", "issue_id": "ISSUE_NODE_1"},
+        github_service=github,
+        performer_services={"implementing": implementing_svc},
+        performer_stage="implementing",
+        lifecycle_sequence=["implementing"],
+        config=config,
+    )
+
+    result = await dispatch_performer(state)
+
+    assert result["phase"] == "monitoring_performer"
+    assert len(implementing_svc.dispatched) == 1
+    assert ("ITEM_1", "BLOCKED") not in github.move_calls
 
 
 # ---------------------------------------------------------------------------

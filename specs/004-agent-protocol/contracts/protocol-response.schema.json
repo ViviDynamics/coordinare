@@ -53,6 +53,16 @@
       "type": ["string", "null"],
       "description": "Optional human-readable description of current activity. May be present when status is working.",
       "default": null
+    },
+    "backend": {
+      "type": ["string", "null"],
+      "description": "Performer backend name (e.g. opencode, junie, cursor, claude_code, codex). Typically set on dispatch acceptance responses.",
+      "default": null
+    },
+    "model": {
+      "type": ["string", "null"],
+      "description": "Performer model override selected for the session. Typically set on dispatch acceptance responses.",
+      "default": null
     }
   },
   "$comment": "Status semantics: accepted=dispatch accepted; working=actively processing; pr_opened=PR created (pr_url+pr_node_id required); blocked=needs human input (questions required); error=unrecoverable failure (reason required); unknown=session not recognised; busy=cannot accept new work; acknowledged=relay_feedback received; session_expired=session context lost (reason required)."

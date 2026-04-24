@@ -5,6 +5,12 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from coordinare.graph.nodes.github_retry import (
+    clear_deferred_github_operation,
+    defer_github_operation,
+    github_operation_ready,
+    is_transient_github_outage_error,
+)
 from coordinare.lib.acceptance_criteria import parse_acceptance_criteria
 from coordinare.models.dependency import DependencyStatus
 from coordinare.services.dependency import build_graph, resolve_off_board_dependencies
@@ -64,9 +70,34 @@ async def check_board(state: CoordinareState) -> CoordinareState:
     if cached_board:
         board = cached_board
     else:
+        ready, retry_in = github_operation_ready(state, "poll_board")
+        if not ready:
+            logger.info(
+                "check_board.poll_deferred_wait",
+                retry_in_seconds=round(retry_in, 1),
+            )
+            # Keep running without crashing; a later cycle will retry.
+            return state
         try:
             board = await github.poll_board()
+            clear_deferred_github_operation(state, "poll_board")
         except Exception as exc:
+            if is_transient_github_outage_error(exc):
+                deferred = defer_github_operation(
+                    state,
+                    operation="poll_board",
+                    error=exc,
+                    base_delay_seconds=30.0,
+                    max_delay_seconds=600.0,
+                )
+                logger.warning(
+                    "check_board.poll_deferred",
+                    error=str(exc),
+                    attempt=deferred.get("attempt"),
+                    retry_at=deferred.get("retry_at"),
+                )
+                # Do not drop active in-flight state on transient GitHub outages.
+                return state
             logger.error("check_board.poll_failed", error=str(exc))
             state["phase"] = "idle"
             return state
@@ -226,7 +257,10 @@ async def check_board(state: CoordinareState) -> CoordinareState:
         state["phase"] = "monitoring_pr"
         return state
     if in_progress:
-        if state.get("system_error_count", 0) > 0:
+        # Fresh-start recovery (no current_card) should re-adopt the active
+        # board card even if stale system_error_count residue exists.
+        # Keep system_error routing for actively tracked cards.
+        if state.get("system_error_count", 0) > 0 and state.get("current_card") is not None:
             state["phase"] = "system_error"
             return state
         # Preserve dispatching, monitoring_performer, and blocked phases so
@@ -263,6 +297,26 @@ async def check_board(state: CoordinareState) -> CoordinareState:
                 card_id=item,
                 title=str(titles.get(item, "")),
             )
+            # 053: Fresh-start recovery for dirty IN_PROGRESS cards.
+            # If state snapshots are unavailable, we no longer know the exact
+            # lifecycle stage. Resume from implementer work (when present)
+            # instead of replaying assessor/architect stages on every restart.
+            # Also clear per-card retry/feedback residue before re-dispatch.
+            lifecycle_seq = [
+                str(stage) for stage in (state.get("lifecycle_sequence") or ["implementing"])
+                if isinstance(stage, str) and stage
+            ]
+            resume_stage = lifecycle_seq[0] if lifecycle_seq else "implementing"
+            if "implementing" in lifecycle_seq and resume_stage in {"assessing", "architecting"}:
+                resume_stage = "implementing"
+            state["performer_stage"] = resume_stage
+            state["system_error_count"] = 0
+            state["system_error_reason"] = None
+            state["system_error_notified"] = False
+            state["relay_feedback"] = []
+            state["open_questions"] = []
+            state["feedback_cycle_count"] = 0  # type: ignore[typeddict-unknown-key]
+            state["blocked_by_dependencies"] = []  # type: ignore[typeddict-unknown-key]
             state["phase"] = "dispatching"
             return state
 

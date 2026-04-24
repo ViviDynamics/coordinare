@@ -142,6 +142,9 @@ class CoordinareState(TypedDict, total=False):
     # 052: Backend transparency — live URL and session stats from the performer backend.
     backend_ui_url: str | None
     session_stats: Any  # SessionStats | None; typed Any — LangGraph resolves annotations at runtime
+    # Deferred GitHub retries for transient outages (DNS/service down/circuit open).
+    github_retry_queue: list[dict[str, Any]]
+    github_retry_after: datetime | None
 
 
 def initial_state() -> CoordinareState:
@@ -181,4 +184,6 @@ def initial_state() -> CoordinareState:
         "slot_manager": None,
         "backend_ui_url": None,
         "session_stats": None,
+        "github_retry_queue": [],
+        "github_retry_after": None,
     }

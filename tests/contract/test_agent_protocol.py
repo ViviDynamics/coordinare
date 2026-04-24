@@ -21,6 +21,8 @@ class TestSchemaContractValidation:
         assert "properties" in schema
         assert "status" in schema["properties"]
         assert "session_id" in schema["properties"]
+        assert "backend" in schema["properties"]
+        assert "model" in schema["properties"]
 
     def test_protocol_response_schema_has_all_status_values(self) -> None:
         schema = ProtocolResponse.model_json_schema()
@@ -78,6 +80,8 @@ class TestGenerateContractsMatchesCheckedIn:
         generated = json.loads((tmp_path / "protocol-response.schema.json").read_text())
         assert "properties" in generated
         assert "status" in generated["properties"]
+        assert "backend" in generated["properties"]
+        assert "model" in generated["properties"]
         assert generated["properties"]["status"] is not None
 
     def test_generated_schemas_are_valid_json(self, tmp_path) -> None:

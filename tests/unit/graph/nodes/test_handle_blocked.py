@@ -4,6 +4,7 @@ import pytest
 
 from coordinare.graph.nodes.handle_blocked import handle_blocked
 from coordinare.graph.state import initial_state
+from coordinare.services.github import TransientGitHubError
 
 
 class _GitHub:
@@ -263,3 +264,53 @@ async def test_handle_blocked_reposts_comment_after_reminder_window() -> None:
     assert github.comment_body is not None
     assert "Needs input" in github.comment_body
     assert result["last_blocked_notified_at"] > very_old
+
+
+@pytest.mark.asyncio
+async def test_handle_blocked_transient_comment_failure_is_deferred() -> None:
+    class _GitHubTransientComment:
+        def __init__(self) -> None:
+            self.comment_attempts = 0
+            self.moved_to: list[str] = []
+            self.comment_body: str | None = None
+
+        async def move_card(self, item_id: str, status: str) -> None:
+            self.moved_to.append(status)
+
+        async def add_comment(self, subject_id: str, body: str):
+            self.comment_attempts += 1
+            if self.comment_attempts == 1:
+                raise TransientGitHubError("temporary failure in name resolution")
+            self.comment_body = body
+            return {"id": "C1"}
+
+    from datetime import UTC, datetime, timedelta
+
+    github = _GitHubTransientComment()
+    state = initial_state()
+    state["github_service"] = github
+    state["current_card"] = {"id": "ITEM_1", "issue_id": "ISSUE_1"}
+    state["open_questions"] = ["Clarify scope"]
+    state["blocked_reminder_hours"] = 24
+
+    first = await handle_blocked(state)
+    assert first["phase"] == "blocked"
+    queue = first.get("github_retry_queue") or []
+    comment_entry = next(
+        (entry for entry in queue if isinstance(entry, dict) and entry.get("operation") == "handle_blocked_comment"),
+        None,
+    )
+    assert comment_entry is not None
+
+    # Force deferred retry to become due now; reminder window should not block
+    # this retry because it is explicitly queued.
+    comment_entry["retry_at"] = datetime.now(UTC) - timedelta(seconds=1)
+    second = await handle_blocked(first)
+    assert second["phase"] == "blocked"
+    assert github.comment_attempts == 2
+    assert github.comment_body is not None
+    queue_after = second.get("github_retry_queue") or []
+    assert not any(
+        isinstance(entry, dict) and entry.get("operation") == "handle_blocked_comment"
+        for entry in queue_after
+    )

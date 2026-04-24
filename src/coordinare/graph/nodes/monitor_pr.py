@@ -8,6 +8,12 @@ import structlog
 
 if TYPE_CHECKING:
     from coordinare.graph.state import CoordinareState
+from coordinare.graph.nodes.github_retry import (
+    clear_deferred_github_operation,
+    defer_github_operation,
+    github_operation_ready,
+    is_transient_github_outage_error,
+)
 from coordinare.models.review import ReviewerType, classify_reviewer
 
 logger = structlog.get_logger(__name__)
@@ -35,10 +41,37 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
         # "Closes #N" linkage and rehydrate the card so monitoring continues.
         issue_node_id = str(card.get("issue_id") or "")
         recovered = None
+        ready, retry_in = github_operation_ready(state, "monitor_pr")
+        if not ready:
+            logger.info(
+                "monitor_pr.deferred_wait",
+                retry_in_seconds=round(retry_in, 1),
+                reason="pr_recovery",
+            )
+            state["phase"] = "monitoring_pr"
+            return state
         if issue_node_id:
             try:
                 recovered = await github.find_pr_for_issue(issue_node_id)
+                clear_deferred_github_operation(state, "monitor_pr")
             except Exception as exc:
+                if is_transient_github_outage_error(exc):
+                    deferred = defer_github_operation(
+                        state,
+                        operation="monitor_pr",
+                        error=exc,
+                        base_delay_seconds=30.0,
+                        max_delay_seconds=600.0,
+                    )
+                    logger.warning(
+                        "monitor_pr.pr_recovery_deferred",
+                        issue_node_id=issue_node_id,
+                        error=str(exc),
+                        attempt=deferred.get("attempt"),
+                        retry_at=deferred.get("retry_at"),
+                    )
+                    state["phase"] = "monitoring_pr"
+                    return state
                 logger.warning(
                     "monitor_pr.pr_recovery_failed",
                     issue_node_id=issue_node_id,
@@ -65,8 +98,34 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
             return state
 
     try:
+        ready, retry_in = github_operation_ready(state, "monitor_pr")
+        if not ready:
+            logger.info(
+                "monitor_pr.deferred_wait",
+                retry_in_seconds=round(retry_in, 1),
+                reason="get_reviews",
+            )
+            state["phase"] = "monitoring_pr"
+            return state
         reviews = await github.get_pr_reviews(pr_node_id)
+        clear_deferred_github_operation(state, "monitor_pr")
     except Exception as exc:
+        if is_transient_github_outage_error(exc):
+            deferred = defer_github_operation(
+                state,
+                operation="monitor_pr",
+                error=exc,
+                base_delay_seconds=30.0,
+                max_delay_seconds=600.0,
+            )
+            logger.warning(
+                "monitor_pr.get_reviews_deferred",
+                error=str(exc),
+                attempt=deferred.get("attempt"),
+                retry_at=deferred.get("retry_at"),
+            )
+            state["phase"] = "monitoring_pr"
+            return state
         logger.warning("monitor_pr.get_reviews_failed", error=str(exc))
         state["phase"] = "monitoring_pr"  # stay in current phase, retry next cycle
         return state

@@ -751,6 +751,52 @@ class GitHubService:
             logger.warning("branch_exists.request_failed", branch=branch_name, error=str(exc))
             return False
 
+    async def branch_has_open_pr(self, branch_name: str) -> bool | None:
+        """Return open-PR state for ``branch_name``.
+
+        Returns:
+        - ``True``: an open PR currently uses ``branch_name`` as head.
+        - ``False``: confirmed no open PR for ``branch_name``.
+        - ``None``: unknown (transient/auth/config failure while checking).
+        """
+        if not self._project_name:
+            logger.warning("branch_has_open_pr.no_project_name", branch=branch_name)
+            return None
+        url = f"{self._rest_api_base()}/repos/{self._org}/{self._project_name}/pulls"
+        try:
+            token = await self._current_token()
+        except Exception as exc:
+            logger.warning("branch_has_open_pr.token_failed", branch=branch_name, error=str(exc))
+            return None
+        headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+        params = {
+            "head": f"{self._org}:{branch_name}",
+            "state": "open",
+            "per_page": "1",
+        }
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(url, headers=headers, params=params)
+            if resp.status_code == 404:
+                logger.warning(
+                    "branch_has_open_pr.repo_not_found_or_inaccessible",
+                    branch=branch_name,
+                )
+                return None
+            if not resp.is_success:
+                logger.warning(
+                    "branch_has_open_pr.unexpected_status",
+                    branch=branch_name,
+                    status_code=resp.status_code,
+                    error=resp.text[:200],
+                )
+                return None
+            data = resp.json()
+            return isinstance(data, list) and len(data) > 0
+        except Exception as exc:
+            logger.warning("branch_has_open_pr.request_failed", branch=branch_name, error=str(exc))
+            return None
+
     async def delete_branch(self, branch_name: str) -> None:
         """Delete a remote branch via REST.
 
@@ -862,6 +908,43 @@ class GitHubService:
             if pr_id and pr_url:
                 return {"pr_node_id": pr_id, "pr_url": pr_url}
         return None
+
+    async def count_closed_prs_for_issue(self, issue_node_id: str) -> int:
+        """Count CLOSED (unmerged) PRs linked to an issue.
+
+        Returns 0 on missing input or query failure.
+        """
+        if not issue_node_id:
+            return 0
+        query = """
+        query($issueId: ID!) {
+          node(id: $issueId) {
+            ... on Issue {
+              closedByPullRequestsReferences(first: 50, includeClosedPrs: true) {
+                nodes { state }
+              }
+            }
+          }
+        }
+        """
+        try:
+            result = await self._guarded_execute(query, {"issueId": issue_node_id})
+        except Exception as exc:
+            logger.warning(
+                "count_closed_prs_for_issue.query_failed",
+                issue_node_id=issue_node_id,
+                error=str(exc),
+            )
+            return 0
+        node = result.get("node") or {}
+        prs = (node.get("closedByPullRequestsReferences") or {}).get("nodes") or []
+        closed_count = 0
+        for pr in prs:
+            if not isinstance(pr, dict):
+                continue
+            if str(pr.get("state") or "").upper() == "CLOSED":
+                closed_count += 1
+        return closed_count
 
     async def get_pr_reviews(self, pr_id: str) -> list[dict[str, Any]]:
         result = await self._guarded_execute(GET_PR_REVIEWS_QUERY, {"prId": pr_id})

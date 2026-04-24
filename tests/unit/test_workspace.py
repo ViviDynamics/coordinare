@@ -518,6 +518,7 @@ def _make_github_service(*, exists_responses: list[bool]) -> MagicMock:
     svc = MagicMock()
     # branch_exists returns successive values from the list
     svc.branch_exists = AsyncMock(side_effect=exists_responses)
+    svc.branch_has_open_pr = AsyncMock(return_value=False)
     svc.delete_branch = AsyncMock()
     return svc
 
@@ -577,6 +578,50 @@ async def test_stale_branch_deletion_failure_continues() -> None:
 
     branch = await mgr._resolve_branch("coordinare/89/add-auth", card)
     github_svc.delete_branch.assert_awaited_once_with("coordinare/89/add-auth")
+    assert branch == "coordinare/89/add-auth"
+
+
+@pytest.mark.asyncio
+async def test_in_flight_branch_preserved_no_delete() -> None:
+    """In-flight cards keep their branch so prior stage commits are retained."""
+    card = {"id": "89", "title": "add auth", "status": "IN_PROGRESS"}
+    cfg = _make_config(stale_branch_cleanup=True, branch_collision_strategy="delete")
+    github_svc = _make_github_service(exists_responses=[True])
+    mgr = WorkspaceManager(cfg, github_service=github_svc)
+
+    branch = await mgr._resolve_branch("coordinare/89/add-auth", card)
+    github_svc.delete_branch.assert_not_awaited()
+    github_svc.branch_has_open_pr.assert_not_awaited()
+    assert branch == "coordinare/89/add-auth"
+
+
+@pytest.mark.asyncio
+async def test_open_pr_branch_preserved_even_from_todo() -> None:
+    """TODO cards with an already-open PR must not delete the head branch."""
+    card = {"id": "89", "title": "add auth", "status": "TODO"}
+    cfg = _make_config(stale_branch_cleanup=True, branch_collision_strategy="delete")
+    github_svc = _make_github_service(exists_responses=[True])
+    github_svc.branch_has_open_pr = AsyncMock(return_value=True)
+    mgr = WorkspaceManager(cfg, github_service=github_svc)
+
+    branch = await mgr._resolve_branch("coordinare/89/add-auth", card)
+    github_svc.delete_branch.assert_not_awaited()
+    github_svc.branch_has_open_pr.assert_awaited_once_with("coordinare/89/add-auth")
+    assert branch == "coordinare/89/add-auth"
+
+
+@pytest.mark.asyncio
+async def test_unknown_open_pr_state_preserves_branch() -> None:
+    """Unknown open-PR state should preserve the branch fail-safe."""
+    card = {"id": "89", "title": "add auth", "status": "TODO"}
+    cfg = _make_config(stale_branch_cleanup=True, branch_collision_strategy="delete")
+    github_svc = _make_github_service(exists_responses=[True])
+    github_svc.branch_has_open_pr = AsyncMock(return_value=None)
+    mgr = WorkspaceManager(cfg, github_service=github_svc)
+
+    branch = await mgr._resolve_branch("coordinare/89/add-auth", card)
+    github_svc.delete_branch.assert_not_awaited()
+    github_svc.branch_has_open_pr.assert_awaited_once_with("coordinare/89/add-auth")
     assert branch == "coordinare/89/add-auth"
 
 

@@ -44,6 +44,14 @@ _STAGE_TO_ROLE: dict[str, str] = {
     "closing_review": "closer",
 }
 
+_PR_REQUIRED_STAGES: set[str] = {
+    "reviewing",
+    "security",
+    "qa",
+    "documenting",
+    "closing_review",
+}
+
 
 def _persona_role_for_stage(stage: str) -> str | None:
     """Return the persona role name for a pipeline stage, or None if unmapped."""
@@ -122,11 +130,143 @@ async def dispatch_performer(state: CoordinareState) -> CoordinareState:
         state["phase"] = "idle"
         return state
 
+    # PR-dependent stages cannot run without PR identifiers. If they're missing,
+    # recover from the linked issue's open PR when possible; otherwise route
+    # back to implementing so a fresh PR can be created.
+    card_id = str(card.get("id", ""))
+    issue_id = str(card.get("issue_id") or "").strip()
+
+    # 053: Guard against repeated PR churn for the same issue.
+    config = state.get("config")
+    raw_closed_pr_limit = getattr(config, "max_closed_pr_attempts_per_issue", 0) if config else 0
+    closed_pr_limit = raw_closed_pr_limit if isinstance(raw_closed_pr_limit, int) else 0
+    raw_transport_timeout = getattr(config, "transport_timeout_seconds", 30) if config else 30
+    closed_pr_count_timeout_seconds = (
+        float(raw_transport_timeout)
+        if isinstance(raw_transport_timeout, int | float) and raw_transport_timeout > 0
+        else 30.0
+    )
+    if performer_stage == "implementing" and issue_id and closed_pr_limit > 0:
+        pr_url = str(card.get("pr_url") or "").strip()
+        pr_node_id = str(card.get("pr_node_id") or "").strip()
+        has_open_pr = bool(pr_url and pr_node_id)
+        if not has_open_pr and hasattr(github, "find_pr_for_issue"):
+            recovered = None
+            try:
+                recovered = await github.find_pr_for_issue(issue_id)
+            except Exception as exc:
+                logger.warning(
+                    "dispatch_performer.pr_recovery_check_failed",
+                    card_id=card_id,
+                    issue_id=issue_id,
+                    error=str(exc),
+                )
+            if recovered and recovered.get("pr_url") and recovered.get("pr_node_id"):
+                card["pr_url"] = recovered["pr_url"]
+                card["pr_node_id"] = recovered["pr_node_id"]
+                state["current_card"] = card
+                has_open_pr = True
+        if not has_open_pr and hasattr(github, "count_closed_prs_for_issue"):
+            closed_count = 0
+            try:
+                closed_count = await asyncio.wait_for(
+                    github.count_closed_prs_for_issue(issue_id),
+                    timeout=closed_pr_count_timeout_seconds,
+                )
+            except TimeoutError:
+                logger.warning(
+                    "dispatch_performer.closed_pr_count_timeout",
+                    card_id=card_id,
+                    issue_id=issue_id,
+                    timeout_seconds=closed_pr_count_timeout_seconds,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "dispatch_performer.closed_pr_count_failed",
+                    card_id=card_id,
+                    issue_id=issue_id,
+                    error=str(exc),
+                )
+            if closed_count >= closed_pr_limit:
+                logger.warning(
+                    "dispatch_performer.closed_pr_limit_reached",
+                    card_id=card_id,
+                    issue_id=issue_id,
+                    closed_pr_count=closed_count,
+                    limit=closed_pr_limit,
+                )
+                try:
+                    await github.move_card(card_id, "BLOCKED")
+                except Exception as exc:
+                    logger.warning(
+                        "dispatch_performer.move_card_to_blocked_failed",
+                        card_id=card_id,
+                        error=str(exc),
+                    )
+                state["phase"] = "blocked"
+                state["open_questions"] = [
+                    (
+                        f"Card has {closed_count} closed PR attempts (limit: {closed_pr_limit}). "
+                        "Blocking new PR creation. Please review prior PRs and decide whether to "
+                        "resume manually, reset branch strategy, or close the card."
+                    ),
+                ]
+                return state
+
+    if performer_stage in _PR_REQUIRED_STAGES and issue_id:
+        pr_url = str(card.get("pr_url") or "").strip()
+        pr_node_id = str(card.get("pr_node_id") or "").strip()
+        if not (pr_url and pr_node_id):
+            recovered: dict[str, str] | None = None
+            if hasattr(github, "find_pr_for_issue"):
+                try:
+                    recovered = await github.find_pr_for_issue(issue_id)
+                except Exception as exc:
+                    logger.warning(
+                        "dispatch_performer.pr_recovery_failed",
+                        card_id=str(card.get("id", "")),
+                        performer_stage=performer_stage,
+                        issue_id=issue_id,
+                        error=str(exc),
+                    )
+            if recovered and recovered.get("pr_url") and recovered.get("pr_node_id"):
+                card["pr_url"] = recovered["pr_url"]
+                card["pr_node_id"] = recovered["pr_node_id"]
+                state["current_card"] = card
+            else:
+                lifecycle: list[str] = list(state.get("lifecycle_sequence") or [])
+                fallback_stage = "implementing" if "implementing" in lifecycle else ""
+                if fallback_stage and fallback_stage != performer_stage:
+                    logger.warning(
+                        "dispatch_performer.missing_pr_context_fallback",
+                        card_id=str(card.get("id", "")),
+                        from_stage=performer_stage,
+                        to_stage=fallback_stage,
+                    )
+                    state["performer_stage"] = fallback_stage
+                    state["phase"] = "dispatching"
+                    state["agent_dispatch"] = {}
+                    state["agent_dispatch_at"] = None
+                    return state
+                logger.error(
+                    "dispatch_performer.missing_pr_context_blocked",
+                    card_id=str(card.get("id", "")),
+                    performer_stage=performer_stage,
+                )
+                state["phase"] = "blocked"
+                state["open_questions"] = [
+                    (
+                        f"Cannot run stage '{performer_stage}' because PR context is missing "
+                        "(`pr_url`/`pr_node_id`) and no open PR could be recovered from "
+                        "the linked issue."
+                    ),
+                ]
+                return state
+
     # 048: Resolve the service for this stage via SlotManager if available.
     # The SlotManager enforces per-role max_concurrency and returns a free
     # service instance, or None if at capacity (card retries next cycle).
     slot_manager = state.get("slot_manager")
-    card_id = str(card.get("id", ""))
     service: AgentServiceProtocol | None = None
     if slot_manager is not None and hasattr(slot_manager, "acquire"):
         service = slot_manager.acquire(
@@ -266,8 +406,12 @@ async def dispatch_performer(state: CoordinareState) -> CoordinareState:
             )
             try:
                 await github.move_card(card_id, "BLOCKED")
-            except Exception:
-                logger.warning("move_card_to_blocked_failed", card_id=card_id)
+            except Exception as move_exc:
+                logger.warning(
+                    "dispatch_performer.move_card_to_blocked_failed",
+                    card_id=card_id,
+                    error=str(move_exc),
+                )
             state["workspace_path"] = None
             state["workspace_branch"] = None
             _release_slot_on_error()
@@ -289,8 +433,12 @@ async def dispatch_performer(state: CoordinareState) -> CoordinareState:
             )
             try:
                 await github.move_card(card_id, "BLOCKED")
-            except Exception:
-                logger.warning("move_card_to_blocked_failed", card_id=card_id)
+            except Exception as move_exc:
+                logger.warning(
+                    "dispatch_performer.move_card_to_blocked_failed",
+                    card_id=card_id,
+                    error=str(move_exc),
+                )
             state["workspace_path"] = None
             state["workspace_branch"] = None
             _release_slot_on_error()
@@ -320,8 +468,12 @@ async def dispatch_performer(state: CoordinareState) -> CoordinareState:
                 )
                 try:
                     await github.move_card(card_id, "BLOCKED")
-                except Exception:
-                    logger.warning("move_card_to_blocked_failed", card_id=card_id)
+                except Exception as move_exc:
+                    logger.warning(
+                        "dispatch_performer.move_card_to_blocked_failed",
+                        card_id=card_id,
+                        error=str(move_exc),
+                    )
                 if workspace_info.path is not None:
                     try:
                         await workspace_manager.teardown(workspace_info.path)
@@ -420,8 +572,12 @@ async def dispatch_performer(state: CoordinareState) -> CoordinareState:
         )
         try:
             await github.move_card(card_id, "BLOCKED")
-        except Exception:
-            logger.warning("move_card_to_blocked_failed", card_id=card_id)
+        except Exception as move_exc:
+            logger.warning(
+                "dispatch_performer.move_card_to_blocked_failed",
+                card_id=card_id,
+                error=str(move_exc),
+            )
         # Tear down workspace to avoid leaking temp directories.
         if workspace_manager is not None and workspace_info is not None and workspace_info.path is not None:
             try:

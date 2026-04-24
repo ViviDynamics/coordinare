@@ -112,6 +112,8 @@ class CoordinareDaemon:
         raw_clarifications = self._state.get("card_clarifications")
         clarifications = list(raw_clarifications) if isinstance(raw_clarifications, list) else []
         last_notified = self._state.get("last_blocked_notified_at")
+        performer_stage = self._state.get("performer_stage")
+        lifecycle_sequence = self._state.get("lifecycle_sequence")
 
         # Coerce a value to a non-empty string or None.  Critical: ``str(None)``
         # returns the literal string ``"None"`` which then survives the
@@ -147,6 +149,10 @@ class CoordinareDaemon:
             agent_session_id=_str_or_none(dispatch_dict.get("session_id")) if dispatch_dict else None,
             open_questions=questions,
             card_clarifications=clarifications,
+            performer_stage=str(performer_stage) if isinstance(performer_stage, str) and performer_stage else None,
+            lifecycle_sequence=[
+                str(stage) for stage in lifecycle_sequence
+            ] if isinstance(lifecycle_sequence, list) else [],
             last_blocked_notified_at=last_notified if isinstance(last_notified, datetime) else None,
             lifecycle_completed_at=self._state.get("lifecycle_completed_at") if isinstance(self._state.get("lifecycle_completed_at"), datetime) else None,
             processed_review_ids=sorted(self._state.get("processed_review_ids") or set()),
@@ -156,6 +162,10 @@ class CoordinareDaemon:
         self._state["phase"] = snapshot.phase
         self._state["open_questions"] = list(snapshot.open_questions)
         self._state["card_clarifications"] = list(snapshot.card_clarifications)
+        if snapshot.lifecycle_sequence:
+            self._state["lifecycle_sequence"] = list(snapshot.lifecycle_sequence)
+        if snapshot.performer_stage:
+            self._state["performer_stage"] = snapshot.performer_stage
         self._state["last_blocked_notified_at"] = snapshot.last_blocked_notified_at
         self._state["lifecycle_completed_at"] = snapshot.lifecycle_completed_at
         self._state["processed_review_ids"] = set(snapshot.processed_review_ids)

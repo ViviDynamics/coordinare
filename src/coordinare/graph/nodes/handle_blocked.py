@@ -5,6 +5,14 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from coordinare.graph.nodes.github_retry import (
+    clear_deferred_github_operation,
+    defer_github_operation,
+    get_deferred_github_operation,
+    github_operation_ready,
+    is_transient_github_outage_error,
+)
+
 if TYPE_CHECKING:
     from coordinare.graph.state import CoordinareState
 
@@ -83,10 +91,35 @@ async def handle_blocked(state: CoordinareState) -> CoordinareState:
             state["last_blocked_notified_at"] = None
             return state
 
-    try:
-        await github.move_card(card_id, "BLOCKED")
-    except Exception as exc:
-        logger.warning("handle_blocked.move_card_blocked_failed", card_id=card_id, error=str(exc))
+    move_ready, move_retry_in = github_operation_ready(state, "handle_blocked_move")
+    if move_ready:
+        try:
+            await github.move_card(card_id, "BLOCKED")
+            clear_deferred_github_operation(state, "handle_blocked_move")
+        except Exception as exc:
+            if is_transient_github_outage_error(exc):
+                deferred = defer_github_operation(
+                    state,
+                    operation="handle_blocked_move",
+                    error=exc,
+                    base_delay_seconds=30.0,
+                    max_delay_seconds=600.0,
+                )
+                logger.warning(
+                    "handle_blocked.move_card_blocked_deferred",
+                    card_id=card_id,
+                    error=str(exc),
+                    attempt=deferred.get("attempt"),
+                    retry_at=deferred.get("retry_at"),
+                )
+            else:
+                logger.warning("handle_blocked.move_card_blocked_failed", card_id=card_id, error=str(exc))
+    else:
+        logger.info(
+            "handle_blocked.move_card_blocked_wait",
+            card_id=card_id,
+            retry_in_seconds=round(move_retry_in, 1),
+        )
     question_lines = "\n".join(f"- {q}" for q in questions)
 
     # Identify which role is blocking so humans know who's talking
@@ -116,9 +149,14 @@ async def handle_blocked(state: CoordinareState) -> CoordinareState:
     # bot's own previous reminders — for fresh user answers and trigger
     # a dispatch loop.  Comment posting (2) is independently gated so we
     # don't spam the issue.
-    should_repost_reminder = last is None or (
-        isinstance(last, datetime) and now - last >= timedelta(hours=hours)
-    )
+    comment_deferred = get_deferred_github_operation(state, "handle_blocked_comment")
+    comment_ready, comment_retry_in = github_operation_ready(state, "handle_blocked_comment")
+    if comment_deferred is not None:
+        should_repost_reminder = comment_ready
+    else:
+        should_repost_reminder = last is None or (
+            isinstance(last, datetime) and now - last >= timedelta(hours=hours)
+        )
 
     if should_repost_reminder:
         if issue_id:
@@ -126,17 +164,40 @@ async def handle_blocked(state: CoordinareState) -> CoordinareState:
                 await github.add_comment(
                     issue_id, f"**{role_label}** — Needs input:\n{question_lines}",
                 )
+                clear_deferred_github_operation(state, "handle_blocked_comment")
             except Exception as exc:
-                logger.warning(
-                    "handle_blocked.add_comment_failed",
-                    card_id=card_id, error=str(exc),
-                )
+                if is_transient_github_outage_error(exc):
+                    deferred = defer_github_operation(
+                        state,
+                        operation="handle_blocked_comment",
+                        error=exc,
+                        base_delay_seconds=60.0,
+                        max_delay_seconds=1800.0,
+                    )
+                    logger.warning(
+                        "handle_blocked.add_comment_deferred",
+                        card_id=card_id,
+                        error=str(exc),
+                        attempt=deferred.get("attempt"),
+                        retry_at=deferred.get("retry_at"),
+                    )
+                else:
+                    logger.warning(
+                        "handle_blocked.add_comment_failed",
+                        card_id=card_id, error=str(exc),
+                    )
         else:
             logger.warning(
                 "handle_blocked.no_issue_id",
                 card_id=card_id,
                 msg="Card has no linked issue (draft item?) — skipping comment",
             )
+    elif comment_deferred is not None:
+        logger.info(
+            "handle_blocked.add_comment_wait",
+            card_id=card_id,
+            retry_in_seconds=round(comment_retry_in, 1),
+        )
 
     # Always advance the cutoff timestamp — see comment above.  Stale
     # cutoffs from a previous blocked round (or from a saved snapshot

@@ -204,10 +204,31 @@ DEFAULT_INSTRUCTIONS: dict[str, str] = {
         "Validate that the implementation satisfies every acceptance criterion by running "
         "the test suite and writing new tests for uncovered paths. "
         + _CI_COMMITTER_DIRECTIVE +
+        "Always include concrete, ordered **verification steps** that a human can "
+        "follow to validate the behavior. For bug-fix cards, call these "
+        "\"verification steps\" (or \"fix verification steps\") rather than "
+        "\"reproduction steps\".\n"
+        "When visual validation is possible, capture evidence (screenshots/GIF/video "
+        "references) and include it in the JSON output. If you cannot capture visual "
+        "artifacts, you MUST explain why and list the exact setup/navigation steps "
+        "required for a human to capture them.\n"
+        "Set `visual_validation_required` to true for UI/UX/visual tasks (layout, styling, "
+        "interaction, rendering, or dashboard/page changes). For required visual validation, "
+        "you must include at least one `visual_evidence` artifact from this run. If capture is "
+        "blocked by the environment, set `environment_error` and explain blockers.\n"
         "When done, output your QA report as a JSON object with these fields:\n"
         '{"passed": true/false, "criteria_checked": 5, "criteria_passed": 4, '
         '"failures": [{"criterion": "...", "expected": "...", "actual": "...", "test": "..."}], '
-        '"new_tests_added": ["path/to/test1.rb"]}\n'
+        '"new_test_files": [{"path": "path/to/test1.rb", "content": "full test file content"}], '
+        '"verification_steps": ["step 1", "step 2"], '
+        '"pre_fix_repro_steps": ["optional known repro step"], '
+        '"visual_validation_required": true/false, '
+        '"demo_setup_steps": ["optional setup + navigation step to reach the UI under test"], '
+        '"visual_capture_commands": ["exact command attempted to capture screenshot/gif"], '
+        '"visual_capture_blockers": ["optional reason screenshots could not be captured"], '
+        '"visual_evidence": [{"label": "after fix", "kind": "screenshot|gif|video|artifact", '
+        '"path_or_url": "https://... or path/in/repo.png", "note": "optional context"}]}\n'
+        "The `verification_steps` field is REQUIRED and must be non-empty. "
         "Your FINAL output MUST be valid JSON."
     ),
     "closer": (

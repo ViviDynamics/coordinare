@@ -86,6 +86,10 @@ performers:
   closer:
     backend: codex
 
+# Guardrail: stop opening fresh PRs after too many closed attempts for one issue.
+# Counts only CLOSED (unmerged) linked PRs. Set 0 to disable.
+max_closed_pr_attempts_per_issue: 3
+
 # --- Persona Instructions (018) ---
 # Customise per-role AI prompts. Omitted roles use built-in defaults.
 #

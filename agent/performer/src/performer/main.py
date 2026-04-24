@@ -9,6 +9,7 @@ import re
 import sys
 import uuid
 from datetime import UTC, datetime
+from urllib.parse import urlparse
 
 import psutil
 import structlog
@@ -17,7 +18,7 @@ from pydantic import ValidationError
 from performer.backends import UnsupportedBackendError, get_backend
 from performer.backends.base import BackendAdapter, BackendStatus
 from performer.config import Settings, get_settings
-from performer.github import GitHubAPIError, create_pull_request, get_check_runs, post_pr_comment, post_pull_request_review, resolve_pr_review_threads, summarise_check_runs
+from performer.github import GitHubAPIError, create_pull_request, get_check_runs, post_issue_comment, post_pr_comment, post_pull_request_review, resolve_pr_review_threads, summarise_check_runs
 from performer.models import Performance, Score, Stand, _redact_secrets
 from performer.protocol import PerformerMessage, PerformerMetrics, PerformerResponse
 from performer.workspace import commit_file
@@ -35,6 +36,45 @@ from performer.workspace import (
 log = structlog.get_logger(__name__)
 
 _CODE_FENCE_RE = re.compile(r"```(?:json)?\s*\n?(.*?)\n?\s*```", re.DOTALL | re.IGNORECASE)
+_FORMAT_ERROR_PREFIX = "BACKEND_FORMAT_ERROR:"
+_VISUAL_TASK_KEYWORDS = (
+    "ui",
+    "ux",
+    "dashboard",
+    "screen",
+    "page",
+    "view",
+    "visual",
+    "layout",
+    "css",
+    "style",
+    "frontend",
+    "button",
+    "component",
+    "render",
+    "screenshot",
+    "gif",
+)
+_VISUAL_TASK_PATTERN = re.compile(
+    r"\b(?:"
+    + "|".join(re.escape(keyword) for keyword in _VISUAL_TASK_KEYWORDS)
+    + r")\b",
+    re.IGNORECASE,
+)
+_ROLE_ALIASES: dict[str, str] = {
+    "assessor": "assessing",
+    "reviewer": "reviewing",
+    "closer": "closing_review",
+    "tech_writer": "documenting",
+}
+_JSON_ROLE_REQUIRED_KEYS: dict[str, tuple[str, ...]] = {
+    "assessing": ("sufficient", "questions"),
+    "reviewing": ("approved", "comments", "body"),
+    "closing_review": ("approved", "comments", "body"),
+    "security": ("passed", "findings"),
+    "qa": ("passed", "failures", "verification_steps"),
+    "documenting": ("files",),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -108,6 +148,308 @@ def _extract_json(text: str) -> dict | list | None:
     return None
 
 
+def _extract_pr_number(pr_url: str) -> int:
+    """Extract PR number from a GitHub PR URL, or 0 when unavailable."""
+    raw = (pr_url or "").strip()
+    if not raw:
+        return 0
+    path = urlparse(raw).path or raw
+    match = re.search(r"/pull/(\d+)(?:/|$)", path)
+    if match is None:
+        return 0
+    try:
+        return int(match.group(1))
+    except (ValueError, IndexError):
+        return 0
+
+
+def _normalise_steps(value: object) -> list[str]:
+    """Normalize backend-provided step lists into non-empty strings."""
+    if not isinstance(value, list):
+        return []
+    out: list[str] = []
+    for item in value:
+        if isinstance(item, str):
+            step = item.strip()
+            if step:
+                out.append(step)
+            continue
+        if isinstance(item, dict):
+            step = str(item.get("step", item.get("text", ""))).strip()
+            if step:
+                out.append(step)
+    # Preserve order while removing duplicates.
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for step in out:
+        if step in seen:
+            continue
+        seen.add(step)
+        deduped.append(step)
+    return deduped
+
+
+def _normalise_visual_evidence(value: object) -> list[dict[str, str]]:
+    """Normalize visual evidence items into a consistent dict shape."""
+    if not isinstance(value, list):
+        return []
+    out: list[dict[str, str]] = []
+    for item in value:
+        if isinstance(item, str):
+            loc = item.strip()
+            if loc:
+                out.append({
+                    "label": "Evidence",
+                    "kind": "artifact",
+                    "path_or_url": loc,
+                    "note": "",
+                })
+            continue
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get("label", "Evidence")).strip() or "Evidence"
+        kind = str(item.get("kind", "artifact")).strip() or "artifact"
+        loc = str(item.get("path_or_url", item.get("url", item.get("path", "")))).strip()
+        note = str(item.get("note", item.get("description", ""))).strip()
+        if not loc and not note:
+            continue
+        out.append({
+            "label": label,
+            "kind": kind,
+            "path_or_url": loc,
+            "note": note,
+        })
+    return out[:20]
+
+
+def _looks_like_url(value: str) -> bool:
+    """Return True for HTTP(S) URLs."""
+    return value.startswith("http://") or value.startswith("https://")
+
+
+def _qa_visual_validation_required(
+    *,
+    score: Score,
+    qa_output: dict,
+    demo_setup_steps: list[str],
+    visual_capture_blockers: list[str],
+    visual_evidence: list[dict[str, str]],
+) -> bool:
+    """Determine whether this QA run must include visual artifacts."""
+    raw = qa_output.get("visual_validation_required")
+    if isinstance(raw, bool):
+        return raw
+
+    if demo_setup_steps or visual_capture_blockers or visual_evidence:
+        return True
+
+    content = "\n".join(
+        [
+            score.title,
+            score.description,
+            "\n".join(score.acceptance_criteria or []),
+        ],
+    )
+    return _VISUAL_TASK_PATTERN.search(content) is not None
+
+
+def _qa_visual_evidence_failures(
+    *,
+    required: bool,
+    stand_path: Path,
+    visual_capture_commands: list[str],
+    visual_capture_blockers: list[str],
+    visual_evidence: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    """Return synthetic QA failures for missing/invalid visual evidence."""
+    if not required:
+        return []
+
+    failures: list[dict[str, str]] = []
+    if not visual_evidence:
+        attempts_text = " | ".join(visual_capture_commands[:3]) if visual_capture_commands else "none"
+        blockers_text = " | ".join(visual_capture_blockers[:3]) if visual_capture_blockers else "none"
+        failures.append(
+            {
+                "criterion": "Visual evidence artifacts captured",
+                "expected": "At least one screenshot/GIF/video/artifact generated from this QA run.",
+                "actual": (
+                    f"No artifacts captured. Commands attempted: {attempts_text}. "
+                    f"Blockers: {blockers_text}."
+                ),
+                "test": "visual-capture",
+            },
+        )
+        return failures
+
+    has_artifact_location = False
+    missing_location_count = 0
+    for ev in visual_evidence:
+        loc = str(ev.get("path_or_url", "")).strip()
+        if not loc:
+            missing_location_count += 1
+            continue
+        has_artifact_location = True
+        if _looks_like_url(loc):
+            continue
+        candidate = Path(loc)
+        artifact_path = candidate if candidate.is_absolute() else (stand_path / candidate)
+        if artifact_path.exists():
+            continue
+        failures.append(
+            {
+                "criterion": "Visual evidence artifact path exists",
+                "expected": "Each local visual artifact path points to an existing file.",
+                "actual": f"Artifact path does not exist: {loc}",
+                "test": "visual-capture",
+            },
+        )
+    if missing_location_count:
+        failures.append(
+            {
+                "criterion": "Visual evidence entries include artifact locations",
+                "expected": "Each visual evidence entry includes a non-empty path_or_url.",
+                "actual": (
+                    f"{missing_location_count} visual evidence entr"
+                    f"{'y is' if missing_location_count == 1 else 'ies are'} missing path_or_url."
+                ),
+                "test": "visual-capture",
+            },
+        )
+    if not has_artifact_location:
+        failures.append(
+            {
+                "criterion": "Visual evidence artifacts captured",
+                "expected": "At least one visual evidence entry includes a screenshot/GIF/video path_or_url.",
+                "actual": "Only note-only visual evidence entries were provided.",
+                "test": "visual-capture",
+            },
+        )
+    return failures
+
+
+def _is_bug_like_ticket(score: Score) -> bool:
+    """Heuristic: detect bug-fix tickets for step-label wording."""
+    text = f"{score.title}\n{score.description}".lower()
+    bug_keywords = ("bug", "fix", "regression", "broken", "error", "defect", "crash", "issue")
+    return any(word in text for word in bug_keywords)
+
+
+def _default_verification_steps(score: Score) -> list[str]:
+    """Generate fallback verification steps when backend omitted them."""
+    criteria = [str(c).strip() for c in (score.acceptance_criteria or []) if str(c).strip()]
+    if criteria:
+        return [f"Verify acceptance criterion: {criterion}" for criterion in criteria[:10]]
+    return [
+        "Run the relevant automated tests and confirm they pass.",
+        "Manually validate the changed user flow end-to-end and confirm expected behavior.",
+    ]
+
+
+def _build_qa_pr_comment(
+    *,
+    score: Score,
+    passed: bool,
+    criteria_checked: int,
+    criteria_passed: int,
+    failures: list[dict],
+    verification_steps: list[str],
+    pre_fix_repro_steps: list[str],
+    demo_setup_steps: list[str],
+    visual_capture_commands: list[str],
+    visual_capture_blockers: list[str],
+    visual_evidence: list[dict[str, str]],
+    environment_error: str,
+) -> str:
+    """Render a human-facing QA evidence comment for the PR thread."""
+    bug_like = _is_bug_like_ticket(score)
+    verify_heading = "Fix Verification Steps" if bug_like else "Demo / Verification Steps"
+    lines = [
+        "## QA Evidence",
+        "",
+        f"**Result:** {'PASSED' if passed else 'FAILED'}",
+        f"- Criteria checked: {criteria_checked}",
+        f"- Criteria passed: {criteria_passed}",
+    ]
+
+    if environment_error:
+        lines += [
+            "",
+            "### Environment Blocker",
+            f"- {environment_error}",
+        ]
+
+    if pre_fix_repro_steps:
+        lines += ["", "### Known Reproduction Steps (pre-fix context)"]
+        lines.extend(f"{idx}. {step}" for idx, step in enumerate(pre_fix_repro_steps, start=1))
+
+    if demo_setup_steps:
+        lines += ["", "### Visual Capture Setup Steps"]
+        lines.extend(f"{idx}. {step}" for idx, step in enumerate(demo_setup_steps, start=1))
+
+    if visual_capture_commands:
+        lines += ["", "### Visual Capture Commands Attempted"]
+        lines.extend(f"{idx}. `{cmd}`" for idx, cmd in enumerate(visual_capture_commands, start=1))
+
+    lines += ["", f"### {verify_heading}"]
+    lines.extend(f"{idx}. {step}" for idx, step in enumerate(verification_steps, start=1))
+
+    lines += ["", "### Visual Evidence"]
+    if visual_evidence:
+        for ev in visual_evidence:
+            label = ev.get("label", "Evidence")
+            kind = ev.get("kind", "artifact")
+            loc = ev.get("path_or_url", "")
+            note = ev.get("note", "")
+            line = f"- **{label}** ({kind})"
+            if loc:
+                line += f": `{loc}`"
+            if note:
+                line += f" — {note}"
+            lines.append(line)
+    else:
+        lines.append("- No visual artifacts captured in this QA run.")
+        if visual_capture_blockers:
+            lines.append("- Capture blockers:")
+            lines.extend(f"  - {blocker}" for blocker in visual_capture_blockers)
+
+    if failures:
+        lines += ["", "### Remaining Failures"]
+        for failure in failures[:10]:
+            criterion = str(failure.get("criterion", ""))
+            expected = str(failure.get("expected", ""))
+            actual = str(failure.get("actual", ""))
+            lines.append(f"- **{criterion or 'Unnamed criterion'}** — expected `{expected}`, got `{actual}`")
+
+    return "\n".join(lines)
+
+
+def _json_required_role(role: str) -> bool:
+    """Return True when a role's terminal output must be JSON."""
+    canonical = _ROLE_ALIASES.get(role, role)
+    return canonical in _JSON_ROLE_REQUIRED_KEYS
+
+
+def _json_recovery_prompt(
+    *,
+    role: str,
+    stage_label: str,
+    failure_reason: str,
+    output_preview: str,
+) -> str:
+    """Build a strict JSON-only repair prompt for retry turns."""
+    canonical = _ROLE_ALIASES.get(role, role)
+    required = _JSON_ROLE_REQUIRED_KEYS.get(canonical, ())
+    keys_hint = ", ".join(required) if required else "(role schema)"
+    return (
+        f"Your previous {stage_label} response {failure_reason}. "
+        "Return ONLY a valid JSON object now. "
+        "Do NOT include markdown, prose, or code fences.\n\n"
+        f"Required top-level keys: {keys_hint}\n"
+        f"Previous output preview: {output_preview}"
+    )
+
+
 async def _handle_backend_parse_failure(
     perf: Performance,
     raw: str,
@@ -125,6 +467,7 @@ async def _handle_backend_parse_failure(
     failed output.  (045)
     """
     max_retries = settings.BACKEND_PARSE_RETRIES if settings else get_settings().BACKEND_PARSE_RETRIES
+    is_json_contract_role = _json_required_role(perf.role)
     # Copilot round 4: ``raw`` is untrusted backend output; run it through
     # the existing secret-pattern redactor before logging it or embedding
     # it in perf.error_reason (which propagates to coordinare-side logs,
@@ -142,34 +485,56 @@ async def _handle_backend_parse_failure(
             failure_reason=failure_reason,
             output_preview=redacted_short,
         )
-        # Copilot round 5: backends like OpenCodeAdapter launch long-lived
-        # ``opencode serve`` processes and start() doesn't tear down previous
-        # instances.  Stop the current backend (best-effort) before launching
-        # a fresh run so repeated parse failures don't leak subprocesses or
-        # background tasks.  Swallow stop() failures — the backend may be
-        # already dead, and start() is what matters.
-        try:
-            await perf.backend.stop()
-        except Exception as exc:
-            log.warning(
-                "backend.parse_retry_stop_failed",
-                stage=stage_label,
-                error=str(exc),
-            )
-        model_name = perf.score.model or None
-        await perf.backend.start(perf.stand, perf.score, model=model_name)
+        recovery_attempted = False
+        if is_json_contract_role:
+            try:
+                await perf.backend.relay_feedback(
+                    _json_recovery_prompt(
+                        role=perf.role,
+                        stage_label=stage_label,
+                        failure_reason=failure_reason,
+                        output_preview=redacted_short or "<empty>",
+                    )
+                )
+                recovery_attempted = True
+            except Exception as exc:
+                log.warning(
+                    "backend.parse_retry_relay_failed",
+                    stage=stage_label,
+                    role=perf.role,
+                    error=str(exc),
+                )
+        if not recovery_attempted:
+            # Copilot round 5: backends like OpenCodeAdapter launch long-lived
+            # ``opencode serve`` processes and start() doesn't tear down previous
+            # instances.  Stop the current backend (best-effort) before launching
+            # a fresh run so repeated parse failures don't leak subprocesses or
+            # background tasks.  Swallow stop() failures — the backend may be
+            # already dead, and start() is what matters.
+            try:
+                await perf.backend.stop()
+            except Exception as exc:
+                log.warning(
+                    "backend.parse_retry_stop_failed",
+                    stage=stage_label,
+                    error=str(exc),
+                )
+            model_name = perf.score.model or None
+            await perf.backend.start(perf.stand, perf.score, model=model_name)
         return PerformerResponse(
             status="working",
             session_id=perf.session_id,
             progress=(
-                f"Backend {stage_label} output {failure_reason} — "
+                f"Backend {stage_label} output {failure_reason}; "
+                f"{'requested JSON repair' if recovery_attempted else 'restarting backend'} — "
                 f"retrying ({perf.parse_retry_count}/{max_retries})"
             ),
         )
     redacted_long = _redact_secrets((raw or "")[:300])
     perf.state = "error"
+    prefix = f"{_FORMAT_ERROR_PREFIX} " if is_json_contract_role else ""
     perf.error_reason = (
-        f"Backend {stage_label} output {failure_reason} after "
+        f"{prefix}Backend {stage_label} output {failure_reason} after "
         f"{perf.parse_retry_count + 1} attempts. Last output: {redacted_long!r}"
     )
     return PerformerResponse(
@@ -223,7 +588,7 @@ async def handle_dispatch(
     """Clone the repo, start the backend, and return accepted + session_id."""
     score = Score(**msg.payload)
     # All fields now come from Score (proper pydantic fields, not raw payload)
-    role = score.role
+    role = _ROLE_ALIASES.get(score.role, score.role)
     raw_backend = score.backend or settings.AGENT_BACKEND
     backend_name = raw_backend.replace("-", "_").lower()  # normalize kebab-case
     model_name = score.model or None
@@ -281,6 +646,7 @@ async def handle_dispatch(
         status="accepted",
         session_id=session_id,
         backend=backend_name,
+        model=model_name,
     ), perf
 
 
@@ -837,10 +1203,46 @@ async def handle_status(
                                 reason=perf.error_reason,
                             )
 
+            verification_steps = _normalise_steps(qa_output.get("verification_steps", []))
+            demo_steps = _normalise_steps(qa_output.get("demo_steps", []))
+            for step in demo_steps:
+                if step not in verification_steps:
+                    verification_steps.append(step)
+            if not verification_steps:
+                verification_steps = _default_verification_steps(perf.score)
+            pre_fix_repro_steps = _normalise_steps(
+                qa_output.get("pre_fix_repro_steps", qa_output.get("reproduction_steps", [])),
+            )
+            demo_setup_steps = _normalise_steps(qa_output.get("demo_setup_steps", []))
+            visual_capture_commands = _normalise_steps(qa_output.get("visual_capture_commands", []))
+            visual_capture_blockers = _normalise_steps(qa_output.get("visual_capture_blockers", []))
+            visual_evidence = _normalise_visual_evidence(qa_output.get("visual_evidence", []))
+            visual_validation_required = _qa_visual_validation_required(
+                score=perf.score,
+                qa_output=qa_output,
+                demo_setup_steps=demo_setup_steps,
+                visual_capture_blockers=visual_capture_blockers,
+                visual_evidence=visual_evidence,
+            )
+
+            # Check for failures/env blockers before summarising and posting evidence.
+            raw_failures = qa_output.get("failures", [])
+            failures = [f for f in (raw_failures if isinstance(raw_failures, list) else []) if isinstance(f, dict)]
+            env_error = str(qa_output.get("environment_error", "")).strip()
+            failures.extend(
+                _qa_visual_evidence_failures(
+                    required=visual_validation_required,
+                    stand_path=perf.stand.path,
+                    visual_capture_commands=visual_capture_commands,
+                    visual_capture_blockers=visual_capture_blockers,
+                    visual_evidence=visual_evidence,
+                ),
+            )
+            qa_passed_flag = (not failures) and (not env_error)
+
             # Commit QA report to the architecture folder
             folder = _doc_folder(perf.score)
             qa_report_content = f"# QA Report: {perf.score.title}\n\n"
-            qa_passed_flag = qa_output.get("passed", True)
             criteria_checked = qa_output.get("criteria_checked", 0)
             criteria_passed = qa_output.get("criteria_passed", 0)
             qa_report_content += f"**Result: {'PASSED' if qa_passed_flag else 'FAILED'}**\n\n"
@@ -850,15 +1252,47 @@ async def handle_status(
                 qa_report_content += f"- New tests added: {len(perf.qa_new_tests)}\n"
                 for tp in perf.qa_new_tests:
                     qa_report_content += f"  - `{tp}`\n"
-            qa_failures = qa_output.get("failures", [])
-            if isinstance(qa_failures, list) and qa_failures:
+            if pre_fix_repro_steps:
+                qa_report_content += "\n## Known Reproduction Steps (pre-fix context)\n\n"
+                for idx, step in enumerate(pre_fix_repro_steps, start=1):
+                    qa_report_content += f"{idx}. {step}\n"
+            if demo_setup_steps:
+                qa_report_content += "\n## Visual Capture Setup Steps\n\n"
+                for idx, step in enumerate(demo_setup_steps, start=1):
+                    qa_report_content += f"{idx}. {step}\n"
+            if visual_capture_commands:
+                qa_report_content += "\n## Visual Capture Commands Attempted\n\n"
+                for idx, command in enumerate(visual_capture_commands, start=1):
+                    qa_report_content += f"{idx}. `{command}`\n"
+            qa_report_content += "\n## Verification Steps\n\n"
+            for idx, step in enumerate(verification_steps, start=1):
+                qa_report_content += f"{idx}. {step}\n"
+            qa_report_content += "\n## Visual Evidence\n\n"
+            if visual_evidence:
+                for ev in visual_evidence:
+                    label = ev.get("label", "Evidence")
+                    kind = ev.get("kind", "artifact")
+                    loc = ev.get("path_or_url", "")
+                    note = ev.get("note", "")
+                    qa_report_content += f"- **{label}** ({kind})"
+                    if loc:
+                        qa_report_content += f": `{loc}`"
+                    if note:
+                        qa_report_content += f" — {note}"
+                    qa_report_content += "\n"
+            else:
+                qa_report_content += "- No visual artifacts captured in this QA run.\n"
+                if visual_capture_blockers:
+                    qa_report_content += "\n### Capture blockers\n\n"
+                    for blocker in visual_capture_blockers:
+                        qa_report_content += f"- {blocker}\n"
+            if failures:
                 qa_report_content += "\n## Failures\n\n"
-                for f in qa_failures:
-                    if isinstance(f, dict):
-                        criterion = f.get("criterion", "")
-                        expected = f.get("expected", "")
-                        actual = f.get("actual", "")
-                        qa_report_content += f"- **{criterion}**\n  Expected: {expected}\n  Actual: {actual}\n\n"
+                for f in failures:
+                    criterion = f.get("criterion", "")
+                    expected = f.get("expected", "")
+                    actual = f.get("actual", "")
+                    qa_report_content += f"- **{criterion}**\n  Expected: {expected}\n  Actual: {actual}\n\n"
             try:
                 issue_num = perf.score.issue_number
                 await commit_file(
@@ -868,20 +1302,56 @@ async def handle_status(
             except Exception as exc:
                 log.warning("qa.commit_report_failed", error=str(exc))
 
+            qa_comment = _build_qa_pr_comment(
+                score=perf.score,
+                passed=qa_passed_flag,
+                criteria_checked=int(criteria_checked) if isinstance(criteria_checked, int | float) else 0,
+                criteria_passed=int(criteria_passed) if isinstance(criteria_passed, int | float) else 0,
+                failures=failures,
+                verification_steps=verification_steps,
+                pre_fix_repro_steps=pre_fix_repro_steps,
+                demo_setup_steps=demo_setup_steps,
+                visual_capture_commands=visual_capture_commands,
+                visual_capture_blockers=visual_capture_blockers,
+                visual_evidence=visual_evidence,
+                environment_error=env_error,
+            )
+
+            # Post QA evidence to the PR so humans can quickly validate behavior.
+            pr_number = _extract_pr_number(perf.pr_url)
+            if pr_number > 0:
+                owner, repo = perf.score.owner_repo
+                token = perf.score.effective_github_token
+                try:
+                    await post_pr_comment(owner, repo, pr_number, body=qa_comment, token=token)
+                except Exception as exc:
+                    log.warning("qa.evidence_comment_failed", error=str(exc), exc_info=True)
+            else:
+                log.warning("qa.evidence_comment_skipped_missing_pr_url", pr_url=perf.pr_url)
+
+            issue_number = perf.score.issue_number
+            if issue_number > 0:
+                owner, repo = perf.score.owner_repo
+                token = perf.score.effective_github_token
+                try:
+                    await post_issue_comment(owner, repo, issue_number, body=qa_comment, token=token)
+                except Exception as exc:
+                    log.warning(
+                        "qa.evidence_issue_comment_failed",
+                        issue_number=issue_number,
+                        error=str(exc),
+                        exc_info=True,
+                    )
+
             # Check for environment failure before acceptance criteria
-            env_error = qa_output.get("environment_error")
             if env_error:
                 perf.state = "blocked"
-                perf.open_questions = [str(env_error)]
+                perf.open_questions = [env_error]
                 return PerformerResponse(
                     status="blocked",
                     session_id=perf.session_id,
-                    questions=[str(env_error)],
+                    questions=[env_error],
                 )
-
-            # Check for failures
-            raw_failures = qa_output.get("failures", [])
-            failures = [f for f in (raw_failures if isinstance(raw_failures, list) else []) if isinstance(f, dict)]
 
             if not failures:
                 perf.state = "qa_passed"
@@ -889,6 +1359,13 @@ async def handle_status(
                     "criteria_checked": qa_output.get("criteria_checked", 0),
                     "criteria_passed": qa_output.get("criteria_passed", 0),
                     "new_tests_added": len(perf.qa_new_tests),
+                    "verification_steps": verification_steps,
+                    "pre_fix_repro_steps": pre_fix_repro_steps,
+                    "demo_setup_steps": demo_setup_steps,
+                    "visual_capture_commands": visual_capture_commands,
+                    "visual_capture_blockers": visual_capture_blockers,
+                    "visual_evidence": visual_evidence,
+                    "visual_validation_required": visual_validation_required,
                 }
                 return PerformerResponse(
                     status="qa_passed",

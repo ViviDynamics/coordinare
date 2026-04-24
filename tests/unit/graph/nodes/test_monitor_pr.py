@@ -4,6 +4,7 @@ import pytest
 
 from coordinare.graph.nodes.monitor_pr import monitor_pr
 from coordinare.graph.state import initial_state
+from coordinare.services.github import TransientGitHubError
 
 
 class _GitHub:
@@ -103,6 +104,58 @@ async def test_monitor_pr_stays_monitoring_when_no_reviews() -> None:
     state["current_card"] = {"pr_node_id": "PR_1"}
     state["human_reviewers"] = ["alice"]
     state["github_service"] = _GitHubNoReviews()
+
+    result = await monitor_pr(state)
+
+    assert result["phase"] == "monitoring_pr"
+
+
+class _GitHubTransientReviews:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def get_pr_reviews(self, pr_id: str):
+        self.calls += 1
+        raise TransientGitHubError("dns lookup failed")
+
+
+@pytest.mark.asyncio
+async def test_monitor_pr_defers_transient_get_reviews_failures() -> None:
+    state = initial_state()
+    state["current_card"] = {"pr_node_id": "PR_1"}
+    state["human_reviewers"] = ["alice"]
+    gh = _GitHubTransientReviews()
+    state["github_service"] = gh
+
+    result = await monitor_pr(state)
+
+    assert result["phase"] == "monitoring_pr"
+    queue = result.get("github_retry_queue") or []
+    assert any(entry.get("operation") == "monitor_pr" for entry in queue if isinstance(entry, dict))
+    assert gh.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_monitor_pr_skips_get_reviews_until_deferred_retry_is_due() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    class _GitHubShouldNotCallReviews:
+        async def get_pr_reviews(self, pr_id: str):
+            raise AssertionError("get_pr_reviews should be deferred")
+
+    state = initial_state()
+    state["current_card"] = {"pr_node_id": "PR_1"}
+    state["human_reviewers"] = ["alice"]
+    state["github_service"] = _GitHubShouldNotCallReviews()
+    state["github_retry_queue"] = [
+        {
+            "operation": "monitor_pr",
+            "attempt": 2,
+            "retry_at": datetime.now(UTC) + timedelta(seconds=180),
+            "error": "dns outage",
+            "deferred_at": datetime.now(UTC),
+        },
+    ]
 
     result = await monitor_pr(state)
 
@@ -350,3 +403,28 @@ async def test_monitor_pr_recovery_swallows_github_errors() -> None:
     result = await monitor_pr(state)
 
     assert result["phase"] == "idle"
+
+
+@pytest.mark.asyncio
+async def test_monitor_pr_recovery_defers_transient_errors() -> None:
+    class _TransientRecovery:
+        async def find_pr_for_issue(self, issue_node_id: str):
+            raise TransientGitHubError("temporary failure in name resolution")
+
+        async def get_pr_reviews(self, pr_id: str):
+            raise AssertionError("must not be called when recovery deferred")
+
+    state = initial_state()
+    state["current_card"] = {
+        "id": "card-1",
+        "issue_id": "I_kwDO_issue",
+        "pr_node_id": None,
+    }
+    state["human_reviewers"] = ["alice"]
+    state["github_service"] = _TransientRecovery()
+
+    result = await monitor_pr(state)
+
+    assert result["phase"] == "monitoring_pr"
+    queue = result.get("github_retry_queue") or []
+    assert any(entry.get("operation") == "monitor_pr" for entry in queue if isinstance(entry, dict))

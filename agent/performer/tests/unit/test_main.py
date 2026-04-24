@@ -16,6 +16,7 @@ from performer.config import Settings, get_settings
 from performer.github import GitHubAPIError
 from performer.main import (
     _doc_folder,
+    _extract_pr_number,
     collect_metrics,
     handle_dispatch,
     handle_health,
@@ -67,6 +68,24 @@ def _settings(backend: str = "opencode") -> Settings:
 
 
 # ---------------------------------------------------------------------------
+# Helper parsing
+# ---------------------------------------------------------------------------
+
+class TestExtractPRNumber:
+    def test_extracts_plain_pull_url(self) -> None:
+        assert _extract_pr_number("https://github.com/acme/repo/pull/42") == 42
+
+    def test_extracts_pull_number_from_suffix_path(self) -> None:
+        assert _extract_pr_number("https://github.com/acme/repo/pull/42/files") == 42
+
+    def test_extracts_pull_number_with_query_fragment(self) -> None:
+        assert _extract_pr_number("https://github.com/acme/repo/pull/42?foo=bar#diff") == 42
+
+    def test_returns_zero_when_missing_pull_segment(self) -> None:
+        assert _extract_pr_number("https://github.com/acme/repo/issues/42") == 0
+
+
+# ---------------------------------------------------------------------------
 # handle_health
 # ---------------------------------------------------------------------------
 
@@ -107,8 +126,32 @@ class TestHandleDispatch:
             elapsed = time.monotonic() - t0
         assert resp.status == "accepted"
         assert resp.session_id  # non-empty UUID
+        assert resp.backend == "opencode"
+        assert resp.model is None
         # SC-003: accepted within 5s
         assert elapsed < 5.0, f"dispatch acceptance took {elapsed:.3f}s — exceeds SC-003 budget"
+
+    async def test_dispatch_returns_backend_and_model_overrides(self) -> None:
+        msg = _msg(
+            "dispatch",
+            title="T",
+            repo_url="https://github.com/org/repo",
+            branch="feat/x",
+            github_token="tok",
+            backend="junie",
+            model="junie-pro-1",
+        )
+        mock_backend = MagicMock()
+        mock_backend.start = AsyncMock()
+        with (
+            patch("performer.main.clone_repository", new=AsyncMock(return_value=MagicMock())),
+            patch("performer.main.get_backend", return_value=mock_backend),
+        ):
+            resp, _ = await handle_dispatch(msg, _settings("opencode"))
+
+        assert resp.status == "accepted"
+        assert resp.backend == "junie"
+        assert resp.model == "junie-pro-1"
 
     async def test_invalid_payload_raises(self) -> None:
         bad_msg = _msg("dispatch", title="T")  # missing repo_url, branch, github_token
@@ -332,10 +375,34 @@ class TestBackendFactory:
         adapter = get_backend("opencode")
         assert isinstance(adapter, OpenCodeAdapter)
 
+    def test_junie_returns_adapter(self) -> None:
+        from performer.backends import get_backend
+        from performer.backends.junie import JunieBackend
+        adapter = get_backend("junie")
+        assert isinstance(adapter, JunieBackend)
+
+    def test_cursor_returns_adapter(self) -> None:
+        from performer.backends import get_backend
+        from performer.backends.cursor import CursorBackend
+        adapter = get_backend("cursor")
+        assert isinstance(adapter, CursorBackend)
+
     def test_unknown_raises_unsupported(self) -> None:
         from performer.backends import UnsupportedBackendError, get_backend
         with pytest.raises(UnsupportedBackendError, match="foobar"):
             get_backend("foobar")
+
+    def test_missing_backend_class_raises_unsupported(self) -> None:
+        from performer.backends import UnsupportedBackendError, get_backend
+        with patch("performer.backends.import_module", return_value=object()):
+            with pytest.raises(UnsupportedBackendError, match="misconfigured"):
+                get_backend("opencode")
+
+    def test_backend_import_error_raises_unsupported(self) -> None:
+        from performer.backends import UnsupportedBackendError, get_backend
+        with patch("performer.backends.import_module", side_effect=ImportError("boom")):
+            with pytest.raises(UnsupportedBackendError, match="supported"):
+                get_backend("opencode")
 
     def test_health_unhealthy_for_bad_backend(self) -> None:
         resp = handle_health(_settings("foobar"))
@@ -900,6 +967,28 @@ class TestArchitectPerformer:
         assert resp.status == "accepted"
 
     @pytest.mark.asyncio
+    async def test_dispatch_normalizes_role_alias_to_stage(self) -> None:
+        """Alias role names normalize to canonical stage names."""
+        msg = _msg(
+            "dispatch",
+            title="Test",
+            repo_url="https://github.com/acme/repo",
+            branch="feat/test",
+            role="reviewer",
+        )
+
+        mock_backend = MagicMock()
+        mock_backend.start = AsyncMock()
+
+        with patch("performer.main.clone_repository", new=AsyncMock(
+            return_value=Stand(path=Path("/tmp/test"), branch="feat/test")
+        )), patch("performer.main.get_backend", return_value=mock_backend):
+            resp, perf = await handle_dispatch(msg, Settings(AGENT_BACKEND="opencode"))
+
+        assert perf.role == "reviewing"
+        assert resp.status == "accepted"
+
+    @pytest.mark.asyncio
     async def test_architect_empty_output_returns_error(self) -> None:
         """Architect backend done with empty output returns error status."""
         perf = self._make_perf(role="architecting")
@@ -1363,6 +1452,220 @@ class TestQAPerformer:
         assert resp.report["criteria_checked"] == 5
 
     @pytest.mark.asyncio
+    async def test_qa_posts_pr_comment_with_verification_and_evidence(self) -> None:
+        import json
+        perf = self._make_perf()
+        perf.score.title = "Dashboard button visual polish"
+        perf.pr_url = "https://github.com/acme/repo/pull/42"
+        output = json.dumps({
+            "failures": [],
+            "criteria_checked": 2,
+            "criteria_passed": 2,
+            "visual_validation_required": True,
+            "verification_steps": ["Open the blog post.", "Click copy and confirm clipboard text."],
+            "visual_evidence": [
+                {
+                    "label": "After fix",
+                    "kind": "screenshot",
+                    "path_or_url": "https://example.com/after-fix.png",
+                    "note": "Copy button visible with no extra padding.",
+                },
+            ],
+        })
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+        mock_commit = AsyncMock()
+        mock_comment = AsyncMock(return_value={})
+        with (
+            patch("performer.main.commit_file", new=mock_commit),
+            patch("performer.main.post_pr_comment", new=mock_comment),
+        ):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+
+        assert resp.status == "qa_passed"
+        mock_comment.assert_called_once()
+        posted_body = mock_comment.call_args.kwargs["body"]
+        assert "QA Evidence" in posted_body
+        assert "Demo / Verification Steps" in posted_body
+        assert "after-fix.png" in posted_body
+        assert resp.report["verification_steps"] == [
+            "Open the blog post.",
+            "Click copy and confirm clipboard text.",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_qa_includes_visual_capture_setup_and_blockers_when_no_artifacts(self) -> None:
+        import json
+        perf = self._make_perf()
+        perf.score.title = "Fix dashboard copy button visual behavior"
+        perf.pr_url = "https://github.com/acme/repo/pull/42"
+        output = json.dumps({
+            "failures": [],
+            "criteria_checked": 2,
+            "criteria_passed": 2,
+            "visual_validation_required": True,
+            "verification_steps": ["Verify copy button behavior on blog post page."],
+            "demo_setup_steps": [
+                "Run bin/dev to start the Rails app.",
+                "Seed sample post content with fenced code blocks.",
+                "Open /blog/<slug> in a browser.",
+            ],
+            "visual_capture_commands": [
+                "bundle exec playwright screenshot http://localhost:3000/blog/example tmp/qa/copy-button.png",
+            ],
+            "visual_capture_blockers": [
+                "No headless browser screenshot tooling was configured in this runtime.",
+            ],
+            "visual_evidence": [],
+        })
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+        mock_commit = AsyncMock()
+        mock_comment = AsyncMock(return_value={})
+        with (
+            patch("performer.main.commit_file", new=mock_commit),
+            patch("performer.main.post_pr_comment", new=mock_comment),
+        ):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+
+        assert resp.status == "qa_failed"
+        posted_body = mock_comment.call_args.kwargs["body"]
+        assert "Visual Capture Setup Steps" in posted_body
+        assert "Visual Capture Commands Attempted" in posted_body
+        assert "Capture blockers" in posted_body
+        assert "No headless browser screenshot tooling was configured" in posted_body
+        assert "Remaining Failures" in posted_body
+        qa_report_markdown = mock_commit.call_args_list[-1][0][2]
+        assert "## Visual Capture Setup Steps" in qa_report_markdown
+        assert "## Visual Capture Commands Attempted" in qa_report_markdown
+        assert "### Capture blockers" in qa_report_markdown
+        assert resp.failures[0]["criterion"] == "Visual evidence artifacts captured"
+
+    @pytest.mark.asyncio
+    async def test_qa_visual_required_fails_when_evidence_has_no_artifact_location(self) -> None:
+        import json
+        perf = self._make_perf()
+        perf.score.title = "Dashboard UI polish for copy interactions"
+        perf.pr_url = "https://github.com/acme/repo/pull/42"
+        output = json.dumps({
+            "failures": [],
+            "criteria_checked": 2,
+            "criteria_passed": 2,
+            "visual_validation_required": True,
+            "verification_steps": ["Open dashboard and validate copy button styling."],
+            "visual_evidence": [
+                {
+                    "label": "Capture note",
+                    "kind": "screenshot",
+                    "note": "Tooling timed out before artifact upload completed.",
+                },
+            ],
+        })
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+        with patch("performer.main.commit_file", new=AsyncMock()):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+
+        assert resp.status == "qa_failed"
+        criteria = {failure["criterion"] for failure in resp.failures}
+        assert "Visual evidence entries include artifact locations" in criteria
+        assert "Visual evidence artifacts captured" in criteria
+
+    @pytest.mark.asyncio
+    async def test_qa_non_visual_ticket_can_pass_without_visual_artifacts(self) -> None:
+        import json
+        perf = self._make_perf()
+        perf.pr_url = "https://github.com/acme/repo/pull/42"
+        perf.score.title = "Harden GitHub retry backoff"
+        perf.score.description = "Improve retry handling for API outages."
+        output = json.dumps({
+            "failures": [],
+            "criteria_checked": 2,
+            "criteria_passed": 2,
+            "visual_validation_required": False,
+            "verification_steps": ["Run unit tests and verify backoff timings in logs."],
+            "visual_evidence": [],
+        })
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+        with patch("performer.main.commit_file", new=AsyncMock()):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+        assert resp.status == "qa_passed"
+
+    @pytest.mark.asyncio
+    async def test_qa_visual_keyword_matching_avoids_substring_false_positives(self) -> None:
+        import json
+        perf = self._make_perf()
+        perf.pr_url = "https://github.com/acme/repo/pull/42"
+        perf.score.title = "Fix build pipeline bug"
+        perf.score.description = "Harden build retries and logging for flaky CI runners."
+        output = json.dumps({
+            "failures": [],
+            "criteria_checked": 1,
+            "criteria_passed": 1,
+            "verification_steps": ["Run CI and verify retries are bounded."],
+            "visual_evidence": [],
+        })
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+        with patch("performer.main.commit_file", new=AsyncMock()):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+        assert resp.status == "qa_passed"
+
+    @pytest.mark.asyncio
+    async def test_qa_posts_issue_comment_when_issue_number_present(self) -> None:
+        import json
+        perf = self._make_perf()
+        perf.pr_url = "https://github.com/acme/repo/pull/42"
+        perf.score.issue_number = 89
+        output = json.dumps({
+            "failures": [],
+            "criteria_checked": 1,
+            "criteria_passed": 1,
+            "verification_steps": ["Open page and verify copied text."],
+        })
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+
+        mock_commit = AsyncMock()
+        mock_pr_comment = AsyncMock(return_value={})
+        mock_issue_comment = AsyncMock(return_value={})
+        with (
+            patch("performer.main.commit_file", new=mock_commit),
+            patch("performer.main.post_pr_comment", new=mock_pr_comment),
+            patch("performer.main.post_issue_comment", new=mock_issue_comment),
+        ):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+
+        assert resp.status == "qa_passed"
+        mock_pr_comment.assert_called_once()
+        mock_issue_comment.assert_called_once()
+        assert mock_issue_comment.call_args.args[2] == 89
+        issue_body = mock_issue_comment.call_args.kwargs["body"]
+        assert "QA Evidence" in issue_body
+        assert "Open page and verify copied text." in issue_body
+
+    @pytest.mark.asyncio
+    async def test_qa_bug_ticket_uses_fix_verification_label_and_default_steps(self) -> None:
+        import json
+        perf = self._make_perf()
+        perf.score.title = "Fix API retry bug"
+        perf.score.acceptance_criteria = ["Retries stop after configured max attempts."]
+        perf.pr_url = "https://github.com/acme/repo/pull/42"
+        output = json.dumps({"failures": [], "criteria_checked": 1, "criteria_passed": 1})
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+
+        mock_commit = AsyncMock()
+        mock_comment = AsyncMock(return_value={})
+        with (
+            patch("performer.main.commit_file", new=mock_commit),
+            patch("performer.main.post_pr_comment", new=mock_comment),
+        ):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+
+        assert resp.status == "qa_passed"
+        assert resp.report["verification_steps"][0].startswith("Verify acceptance criterion:")
+        qa_report_markdown = mock_commit.call_args_list[-1][0][2]
+        assert "## Verification Steps" in qa_report_markdown
+        assert "Retries stop after configured max attempts." in qa_report_markdown
+        posted_body = mock_comment.call_args.kwargs["body"]
+        assert "Fix Verification Steps" in posted_body
+
+    @pytest.mark.asyncio
     async def test_qa_failed_with_failures(self) -> None:
         import json
         perf = self._make_perf()
@@ -1652,21 +1955,49 @@ class TestAssessorRole:
         perf = self._make_perf()
         perf.backend.get_status.return_value = BackendStatus(state="done", output="prose, not json")
         perf.backend.start = AsyncMock()
+        perf.backend.relay_feedback = AsyncMock()
         settings = Settings(AGENT_BACKEND="opencode", AGENT_TIMEOUT=1800, BACKEND_PARSE_RETRIES=1)
 
-        # First call: parse fails, retry scheduled → working.
+        # First call: parse fails, JSON repair requested → working.
         resp1 = await handle_status(_msg("status", session_id="sid"), perf, settings)
         assert resp1.status == "working"
         assert perf.parse_retry_count == 1
-        assert perf.backend.start.await_count == 1  # backend re-started
+        assert "requested JSON repair" in (resp1.progress or "")
+        assert perf.backend.relay_feedback.await_count == 1
+        assert perf.backend.start.await_count == 0
 
         # Second call: parse fails again, budget exhausted → error with preview.
         resp2 = await handle_status(_msg("status", session_id="sid"), perf, settings)
         assert resp2.status == "error"
         reason = resp2.reason or ""
+        assert reason.startswith("BACKEND_FORMAT_ERROR:")
+        assert "after 2 attempts" in reason
         assert "could not be parsed" in reason.lower()
         assert "prose, not json" in reason  # preview carried into reason
         assert perf.state == "error"
+
+    @pytest.mark.asyncio
+    async def test_invalid_json_then_valid_json_recovers(self) -> None:
+        """JSON-required roles should recover without terminal error when retry output is valid."""
+        import json
+
+        perf = self._make_perf()
+        perf.backend.get_status.side_effect = [
+            BackendStatus(state="done", output="prose only"),
+            BackendStatus(state="done", output=json.dumps({"sufficient": True, "questions": []})),
+        ]
+        perf.backend.relay_feedback = AsyncMock()
+        perf.backend.start = AsyncMock()
+        settings = Settings(AGENT_BACKEND="opencode", AGENT_TIMEOUT=1800, BACKEND_PARSE_RETRIES=1)
+
+        resp1 = await handle_status(_msg("status", session_id="sid"), perf, settings)
+        assert resp1.status == "working"
+        assert perf.backend.relay_feedback.await_count == 1
+        assert perf.backend.start.await_count == 0
+
+        resp2 = await handle_status(_msg("status", session_id="sid"), perf, settings)
+        assert resp2.status == "assessment_complete"
+        assert perf.state == "assessment_complete"
 
     @pytest.mark.asyncio
     async def test_invalid_json_redacts_secrets_in_preview_and_reason(self) -> None:
@@ -1691,6 +2022,7 @@ class TestAssessorRole:
         reason = resp.reason or ""
 
         assert resp.status == "error"
+        assert reason.startswith("BACKEND_FORMAT_ERROR:")
         assert fake_pat not in reason
         assert "[REDACTED]" in reason
 

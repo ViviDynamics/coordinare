@@ -50,6 +50,8 @@ class TestProtocolResponse:
         assert resp.pr_url is None
         assert resp.pr_node_id is None
         assert resp.progress is None
+        assert resp.backend is None
+        assert resp.model is None
 
     def test_pr_opened_response(self) -> None:
         resp = ProtocolResponse(
@@ -94,6 +96,8 @@ class TestProtocolResponse:
             status="working",
             session_id="s1",
             progress="Building tests",
+            backend="cursor",
+            model="cursor-fast",
         )
         raw = resp.model_dump_json()
         restored = ProtocolResponse.model_validate_json(raw)
@@ -126,6 +130,8 @@ class TestGenerateContracts:
         assert "properties" in schema
         assert "status" in schema["properties"]
         assert "session_id" in schema["properties"]
+        assert "backend" in schema["properties"]
+        assert "model" in schema["properties"]
 
     def test_creates_output_dir_if_missing(self, tmp_path) -> None:
         nested = tmp_path / "nested" / "dir"

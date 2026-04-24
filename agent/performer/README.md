@@ -105,7 +105,7 @@ pytest tests/unit/test_protocol_contract.py -v
 
 | Variable | Default | Description |
 |---|---|---|
-| `AGENT_BACKEND` | `opencode` | Coding backend to use. Currently only `opencode` is supported. |
+| `AGENT_BACKEND` | `opencode` | Coding backend to use. Supported: `opencode`, `junie`, `cursor`, `claude_code`, `codex`. |
 | `AGENT_TIMEOUT` | `1800` | Maximum seconds for a single performance before the backend is killed and the session transitions to `error`. |
 
 ---

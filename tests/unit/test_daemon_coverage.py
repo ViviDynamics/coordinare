@@ -63,6 +63,18 @@ def test_build_snapshot_with_no_dispatch_has_no_session_id() -> None:
     assert snapshot.agent_session_id is None
 
 
+def test_build_snapshot_includes_performer_stage_and_lifecycle_sequence() -> None:
+    """053: Snapshot must carry lifecycle position for restart continuity."""
+    daemon = _make_daemon()
+    daemon._state["performer_stage"] = "architecting"
+    daemon._state["lifecycle_sequence"] = ["assessing", "architecting", "implementing"]
+
+    snapshot = daemon._build_snapshot()
+
+    assert snapshot.performer_stage == "architecting"
+    assert snapshot.lifecycle_sequence == ["assessing", "architecting", "implementing"]
+
+
 # ---------------------------------------------------------------------------
 # 042 — pr_url / pr_node_id None coercion (regression: writes literal "None")
 # ---------------------------------------------------------------------------
@@ -221,6 +233,28 @@ def test_restore_from_snapshot_no_card_skips_current_card() -> None:
     daemon._restore_from_snapshot(snap)
     # current_card should not be set (active_card_id is None/empty)
     assert daemon._state.get("current_card") is None
+
+
+def test_restore_from_snapshot_restores_lifecycle_position() -> None:
+    """053 regression: restart restore must preserve in-flight performer stage."""
+    daemon = _make_daemon()
+    snap = WorkflowSnapshot(
+        snapshot_at=datetime.now(UTC),
+        phase="monitoring_performer",
+        active_card_id="card-1",
+        performer_stage="architecting",
+        lifecycle_sequence=["assessing", "architecting", "implementing", "reviewing"],
+    )
+
+    daemon._restore_from_snapshot(snap)
+
+    assert daemon._state["performer_stage"] == "architecting"
+    assert daemon._state["lifecycle_sequence"] == [
+        "assessing",
+        "architecting",
+        "implementing",
+        "reviewing",
+    ]
 
 
 # ---------------------------------------------------------------------------

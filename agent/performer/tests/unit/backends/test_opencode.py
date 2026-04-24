@@ -717,6 +717,47 @@ class TestBuildTaskPrompt:
         assert "Commit your changes" in prompt
         assert "Do not push or open a pull request — this will be handled automatically" in prompt
 
+    def test_reviewer_role_uses_json_only_footer(self) -> None:
+        score = Score(
+            title="T",
+            repo_url="https://github.com/org/repo",
+            branch="main",
+            github_token="tok",
+            role="reviewing",
+        )
+        prompt = _build_task_prompt(score)
+        assert "Return ONLY a valid JSON object" in prompt
+        assert "Do not include markdown, prose, or code fences." in prompt
+        assert "Commit your changes" not in prompt
+
+    def test_reviewer_noun_role_uses_json_only_footer(self) -> None:
+        score = Score(
+            title="T",
+            repo_url="https://github.com/org/repo",
+            branch="main",
+            github_token="tok",
+            role="reviewer",
+        )
+        prompt = _build_task_prompt(score)
+        assert "Return ONLY a valid JSON object" in prompt
+        assert "Commit your changes" not in prompt
+
+    def test_qa_role_includes_verification_contract_hints(self) -> None:
+        score = Score(
+            title="T",
+            repo_url="https://github.com/org/repo",
+            branch="main",
+            github_token="tok",
+            role="qa",
+        )
+        prompt = _build_task_prompt(score)
+        assert "verification_steps" in prompt
+        assert "visual_evidence" in prompt
+        assert "visual_validation_required" in prompt
+        assert "demo_setup_steps" in prompt
+        assert "visual_capture_commands" in prompt
+        assert "visual_capture_blockers" in prompt
+
 
 # ---------------------------------------------------------------------------
 # stop() — psutil NoSuchProcess paths

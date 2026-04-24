@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_ignore_empty=True, extra="ignore")
 
     AGENT_BACKEND: str = "opencode"
-    # Supported values: "opencode" | "claude_code" | "codex" (stub)
+    # Supported values: "opencode" | "junie" | "cursor" | "claude_code" | "codex"
     AGENT_TIMEOUT: int = 7200  # seconds — 120 minutes
 
     # 036 — GitHub Enterprise: configurable REST API base URL

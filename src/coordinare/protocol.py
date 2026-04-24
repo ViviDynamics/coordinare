@@ -51,6 +51,7 @@ class ProtocolResponse(BaseModel):
     # Telemetry fields — populated by performer on "working" status responses.
     # Must be kept in sync with performer.protocol.PerformerResponse.
     backend: str | None = None  # AGENT_BACKEND name, returned on dispatch
+    model: str | None = None  # model override, returned on dispatch if set
     plan_path: str | None = None  # 020: path to committed architecture plan
     comments: list[dict] = Field(default_factory=list)  # 021: review comments [{file, line, body}]
     suggestions: list[str] = Field(default_factory=list)  # 021: non-blocking suggestions

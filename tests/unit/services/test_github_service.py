@@ -298,3 +298,76 @@ class TestDeleteBranch:
             await svc.delete_branch("coordinare/CARD-89/add-auth")
         events = [e.get("event") for e in cap]
         assert "workspace.stale_branch_delete_failed" in events
+
+
+class TestBranchHasOpenPr:
+    @pytest.mark.asyncio
+    async def test_returns_true_when_open_pr_exists(self) -> None:
+        svc = _make_branch_service()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.is_success = True
+        mock_resp.json.return_value = [{"number": 123}]
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client.get = AsyncMock(return_value=mock_resp)
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            result = await svc.branch_has_open_pr("coordinare/CARD-89/add-auth")
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_returns_false_when_no_open_pr(self) -> None:
+        svc = _make_branch_service()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.is_success = True
+        mock_resp.json.return_value = []
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client.get = AsyncMock(return_value=mock_resp)
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            result = await svc.branch_has_open_pr("coordinare/CARD-89/add-auth")
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_returns_none_on_404_repo_inaccessible_or_missing(self) -> None:
+        svc = _make_branch_service()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 404
+        mock_resp.is_success = False
+        mock_resp.text = "Not Found"
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client.get = AsyncMock(return_value=mock_resp)
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            result = await svc.branch_has_open_pr("coordinare/CARD-89/add-auth")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_returns_none_on_unexpected_status(self) -> None:
+        svc = _make_branch_service()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 500
+        mock_resp.is_success = False
+        mock_resp.text = "server error"
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client.get = AsyncMock(return_value=mock_resp)
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            result = await svc.branch_has_open_pr("coordinare/CARD-89/add-auth")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_returns_none_on_request_failure(self) -> None:
+        svc = _make_branch_service()
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client.get = AsyncMock(side_effect=RuntimeError("network down"))
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            result = await svc.branch_has_open_pr("coordinare/CARD-89/add-auth")
+        assert result is None

@@ -615,6 +615,29 @@ async def test_error_status_includes_reason_in_open_questions() -> None:
 
 
 @pytest.mark.asyncio
+async def test_backend_format_error_routes_to_system_error() -> None:
+    """Format-contract failures should route through retryable system_error path first."""
+    service = _Performer(
+        {"status": "error", "reason": "BACKEND_FORMAT_ERROR: invalid reviewer JSON after retries"},
+    )
+    state = _make_state(
+        service=service,
+        stage="reviewing",
+        sequence=["implementing", "reviewing"],
+    )
+    state["open_questions"] = ["stale question to clear"]
+    state["relay_feedback"] = [{"body": "stale feedback to clear"}]  # type: ignore[typeddict-unknown-key]
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "system_error"
+    assert result["system_error_count"] == 1
+    assert "BACKEND_FORMAT_ERROR" in (result.get("system_error_reason") or "")
+    assert result.get("open_questions", []) == []
+    assert result.get("relay_feedback", []) == []
+
+
+@pytest.mark.asyncio
 async def test_error_status_without_reason() -> None:
     """Error status with no reason still produces a meaningful open_questions entry."""
     service = _Performer({"status": "error"})
@@ -625,6 +648,106 @@ async def test_error_status_without_reason() -> None:
     assert result["phase"] == "blocked"
     assert len(result["open_questions"]) == 1
     assert "error" in result["open_questions"][0].lower()
+
+
+@pytest.mark.asyncio
+async def test_workflow_permission_push_error_reroutes_to_implementer() -> None:
+    """Workflow-permission push failures should auto-reroute with feedback."""
+    service = _Performer({
+        "status": "error",
+        "reason": (
+            "git push failed (exit 1): Push rejected: attempted to modify workflow file "
+            "`.github/workflows/main-branch-build.yml` but the GitHub App token lacks "
+            "`workflows` permission."
+        ),
+    })
+    state = _make_state(
+        service=service,
+        stage="implementing",
+        sequence=["assessing", "implementing", "reviewing"],
+    )
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "dispatching"
+    assert result["performer_stage"] == "implementing"
+    assert result["agent_dispatch"] == {}
+    assert result["agent_dispatch_at"] is None
+    assert result["open_questions"] == []
+    feedback = result.get("relay_feedback") or []
+    assert len(feedback) == 1
+    assert "workflow" in str(feedback[0].get("body", "")).lower()
+    assert result["feedback_cycle_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_workflow_permission_push_error_obeys_feedback_cycle_limit() -> None:
+    """When the retry budget is exhausted, workflow push errors block the card."""
+    from types import SimpleNamespace
+
+    service = _Performer({
+        "status": "error",
+        "reason": (
+            "git push failed (exit 1): refusing to allow a GitHub App to create or "
+            "update workflow `.github/workflows/main-branch-build.yml` without "
+            "`workflows` permission"
+        ),
+    })
+    state = _make_state(
+        service=service,
+        stage="implementing",
+        sequence=["implementing", "reviewing"],
+        card={
+            "id": "ITEM_1",
+            "status": "IN_PROGRESS",
+            "title": "Copy code button",
+            "issue_number": 89,
+            "pr_url": "https://github.com/ViviDynamics/website/pull/98",
+        },
+    )
+    state["config"] = SimpleNamespace(max_feedback_cycles=1)
+    state["feedback_cycle_count"] = 1  # type: ignore[typeddict-unknown-key]
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "blocked"
+    assert result["feedback_cycle_count"] == 2
+    msg = (result.get("open_questions") or [""])[0]
+    assert "workflow_push_permission" in msg
+    assert "pull/98" in msg
+
+
+@pytest.mark.asyncio
+async def test_workflow_permission_push_error_without_implementing_stage_logs_and_blocks() -> None:
+    """If lifecycle lacks implementing, workflow permission errors should block with an explicit log."""
+    from unittest.mock import patch
+
+    service = _Performer({
+        "status": "error",
+        "reason": (
+            "git push failed (exit 1): refusing to allow a GitHub App to create or "
+            "update workflow `.github/workflows/main-branch-build.yml` without "
+            "`workflows` permission"
+        ),
+    })
+    state = _make_state(
+        service=service,
+        stage="reviewing",
+        sequence=["reviewing"],
+    )
+
+    with patch("coordinare.graph.nodes.monitor_performer.logger.info") as info_mock:
+        result = await monitor_performer(state)
+
+    assert result["phase"] == "blocked"
+    assert result["performer_stage"] == "reviewing"
+    assert any("Performer (reviewing) encountered an error" in q for q in result.get("open_questions", []))
+    assert any(
+        call.args
+        and call.args[0] == "monitor_performer.workflow_push_permission_no_implementing_stage"
+        and call.kwargs.get("performer_stage") == "reviewing"
+        for call in info_mock.call_args_list
+    )
 
 
 # ---------------------------------------------------------------------------
