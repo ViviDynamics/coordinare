@@ -15,6 +15,7 @@ from coordinare.lib.acceptance_criteria import parse_acceptance_criteria
 from coordinare.models.dependency import DependencyStatus
 from coordinare.services.dependency import build_graph, resolve_off_board_dependencies
 from coordinare.services.dependency import filter_eligible_todo as _dep_filter
+from coordinare.services.rebase import repo_url_from_config
 from coordinare.session import create_session_from_card
 
 if TYPE_CHECKING:
@@ -119,16 +120,7 @@ async def check_board(state: CoordinareState) -> CoordinareState:
     active_sessions = state.get("active_sessions") or {}
     if active_sessions and config is not None:
         # Derive repo URL from config (not WorkspaceManager internals)
-        _org = getattr(config, "github_org", "") or ""
-        _project = getattr(config, "project_name", "") or ""
-        _org = str(_org) if isinstance(_org, str) else ""
-        _project = str(_project) if isinstance(_project, str) else ""
-        _api_url = getattr(config, "github_api_url", "") or ""
-        _host = "github.com"
-        if isinstance(_api_url, str) and _api_url and "github.com" not in _api_url:
-            from urllib.parse import urlparse as _urlparse
-            _host = _urlparse(_api_url).hostname or "github.com"
-        repo_url = f"https://{_host}/{_org}/{_project}.git" if _org and _project else ""
+        repo_url = repo_url_from_config(config)
         # Get token from github_service (which owns the auth)
         token = ""
         if github is not None and hasattr(github, "_current_token"):

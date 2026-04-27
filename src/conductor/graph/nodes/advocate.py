@@ -19,6 +19,12 @@ async def advocate_scan(state: CoordinareState) -> CoordinareState:
     If advocate_service is None (disabled), returns state unchanged.
     Otherwise calls scan_and_respond and updates advocate_history.
     """
+    # Multi-session fanout runs this node N times concurrently.  The preflight
+    # in _invoke_multi_session runs advocate_scan once on self._state first and
+    # sets this flag so per-session invocations are no-ops.
+    if state.get("_advocate_scan_done"):  # type: ignore[typeddict-item]
+        return state
+
     advocate_service = state.get("advocate_service")
     if advocate_service is None:
         return state

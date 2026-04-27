@@ -649,6 +649,60 @@ class TestRunLoop:
         feedback_resp = next((r for r in responses if r.status == "acknowledged"), None)
         assert feedback_resp is not None
 
+    async def test_status_message_refreshes_stand_git_env(self) -> None:
+        """A status poll carrying github_token updates both score.github_token and stand.git_env.
+
+        This covers the tech-writer (and architect/security/QA) 401 regression: those roles use
+        stand.git_env for git credential injection.  The fix must propagate the rotated token into
+        stand.git_env so that long-running sessions don't hit the old baked-in credentials.
+        """
+        import base64
+        from performer.workspace import _git_credential_vars
+
+        stand = Stand(path=Path("/tmp/x"), branch="feat/x")
+        stand.git_env = _git_credential_vars("old-token")
+
+        score = Score(
+            title="T",
+            repo_url="https://github.com/org/repo",
+            branch="feat/x",
+            github_token="old-token",
+        )
+        backend = MagicMock()
+        backend.stop = AsyncMock()
+
+        perf = Performance(session_id="sid", stand=stand, score=score, backend=backend)
+        perf.state = "working"  # type: ignore[assignment]
+        perf.started_at = datetime.now(UTC)
+
+        with (
+            patch("performer.main.handle_dispatch", new=AsyncMock(return_value=(
+                PerformerResponse(status="accepted", session_id="sid"),
+                perf,
+            ))),
+            patch("performer.main.handle_status", new=AsyncMock(
+                return_value=PerformerResponse(status="error", session_id="sid"),
+            )),
+            patch("performer.main.cleanup_stand"),
+        ):
+            await _run_loop_with([
+                _make_line(action="dispatch", title="T", repo_url="https://github.com/org/repo",
+                           branch="feat/x", github_token="old-token"),
+                _make_line(action="status", session_id="sid", payload={"github_token": "new-token"}),
+            ])
+
+        assert perf.score.github_token == "new-token"
+
+        expected_header = "Authorization: Basic " + base64.b64encode(
+            b"x-access-token:new-token"
+        ).decode()
+        assert perf.stand.git_env.get("GIT_CONFIG_VALUE_0") == expected_header
+
+        old_header = "Authorization: Basic " + base64.b64encode(
+            b"x-access-token:old-token"
+        ).decode()
+        assert perf.stand.git_env.get("GIT_CONFIG_VALUE_0") != old_header
+
     async def test_watchdog_fires_when_session_exceeds_timeout(self) -> None:
         """If the coordinare stops polling after dispatch, the watchdog terminates the loop."""
         mock_backend = MagicMock()
@@ -1752,6 +1806,110 @@ class TestQAPerformer:
         perf.qa_failures = [{"criterion": "X"}]
         resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
         assert resp.status == "qa_failed"
+
+    # --- 054: QA freshness gate tests ---
+
+    @pytest.mark.asyncio
+    async def test_qa_freshness_up_to_date_passes(self) -> None:
+        """054 T023: Branch includes latest main SHA → freshness check passes, qa_passed."""
+        import json
+        from unittest.mock import MagicMock
+
+        perf = self._make_perf()
+        perf.score.latest_main_sha = "abc1234567890000000000000000000000000000"
+        output = json.dumps({"failures": [], "criteria_checked": 2, "criteria_passed": 2})
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+
+        mock_proc = MagicMock()
+        mock_proc.wait = AsyncMock(return_value=0)
+
+        with (
+            patch("performer.main.commit_file", new=AsyncMock()),
+            patch("performer.main.get_head_sha", new=AsyncMock(return_value="head-sha")),
+            patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=mock_proc)),
+        ):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+
+        assert resp.status == "qa_passed"
+        assert resp.report is not None
+        fc = resp.report.get("qa_freshness_check", {})
+        assert fc.get("up_to_date") is True
+        assert fc.get("latest_main_sha") == perf.score.latest_main_sha
+
+    @pytest.mark.asyncio
+    async def test_qa_freshness_behind_main_fails(self) -> None:
+        """054 T023: Branch does not include latest main SHA → freshness fails, qa_failed."""
+        import json
+        from unittest.mock import MagicMock
+
+        perf = self._make_perf()
+        perf.score.latest_main_sha = "deadbeef0000000000000000000000000000000"
+        output = json.dumps({"failures": [], "criteria_checked": 2, "criteria_passed": 2})
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+
+        mock_proc = MagicMock()
+        mock_proc.wait = AsyncMock(return_value=1)  # non-zero → not an ancestor
+
+        with (
+            patch("performer.main.commit_file", new=AsyncMock()),
+            patch("performer.main.get_head_sha", new=AsyncMock(return_value="head-sha")),
+            patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=mock_proc)),
+        ):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+
+        assert resp.status == "qa_failed"
+        assert resp.report is not None
+        fc = resp.report.get("qa_freshness_check", {})
+        assert fc.get("up_to_date") is False
+
+    @pytest.mark.asyncio
+    async def test_qa_freshness_indeterminate_fails(self) -> None:
+        """054 T023: git subprocess raises → freshness is indeterminate, qa_failed."""
+        import json
+
+        perf = self._make_perf()
+        perf.score.latest_main_sha = "cafebabe0000000000000000000000000000000"
+        output = json.dumps({"failures": [], "criteria_checked": 2, "criteria_passed": 2})
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+
+        with (
+            patch("performer.main.commit_file", new=AsyncMock()),
+            patch("performer.main.get_head_sha", new=AsyncMock(return_value="head-sha")),
+            patch("asyncio.create_subprocess_exec", new=AsyncMock(side_effect=OSError("git not found"))),
+        ):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+
+        assert resp.status == "qa_failed"
+        assert resp.report is not None
+        fc = resp.report.get("qa_freshness_check", {})
+        assert fc.get("up_to_date") is None
+        assert fc.get("detail") == "freshness_check_indeterminate"
+
+    @pytest.mark.asyncio
+    async def test_qa_no_freshness_check_when_no_main_sha(self) -> None:
+        """054 T023: When latest_main_sha is empty, freshness is indeterminate (non-blocking)."""
+        import json
+
+        perf = self._make_perf()
+        perf.score.latest_main_sha = ""  # not provided
+        output = json.dumps({"failures": [], "criteria_checked": 2, "criteria_passed": 2})
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+
+        mock_subprocess = AsyncMock()
+        with (
+            patch("performer.main.commit_file", new=AsyncMock()),
+            patch("performer.main.get_head_sha", new=AsyncMock(return_value="head-sha")),
+            patch("asyncio.create_subprocess_exec", new=mock_subprocess),
+        ):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+
+        # No failure is added — QA still passes when coordinare hasn't provided a SHA.
+        assert resp.status == "qa_passed"
+        mock_subprocess.assert_not_called()
+        # But the indeterminate block IS recorded in the report.
+        freshness = (resp.report or {}).get("qa_freshness_check", {})
+        assert freshness.get("up_to_date") is None
+        assert freshness.get("detail") == "freshness_check_indeterminate"
 
 
 # ---------------------------------------------------------------------------

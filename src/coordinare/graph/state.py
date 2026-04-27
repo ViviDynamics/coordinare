@@ -145,6 +145,9 @@ class CoordinareState(TypedDict, total=False):
     # Deferred GitHub retries for transient outages (DNS/service down/circuit open).
     github_retry_queue: list[dict[str, Any]]
     github_retry_after: datetime | None
+    # 054: Per-cycle eligibility skip map — card_id → {reason, detail, blockers}.
+    # Cleared at cycle start; populated by _invoke_multi_session for ineligible sessions.
+    session_skip_reasons: dict[str, dict[str, Any]]
 
 
 def initial_state() -> CoordinareState:
@@ -186,4 +189,5 @@ def initial_state() -> CoordinareState:
         "session_stats": None,
         "github_retry_queue": [],
         "github_retry_after": None,
+        "session_skip_reasons": {},
     }

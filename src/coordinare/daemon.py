@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import copy
 import signal
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from time import monotonic, perf_counter
 from typing import TYPE_CHECKING, Any
@@ -9,19 +12,132 @@ from uuid import uuid4
 
 import structlog
 
+from coordinare.graph.nodes.github_retry import (
+    clear_deferred_github_operation,
+    defer_github_operation,
+    github_operation_ready,
+    is_transient_github_outage_error,
+)
 from coordinare.graph.state import CoordinareState, initial_state
 from coordinare.lib.runtime_events import build_runtime_event
 from coordinare.metrics import METRICS
+from coordinare.models.dependency import DependencyStatus
 from coordinare.observability import HEALTH, HealthStatus, bind_cycle_id, clear_cycle_id
 from coordinare.resilience import CircuitOpenError
-from coordinare.session import session_to_state, state_to_session
+from coordinare.services.dependency import build_graph as _build_dep_graph
+from coordinare.services.rebase import fetch_main_sha, repo_url_from_config, run_rebase_round
+from coordinare.session import _SESSION_FIELDS, session_to_state, state_to_session
 from coordinare.state_store import StateLoadError, WorkflowPhase, WorkflowSnapshot
 
 if TYPE_CHECKING:
     from coordinare.dashboard import DashboardStore
+    from coordinare.models.dependency import DependencyGraph
     from coordinare.state_store import StateStore
 
 logger = structlog.get_logger(__name__)
+
+
+@dataclass
+class SessionEligibility:
+    """Per-cycle eligibility verdict for one active session."""
+
+    card_id: str
+    eligible: bool
+    reason: str  # "eligible" | "blocked_column" | "dependency_blocked" | "missing_card"
+    blockers: list[int] = field(default_factory=list)
+
+
+@dataclass
+class AsyncSessionTickResult:
+    """Result of one concurrent session invocation."""
+
+    card_id: str
+    ok: bool
+    session_state: dict
+    skipped: bool = False
+    error: str | None = None
+    duration_ms: int = 0
+    global_updates: dict[str, Any] | None = None
+
+
+_PHASE_PRIORITY: dict[str, int] = {
+    "system_error": 9,
+    "blocked": 8,
+    "recovery": 7,
+    "merging": 6,
+    "relay_feedback": 5,
+    "dispatching": 4,
+    "monitoring_performer": 3,
+    "monitoring_pr": 2,
+    "monitoring_agent": 1,
+    "idle": 0,
+}
+
+
+def _derive_global_phase(active_sessions: dict) -> str:
+    """Derive the global daemon phase from the highest-priority session phase."""
+    if not active_sessions:
+        return "idle"
+    best = "idle"
+    best_pri = 0
+    for sess in active_sessions.values():
+        p = str(sess.get("phase") or "idle")
+        pri = _PHASE_PRIORITY.get(p, 0)
+        if pri > best_pri:
+            best = p
+            best_pri = pri
+    return best
+
+
+# Global state keys mutated by graph nodes (e.g. check_board) that are shared
+# across all sessions in a cycle.  After the concurrent fanout, these are merged
+# back into self._state from the first successful result so they're not lost.
+_GLOBAL_STATE_KEYS: tuple[str, ...] = (
+    "last_known_main_sha",
+    "last_rebase_round",
+    "last_poll_at",
+    "github_retry_queue",
+    "github_retry_after",
+    # advocate_history is union-merged across all session results below so
+    # no issue processed by any concurrent tick is re-scanned next cycle.
+    "advocate_history",
+    # phase is NOT included here; it is derived explicitly from active_sessions
+    # after the merge loop to avoid misreporting the daemon as idle when only
+    # the first completed session had phase="idle" while others are still active.
+)
+
+
+def _compute_eligibility(
+    card_id: str,
+    session: dict,
+    board_snapshot: dict[str, list[str]],
+    dep_graph: DependencyGraph | None,
+) -> SessionEligibility:
+    """Derive per-cycle eligibility for a session from board state."""
+    card = session.get("current_card") or {}
+    if not card:
+        return SessionEligibility(card_id=card_id, eligible=False, reason="missing_card")
+    card_item_id = str(card.get("content_id") or card.get("id") or "")
+    if not card_item_id:
+        return SessionEligibility(card_id=card_id, eligible=False, reason="missing_card")
+
+    blocked_cards = board_snapshot.get("BLOCKED", [])
+    if card_item_id in blocked_cards:
+        return SessionEligibility(card_id=card_id, eligible=False, reason="blocked_column")
+
+    if dep_graph is not None:
+        deps = dep_graph.by_dependent.get(card_item_id, [])
+        unresolved = [d for d in deps if d.status != DependencyStatus.SATISFIED]
+        if unresolved:
+            return SessionEligibility(
+                card_id=card_id,
+                eligible=False,
+                reason="dependency_blocked",
+                blockers=[d.blocker_issue_number for d in unresolved],
+            )
+
+    return SessionEligibility(card_id=card_id, eligible=True, reason="eligible")
+
 
 # Maps (previous_phase, current_phase) tuples to canonical metric transition labels.
 # Transitions not listed here are not recorded (e.g. recovery→idle, relay_feedback→*).
@@ -297,17 +413,17 @@ class CoordinareDaemon:
         return 1
 
     async def _invoke_multi_session(self) -> None:
-        """Process each active session through the graph independently.
+        """Process each active session through the graph concurrently.
 
         Called only when max_concurrent_cards > 1 and there are active
-        sessions.  Each session's fields are copied into the flat state,
-        the graph is invoked, and the resulting state is copied back into
-        the session.  Completed sessions (phase=idle, current_card=None)
-        are removed to free capacity.
+        sessions.  Before dispatching, eligible sessions are filtered from
+        ineligible ones (BLOCKED column, unsatisfied dependencies).  Eligible
+        sessions are fanned out with asyncio.gather so they run concurrently
+        within a single cycle.  Failures are isolated per session.
 
-        On error, session-scoped fields are restored from a pre-invocation
-        snapshot.  Non-session fields (board_snapshot, phase, caches) are
-        re-derived each cycle so transient leaks are self-correcting.
+        The board is polled once in a pre-flight step and cached so concurrent
+        sessions don't each trigger a GitHub API call.  The main-SHA cache is
+        also pre-seeded so rebase detection fires at most once per cycle.
         """
         active_sessions: dict = self._state.get("active_sessions") or {}
 
@@ -317,56 +433,389 @@ class CoordinareDaemon:
         if slot_mgr is not None and hasattr(slot_mgr, "sync_from_sessions"):
             slot_mgr.sync_from_sessions(active_sessions)
 
-        # Always clear board cache at cycle start so check_board re-polls
-        self._state["_board_cache"] = None
+        self._state["_board_cache"] = None  # type: ignore[typeddict-unknown-key]
+        self._state["_main_sha_cache"] = None  # type: ignore[typeddict-unknown-key]
 
         if not active_sessions:
             # No sessions yet — run one graph cycle to let check_board populate them
             self._state = await self._graph.ainvoke(self._state)
             return
 
-        # Cache was already cleared above; the first session's check_board
-        # will re-poll GitHub exactly once; subsequent sessions within
-        # this cycle reuse the cached result and skip the API call.
+        # Pre-fanout: run advocate_scan exactly once so N concurrent sessions don't
+        # each call scan_and_respond independently (duplicate comments/labels/load).
+        # The flag signals per-session advocate_scan invocations to be no-ops.
+        if self._state.get("advocate_service") is not None:
+            from coordinare.graph.nodes.advocate import advocate_scan
+            self._state = await advocate_scan(self._state)  # type: ignore[assignment]
+        self._state["_advocate_scan_done"] = True  # type: ignore[typeddict-unknown-key]
 
-        completed_ids: list[str] = []
-        for card_id, session in list(active_sessions.items()):
-            # Save the pre-invocation session fields so we can restore
-            # on error without deep-copying service objects.
-            pre_session = dict(session)
-
-            # Copy session → flat state
-            session_to_state(session, self._state)
-            try:
-                self._state = await self._graph.ainvoke(self._state)
-            except Exception:
-                logger.error(
-                    "session_graph_error",
-                    card_id=card_id,
-                    exc_info=True,
+        # Pre-flight: poll board once so all concurrent sessions share the cache
+        # and eligibility can be computed before the fanout.  Respect the same
+        # github_operation_ready/backoff state used by check_board so multi-session
+        # mode doesn't bypass transient-outage handling.
+        github = self._state.get("github_service")
+        if github is not None:
+            ready, retry_in = github_operation_ready(self._state, "poll_board")
+            if not ready:
+                logger.info(
+                    "multi_session.pre_poll_deferred",
+                    retry_in_seconds=round(retry_in, 1),
                 )
-                # Restore the original session fields so the partial
-                # mutation doesn't leak; the session can be retried next cycle.
-                session_to_state(pre_session, self._state)
-                active_sessions[card_id] = pre_session
+            else:
+                try:
+                    board = await github.poll_board()
+                    self._state["_board_cache"] = board  # type: ignore[typeddict-unknown-key]
+                    clear_deferred_github_operation(self._state, "poll_board")
+                    self._state["last_poll_at"] = datetime.now(UTC)
+                    snapshot = board.get("snapshot")
+                    if isinstance(snapshot, dict):
+                        self._state["board_snapshot"] = snapshot
+                    # Pre-seed _main_sha_cache so concurrent sessions share one
+                    # ls-remote result instead of each making an independent call.
+                    # suppress is scoped only to _current_token() — fetch_main_sha
+                    # and rebase failures are logged explicitly so they're visible.
+                    _config = self._state.get("config")
+                    if _config is not None and hasattr(github, "_current_token"):
+                        _token = ""
+                        with contextlib.suppress(Exception):
+                            _token = await github._current_token()
+                        if _token:
+                            _repo_url = repo_url_from_config(_config)
+                            if _repo_url:
+                                try:
+                                    _sha = await fetch_main_sha(_repo_url, _token)
+                                except Exception:
+                                    logger.warning("multi_session.preflight.sha_fetch_failed", exc_info=True)
+                                    _sha = None
+                                if _sha:
+                                    self._state["_main_sha_cache"] = _sha  # type: ignore[typeddict-unknown-key]
+                                    # Run main-advance detection once in preflight so
+                                    # every per-session check_board copy inherits the
+                                    # updated last_known_main_sha and skips its own
+                                    # run_rebase_round — preventing N parallel rebase
+                                    # rounds when main advances with N active sessions.
+                                    _prev_sha = self._state.get("last_known_main_sha")
+                                    if _prev_sha is None:
+                                        self._state["last_known_main_sha"] = _sha  # type: ignore[typeddict-unknown-key]
+                                    elif _sha != _prev_sha:
+                                        logger.info(
+                                            "multi_session.preflight.main_head_changed",
+                                            old_sha=_prev_sha[:8],
+                                            new_sha=_sha[:8],
+                                        )
+                                        self._state["last_known_main_sha"] = _sha  # type: ignore[typeddict-unknown-key]
+                                        try:
+                                            _rr = await run_rebase_round(
+                                                active_sessions,
+                                                _sha,
+                                                _repo_url,
+                                                _token,
+                                                notification_service=self._state.get("notification_service"),
+                                                github=github,
+                                                human_reviewers=self._state.get("human_reviewers"),
+                                            )
+                                            self._state["last_rebase_round"] = _rr.to_dict()  # type: ignore[typeddict-unknown-key]
+                                            # Mirror check_board's conflict-resolution
+                                            # handoff: route the first BLOCKED job back
+                                            # to implementing so relay_feedback fires.
+                                            from coordinare.models.rebase import RebaseOutcome
+                                            from coordinare.services.rebase import (
+                                                prepare_conflict_resolution,
+                                            )
+                                            for _job in _rr.jobs:
+                                                if _job.outcome == RebaseOutcome.BLOCKED:
+                                                    _sess = active_sessions.get(_job.card_id)
+                                                    if isinstance(_sess, dict):
+                                                        prepare_conflict_resolution(
+                                                            _job, _sess,
+                                                            human_reviewers=self._state.get("human_reviewers"),
+                                                        )
+                                                    break
+                                        except Exception:
+                                            logger.warning("multi_session.preflight.rebase_round_failed", exc_info=True)
+                except Exception as _poll_exc:
+                    logger.warning("multi_session.pre_poll_failed", exc_info=True)
+                    if is_transient_github_outage_error(_poll_exc):
+                        defer_github_operation(self._state, operation="poll_board", error=_poll_exc)
+
+        # Build dependency graph from the pre-fetched board if available.
+        # NOTE: This uses build_graph only — it does not run resolve_off_board_dependencies,
+        # so sessions blocked by a now-closed off-board issue may be conservatively skipped
+        # this cycle.  The full resolution runs inside each session's check_board tick and
+        # will correct the dep state by the following cycle.
+        dep_graph: DependencyGraph | None = None
+        cached_board = self._state.get("_board_cache")  # type: ignore[misc]
+        if cached_board is not None:
+            try:
+                dep_graph = _build_dep_graph(cached_board)
+            except Exception:
+                logger.warning("multi_session.dep_graph_failed", exc_info=True)
+
+        board_snapshot: dict[str, list[str]] = self._state.get("board_snapshot") or {}  # type: ignore[assignment]
+
+        # Compute eligibility for all sessions.
+        eligibilities: dict[str, SessionEligibility] = {
+            card_id: _compute_eligibility(card_id, session, board_snapshot, dep_graph)
+            for card_id, session in active_sessions.items()
+        }
+
+        # Record skip reasons for ineligible sessions.
+        skip_reasons: dict[str, dict] = {}
+        for card_id, elig in eligibilities.items():
+            if not elig.eligible:
+                skip_reasons[card_id] = {
+                    "reason": elig.reason,
+                    "detail": None,
+                    "blockers": elig.blockers,
+                }
+                logger.info(
+                    "session_skipped",
+                    card_id=card_id,
+                    reason=elig.reason,
+                    blockers=elig.blockers,
+                )
+        self._state["session_skip_reasons"] = skip_reasons  # type: ignore[typeddict-unknown-key]
+
+        # Fallback: if every session is ineligible this cycle (e.g. all BLOCKED /
+        # dependency_blocked), run a single full graph invocation so check_board
+        # can still pick up new sessions from open slots or do other per-cycle
+        # maintenance.  Without this, check_board never fires and available slots
+        # go unfilled until at least one existing session becomes eligible.
+        if not any(e.eligible for e in eligibilities.values()):
+            self._state = await self._graph.ainvoke(self._state)  # type: ignore[assignment]
+            self._state.pop("_advocate_scan_done", None)  # type: ignore[misc]
+            return
+
+        graph = self._graph
+        semaphore = asyncio.Semaphore(self._max_concurrent_cards())
+
+        async def _invoke_one(card_id: str, session: dict) -> AsyncSessionTickResult:
+            elig = eligibilities[card_id]
+            if not elig.eligible:
+                return AsyncSessionTickResult(
+                    card_id=card_id, ok=True, session_state=session, skipped=True
+                )
+            pre_session = dict(session)
+            async with semaphore:
+                # State prep runs inside the semaphore so the concurrency bound
+                # also limits peak memory from simultaneous deep-copies.
+                # self._state is stable throughout the fanout (mutated only after
+                # all results are merged), so sessions that acquire the semaphore
+                # at different times still snapshot the same pre-fanout state.
+                t0 = perf_counter()
+                try:
+                    session_state: dict[str, Any] = dict(self._state)
+                    if session_state.get("github_retry_queue") is not None:
+                        session_state["github_retry_queue"] = list(session_state["github_retry_queue"])
+                    # Deep-copy only the session being invoked (inside the semaphore
+                    # so the concurrency bound also limits peak copy memory).
+                    # Siblings are shallow-copied from the stable pre-fanout
+                    # active_sessions; nodes only mutate top-level sibling keys so
+                    # shallow isolation is sufficient.
+                    session_state["active_sessions"] = {
+                        cid: (copy.deepcopy(sess) if cid == card_id else dict(sess))
+                        for cid, sess in active_sessions.items()
+                    }
+                    session_to_state(session_state["active_sessions"][card_id], session_state)
+                    # Snapshot sibling sessions before ainvoke.  Graph nodes such
+                    # as prepare_conflict_resolution can mutate session dicts
+                    # in-place; capturing shallow copies here lets us detect
+                    # real mutations post-ainvoke by value comparison.
+                    pre_fanout_siblings: dict[str, dict] = {
+                        k: dict(v) for k, v in session_state["active_sessions"].items()
+                        if k != card_id
+                    }
+                    updated = await graph.ainvoke(session_state)
+                    updated_session = state_to_session(updated)
+                    # Merge in any mutations that nodes made directly to
+                    # updated["active_sessions"][card_id] without mirroring them
+                    # back onto the flat state fields (e.g. prepare_conflict_resolution
+                    # routing a BLOCKED card by writing phase/performer_stage directly
+                    # into the session dict).  Only apply an in-place value when the
+                    # flat field was NOT independently updated — flat mutations take
+                    # priority so that nodes using the canonical flat-field path are
+                    # not overwritten by a stale pre-fanout deep copy.
+                    _in_place_session = (updated.get("active_sessions") or {}).get(card_id)
+                    if _in_place_session:
+                        for _f in _SESSION_FIELDS:
+                            if _f not in _in_place_session:
+                                continue
+                            _pre_val = session.get(_f)
+                            if updated_session.get(_f) == _pre_val:
+                                # flat field unchanged — apply in-place mutation if any
+                                _ip_val = _in_place_session[_f]
+                                if _ip_val != _pre_val:
+                                    updated_session[_f] = _ip_val  # type: ignore[literal-required]
+                    # Capture new sessions added by check_board so they survive
+                    # the fanout merge.  Only keys not present before dispatch
+                    # are considered new to avoid overwriting concurrent updates.
+                    updated_sessions = updated.get("active_sessions") or {}
+                    new_sessions = {k: v for k, v in updated_sessions.items() if k not in active_sessions}
+                    # Capture mutations to other existing sessions (e.g. prepare_conflict_resolution
+                    # routing a BLOCKED session back to dispatching).  Only include sessions
+                    # that actually changed vs the pre-fanout snapshot so that an unmodified
+                    # deep-copy of a sibling can't clobber a real mutation applied by another
+                    # concurrent task via last-writer-wins in cross_mutations.update(cm).
+                    cross_session = {
+                        k: v for k, v in updated_sessions.items()
+                        if k != card_id and k in active_sessions
+                        and v != pre_fanout_siblings.get(k)
+                    }
+                    g_updates: dict[str, Any] = {k: updated[k] for k in _GLOBAL_STATE_KEYS if k in updated}
+                    if new_sessions:
+                        g_updates["_new_sessions"] = new_sessions
+                    if cross_session:
+                        g_updates["_cross_session_mutations"] = cross_session
+                    return AsyncSessionTickResult(
+                        card_id=card_id,
+                        ok=True,
+                        session_state=updated_session,
+                        duration_ms=int((perf_counter() - t0) * 1000),
+                        global_updates=g_updates,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.error("session_graph_error", card_id=card_id, exc_info=True)
+                    return AsyncSessionTickResult(
+                        card_id=card_id,
+                        ok=False,
+                        error=str(exc),
+                        session_state=pre_session,
+                        duration_ms=int((perf_counter() - t0) * 1000),
+                    )
+
+        results: list[AsyncSessionTickResult] = list(
+            await asyncio.gather(
+                *[_invoke_one(cid, sess) for cid, sess in list(active_sessions.items())]
+            )
+        )
+
+        # Merge global state updates from results.  Non-session, non-queue keys
+        # come from the first successful result.  github_retry_queue is merged
+        # across ALL results (dedupe by operation, keep highest attempt) so that
+        # deferred entries from any session are not silently dropped.  New sessions
+        # added by check_board are also merged from ALL results so no slot is lost.
+        # Ops that were present at fanout start but are absent in any successful
+        # result are treated as cleared and removed from the merged queue.
+        pre_fanout_ops: set[str] = {
+            e["operation"]
+            for e in (self._state.get("github_retry_queue") or [])  # type: ignore[misc]
+            if isinstance(e, dict) and e.get("operation")
+        }
+        cleared_ops: set[str] = set()
+        first_global_merged = False
+        merged_retry_queue: list[dict] | None = None
+        merged_advocate_history: set[str] | None = None
+        cross_mutations: dict[str, dict] = {}
+        for result in results:
+            if not result.ok or result.skipped or not result.global_updates:
                 continue
+            if not first_global_merged:
+                for k, v in result.global_updates.items():
+                    if k not in ("_new_sessions", "_cross_session_mutations", "github_retry_queue", "github_retry_after", "advocate_history"):
+                        self._state[k] = v  # type: ignore[literal-required]
+                first_global_merged = True
+            ah = result.global_updates.get("advocate_history")
+            if isinstance(ah, set):
+                if merged_advocate_history is None:
+                    merged_advocate_history = set(ah)
+                else:
+                    merged_advocate_history |= ah
+            rq = result.global_updates.get("github_retry_queue")
+            if isinstance(rq, list):
+                session_ops = {e["operation"] for e in rq if isinstance(e, dict) and e.get("operation")}
+                cleared_ops.update(pre_fanout_ops - session_ops)
+                if merged_retry_queue is None:
+                    merged_retry_queue = list(rq)
+                else:
+                    for entry in rq:
+                        if not isinstance(entry, dict):
+                            continue
+                        op = entry.get("operation")
+                        existing = next(
+                            (e for e in merged_retry_queue if isinstance(e, dict) and e.get("operation") == op),
+                            None,
+                        )
+                        if existing is None:
+                            merged_retry_queue.append(entry)
+                        else:
+                            entry_attempt = int(entry.get("attempt", 0))
+                            existing_attempt = int(existing.get("attempt", 0))
+                            # Keep the most conservative entry: higher attempt wins;
+                            # on a tie, keep the later retry_at so two sessions that
+                            # deferred the same op at the same attempt (but slightly
+                            # different wall-clock times) don't shorten the backoff.
+                            # Compare as datetime objects — retry_at is always a
+                            # datetime in-memory; str() comparison is fragile across
+                            # tz representations.
+                            entry_ra = entry.get("retry_at")
+                            existing_ra = existing.get("retry_at")
+                            later_retry_at = (
+                                isinstance(entry_ra, datetime)
+                                and isinstance(existing_ra, datetime)
+                                and entry_ra > existing_ra
+                            )
+                            if entry_attempt > existing_attempt or (
+                                entry_attempt == existing_attempt and later_retry_at
+                            ):
+                                merged_retry_queue[merged_retry_queue.index(existing)] = entry
+            cm = result.global_updates.get("_cross_session_mutations") or {}
+            cross_mutations.update(cm)  # last-writer-wins across concurrent results
+            new_sessions = result.global_updates.get("_new_sessions") or {}
+            for cid, sess in new_sessions.items():
+                if cid not in active_sessions:
+                    active_sessions[cid] = sess
+                    logger.info("new_session_registered", card_id=cid)
+        if merged_retry_queue is not None:
+            if cleared_ops:
+                merged_retry_queue = [
+                    e for e in merged_retry_queue
+                    if not (isinstance(e, dict) and e.get("operation") in cleared_ops)
+                ]
+            self._state["github_retry_queue"] = merged_retry_queue  # type: ignore[literal-required]
+            retry_ats = [e["retry_at"] for e in merged_retry_queue if isinstance(e, dict) and isinstance(e.get("retry_at"), datetime)]
+            self._state["github_retry_after"] = min(retry_ats) if retry_ats else None  # type: ignore[literal-required]
+        if merged_advocate_history is not None:
+            self._state["advocate_history"] = merged_advocate_history  # type: ignore[literal-required]
 
-            # Copy flat state → session
-            updated_session = state_to_session(self._state)
-            active_sessions[card_id] = updated_session
+        # Apply cross-session mutations as a baseline before direct results so
+        # each session's own tick result takes precedence over mutations from a
+        # sibling session's graph run (e.g. prepare_conflict_resolution targeting
+        # a BLOCKED session that was skipped this cycle).
+        for cid, mutated_sess in cross_mutations.items():
+            if cid in active_sessions:
+                active_sessions[cid] = mutated_sess
 
-            # Check if session completed
-            session_phase = updated_session.get("phase", "idle")
-            session_card = updated_session.get("current_card")
-            if session_phase == "idle" and session_card is None:
-                completed_ids.append(card_id)
+        # Merge session results back into active_sessions; collect completions.
+        completed_ids: list[str] = []
+        for result in results:
+            if result.skipped:
+                # missing_card sessions have no card to resume — remove them so
+                # the slot doesn't linger forever.
+                if eligibilities[result.card_id].reason == "missing_card":
+                    logger.warning("session_missing_card_evicted", card_id=result.card_id)
+                    completed_ids.append(result.card_id)
+                continue
+            if result.ok:
+                # Only overwrite on success; preserves any cross-session
+                # mutations applied above for sessions whose own tick failed.
+                active_sessions[result.card_id] = result.session_state
+                sess = result.session_state
+                if sess.get("phase", "idle") == "idle" and sess.get("current_card") is None:
+                    completed_ids.append(result.card_id)
 
-        # Remove completed sessions
         for card_id in completed_ids:
             del active_sessions[card_id]
             logger.info("session_completed", card_id=card_id)
 
+        # Clear the per-cycle advocate sentinel so the next cycle runs a fresh scan.
+        self._state.pop("_advocate_scan_done", None)  # type: ignore[misc]
+
         self._state["active_sessions"] = active_sessions
+        # Derive global phase from the highest-priority session phase so the
+        # dashboard never shows a stale or idle value while work is ongoing.
+        self._state["phase"] = _derive_global_phase(active_sessions)  # type: ignore[literal-required]
 
     def _install_signal_handlers(self) -> None:
         loop = asyncio.get_running_loop()
@@ -481,6 +930,7 @@ class CoordinareDaemon:
 
                 # 035: Multi-card parallelism — when concurrency > 1,
                 # iterate over active sessions independently.
+                self._state["session_skip_reasons"] = {}  # type: ignore[typeddict-unknown-key]
                 if self._max_concurrent_cards() > 1:
                     await self._invoke_multi_session()
                 else:

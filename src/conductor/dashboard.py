@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
 import json
 import socket
 import sys
@@ -353,6 +354,8 @@ class DashboardStore:
             # 052: Backend transparency — live URL and session stats.
             "backend_ui_url": daemon.state.get("backend_ui_url"),
             "session_stats": self._serialise_session_stats(daemon.state.get("session_stats")),
+            # 054: Per-cycle skip reasons for ineligible sessions.
+            "session_skip_reasons": copy.deepcopy(daemon.state.get("session_skip_reasons") or {}),
         }
 
     @staticmethod
@@ -1646,10 +1649,27 @@ function renderPerformersPage(s) {
     } catch (_ignore) {}
   }
 
+  // Build skip-reason diagnostics for sessions associated with this role only.
+  var skipReasons = s.session_skip_reasons || {};
+  var roleSkips = [];
+  selectedSessions.forEach(function(sess) {
+    var reason = skipReasons[sess.card_id];
+    if (reason) roleSkips.push({card: sess.card_title || sess.card_id, reason: reason});
+  });
+  var skipHtml = roleSkips.length
+    ? '<ul class="detail-list">' + roleSkips.map(function(sr) {
+        var r = sr.reason || {};
+        var label = esc(r.reason || 'skipped');
+        var blockers = Array.isArray(r.blockers) && r.blockers.length
+          ? ' (blocked by #' + r.blockers.map(function(n) { return esc(String(n)); }).join(', #') + ')' : '';
+        return '<li><span style="color:#f0883e">' + esc(sr.card) + '</span> — ' + label + blockers + '</li>';
+      }).join('') + '</ul>'
+    : '';
+
   detailEl.innerHTML =
     '<div><strong>' + humanPhase(selectedRole) + '</strong>' + statusBadge + '</div>' +
     '<div class="muted" style="margin-top:4px">Active/Max: ' + String(row.active != null ? row.active : 0) + ' / ' + String(row.max != null ? row.max : 0) + ' &middot; Queued: ' + String(row.queued != null ? row.queued : 0) + '</div>' +
-    '<div class="detail-block"><strong>Card Context</strong>' + roleCardsHtml + '</div>' +
+    '<div class="detail-block"><strong>Card Context</strong>' + roleCardsHtml + (skipHtml ? '<div style="margin-top:8px"><span style="color:#d29922;font-size:12px">Skipped this cycle:</span>' + skipHtml + '</div>' : '') + '</div>' +
     '<div class="detail-block"><strong>Session</strong><div class="muted" style="margin-top:4px">Session: ' + esc(s.agent_session_id || '—') + ' &middot; Uptime: ' + esc(fmtAge(s.agent_dispatch_at) || '—') + '</div><div class="muted" style="margin-top:4px">' + backendLine + '</div><div class="muted" style="margin-top:4px">' + statsLine + '</div></div>' +
     '<div class="detail-block"><strong>Metrics</strong><div class="muted" style="margin-top:4px">' + metricsLine + '</div></div>' +
     '<div class="detail-block"><strong>Live Events</strong>' + eventsHtml + '</div>' +

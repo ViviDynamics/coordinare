@@ -1215,3 +1215,180 @@ async def test_check_board_off_board_closed_blocker_satisfies_dependency() -> No
 
     assert result["phase"] == "dispatching"
     assert result["current_card"]["id"] == "ITEM_X"
+
+
+# ---------------------------------------------------------------------------
+# 054: skip-reason state shape (T006)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_check_board_preserves_session_skip_reasons_field() -> None:
+    """054 T006: session_skip_reasons is present in initial_state and check_board
+    returns the field unchanged (it is managed by daemon, not check_board)."""
+    state = initial_state()
+    assert "session_skip_reasons" in state
+    assert isinstance(state["session_skip_reasons"], dict)
+
+    state["github_service"] = _GitHub()
+    state["session_skip_reasons"] = {"card-A": {"reason": "blocked_column"}}
+
+    result = await check_board(state)
+
+    # check_board must not clobber session_skip_reasons
+    assert result.get("session_skip_reasons") == {"card-A": {"reason": "blocked_column"}}
+
+
+@pytest.mark.asyncio
+async def test_check_board_session_skip_reasons_empty_by_default() -> None:
+    """054 T006: initial_state always provides an empty dict for session_skip_reasons."""
+    state = initial_state()
+    assert state["session_skip_reasons"] == {}
+
+
+# ---------------------------------------------------------------------------
+# 054: rebase dispatch targeting / failure isolation (T016, T017)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_check_board_rebase_not_dispatched_when_no_active_sessions() -> None:
+    """054 T017: When there are no active sessions, run_rebase_round is never called
+    even if the main SHA changes."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, patch
+
+    class _GitHubWithToken:
+        async def poll_board(self):
+            return {
+                "snapshot": {"TODO": ["ITEM_1"]},
+                "titles": {"ITEM_1": "Pending"},
+                "descriptions": {"ITEM_1": ""},
+                "issue_numbers": {"ITEM_1": 10},
+                "issue_urls": {},
+                "content_node_ids": {},
+            }
+
+        async def _current_token(self):
+            return "test-token"
+
+    state = initial_state()
+    state["github_service"] = _GitHubWithToken()
+    state["config"] = SimpleNamespace(
+        github_org="acme", project_name="repo",
+        max_concurrent_cards=2, priority=SimpleNamespace(field_name=""),
+        github_api_url="",
+    )
+    # No active sessions → rebase block is skipped entirely
+    state["active_sessions"] = {}
+    state["last_known_main_sha"] = "old-sha-000"
+
+    with patch("coordinare.services.rebase.run_rebase_round", new=AsyncMock()) as mock_rebase:
+        await check_board(state)
+
+    mock_rebase.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_check_board_rebase_dispatched_for_open_pr_sessions() -> None:
+    """054 T016: When an active session has an open PR and main SHA changes,
+    run_rebase_round is called and its result is stored."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, patch
+
+    class _GitHubWithToken:
+        async def poll_board(self):
+            return {
+                "snapshot": {"IN_REVIEW": ["ITEM_2"]},
+                "titles": {"ITEM_2": "Reviewed"},
+                "descriptions": {"ITEM_2": ""},
+                "issue_numbers": {"ITEM_2": 20},
+                "issue_urls": {},
+                "content_node_ids": {},
+            }
+
+        async def _current_token(self):
+            return "test-token"
+
+    from coordinare.models.rebase import RebaseJob, RebaseOutcome, RebaseRound
+
+    rr = RebaseRound(
+        trigger_sha="new-sha-222",
+        jobs=[RebaseJob(card_id="ITEM_2", branch="feat/item-2", outcome=RebaseOutcome.SKIPPED)],
+    )
+
+    state = initial_state()
+    state["github_service"] = _GitHubWithToken()
+    state["config"] = SimpleNamespace(
+        github_org="acme", project_name="repo",
+        max_concurrent_cards=2, priority=SimpleNamespace(field_name=""),
+        github_api_url="",
+    )
+    state["active_sessions"] = {
+        "ITEM_2": {
+            "current_card": {"id": "ITEM_2", "pr_url": "https://github.com/acme/repo/pull/20"},
+            "workspace_branch": "coordinare/item-2",
+            "phase": "monitoring_performer",
+        },
+    }
+    state["last_known_main_sha"] = "old-sha-111"
+
+    mock_rebase = AsyncMock(return_value=rr)
+    with (
+        patch("coordinare.services.rebase.fetch_main_sha", new=AsyncMock(return_value="new-sha-222")),
+        patch("coordinare.services.rebase.run_rebase_round", new=mock_rebase),
+    ):
+        result = await check_board(state)
+
+    assert result.get("last_known_main_sha") == "new-sha-222"
+    mock_rebase.assert_called_once()
+    assert result.get("last_rebase_round") is not None
+
+
+@pytest.mark.asyncio
+async def test_check_board_rebase_exception_does_not_abort_cycle() -> None:
+    """054 T016: If run_rebase_round raises, check_board logs and continues normally."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, patch
+
+    class _GitHubWithToken:
+        async def poll_board(self):
+            return {
+                "snapshot": {"IN_REVIEW": ["ITEM_3"]},
+                "titles": {"ITEM_3": "Card"},
+                "descriptions": {"ITEM_3": ""},
+                "issue_numbers": {"ITEM_3": 30},
+                "issue_urls": {},
+                "content_node_ids": {},
+            }
+
+        async def _current_token(self):
+            return "test-token"
+
+    state = initial_state()
+    state["github_service"] = _GitHubWithToken()
+    state["config"] = SimpleNamespace(
+        github_org="acme", project_name="repo",
+        max_concurrent_cards=2, priority=SimpleNamespace(field_name=""),
+        github_api_url="",
+    )
+    state["active_sessions"] = {
+        "ITEM_3": {
+            "current_card": {"id": "ITEM_3", "pr_url": "https://github.com/acme/repo/pull/30"},
+            "workspace_branch": "coordinare/item-3",
+            "phase": "monitoring_performer",
+        },
+    }
+    state["last_known_main_sha"] = "old-sha-aaa"
+
+    mock_rebase = AsyncMock(side_effect=RuntimeError("network failure"))
+    with (
+        patch("coordinare.services.rebase.fetch_main_sha", new=AsyncMock(return_value="new-sha-bbb")),
+        patch("coordinare.services.rebase.run_rebase_round", new=mock_rebase),
+    ):
+        result = await check_board(state)
+
+    # Should not raise; last_known_main_sha updated even on exception
+    assert result.get("last_known_main_sha") == "new-sha-bbb"
+    # run_rebase_round must have been attempted (session is now detectable as stale)
+    mock_rebase.assert_called_once()

@@ -14,6 +14,7 @@ from coordinare.services.rebase import (
     force_push_with_lease,
     prepare_conflict_resolution,
     rebase_branch,
+    repo_url_from_config,
 )
 
 # ---------------------------------------------------------------------------
@@ -798,3 +799,60 @@ class TestRebaseBranchNonConflictFailure:
 
         assert job.outcome == RebaseOutcome.FAILED
         assert "not a merge conflict" in job.conflict_preview
+
+
+# ---------------------------------------------------------------------------
+# repo_url_from_config tests
+# ---------------------------------------------------------------------------
+
+
+class _Cfg:
+    """Minimal stand-in for ProjectConfiguration."""
+
+    def __init__(self, org: str, project: str, api_url: str = "") -> None:
+        self.github_org = org
+        self.project_name = project
+        self.github_api_url = api_url
+
+
+class TestRepoUrlFromConfig:
+    def test_public_github(self) -> None:
+        cfg = _Cfg("myorg", "myrepo")
+        assert repo_url_from_config(cfg) == "https://github.com/myorg/myrepo.git"
+
+    def test_public_github_explicit_api_url(self) -> None:
+        cfg = _Cfg("myorg", "myrepo", "https://api.github.com")
+        assert repo_url_from_config(cfg) == "https://github.com/myorg/myrepo.git"
+
+    def test_ghes_host(self) -> None:
+        cfg = _Cfg("myorg", "myrepo", "https://github.example.com/api/v3")
+        assert repo_url_from_config(cfg) == "https://github.example.com/myorg/myrepo.git"
+
+    def test_ghes_non_standard_port(self) -> None:
+        cfg = _Cfg("myorg", "myrepo", "https://github.example.com:8443/api/v3")
+        assert repo_url_from_config(cfg) == "https://github.example.com:8443/myorg/myrepo.git"
+
+    def test_missing_org_returns_empty(self) -> None:
+        cfg = _Cfg("", "myrepo")
+        assert repo_url_from_config(cfg) == ""
+
+    def test_missing_project_returns_empty(self) -> None:
+        cfg = _Cfg("myorg", "")
+        assert repo_url_from_config(cfg) == ""
+
+    def test_userinfo_stripped_from_clone_url(self) -> None:
+        cfg = _Cfg("myorg", "myrepo", "https://user:token@github.example.com/api/v3")
+        result = repo_url_from_config(cfg)
+        assert result == "https://github.example.com/myorg/myrepo.git"
+        assert "user" not in result
+        assert "token" not in result
+
+    def test_ipv6_host_bracketed(self) -> None:
+        cfg = _Cfg("myorg", "myrepo", "https://[::1]:8443/api/v3")
+        result = repo_url_from_config(cfg)
+        assert result == "https://[::1]:8443/myorg/myrepo.git"
+
+    def test_ipv6_host_no_port(self) -> None:
+        cfg = _Cfg("myorg", "myrepo", "https://[::1]/api/v3")
+        result = repo_url_from_config(cfg)
+        assert result == "https://[::1]/myorg/myrepo.git"

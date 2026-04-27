@@ -25,6 +25,7 @@ from performer.workspace import commit_file
 from performer.workspace import (
     BranchConflictError,
     WorkspaceSetupError,
+    _git_credential_vars,
     cleanup_stand,
     clone_repository,
     commit_files,
@@ -1238,6 +1239,84 @@ async def handle_status(
                     visual_evidence=visual_evidence,
                 ),
             )
+            latest_main_sha = perf.score.latest_main_sha.strip()
+            qa_freshness_check: dict = {}
+            if not latest_main_sha:
+                # Coordinare did not supply latest_main_sha — cannot verify freshness.
+                # Record the indeterminate state but do NOT add a failure: QA can still
+                # pass when coordinare hasn't yet populated last_known_main_sha (e.g. first
+                # cycle after startup).  This is a non-blocking indeterminate.
+                qa_freshness_check = {
+                    "latest_main_sha": None,
+                    "branch_head_sha": None,
+                    "up_to_date": None,
+                    "detail": "freshness_check_indeterminate",
+                }
+            else:
+                try:
+                    branch_head: str | None = None
+                    try:
+                        branch_head = await get_head_sha(perf.stand)
+                    except Exception as _head_exc:
+                        log.debug("qa.branch_head_fetch_failed", error=str(_head_exc))
+                    _proc = await asyncio.create_subprocess_exec(
+                        "git", "merge-base", "--is-ancestor", latest_main_sha, "HEAD",
+                        cwd=str(perf.stand.path),
+                        stdout=asyncio.subprocess.DEVNULL,
+                        stderr=asyncio.subprocess.DEVNULL,
+                    )
+                    try:
+                        _rc = await asyncio.wait_for(_proc.wait(), timeout=30)
+                    except asyncio.TimeoutError:
+                        _proc.kill()
+                        await _proc.wait()
+                        raise
+                    if _rc == 0:
+                        qa_freshness_check = {
+                            "latest_main_sha": latest_main_sha,
+                            "branch_head_sha": branch_head,
+                            "up_to_date": True,
+                            "detail": "branch includes latest main (git merge-base confirmed)",
+                        }
+                    elif _rc == 1:
+                        # Exit code 1: SHA is not an ancestor (branch is behind main).
+                        qa_freshness_check = {
+                            "latest_main_sha": latest_main_sha,
+                            "branch_head_sha": branch_head,
+                            "up_to_date": False,
+                            "detail": f"{latest_main_sha[:8]} is not an ancestor of HEAD",
+                        }
+                        failures.append({
+                            "file": None,
+                            "line": None,
+                            "message": "Branch is behind latest main — rebase required before QA can pass",
+                            "type": "freshness",
+                            "criterion": "Branch includes latest main",
+                            "expected": f"Branch rebased onto {latest_main_sha[:8]}",
+                            "actual": "Branch is behind latest main — rebase required",
+                        })
+                    else:
+                        # Exit codes > 1 indicate a git/environment error, not a
+                        # definitive "behind main" result — treat as indeterminate.
+                        raise RuntimeError(f"git merge-base exited with code {_rc}")
+                except Exception as _exc:
+                    qa_freshness_check = {
+                        "latest_main_sha": None,
+                        "branch_head_sha": None,
+                        "up_to_date": None,
+                        "detail": "freshness_check_indeterminate",
+                    }
+                    failures.append({
+                        "file": None,
+                        "line": None,
+                        "message": "Branch freshness could not be verified — environment/git failure",
+                        "type": "freshness_indeterminate",
+                        "criterion": "Branch freshness check",
+                        "expected": "Freshness check succeeds",
+                        "actual": "Branch freshness could not be verified — environment/git failure",
+                    })
+                    log.warning("qa.freshness_check_failed", error=str(_exc))
+
             qa_passed_flag = (not failures) and (not env_error)
 
             # Commit QA report to the architecture folder
@@ -1367,6 +1446,8 @@ async def handle_status(
                     "visual_evidence": visual_evidence,
                     "visual_validation_required": visual_validation_required,
                 }
+                if qa_freshness_check:
+                    perf.qa_report["qa_freshness_check"] = qa_freshness_check
                 return PerformerResponse(
                     status="qa_passed",
                     session_id=perf.session_id,
@@ -1387,10 +1468,12 @@ async def handle_status(
                 )
             perf.qa_failures = [f for f in failures if isinstance(f, dict)]
             perf.state = "qa_failed"
+            _fail_report: dict | None = {"qa_freshness_check": qa_freshness_check} if qa_freshness_check else None
             return PerformerResponse(
                 status="qa_failed",
                 session_id=perf.session_id,
                 failures=perf.qa_failures,
+                report=_fail_report,
             )
 
         # 024: Tech writer path — commit documentation files, return docs_committed.
@@ -1704,6 +1787,7 @@ async def run_loop() -> None:
                 refreshed_token = msg.payload.get("github_token")
                 if refreshed_token and perf is not None and perf.score is not None:
                     perf.score.github_token = refreshed_token
+                    perf.stand.git_env = _git_credential_vars(refreshed_token)
                     log.debug("token_refreshed", session_id=perf.session_id)
                 try:
                     resp = await handle_status(msg, perf, settings)

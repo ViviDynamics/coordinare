@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from coordinare.services.github import PermanentGitHubError
+from coordinare.services.rebase import repo_url_from_config
 
 if TYPE_CHECKING:
     from coordinare.graph.state import CoordinareState
@@ -91,17 +92,7 @@ async def merge_pr(state: CoordinareState) -> CoordinareState:
         if active_sessions and config is not None:
             try:
                 from coordinare.services.rebase import run_rebase_round
-                # Derive repo URL from config (not WorkspaceManager internals)
-                org = getattr(config, "github_org", "") or ""
-                project = getattr(config, "project_name", "") or ""
-                org = str(org) if isinstance(org, str) else ""
-                project = str(project) if isinstance(project, str) else ""
-                api_url = getattr(config, "github_api_url", "") or ""
-                host = "github.com"
-                if isinstance(api_url, str) and api_url and "github.com" not in api_url:
-                    from urllib.parse import urlparse
-                    host = urlparse(api_url).hostname or "github.com"
-                repo_url = f"https://{host}/{org}/{project}.git" if org and project else ""
+                repo_url = repo_url_from_config(config)
                 # Get token from github_service (which owns the auth)
                 import contextlib
                 token = ""

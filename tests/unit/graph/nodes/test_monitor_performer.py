@@ -1886,3 +1886,95 @@ async def test_teardown_workspace_clears_backend_ui_fields() -> None:
 
     assert state["backend_ui_url"] is None
     assert state["session_stats"] is None
+
+
+# ---------------------------------------------------------------------------
+# 054: QA freshness failure routes to implementer (T024)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_qa_freshness_failure_routes_to_implementer() -> None:
+    """054 T024: qa_failed with freshness type routes to implementer like any qa failure."""
+    state = initial_state()
+    failures = [
+        {
+            "file": None, "line": None,
+            "message": "Branch is behind latest main — rebase required before QA can pass",
+            "type": "freshness",
+        }
+    ]
+    report = {
+        "criteria_checked": 3,
+        "criteria_passed": 3,
+        "qa_freshness_check": {
+            "latest_main_sha": "abc1234",
+            "branch_head_sha": "def5678",
+            "up_to_date": False,
+            "detail": "abc1234 is not an ancestor of HEAD",
+        },
+    }
+    svc = _Performer(response={"status": "qa_failed", "failures": failures, "report": report})
+    state["performer_services"] = {"qa": svc}
+    state["performer_stage"] = "qa"
+    state["lifecycle_sequence"] = ["implementing", "qa"]
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+
+    result = await monitor_performer(state)
+
+    assert result["performer_stage"] == "implementing"
+    assert result["phase"] == "dispatching"
+    relay = result.get("relay_feedback") or []
+    assert any(f.get("type") == "freshness" for f in relay)
+
+
+@pytest.mark.asyncio
+async def test_qa_freshness_indeterminate_routes_to_implementer() -> None:
+    """054 T024: qa_failed with freshness_indeterminate type also routes to implementer."""
+    state = initial_state()
+    failures = [
+        {
+            "file": None, "line": None,
+            "message": "Branch freshness could not be verified — environment/git failure",
+            "type": "freshness_indeterminate",
+        }
+    ]
+    svc = _Performer(response={"status": "qa_failed", "failures": failures})
+    state["performer_services"] = {"qa": svc}
+    state["performer_stage"] = "qa"
+    state["lifecycle_sequence"] = ["implementing", "qa"]
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+
+    result = await monitor_performer(state)
+
+    assert result["performer_stage"] == "implementing"
+    assert result["phase"] == "dispatching"
+
+
+@pytest.mark.asyncio
+async def test_qa_freshness_up_to_date_does_not_route_to_implementer() -> None:
+    """054 T024: qa_passed with up-to-date freshness check does not route back to implementer."""
+    state = initial_state()
+    report = {
+        "criteria_checked": 2,
+        "criteria_passed": 2,
+        "qa_freshness_check": {
+            "latest_main_sha": "abc1234",
+            "branch_head_sha": "abc1234",
+            "up_to_date": True,
+            "detail": "branch includes latest main (git merge-base confirmed)",
+        },
+    }
+    svc = _Performer(response={"status": "qa_passed", "report": report})
+    state["performer_services"] = {"qa": svc}
+    state["performer_stage"] = "qa"
+    state["lifecycle_sequence"] = ["implementing", "qa"]
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_REVIEW"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+
+    result = await monitor_performer(state)
+
+    # qa_passed must NOT route back to implementing
+    assert not (result.get("phase") == "dispatching" and result.get("performer_stage") == "implementing")

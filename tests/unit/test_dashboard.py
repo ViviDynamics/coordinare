@@ -1361,3 +1361,55 @@ def test_build_snapshot_assignee_filter_none_when_not_configured() -> None:
     snap = store.build_snapshot(daemon, metrics, health)
 
     assert snap["assignee_filter"] is None
+
+
+# ---------------------------------------------------------------------------
+# 054: session_skip_reasons in snapshot (T020)
+# ---------------------------------------------------------------------------
+
+
+def test_build_snapshot_session_skip_reasons_populated() -> None:
+    """054 T020: session_skip_reasons dict is included in the snapshot."""
+    store = DashboardStore()
+    daemon = _make_mock_daemon()
+    daemon.state["session_skip_reasons"] = {
+        "card-A": {"reason": "blocked_column", "blockers": []},
+        "card-B": {"reason": "dependency_blocked", "blockers": [42]},
+    }
+    metrics = _make_mock_metrics()
+    health = _make_mock_health()
+
+    snap = store.build_snapshot(daemon, metrics, health)
+
+    assert "session_skip_reasons" in snap
+    assert snap["session_skip_reasons"]["card-A"]["reason"] == "blocked_column"
+    assert snap["session_skip_reasons"]["card-B"]["blockers"] == [42]
+
+
+def test_build_snapshot_session_skip_reasons_empty_when_absent() -> None:
+    """054 T020: session_skip_reasons defaults to empty dict when not in state."""
+    store = DashboardStore()
+    daemon = _make_mock_daemon()
+    # Ensure key is absent
+    daemon.state.pop("session_skip_reasons", None)
+    metrics = _make_mock_metrics()
+    health = _make_mock_health()
+
+    snap = store.build_snapshot(daemon, metrics, health)
+
+    assert snap.get("session_skip_reasons") == {}
+
+
+def test_build_snapshot_session_skip_reasons_is_copy() -> None:
+    """054 T020: snapshot returns a copy so mutations don't affect daemon state."""
+    store = DashboardStore()
+    daemon = _make_mock_daemon()
+    original = {"card-X": {"reason": "blocked_column"}}
+    daemon.state["session_skip_reasons"] = original
+    metrics = _make_mock_metrics()
+    health = _make_mock_health()
+
+    snap = store.build_snapshot(daemon, metrics, health)
+    snap["session_skip_reasons"]["card-Y"] = {"reason": "extra"}
+
+    assert "card-Y" not in original

@@ -513,6 +513,11 @@ async def dispatch_performer(state: CoordinareState) -> CoordinareState:
     # Pass the performer role so the performer can gate behavior on it.
     card_context["role"] = performer_stage
 
+    if performer_stage == "qa":
+        latest_main_sha = state.get("last_known_main_sha")
+        if latest_main_sha:
+            card_context["latest_main_sha"] = latest_main_sha
+
     # 036: Include GitHub API URL so the performer connects to the same instance.
     config = state.get("config")
     if config is not None and hasattr(config, "github_api_url"):

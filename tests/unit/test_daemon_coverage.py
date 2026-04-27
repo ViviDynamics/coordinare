@@ -800,3 +800,296 @@ async def test_state_load_error_during_startup_is_handled() -> None:
     await daemon.start()
 
     assert not daemon._running
+
+
+# ---------------------------------------------------------------------------
+# 054 — session eligibility, concurrent fanout, skip reasons
+# ---------------------------------------------------------------------------
+
+from coordinare.daemon import (  # noqa: E402
+    _compute_eligibility,
+)
+
+
+def _make_session(card_id: str = "card-1", phase: str = "monitoring_performer") -> dict:
+    return {
+        "current_card": {"id": card_id, "content_id": card_id, "title": "Test Card"},
+        "phase": phase,
+    }
+
+
+# --- _compute_eligibility ---
+
+def test_compute_eligibility_eligible() -> None:
+    session = _make_session("card-1")
+    board_snapshot = {"IN_PROGRESS": ["card-1"]}
+    result = _compute_eligibility("card-1", session, board_snapshot, None)
+    assert result.eligible is True
+    assert result.reason == "eligible"
+
+
+def test_compute_eligibility_blocked_column() -> None:
+    session = _make_session("card-2")
+    board_snapshot = {"BLOCKED": ["card-2"]}
+    result = _compute_eligibility("card-2", session, board_snapshot, None)
+    assert result.eligible is False
+    assert result.reason == "blocked_column"
+
+
+def test_compute_eligibility_missing_card() -> None:
+    session = {"current_card": None, "phase": "idle"}
+    result = _compute_eligibility("card-3", session, {}, None)
+    assert result.eligible is False
+    assert result.reason == "missing_card"
+
+
+def test_compute_eligibility_missing_card_empty_dict() -> None:
+    session = {"current_card": {}, "phase": "idle"}
+    result = _compute_eligibility("card-4", session, {}, None)
+    assert result.eligible is False
+    assert result.reason == "missing_card"
+
+
+def test_compute_eligibility_dependency_blocked() -> None:
+    from coordinare.models.dependency import CardDependency, DependencyGraph, DependencyStatus
+    card_id = "card-5"
+    dep = CardDependency(
+        dependent_item_id=card_id,
+        blocker_issue_number=99,
+        status=DependencyStatus.PENDING,
+    )
+    dep_graph = DependencyGraph()
+    dep_graph.by_dependent[card_id] = [dep]
+
+    session = _make_session(card_id)
+    result = _compute_eligibility(card_id, session, {}, dep_graph)
+    assert result.eligible is False
+    assert result.reason == "dependency_blocked"
+    assert 99 in result.blockers
+
+
+def test_compute_eligibility_satisfied_deps_are_eligible() -> None:
+    from coordinare.models.dependency import CardDependency, DependencyGraph, DependencyStatus
+    card_id = "card-6"
+    dep = CardDependency(
+        dependent_item_id=card_id,
+        blocker_issue_number=10,
+        status=DependencyStatus.SATISFIED,
+    )
+    dep_graph = DependencyGraph()
+    dep_graph.by_dependent[card_id] = [dep]
+
+    session = _make_session(card_id)
+    result = _compute_eligibility(card_id, session, {}, dep_graph)
+    assert result.eligible is True
+
+
+# --- async fanout: concurrent invocation ---
+
+@pytest.mark.asyncio
+async def test_invoke_multi_session_concurrent_eligible() -> None:
+    """All eligible sessions must be invoked concurrently via asyncio.gather."""
+    invocation_order: list[str] = []
+
+    async def _tracked_ainvoke(state: dict) -> dict:
+        card_id = (state.get("current_card") or {}).get("id", "?")
+        invocation_order.append(card_id)
+        return state
+
+    graph = MagicMock()
+    graph.ainvoke = AsyncMock(side_effect=_tracked_ainvoke)
+
+    daemon = _make_daemon()
+    daemon._graph = graph
+
+    daemon._state["active_sessions"] = {
+        "card-a": _make_session("card-a"),
+        "card-b": _make_session("card-b"),
+    }
+    daemon._state["board_snapshot"] = {"IN_PROGRESS": ["card-a", "card-b"]}
+
+    # _invoke_multi_session clears _board_cache at cycle start, so this has no
+    # effect on the pre-poll path. Pre-poll is skipped because github_service=None.
+    daemon._state["_board_cache"] = {
+        "snapshot": {"IN_PROGRESS": ["card-a", "card-b"]},
+        "titles": {},
+        "descriptions": {},
+        "issue_numbers": {},
+        "issue_urls": {},
+        "content_node_ids": {},
+    }
+    daemon._state["github_service"] = None  # no pre-poll
+
+    await daemon._invoke_multi_session()
+
+    assert "card-a" in invocation_order
+    assert "card-b" in invocation_order
+    assert graph.ainvoke.call_count == 2
+
+
+# --- skip reasons: blocked and dependency ---
+
+@pytest.mark.asyncio
+async def test_invoke_multi_session_blocked_column_fallback_invoked() -> None:
+    """When all sessions are in the BLOCKED column, a single fallback graph
+    invocation must still run so check_board can fill open slots."""
+    graph = MagicMock()
+    graph.ainvoke = AsyncMock(return_value={})
+
+    daemon = _make_daemon()
+    daemon._graph = graph
+    daemon._state["github_service"] = None
+
+    daemon._state["active_sessions"] = {"card-x": _make_session("card-x")}
+    daemon._state["board_snapshot"] = {"BLOCKED": ["card-x"]}
+    daemon._state["_board_cache"] = {
+        "snapshot": {"BLOCKED": ["card-x"]},
+        "titles": {}, "descriptions": {}, "issue_numbers": {},
+        "issue_urls": {}, "content_node_ids": {},
+    }
+
+    await daemon._invoke_multi_session()
+
+    # Fallback invocation must have fired with skip_reasons already set.
+    graph.ainvoke.assert_called_once()
+    call_state = graph.ainvoke.call_args[0][0]
+    skip = call_state.get("session_skip_reasons", {})
+    assert "card-x" in skip
+    assert skip["card-x"]["reason"] == "blocked_column"
+
+
+@pytest.mark.asyncio
+async def test_invoke_multi_session_dep_blocked_not_invoked() -> None:
+    """Sessions with unresolved dependencies must be skipped."""
+    board = {
+        "snapshot": {"IN_PROGRESS": ["card-y"]},
+        "titles": {"card-y": "Test"},
+        "descriptions": {"card-y": "Depends on #50"},
+        "issue_numbers": {},
+        "issue_urls": {},
+        "content_node_ids": {},
+    }
+    github = MagicMock()
+    github.poll_board = AsyncMock(return_value=board)
+
+    graph = MagicMock()
+    graph.ainvoke = AsyncMock(return_value={})
+
+    daemon = _make_daemon()
+    daemon._graph = graph
+    daemon._state["github_service"] = github
+    daemon._state["active_sessions"] = {"card-y": _make_session("card-y")}
+    daemon._state["board_snapshot"] = {"IN_PROGRESS": ["card-y"]}
+
+    await daemon._invoke_multi_session()
+
+    # Fallback invocation must have fired with skip_reasons already set.
+    graph.ainvoke.assert_called_once()
+    call_state = graph.ainvoke.call_args[0][0]
+    skip = call_state.get("session_skip_reasons", {})
+    assert "card-y" in skip
+    assert skip["card-y"]["reason"] == "dependency_blocked"
+
+
+# --- failure isolation ---
+
+@pytest.mark.asyncio
+async def test_invoke_multi_session_failure_isolation() -> None:
+    """A crash in one session must not prevent other sessions from completing."""
+    async def _side_effect(state: dict) -> dict:
+        card_id = (state.get("current_card") or {}).get("id", "?")
+        if card_id == "card-bad":
+            raise RuntimeError("boom")
+        return state
+
+    graph = MagicMock()
+    graph.ainvoke = AsyncMock(side_effect=_side_effect)
+
+    daemon = _make_daemon()
+    daemon._graph = graph
+    daemon._state["github_service"] = None
+
+    daemon._state["active_sessions"] = {
+        "card-bad": _make_session("card-bad"),
+        "card-good": _make_session("card-good"),
+    }
+    daemon._state["board_snapshot"] = {"IN_PROGRESS": ["card-bad", "card-good"]}
+    daemon._state["_board_cache"] = {
+        "snapshot": {"IN_PROGRESS": ["card-bad", "card-good"]},
+        "titles": {}, "descriptions": {}, "issue_numbers": {},
+        "issue_urls": {}, "content_node_ids": {},
+    }
+
+    await daemon._invoke_multi_session()
+
+    # card-good should still be in active_sessions
+    assert "card-good" in daemon._state["active_sessions"]
+    # card-bad restored from pre_session (not removed — next cycle retries)
+    assert "card-bad" in daemon._state["active_sessions"]
+
+
+# --- max_concurrent_cards=1 compatibility ---
+
+@pytest.mark.asyncio
+async def test_invoke_single_session_uses_sequential_path() -> None:
+    """max_concurrent_cards=1 must use the single-session graph path, not _invoke_multi_session."""
+    graph = MagicMock()
+    graph.ainvoke = AsyncMock(return_value={})
+
+    daemon = _make_daemon()
+    daemon._graph = graph
+
+    # In single-session mode _invoke_multi_session is not called — the
+    # daemon calls graph.ainvoke directly from the main tick.  Verify the
+    # _max_concurrent_cards() guard returns 1 when config is absent.
+    assert daemon._max_concurrent_cards() == 1
+
+
+# --- resume on unblock ---
+
+@pytest.mark.asyncio
+async def test_dependency_unblock_resumes_session() -> None:
+    """After blocker is satisfied, session should be invoked on the next cycle."""
+    invoked: list[str] = []
+
+    async def _tracked(state: dict) -> dict:
+        card_id = (state.get("current_card") or {}).get("id", "?")
+        invoked.append(card_id)
+        return state
+
+    graph = MagicMock()
+    graph.ainvoke = AsyncMock(side_effect=_tracked)
+    daemon = _make_daemon()
+    daemon._graph = graph
+
+    board_cycle1 = {
+        "snapshot": {"IN_PROGRESS": ["card-z"]},
+        "titles": {"card-z": "Z"},
+        "descriptions": {"card-z": "Depends on #77"},
+        "issue_numbers": {},
+        "issue_urls": {},
+        "content_node_ids": {},
+    }
+    board_cycle2 = {
+        "snapshot": {"IN_PROGRESS": ["card-z"]},
+        "titles": {"card-z": "Z"},
+        "descriptions": {"card-z": ""},  # no dep
+        "issue_numbers": {},
+        "issue_urls": {},
+        "content_node_ids": {},
+    }
+    github = MagicMock()
+    github.poll_board = AsyncMock(side_effect=[board_cycle1, board_cycle2])
+    daemon._state["github_service"] = github
+
+    daemon._state["active_sessions"] = {"card-z": _make_session("card-z")}
+
+    # Cycle 1: dependency present → skip
+    daemon._state["board_snapshot"] = {"IN_PROGRESS": ["card-z"]}
+    await daemon._invoke_multi_session()
+    assert "card-z" not in invoked
+
+    # Cycle 2: blocker resolved (no description, no dep graph entry) → eligible
+    daemon._state["board_snapshot"] = {"IN_PROGRESS": ["card-z"]}
+    await daemon._invoke_multi_session()
+    assert "card-z" in invoked

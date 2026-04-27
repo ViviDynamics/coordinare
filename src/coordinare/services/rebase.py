@@ -25,6 +25,36 @@ logger = structlog.get_logger(__name__)
 _COORDINARE_BRANCH_PREFIX = "coordinare/"
 
 
+_PUBLIC_GITHUB_API_HOSTS = frozenset({"github.com", "api.github.com"})
+
+
+def repo_url_from_config(config: object) -> str:
+    """Build the HTTPS clone URL from coordinare config.
+
+    Uses ``parsed.hostname`` + ``parsed.port`` (not ``.netloc``) so that any
+    userinfo (``user:pass@host``) embedded in ``github_api_url`` is never
+    propagated into the clone URL or logs.  Non-standard ports are still
+    preserved.  Returns ``""`` when org or project is unset.
+    """
+    from urllib.parse import urlparse
+
+    org = str(getattr(config, "github_org", "") or "")
+    project = str(getattr(config, "project_name", "") or "")
+    if not org or not project:
+        return ""
+    api_url = str(getattr(config, "github_api_url", "") or "")
+    host = "github.com"
+    if api_url:
+        parsed = urlparse(api_url)
+        hostname = (parsed.hostname or "").lower()
+        if hostname and hostname not in _PUBLIC_GITHUB_API_HOSTS:
+            # Wrap IPv6 literals in brackets so the URL stays valid
+            # (urlparse strips them from .hostname, so detect via ":").
+            bracketed = f"[{hostname}]" if ":" in hostname else hostname
+            host = f"{bracketed}:{parsed.port}" if parsed.port else bracketed
+    return f"https://{host}/{org}/{project}.git"
+
+
 async def _run_git(
     args: list[str],
     cwd: str,
