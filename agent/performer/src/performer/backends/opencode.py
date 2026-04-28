@@ -81,7 +81,16 @@ class OpenCodeAdapter:
     # BackendAdapter protocol
     # ------------------------------------------------------------------
 
-    async def start(self, stand: Stand, score: Score, *, model: str | None = None) -> None:
+    async def start(
+        self,
+        stand: Stand,
+        score: Score,
+        *,
+        model: str | None = None,
+        effort: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> None:
         """Launch ``<executable> serve`` in *stand.path* and send the initial task."""
         port = _find_free_port()
         self._port = port
@@ -113,8 +122,13 @@ class OpenCodeAdapter:
             timeout=httpx.Timeout(connect=10.0, read=None, write=10.0, pool=10.0),
         )
 
-        # Create a new session for this task
-        resp = await self._client.post("/session")
+        # Create a new session for this task, optionally pinning model and token cap.
+        session_body: dict = {}
+        if model:
+            session_body["modelID"] = model
+        if max_tokens is not None:
+            session_body["maxTokens"] = max_tokens
+        resp = await self._client.post("/session", json=session_body if session_body else None)
         resp.raise_for_status()
         self._session_id = resp.json()["id"]
         log.info(

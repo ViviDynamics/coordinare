@@ -60,6 +60,9 @@ class CardSession(TypedDict, total=False):
     phase_entered_at: datetime | None
     backend_ui_url: str | None
     session_stats: SessionStats | None
+    last_issue_comment_id: int | None
+    processed_issue_comment_ids: set[int]
+    qa_screenshots: list[Any]
 
 
 # Fields that live on both CardSession and CoordinareState (flat).
@@ -94,6 +97,9 @@ _SESSION_FIELDS: tuple[str, ...] = (
     "phase_entered_at",
     "backend_ui_url",
     "session_stats",
+    "last_issue_comment_id",
+    "processed_issue_comment_ids",
+    "qa_screenshots",
 )
 
 
@@ -129,6 +135,9 @@ def create_session_from_card(card: dict[str, Any]) -> CardSession:
         phase_entered_at=None,
         backend_ui_url=None,
         session_stats=None,
+        last_issue_comment_id=None,
+        processed_issue_comment_ids=set(),
+        qa_screenshots=[],
     )
 
 

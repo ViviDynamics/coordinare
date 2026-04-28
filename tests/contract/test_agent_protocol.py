@@ -34,7 +34,7 @@ class TestSchemaContractValidation:
             "qa_passed", "qa_failed",
             "docs_committed", "assessment_complete",
             "blocked", "error", "unknown", "busy", "acknowledged",
-            "session_expired", "healthy", "unhealthy",
+            "session_expired", "token_limit", "healthy", "unhealthy",
         }
         # status enum may be in the property directly or via $ref
         enum_values = set()

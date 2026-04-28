@@ -903,7 +903,7 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
         # security_failed, qa_failed, error) return early.
         _terminal_markers = TERMINAL_SUCCESS_STATES | {
             "changes_requested", "security_failed", "qa_failed",
-            "error", "blocked", "session_expired",
+            "error", "blocked", "session_expired", "token_limit",
         }
         if marker in _terminal_markers:
             _slot_mgr = state.get("slot_manager")
@@ -1079,6 +1079,46 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
             state["phase"] = "dispatching"
             state["agent_dispatch"] = {}
             state["agent_dispatch_at"] = None
+            return state
+
+        # --- Token-cap exhaustion (055) ---
+        if marker == "token_limit":
+            reason = str(status.get("reason", ""))
+            current_max = state.get("card_context", {}).get("max_tokens")
+            if current_max:
+                advice = (
+                    f"The {stage} performer hit its output token cap ({current_max:,} tokens). "
+                    f"Raise `performers.{stage}.max_tokens` in your config, or set it to `0` "
+                    f"(unlimited) to remove the cap."
+                )
+            else:
+                advice = (
+                    f"The {stage} performer hit the backend's output token cap. "
+                    f"Set `performers.{stage}.max_tokens` to a higher value, or `0` for unlimited."
+                )
+            logger.warning(
+                "monitor_performer.token_limit",
+                performer_stage=stage,
+                card_id=card_id,
+                max_tokens=current_max,
+                reason=reason,
+            )
+            if github is not None:
+                try:
+                    issue_number = card.get("issue_number") or state.get("issue_number")
+                    if issue_number:
+                        await github.post_comment(
+                            int(issue_number),
+                            f"**Performer blocked — output token limit reached**\n\n{advice}",
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "monitor_performer.token_limit_comment_failed",
+                        card_id=card_id,
+                        error=str(exc),
+                    )
+            state["phase"] = "blocked"
+            state["open_questions"] = [advice]
             return state
 
         # --- Error status (FR-006) ---

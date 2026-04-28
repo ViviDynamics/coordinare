@@ -400,6 +400,18 @@ class GitHubService:
     async def _current_token(self) -> str:
         return await self._auth.get_token()
 
+    async def current_token(self) -> str:
+        """Public accessor for the current auth token."""
+        return await self._current_token()
+
+    @property
+    def org(self) -> str:
+        return self._org
+
+    @property
+    def project_name(self) -> str:
+        return self._project_name
+
     def _build_client(self, token: str) -> Client:
         transport = AIOHTTPTransport(
             url=self._endpoint,
@@ -698,6 +710,70 @@ class GitHubService:
                 exc_type=type(exc).__name__,
             )
             return "api_error"
+
+    async def get_issue_comments(
+        self,
+        issue_number: int,
+        since_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Fetch comments on a GitHub issue, optionally after a known comment ID.
+
+        Returns a list of dicts with keys: id, author, body, created_at.
+        Returns [] on any error (logs warning).
+        """
+        if not self._project_name:
+            logger.warning("get_issue_comments.no_project_name", issue_number=issue_number)
+            return []
+        url = f"{self._rest_api_base()}/repos/{self._org}/{self._project_name}/issues/{issue_number}/comments"
+        params: dict[str, str | int] = {"per_page": 100}
+        try:
+            token = await self._current_token()
+        except Exception as exc:
+            logger.warning("get_issue_comments.auth_failed", issue_number=issue_number, error=str(exc))
+            return []
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+        }
+        try:
+            comments: list[dict[str, Any]] = []
+            next_url: str | None = url
+            async with httpx.AsyncClient(timeout=10) as client:
+                while next_url:
+                    resp = await client.get(next_url, headers=headers, params=params if next_url == url else {})
+                    if not resp.is_success:
+                        logger.warning(
+                            "get_issue_comments.api_error",
+                            issue_number=issue_number,
+                            status_code=resp.status_code,
+                        )
+                        return []
+                    page: list[dict[str, Any]] = resp.json()
+                    for c in page:
+                        if not isinstance(c, dict):
+                            continue
+                        cid = int(c.get("id", 0))
+                        if since_id is not None and cid <= since_id:
+                            continue
+                        author = c.get("user", {})
+                        comments.append({
+                            "id": cid,
+                            "author": str(author.get("login", "")) if isinstance(author, dict) else "",
+                            "body": str(c.get("body", "")),
+                            "created_at": str(c.get("created_at", "")),
+                        })
+                    link = resp.headers.get("link", "")
+                    next_url = None
+                    if 'rel="next"' in link:
+                        for part in link.split(","):
+                            if 'rel="next"' in part:
+                                next_url = part.split(";")[0].strip().strip("<>")
+                                break
+                    params = {}
+            return comments
+        except Exception as exc:
+            logger.warning("get_issue_comments.request_failed", issue_number=issue_number, error=str(exc))
+            return []
 
     def _rest_api_base(self) -> str:
         """Derive the REST API base URL from the configured GraphQL endpoint.

@@ -59,7 +59,16 @@ def _github_mocks() -> None:
 def _make_patched_start(stand_override: Stand) -> object:
     """Return an OpenCodeAdapter.start replacement that uses respx-mocked HTTP."""
 
-    async def _patched_start(self: OpenCodeAdapter, stand: Stand, score: Score, *, model: str | None = None) -> None:
+    async def _patched_start(
+        self: OpenCodeAdapter,
+        stand: Stand,
+        score: Score,
+        *,
+        model: str | None = None,
+        effort: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> None:
         port = 19950
         self._port = port
         self._session_id = "mock-session-1"

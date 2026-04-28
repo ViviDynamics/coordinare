@@ -148,6 +148,11 @@ class CoordinareState(TypedDict, total=False):
     # 054: Per-cycle eligibility skip map — card_id → {reason, detail, blockers}.
     # Cleared at cycle start; populated by _invoke_multi_session for ineligible sessions.
     session_skip_reasons: dict[str, dict[str, Any]]
+    # 055: QA screenshot results from most recent capture pass.
+    qa_screenshots: list[Any]
+    # 055: Issue comment idempotency fields.
+    last_issue_comment_id: int | None
+    processed_issue_comment_ids: set[int]
 
 
 def initial_state() -> CoordinareState:
@@ -190,4 +195,7 @@ def initial_state() -> CoordinareState:
         "github_retry_queue": [],
         "github_retry_after": None,
         "session_skip_reasons": {},
+        "qa_screenshots": [],
+        "last_issue_comment_id": None,
+        "processed_issue_comment_ids": set(),
     }

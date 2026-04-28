@@ -254,6 +254,30 @@ class PerformerRoleConfig(BaseModel):
     # 048: Maximum concurrent instances of this role.  Clamped to 1 for
     # assessor/closer (SINGLETON_STAGES).  0 disables the role entirely.
     max_concurrency: int = Field(default=1, ge=0)
+    # 055: Backend-agnostic tuning knobs — translated to backend-specific params at dispatch.
+    # effort:      low / medium / high  (opencode → --effort; anthropic → thinking budget)
+    # temperature: 0.0-1.0             (lower = more deterministic; None = backend default)
+    # max_tokens:  max output tokens    (primary cost-control lever)
+    #   None / omitted → inherit from default (or backend default if no default set)
+    #   0              → unlimited (explicitly remove cap, overrides any inherited default)
+    #   N > 0          → cap at N tokens
+    effort: Literal["low", "medium", "high"] | None = None
+    temperature: float | None = None
+    max_tokens: int | None = None
+
+    @field_validator("temperature")
+    @classmethod
+    def _validate_temperature(cls, v: float | None) -> float | None:
+        if v is not None and not (0.0 <= v <= 1.0):
+            raise ValueError(f"temperature must be between 0.0 and 1.0, got {v}")
+        return v
+
+    @field_validator("max_tokens")
+    @classmethod
+    def _validate_max_tokens(cls, v: int | None) -> int | None:
+        if v is not None and v < 0:
+            raise ValueError(f"max_tokens must be >= 0 (use 0 for unlimited), got {v}")
+        return v
 
 
 class PerformersConfig(BaseModel):
@@ -261,8 +285,15 @@ class PerformersConfig(BaseModel):
 
     A role is considered configured when its field is non-None.
     Roles that are None are skipped in the lifecycle sequence.
+
+    The optional ``default`` entry supplies base values inherited by every
+    configured role.  Role-level fields that are explicitly set override the
+    default; fields left unset inherit from it.  This lets operators define a
+    single backend / effort / max_tokens baseline and only spell out
+    per-role exceptions.
     """
 
+    default: PerformerRoleConfig | None = None
     advocate: PerformerRoleConfig | None = None
     assessor: PerformerRoleConfig | None = None
     architect: PerformerRoleConfig | None = None
@@ -272,6 +303,32 @@ class PerformersConfig(BaseModel):
     qa: PerformerRoleConfig | None = None
     tech_writer: PerformerRoleConfig | None = None
     closer: PerformerRoleConfig | None = None
+
+    def resolved_role(self, role_name: str) -> PerformerRoleConfig | None:
+        """Return the effective config for a role, merging default + role overrides.
+
+        Returns None when the role is not configured (skipped in the lifecycle).
+        Explicitly-set role fields take precedence over the default; unset fields
+        fall back to the default.
+
+        max_tokens=0 in a role config is the "unlimited" sentinel: it overrides a
+        default max_tokens and resolves to None (omitted from the backend payload).
+        """
+        role = getattr(self, role_name, None)
+        if role is None:
+            return None
+        if self.default is None:
+            resolved = role
+        else:
+            base = self.default.model_dump()
+            for field in role.model_fields_set:
+                base[field] = getattr(role, field)
+            resolved = PerformerRoleConfig(**base)
+        # Treat max_tokens=0 as the unlimited sentinel — convert to None so the
+        # backend payload key is omitted (backend uses its own default = unlimited).
+        if resolved.max_tokens == 0:
+            resolved = resolved.model_copy(update={"max_tokens": None})
+        return resolved
 
 
 # ---------------------------------------------------------------------------
@@ -507,6 +564,12 @@ class ProjectConfiguration(BaseSettings):
     # Maximum number of CLOSED (unmerged) PRs linked to a card's issue before
     # coordinare blocks fresh implementer dispatches. 0 disables this guard.
     max_closed_pr_attempts_per_issue: int = Field(default=0, ge=0, le=100)
+
+    # 055 — QA visual testing
+    qa_docker_enabled: bool = True
+    qa_playwright_image: str = "mcr.microsoft.com/playwright:v1.44.0-jammy"
+    qa_screenshot_timeout_s: int = Field(default=120, ge=10, le=600)
+    qa_screenshot_upload_retries: int = Field(default=3, ge=0, le=10)
 
     @classmethod
     def settings_customise_sources(

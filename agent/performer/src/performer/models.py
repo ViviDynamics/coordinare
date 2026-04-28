@@ -93,6 +93,9 @@ class Score(BaseModel):
     pr_node_id: str = ""  # existing PR node ID (for terminal status)
     backend: str = ""  # AI backend override (037)
     model: str = ""  # AI model override (037)
+    effort: str = ""  # 055: low/medium/high effort hint for backend
+    temperature: float | None = None  # 055: 0.0–1.0; None = backend default
+    max_tokens: int | None = None  # 055: output token cap; None = unlimited
     github_api_url: str = ""  # GitHub API URL override (036)
     architecture_plan_path: str = ""  # path to architect's plan on branch
     issue_number: int = 0  # GitHub issue number for PR linkage

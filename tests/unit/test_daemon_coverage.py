@@ -1093,3 +1093,61 @@ async def test_dependency_unblock_resumes_session() -> None:
     daemon._state["board_snapshot"] = {"IN_PROGRESS": ["card-z"]}
     await daemon._invoke_multi_session()
     assert "card-z" in invoked
+
+
+# ---------------------------------------------------------------------------
+# Slot-leak fix: sync_from_sessions runs in single-card mode
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_single_card_cycle_calls_sync_from_sessions() -> None:
+    """sync_from_sessions must fire in single-card mode so stale slots are freed."""
+    daemon = _make_daemon()  # max_concurrent_cards defaults to 1
+
+    sync_calls: list = []
+
+    class _FakeSlotMgr:
+        def sync_from_sessions(self, sessions):
+            sync_calls.append(dict(sessions))
+
+    daemon._state["slot_manager"] = _FakeSlotMgr()
+    daemon._state["active_sessions"] = {}  # empty — all slots should be freed
+
+    # Run one cycle (max_cycles=1 so the loop exits after one iteration)
+    await daemon.start()
+
+    assert len(sync_calls) >= 1
+    assert sync_calls[0] == {}
+
+
+@pytest.mark.asyncio
+async def test_single_card_cycle_sync_frees_stale_slots() -> None:
+    """Stale assessing/architecting slots left over from a completed card
+    are freed on the next single-card cycle when active_sessions is empty."""
+    from coordinare.services.slot_manager import SlotManager
+
+    sm = SlotManager()
+    sm.register_pool("assessing", [MagicMock()], max_concurrency=1)
+    sm.register_pool("architecting", [MagicMock()], max_concurrency=1)
+    sm.acquire("assessing", "CARD_OLD")
+    sm.acquire("architecting", "CARD_OLD")
+    assert sm.active_count("assessing") == 1
+    assert sm.active_count("architecting") == 1
+
+    daemon = _make_daemon()
+    daemon._state["slot_manager"] = sm
+    daemon._state["active_sessions"] = {}  # card already gone
+
+    await daemon.start()
+
+    assert sm.active_count("assessing") == 0
+    assert sm.active_count("architecting") == 0
+
+
+@pytest.mark.asyncio
+async def test_single_card_cycle_no_slot_manager_does_not_raise() -> None:
+    """When slot_manager is absent, the cycle must complete without error."""
+    daemon = _make_daemon()
+    daemon._state["slot_manager"] = None
+    await daemon.start()  # should not raise

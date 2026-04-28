@@ -521,7 +521,13 @@ async def _handle_backend_parse_failure(
                     error=str(exc),
                 )
             model_name = perf.score.model or None
-            await perf.backend.start(perf.stand, perf.score, model=model_name)
+            await perf.backend.start(
+                perf.stand, perf.score,
+                model=model_name,
+                effort=perf.score.effort or None,
+                temperature=perf.score.temperature,
+                max_tokens=perf.score.max_tokens,
+            )
         return PerformerResponse(
             status="working",
             session_id=perf.session_id,
@@ -625,7 +631,13 @@ async def handle_dispatch(
     stand: Stand = await clone_repository(score)
     try:
         backend = get_backend(backend_name)
-        await backend.start(stand, score, model=model_name)
+        await backend.start(
+            stand, score,
+            model=model_name,
+            effort=score.effort or None,
+            temperature=score.temperature,
+            max_tokens=score.max_tokens,
+        )
     except BaseException:
         cleanup_stand(stand)
         raise
@@ -1580,6 +1592,12 @@ async def handle_status(
     if backend_status.state == "error":
         perf.state = "error"
         perf.error_reason = backend_status.error_reason
+        if backend_status.stop_reason == "max_tokens":
+            return PerformerResponse(
+                status="token_limit",
+                session_id=perf.session_id,
+                reason=backend_status.error_reason,
+            )
         return PerformerResponse(
             status="error",
             session_id=perf.session_id,

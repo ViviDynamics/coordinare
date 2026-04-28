@@ -25,6 +25,7 @@ PerformerStatusType = Literal[
     "busy",
     "acknowledged",
     "session_expired",
+    "token_limit",
     "plan_committed",
     "approved",
     "changes_requested",

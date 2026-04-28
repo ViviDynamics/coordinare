@@ -29,6 +29,7 @@ StatusType = Literal[
     "busy",
     "acknowledged",
     "session_expired",
+    "token_limit",
     "healthy",
     "unhealthy",
 ]

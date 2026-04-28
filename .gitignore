@@ -240,3 +240,5 @@ config.*.yaml
 .claude/worktrees
 tmp
 coordinare.state.json
+.claude/scheduled_tasks.lock
+

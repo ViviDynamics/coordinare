@@ -16,6 +16,7 @@ from coordinare.graph.nodes.monitor_performer import monitor_performer
 from coordinare.graph.nodes.monitor_pr import monitor_pr
 from coordinare.graph.nodes.notify import notify
 from coordinare.graph.nodes.relay_feedback import relay_feedback
+from coordinare.graph.nodes.route_issue_comments import route_issue_comments
 from coordinare.graph.routing import (
     route_from_agent_status,
     route_from_assess,
@@ -33,6 +34,7 @@ async def _placeholder_node(state: CoordinareState) -> CoordinareState:
 
 _DEFAULT_NODES: dict[str, Any] = {
     "advocate_scan": advocate_scan,
+    "route_issue_comments": route_issue_comments,
     "check_board": check_board,
     "assess_card": assess_card,
     "dispatch_card": dispatch_performer,
@@ -65,6 +67,7 @@ class CoordinareGraphBuilder:
         graph = StateGraph(CoordinareState)
 
         graph.add_node("advocate_scan", cast("Any", self._node("advocate_scan")))
+        graph.add_node("route_issue_comments", cast("Any", self._node("route_issue_comments")))
         graph.add_node("check_board", cast("Any", self._node("check_board")))
         graph.add_node("assess_card", cast("Any", self._node("assess_card")))
         graph.add_node("dispatch_card", cast("Any", self._node("dispatch_card")))
@@ -78,7 +81,8 @@ class CoordinareGraphBuilder:
         graph.add_node("notify", cast("Any", self._node("notify")))
 
         graph.add_edge(START, "advocate_scan")
-        graph.add_edge("advocate_scan", "check_board")
+        graph.add_edge("advocate_scan", "route_issue_comments")
+        graph.add_edge("route_issue_comments", "check_board")
 
         graph.add_conditional_edges(
             "check_board",

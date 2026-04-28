@@ -59,16 +59,27 @@ class ClaudeCodeBackend:
         self._session_id: str | None = None  # captured from system/init event
         self._git_env: dict[str, str] = {}
         self._model: str | None = None  # 037: per-role model selection
+        self._max_tokens: int | None = None  # 055: output token cap
 
     # ------------------------------------------------------------------
     # BackendAdapter protocol
     # ------------------------------------------------------------------
 
-    async def start(self, stand: Stand, score: Score, *, model: str | None = None) -> None:
+    async def start(
+        self,
+        stand: Stand,
+        score: Score,
+        *,
+        model: str | None = None,
+        effort: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> None:
         """Build the prompt and launch ``claude --print --output-format stream-json``."""
         self._stand = stand
         self._git_env = stand.git_env
         self._model = model
+        self._max_tokens = max_tokens
         prompt = _build_task_prompt(score)
         await self._launch(prompt)
 
@@ -141,6 +152,8 @@ class ClaudeCodeBackend:
         ]
         if self._model:
             args += ["--model", self._model]
+        if self._max_tokens is not None:
+            args += ["--max-tokens", str(self._max_tokens)]
         if resume_session_id:
             args += ["--resume", resume_session_id]
         args += ["-p", prompt]
@@ -252,7 +265,21 @@ class ClaudeCodeBackend:
                 tokens = (input_t or 0) + (output_t or 0)
                 cost_str = f" · ${cost:.4f}" if cost is not None else ""
                 self._emit(BackendEventType.cost, f"{tokens:,} tokens{cost_str}")
-                self._status = BackendStatus(state="done", tokens_processed=tokens)
+                stop_reason = event.get("stop_reason") or None
+                if stop_reason == "max_tokens":
+                    self._emit(BackendEventType.error, "output token limit reached")
+                    self._status = BackendStatus(
+                        state="error",
+                        stop_reason="max_tokens",
+                        error_reason="Output token limit reached (max_tokens)",
+                        tokens_processed=tokens,
+                    )
+                else:
+                    self._status = BackendStatus(
+                        state="done",
+                        stop_reason=stop_reason,
+                        tokens_processed=tokens,
+                    )
             elif subtype in ("error", "interrupted"):
                 reason = event.get("error", subtype)
                 self._emit(BackendEventType.error, str(reason)[:_MAX_TEXT])

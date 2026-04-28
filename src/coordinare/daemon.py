@@ -931,6 +931,11 @@ class CoordinareDaemon:
                 # 035: Multi-card parallelism — when concurrency > 1,
                 # iterate over active sessions independently.
                 self._state["session_skip_reasons"] = {}  # type: ignore[typeddict-unknown-key]
+                # Free stale slots on every cycle (not just in multi-card mode).
+                _slot_mgr = self._state.get("slot_manager")
+                if _slot_mgr is not None and hasattr(_slot_mgr, "sync_from_sessions"):
+                    _active_sessions = self._state.get("active_sessions") or {}
+                    _slot_mgr.sync_from_sessions(_active_sessions)
                 if self._max_concurrent_cards() > 1:
                     await self._invoke_multi_session()
                 else:

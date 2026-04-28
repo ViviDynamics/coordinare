@@ -17,6 +17,7 @@ class BackendStatus:
     state: Literal["working", "blocked", "done", "error"] = "working"
     questions: list[str] = field(default_factory=list)
     error_reason: str | None = None
+    stop_reason: str | None = None  # 055: "max_tokens", "end_turn", etc.
     tokens_processed: int | None = None
     progress: str | None = None
     output: str | None = None  # 020: AI-generated content (e.g. architecture plan)
@@ -26,7 +27,16 @@ class BackendStatus:
 class BackendAdapter(Protocol):
     """Strategy interface implemented by each AI coding backend."""
 
-    async def start(self, stand: "Stand", score: "Score", *, model: str | None = None) -> None:
+    async def start(
+        self,
+        stand: "Stand",
+        score: "Score",
+        *,
+        model: str | None = None,
+        effort: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> None:
         """Launch the backend in *stand* with the task from *score*."""
         ...
 

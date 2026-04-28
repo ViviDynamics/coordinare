@@ -523,13 +523,15 @@ async def dispatch_performer(state: CoordinareState) -> CoordinareState:
     if config is not None and hasattr(config, "github_api_url"):
         card_context["github_api_url"] = config.github_api_url
 
-    # 037: Include per-role backend and model in dispatch payload.
+    # 037/055: Include per-role backend, model, and tuning params in dispatch payload.
     if config is not None and hasattr(config, "performers") and role is not None:
-        role_config = getattr(config.performers, role, None)
+        role_config = config.performers.resolved_role(role)
         if role_config is not None:
+            from coordinare.services.performer_tuning import translate_tuning
             card_context["backend"] = role_config.backend
             if role_config.model is not None:
                 card_context["model"] = role_config.model
+            card_context.update(translate_tuning(role_config))
 
     # --- Dispatch ---
     try:

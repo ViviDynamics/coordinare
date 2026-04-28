@@ -77,6 +77,9 @@ class _GitHubRecorder:
         self.comments_posted.append((subject_id, body))
         return {"id": "C1"}
 
+    async def get_issue_comments(self, issue_number: int, since_id: int | None = None) -> list:
+        return []
+
     async def get_pr_reviews(self, pr_id: str) -> list:
         return []
 
