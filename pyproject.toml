@@ -36,7 +36,8 @@ dev = [
     "ruff>=0.8",
     "mypy>=1.13",
     "types-pyyaml>=6.0",
-    "jsonschema>=4.20",
+    "jsonschema>=4.26.0",
+    "openapi-spec-validator>=0.7",
 ]
 
 [project.scripts]
@@ -120,6 +121,7 @@ markers = [
     "integration: Integration tests (may use in-memory services)",
     "contract: Contract tests (validate API schemas)",
     "e2e: End-to-end browser tests (require Playwright browser binaries)",
+    "benchmark: Performance benchmark tests (require Docker; emit JSON results)",
 ]
 filterwarnings = [
     "ignore::DeprecationWarning",
@@ -149,6 +151,4 @@ exclude_lines = [
 ]
 
 [dependency-groups]
-dev = [
-    "jsonschema>=4.26.0",
-]
+dev = []

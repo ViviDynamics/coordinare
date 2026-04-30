@@ -11,6 +11,8 @@ SENSITIVE_KEYS = {
     "api_key",
     "webhook_url",
     "authorization",
+    "secrets",  # JobInitPayload.secrets dict
+    "auth_token",  # PerformerEndpointConfig.auth_token
 }
 
 # Value-based redaction.  Used when untrusted text (e.g. performer stdout

@@ -1,0 +1,34 @@
+FROM coordinare-performer:base
+
+# Place stub binaries for all five backend CLIs.
+# Stubs satisfy shutil.which() so the capability probe advertises them.
+# Layer a genuine CLI install on top for production images.
+RUN for bin in claude codex cursor junie opencode; do \
+      printf '#!/bin/sh\n' > /usr/local/bin/$bin && chmod +x /usr/local/bin/$bin; \
+    done
+
+# Install Playwright + Chromium for browser automation
+RUN pip install --no-cache-dir playwright && \
+    playwright install --with-deps chromium
+
+# Install cross-language linters, formatters, and test runners
+# Python tools
+RUN pip install --no-cache-dir \
+    black \
+    isort \
+    pylint \
+    pytest \
+    ruff
+
+# Node.js tools (installed globally via npm)
+RUN npm install -g \
+    eslint \
+    prettier \
+    jest
+
+# Generic tools for shell/bash
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    shellcheck \
+    && rm -rf /var/lib/apt/lists/*
+
+# Entrypoint inherited from base: ["python", "-m", "performer", "--serve", "--port", "8088"]

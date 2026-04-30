@@ -1,6 +1,6 @@
 # coordinare Development Guidelines
 
-Auto-generated from all feature plans. Last updated: 2026-04-21
+Auto-generated from all feature plans. Last updated: 2026-04-28
 
 ## Active Technologies
 - Python 3.12+ + `stamina>=24.2.0` (NEW — add to pyproject.toml), `tenacity` (already installed via langgraph), `prometheus-client>=0.21`, `structlog>=24.1`, `pydantic>=2.9`, `pydantic-settings>=2.6` (005-resilience)
@@ -45,6 +45,8 @@ Auto-generated from all feature plans. Last updated: 2026-04-21
 - Python 3.12+ + httpx (existing), pydantic-settings (existing), FastAPI/SSE (existing), vanilla JS (existing) — no new dependencies required (052-operational-visibility-hygiene)
 - Python 3.12+ + `asyncio` (stdlib), `structlog` (existing), `pydantic` (existing), `LangGraph ≥ 0.2` (existing) — no new dependencies (054-async-multi-card-orchestration)
 - In-memory only; `session_skip_reasons` dict added to `CoordinareState`; resets each cycle (054-async-multi-card-orchestration)
+- Python 3.12+ + FastAPI + Starlette (performer HTTP server — already used in coordinare's dashboard), httpx (coordinare → performer client — existing), pydantic + pydantic-settings (config + payload models — existing), structlog (logging — existing), Docker Engine API via the local `docker` CLI invoked through `asyncio.create_subprocess_exec` (no new SDK dependency); Playwright + browser binaries baked into `full` image (056-performer-containerization)
+- N/A — performer registry, pool state, and last-known status held in memory; resets on coordinare restart. Existing `CoordinareState` extended with `performer_endpoints: dict[str, PerformerEndpointState]` (056-performer-containerization)
 
 - Python 3.12+ + LangGraph (>=0.2), anthropic (>=0.40), gql[aiohttp], FastAPI, structlog, slack-sdk, aiosmtplib, prometheus-client, pydantic-settings (001-board-orchestrator)
 - Python 3.12+ + Pydantic v2 (existing), `asyncio.create_subprocess_exec` (stdlib), `structlog` (existing); `asyncssh` removed — replaced by pluggable transport architecture (004-agent-protocol)
@@ -65,9 +67,9 @@ cd src [ONLY COMMANDS FOR ACTIVE TECHNOLOGIES][ONLY COMMANDS FOR ACTIVE TECHNOLO
 Python 3.12+: Follow standard conventions
 
 ## Recent Changes
+- 056-performer-containerization: Added Python 3.12+ + FastAPI + Starlette (performer HTTP server — already used in coordinare's dashboard), httpx (coordinare → performer client — existing), pydantic + pydantic-settings (config + payload models — existing), structlog (logging — existing), Docker Engine API via the local `docker` CLI invoked through `asyncio.create_subprocess_exec` (no new SDK dependency); Playwright + browser binaries baked into `full` image
 - 054-async-multi-card-orchestration: Added Python 3.12+ + `asyncio` (stdlib), `structlog` (existing), `pydantic` (existing), `LangGraph ≥ 0.2` (existing) — no new dependencies
 - 052-operational-visibility-hygiene: Added Python 3.12+ + httpx (existing), pydantic-settings (existing), FastAPI/SSE (existing), vanilla JS (existing) — no new dependencies required
-- 051-performer-env-isolation: Added Python 3.12+ + pydantic-settings (existing), asyncio (stdlib), os (stdlib)
 
 
 <!-- MANUAL ADDITIONS START -->

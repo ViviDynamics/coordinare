@@ -1,0 +1,32 @@
+FROM coordinare-performer:base
+
+# ARG BACKEND: select exactly one of [claude_code, codex, cursor, junie, opencode]
+ARG BACKEND=opencode
+
+# ARG BROWSER: optional toggle for Playwright + Chromium (default: false)
+ARG BROWSER=false
+
+# Place a stub binary for the selected backend so the capability probe
+# (shutil.which) finds it on PATH.  Users who need the real CLI should
+# layer a genuine install on top of this image at build time.
+RUN if [ "$BACKEND" = "claude_code" ]; then \
+      printf '#!/bin/sh\n' > /usr/local/bin/claude && chmod +x /usr/local/bin/claude; \
+    elif [ "$BACKEND" = "codex" ]; then \
+      printf '#!/bin/sh\n' > /usr/local/bin/codex && chmod +x /usr/local/bin/codex; \
+    elif [ "$BACKEND" = "cursor" ]; then \
+      printf '#!/bin/sh\n' > /usr/local/bin/cursor && chmod +x /usr/local/bin/cursor; \
+    elif [ "$BACKEND" = "junie" ]; then \
+      printf '#!/bin/sh\n' > /usr/local/bin/junie && chmod +x /usr/local/bin/junie; \
+    elif [ "$BACKEND" = "opencode" ]; then \
+      printf '#!/bin/sh\n' > /usr/local/bin/opencode && chmod +x /usr/local/bin/opencode; \
+    else \
+      echo "Unknown backend: $BACKEND"; exit 1; \
+    fi
+
+# Install Playwright and Chromium if BROWSER=true
+RUN if [ "$BROWSER" = "true" ]; then \
+      pip install --no-cache-dir playwright; \
+      playwright install chromium; \
+    fi
+
+# Entrypoint inherited from base: ["python", "-m", "performer", "--serve", "--port", "8088"]

@@ -1860,5 +1860,38 @@ def _write_response(resp: PerformerResponse) -> None:  # pragma: no cover
     sys.stdout.flush()
 
 
+def _run_server(port: int) -> None:  # pragma: no cover
+    """Boot the FastAPI HTTP server (spec 056, T025).
+
+    Runs as PID 1 inside the performer container. Auth token is read from
+    ``PERFORMER_AUTH_TOKEN`` (absent → auth disabled).
+    """
+    import uvicorn
+
+    from performer.server import create_app_from_env
+
+    app = create_app_from_env()
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
+
+
 def main() -> None:  # pragma: no cover
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="performer")
+    parser.add_argument(
+        "--serve",
+        action="store_true",
+        help="Run as HTTP server (spec 056) instead of stdio dispatch loop.",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8088,
+        help="Port for --serve mode (default: 8088).",
+    )
+    args, _ = parser.parse_known_args()
+
+    if args.serve:
+        _run_server(args.port)
+        return
     asyncio.run(run_loop())

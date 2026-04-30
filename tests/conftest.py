@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import shutil
+import subprocess
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
@@ -7,6 +9,32 @@ import pytest
 import stamina
 
 from coordinare.models.card import Card, CardStatus
+
+
+def _docker_available() -> bool:
+    if shutil.which("docker") is None:
+        return False
+    try:
+        result = subprocess.run(
+            ["docker", "info"],
+            capture_output=True,
+            timeout=5,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+    return result.returncode == 0
+
+
+@pytest.fixture(scope="session")
+def docker_available() -> bool:
+    return _docker_available()
+
+
+@pytest.fixture
+def require_docker(docker_available: bool) -> None:
+    if not docker_available:
+        pytest.skip("Docker daemon not reachable; skipping containerized test")
 
 
 @pytest.fixture(autouse=True)

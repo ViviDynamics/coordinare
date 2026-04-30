@@ -11,7 +11,7 @@ class TransportError(RuntimeError):
 
 
 class TransportTimeoutError(TransportError):
-    def __init__(self, timeout: int) -> None:
+    def __init__(self, timeout: float) -> None:
         self.timeout = timeout
         super().__init__(f"Transport timed out after {timeout}s")
 

@@ -47,6 +47,78 @@ def format_phase_label(phase: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Performer pool widget (spec 056, T040)
+# ---------------------------------------------------------------------------
+
+
+def render_performer_pool_widget(pool: Any) -> dict[str, Any]:
+    """Render performer pool state for the dashboard snapshot.
+
+    Args:
+        pool: the PerformerPool instance, or None if not available.
+
+    Returns:
+        A dict with performer registrations and metadata, suitable for JSON
+        serialization and inclusion in the dashboard state snapshot.
+    """
+    if pool is None:
+        return {
+            "performers": [],
+            "total_registered": 0,
+            "total_excluded": 0,
+            "total_idle": 0,
+            "total_busy": 0,
+        }
+
+    performers = []
+    total_excluded = 0
+    total_idle = 0
+    total_busy = 0
+
+    for state in pool.list_all():
+        is_excluded = state.excluded_until_recovery
+        if is_excluded:
+            total_excluded += 1
+
+        if state.availability == "idle":
+            total_idle += 1
+        elif state.availability == "busy":
+            total_busy += 1
+
+        performer_entry = {
+            "id": state.id,
+            "mode": state.mode,
+            "availability": state.availability,
+            "endpoint": str(state.endpoint) if state.endpoint else None,
+            "current_job_id": state.current_job_id,
+            "capabilities": (
+                {
+                    "backends": state.capabilities.backends,
+                    "tool_flags": state.capabilities.tool_flags,
+                }
+                if state.capabilities
+                else None
+            ),
+            "consecutive_failures": state.consecutive_failures,
+            "excluded_until_recovery": is_excluded,
+            "last_status_at": (
+                state.last_status_at.isoformat()
+                if state.last_status_at
+                else None
+            ),
+        }
+        performers.append(performer_entry)
+
+    return {
+        "performers": performers,
+        "total_registered": len(performers),
+        "total_excluded": total_excluded,
+        "total_idle": total_idle,
+        "total_busy": total_busy,
+    }
+
+
+# ---------------------------------------------------------------------------
 # SSE broadcaster
 # ---------------------------------------------------------------------------
 

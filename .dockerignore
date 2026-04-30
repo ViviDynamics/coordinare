@@ -38,6 +38,8 @@ config.*.yaml
 !config.example.yaml
 .codex
 .claude
+.idea
+.junie
 
 # Docker files
 Dockerfile*

@@ -153,6 +153,10 @@ class CoordinareState(TypedDict, total=False):
     # 055: Issue comment idempotency fields.
     last_issue_comment_id: int | None
     processed_issue_comment_ids: set[int]
+    # 056: Containerized performer endpoint registry — id → PerformerEndpointState.
+    # Typed as Any because LangGraph's get_type_hints() resolves annotations at
+    # runtime; a TYPE_CHECKING import would NameError. Reset on coordinare restart.
+    performer_endpoints: dict[str, Any]
 
 
 def initial_state() -> CoordinareState:
@@ -198,4 +202,5 @@ def initial_state() -> CoordinareState:
         "qa_screenshots": [],
         "last_issue_comment_id": None,
         "processed_issue_comment_ids": set(),
+        "performer_endpoints": {},
     }

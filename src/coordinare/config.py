@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import string
+from collections import Counter
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal
@@ -11,6 +12,10 @@ from pydantic import BaseModel, Field, SecretStr, field_validator, model_validat
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 from coordinare.models.notification import ChannelType, EventType
+from coordinare.models.performer_endpoint import (
+    PerformerEndpointConfig,
+    detect_duplicate_endpoints,
+)
 
 # ---------------------------------------------------------------------------
 # 052 — Branch collision strategy
@@ -570,6 +575,27 @@ class ProjectConfiguration(BaseSettings):
     qa_playwright_image: str = "mcr.microsoft.com/playwright:v1.44.0-jammy"
     qa_screenshot_timeout_s: int = Field(default=120, ge=10, le=600)
     qa_screenshot_upload_retries: int = Field(default=3, ge=0, le=10)
+
+    # 056 — Containerized performer registrations.
+    # Each entry registers an ephemeral or persistent performer endpoint;
+    # subprocess-mode entries coexist for backwards compatibility but carry
+    # only id + roles (no image/endpoint/auth_token).
+    performer_endpoints: list[PerformerEndpointConfig] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_performer_endpoints(self) -> ProjectConfiguration:
+        ids = [cfg.id for cfg in self.performer_endpoints]
+        dup_ids = {i for i, n in Counter(ids).items() if n > 1}
+        if dup_ids:
+            raise ValueError(
+                f"performer_endpoints contains duplicate id(s): {sorted(dup_ids)}"
+            )
+        dup_endpoints = detect_duplicate_endpoints(self.performer_endpoints)
+        if dup_endpoints:
+            raise ValueError(
+                f"performer_endpoints contains duplicate endpoint URL(s): {dup_endpoints}"
+            )
+        return self
 
     @classmethod
     def settings_customise_sources(

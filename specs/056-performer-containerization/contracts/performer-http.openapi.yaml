@@ -1,0 +1,301 @@
+openapi: 3.0.3
+info:
+  title: Coordinare Performer HTTP Job Protocol
+  version: 1.0.0
+  description: |
+    Contract every conformant performer image MUST satisfy. Implemented by
+    the bundled `performer:full|slim-*|base` images and by any operator-
+    supplied (BYO) image registered with the coordinare.
+
+    Authentication: when a per-performer bearer token is configured, every
+    request MUST include `Authorization: Bearer <token>`. The performer
+    rejects missing or mismatched tokens with HTTP 401. When the token is
+    not configured (operator opt-out, dev only), endpoints accept anonymous
+    requests.
+
+servers:
+  - url: http://{host}:{port}
+    variables:
+      host:
+        default: localhost
+      port:
+        default: "8088"
+
+security:
+  - bearerAuth: []
+  - {}   # also valid when auth disabled
+
+paths:
+  /status:
+    get:
+      summary: Performer status snapshot
+      operationId: getStatus
+      responses:
+        '200':
+          description: Current state and advertised capabilities.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PerformerStatus'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /jobs:
+    post:
+      summary: Submit a job for execution
+      operationId: submitJob
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JobInitPayload'
+      responses:
+        '202':
+          description: Job accepted. Performer transitions to busy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobAcceptResponse'
+        '409':
+          description: Performer cannot accept (busy / draining / mismatch).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobBusyResponse'
+        '400':
+          description: Malformed payload.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          description: Required secret missing from all enabled sources.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobBusyResponse'
+
+  /jobs/{jobId}:
+    get:
+      summary: Poll job status / result
+      operationId: getJob
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      responses:
+        '200':
+          description: Current job status. Result is populated when terminal.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobStatus'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Unknown job id.
+
+  /jobs/{jobId}/stream:
+    get:
+      summary: Stream job progress events (Server-Sent Events)
+      operationId: streamJob
+      description: |
+        Server-Sent Events. Each event payload is a JSON-encoded JobStatus.
+        The stream closes when the job reaches a terminal state. Coordinare
+        MUST tolerate disconnects and fall back to /jobs/{jobId} polling.
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      responses:
+        '200':
+          description: SSE stream of JobStatus events.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Unknown job id.
+
+  /jobs/{jobId}/cancel:
+    post:
+      summary: Request cancellation of an in-flight job
+      operationId: cancelJob
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      responses:
+        '200':
+          description: Cancellation outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CancelResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Unknown job id.
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+
+  parameters:
+    JobId:
+      name: jobId
+      in: path
+      required: true
+      schema:
+        type: string
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid bearer token.
+
+  schemas:
+    PerformerStatus:
+      type: object
+      required: [availability, capabilities, auth_enabled]
+      properties:
+        availability:
+          type: string
+          enum: [starting, idle, busy, draining]
+        current_job_id:
+          type: string
+          nullable: true
+        capabilities:
+          $ref: '#/components/schemas/PerformerCapabilities'
+        auth_enabled:
+          type: boolean
+        version:
+          type: string
+          description: Performer image semver.
+
+    PerformerCapabilities:
+      type: object
+      required: [backends, tool_flags]
+      properties:
+        backends:
+          type: array
+          items:
+            type: string
+          description: Supported backend identifiers (e.g. claude_code, codex, cursor, junie, opencode).
+        tool_flags:
+          type: array
+          items:
+            type: string
+            enum: [git, node, python, browser, lint, format, test_runner, ripgrep, jq, shell]
+          description: Fixed v1 enumeration. Performers MUST ignore unknown flags on input.
+
+    JobInitPayload:
+      type: object
+      required: [job_id, card_id, role, backend, persona, repo_url, branch]
+      properties:
+        job_id:
+          type: string
+        card_id:
+          type: string
+        role:
+          type: string
+        backend:
+          type: string
+        persona:
+          type: string
+        repo_url:
+          type: string
+          format: uri
+        branch:
+          type: string
+        secrets:
+          type: object
+          additionalProperties:
+            type: string
+            format: password
+        metadata:
+          type: object
+          additionalProperties: true
+
+    JobAcceptResponse:
+      type: object
+      required: [accepted, job_id, started_at]
+      properties:
+        accepted:
+          type: boolean
+          enum: [true]
+        job_id:
+          type: string
+        started_at:
+          type: string
+          format: date-time
+
+    JobBusyResponse:
+      type: object
+      required: [accepted, reason]
+      properties:
+        accepted:
+          type: boolean
+          enum: [false]
+        reason:
+          type: string
+          enum: [busy, draining, auth_failed, capability_mismatch, secret_missing]
+        retry_after_s:
+          type: integer
+          nullable: true
+        detail:
+          type: string
+          nullable: true
+          description: Operator-actionable detail. MUST NOT contain secret values.
+
+    JobStatus:
+      type: object
+      required: [job_id, state, started_at]
+      properties:
+        job_id:
+          type: string
+        state:
+          type: string
+          enum: [accepted, running, succeeded, failed, cancelled]
+        progress_pct:
+          type: integer
+          minimum: 0
+          maximum: 100
+          nullable: true
+        last_event:
+          type: string
+          nullable: true
+        started_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: string
+          format: date-time
+          nullable: true
+        result:
+          $ref: '#/components/schemas/JobResult'
+
+    JobResult:
+      type: object
+      required: [success, summary]
+      properties:
+        success:
+          type: boolean
+        summary:
+          type: string
+        diff_url:
+          type: string
+          format: uri
+          nullable: true
+        logs_excerpt:
+          type: string
+          nullable: true
+        error_code:
+          type: string
+          nullable: true
+
+    CancelResponse:
+      type: object
+      required: [honored]
+      properties:
+        honored:
+          type: boolean
+        detail:
+          type: string
+          nullable: true

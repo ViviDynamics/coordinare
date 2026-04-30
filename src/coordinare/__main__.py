@@ -481,6 +481,40 @@ def _build_performer_services(
     return services
 
 
+def _build_http_performer_services(
+    config: ProjectConfiguration,
+) -> dict[str, list[Any]]:
+    """Build HTTPPerformerService instances from ``config.performer_endpoints``.
+
+    Returns a stage → list[HTTPPerformerService] mapping.  Each endpoint is
+    registered under every stage corresponding to a role in ``cfg.roles``.
+    Subprocess-mode endpoints are skipped here — they go through the legacy
+    ``config.performers.<role>`` pipeline.
+    """
+    from coordinare.services.http_performer_service import HTTPPerformerService
+
+    _stage_names = set(_ROLE_TO_STAGE.values())
+    services_by_stage: dict[str, list[Any]] = {}
+    for cfg in config.performer_endpoints:
+        if cfg.mode == "subprocess":
+            continue
+        service = HTTPPerformerService(cfg)
+        for role in cfg.roles:
+            stage = _ROLE_TO_STAGE.get(role)
+            if stage is None:
+                if role in _stage_names:
+                    stage = role  # already a stage name
+                else:
+                    logger.warning(
+                        "performer_endpoint.unknown_role",
+                        performer_id=cfg.id,
+                        role=role,
+                    )
+                    continue
+            services_by_stage.setdefault(stage, []).append(service)
+    return services_by_stage
+
+
 def _build_transport(config: ProjectConfiguration) -> AgentTransport:
     github_token = (
         config.github_token.get_secret_value() if config.github_token is not None else None
@@ -562,13 +596,12 @@ async def _bootstrap_services(
     lifecycle_sequence = _build_lifecycle_sequence(config)
     performer_services = _build_performer_services(config, circuit_breakers)
 
-    # 048 — Build SlotManager from the per-role service lists
-    from coordinare.services.slot_manager import SlotManager
-    slot_manager = SlotManager()
+    # 048 — Collect per-role service lists and max_concurrency before slot registration.
     service_lists: dict[str, list] = getattr(
         _build_performer_services, "_service_lists", {},
     )
-    for stage, svc_list in service_lists.items():
+    stage_max_c: dict[str, int] = {}
+    for stage, _svc_list in service_lists.items():
         role_name = None
         for r_name, s_name in _ROLE_TO_STAGE.items():
             if s_name == stage:
@@ -579,7 +612,24 @@ async def _bootstrap_services(
             rc = getattr(config.performers, role_name, None)
             if rc is not None:
                 max_c = getattr(rc, "max_concurrency", 1)
-        slot_manager.register_pool(stage, svc_list, max_c)
+        stage_max_c[stage] = max_c
+
+    # 056 — Merge containerized (ephemeral / persistent) performers into the same
+    # service lists before slot registration so each stage is registered once.
+    http_services_by_stage = _build_http_performer_services(config)
+    for stage, http_services in http_services_by_stage.items():
+        existing = service_lists.get(stage, [])
+        merged = existing + http_services
+        service_lists[stage] = merged
+        if stage not in performer_services:
+            performer_services[stage] = merged[0]
+        stage_max_c[stage] = len(service_lists[stage])
+
+    # Register all pools once after subprocess + HTTP services are merged.
+    from coordinare.services.slot_manager import SlotManager
+    slot_manager = SlotManager()
+    for stage, svc_list in service_lists.items():
+        slot_manager.register_pool(stage, svc_list, stage_max_c[stage])
 
     # If no explicit performer roles are configured but legacy agent_service exists,
     # register it as the implementer service for backward compatibility.
