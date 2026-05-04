@@ -183,3 +183,111 @@ async def test_merge_pr_loops_on_transient_squash_error() -> None:
 
     # Stays in merging to retry on the next cycle
     assert result["phase"] == "merging"
+
+
+# ---------------------------------------------------------------------------
+# Transient check_mergeability exception → retry (lines 36-39)
+# ---------------------------------------------------------------------------
+
+
+class _GitHubMergeabilityTransient:
+    async def check_mergeability(self, pr_id: str):
+        raise RuntimeError("transient network error during mergeability check")
+
+
+@pytest.mark.asyncio
+async def test_merge_pr_loops_on_transient_mergeability_error() -> None:
+    """Generic exception from check_mergeability stays in merging for next cycle."""
+    state = initial_state()
+    state["github_service"] = _GitHubMergeabilityTransient()
+    state["current_card"] = {"id": "ITEM_1", "pr_node_id": "PR_1", "status": "IN_REVIEW"}
+
+    result = await merge_pr(state)
+
+    assert result["phase"] == "merging"
+
+
+# ---------------------------------------------------------------------------
+# move_card exception is swallowed (lines 73-74)
+# ---------------------------------------------------------------------------
+
+
+class _GitHubMoveCardFails:
+    async def check_mergeability(self, pr_id: str):
+        return {"mergeable": True}
+
+    async def squash_merge(self, pr_id: str):
+        return {"merged": True}
+
+    async def move_card(self, item_id: str, status: str) -> None:
+        raise RuntimeError("board API unavailable")
+
+
+@pytest.mark.asyncio
+async def test_merge_pr_move_card_exception_is_swallowed() -> None:
+    """Exception on move_card is swallowed; merge still completes successfully."""
+    state = initial_state()
+    state["github_service"] = _GitHubMoveCardFails()
+    state["current_card"] = {"id": "ITEM_1", "pr_node_id": "PR_1", "status": "IN_REVIEW"}
+
+    result = await merge_pr(state)
+
+    assert result["phase"] == "idle"
+    assert result["current_card"]["status"] == "DONE"
+
+
+# ---------------------------------------------------------------------------
+# Rebase round triggered for active sessions after merge (lines 93-141)
+# ---------------------------------------------------------------------------
+
+
+class _GitHubWithToken:
+    async def check_mergeability(self, pr_id: str):
+        return {"mergeable": True}
+
+    async def squash_merge(self, pr_id: str):
+        return {
+            "merged": True,
+            "merge_commit": {"oid": "abc1234def5678", "messageHeadline": "Merge card (#42)"},
+        }
+
+    async def move_card(self, item_id: str, status: str) -> None:
+        pass
+
+    async def _current_token(self) -> str:
+        return "ghp_testtoken"
+
+
+@pytest.mark.asyncio
+async def test_merge_pr_triggers_rebase_round_for_other_sessions() -> None:
+    """After merge, run_rebase_round is invoked for other active sessions."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    state = initial_state()
+    state["github_service"] = _GitHubWithToken()
+    state["current_card"] = {
+        "id": "ITEM_1",
+        "pr_node_id": "PR_1",
+        "status": "IN_REVIEW",
+        "pr_url": "https://github.com/org/repo/pull/42",
+    }
+    state["active_sessions"] = {
+        "ITEM_2": {"session_id": "s2", "branch": "feat/card-2"},
+    }
+    config = MagicMock()
+    state["config"] = config
+
+    mock_rr = MagicMock()
+    mock_rr.to_dict.return_value = {"summary": "1 rebased"}
+    mock_rr.jobs = []
+    mock_rr.summary = "1 rebased"
+
+    with (
+        patch("coordinare.graph.nodes.merge_pr.repo_url_from_config", return_value="https://github.com/org/repo.git"),
+        patch("coordinare.services.rebase.run_rebase_round", AsyncMock(return_value=mock_rr)),
+    ):
+        result = await merge_pr(state)
+
+    assert result["phase"] == "idle"
+    assert result["current_card"]["status"] == "DONE"
+    assert "last_rebase_round" in result

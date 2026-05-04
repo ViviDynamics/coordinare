@@ -21,8 +21,11 @@ __all__ = [
     "DeprecationEntry",
     "ErrorType",
     "_load_raw_yaml",
+    "coerce_multi_symphony_raw",
+    "is_multi_symphony_config",
     "pre_validate_raw",
     "validate_config",
+    "wrap_legacy_config",
 ]
 
 
@@ -185,6 +188,61 @@ def _map_pydantic_error_type(pydantic_type: str) -> ErrorType:
     return ErrorType.invalid_value
 
 
+def is_multi_symphony_config(raw: dict) -> bool:
+    """Return True if the config uses the multi-symphony format (spec 057).
+
+    An empty or absent 'symphonies' key falls back to single-symphony mode per spec FR-001.
+    A present but non-list value (including null) is treated as multi-symphony so Pydantic
+    surfaces a type error rather than silently ignoring the key.
+    """
+    if "symphonies" not in raw:
+        return False
+    val = raw["symphonies"]
+    # Empty list → legacy; non-list or non-empty list → multi-symphony
+    return not (isinstance(val, list) and len(val) == 0)
+
+
+def coerce_multi_symphony_raw(raw: dict) -> dict:
+    """Build the CoordinareConfiguration constructor dict from a multi-symphony raw config.
+
+    Separates the symphony/orchestra top-level keys from the global config fields.
+    """
+    _sym_keys = frozenset({"symphonies", "orchestra"})
+    return {
+        "global_config": {k: v for k, v in raw.items() if k not in _sym_keys},
+        "symphonies": raw.get("symphonies", []),
+        "orchestra": raw.get("orchestra", {"mode": "shared_pool", "performers": []}),
+    }
+
+
+def wrap_legacy_config(raw: dict) -> dict:
+    """Auto-wrap a legacy single-project config as a CoordinareConfiguration dict.
+
+    Takes a legacy flat ProjectConfiguration dict and wraps it in a
+    CoordinareConfiguration with a single 'default' symphony (underscore-free
+    to pass validation regex; context default is "__default__" for backwards compat).
+    """
+    global_cfg = dict(raw)
+    _env_pn = os.environ.get("COORDINARE_GITHUB_PROJECT_NUMBER", "") or ""
+    try:
+        project_number = global_cfg.get("github_project_number") or (int(_env_pn) if _env_pn else 0)
+    except ValueError:
+        project_number = 0
+    return {
+        "global_config": global_cfg,
+        "symphonies": [
+            {
+                "name": "default",
+                # Use placeholder 1 when value is absent/zero so SymphonyConfig(ge=1)
+                # passes schema construction. validate_config() reports the missing field
+                # as a ConfigFieldError separately.
+                "github_project_number": project_number or 1,
+            }
+        ],
+        "orchestra": {"mode": "shared_pool", "performers": []},
+    }
+
+
 def _count_env_var_fields(raw: dict, config: object) -> int:
     """Count top-level scalar fields resolved from COORDINARE_* env vars (T011/DD-3)."""
     from coordinare.config import ProjectConfiguration
@@ -225,7 +283,9 @@ def pre_validate_raw(
 
     known_fields = frozenset(ProjectConfiguration.model_fields.keys())
     deprecated_keys = frozenset(DEPRECATION_REGISTRY.keys())
-    all_known = known_fields | deprecated_keys
+    # Allow 057 top-level keys alongside global config fields
+    multi_symphony_keys = frozenset({"symphonies", "orchestra"})
+    all_known = known_fields | deprecated_keys | multi_symphony_keys
 
     errors: list[ConfigFieldError] = []
     warnings: list[ConfigDeprecationWarning] = []
@@ -261,6 +321,25 @@ def pre_validate_raw(
                     source="file",
                 )
             )
+
+    # Fail validation when 'orchestra' is present without 'symphonies': the orchestra block
+    # would be silently discarded because is_multi_symphony_config() returns False and
+    # wrap_legacy_config() injects a default orchestra, overwriting the user-supplied one.
+    symphonies_val = raw.get("symphonies")
+    symphonies_absent = "symphonies" not in raw or (isinstance(symphonies_val, list) and not symphonies_val)
+    if "orchestra" in raw and symphonies_absent:
+        errors.append(
+            ConfigFieldError(
+                field_path="orchestra",
+                error_type=ErrorType.invalid_value,
+                fix_hint=(
+                    "Field 'orchestra' is only valid in multi-symphony configs (when 'symphonies' "
+                    "is also present). Without 'symphonies', the 'orchestra' block is ignored. "
+                    "Add a 'symphonies' section or remove 'orchestra'."
+                ),
+                source="file",
+            )
+        )
 
     return errors, warnings
 
@@ -338,10 +417,104 @@ def validate_config(
     env_var_fields_count = 0
 
     try:
-        from coordinare.config import ProjectConfiguration
+        from coordinare.config import CoordinareConfiguration
 
-        config_obj = ProjectConfiguration(**raw)
-        env_var_fields_count = _count_env_var_fields(raw, config_obj)
+        # Check if this is a multi-symphony format or legacy single-project format
+        if is_multi_symphony_config(raw):
+            # Multi-symphony format: root-level keys are global config; extract symphonies/orchestra.
+            coerced = coerce_multi_symphony_raw(raw)
+            coordinare_cfg = CoordinareConfiguration(**coerced)
+            config_obj = coordinare_cfg.global_config
+            env_var_fields_count = _count_env_var_fields(coerced["global_config"], config_obj)
+            # Validate that each symphony's overrides can merge into a valid effective
+            # config. effective_config() raises ValueError on unknown override keys;
+            # catching it here keeps the contract: validate_config() pass ⇒ no startup crash.
+            for _sym_idx, sym in enumerate(coordinare_cfg.symphonies):
+                try:
+                    sym.effective_config(coordinare_cfg.global_config)
+                except ValueError as _eff_exc:
+                    pydantic_errors.append(
+                        ConfigFieldError(
+                            field_path=f"symphonies[{_sym_idx}].overrides",
+                            error_type=ErrorType.invalid_value,
+                            fix_hint=str(_eff_exc),
+                            source="file",
+                        )
+                    )
+                except ValidationError as _val_exc:
+                    for _verr in _val_exc.errors():
+                        _loc = _verr.get("loc", ())
+                        _field = _dotted_path(_loc) if _loc else "unknown"
+                        pydantic_errors.append(
+                            ConfigFieldError(
+                                field_path=f"symphonies[{_sym_idx}].overrides.{_field}",
+                                error_type=_map_pydantic_error_type(str(_verr.get("type", ""))),
+                                fix_hint=str(_verr.get("msg", "")),
+                                source="file",
+                            )
+                        )
+        else:
+            # Legacy format: auto-wrap and parse.
+            # Check github_project_number BEFORE wrapping — SymphonyConfig.github_project_number
+            # has Field(ge=1), so a missing/zero value would cause CoordinareConfiguration(**wrapped)
+            # to raise ValidationError before config_obj is available, producing a confusing
+            # symphonies[0].github_project_number path instead of the friendly fix_hint below.
+            _env_lpn = os.environ.get("COORDINARE_GITHUB_PROJECT_NUMBER", "") or ""
+            _project_number_parse_failed = False
+            try:
+                _legacy_project_number = raw.get("github_project_number") or (
+                    int(_env_lpn) if _env_lpn else 0
+                )
+            except ValueError:
+                _legacy_project_number = 0
+                _project_number_parse_failed = True
+                pydantic_errors.append(
+                    ConfigFieldError(
+                        field_path="github_project_number",
+                        error_type=ErrorType.wrong_type,
+                        fix_hint=(
+                            "COORDINARE_GITHUB_PROJECT_NUMBER must be an integer. "
+                            f"Got: {_env_lpn!r}"
+                        ),
+                        source="env_var:COORDINARE_GITHUB_PROJECT_NUMBER",
+                    )
+                )
+            if not _legacy_project_number:
+                if not _project_number_parse_failed:
+                    pydantic_errors.append(
+                        ConfigFieldError(
+                            field_path="github_project_number",
+                            error_type=ErrorType.missing,
+                            fix_hint=(
+                                "Field 'github_project_number' is required in legacy single-project mode. "
+                                "Set it in your config file or via COORDINARE_GITHUB_PROJECT_NUMBER."
+                            ),
+                            source=None,
+                        )
+                    )
+                # Inject placeholder so wrap_legacy_config produces a valid symphony dict
+                # (ge=1 must pass for CoordinareConfiguration construction to succeed).
+                # Rebind to a new dict — does not affect _count_env_var_fields because
+                # github_project_number isn't in COORDINARE_* env vars when we reach here.
+                raw = {**raw, "github_project_number": 1}
+            wrapped = wrap_legacy_config(raw)
+            coordinare_cfg = CoordinareConfiguration(**wrapped)
+            config_obj = coordinare_cfg.global_config
+            env_var_fields_count = _count_env_var_fields(raw, config_obj)
+            # In legacy mode, project_name must also be set — it cannot be derived
+            # from a symphony name as in multi-symphony mode.
+            if not config_obj.project_name:
+                pydantic_errors.append(
+                    ConfigFieldError(
+                        field_path="project_name",
+                        error_type=ErrorType.missing,
+                        fix_hint=(
+                            "Field 'project_name' is required in legacy single-project mode. "
+                            "Set it in your config file or via COORDINARE_PROJECT_NAME."
+                        ),
+                        source=None,
+                    )
+                )
     except ValidationError as exc:
         for err in exc.errors():
             loc = err.get("loc", ())
@@ -352,11 +525,17 @@ def validate_config(
             # Determine source: env var or file
             source: str | None = None
             if loc:
-                top_field = str(loc[0])
+                # For CoordinareConfiguration validation errors, the path starts with
+                # "global_config" then the field name — unwrap one level.
+                if len(loc) > 1 and loc[0] == "global_config":
+                    top_field = str(loc[1])
+                else:
+                    top_field = str(loc[0])
                 env_var_name = f"COORDINARE_{top_field.upper()}"
+
                 if os.environ.get(env_var_name):
                     source = f"env_var:{env_var_name}"
-                elif field_path in raw or top_field in raw:
+                elif top_field in raw:
                     source = "file"
 
             pydantic_errors.append(

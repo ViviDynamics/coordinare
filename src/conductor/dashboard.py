@@ -428,6 +428,12 @@ class DashboardStore:
             "session_stats": self._serialise_session_stats(daemon.state.get("session_stats")),
             # 054: Per-cycle skip reasons for ineligible sessions.
             "session_skip_reasons": copy.deepcopy(daemon.state.get("session_skip_reasons") or {}),
+            # 057: Multi-symphony orchestration
+            "symphonies": self._build_symphonies_data(daemon),
+            "coordinare": {
+                "current_symphony": daemon.state.get("current_symphony"),
+                "config_version": daemon.state.get("config_version", 0),
+            },
         }
 
     @staticmethod
@@ -470,6 +476,34 @@ class DashboardStore:
             value = snapshot.get(column)
             summary[column] = len(value) if isinstance(value, list) else 0
         return summary
+
+    @staticmethod
+    def _build_symphonies_data(daemon: Any) -> list[dict]:
+        """Build symphony state for the dashboard snapshot (spec 057)."""
+        symphony_configs = daemon.state.get("symphony_configs") or {}
+        symphony_states = daemon.state.get("symphony_states") or {}
+        symphonies_data = []
+        for i, (sym_name, sym_cfg) in enumerate(symphony_configs.items()):
+            sym_state = symphony_states.get(sym_name)
+            sym_entry = {
+                "name": sym_name,
+                "priority": i,
+                "github_project_number": getattr(sym_cfg, "github_project_number", None),
+                "state": {
+                    "cycle_count": getattr(sym_state, "cycle_count", 0) if sym_state else 0,
+                    "error_count": getattr(sym_state, "error_count", 0) if sym_state else 0,
+                    "last_error": getattr(sym_state, "last_error", None) if sym_state else None,
+                    "last_poll_at": (
+                        getattr(sym_state, "last_poll_at", None).isoformat()
+                        if sym_state and isinstance(getattr(sym_state, "last_poll_at", None), datetime)
+                        else None
+                    ),
+                    "active_card": getattr(sym_state, "active_card", None) if sym_state else None,
+                    "board_snapshot": getattr(sym_state, "board_snapshot", None) if sym_state else None,
+                } if sym_state is not None else None,
+            }
+            symphonies_data.append(sym_entry)
+        return symphonies_data
 
 
 # ---------------------------------------------------------------------------
@@ -639,6 +673,8 @@ td { padding: 4px 8px; border-bottom: 1px solid #21262d; }
     <a href="/performers" class="nav-link" onclick="navigate(event,'/performers')">Performers</a>
     <a href="/personas" class="nav-link" onclick="navigate(event,'/personas')">Personas</a>
     <a href="/history" class="nav-link" onclick="navigate(event,'/history')">History</a>
+    <a href="/symphonies" class="nav-link" onclick="navigate(event,'/symphonies')">Symphonies</a>
+    <a href="/admin/config" class="nav-link" onclick="navigate(event,'/admin/config')">Admin Config</a>
   </div>
   <span class="nav-spacer"></span>
   <span><span id="nav-sse-dot" class="nav-status-dot"></span><span id="project-link" style="font-size:12px;color:#8b949e"></span></span>
@@ -810,6 +846,21 @@ td { padding: 4px 8px; border-bottom: 1px solid #21262d; }
   <div class="card">
     <h2>History</h2>
     <div id="history-page-section"><span class="empty-state">Loading...</span></div>
+  </div>
+</div>
+
+<!-- 057: Symphonies page -->
+<div id="symphonies-page" style="display:none">
+  <div class="card">
+    <h2>Symphonies</h2>
+    <div id="symphonies-page-section"><span class="empty-state">Loading...</span></div>
+  </div>
+</div>
+
+<div id="admin-config-page" style="display:none">
+  <div class="card">
+    <h2>Admin Config</h2>
+    <div id="admin-config-page-section"><span class="empty-state">Configuration management panel — coming soon.</span></div>
   </div>
 </div>
 
@@ -1476,7 +1527,7 @@ var _performersDetailOpen = false;
 
 // 049: Client-side router
 function showPage(pageId) {
-  var pages = ['dashboard-page','performers-page','personas-page','history-page'];
+  var pages = ['dashboard-page','performers-page','personas-page','history-page','symphonies-page','admin-config-page'];
   pages.forEach(function(id) {
     var el = document.getElementById(id);
     if (el) el.style.display = id === pageId ? '' : 'none';
@@ -1490,8 +1541,45 @@ function updateNavActive(path) {
     var active = (path === '/' && href === '/') || (path !== '/' && href !== '/' && path.startsWith(href));
     link.classList.toggle('nav-active', active);
   });
-  var titles = {'/':'Dashboard — Coordinare','/performers':'Performers — Coordinare','/personas':'Personas — Coordinare','/history':'History — Coordinare'};
-  document.title = titles[path] || 'Coordinare';
+  var titles = {'/':'Dashboard — Coordinare','/performers':'Performers — Coordinare','/personas':'Personas — Coordinare','/history':'History — Coordinare','/symphonies':'Symphonies — Coordinare','/admin/config':'Admin Config — Coordinare'};
+  document.title = titles[path] || (path.startsWith('/symphonies/') ? 'Symphony — Coordinare' : 'Coordinare');
+}
+
+function renderSymphoniesPage(s) {
+  var el = document.getElementById('symphonies-page-section');
+  if (!el) return;
+  var syms = Array.isArray(s.symphonies) ? s.symphonies : [];
+  var path = location.pathname;
+  var detail = path.startsWith('/symphonies/') ? decodeURIComponent(path.slice('/symphonies/'.length)) : null;
+  if (detail) {
+    var sym = syms.find(function(x) { return x.name === detail; });
+    if (!sym) { el.innerHTML = '<span class="empty-state">Symphony not found: ' + esc(detail) + '</span>'; return; }
+    var st = sym.state || {};
+    el.innerHTML = '<a href="/symphonies" onclick="navigate(event,\\'/symphonies\\')" style="color:#58a6ff;font-size:13px">&#8592; All symphonies</a>'
+      + '<h3 style="margin:12px 0 8px">' + esc(sym.name) + '</h3>'
+      + '<table style="font-size:12px;width:100%"><tbody>'
+      + '<tr><th style="text-align:left;padding:4px 8px 4px 0;color:#8b949e">Priority</th><td>' + (sym.priority != null ? sym.priority : '—') + '</td></tr>'
+      + '<tr><th style="text-align:left;padding:4px 8px 4px 0;color:#8b949e">Cycles</th><td>' + (st.cycle_count != null ? st.cycle_count : '—') + '</td></tr>'
+      + '<tr><th style="text-align:left;padding:4px 8px 4px 0;color:#8b949e">Errors</th><td>' + (st.error_count != null ? st.error_count : '—') + '</td></tr>'
+      + '<tr><th style="text-align:left;padding:4px 8px 4px 0;color:#8b949e">Active card</th><td>' + (st.active_card ? esc(st.active_card.title || st.active_card.id || '') : '—') + '</td></tr>'
+      + '<tr><th style="text-align:left;padding:4px 8px 4px 0;color:#8b949e">Last poll</th><td>' + (st.last_poll_at ? esc(st.last_poll_at) : '—') + '</td></tr>'
+      + '</tbody></table>';
+    return;
+  }
+  if (!syms.length) { el.innerHTML = '<span class="empty-state">No symphonies configured.</span>'; return; }
+  var rows = syms.map(function(sym) {
+    var st = sym.state || {};
+    return '<tr>'
+      + '<td><a href="/symphonies/' + encodeURIComponent(sym.name) + '" onclick="navigate(event,\\'/symphonies/' + encodeURIComponent(sym.name) + '\\')" style="color:#58a6ff">' + esc(sym.name) + '</a></td>'
+      + '<td>' + (sym.priority != null ? sym.priority : '—') + '</td>'
+      + '<td>' + (st.cycle_count != null ? st.cycle_count : '—') + '</td>'
+      + '<td>' + (st.error_count != null ? st.error_count : '—') + '</td>'
+      + '<td>' + (st.active_card ? esc(st.active_card.title || st.active_card.id || '') : '—') + '</td>'
+      + '</tr>';
+  }).join('');
+  el.innerHTML = '<table style="width:100%;font-size:12px"><thead><tr>'
+    + '<th style="text-align:left">Name</th><th style="text-align:left">Priority</th><th style="text-align:left">Cycles</th><th style="text-align:left">Errors</th><th style="text-align:left">Active card</th>'
+    + '</tr></thead><tbody>' + rows + '</tbody></table>';
 }
 
 function router() {
@@ -1506,6 +1594,11 @@ function router() {
   } else if (path === '/history') {
     showPage('history-page');
     if (_lastState) renderHistoryPage(_lastState);
+  } else if (path === '/symphonies' || path.startsWith('/symphonies/')) {
+    showPage('symphonies-page');
+    if (_lastState) renderSymphoniesPage(_lastState);
+  } else if (path === '/admin/config') {
+    showPage('admin-config-page');
   } else {
     showPage('dashboard-page');
     if (_lastState) renderDashboardExtras(_lastState);
@@ -1952,6 +2045,7 @@ es.addEventListener('state_update', function(e) {
     var path = location.pathname;
     if (path === '/performers') renderPerformersPage(_lastState);
     else if (path === '/history') renderHistoryPage(_lastState);
+    else if (path === '/symphonies' || path.startsWith('/symphonies/')) renderSymphoniesPage(_lastState);
     else renderDashboardExtras(_lastState);
   } catch(err) { console.error('parse error', err); }
 });
@@ -2036,6 +2130,22 @@ def create_dashboard_app(
 
     @app.get("/history", response_class=HTMLResponse)
     async def dashboard_history() -> HTMLResponse:
+        return HTMLResponse(_DASHBOARD_HTML)
+
+    # 057: Symphony management routes
+    @app.get("/symphonies", response_class=HTMLResponse)
+    async def dashboard_symphonies() -> HTMLResponse:
+        """Display the symphonies list page (Task 8)."""
+        return HTMLResponse(_DASHBOARD_HTML)
+
+    @app.get("/symphonies/{name}", response_class=HTMLResponse)
+    async def dashboard_symphony_detail(name: str) -> HTMLResponse:
+        """Display the detail page for a specific symphony (Task 8)."""
+        return HTMLResponse(_DASHBOARD_HTML)
+
+    @app.get("/admin/config", response_class=HTMLResponse)
+    async def dashboard_admin_config() -> HTMLResponse:
+        """Display the admin configuration page (Task 11)."""
         return HTMLResponse(_DASHBOARD_HTML)
 
     @app.get("/api/performer-logs")
@@ -2136,6 +2246,353 @@ def create_dashboard_app(
             return JSONResponse({"error": "No active card to override"}, status_code=400)
         daemon.state["pending_override"] = {"action": "veto"}
         return JSONResponse({"status": "override_queued", "action": "veto"})
+
+    # -----------------------------------------------------------------------
+    # 057 — Symphony Management API endpoints (Tasks 9-10)
+    # -----------------------------------------------------------------------
+
+    def _persist_symphony_configs(sym_configs: dict) -> None:
+        """Atomically write the current symphony list to config.yaml (FR-020)."""
+        import os
+        import stat
+        import tempfile
+
+        import yaml
+
+        if config_path is None or not config_path.is_file():
+            msg = "Config file not available; symphony changes are in-memory only"
+            raise ValueError(msg)
+
+        sym_list = [s.model_dump(exclude_none=True) for s in sym_configs.values()]
+
+        loaded = yaml.safe_load(config_path.read_text())
+        if not isinstance(loaded, dict):
+            msg = "Config file does not contain a YAML mapping"
+            raise ValueError(msg)
+        loaded["symphonies"] = sym_list
+
+        original_mode = stat.S_IMODE(os.stat(config_path).st_mode)
+        tmp_fd, tmp_path = tempfile.mkstemp(
+            dir=config_path.parent, prefix=".coordinare_config_", suffix=".yaml.tmp"
+        )
+        try:
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                yaml.safe_dump(
+                    loaded, f, default_flow_style=False, allow_unicode=True, sort_keys=False
+                )
+                f.flush()
+                os.fsync(f.fileno())
+            os.chmod(tmp_path, original_mode)
+            os.replace(tmp_path, str(config_path))
+        except Exception:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_path)
+            raise
+
+    @app.get("/api/symphonies")
+    async def get_symphonies() -> JSONResponse:
+        """List all symphonies with their current state (Task 9)."""
+        symphony_configs = daemon.state.get("symphony_configs") or {}
+        symphony_states = daemon.state.get("symphony_states") or {}
+        config_version = daemon.state.get("config_version", 0)
+
+        symphonies = []
+        for i, (name, cfg) in enumerate(symphony_configs.items()):
+            state = symphony_states.get(name)
+            symphonies.append({
+                "name": name,
+                "priority": i,
+                "github_project_number": getattr(cfg, "github_project_number", None),
+                "cycle_count": getattr(state, "cycle_count", 0) if state else 0,
+                "error_count": getattr(state, "error_count", 0) if state else 0,
+                "last_error": getattr(state, "last_error", None) if state else None,
+                "last_poll_at": (
+                    getattr(state, "last_poll_at", None).isoformat()
+                    if state and isinstance(getattr(state, "last_poll_at", None), datetime)
+                    else None
+                ),
+            })
+
+        return JSONResponse({
+            "symphonies": symphonies,
+            "config_version": config_version,
+        })
+
+    @app.get("/api/symphonies/{name}")
+    async def get_symphony(name: str) -> JSONResponse:
+        """Get detailed state for a specific symphony (Task 9)."""
+        symphony_configs = daemon.state.get("symphony_configs") or {}
+        symphony_states = daemon.state.get("symphony_states") or {}
+
+        if name not in symphony_configs:
+            return JSONResponse(
+                {"error": f"Symphony {name!r} not found"},
+                status_code=404,
+            )
+
+        cfg = symphony_configs[name]
+        state = symphony_states.get(name)
+
+        return JSONResponse({
+            "name": name,
+            "github_project_number": getattr(cfg, "github_project_number", None),
+            "state": {
+                "cycle_count": getattr(state, "cycle_count", 0) if state else 0,
+                "error_count": getattr(state, "error_count", 0) if state else 0,
+                "last_error": getattr(state, "last_error", None) if state else None,
+                "last_poll_at": (
+                    getattr(state, "last_poll_at", None).isoformat()
+                    if state and isinstance(getattr(state, "last_poll_at", None), datetime)
+                    else None
+                ),
+                "active_card": getattr(state, "active_card", None) if state else None,
+                "board_snapshot": getattr(state, "board_snapshot", None) if state else None,
+            } if state is not None else None,
+        })
+
+    @app.post("/api/symphonies/{name}/validate")
+    async def validate_symphony(name: str, request: Request) -> JSONResponse:
+        """Validate a symphony's configuration (Task 9). Accepts optional body with proposed overrides/personas for dry-run validation."""
+        from coordinare.config import SymphonyConfig
+
+        symphony_configs = daemon.state.get("symphony_configs") or {}
+
+        if name not in symphony_configs:
+            return JSONResponse(
+                {"error": f"Symphony {name!r} not found"},
+                status_code=404,
+            )
+
+        cfg = symphony_configs[name]
+        coordinare_cfg = daemon.state.get("coordinare_config")
+
+        if not coordinare_cfg:
+            return JSONResponse(
+                {"error": "Coordinare configuration not available"},
+                status_code=500,
+            )
+
+        # Accept optional body with proposed overrides/personas for dry-run validation
+        proposed_overrides = getattr(cfg, "overrides", None)
+        proposed_personas = getattr(cfg, "personas", None)
+        raw_body = await request.body()
+        if raw_body:
+            try:
+                body = await request.json()
+            except Exception:
+                return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+            if not isinstance(body, dict):
+                return JSONResponse(
+                    {"error": "Request body must be a JSON object"}, status_code=400
+                )
+            proposed_overrides = body.get("overrides", proposed_overrides)
+            proposed_personas = body.get("personas", proposed_personas)
+
+        from pydantic import ValidationError as PydanticValidationError
+
+        try:
+            candidate = SymphonyConfig(
+                name=name,
+                github_project_number=getattr(cfg, "github_project_number", None),
+                overrides=proposed_overrides,
+                personas=proposed_personas,
+            )
+            effective = candidate.effective_config(coordinare_cfg.global_config)
+            return JSONResponse({
+                "valid": True,
+                "symphony": name,
+                "effective_config": {
+                    "github_org": effective.github_org,
+                    "github_project_number": effective.github_project_number,
+                    "project_name": effective.project_name,
+                },
+            })
+        except PydanticValidationError as exc:
+            return JSONResponse(
+                {"valid": False, "errors": exc.errors()},
+                status_code=400,
+            )
+        except ValueError as exc:
+            return JSONResponse(
+                {"valid": False, "errors": [{"msg": str(exc)}]},
+                status_code=400,
+            )
+        except Exception:
+            _log.warning("symphony_validate_unexpected_error", name=name, exc_info=True)
+            return JSONResponse({"error": "Internal validation error"}, status_code=500)
+
+    @app.put("/api/symphonies/{name}")
+    async def update_symphony(name: str, request: Request) -> JSONResponse:
+        """Update a symphony's overrides or personas (Task 9)."""
+        from coordinare.config import SymphonyConfig
+
+        if daemon._cycle_active:
+            return JSONResponse({"status": "cycle_in_progress"}, status_code=409)
+
+        symphony_configs = daemon.state.get("symphony_configs") or {}
+
+        if name not in symphony_configs:
+            return JSONResponse({"error": f"Symphony {name!r} not found"}, status_code=404)
+
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "Request body must be a JSON object"}, status_code=400)
+
+        cfg = symphony_configs[name]
+        try:
+            updated = SymphonyConfig(
+                name=name,
+                github_project_number=getattr(cfg, "github_project_number", None),
+                overrides=body.get("overrides", getattr(cfg, "overrides", None)),
+                personas=body.get("personas", getattr(cfg, "personas", None)),
+            )
+        except Exception:
+            _log.warning("symphony_config_validation_failed", name=name, exc_info=True)
+            return JSONResponse({"error": "Invalid symphony configuration"}, status_code=400)
+
+        coordinare_cfg = daemon.state.get("coordinare_config")
+        if coordinare_cfg is not None:
+            try:
+                updated.effective_config(coordinare_cfg.global_config)
+            except Exception as exc:
+                _log.warning("symphony_effective_config_failed", name=name, exc_info=True)
+                from pydantic import ValidationError as PydanticValidationError
+                if isinstance(exc, PydanticValidationError):
+                    msg = "; ".join(
+                        f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}" for e in exc.errors()
+                    )
+                else:
+                    msg = str(exc)
+                return JSONResponse({"error": msg}, status_code=400)
+
+        symphony_configs[name] = updated
+        daemon.state["symphony_configs"] = symphony_configs
+        daemon.state["config_version"] = daemon.state.get("config_version", 0) + 1
+
+        try:
+            _persist_symphony_configs(symphony_configs)
+        except Exception:
+            _log.warning("symphony_persist_failed", name=name, exc_info=True)
+
+        if hasattr(daemon, "_config_reload_trigger"):
+            daemon._config_reload_trigger.set()
+
+        return JSONResponse({
+            "name": name,
+            "overrides": getattr(updated, "overrides", None),
+            "personas": getattr(updated, "personas", None),
+        })
+
+    @app.delete("/api/symphonies/{name}")
+    async def delete_symphony(name: str) -> JSONResponse:
+        """Remove a symphony (Task 9). Returns 409 if it would remove the last symphony."""
+        if daemon._cycle_active:
+            return JSONResponse({"status": "cycle_in_progress"}, status_code=409)
+
+        symphony_configs = daemon.state.get("symphony_configs") or {}
+
+        if name not in symphony_configs:
+            return JSONResponse({"error": f"Symphony {name!r} not found"}, status_code=404)
+
+        if len(symphony_configs) <= 1:
+            return JSONResponse(
+                {"error": "Cannot delete the last symphony"},
+                status_code=409,
+            )
+
+        symphony_states = daemon.state.get("symphony_states") or {}
+        sym_state = symphony_states.get(name)
+        if sym_state is not None and getattr(sym_state, "active_sessions", None):
+            return JSONResponse(
+                {
+                    "error": "Symphony has active sessions; wait for them to complete before deleting",
+                    "active_sessions": list(sym_state.active_sessions.keys()),
+                },
+                status_code=409,
+            )
+
+        del symphony_configs[name]
+        daemon.state["symphony_configs"] = symphony_configs
+        daemon.state["config_version"] = daemon.state.get("config_version", 0) + 1
+
+        symphony_states.pop(name, None)
+        daemon.state["symphony_states"] = symphony_states
+
+        try:
+            _persist_symphony_configs(symphony_configs)
+        except Exception:
+            _log.warning("symphony_persist_failed", name=name, exc_info=True)
+
+        if hasattr(daemon, "_config_reload_trigger"):
+            daemon._config_reload_trigger.set()
+
+        return JSONResponse({"deleted": name})
+
+    @app.get("/api/config/effective")
+    async def get_effective_config(symphony: str | None = None) -> JSONResponse:
+        """Get effective configuration, optionally scoped to a symphony (Task 9)."""
+        coordinare_cfg = daemon.state.get("coordinare_config")
+        cfg = coordinare_cfg.global_config if coordinare_cfg else daemon.state.get("config")
+
+        if not cfg:
+            return JSONResponse(
+                {"error": "Config not available"},
+                status_code=500,
+            )
+
+        if symphony:
+            symphony_configs = daemon.state.get("symphony_configs") or {}
+            if symphony not in symphony_configs:
+                return JSONResponse(
+                    {"error": f"Symphony {symphony!r} not found"},
+                    status_code=404,
+                )
+            sym_cfg = symphony_configs[symphony]
+            try:
+                effective = sym_cfg.effective_config(cfg)
+                return JSONResponse({
+                    "github_org": effective.github_org,
+                    "github_project_number": effective.github_project_number,
+                    "project_name": effective.project_name,
+                    "symphony": symphony,
+                    "mode": "symphony",
+                })
+            except Exception:
+                _log.error("effective_config_resolution_failed", symphony=symphony, exc_info=True)
+                return JSONResponse(
+                    {"error": "Failed to compute effective config for this symphony"},
+                    status_code=500,
+                )
+
+        return JSONResponse({
+            "github_org": cfg.github_org,
+            "github_project_number": cfg.github_project_number,
+            "project_name": cfg.project_name,
+            "mode": daemon.state.get("config_mode", "legacy"),
+        })
+
+    @app.post("/api/config/reload")
+    async def reload_config() -> JSONResponse:
+        """Trigger a hot-reload of the configuration (Task 10)."""
+        if not hasattr(daemon, "_config_reload_trigger"):
+            return JSONResponse(
+                {"error": "Config reload not supported"},
+                status_code=501,
+            )
+
+        daemon._config_reload_trigger.set()
+        # Wake the daemon loop in case it's blocked waiting on _webhook_trigger
+        # (e.g. poll_interval_seconds=0 / webhook-only mode)
+        if hasattr(daemon, "_webhook_trigger"):
+            daemon._webhook_trigger.set()
+        return JSONResponse({
+            "status": "reload_triggered",
+            "message": "Configuration reload in progress",
+        }, status_code=202)
 
     # -----------------------------------------------------------------------
     # 018 — Personas API endpoints

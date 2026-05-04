@@ -249,7 +249,7 @@ def test_daemon_startup_emits_config_loaded_log(tmp_path) -> None:
 
     config_file = _write_config(tmp_path)
 
-    async def _noop_run(config, config_path=None):
+    async def _noop_run(config, config_path=None, **kwargs):
         pass
 
     with (

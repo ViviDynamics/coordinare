@@ -154,6 +154,83 @@ def test_cancel_endpoint_returns_200(tmp_path) -> None:
     assert res.json()["status"] == "cancelled"
 
 
+# ---------------------------------------------------------------------------
+# Exception-swallowing paths in cancel_active_card (lines 48-68, 120-121)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cancel_performer_stop_timeout_is_swallowed() -> None:
+    """TimeoutError from performer stop is caught and logged; cancellation still completes."""
+    state = initial_state()
+    state["phase"] = "monitoring_performer"
+    state["current_card"] = {"id": "ITEM_1", "title": "Card"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["agent_service"] = MagicMock(
+        relay_feedback=AsyncMock(side_effect=TimeoutError("performer stop timed out"))
+    )
+    state["notification_service"] = MagicMock(dispatch=AsyncMock())
+
+    result = await cancel_active_card(state)
+
+    assert result["status"] == "cancelled"
+    assert state["phase"] == "idle"
+
+
+@pytest.mark.asyncio
+async def test_cancel_workspace_cleanup_exception_is_swallowed() -> None:
+    """Exception from workspace teardown is caught and logged; cancellation still completes."""
+    state = initial_state()
+    state["phase"] = "monitoring_performer"
+    state["current_card"] = {"id": "ITEM_1", "title": "Card"}
+
+    workspace_manager = MagicMock()
+    workspace_manager.teardown = AsyncMock(side_effect=RuntimeError("workspace teardown failed"))
+    state["workspace_manager"] = workspace_manager
+    state["workspace_path"] = "/tmp/workspace"
+    state["notification_service"] = MagicMock(dispatch=AsyncMock())
+
+    result = await cancel_active_card(state)
+
+    assert result["status"] == "cancelled"
+    assert state["phase"] == "idle"
+
+
+@pytest.mark.asyncio
+async def test_cancel_move_to_todo_exception_is_swallowed() -> None:
+    """Exception from move_card(TODO) is caught and logged; cancellation still completes."""
+    state = initial_state()
+    state["phase"] = "monitoring_performer"
+    state["current_card"] = {"id": "ITEM_1", "title": "Card"}
+
+    github = MagicMock()
+    github.move_card = AsyncMock(side_effect=RuntimeError("board API unavailable"))
+    state["github_service"] = github
+    state["notification_service"] = MagicMock(dispatch=AsyncMock())
+
+    result = await cancel_active_card(state, move_to_todo=True)
+
+    assert result["status"] == "cancelled"
+    assert state["phase"] == "idle"
+
+
+@pytest.mark.asyncio
+async def test_cancel_notification_exception_is_swallowed() -> None:
+    """Exception from notification dispatch is caught and logged; result is still 'cancelled'."""
+    state = initial_state()
+    state["phase"] = "monitoring_performer"
+    state["current_card"] = {"id": "ITEM_1", "title": "Card"}
+
+    notification = MagicMock()
+    notification.dispatch = AsyncMock(side_effect=RuntimeError("notification service down"))
+    state["notification_service"] = notification
+
+    result = await cancel_active_card(state)
+
+    assert result["status"] == "cancelled"
+    assert result["card_id"] == "ITEM_1"
+
+
 def test_cancel_endpoint_idle_returns_no_active_card(tmp_path) -> None:
     """POST /api/cancel when idle returns no_active_card."""
     import asyncio

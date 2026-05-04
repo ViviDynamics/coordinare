@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from dataclasses import field as dc_field
 from datetime import UTC, datetime
 from pathlib import Path  # noqa: TC003 — needed at runtime for LangGraph get_type_hints()
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypedDict
@@ -56,6 +58,27 @@ class AdvocateServiceProtocol(Protocol):
     async def scan_and_respond(self, processed_ids: set[str], *, persona_instructions: str = "") -> set[str]:
         """Scan open issues, process unhandled ones, return updated processed_ids set."""
         ...
+
+
+# ---------------------------------------------------------------------------
+# 057 — Symphony Management & Multi-Project Orchestration
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class SymphonyRuntimeState:
+    """Per-symphony runtime tracking (spec 057)."""
+
+    name: str
+    last_poll_at: datetime | None = None
+    active_card: dict[str, Any] | None = None
+    active_sessions: dict[str, Any] = dc_field(default_factory=dict)
+    cycle_count: int = 0
+    error_count: int = 0
+    last_error: str | None = None
+    board_snapshot: dict[str, list[str]] | None = None
+    session_skip_reasons: dict[str, Any] | None = None
+    previous_phase: str | None = None
 
 
 class CoordinareState(TypedDict, total=False):
@@ -158,6 +181,17 @@ class CoordinareState(TypedDict, total=False):
     # runtime; a TYPE_CHECKING import would NameError. Reset on coordinare restart.
     performer_endpoints: dict[str, Any]
 
+    # 057: Multi-symphony orchestration
+    symphony_configs: dict[str, Any]           # name → SymphonyConfig
+    symphony_states: dict[str, Any]            # name → SymphonyRuntimeState
+    current_symphony: str | None               # symphony currently being orchestrated
+    orchestra_config: Any                      # OrchestraConfig
+    config_version: int                        # incremented on hot-reload
+    coordinare_config: Any                      # CoordinareConfiguration (full config object)
+    config_mode: str                           # "legacy" or "multi_symphony"
+    symphony_github_services: dict[str, Any]   # name → GitHubService
+    symphony_workspace_managers: dict[str, Any]  # name → WorkspaceManager
+
 
 def initial_state() -> CoordinareState:
     return {
@@ -203,4 +237,13 @@ def initial_state() -> CoordinareState:
         "last_issue_comment_id": None,
         "processed_issue_comment_ids": set(),
         "performer_endpoints": {},
+        "symphony_configs": {},
+        "symphony_states": {},
+        "current_symphony": None,
+        "orchestra_config": None,
+        "config_version": 0,
+        "coordinare_config": None,
+        "config_mode": "legacy",
+        "symphony_github_services": {},
+        "symphony_workspace_managers": {},
     }

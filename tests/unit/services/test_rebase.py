@@ -45,12 +45,18 @@ class TestRunGit:
         """Mock asyncio.wait_for to raise TimeoutError so we exercise
         the _run_git timeout handling path without a real long-running
         process."""
+        import inspect
         import tempfile
 
         from coordinare.services.rebase import _run_git
 
+        async def _fake_wait_for(coro, *, timeout=None):
+            if inspect.iscoroutine(coro):
+                coro.close()
+            raise TimeoutError()
+
         with tempfile.TemporaryDirectory() as tmp, \
-             patch("asyncio.wait_for", side_effect=TimeoutError):
+             patch("asyncio.wait_for", new=_fake_wait_for):
             exit_code, _stdout, stderr = await _run_git(
                 ["--version"], cwd=tmp, timeout=1,
             )

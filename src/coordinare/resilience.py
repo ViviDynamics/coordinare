@@ -241,6 +241,7 @@ class ResilientAgentService:
         workspace_info: WorkspaceInfo | None = None,
     ) -> dict[str, Any]:
         from coordinare.metrics import METRICS
+        from coordinare.observability import get_current_symphony
         from coordinare.transport.base import TransportTimeoutError
 
         retry = stamina.retry(
@@ -256,12 +257,18 @@ class ResilientAgentService:
             async with self._circuit_breaker.guard():
                 result = await _retried()
             METRICS.service_calls_total.labels(
-                service="agent", action="dispatch_card", outcome="success",
+                symphony=get_current_symphony(),
+                service="agent",
+                action="dispatch_card",
+                outcome="success",
             ).inc()
             return result
         except Exception:
             METRICS.service_calls_total.labels(
-                service="agent", action="dispatch_card", outcome="failure",
+                symphony=get_current_symphony(),
+                service="agent",
+                action="dispatch_card",
+                outcome="failure",
             ).inc()
             raise
 
@@ -275,6 +282,7 @@ class ResilientAgentService:
 
     async def check_status(self, session_id: str, *, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         from coordinare.metrics import METRICS
+        from coordinare.observability import get_current_symphony
         from coordinare.transport.base import TransportTimeoutError
 
         retry = stamina.retry(
@@ -290,17 +298,24 @@ class ResilientAgentService:
             async with self._circuit_breaker.guard():
                 result = await _retried()
             METRICS.service_calls_total.labels(
-                service="agent", action="check_status", outcome="success",
+                symphony=get_current_symphony(),
+                service="agent",
+                action="check_status",
+                outcome="success",
             ).inc()
             return result
         except Exception:
             METRICS.service_calls_total.labels(
-                service="agent", action="check_status", outcome="failure",
+                symphony=get_current_symphony(),
+                service="agent",
+                action="check_status",
+                outcome="failure",
             ).inc()
             raise
 
     async def relay_feedback(self, review_payload: dict[str, Any]) -> dict[str, Any]:
         from coordinare.metrics import METRICS
+        from coordinare.observability import get_current_symphony
         from coordinare.transport.base import TransportTimeoutError
 
         retry = stamina.retry(
@@ -316,11 +331,17 @@ class ResilientAgentService:
             async with self._circuit_breaker.guard():
                 result = await _retried()
             METRICS.service_calls_total.labels(
-                service="agent", action="relay_feedback", outcome="success",
+                symphony=get_current_symphony(),
+                service="agent",
+                action="relay_feedback",
+                outcome="success",
             ).inc()
             return result
         except Exception:
             METRICS.service_calls_total.labels(
-                service="agent", action="relay_feedback", outcome="failure",
+                symphony=get_current_symphony(),
+                service="agent",
+                action="relay_feedback",
+                outcome="failure",
             ).inc()
             raise

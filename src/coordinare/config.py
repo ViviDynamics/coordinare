@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import string
 from collections import Counter
 from enum import StrEnum
@@ -8,7 +9,7 @@ from typing import Any, Literal
 from urllib.parse import urlparse
 
 import yaml
-from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 from coordinare.models.notification import ChannelType, EventType
@@ -475,9 +476,9 @@ class ProjectConfiguration(BaseSettings):
 
     model_config = SettingsConfigDict(env_prefix="COORDINARE_", extra="ignore", env_ignore_empty=True)
 
-    project_name: str
+    project_name: str = ""
     github_org: str
-    github_project_number: int
+    github_project_number: int = 0
 
     # 036 — GitHub Enterprise: configurable API base URL and GraphQL endpoint
     github_api_url: str = "https://api.github.com"
@@ -714,4 +715,104 @@ class ProjectConfiguration(BaseSettings):
             msg = "human_reviewers must contain at least one entry"
             raise ValueError(msg)
         return value
+
+
+# ---------------------------------------------------------------------------
+# 057 — Symphony Management & Multi-Project Orchestration
+# ---------------------------------------------------------------------------
+
+
+class SymphonyConfig(BaseModel):
+    """A named project orchestration configuration."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    github_project_number: int = Field(ge=1)
+    enabled: bool = True
+    overrides: dict[str, Any] | None = None   # partial ProjectConfiguration fields merged with global
+    personas: dict[str, Any] | None = None    # per-symphony persona overrides
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, v: str) -> str:
+        if not re.match(r"^[a-z0-9]([a-z0-9\-]*[a-z0-9])?$", v):
+            msg = "name must be alphanumeric + dash, start/end with alphanumeric"
+            raise ValueError(msg)
+        return v
+
+    def effective_config(self, global_config: ProjectConfiguration) -> ProjectConfiguration:
+        """Resolve effective config by merging global with overrides."""
+        base_dict = global_config.model_dump()
+        if self.overrides:
+            valid_fields = set(ProjectConfiguration.model_fields)
+            # github_project_number is a reserved per-symphony field; it cannot be
+            # set via overrides because the symphony's own value always takes precedence,
+            # so any override value would be silently discarded.
+            reserved_keys = frozenset({"github_project_number"})
+            reserved_used = set(self.overrides) & reserved_keys
+            if reserved_used:
+                msg = (
+                    f"Override keys {sorted(reserved_used)} are reserved per-symphony fields; "
+                    "set them directly on the symphony configuration instead of via overrides."
+                )
+                raise ValueError(msg)
+            unknown = set(self.overrides) - valid_fields
+            if unknown:
+                msg = f"Unknown override keys: {sorted(unknown)}"
+                raise ValueError(msg)
+            base_dict.update(self.overrides)
+        # Per-symphony fields always take precedence over global defaults.
+        # project_name: use symphony name unless the global config already has one
+        # (preserves backward compatibility with legacy single-project configs).
+        base_dict["github_project_number"] = self.github_project_number
+        if not base_dict.get("project_name"):
+            base_dict["project_name"] = self.name
+        return ProjectConfiguration(**base_dict)
+
+
+class OrchestraConfig(BaseModel):
+    """Shared performer pool configuration."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["shared_pool"] = "shared_pool"
+    performers: list[Any] = Field(default_factory=list)
+    allocation_strategy: Literal["round_robin", "priority_order"] = "priority_order"
+
+
+class CoordinareConfiguration(BaseModel):
+    """Root configuration combining global defaults + multiple symphonies + orchestra."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    global_config: ProjectConfiguration
+    symphonies: list[SymphonyConfig]
+    orchestra: OrchestraConfig = Field(default_factory=OrchestraConfig)
+
+    @field_validator("symphonies")
+    @classmethod
+    def validate_non_empty(cls, v: list[SymphonyConfig]) -> list[SymphonyConfig]:
+        if not v:
+            msg = "at least one symphony is required"
+            raise ValueError(msg)
+        return v
+
+    @field_validator("symphonies")
+    @classmethod
+    def validate_unique_names(cls, v: list[SymphonyConfig]) -> list[SymphonyConfig]:
+        names = [s.name for s in v]
+        if len(names) != len(set(names)):
+            msg = "symphony names must be unique"
+            raise ValueError(msg)
+        return v
+
+    @field_validator("symphonies")
+    @classmethod
+    def validate_unique_boards(cls, v: list[SymphonyConfig]) -> list[SymphonyConfig]:
+        boards = [s.github_project_number for s in v]
+        if len(boards) != len(set(boards)):
+            msg = "symphony project numbers must be unique"
+            raise ValueError(msg)
+        return v
 

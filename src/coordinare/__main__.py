@@ -10,15 +10,25 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from time import perf_counter
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import structlog
 import uvicorn
 
 from coordinare import configure_logging
 from coordinare.auth import build_auth, validate_auth_config
-from coordinare.config import ProjectConfiguration, ServiceCircuitConfig, ServiceRetryConfig
-from coordinare.config_validation import _load_raw_yaml, validate_config
+from coordinare.config import (
+    CoordinareConfiguration,
+    ProjectConfiguration,
+    ServiceCircuitConfig,
+    ServiceRetryConfig,
+)
+from coordinare.config_validation import (
+    _load_raw_yaml,
+    coerce_multi_symphony_raw,
+    is_multi_symphony_config,
+    validate_config,
+)
 from coordinare.daemon import CoordinareDaemon, RuntimeExecutionError
 from coordinare.dashboard import DashboardStore, check_port_available, create_dashboard_app
 from coordinare.graph.builder import CoordinareGraphBuilder
@@ -27,7 +37,7 @@ from coordinare.lifecycle import CANONICAL_ORDER as _CANONICAL_ORDER
 from coordinare.lifecycle import ROLE_TO_STAGE as _ROLE_TO_STAGE
 from coordinare.metrics import METRICS, _coordinare_version
 from coordinare.models.notification import EventType, NotificationEvent, NotificationSeverity
-from coordinare.observability import HEALTH
+from coordinare.observability import HEALTH, bind_symphony, clear_symphony
 from coordinare.resilience import CircuitBreaker, ResilientAgentService, RetryConfig
 from coordinare.services.advocate import AdvocateService
 from coordinare.services.agent_service import AgentService
@@ -131,7 +141,11 @@ def _cmd_dry_run(args: argparse.Namespace) -> None:
     try:
         if result.config_file_path is not None:
             raw = _load_raw_yaml(result.config_file_path)
-            config = ProjectConfiguration(**raw)
+            if is_multi_symphony_config(raw):
+                from coordinare.config import CoordinareConfiguration
+                config = CoordinareConfiguration(**coerce_multi_symphony_raw(raw)).global_config
+            else:
+                config = ProjectConfiguration(**raw)
         else:
             config = ProjectConfiguration()
     except Exception as exc:
@@ -553,7 +567,8 @@ async def _bootstrap_services(
         retry_kwargs=_retry_config_from(r.github_retry).to_stamina_kwargs(),
     )
     github._project_name = config.project_name
-    await github.initialize()
+    if config.github_project_number:
+        await github.initialize()
 
     try:
         transport = _build_transport(config)
@@ -723,7 +738,12 @@ async def _bootstrap_services(
     return service_state
 
 
-async def _run(config: ProjectConfiguration, config_path: Path | None = None) -> None:
+async def _run(
+    config: ProjectConfiguration,
+    config_path: Path | None = None,
+    coordinare_config: CoordinareConfiguration | None = None,
+    config_mode: Literal["legacy", "multi_symphony"] = "legacy",
+) -> None:
     run_mode = os.getenv("COORDINARE_RUN_MODE", "shell").strip().lower() or "shell"
     graph = CoordinareGraphBuilder().build()
 
@@ -785,6 +805,54 @@ async def _run(config: ProjectConfiguration, config_path: Path | None = None) ->
     )
 
     daemon.state.update(await _bootstrap_services(config, circuit_breakers, config_path=config_path))
+
+    # 057: Initialize symphony state so the daemon loop starts in multi-symphony mode
+    # without requiring a POST /api/config/reload after startup.
+    if coordinare_config is not None:
+        from coordinare.graph.state import SymphonyRuntimeState
+        daemon.state["symphony_configs"] = {s.name: s for s in coordinare_config.symphonies}
+        daemon.state["symphony_states"] = {s.name: SymphonyRuntimeState(name=s.name) for s in coordinare_config.symphonies}
+        daemon.state["coordinare_config"] = coordinare_config
+        daemon.state["orchestra_config"] = coordinare_config.orchestra
+        daemon.state["config_mode"] = config_mode
+
+        # Create per-symphony GitHubService instances so each symphony queries the
+        # correct project board. The global service has project_number=0 in
+        # multi-symphony mode and is NOT initialized (no project_id); these per-symphony
+        # services carry the real project_id resolved from each symphony's project number.
+        if config_mode == "multi_symphony":
+            _sym_github_services: dict[str, Any] = {}
+            for _sym in coordinare_config.symphonies:
+                _eff = _sym.effective_config(config)
+                _sym_svc = GitHubService(
+                    auth=build_auth(_eff),
+                    org=_eff.github_org,
+                    project_number=_eff.github_project_number,
+                    endpoint=_eff.github_graphql_url,
+                    circuit_breaker=circuit_breakers["github"],
+                    retry_kwargs=_retry_config_from(_eff.resilience.github_retry).to_stamina_kwargs(),
+                )
+                _sym_svc._project_name = _eff.project_name
+                bind_symphony(_sym.name)
+                try:
+                    await _sym_svc.initialize()
+                finally:
+                    clear_symphony()
+                _sym_github_services[_sym.name] = _sym_svc
+            daemon.state["symphony_github_services"] = _sym_github_services
+
+            # Create per-symphony WorkspaceManager instances so each symphony
+            # clones the correct repo (project_name may differ per symphony).
+            _sym_workspace_managers: dict[str, Any] = {}
+            for _sym in coordinare_config.symphonies:
+                _eff = _sym.effective_config(config)
+                _sym_wm = WorkspaceManager(
+                    _eff,
+                    auth=build_auth(_eff),
+                    github_service=_sym_github_services[_sym.name],
+                )
+                _sym_workspace_managers[_sym.name] = _sym_wm
+            daemon.state["symphony_workspace_managers"] = _sym_workspace_managers
 
     app = _create_health_app(daemon, circuit_breakers=circuit_breakers)
     server = uvicorn.Server(
@@ -892,10 +960,23 @@ def main() -> None:
 
     # Step 2: Re-instantiate ProjectConfiguration from resolved path
     # (validate_config already verified this succeeds; re-instantiate to get the typed object)
+    _coordinare_cfg = None
+    _config_mode = "legacy"
     try:
         if result.config_file_path is not None:
             raw = _load_raw_yaml(result.config_file_path)
-            config = ProjectConfiguration(**raw)
+            if is_multi_symphony_config(raw):
+                from coordinare.config import CoordinareConfiguration
+                _coordinare_cfg = CoordinareConfiguration(**coerce_multi_symphony_raw(raw))
+                config = _coordinare_cfg.global_config
+                _config_mode = "multi_symphony"
+            else:
+                # Legacy single-project config: auto-wrap as "default" symphony so
+                # symphony_configs is populated and /api/symphonies works correctly.
+                from coordinare.config import CoordinareConfiguration
+                from coordinare.config_validation import wrap_legacy_config
+                config = ProjectConfiguration(**raw)
+                _coordinare_cfg = CoordinareConfiguration(**wrap_legacy_config(raw))
         else:
             config = ProjectConfiguration()
     except Exception as exc:
@@ -966,7 +1047,7 @@ def main() -> None:
     HEALTH.update("config", _HealthStatus.healthy)
 
     try:
-        asyncio.run(_run(config, config_path=result.config_file_path))
+        asyncio.run(_run(config, config_path=result.config_file_path, coordinare_config=_coordinare_cfg, config_mode=_config_mode))
     except RuntimeExecutionError as exc:
         logger.error(
             "runtime_failure",

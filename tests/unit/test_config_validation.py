@@ -68,11 +68,11 @@ def test_type_mismatch_error(tmp_path: Path) -> None:
 
 
 def test_all_errors_collected_in_single_pass(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Config missing 3 required fields → all 3 errors returned in one call."""
-    for var in ("COORDINARE_GITHUB_TOKEN", "COORDINARE_GITHUB_ORG", "COORDINARE_PROJECT_NAME"):
+    """Config missing required fields (github_org, github_token, human_reviewers) → all errors returned in one call."""
+    for var in ("COORDINARE_GITHUB_TOKEN", "COORDINARE_GITHUB_ORG", "COORDINARE_HUMAN_REVIEWERS"):
         monkeypatch.delenv(var, raising=False)
     config_file = tmp_path / "config.yaml"
-    config_file.write_text("github_project_number: 12\nhuman_reviewers: [alice]")
+    config_file.write_text('project_name: "Demo"\ngithub_project_number: 12\n')
     result = validate_config(config_file)
     assert not result.passed
     assert len(result.errors) >= 2

@@ -86,16 +86,16 @@ def test_all_errors_reported_in_single_pass(
     tmp_path: Path, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Config with multiple errors → all errors appear in one stdout pass."""
-    for var in ("COORDINARE_GITHUB_TOKEN", "COORDINARE_GITHUB_ORG", "COORDINARE_PROJECT_NAME"):
+    for var in ("COORDINARE_GITHUB_TOKEN", "COORDINARE_GITHUB_ORG", "COORDINARE_HUMAN_REVIEWERS"):
         monkeypatch.delenv(var, raising=False)
     config_file = tmp_path / "config.yaml"
-    config_file.write_text("github_project_number: 12\nhuman_reviewers: [alice]")
+    config_file.write_text("github_project_number: 12\n")
     with pytest.raises(SystemExit) as exc_info:
         _cmd_config_validate(_make_args(config=config_file))
     assert exc_info.value.code == 1
     out = capsys.readouterr().out
-    # At least 2 of the 3 missing fields must be named in the output
-    missing_named = sum(1 for field in ("github_token", "github_org", "project_name") if field in out)
+    # At least 2 of the 3 required fields must be named in the output
+    missing_named = sum(1 for field in ("github_org", "github_token", "human_reviewers") if field in out)
     assert missing_named >= 2
 
 

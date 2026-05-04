@@ -205,6 +205,7 @@ class CoordinareDaemon:
         self._idle_threshold_seconds = idle_threshold_seconds
         self._dashboard_store = dashboard_store
         self._main_task: asyncio.Task[None] | None = None
+        self._config_reload_trigger: asyncio.Event = asyncio.Event()
 
     @property
     def running(self) -> bool:
@@ -496,14 +497,14 @@ class CoordinareDaemon:
                                     # rounds when main advances with N active sessions.
                                     _prev_sha = self._state.get("last_known_main_sha")
                                     if _prev_sha is None:
-                                        self._state["last_known_main_sha"] = _sha  # type: ignore[typeddict-unknown-key]
+                                        self._state["last_known_main_sha"] = _sha
                                     elif _sha != _prev_sha:
                                         logger.info(
                                             "multi_session.preflight.main_head_changed",
                                             old_sha=_prev_sha[:8],
                                             new_sha=_sha[:8],
                                         )
-                                        self._state["last_known_main_sha"] = _sha  # type: ignore[typeddict-unknown-key]
+                                        self._state["last_known_main_sha"] = _sha
                                         try:
                                             _rr = await run_rebase_round(
                                                 active_sessions,
@@ -514,7 +515,7 @@ class CoordinareDaemon:
                                                 github=github,
                                                 human_reviewers=self._state.get("human_reviewers"),
                                             )
-                                            self._state["last_rebase_round"] = _rr.to_dict()  # type: ignore[typeddict-unknown-key]
+                                            self._state["last_rebase_round"] = _rr.to_dict()
                                             # Mirror check_board's conflict-resolution
                                             # handoff: route the first BLOCKED job back
                                             # to implementing so relay_feedback fires.
@@ -574,7 +575,7 @@ class CoordinareDaemon:
                     reason=elig.reason,
                     blockers=elig.blockers,
                 )
-        self._state["session_skip_reasons"] = skip_reasons  # type: ignore[typeddict-unknown-key]
+        self._state["session_skip_reasons"] = skip_reasons
 
         # Fallback: if every session is ineligible this cycle (e.g. all BLOCKED /
         # dependency_blocked), run a single full graph invocation so check_board
@@ -817,6 +818,289 @@ class CoordinareDaemon:
         # dashboard never shows a stale or idle value while work is ongoing.
         self._state["phase"] = _derive_global_phase(active_sessions)  # type: ignore[literal-required]
 
+    async def _conduct_single_symphony(
+        self,
+        symphony_name: str,
+        symphony_config: Any,  # SymphonyConfig
+    ) -> None:
+        """Run one orchestration cycle for a single symphony (spec 057)."""
+        from coordinare.observability import bind_symphony, clear_symphony
+
+        bind_symphony(symphony_name)
+        self._state["current_symphony"] = symphony_name
+        _propagating = False
+        # Save symphony-scoped graph keys before entering the try so the outer
+        # finally can always restore them (prevents cross-symphony contamination).
+        _prev_current_card = self._state.get("current_card")
+        _prev_board_snapshot = self._state.get("board_snapshot")
+        _prev_session_skip_reasons = self._state.get("session_skip_reasons")
+        _prev_phase = self._state.get("phase")
+        try:
+            # Check max_concurrent_cards limit per symphony
+            symphony_states = self._state.get("symphony_states") or {}
+            sym_state = symphony_states.get(symphony_name)
+            _global_cfg = self._state.get("config")
+            _effective_cfg = (
+                symphony_config.effective_config(_global_cfg)
+                if hasattr(symphony_config, "effective_config") and _global_cfg is not None
+                else _global_cfg
+            )
+            _sym_sessions = (getattr(sym_state, "active_sessions", None) or {}) if sym_state is not None else {}
+            if (
+                sym_state is not None
+                and _effective_cfg is not None
+                and hasattr(_effective_cfg, "max_concurrent_cards")
+                and len(_sym_sessions) >= _effective_cfg.max_concurrent_cards
+            ):
+                logger.debug(
+                    "symphony.dispatch_skipped.at_capacity",
+                    symphony=symphony_name,
+                    active=len(_sym_sessions),
+                    limit=_effective_cfg.max_concurrent_cards,
+                )
+                # Do NOT return here — existing sessions still need to be ticked by
+                # the graph. The graph respects active_sessions count and will skip
+                # new dispatch naturally while still monitoring in-flight work.
+
+            _eff_max = (
+                int(_effective_cfg.max_concurrent_cards)
+                if _effective_cfg is not None and hasattr(_effective_cfg, "max_concurrent_cards")
+                else self._max_concurrent_cards()
+            )
+            # Swap state["config"] to the per-symphony effective config so that
+            # graph nodes and _invoke_multi_session() see the symphony's limits.
+            _prev_config = self._state.get("config")
+            # Swap state["github_service"] to the per-symphony service so that
+            # graph nodes query the correct project board for this symphony.
+            _sym_github_services = self._state.get("symphony_github_services") or {}
+            _prev_github = self._state.get("github_service")
+            _sym_github = _sym_github_services.get(symphony_name)
+            _sym_workspace_managers = self._state.get("symphony_workspace_managers") or {}
+            _prev_workspace_manager = self._state.get("workspace_manager")
+            _sym_workspace_manager = _sym_workspace_managers.get(symphony_name)
+            # Restore per-symphony active_sessions and other graph-scoped keys so
+            # the graph sees this symphony's state, not the previous symphony's.
+            self._state["active_sessions"] = dict(_sym_sessions)
+            if sym_state is not None:
+                self._state["current_card"] = sym_state.active_card
+                if sym_state.board_snapshot is not None:
+                    self._state["board_snapshot"] = sym_state.board_snapshot
+                if sym_state.session_skip_reasons is not None:
+                    self._state["session_skip_reasons"] = sym_state.session_skip_reasons
+                if sym_state.previous_phase is not None:
+                    self._state["phase"] = sym_state.previous_phase
+            if _effective_cfg is not None and _effective_cfg is not _global_cfg:
+                self._state["config"] = _effective_cfg
+            if _sym_github is not None:
+                self._state["github_service"] = _sym_github
+            if _sym_workspace_manager is not None:
+                self._state["workspace_manager"] = _sym_workspace_manager
+            try:
+                if _eff_max > 1:
+                    await self._invoke_multi_session()
+                else:
+                    self._state = await self._graph.ainvoke(self._state)
+            finally:
+                self._state["config"] = _prev_config
+                if _sym_github is not None:
+                    self._state["github_service"] = _prev_github
+                if _sym_workspace_manager is not None:
+                    self._state["workspace_manager"] = _prev_workspace_manager
+
+            # Update symphony state on success
+            if sym_state is not None:
+                sym_state.cycle_count = getattr(sym_state, "cycle_count", 0) + 1
+                sym_state.last_poll_at = datetime.now(UTC)
+                board_snap = self._state.get("board_snapshot")
+                if board_snap is not None:
+                    sym_state.board_snapshot = board_snap
+                sym_state.active_sessions = dict(self._state.get("active_sessions") or {})
+                sym_state.active_card = self._state.get("current_card")
+                skip_reasons = self._state.get("session_skip_reasons")
+                sym_state.session_skip_reasons = dict(skip_reasons) if skip_reasons else None
+                # Per-symphony phase transition metric (labels each transition with the actual symphony)
+                _prev_sym_phase = sym_state.previous_phase
+                _cur_sym_phase = self._state.get("phase")
+                if _cur_sym_phase != _prev_sym_phase:
+                    _sym_transition = _PHASE_TRANSITION_METRIC.get(
+                        (str(_prev_sym_phase), str(_cur_sym_phase))
+                    )
+                    if _sym_transition is not None:
+                        METRICS.card_state_transitions_total.labels(
+                            symphony=symphony_name,
+                            transition_type=_sym_transition,
+                        ).inc()
+                    sym_state.previous_phase = _cur_sym_phase  # type: ignore[assignment]
+        except (asyncio.CancelledError, CircuitOpenError):
+            _propagating = True
+            # Rebuild aggregate active_sessions from last-known-good symphony states
+            # so state is not left in a per-symphony scoped view on abnormal exit.
+            _agg: dict = {}
+            for _ss in (self._state.get("symphony_states") or {}).values():
+                _agg.update(getattr(_ss, "active_sessions", None) or {})
+            self._state["active_sessions"] = _agg
+            raise
+        except Exception as exc:
+            logger.error(
+                "symphony.cycle_error",
+                symphony=symphony_name,
+                error=str(exc),
+                exc_info=True,
+            )
+            sym_states = self._state.get("symphony_states") or {}
+            s = sym_states.get(symphony_name)
+            if s is not None:
+                s.error_count = getattr(s, "error_count", 0) + 1
+                s.last_error = str(exc)
+            # Do NOT re-raise — other symphonies continue
+        finally:
+            clear_symphony()
+            if not _propagating:
+                self._state["current_symphony"] = None
+            # Restore symphony-scoped graph keys so the next symphony starts clean.
+            self._state["current_card"] = _prev_current_card
+            self._state["board_snapshot"] = _prev_board_snapshot
+            self._state["session_skip_reasons"] = _prev_session_skip_reasons
+            self._state["phase"] = _prev_phase
+
+    async def _handle_config_reload(self) -> None:
+        """Reload configuration from disk and update symphony state (spec 057)."""
+        config_path = self._state.get("config_path")
+        if config_path is None:
+            logger.warning("config_reload.no_path")
+            return
+        try:
+            from coordinare.config import CoordinareConfiguration
+            from coordinare.config_validation import (
+                _load_raw_yaml,
+                coerce_multi_symphony_raw,
+                is_multi_symphony_config,
+                validate_config,
+                wrap_legacy_config,
+            )
+            from coordinare.graph.state import SymphonyRuntimeState
+
+            validation = validate_config(config_path)
+            if not validation.passed:
+                errs = "; ".join(e.fix_hint for e in validation.errors)
+                logger.error("config_reload.validation_failed", errors=errs)
+                return
+
+            raw = _load_raw_yaml(config_path)
+
+            if is_multi_symphony_config(raw):
+                coordinare_cfg = CoordinareConfiguration(**coerce_multi_symphony_raw(raw))
+            else:
+                wrapped = wrap_legacy_config(raw)
+                coordinare_cfg = CoordinareConfiguration(**wrapped)
+
+            old_names = set(self._state.get("symphony_configs") or {})
+            new_configs = {s.name: s for s in coordinare_cfg.symphonies}
+            new_names = set(new_configs)
+
+            added = new_names - old_names
+            removed = old_names - new_names
+
+            # Preflight: check active sessions BEFORE mutating any daemon state so
+            # an aborted reload cannot leave symphony_configs/config/config_version
+            # out of sync with the still-running symphony_states.
+            sym_states = dict(self._state.get("symphony_states") or {})
+            for name in added:
+                sym_states[name] = SymphonyRuntimeState(name=name)
+            for name in removed:
+                sym_state = sym_states.get(name)
+                if sym_state is not None and getattr(sym_state, "active_sessions", None):
+                    logger.error(
+                        "config_reload.aborted_active_sessions",
+                        symphony=name,
+                        active_sessions=list(sym_state.active_sessions.keys()),
+                        reason="Reload would orphan in-flight sessions; retry once sessions complete",
+                    )
+                    return
+                sym_states.pop(name, None)
+
+            # Rebuild the full per-symphony GitHubService map on every successful
+            # reload so that changed project numbers or GitHub settings in existing
+            # symphonies are reflected, not just added/removed symphonies.
+            # Build new services first; only swap (and close old) once all are ready
+            # so a failed initialize() leaves the daemon in a consistent state.
+            _global_gh = self._state.get("github_service")
+            if _global_gh is not None:
+                import contextlib
+
+                from coordinare.auth import build_auth as _build_auth
+                from coordinare.observability import bind_symphony, clear_symphony
+                from coordinare.services.github import GitHubService as _GHSvc
+
+                _sym_svcs: dict[str, Any] = {}
+                try:
+                    for _sym_name, _sym_cfg in new_configs.items():
+                        _new_eff = _sym_cfg.effective_config(coordinare_cfg.global_config)
+                        _r = _new_eff.resilience.github_retry
+                        _new_svc = _GHSvc(
+                            auth=_build_auth(_new_eff),
+                            org=_new_eff.github_org,
+                            project_number=_new_eff.github_project_number,
+                            endpoint=_new_eff.github_graphql_url,
+                            circuit_breaker=_global_gh._circuit_breaker,
+                            retry_kwargs={
+                                "attempts": _r.attempts,
+                                "wait_initial": _r.wait_initial_seconds,
+                                "wait_max": _r.wait_max_seconds,
+                                "wait_jitter": _r.wait_jitter_seconds,
+                                "wait_exp_base": _r.wait_exp_base,
+                            },
+                        )
+                        _new_svc._project_name = _new_eff.project_name
+                        bind_symphony(_sym_name)
+                        try:
+                            await _new_svc.initialize()
+                        finally:
+                            clear_symphony()
+                        _sym_svcs[_sym_name] = _new_svc
+                except Exception:
+                    # Initialization failed — close any partially-built services
+                    # and re-raise so the outer handler logs and keeps old state.
+                    for _partial in _sym_svcs.values():
+                        if hasattr(_partial, "aclose"):
+                            with contextlib.suppress(Exception):
+                                await _partial.aclose()
+                    raise
+
+                # All new services ready — close old ones then swap atomically.
+                _old_svcs: dict[str, Any] = self._state.get("symphony_github_services") or {}
+                for _old_svc in _old_svcs.values():
+                    if hasattr(_old_svc, "aclose"):
+                        with contextlib.suppress(Exception):
+                            await _old_svc.aclose()
+                self._state["symphony_github_services"] = _sym_svcs
+
+                # Rebuild per-symphony WorkspaceManager instances for the new config.
+                from coordinare.workspace import WorkspaceManager as _WorkspaceManager
+                _sym_wms: dict[str, Any] = {}
+                for _sym_name2, _sym_cfg2 in new_configs.items():
+                    _wm_eff = _sym_cfg2.effective_config(coordinare_cfg.global_config)
+                    _sym_wms[_sym_name2] = _WorkspaceManager(
+                        _wm_eff,
+                        auth=_build_auth(_wm_eff),
+                        github_service=_sym_svcs.get(_sym_name2),
+                    )
+                self._state["symphony_workspace_managers"] = _sym_wms
+
+            # Atomic state swap: all config fields updated only after all
+            # preflights and service builds have succeeded without raising.
+            self._state["symphony_configs"] = new_configs  # type: ignore
+            self._state["coordinare_config"] = coordinare_cfg  # type: ignore
+            self._state["config"] = coordinare_cfg.global_config  # type: ignore
+            self._state["orchestra_config"] = coordinare_cfg.orchestra  # type: ignore
+            self._state["symphony_states"] = sym_states  # type: ignore
+            self._state["config_mode"] = "multi_symphony" if is_multi_symphony_config(raw) else "legacy"
+            self._state["config_version"] = (self._state.get("config_version") or 0) + 1  # type: ignore
+
+            logger.info("config_reloaded", added=list(added), removed=list(removed))
+        except Exception as exc:
+            logger.error("config_reload.failed", error=str(exc), exc_info=True)
+
     def _install_signal_handlers(self) -> None:
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
@@ -923,6 +1207,11 @@ class CoordinareDaemon:
         while self._running and not self._stop_event.is_set():
             try:
                 self._cycle_active = True
+                # 057: Check for config reload at cycle start
+                if self._config_reload_trigger.is_set():
+                    self._config_reload_trigger.clear()
+                    await self._handle_config_reload()
+
                 # US2: bind a unique cycle_id for log correlation
                 cycle_id = str(uuid4())
                 bind_cycle_id(cycle_id)
@@ -930,16 +1219,36 @@ class CoordinareDaemon:
 
                 # 035: Multi-card parallelism — when concurrency > 1,
                 # iterate over active sessions independently.
-                self._state["session_skip_reasons"] = {}  # type: ignore[typeddict-unknown-key]
+                self._state["session_skip_reasons"] = {}
                 # Free stale slots on every cycle (not just in multi-card mode).
                 _slot_mgr = self._state.get("slot_manager")
                 if _slot_mgr is not None and hasattr(_slot_mgr, "sync_from_sessions"):
                     _active_sessions = self._state.get("active_sessions") or {}
                     _slot_mgr.sync_from_sessions(_active_sessions)
-                if self._max_concurrent_cards() > 1:
-                    await self._invoke_multi_session()
+
+                # 057: Multi-symphony orchestration
+                symphony_configs = self._state.get("symphony_configs") or {}
+                _multi_symphony = bool(symphony_configs)
+                if symphony_configs:
+                    for sym_name, sym_cfg in symphony_configs.items():
+                        if not self._running or self._stop_event.is_set():
+                            break
+                        if not getattr(sym_cfg, "enabled", True):
+                            continue
+                        await self._conduct_single_symphony(sym_name, sym_cfg)
+                    # Rebuild aggregate active_sessions from all symphony states so
+                    # downstream metrics, slot sync, and dashboard see the full picture.
+                    _agg_sessions: dict = {}
+                    for _ss in (self._state.get("symphony_states") or {}).values():
+                        _agg_sessions.update(getattr(_ss, "active_sessions", None) or {})
+                    self._state["active_sessions"] = _agg_sessions
+                    self._state["phase"] = _derive_global_phase(_agg_sessions)  # type: ignore[literal-required]
                 else:
-                    self._state = await self._graph.ainvoke(self._state)
+                    # Legacy single-symphony mode (backward compat)
+                    if self._max_concurrent_cards() > 1:
+                        await self._invoke_multi_session()
+                    else:
+                        self._state = await self._graph.ainvoke(self._state)
 
                 # US1: record cycle metrics
                 _cycle_elapsed = perf_counter() - _cycle_t0
@@ -989,15 +1298,18 @@ class CoordinareDaemon:
                             current_phase=current_phase,
                         )
                     )
-                    # US1: record phase transition metric before updating previous_phase;
-                    # only canonical transitions defined in _PHASE_TRANSITION_METRIC are recorded.
-                    _transition_label = _PHASE_TRANSITION_METRIC.get(
-                        (str(previous_phase), str(current_phase))
-                    )
-                    if _transition_label is not None:
-                        METRICS.card_state_transitions_total.labels(
-                            transition_type=_transition_label,
-                        ).inc()
+                    # In legacy mode, emit the phase-transition metric here.
+                    # In multi-symphony mode it is emitted per-symphony inside
+                    # _conduct_single_symphony() with the actual symphony label.
+                    if not _multi_symphony:
+                        _transition_label = _PHASE_TRANSITION_METRIC.get(
+                            (str(previous_phase), str(current_phase))
+                        )
+                        if _transition_label is not None:
+                            METRICS.card_state_transitions_total.labels(
+                                symphony="__default__",
+                                transition_type=_transition_label,
+                            ).inc()
                     previous_phase = current_phase
                     # 028: Track when the phase was entered
                     self._state["phase_entered_at"] = datetime.now(UTC)
@@ -1107,8 +1419,13 @@ class CoordinareDaemon:
                 break  # exit loop cleanly so shutdown log can emit
             except CircuitOpenError as exc:
                 self._cycle_active = False
+                current_sym = self._state.get("current_symphony") or "__default__"
+                self._state["current_symphony"] = None
                 METRICS.service_calls_total.labels(
-                    service=exc.service_name, action="call_blocked", outcome="circuit_open",
+                    symphony=current_sym,
+                    service=exc.service_name,
+                    action="call_blocked",
+                    outcome="circuit_open",
                 ).inc()
                 logger.warning(
                     "circuit_open.call_skipped",

@@ -1,6 +1,7 @@
 """Observability primitives: cycle correlation context and health registry (009)."""
 from __future__ import annotations
 
+import contextvars
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -16,13 +17,22 @@ __all__ = [
     "HealthReport",
     "HealthStatus",
     "bind_cycle_id",
+    "bind_symphony",
     "clear_cycle_id",
+    "clear_symphony",
+    "get_current_symphony",
 ]
 
 
 # ---------------------------------------------------------------------------
 # Cycle correlation context (US2)
 # ---------------------------------------------------------------------------
+
+# Module-level ContextVar for symphony name propagation (spec 057)
+# Updated by bind_symphony() and read by get_current_symphony()
+_current_symphony: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "coordinare_symphony", default="__default__"
+)
 
 
 @dataclass
@@ -41,6 +51,28 @@ def bind_cycle_id(cycle_id: str) -> None:
 def clear_cycle_id() -> None:
     """Remove the cycle_id context var for the current async task."""
     structlog.contextvars.unbind_contextvars("cycle_id")
+
+
+def bind_symphony(name: str) -> None:
+    """Bind symphony name into the structlog context for the current async task."""
+    structlog.contextvars.bind_contextvars(symphony=name)
+    _current_symphony.set(name)
+
+
+def clear_symphony() -> None:
+    """Remove the symphony context var for the current async task."""
+    structlog.contextvars.unbind_contextvars("symphony")
+    _current_symphony.set("__default__")
+
+
+def get_current_symphony() -> str:
+    """Retrieve the bound symphony name from context, or '__default__' if not bound.
+
+    Works in conjunction with bind_symphony() to propagate the symphony name to
+    lower-level services that emit metrics but don't have direct access to the
+    daemon state. Used for adding the symphony label to metric emissions.
+    """
+    return _current_symphony.get()
 
 
 # ---------------------------------------------------------------------------

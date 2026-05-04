@@ -313,7 +313,10 @@ class TestMetricsRecording:
             await service.assess_card_sufficiency(SAMPLE_CARD)
 
         mock_counter.labels.assert_any_call(
-            service="anthropic", action="assess_card", outcome="success",
+            symphony="__default__",
+            service="anthropic",
+            action="assess_card",
+            outcome="success",
         )
         mock_counter.inc.assert_called()
 
@@ -333,7 +336,10 @@ class TestMetricsRecording:
                 await service.assess_card_sufficiency(SAMPLE_CARD)
 
         mock_counter.labels.assert_any_call(
-            service="anthropic", action="assess_card", outcome="failure",
+            symphony="__default__",
+            service="anthropic",
+            action="assess_card",
+            outcome="failure",
         )
         mock_counter.inc.assert_called()
 

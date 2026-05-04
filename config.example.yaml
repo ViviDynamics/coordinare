@@ -22,13 +22,42 @@
 #   Coordinare starts successfully with NO config file if all required fields
 #   are supplied via COORDINARE_* environment variables (useful for CI/CD).
 #
-# Required fields: project_name, github_org, github_project_number,
-#                  github_token (or github_auth: app), human_reviewers
+# =============================================================================
+# TWO SUPPORTED FORMATS
+# =============================================================================
+#
+# FORMAT A — Multi-Symphony (spec 057, recommended for multi-project setups):
+#   Global settings live at the root level. Projects are declared under
+#   `symphonies:`, each with their own name and github_project_number.
+#   Per-symphony `overrides:` can override any global field for that project.
+#   Format is detected automatically by the presence of a non-empty `symphonies:` list
+#   (`symphonies: []` is treated as legacy fallback per FR-001).
+#
+# FORMAT B — Legacy Flat (still supported, single-project):
+#   All fields (including project_name and github_project_number) at the root.
+#   No `symphonies:` or `orchestra:` keys.
+#   (See the legacy example at the bottom of this file.)
+#
+# Required global fields: github_org, github_token or github_auth:app,
+#                         human_reviewers
+# Required per-symphony:  name, github_project_number
+# project_name note:      project_name identifies the GitHub repo used for REST
+#                         operations (branch checks, PR queries, and git clone).
+#                         Each symphony gets its own WorkspaceManager seeded from
+#                         its effective config. project_name defaults to the symphony
+#                         name when not set, so if your repo name matches the symphony
+#                         name no explicit value is needed. If they differ, set it
+#                         globally or per-symphony: overrides: {project_name: my-repo}.
 # =============================================================================
 
-project_name: "my-project"
+
+# =============================================================================
+# FORMAT A — Multi-Symphony Configuration (spec 057)
+# =============================================================================
+
+# --- Global settings (shared across all symphonies) ---
+
 github_org: "your-org"
-github_project_number: 1
 
 # --- Authentication ---
 # Option A: Personal Access Token (PAT)
@@ -157,3 +186,79 @@ notifications:
       channels: [slack-ops, email-team]
     - event_type: prolonged_idle
       channels: [email-team]
+
+
+# --- Symphonies (spec 057) ---
+# Each entry is a separate GitHub project board to orchestrate.
+# Required: name (alphanumeric + dash), github_project_number.
+# name becomes the project identifier in logs and the dashboard.
+# Orchestration runs each enabled symphony in priority order (list order).
+symphonies:
+  - name: backend
+    github_project_number: 43
+    # enabled: true  # default; set false to pause without removing
+
+    # Per-symphony overrides — any global field can be overridden here.
+    # overrides:
+    #   poll_interval_seconds: 60
+    #   max_closed_pr_attempts_per_issue: 5
+
+    # Per-symphony personas — merged with global personas.
+    # personas:
+    #   implementer:
+    #     instructions: "Follow the backend coding standards doc."
+
+  - name: frontend
+    github_project_number: 44
+    # overrides:
+    #   poll_interval_seconds: 45
+
+  # Example: a temporarily paused symphony
+  # - name: data-platform
+  #   github_project_number: 55
+  #   enabled: false
+
+
+# --- Orchestra (spec 057) ---
+# Controls how coordinare schedules work across symphonies.
+orchestra:
+  mode: shared_pool
+
+
+# =============================================================================
+# FORMAT B — Legacy Flat Configuration (single-project, backward compatible)
+# =============================================================================
+# Uncomment this block and remove everything above `symphonies:` to use the
+# single-project format. Coordinare auto-detects the format by checking for
+# the `symphonies:` key.
+
+# project_name: "my-project"
+# github_org: "your-org"
+# github_project_number: 1
+#
+# # github_token: "${COORDINARE_GITHUB_TOKEN}"
+#
+# agent_transport: "subprocess"
+# agent_executable: "/usr/local/bin/performer"
+#
+# human_reviewers:
+#   - "your-github-login"
+#
+# trusted_bot_reviewers:
+#   - "copilot-pull-request-reviewer[bot]"
+#
+# performers:
+#   implementer:
+#     backend: codex
+#   reviewer:
+#     backend: codex
+#
+# poll_interval_seconds: 30
+# health_check_port: 8080
+# dashboard_port: 8090
+# output_mode: "human"
+# log_level: "info"
+#
+# notifications:
+#   channels: []
+#   routing: []

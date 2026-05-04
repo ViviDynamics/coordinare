@@ -36,9 +36,9 @@ def test_card_state_transitions_total_uses_correct_labels(fresh_metrics: Coordin
         "monitor_to_blocked",
         "blocked_to_idle",
     ):
-        fresh_metrics.card_state_transitions_total.labels(transition_type=transition).inc()
+        fresh_metrics.card_state_transitions_total.labels(symphony="__default__", transition_type=transition).inc()
         val = fresh_metrics.card_state_transitions_total.labels(
-            transition_type=transition
+            symphony="__default__", transition_type=transition
         )._value.get()
         assert val >= 1, f"Expected count ≥1 for transition_type={transition}"
 
@@ -134,9 +134,9 @@ def test_metric_collection_overhead_under_10ms(fresh_metrics: CoordinareMetrics)
         fresh_metrics.cycle_duration_seconds.observe(0.5)
         fresh_metrics.daemon_up.set(1)
         for t in ("idle_to_dispatch", "dispatch_to_monitor", "monitor_to_merge"):
-            fresh_metrics.card_state_transitions_total.labels(transition_type=t).inc()
+            fresh_metrics.card_state_transitions_total.labels(symphony="__default__", transition_type=t).inc()
         for s in ("dispatched", "monitoring_agent", "idle"):
-            fresh_metrics.cards_processed_total.labels(card_status=s).inc()
+            fresh_metrics.cards_processed_total.labels(symphony="__default__", card_status=s).inc()
         return time.perf_counter() - t0
 
     # Warm up the Prometheus client label cache, then measure 15 steady-state iterations

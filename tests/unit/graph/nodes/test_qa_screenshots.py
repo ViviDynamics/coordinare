@@ -280,3 +280,179 @@ async def test_node_teardown_called_even_on_capture_failure(tmp_path):
         await qa_screenshots(state)
 
     mock_teardown.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# CDN upload paths (lines 84-117)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_node_token_fetch_exception_skips_upload(tmp_path):
+    """If github.current_token() raises, upload is skipped but screenshots are still returned."""
+    state = _make_state(workspace_path=tmp_path)
+
+    class _GitHubBadToken:
+        org = "org"
+        project_name = "repo"
+
+        async def current_token(self):
+            raise RuntimeError("vault unavailable")
+
+    state["github_service"] = _GitHubBadToken()
+    state["current_card"] = {"id": "ITEM_1", "issue_number": 42}
+
+    mock_session = DockerSession(
+        container_id="abc",
+        app_url="http://localhost:3000",
+        screenshot_dir=tmp_path / "qa_screenshots",
+    )
+    fake_results = [
+        QAScreenshotResult(
+            feature_area="home",
+            file_path=tmp_path / "qa_screenshots" / "home.png",
+            cdn_url=None,
+            status="ok",
+        )
+    ]
+
+    with (
+        patch(
+            "coordinare.graph.nodes.qa_screenshots.launch_docker_env",
+            new_callable=AsyncMock,
+            return_value=mock_session,
+        ),
+        patch(
+            "coordinare.graph.nodes.qa_screenshots.capture_screenshots",
+            new_callable=AsyncMock,
+            return_value=fake_results,
+        ),
+        patch(
+            "coordinare.graph.nodes.qa_screenshots.teardown_docker_env",
+            new_callable=AsyncMock,
+        ),
+    ):
+        result = await qa_screenshots(state)
+
+    # Screenshots captured even though token fetch failed (upload skipped)
+    assert len(result["qa_screenshots"]) == 1
+    assert result["qa_screenshots"][0].cdn_url is None
+
+
+@pytest.mark.asyncio
+async def test_node_cdn_upload_called_when_all_fields_present(tmp_path):
+    """CDN upload is triggered for 'ok' screenshots when token, org, repo and issue are set."""
+    state = _make_state(workspace_path=tmp_path)
+
+    class _GitHubGoodToken:
+        org = "myorg"
+        project_name = "myrepo"
+
+        async def current_token(self):
+            return "ghp_goodtoken"
+
+    state["github_service"] = _GitHubGoodToken()
+    state["current_card"] = {"id": "ITEM_1", "issue_number": 7}
+
+    shot_path = tmp_path / "qa_screenshots" / "home.png"
+    shot_path.parent.mkdir(parents=True, exist_ok=True)
+    shot_path.write_bytes(b"\x89PNG\r\n")
+
+    mock_session = DockerSession(
+        container_id="abc",
+        app_url="http://localhost:3000",
+        screenshot_dir=tmp_path / "qa_screenshots",
+    )
+    fake_results = [
+        QAScreenshotResult(
+            feature_area="home",
+            file_path=shot_path,
+            cdn_url=None,
+            status="ok",
+        )
+    ]
+
+    with (
+        patch(
+            "coordinare.graph.nodes.qa_screenshots.launch_docker_env",
+            new_callable=AsyncMock,
+            return_value=mock_session,
+        ),
+        patch(
+            "coordinare.graph.nodes.qa_screenshots.capture_screenshots",
+            new_callable=AsyncMock,
+            return_value=fake_results,
+        ),
+        patch(
+            "coordinare.graph.nodes.qa_screenshots.teardown_docker_env",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "coordinare.graph.nodes.qa_screenshots.upload_screenshot",
+            new_callable=AsyncMock,
+            return_value="https://cdn.example.com/home.png",
+        ) as mock_upload,
+    ):
+        result = await qa_screenshots(state)
+
+    mock_upload.assert_awaited_once()
+    assert result["qa_screenshots"][0].cdn_url == "https://cdn.example.com/home.png"
+
+
+@pytest.mark.asyncio
+async def test_node_cdn_upload_failure_marks_upload_failed(tmp_path):
+    """When CDN upload returns None, the screenshot status is set to 'upload_failed'."""
+    state = _make_state(workspace_path=tmp_path)
+
+    class _GitHubGoodToken:
+        org = "myorg"
+        project_name = "myrepo"
+
+        async def current_token(self):
+            return "ghp_goodtoken"
+
+    state["github_service"] = _GitHubGoodToken()
+    state["current_card"] = {"id": "ITEM_1", "issue_number": 7}
+
+    shot_path = tmp_path / "qa_screenshots" / "home.png"
+    shot_path.parent.mkdir(parents=True, exist_ok=True)
+    shot_path.write_bytes(b"\x89PNG\r\n")
+
+    mock_session = DockerSession(
+        container_id="abc",
+        app_url="http://localhost:3000",
+        screenshot_dir=tmp_path / "qa_screenshots",
+    )
+    fake_results = [
+        QAScreenshotResult(
+            feature_area="home",
+            file_path=shot_path,
+            cdn_url=None,
+            status="ok",
+        )
+    ]
+
+    with (
+        patch(
+            "coordinare.graph.nodes.qa_screenshots.launch_docker_env",
+            new_callable=AsyncMock,
+            return_value=mock_session,
+        ),
+        patch(
+            "coordinare.graph.nodes.qa_screenshots.capture_screenshots",
+            new_callable=AsyncMock,
+            return_value=fake_results,
+        ),
+        patch(
+            "coordinare.graph.nodes.qa_screenshots.teardown_docker_env",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "coordinare.graph.nodes.qa_screenshots.upload_screenshot",
+            new_callable=AsyncMock,
+            return_value=None,  # upload fails
+        ),
+    ):
+        result = await qa_screenshots(state)
+
+    assert result["qa_screenshots"][0].status == "upload_failed"

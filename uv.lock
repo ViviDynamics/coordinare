@@ -367,12 +367,6 @@ dev = [
     { name = "types-pyyaml" },
 ]
 
-[package.dev-dependencies]
-dev = [
-    { name = "jsonschema" },
-    { name = "openapi-spec-validator" },
-]
-
 [package.metadata]
 requires-dist = [
     { name = "aiosmtplib", specifier = ">=3.0" },
@@ -380,7 +374,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "gql", extras = ["aiohttp"], specifier = ">=3.5" },
     { name = "httpx", specifier = ">=0.27" },
-    { name = "jsonschema", marker = "extra == 'dev'", specifier = ">=4.20" },
+    { name = "jsonschema", marker = "extra == 'dev'", specifier = ">=4.26.0" },
     { name = "langgraph", specifier = ">=0.2" },
     { name = "langgraph-checkpoint-postgres", specifier = ">=2.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.13" },
@@ -405,10 +399,7 @@ requires-dist = [
 provides-extras = ["dev"]
 
 [package.metadata.requires-dev]
-dev = [
-    { name = "jsonschema", specifier = ">=4.26.0" },
-    { name = "openapi-spec-validator", specifier = ">=0.7" },
-]
+dev = []
 
 [[package]]
 name = "coverage"

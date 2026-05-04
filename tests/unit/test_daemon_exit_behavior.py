@@ -198,7 +198,7 @@ async def test_daemon_increments_circuit_open_metric() -> None:
         await daemon.start()
 
     mock_counter.labels.assert_any_call(
-        service="github", action="call_blocked", outcome="circuit_open",
+        symphony="__default__", service="github", action="call_blocked", outcome="circuit_open",
     )
     mock_counter.inc.assert_called()
 

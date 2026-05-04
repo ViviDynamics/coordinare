@@ -13,6 +13,7 @@ from anthropic import (
 )
 
 from coordinare.metrics import METRICS
+from coordinare.observability import get_current_symphony
 
 # ---------------------------------------------------------------------------
 # Exception taxonomy (T023)
@@ -86,11 +87,17 @@ class ClaudeService:
             else:
                 response = await _retried_create()
             METRICS.service_calls_total.labels(
-                service="anthropic", action="prompt", outcome="success",
+                symphony=get_current_symphony(),
+                service="anthropic",
+                action="prompt",
+                outcome="success",
             ).inc()
         except Exception:
             METRICS.service_calls_total.labels(
-                service="anthropic", action="prompt", outcome="failure",
+                symphony=get_current_symphony(),
+                service="anthropic",
+                action="prompt",
+                outcome="failure",
             ).inc()
             raise
 
@@ -163,11 +170,17 @@ class ClaudeService:
             else:
                 response = await _retried_create()
             METRICS.service_calls_total.labels(
-                service="anthropic", action="assess_card", outcome="success",
+                symphony=get_current_symphony(),
+                service="anthropic",
+                action="assess_card",
+                outcome="success",
             ).inc()
         except Exception:
             METRICS.service_calls_total.labels(
-                service="anthropic", action="assess_card", outcome="failure",
+                symphony=get_current_symphony(),
+                service="anthropic",
+                action="assess_card",
+                outcome="failure",
             ).inc()
             raise
 

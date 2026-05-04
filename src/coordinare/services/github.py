@@ -419,6 +419,14 @@ class GitHubService:
         )
         return Client(transport=transport, fetch_schema_from_transport=False)
 
+    async def aclose(self) -> None:
+        """Close the underlying aiohttp session if one has been opened."""
+        import contextlib
+        if self._client is not None:
+            with contextlib.suppress(Exception):
+                await self._client.close_async()
+            self._client = None
+
     async def _execute(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
         token = await self._current_token()
         if self._client is None or token != self._last_token:
@@ -487,6 +495,7 @@ class GitHubService:
 
     async def _guarded_execute(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
         from coordinare.metrics import METRICS
+        from coordinare.observability import get_current_symphony
 
         try:
             if self._circuit_breaker is not None:
@@ -500,12 +509,18 @@ class GitHubService:
             else:
                 result = await self._retried_execute(query, variables)
             METRICS.service_calls_total.labels(
-                service="github", action="execute", outcome="success",
+                symphony=get_current_symphony(),
+                service="github",
+                action="execute",
+                outcome="success",
             ).inc()
             return result
         except Exception:
             METRICS.service_calls_total.labels(
-                service="github", action="execute", outcome="failure",
+                symphony=get_current_symphony(),
+                service="github",
+                action="execute",
+                outcome="failure",
             ).inc()
             raise
 

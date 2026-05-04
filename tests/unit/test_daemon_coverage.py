@@ -706,13 +706,13 @@ async def test_known_phase_transition_increments_metric() -> None:
     )
 
     before = METRICS.card_state_transitions_total.labels(
-        transition_type="idle_to_dispatch"
+        symphony="__default__", transition_type="idle_to_dispatch"
     )._value.get()
 
     await daemon.start()
 
     after = METRICS.card_state_transitions_total.labels(
-        transition_type="idle_to_dispatch"
+        symphony="__default__", transition_type="idle_to_dispatch"
     )._value.get()
     assert after == before + 1.0
 

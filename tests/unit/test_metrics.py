@@ -24,7 +24,7 @@ def test_observe_error_increments_counter() -> None:
     metrics = CoordinareMetrics()
     metrics.observe_error("graph_execution")
 
-    assert metrics.errors_total.labels(category="graph_execution")._value.get() == 1.0
+    assert metrics.errors_total.labels(symphony="__default__", category="graph_execution")._value.get() == 1.0
 
 
 def test_coordinare_version_returns_dev_when_package_not_installed() -> None:

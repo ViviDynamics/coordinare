@@ -32,13 +32,13 @@ class CoordinareMetrics:
         self.cards_processed_total = Counter(
             "coordinare_cards_processed_total",
             "Total number of cards processed by status",
-            labelnames=("card_status",),
+            labelnames=("symphony", "card_status"),
             registry=self.registry,
         )
         self.card_state_transitions_total = Counter(
             "coordinare_card_state_transitions_total",
             "Card state transition events by transition type",
-            labelnames=("transition_type",),
+            labelnames=("symphony", "transition_type"),
             registry=self.registry,
         )
         self.cycle_duration_seconds = Histogram(
@@ -110,19 +110,21 @@ class CoordinareMetrics:
         self.card_cycle_seconds = Histogram(
             "coordinare_card_cycle_seconds",
             "Time from card pickup to Done",
+            labelnames=("symphony",),
             registry=self.registry,
             buckets=(300, 600, 1800, 3600),
         )
         self.agent_dispatch_seconds = Histogram(
             "coordinare_agent_dispatch_seconds",
             "Time to dispatch card to agent",
+            labelnames=("symphony",),
             registry=self.registry,
             buckets=(5, 10, 30),
         )
         self.errors_total = Counter(
             "coordinare_errors_total",
             "Error count by category",
-            labelnames=("category",),
+            labelnames=("symphony", "category"),
             registry=self.registry,
         )
         self.board_poll_seconds = Gauge(
@@ -177,7 +179,7 @@ class CoordinareMetrics:
         self.service_calls_total = Counter(
             "coordinare_service_calls_total",
             "Total service call outcomes",
-            labelnames=("service", "action", "outcome"),
+            labelnames=("symphony", "service", "action", "outcome"),
             registry=self.registry,
         )
 
@@ -204,8 +206,11 @@ class CoordinareMetrics:
         self._initialize_zero_values()
 
     def _initialize_zero_values(self) -> None:
-        """Pre-populate label combinations so /metrics shows zero values before any events."""
-        # card_state_transitions_total
+        """Pre-populate common label combinations for the default symphony so /metrics
+        shows zero values before any events. Seeded series: card_state_transitions_total,
+        cards_processed_total, errors_total, notification counters, and circuit breaker
+        state. Other labeled metrics appear on first use."""
+        # card_state_transitions_total with default symphony
         for t in (
             "idle_to_dispatch",
             "dispatch_to_monitor",
@@ -213,11 +218,11 @@ class CoordinareMetrics:
             "monitor_to_blocked",
             "blocked_to_idle",
         ):
-            self.card_state_transitions_total.labels(transition_type=t)
+            self.card_state_transitions_total.labels(symphony="__default__", transition_type=t)
 
-        # cards_processed_total
+        # cards_processed_total with default symphony
         for s in ("dispatched", "monitoring_agent", "monitoring_pr", "blocked", "merged", "idle"):
-            self.cards_processed_total.labels(card_status=s)
+            self.cards_processed_total.labels(symphony="__default__", card_status=s)
 
         # notification counters
         for ch in ("slack", "email"):
@@ -231,6 +236,10 @@ class CoordinareMetrics:
             self.circuit_breaker_trips_total.labels(service_name=svc)
             self.circuit_breaker_state.labels(service_name=svc)
 
+        # errors_total with default symphony (common error categories)
+        for cat in ("github", "agent", "config", "unknown"):
+            self.errors_total.labels(symphony="__default__", category=cat)
+
         # 034: card token counter per role
         for role in (
             "implementing", "reviewing", "security", "qa",
@@ -239,8 +248,8 @@ class CoordinareMetrics:
         ):
             self.card_tokens_total.labels(role=role)
 
-    def observe_error(self, category: str) -> None:
-        self.errors_total.labels(category=category).inc()
+    def observe_error(self, category: str, symphony: str = "__default__") -> None:
+        self.errors_total.labels(symphony=symphony, category=category).inc()
 
     def render(self) -> str:
         return generate_latest(self.registry).decode("utf-8")
