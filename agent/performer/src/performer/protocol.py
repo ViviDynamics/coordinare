@@ -7,7 +7,7 @@ deserialization) until it explicitly adopts it.
 """
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from pydantic import BaseModel, Field
 
@@ -38,6 +38,25 @@ PerformerStatusType = Literal[
     "healthy",
     "unhealthy",
 ]
+
+# Non-terminal statuses — session is still in progress.
+_NON_TERMINAL_STATUSES: frozenset[str] = frozenset({
+    "accepted", "working", "busy", "acknowledged", "unknown", "healthy", "unhealthy",
+})
+
+# Derived from the Literal above so new terminal statuses are picked up automatically.
+TERMINAL_STATUSES: frozenset[str] = frozenset(get_args(PerformerStatusType)) - _NON_TERMINAL_STATUSES
+
+# Failure states within the terminal set — used to determine job success.
+FAILURE_STATUSES: frozenset[str] = frozenset({
+    "error",
+    "session_expired",
+    "token_limit",
+    "blocked",
+    "changes_requested",
+    "security_failed",
+    "qa_failed",
+})
 
 
 class PerformerMetrics(BaseModel):

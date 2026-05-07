@@ -268,3 +268,32 @@ def test_utc_now_returns_datetime() -> None:
     from datetime import datetime as _datetime
     result = utc_now()
     assert isinstance(result, _datetime)
+
+
+@pytest.mark.asyncio
+async def test_stream_job_timeout_raises_transport_timeout_error() -> None:
+    """stream_job raises TransportTimeoutError on httpx.TimeoutException."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectTimeout("connection timed out", request=request)
+
+    client = _client_with(httpx.MockTransport(handler))
+    with pytest.raises(TransportTimeoutError):
+        async for _ in client.stream_job("job-1"):
+            pass
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_stream_job_http_error_raises_performer_unreachable_error() -> None:
+    """stream_job raises PerformerUnreachableError on generic httpx.HTTPError."""
+    from coordinare.transport.http_transport import PerformerUnreachableError
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # Simulate a connection error that's not a timeout or status error
+        raise httpx.ConnectError("connection refused", request=request)
+
+    client = _client_with(httpx.MockTransport(handler))
+    with pytest.raises(PerformerUnreachableError):
+        async for _ in client.stream_job("job-1"):
+            pass
+    await client.aclose()

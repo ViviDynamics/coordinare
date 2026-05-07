@@ -88,6 +88,7 @@ class PerformerEndpointConfig(BaseModel):
     failure_threshold: int = 5
     secret_sources: SecretSourceConfig = Field(default_factory=SecretSourceConfig)
     volumes: list[VolumeMount] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)
     capability_overrides: CapabilityOverride | None = None
 
     @field_validator("readiness_timeout_s")
@@ -118,6 +119,8 @@ class PerformerEndpointConfig(BaseModel):
                 set_fields.append("port")
             if self.volumes:
                 set_fields.append("volumes")
+            if self.env:
+                set_fields.append("env")
             if self.secret_sources != SecretSourceConfig():
                 set_fields.append("secret_sources")
             if set_fields:
@@ -243,6 +246,8 @@ class JobStatus(BaseModel):
     started_at: datetime
     finished_at: datetime | None = None
     result: JobResult | None = None
+    events: list[dict[str, Any]] = Field(default_factory=list)
+    metrics: dict[str, Any] | None = None
 
     @field_validator("progress_pct")
     @classmethod

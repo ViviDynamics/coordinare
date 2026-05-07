@@ -14,6 +14,10 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, SecretStr, field_validator
 
+# ---- Progress streaming types ----
+
+ProgressEvent = dict[str, Any]
+
 JobState = Literal["accepted", "running", "succeeded", "failed", "cancelled"]
 BusyReason = Literal[
     "busy",
@@ -92,6 +96,8 @@ class JobStatus(BaseModel):
     started_at: datetime
     finished_at: datetime | None = None
     result: JobResult | None = None
+    events: list[ProgressEvent] = Field(default_factory=list)
+    metrics: dict[str, Any] | None = None
 
     @field_validator("progress_pct")
     @classmethod

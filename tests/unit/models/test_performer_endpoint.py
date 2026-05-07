@@ -128,3 +128,53 @@ class TestDetectDuplicateEndpoints:
             PerformerEndpointConfig(**_base(id="p2")),
         ]
         assert detect_duplicate_endpoints(configs) == []
+
+
+class TestFieldValidators:
+    def test_readiness_timeout_zero_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="readiness_timeout_s"):
+            PerformerEndpointConfig(**_base(
+                mode="ephemeral", image="img", readiness_timeout_s=0,
+            ))
+
+    def test_failure_threshold_zero_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="failure_threshold"):
+            PerformerEndpointConfig(**_base(
+                mode="ephemeral", image="img", failure_threshold=0,
+            ))
+
+    def test_subprocess_rejects_port(self) -> None:
+        with pytest.raises(ValidationError, match="subprocess performers must not"):
+            PerformerEndpointConfig(**_base(port=8080))
+
+    def test_subprocess_rejects_volumes(self) -> None:
+        with pytest.raises(ValidationError, match="subprocess performers must not"):
+            PerformerEndpointConfig(**_base(volumes=[{"host_path": "/tmp", "container_path": "/w"}]))
+
+    def test_subprocess_rejects_secret_sources(self) -> None:
+        with pytest.raises(ValidationError, match="subprocess performers must not"):
+            PerformerEndpointConfig(**_base(secret_sources={"init_payload": False}))
+
+
+class TestJobStatusProgressValidator:
+    def test_progress_pct_out_of_range_rejected(self) -> None:
+        from coordinare.models.performer_endpoint import JobStatus
+
+        with pytest.raises(ValidationError, match="progress_pct"):
+            JobStatus(
+                job_id="j1",
+                state="running",
+                started_at="2026-01-01T00:00:00Z",
+                progress_pct=150,
+            )
+
+    def test_progress_pct_none_allowed(self) -> None:
+        from coordinare.models.performer_endpoint import JobStatus
+
+        s = JobStatus(
+            job_id="j1",
+            state="running",
+            started_at="2026-01-01T00:00:00Z",
+            progress_pct=None,
+        )
+        assert s.progress_pct is None

@@ -42,7 +42,7 @@ async def test_assess_card_sufficiency_detects_false() -> None:
 
 @pytest.mark.asyncio
 async def test_assess_card_sufficiency_heuristic_fallback_sufficient() -> None:
-    """Non-JSON response containing 'sufficient: true' triggers heuristic."""
+    """Non-JSON response blocks the card so the operator can inspect it."""
     service = ClaudeService(api_key="test-key")
 
     class _TextBlock:
@@ -56,13 +56,14 @@ async def test_assess_card_sufficiency_heuristic_fallback_sufficient() -> None:
 
     result = await service.assess_card_sufficiency({"title": "Card"})
 
-    assert result["sufficient"] is True
-    assert result["questions"] == []
+    assert result["sufficient"] is False
+    assert result["questions"] == ["assessment parse error — model returned non-JSON"]
+    assert "assessment parse error" in result["rationale"]
 
 
 @pytest.mark.asyncio
-async def test_assess_card_sufficiency_heuristic_fallback_insufficient() -> None:
-    """Non-JSON response without 'sufficient: true' returns insufficient."""
+async def test_assess_card_sufficiency_heuristic_fallback_non_json() -> None:
+    """Non-JSON response blocks the card rather than silently dispatching it."""
     service = ClaudeService(api_key="test-key")
 
     class _TextBlock:
@@ -77,4 +78,5 @@ async def test_assess_card_sufficiency_heuristic_fallback_insufficient() -> None
     result = await service.assess_card_sufficiency({"title": "Card"})
 
     assert result["sufficient"] is False
-    assert "clarify" in result["questions"][0].lower()
+    assert result["questions"] == ["assessment parse error — model returned non-JSON"]
+    assert "This card needs more details" in result["rationale"]

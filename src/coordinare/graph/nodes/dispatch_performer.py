@@ -17,6 +17,7 @@ import structlog
 from coordinare.services.github import PermanentGitHubError
 from coordinare.services.persona_service import get_effective_instructions, load_personas_hot
 from coordinare.transport.base import TransportError
+from coordinare.transport.http_transport import PerformerAuthError
 from coordinare.workspace import WorkspaceSetupError
 
 if TYPE_CHECKING:
@@ -537,6 +538,32 @@ async def dispatch_performer(state: CoordinareState) -> CoordinareState:
     try:
         await github.move_card(card_id, "IN_PROGRESS")
         result = await service.dispatch_card(card_context, workspace_info=workspace_info)
+    except PerformerAuthError as exc:
+        logger.error(
+            "dispatch_performer.permanent_config_error",
+            card_id=card_id,
+            performer_stage=performer_stage,
+            error=str(exc),
+        )
+        try:
+            await github.move_card(card_id, "BLOCKED")
+        except Exception as move_exc:
+            logger.warning(
+                "dispatch_performer.move_card_to_blocked_failed",
+                card_id=card_id,
+                error=str(move_exc),
+            )
+        if workspace_manager is not None and workspace_info is not None and workspace_info.path is not None:
+            try:
+                await workspace_manager.teardown(workspace_info.path)
+            except Exception:
+                logger.warning("workspace_teardown_failed.after_permanent_error", card_id=card_id)
+        state["workspace_path"] = None
+        state["workspace_branch"] = None
+        _release_slot_on_error()
+        state["phase"] = "blocked"
+        state["open_questions"] = [f"Performer config error: {exc}"]
+        return state
     except TransportError as exc:
         reason = f"Transport failure during dispatch: {type(exc).__name__}"
         logger.warning(

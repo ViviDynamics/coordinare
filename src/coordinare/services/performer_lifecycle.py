@@ -117,6 +117,9 @@ async def start_ephemeral(config: PerformerEndpointConfig) -> StartedContainer:
     for vol in config.volumes:
         args += ["-v", f"{vol.host_path}:{vol.container_path}:{vol.mode}"]
 
+    for key, val in config.env.items():
+        args += ["-e", f"{key}={val}"]
+
     args += [config.image]
 
     rc, stdout, stderr = await _run_docker(*args)
@@ -187,6 +190,33 @@ async def _safe_stop(container_id: str) -> None:
         )
 
 
+async def cleanup_orphaned_containers() -> int:
+    """Stop containers left behind by a previous coordinare crash.
+
+    Finds all running containers with the ``coordinare.performer.id`` label and
+    stops them. Returns the count stopped. Errors on individual stops are
+    logged but do not abort cleanup of remaining containers.
+    """
+    rc, stdout, _stderr = await _run_docker(
+        "ps", "--filter", "label=coordinare.performer.id", "--format", "{{.ID}}",
+        timeout=15.0,
+    )
+    if rc != 0 or not stdout:
+        return 0
+    ids = [line.strip() for line in stdout.splitlines() if line.strip()]
+    if not ids:
+        return 0
+    logger.info(
+        "performer_lifecycle.cleanup_orphaned_start",
+        count=len(ids),
+        container_ids=ids,
+    )
+    for cid in ids:
+        await _safe_stop(cid)
+    logger.info("performer_lifecycle.cleanup_orphaned_done", count=len(ids))
+    return len(ids)
+
+
 async def wait_ready(
     endpoint: str,
     auth_token: str | None,
@@ -245,6 +275,7 @@ __all__ = [
     "LifecycleError",
     "ReadinessTimeoutError",
     "StartedContainer",
+    "cleanup_orphaned_containers",
     "start_ephemeral",
     "stop",
     "wait_ready",

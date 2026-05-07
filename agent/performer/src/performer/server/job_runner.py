@@ -15,11 +15,13 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
+from contextvars import ContextVar
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from performer.models import _redact_secrets
 from performer.server.models import (
     CancelResponse,
     JobAcceptResponse,
@@ -36,6 +38,13 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 JobExecutor = Callable[[JobInitPayload], Awaitable[JobResult]]
+
+# Contextvar that holds the active runner's push_progress callback during job execution.
+# Set by JobRunner._run() so _perform_job can push intermediate events without a
+# direct reference to the runner.
+_progress_cb_var: ContextVar[Callable[[list[Any], dict[str, Any] | None], None] | None] = (
+    ContextVar("_progress_cb", default=None)
+)
 
 
 def _utcnow() -> datetime:
@@ -60,6 +69,8 @@ class JobRunner:
         self._status: JobStatus | None = None
         self._task: asyncio.Task[None] | None = None
         self._update_event = asyncio.Event()
+        self._live_events: list[dict[str, Any]] = []
+        self._live_metrics: dict[str, Any] | None = None
 
     @property
     def current_job_id(self) -> str | None:
@@ -95,6 +106,24 @@ class JobRunner:
                             detail=exc.name,
                             retry_after_s=None,
                         )
+                # Backend-specific pre-flight: ensure the API key for the selected
+                # backend is present so the job fails fast rather than mid-run.
+                # Use resolve() so env/creds_file fallback sources are honoured.
+                _backend = payload.backend.replace("-", "_")
+                _backend_keys: dict[str, str] = {
+                    "codex": "OPENAI_API_KEY",
+                    "claude_code": "ANTHROPIC_API_KEY",
+                }
+                _required_backend_key = _backend_keys.get(_backend)
+                if _required_backend_key is not None:
+                    try:
+                        self._resolver.resolve(_required_backend_key)
+                    except SecretMissingError as exc:
+                        return JobBusyResponse(
+                            reason="secret_missing",
+                            detail=exc.name,
+                            retry_after_s=None,
+                        )
 
             started = _utcnow()
             self._status = JobStatus(
@@ -102,15 +131,31 @@ class JobRunner:
                 state="accepted",
                 started_at=started,
             )
+            self._live_events = []
+            self._live_metrics = None
             self._update_event = asyncio.Event()
             self._task = asyncio.create_task(self._run(payload))
             return JobAcceptResponse(job_id=payload.job_id, started_at=started)
+
+    def push_progress(
+        self,
+        events: list[dict[str, Any]],
+        metrics: dict[str, Any] | None = None,
+    ) -> None:
+        """Called by the executor to stream intermediate events and metrics."""
+        if events:
+            self._live_events = (self._live_events + events)[-200:]
+        if metrics is not None:
+            self._live_metrics = metrics
+        if self._status is not None and (events or metrics is not None):
+            self._signal_update()
 
     async def _run(self, payload: JobInitPayload) -> None:
         if self._status is None:
             raise RuntimeError("_run called without active status — submit() must set _status first")
         self._status = self._status.model_copy(update={"state": "running"})
         self._signal_update()
+        _progress_cb_var.set(self.push_progress)
         try:
             result = await self._executor(payload)
             self._status = self._status.model_copy(
@@ -143,7 +188,7 @@ class JobRunner:
                     "finished_at": _utcnow(),
                     "result": JobResult(
                         success=False,
-                        summary=f"executor raised: {type(exc).__name__}",
+                        summary=_redact_secrets(f"{type(exc).__name__}: {str(exc)[:500]}"),
                         error_code="executor_error",
                     ),
                 }
@@ -158,6 +203,10 @@ class JobRunner:
     def get(self, job_id: str) -> JobStatus:
         if self._status is None or self._status.job_id != job_id:
             raise JobNotFoundError(job_id)
+        if self._live_events or self._live_metrics is not None:
+            return self._status.model_copy(
+                update={"events": list(self._live_events), "metrics": self._live_metrics}
+            )
         return self._status
 
     async def stream(self, job_id: str) -> AsyncIterator[JobStatus]:
@@ -193,4 +242,4 @@ class JobRunner:
         return CancelResponse(honored=True)
 
 
-__all__ = ["JobExecutor", "JobNotFoundError", "JobRunner"]
+__all__ = ["JobExecutor", "JobNotFoundError", "JobRunner", "_progress_cb_var"]

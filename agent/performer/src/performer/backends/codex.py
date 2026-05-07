@@ -85,20 +85,47 @@ class CodexBackend:
     # BackendAdapter protocol
     # ------------------------------------------------------------------
 
-    async def start(self, stand: Stand, score: Score, *, model: str | None = None) -> None:
+    async def start(
+        self,
+        stand: Stand,
+        score: Score,
+        *,
+        model: str | None = None,
+        effort: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+    ) -> None:
         """Launch codex app-server and dispatch the initial task."""
         port = _find_free_port()
         self._port = port
 
+        env = {**os.environ, **stand.git_env}
+        cmd: list[str] = ["codex", "app-server", "--listen", f"ws://127.0.0.1:{port}"]
+        # Codex stores auth state in ~/.codex/auth.json.  In a fresh container
+        # there is no auth.json, so codex defaults to ChatGPT-OAuth mode and
+        # ignores OPENAI_API_KEY.  Write auth.json to force "api_key" mode.
+        api_key = env.get("OPENAI_API_KEY", "")
+        if api_key:
+            import json as _json
+            import pathlib
+            codex_dir = pathlib.Path.home() / ".codex"
+            codex_dir.mkdir(parents=True, exist_ok=True)
+            auth = {
+                "auth_mode": "apikey",
+                "OPENAI_API_KEY": api_key,
+                "tokens": None,
+                "last_refresh": None,
+            }
+            (codex_dir / "auth.json").write_text(_json.dumps(auth))
+
         self._proc = await asyncio.create_subprocess_exec(
-            "codex", "app-server",
-            "--listen", f"ws://127.0.0.1:{port}",
+            *cmd,
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             cwd=str(stand.path),
             start_new_session=True,
-            env={**os.environ, **stand.git_env},
+            env=env,
         )
 
         # Read stdout until the server announces it's ready, then drain the rest.
@@ -134,6 +161,12 @@ class CodexBackend:
         # Pass model override if specified
         if model:
             thread_params["model"] = model
+        if temperature is not None:
+            thread_params["temperature"] = temperature
+        if max_tokens is not None:
+            thread_params["maxTokens"] = max_tokens
+        if effort is not None:
+            thread_params["effort"] = effort
         thread_resp = await self._rpc("thread/start", thread_params)
         self._thread_id = thread_resp["thread"]["id"]
         log.info("codex thread started", thread_id=self._thread_id, port=port)

@@ -130,7 +130,7 @@ def test_all_section_ids_present(page: Page, live_server_url: str) -> None:
     page.goto(live_server_url)
     for element_id in (
         "phase",
-        "card-section",
+        "active-work-card",
         "questions-card",
         "cycles-completed",
         "last-duration",
@@ -169,7 +169,7 @@ def test_idle_shows_no_active_card(page: Page, live_server_url: str) -> None:
     """Empty-state message must appear in the card section when no card is active."""
     page.goto(live_server_url)
     expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
-    expect(page.locator("#card-section")).to_contain_text("No cards in the TODO column")
+    expect(page.locator("#active-work-section")).to_contain_text("No cards in the TODO column")
 
 
 @pytest.mark.e2e
@@ -218,25 +218,22 @@ def test_phase_updates_on_broadcast(
 def test_active_card_details_render(
     page: Page, live_server_url: str, store: DashboardStore
 ) -> None:
-    """Scenario 2: Card title, column, and PR link must appear after broadcast."""
+    """Scenario 2: Card title and issue link must appear in active-work panel after broadcast."""
     page.goto(live_server_url)
     expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
 
+    session = {**_active_session("PVTI_1", "Fix timeout bug", "implementing"), "issue_url": "https://github.com/org/repo/issues/42"}
     store.broadcaster.broadcast(
         _full_snapshot(
             phase="monitoring_agent",
             phase_label="Monitoring Agent",
-            active_card_title="Fix timeout bug",
-            active_card_column="In Progress",
-            pr_url="https://github.com/org/repo/pull/42",
-            agent_session_id="sess-abc",
+            active_sessions=[session],
         )
     )
 
-    expect(page.locator("#card-section")).to_contain_text("Fix timeout bug", timeout=_WAIT_LIVE)
-    expect(page.locator("#card-section")).to_contain_text("In Progress", timeout=_WAIT_LIVE)
-    expect(page.locator("#card-section a")).to_have_attribute(
-        "href", "https://github.com/org/repo/pull/42", timeout=_WAIT_LIVE
+    expect(page.locator("#active-work-section")).to_contain_text("Fix timeout bug", timeout=_WAIT_LIVE)
+    expect(page.locator("#active-work-section a")).to_have_attribute(
+        "href", "https://github.com/org/repo/issues/42", timeout=_WAIT_LIVE
     )
 
 

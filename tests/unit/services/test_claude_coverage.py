@@ -252,3 +252,20 @@ async def test_prompt_text_circuit_breaker_path() -> None:
 
     assert result == "cb result"
     mock_cb.guard.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_prompt_text_authentication_error_raises_permanent() -> None:
+    """AuthenticationError in prompt_text is wrapped as PermanentAnthropicError."""
+    from anthropic import AuthenticationError
+
+    svc = _service()
+    req = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    response = httpx.Response(401, request=req)
+    svc._client = MagicMock()
+    svc._client.messages.create = AsyncMock(
+        side_effect=AuthenticationError("invalid api key", response=response, body={})
+    )
+
+    with pytest.raises(PermanentAnthropicError):
+        await svc.prompt_text("test")

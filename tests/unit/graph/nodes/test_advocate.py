@@ -776,3 +776,49 @@ async def test_advocate_scan_passes_default_instructions_when_no_custom_persona(
     assert len(captured) == 1
     assert captured[0] == DEFAULT_INSTRUCTIONS["advocate"]
     assert captured[0]  # non-empty
+
+
+@pytest.mark.asyncio
+async def test_process_issue_with_persona_instructions_prepends_to_doc_content() -> None:
+    """Line 214: when persona_instructions is non-empty, prepend it to doc_content."""
+    from datetime import UTC, datetime
+
+    from coordinare.models.advocate import DocumentationSource
+
+    scorer_result = ScoringResult(
+        provider=ScoringProvider(provider_name="claude", score=0.85, reasoning=""),
+        classification=IssueType.question,
+        response_text="Based on README: answer.",
+        source_documents=["README.md"],
+    )
+    test_issue = _make_issue()
+    service, _github = _make_advocate_service(
+        issues=[test_issue],
+        file_content="# README\nOriginal doc content.",
+        scorer_result=scorer_result,
+    )
+
+    # Create proper DocumentationSource objects
+    doc_source = DocumentationSource(
+        file_path="README.md",
+        branch_ref="main",
+        content="# README\nOriginal doc content.",
+        last_read_at=datetime.now(UTC),
+        reachable=True,
+    )
+
+    # Call _process_issue directly with non-empty persona_instructions
+    await service._process_issue(
+        test_issue,
+        [doc_source],
+        persona_instructions="Only answer questions about feature X.",
+    )
+
+    # Verify the scorer was called (which exercises line 214 where persona instructions are prepended)
+    service._scorers[0].score.assert_called_once()
+    # The call_args should include the effective doc content with persona instructions prepended
+    call_args = service._scorers[0].score.call_args
+    assert call_args is not None
+    # Verify persona instructions appear in the scored content
+    scored_content = call_args[0][2] if len(call_args[0]) > 2 else ""
+    assert "Only answer questions about feature X" in scored_content or "## Advocate Instructions" in scored_content

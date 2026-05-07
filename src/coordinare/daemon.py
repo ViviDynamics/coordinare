@@ -12,6 +12,7 @@ from uuid import uuid4
 
 import structlog
 
+from coordinare.graph.nodes.check_board import PASSIVE_PHASES
 from coordinare.graph.nodes.github_retry import (
     clear_deferred_github_operation,
     defer_github_operation,
@@ -585,6 +586,12 @@ class CoordinareDaemon:
         if not any(e.eligible for e in eligibilities.values()):
             self._state = await self._graph.ainvoke(self._state)  # type: ignore[assignment]
             self._state.pop("_advocate_scan_done", None)  # type: ignore[misc]
+            # If the graph settled into a passive phase (monitoring_pr),
+            # clear current_card so route_issue_comments doesn't poll the card's
+            # issue on every cycle.  check_board rescans the full board each cycle
+            # and re-sets current_card when it needs to handle or dispatch the card.
+            if self._state.get("phase") in PASSIVE_PHASES:
+                self._state["current_card"] = None  # type: ignore[typeddict-unknown-key]
             return
 
         graph = self._graph
@@ -846,16 +853,20 @@ class CoordinareDaemon:
                 else _global_cfg
             )
             _sym_sessions = (getattr(sym_state, "active_sessions", None) or {}) if sym_state is not None else {}
+            _active_sym_count = sum(
+                1 for sess in _sym_sessions.values()
+                if sess.get("phase") not in PASSIVE_PHASES
+            )
             if (
                 sym_state is not None
                 and _effective_cfg is not None
                 and hasattr(_effective_cfg, "max_concurrent_cards")
-                and len(_sym_sessions) >= _effective_cfg.max_concurrent_cards
+                and _active_sym_count >= _effective_cfg.max_concurrent_cards
             ):
                 logger.debug(
                     "symphony.dispatch_skipped.at_capacity",
                     symphony=symphony_name,
-                    active=len(_sym_sessions),
+                    active=_active_sym_count,
                     limit=_effective_cfg.max_concurrent_cards,
                 )
                 # Do NOT return here — existing sessions still need to be ticked by

@@ -26,12 +26,11 @@
 # TWO SUPPORTED FORMATS
 # =============================================================================
 #
-# FORMAT A — Multi-Symphony (spec 057, recommended for multi-project setups):
+# FORMAT A — Multi-Symphony (recommended for multi-project setups):
 #   Global settings live at the root level. Projects are declared under
 #   `symphonies:`, each with their own name and github_project_number.
 #   Per-symphony `overrides:` can override any global field for that project.
-#   Format is detected automatically by the presence of a non-empty `symphonies:` list
-#   (`symphonies: []` is treated as legacy fallback per FR-001).
+#   Format is detected automatically by the presence of a non-empty `symphonies:` list.
 #
 # FORMAT B — Legacy Flat (still supported, single-project):
 #   All fields (including project_name and github_project_number) at the root.
@@ -41,135 +40,469 @@
 # Required global fields: github_org, github_token or github_auth:app,
 #                         human_reviewers
 # Required per-symphony:  name, github_project_number
-# project_name note:      project_name identifies the GitHub repo used for REST
-#                         operations (branch checks, PR queries, and git clone).
-#                         Each symphony gets its own WorkspaceManager seeded from
-#                         its effective config. project_name defaults to the symphony
-#                         name when not set, so if your repo name matches the symphony
-#                         name no explicit value is needed. If they differ, set it
-#                         globally or per-symphony: overrides: {project_name: my-repo}.
+#
+# project_name note: identifies the GitHub repo for REST operations (branch
+#   checks, PR queries, git clone). Defaults to the symphony name when not
+#   set. If your repo name differs from the symphony name, set it globally
+#   or per-symphony via overrides: {project_name: my-repo}.
 # =============================================================================
 
 
 # =============================================================================
-# FORMAT A — Multi-Symphony Configuration (spec 057)
+# FORMAT A — Multi-Symphony Configuration
 # =============================================================================
 
-# --- Global settings (shared across all symphonies) ---
+# --- GitHub Organization ---
 
-github_org: "your-org"
+github_org: "your-org"   # Required. The GitHub org/user that owns the repos.
 
-# --- Authentication ---
+# --- Authentication (choose one) ---
+
 # Option A: Personal Access Token (PAT)
 # github_token: "${COORDINARE_GITHUB_TOKEN}"
+# github_auth: "pat"     # "pat" (default) | "app"
 
-# Option B: GitHub App (recommended for production)
-# github_auth: app
-# github_app_id: 12345
-# github_private_key_path: /path/to/private-key.pem
-# github_installation_id: 67890
+# Option B: GitHub App (recommended for production — no token expiry)
+# github_auth: "app"
+# github_app_id: 12345                          # App ID from GitHub App settings
+# github_private_key_path: /path/to/key.pem     # Private key downloaded from GitHub
+# github_installation_id: 67890                 # Installation ID for your org/repo
+
+# --- GitHub Enterprise (optional) ---
+# github_api_url: "https://github.example.com/api/v3"
+# github_graphql_url: "https://github.example.com/api/graphql"
 
 # --- Agent Transport ---
-agent_transport: "subprocess"
-agent_executable: "/usr/local/bin/performer"
-# transport_timeout_seconds: 30  # default
+# Controls how coordinare spawns the performer process.
+#
+# Modes:
+#   subprocess  — run performer as a local child process (default; simplest setup)
+#   ssh         — connect to a remote host and run performer there
+#   kubernetes  — dispatch to a Kubernetes job (uses performer_image)
+#
+# For containerized performers, use performer_endpoints instead (see below).
+agent_transport: "subprocess"         # "subprocess" | "ssh" | "kubernetes"
+agent_executable: "/usr/local/bin/performer"  # path to the performer binary
+# transport_timeout_seconds: 30       # seconds to wait for a response; range 1–300
+
+# SSH-specific (only when agent_transport: ssh):
+# agent_host: "performer.example.com"
+# agent_port: 22
+# agent_user: "ubuntu"
+# agent_key_path: "~/.ssh/id_ed25519"
+
+# --- Containerized Performer Endpoints (spec 056) ---
+# Register Docker-based performers. Each entry can cover multiple roles.
+# Modes:
+#   ephemeral  — a fresh container is spun up per card dispatch and torn down
+#                when the job reaches a terminal state. Requires `image`.
+#   persistent — a long-running container at a fixed URL. Requires `image`
+#                and `endpoint`.
+#   subprocess — legacy entry with no container; just maps roles to the
+#                subprocess transport. Must not set image/endpoint/volumes.
+#
+# All entries are optional. If omitted, coordinare uses agent_transport above.
+#
+# Volumes:
+#   host_path      — absolute path on the coordinare host machine
+#   container_path — absolute path inside the container (typically /root/... for root user)
+#   mode           — "ro" (read-only, default) | "rw" (read-write)
+#
+# API keys / secrets:
+#   coordinare forwards secrets into each container job based on the backend:
+#     GITHUB_TOKEN      — always forwarded from the workspace GitHub credential
+#     OPENAI_API_KEY    — forwarded only when backend == "codex"
+#     ANTHROPIC_API_KEY — forwarded only when backend == "claude_code"
+#   No volumes are needed for these. Other credentials must be injected via
+#   volume mounts or baked into a custom image — they are NOT forwarded
+#   automatically even if set in the coordinare host environment.
+#
+# performer_endpoints:
+
+#   # -------------------------------------------------------------------------
+#   # Codex (OpenAI) — uses OPENAI_API_KEY forwarded from coordinare environment.
+#   # Build image: docker build -t coordinare-performer:full -f agent/performer/Dockerfile .
+#   # -------------------------------------------------------------------------
+#   - id: codex-ephemeral
+#     mode: ephemeral                # "ephemeral" | "persistent" | "subprocess"
+#     roles:                         # which lifecycle roles this endpoint handles
+#       - assessor
+#       - architect
+#       - implementer
+#       - reviewer
+#       - security
+#       - qa
+#       - tech_writer
+#       - closer
+#     image: coordinare-performer:full  # Docker image to run
+#     readiness_timeout_s: 120         # seconds to wait for container /health; default 120
+#     failure_threshold: 5             # consecutive health failures before circuit-break; default 5
+#     # auth_token: "${PERFORMER_TOKEN}"  # Bearer token for HTTP API; optional
+
+#   # -------------------------------------------------------------------------
+#   # Claude Code — uses ANTHROPIC_API_KEY forwarded from coordinare environment.
+#   # Build image: docker build -t coordinare-performer:full -f agent/performer/Dockerfile .
+#   # No volumes required; the key is injected via the job payload.
+#   # -------------------------------------------------------------------------
+#   - id: claude-ephemeral
+#     mode: ephemeral
+#     roles: [implementer, reviewer]
+#     image: coordinare-performer:full
+
+#   # -------------------------------------------------------------------------
+#   # Cursor — authenticates via a persistent session directory on the host.
+#   #
+#   # Prerequisites:
+#   #   1. Log in to Cursor on the coordinare host: open Cursor and sign in once.
+#   #   2. Confirm ~/.cursor/session (or equivalent) exists and is non-empty.
+#   #   3. Build a Cursor-capable image that has the `cursor` CLI installed:
+#   #        docker build -t coordinare-performer:cursor \
+#   #          -f agent/performer/Dockerfile.cursor .
+#   #
+#   # Caveats:
+#   #   - Cursor encodes a device fingerprint in its auth token. If the Linux
+#   #     container presents a different machine ID than the host, the session
+#   #     may be rejected. Test with a one-off `docker run` first.
+#   #   - The session directory is mounted read-only; if the token expires mid-job
+#   #     the container cannot refresh it. Monitor session expiry and re-login on
+#   #     the host before it lapses.
+#   #   - Multiple concurrent Cursor containers safely share the same ro mount.
+#   # -------------------------------------------------------------------------
+#   - id: cursor-ephemeral
+#     mode: ephemeral
+#     roles: [implementer, reviewer]
+#     image: coordinare-performer:cursor
+#     volumes:
+#       - host_path: /home/youruser/.cursor   # adjust to your actual home dir
+#         container_path: /root/.cursor
+#         mode: ro
+
+#   # -------------------------------------------------------------------------
+#   # Junie (JetBrains) — authenticates via a persistent session directory.
+#   #
+#   # Prerequisites:
+#   #   1. Log in to your JetBrains account on the coordinare host (e.g. via
+#   #      the Junie CLI: `junie login`).
+#   #   2. Confirm ~/.junie/ exists with valid credentials.
+#   #   3. Build a Junie-capable image with the `junie` CLI installed:
+#   #        docker build -t coordinare-performer:junie \
+#   #          -f agent/performer/Dockerfile.junie .
+#   #
+#   # Caveats:
+#   #   - Same device-fingerprint risk as Cursor. JetBrains tokens are tied to
+#   #     the device that completed the OAuth flow; test headless auth first.
+#   #   - Mount read-only; expired tokens cannot be refreshed inside the container.
+#   #   - If your JetBrains config lives elsewhere (e.g. XDG_CONFIG_HOME), adjust
+#   #     host_path accordingly.
+#   # -------------------------------------------------------------------------
+#   - id: junie-ephemeral
+#     mode: ephemeral
+#     roles: [implementer]
+#     image: coordinare-performer:junie
+#     volumes:
+#       - host_path: /home/youruser/.junie   # adjust to your actual home dir
+#         container_path: /root/.junie
+#         mode: ro
+
+#   # -------------------------------------------------------------------------
+#   # Persistent GPU performer — long-running container on a remote host.
+#   # Coordinare will health-check it on startup and route matching roles to it.
+#   # -------------------------------------------------------------------------
+#   - id: persistent-gpu
+#     mode: persistent
+#     roles: [implementer]
+#     image: coordinare-performer:gpu
+#     endpoint: "http://gpu-host:8080"   # must be reachable from coordinare
 
 # --- Reviewers ---
-human_reviewers:
+
+human_reviewers:                    # Required. GitHub logins who can approve PRs.
   - "your-github-login"
 
-# Trusted bot reviewers whose feedback triggers the performer lifecycle
-# (same as human reviews — implementer will address their comments)
-trusted_bot_reviewers:
-  - "copilot-pull-request-reviewer[bot]"
+# Bot reviewers whose comments trigger the performer lifecycle (same as human reviews).
+# trusted_bot_reviewers:
+#   - "copilot-pull-request-reviewer[bot]"
 
 # --- Performer Lifecycle ---
-# Configure which roles run and their AI backends.
-# Roles execute in canonical order: assessor → architect → implementer →
-# reviewer → security → qa → tech_writer → closer.
-# Unconfigured roles are skipped. With no performers section, coordinare
-# falls back to implementer-only mode (backward compatible).
+# Configures which AI roles run and their backends/models.
 #
-# The closer is the closing-review pass: after all other roles have run,
-# it verifies that prior PR feedback (from earlier reviewers, Copilot, or
-# humans) was actually addressed by subsequent commits, then resolves all
-# open review threads so the PR can clear merge gates that require
-# "all conversations resolved" (a common ruleset requirement).
+# Canonical role order (earlier roles run first):
+#   assessor → architect → implementer → reviewer → security → qa → tech_writer → closer
 #
-# Available backends: codex, opencode, claude_code
+# The `default` entry supplies baseline values inherited by every configured role.
+# Role-level fields that are explicitly set override the default; unset fields
+# fall back to the default. This means you can set backend/model once and only
+# specify exceptions.
+#
+# Omitting a role skips it entirely from the lifecycle.
+#
+# Role descriptions:
+#   assessor    — evaluates whether the card spec is sufficiently clear to implement
+#   architect   — designs the solution and produces a technical plan
+#   implementer — writes the code
+#   reviewer    — reviews for correctness and test coverage
+#   security    — audits for vulnerabilities
+#   qa          — validates acceptance criteria; writes missing tests
+#   tech_writer — updates docs and changelogs
+#   closer      — verifies all prior feedback was addressed; resolves open review threads
+#   advocate    — answers inbound GitHub issues from external users (separate from lifecycle)
+#
+# Available backends: codex | claude_code | opencode | cursor | junie
+#   codex       — OpenAI Codex CLI; needs OPENAI_API_KEY in coordinare environment
+#   claude_code — Anthropic Claude Code CLI; needs ANTHROPIC_API_KEY in coordinare environment
+#   opencode    — OpenCode CLI; reads API keys from ~/.opencode/config.json in the container
+#   cursor      — Cursor CLI; reads auth from ~/.cursor/ (mount via volumes, see above)
+#   junie       — JetBrains Junie CLI; reads auth from ~/.junie/ (mount via volumes, see above)
+# effort values:      low | medium | high
+# temperature:        0.0 (deterministic) – 1.0 (creative); None = backend default
+# max_tokens:         cap output tokens; 0 = unlimited (overrides any inherited default)
+# max_concurrency:    how many parallel instances of this role; default 1
+
 performers:
+  default:
+    backend: codex                  # inherited by all roles below unless overridden
+    model: gpt-5.4                  # specific model within the backend (optional)
+    effort: medium                  # "low" | "medium" | "high"
+    temperature: 0.2                # 0.0–1.0
+    max_tokens: 8192                # per-role output token cap; 0 = unlimited
+
   assessor:
-    backend: codex
+    model: gpt-5.4-mini
+    effort: low
+    temperature: 0.0
+    max_tokens: 2048
+
   architect:
-    backend: codex
+    effort: high
+    max_tokens: 12288
+
   implementer:
-    backend: codex
+    effort: high
+    max_tokens: 16384
+
   reviewer:
-    backend: codex
+    effort: high
+    temperature: 0.0
+
   security:
-    backend: codex
+    model: gpt-5.5                  # upgrade model for security analysis if desired
+    effort: high
+    temperature: 0.0
+
   qa:
-    backend: codex
+    effort: high
+    temperature: 0.0
+    max_tokens: 12288
+
   tech_writer:
-    backend: codex
+    effort: medium
+    max_tokens: 4096
+
   closer:
-    backend: codex
+    model: gpt-5.4-mini
+    effort: low
+    temperature: 0.0
+    max_tokens: 2048
 
-# Guardrail: stop opening fresh PRs after too many closed attempts for one issue.
-# Counts only CLOSED (unmerged) linked PRs. Set 0 to disable.
-max_closed_pr_attempts_per_issue: 3
-
-# --- Persona Instructions (018) ---
+# --- Personas ---
 # Customise per-role AI prompts. Omitted roles use built-in defaults.
+# Max 8000 characters per instructions string.
 #
 # personas:
 #   implementer:
-#     instructions: "Always write tests first."
+#     instructions: "Always write tests first. Follow our coding standards."
 #   reviewer:
-#     instructions: "Focus on correctness and test coverage."
+#     instructions: "Focus on correctness, security, and test coverage."
+#   qa:
+#     instructions: "Run the full test suite and write tests for every uncovered path."
 
-# --- Polling & Health ---
-poll_interval_seconds: 30
-heartbeat_interval_seconds: 30
-health_check_port: 8080
-dashboard_port: 8090  # default; change if another service holds this port
-output_mode: "human"   # "human" or "structured" (JSON)
-log_level: "info"
+# --- Card Selection ---
+
+# Only consider cards assigned to this GitHub login. Omit to process all cards.
+# assignee_filter: "coordinare-bot"
+
+# Priority-aware card selection from the TODO column.
+# priority:
+#   field_name: "Priority"          # name of the GitHub Project V2 custom field
+#   priority_order: ["P0", "P1", "P2", "P3"]  # highest-to-lowest priority values
+
+# --- Concurrency ---
+
+# Maximum cards worked in parallel across all symphonies (or per symphony via overrides).
+# Sessions passively awaiting human review do not count toward this limit.
+# Range: 1–20. Default: 1.
+max_concurrent_cards: 1
+
+# Maximum reviewer → implementer feedback cycles before blocking for human review.
+# Each "changes requested" that routes back to the implementer counts as one cycle.
+# Set 0 to disable (not recommended — a flaky reviewer can loop indefinitely).
+# Range: 0–50. Default: 5.
+max_feedback_cycles: 5
+
+# --- PR Lifecycle Guards ---
+
+# Block fresh implementer dispatches after this many closed (unmerged) PRs for an issue.
+# Set 0 to disable.
+max_closed_pr_attempts_per_issue: 3
+
+# How coordinare handles a branch that collides with an existing remote branch.
+#   delete — delete the existing branch and recreate (default)
+#   suffix — append a short unique suffix to the new branch name
+branch_collision_strategy: "delete"   # "delete" | "suffix"
+
+# Whether to delete stale feature branches after merging.
+stale_branch_cleanup: true
+
+# What to do when card requirements change while a performer is in flight.
+#   ignore      — continue with original requirements
+#   warn        — log a warning and notify, but continue
+#   re-dispatch — abort current lifecycle and re-dispatch with updated requirements (default: warn)
+requirement_change_policy: "warn"   # "ignore" | "warn" | "re-dispatch"
+
+# --- Assessment Backend ---
+# How coordinare evaluates whether a card spec is clear enough to implement.
+#   anthropic_api — direct Anthropic SDK call (requires ANTHROPIC_API_KEY env var)
+#   claude_cli    — subprocess `claude --print "..."` using local CLI auth
+#   opencode      — opencode CLI
+#   none          — skip assessment; all cards assumed sufficient
+assessment_backend: "anthropic_api"   # "anthropic_api" | "claude_cli" | "opencode" | "none"
+
+# --- Workspace ---
+# Root directory for performer workspaces (cloned repos). Defaults to system temp dir.
+# workspace_root: "/var/coordinare/workspaces"
+
+# Git identity used for all performer commits.
+# bot_identity:
+#   name: "Coordinare Bot"
+#   email: "coordinare@localhost"
+
+# Environment variables passed through to performer subprocesses.
+# env_passthrough: ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "DATABASE_URL"]
+
+# --- Polling & Timing ---
+
+poll_interval_seconds: 30               # how often to poll the board; range 0–3600
+heartbeat_interval_seconds: 30          # internal liveness tick; range 5–300
+blocked_reminder_hours: 24              # re-notify on blocked cards after this many hours
+
+# --- Ports & Output ---
+
+health_check_port: 8080                 # GET /health — liveness probe endpoint
+dashboard_port: 8090                    # web dashboard; change if port is taken
+dashboard_host: "127.0.0.1"             # bind address; use "0.0.0.0" to expose externally
+output_mode: "human"                    # "human" (readable logs) | "structured" (JSON)
+log_level: "info"                       # "debug" | "info" | "warning" | "error"
+
+# --- Webhooks (optional, replaces polling) ---
+# webhooks:
+#   enabled: false
+#   path: "/webhook/github"             # endpoint path on the health server
+#   secret: "${GITHUB_WEBHOOK_SECRET}"  # HMAC secret configured in GitHub
+
+# --- Cost Tracking ---
+# cost_tracking:
+#   cost_per_million_tokens: 3.0        # dollars per million tokens; used for estimates
+#   cost_budget_per_card: null          # alert when a card exceeds this dollar budget; null = no limit
+
+# --- Stuck Card Alerts ---
+# stuck_alerts:
+#   threshold_seconds: 1800             # alert when a card is stuck for this long; 0 = disabled
+#   cooldown_seconds: 1800              # minimum interval between repeated stuck alerts
+#   per_phase_thresholds:               # per-phase overrides (take precedence over threshold_seconds)
+#     monitoring_performer: 3600        # 60 min — codex sessions routinely run 30–40 min
+#     monitoring_agent: 3600
+
+# --- Health-Check Retry ---
+# health_check:
+#   max_attempts: 3                     # total attempts when waiting for a performer to become ready; range 1–10
+#   backoff_seconds: 1.0                # base backoff in seconds; doubles each attempt
+
+# --- QA Visual Testing ---
+# qa_docker_enabled: true               # enable Playwright screenshot capture via Docker
+# qa_playwright_image: "mcr.microsoft.com/playwright:v1.44.0-jammy"
+# qa_screenshot_timeout_s: 120          # range 10–600
+# qa_screenshot_upload_retries: 3       # range 0–10
+
+# --- Resilience (circuit breakers & retries) ---
+# Fine-tune retry/circuit-breaker behaviour per service. Defaults shown.
+#
+# resilience:
+#   github_retry:
+#     attempts: 5                       # total attempts; range 1–10
+#     wait_initial_seconds: 3.0         # initial backoff; range 0.1–60
+#     wait_max_seconds: 30.0            # max backoff cap; range 1–300
+#     wait_jitter_seconds: 2.0          # random jitter added to each wait
+#     wait_exp_base: 1.618              # exponential base (golden ratio); range 1–5
+#   github_circuit:
+#     failure_threshold: 5              # consecutive failures before opening; range 1–20
+#     recovery_window_seconds: 180.0    # how long to stay open before half-open probe
+#     observation_window_seconds: 300.0 # window over which failures are counted
+#
+#   # Same structure for: slack_retry, smtp_retry, anthropic_retry, agent_retry
+#   #                     slack_circuit, smtp_circuit, anthropic_circuit, agent_circuit
+
+# --- Customer Advocate (optional, spec 007) ---
+# Monitors inbound GitHub issues and auto-responds to non-engineering requests.
+#
+# advocate:
+#   enabled: false
+#   github_repo: "your-org/your-repo"   # required when enabled
+#   confidence_threshold: 0.70          # 0.0–1.0; above this threshold, auto-respond
+#   handled_label: "advocate-handled"   # label applied to handled issues
+#   escalation_label: "needs-human"     # label applied when escalating
+#   doc_sources: ["README.md"]          # repo files to use as context for responses
+#   doc_branch: "HEAD"                  # branch to fetch doc_sources from
+#   sensitive_keywords:                 # issues mentioning these are always escalated
+#     - billing
+#     - payment
+#     - legal
+#     - security breach
+#   support_channel_url: "https://example.com/support"
 
 # --- Notifications ---
 notifications:
-  history_max_age_hours: 24
-  prolonged_idle_threshold_seconds: 1800
+  history_max_age_hours: 24             # how long to retain notification history in memory
+  prolonged_idle_threshold_seconds: 1800  # fire prolonged_idle event after this many seconds with no activity
 
   channels:
     - name: slack-ops
-      type: slack
-      webhook_url: "${COORDINARE_SLACK_WEBHOOK_URL}"
-      rate_limit: 10
+      type: slack                       # "slack" | "email"
+      webhook_url: "${COORDINARE_SLACK_WEBHOOK_URL}"  # incoming webhook URL from Slack app settings
+      rate_limit: 10                    # max messages per rate_window_seconds; 0 = unlimited
       rate_window_seconds: 60
-      dedup_window_seconds: 600
-      retry_count: 5
-      retry_delay_seconds: 2
-      message_template: "{summary}"
+      dedup_window_seconds: 600         # suppress duplicate messages within this window; 0 = off
+      retry_count: 5                    # delivery retry attempts; range 1–10
+      retry_delay_seconds: 2.0          # seconds between retries
+      message_template: "{summary}"     # template vars: {event_type} {source} {summary} {detail}
 
     - name: email-team
       type: email
       # Mailgun SMTP example — confirmed working with port 587 + STARTTLS.
-      # For Mailgun EU use "smtp.eu.mailgun.org".  Username must be the full
-      # SMTP credential email (e.g. postmaster@mail.yourdomain.com) created
-      # in the Mailgun dashboard under "SMTP credentials".
+      # For Mailgun EU use "smtp.eu.mailgun.org". smtp_username must be the full
+      # SMTP credential email created in the Mailgun dashboard.
       smtp_host: "smtp.mailgun.org"
-      smtp_port: 587
+      smtp_port: 587                    # 587 (STARTTLS) | 465 (SSL) | 25 (plain)
       smtp_username: "postmaster@mail.example.com"
       smtp_password: "${COORDINARE_SMTP_PASSWORD}"
       smtp_recipient: "team@example.com"
+      # smtp_sender: "coordinare@vividynamics.com"   # From address; default shown
+      # subject_template: "{event_type}: {source}"  # email subject; defaults to message_template
       rate_limit: 5
       rate_window_seconds: 300
       dedup_window_seconds: 3600
       retry_count: 3
-      retry_delay_seconds: 5
+      retry_delay_seconds: 5.0
 
   routing:
+    # Available event types:
+    #   card_transition     — card moved to a new phase
+    #   card_dispatched     — performer started on a card
+    #   card_blocked        — card is blocked (dependency or repeated failure)
+    #   card_merged         — PR was squash-merged
+    #   advocate_escalation — advocate escalated an issue to a human
+    #   daemon_restart      — coordinare process restarted
+    #   circuit_breaker_trip — a circuit breaker opened (service outage detected)
+    #   prolonged_idle      — coordinare has been idle for prolonged_idle_threshold_seconds
     - event_type: card_transition
       channels: [slack-ops]
     - event_type: card_dispatched
@@ -188,30 +521,38 @@ notifications:
       channels: [email-team]
 
 
-# --- Symphonies (spec 057) ---
-# Each entry is a separate GitHub project board to orchestrate.
-# Required: name (alphanumeric + dash), github_project_number.
-# name becomes the project identifier in logs and the dashboard.
-# Orchestration runs each enabled symphony in priority order (list order).
+# --- Symphonies ---
+# Each entry is a separate GitHub Project board to orchestrate.
+# Coordinare runs symphonies in the order listed.
+#
+# Required per entry: name (alphanumeric + dash), github_project_number.
+# name appears in logs, dashboard, and branch names.
+# enabled: false pauses a symphony without removing it.
+#
+# Per-symphony overrides merge with global config for that symphony only.
+# Any global field (poll_interval_seconds, max_concurrent_cards, performers, etc.)
+# can be overridden here. Per-symphony personas merge with (not replace) global personas.
 symphonies:
   - name: backend
     github_project_number: 43
-    # enabled: true  # default; set false to pause without removing
-
-    # Per-symphony overrides — any global field can be overridden here.
+    # enabled: true                   # default; set false to pause without removing
     # overrides:
+    #   max_concurrent_cards: 2       # range 1–20
     #   poll_interval_seconds: 60
     #   max_closed_pr_attempts_per_issue: 5
-
-    # Per-symphony personas — merged with global personas.
+    #   assignee_filter: "backend-bot"
     # personas:
     #   implementer:
-    #     instructions: "Follow the backend coding standards doc."
+    #     instructions: "Follow the backend coding standards in CONTRIBUTING.md."
 
   - name: frontend
     github_project_number: 44
     # overrides:
     #   poll_interval_seconds: 45
+    #   performers:
+    #     implementer:
+    #       model: gpt-5.4
+    #       max_tokens: 16384
 
   # Example: a temporarily paused symphony
   # - name: data-platform
@@ -219,8 +560,12 @@ symphonies:
   #   enabled: false
 
 
-# --- Orchestra (spec 057) ---
+# --- Orchestra ---
 # Controls how coordinare schedules work across symphonies.
+#
+# Modes:
+#   shared_pool — all symphonies share the global max_concurrent_cards budget
+#                 (the only mode currently implemented)
 orchestra:
   mode: shared_pool
 
@@ -232,13 +577,12 @@ orchestra:
 # single-project format. Coordinare auto-detects the format by checking for
 # the `symphonies:` key.
 
-# project_name: "my-project"
+# project_name: "my-project"           # GitHub repo name (defaults to project dir name)
 # github_org: "your-org"
 # github_project_number: 1
+# github_token: "${COORDINARE_GITHUB_TOKEN}"
 #
-# # github_token: "${COORDINARE_GITHUB_TOKEN}"
-#
-# agent_transport: "subprocess"
+# agent_transport: "subprocess"         # "subprocess" | "ssh" | "kubernetes"
 # agent_executable: "/usr/local/bin/performer"
 #
 # human_reviewers:
@@ -248,16 +592,17 @@ orchestra:
 #   - "copilot-pull-request-reviewer[bot]"
 #
 # performers:
-#   implementer:
-#     backend: codex
-#   reviewer:
-#     backend: codex
+#   default:
+#     backend: codex                    # "codex" | "opencode" | "claude_code"
+#   implementer: {}                     # inherits all fields from default
+#   reviewer: {}
 #
+# max_concurrent_cards: 1
 # poll_interval_seconds: 30
 # health_check_port: 8080
 # dashboard_port: 8090
-# output_mode: "human"
-# log_level: "info"
+# output_mode: "human"                  # "human" | "structured"
+# log_level: "info"                     # "debug" | "info" | "warning" | "error"
 #
 # notifications:
 #   channels: []

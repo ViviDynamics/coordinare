@@ -1,12 +1,5 @@
 FROM coordinare-performer:base
 
-# Place stub binaries for all five backend CLIs.
-# Stubs satisfy shutil.which() so the capability probe advertises them.
-# Layer a genuine CLI install on top for production images.
-RUN for bin in claude codex cursor junie opencode; do \
-      printf '#!/bin/sh\n' > /usr/local/bin/$bin && chmod +x /usr/local/bin/$bin; \
-    done
-
 # Install Playwright + Chromium for browser automation
 RUN pip install --no-cache-dir playwright && \
     playwright install --with-deps chromium
@@ -31,4 +24,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     shellcheck \
     && rm -rf /var/lib/apt/lists/*
 
-# Entrypoint inherited from base: ["python", "-m", "performer", "--serve", "--port", "8088"]
+# Backend CLI is installed at container start by entrypoint.sh based on $BACKEND.
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# Ensure ~/.local/bin is in PATH for backends that install to ~/.local/bin (cursor, opencode)
+ENV PATH="/root/.local/bin:${PATH}"
+
+ENTRYPOINT ["/entrypoint.sh"]

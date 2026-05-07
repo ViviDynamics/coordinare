@@ -428,3 +428,117 @@ async def test_monitor_pr_recovery_defers_transient_errors() -> None:
     assert result["phase"] == "monitoring_pr"
     queue = result.get("github_retry_queue") or []
     assert any(entry.get("operation") == "monitor_pr" for entry in queue if isinstance(entry, dict))
+
+
+@pytest.mark.asyncio
+async def test_monitor_pr_deferred_wait_when_operation_not_ready() -> None:
+    """When monitor_pr github op is deferred and not yet due, node stays in monitoring_pr."""
+    from datetime import UTC, datetime, timedelta
+
+
+    class _NeverCalled:
+        async def find_pr_for_issue(self, issue_node_id: str):
+            raise AssertionError("must not be called when deferred")
+
+        async def get_pr_reviews(self, pr_id: str):
+            raise AssertionError("must not be called when deferred")
+
+    state = initial_state()
+    state["current_card"] = {
+        "id": "card-1",
+        "issue_id": "I_kwDO_issue",
+        "pr_node_id": None,
+    }
+    state["human_reviewers"] = ["alice"]
+    state["github_service"] = _NeverCalled()
+    # Pre-load a deferred entry that is not yet due
+    state["github_retry_queue"] = [{
+        "operation": "monitor_pr",
+        "attempt": 1,
+        "retry_at": datetime.now(UTC) + timedelta(seconds=300),
+        "error": "dns",
+        "deferred_at": datetime.now(UTC),
+    }]
+
+    result = await monitor_pr(state)
+    assert result["phase"] == "monitoring_pr"
+
+
+@pytest.mark.asyncio
+async def test_monitor_pr_non_transient_get_reviews_error_stays_monitoring() -> None:
+    """Non-transient get_pr_reviews error: log and stay in monitoring_pr."""
+
+    class _FailingReviews:
+        async def get_pr_reviews(self, pr_id: str):
+            raise RuntimeError("graphql validation error")
+
+    state = initial_state()
+    state["current_card"] = {"pr_node_id": "PR_1"}
+    state["human_reviewers"] = ["alice"]
+    state["github_service"] = _FailingReviews()
+
+    result = await monitor_pr(state)
+    assert result["phase"] == "monitoring_pr"
+
+
+@pytest.mark.asyncio
+async def test_monitor_pr_lifecycle_completed_at_as_string_sets_cutoff() -> None:
+    """lifecycle_completed_at stored as ISO string is parsed into a cutoff datetime."""
+    from datetime import UTC, datetime, timedelta
+
+    cutoff_dt = datetime.now(UTC) - timedelta(hours=1)
+    cutoff_str = cutoff_dt.isoformat().replace("+00:00", "Z")
+
+    class _Reviews:
+        async def get_pr_reviews(self, pr_id: str):
+            return [
+                {
+                    "id": "R_old",
+                    "author_login": "alice",
+                    "state": "APPROVED",
+                    "submitted_at": (cutoff_dt - timedelta(minutes=30)).isoformat().replace("+00:00", "Z"),
+                },
+                {
+                    "id": "R_new",
+                    "author_login": "alice",
+                    "state": "COMMENTED",
+                    "submitted_at": (cutoff_dt + timedelta(minutes=30)).isoformat().replace("+00:00", "Z"),
+                },
+            ]
+
+    state = initial_state()
+    state["current_card"] = {"pr_node_id": "PR_1"}
+    state["human_reviewers"] = ["alice"]
+    state["github_service"] = _Reviews()
+    state["lifecycle_completed_at"] = cutoff_str
+
+    result = await monitor_pr(state)
+    # Old APPROVED review is filtered out by cutoff, so no merge should happen
+    assert result["phase"] != "merging"
+
+
+@pytest.mark.asyncio
+async def test_monitor_pr_cutoff_filters_old_reviews() -> None:
+    """Reviews with submitted_at before the lifecycle cutoff are skipped."""
+    from datetime import UTC, datetime, timedelta
+
+    cutoff = datetime.now(UTC) - timedelta(hours=1)
+
+    class _OldApproval:
+        async def get_pr_reviews(self, pr_id: str):
+            return [{
+                "id": "R1",
+                "author_login": "alice",
+                "state": "APPROVED",
+                "submitted_at": (cutoff - timedelta(hours=1)).isoformat().replace("+00:00", "Z"),
+            }]
+
+    state = initial_state()
+    state["current_card"] = {"pr_node_id": "PR_1"}
+    state["human_reviewers"] = ["alice"]
+    state["github_service"] = _OldApproval()
+    state["lifecycle_completed_at"] = cutoff  # datetime directly (line 141 path)
+
+    result = await monitor_pr(state)
+    # Old approval filtered out — no merge
+    assert result["phase"] != "merging"

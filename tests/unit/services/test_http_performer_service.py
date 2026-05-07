@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+from unittest.mock import AsyncMock
+
 import httpx
 import pytest
 
@@ -190,6 +193,11 @@ async def test_dispatch_ephemeral_starts_container_and_dispatches(monkeypatch) -
         )
 
     svc = HTTPPerformerService(_ephemeral_config(), client=_client(handler))
+
+    async def _noop_log_poll(container_id: str, job_id: str) -> None:
+        return
+
+    monkeypatch.setattr(svc, "_poll_container_logs", _noop_log_poll)
     result = await svc.dispatch_card(_card(), _workspace())
 
     assert result["status"] == "ok"
@@ -239,10 +247,17 @@ async def test_check_status_terminal_cleans_up_ephemeral(monkeypatch) -> None:
         )
 
     svc = HTTPPerformerService(_ephemeral_config(), client=_client(handler))
+
+    async def _noop_log_poll(container_id: str, job_id: str) -> None:
+        return
+
+    monkeypatch.setattr(svc, "_poll_container_logs", _noop_log_poll)
     await svc.dispatch_card(_card(), _workspace())
     status = await svc.check_status("job-T")
 
-    assert status["state"] == "succeeded"
+    # Non-JSON summary falls through to plain-text fallback: always "error"
+    # so monitor_performer can terminate the session (it doesn't recognise "ok").
+    assert status["status"] == "error"
     assert stop_calls == ["ctr-9"]
 
 
@@ -299,7 +314,7 @@ async def test_ensure_client_creates_client_from_endpoint() -> None:
     cfg = _persistent_config()
     svc = HTTPPerformerService(cfg)
     # Replace transport after construction to intercept real HTTP.
-    svc._client = PerformerHTTPClient(
+    svc._persistent_client = PerformerHTTPClient(
         "http://127.0.0.1:8080",
         client=_httpx.AsyncClient(transport=_httpx.MockTransport(handler)),
     )
@@ -447,7 +462,9 @@ async def test_check_status_non_terminal_returns_state_without_cleanup() -> None
 
     svc = HTTPPerformerService(_persistent_config(), client=_client(handler))
     result = await svc.check_status("job-R")
-    assert result["state"] == "running"
+    # Non-terminal → {"status": "working", "job_state": "running", ...}
+    assert result["status"] == "working"
+    assert result["job_state"] == "running"
     await svc.aclose()
 
 
@@ -479,7 +496,9 @@ async def test_check_status_terminal_persistent_does_not_stop_container() -> Non
     await svc.dispatch_card(_card(), _workspace())
     result = await svc.check_status("job-P")
 
-    assert result["state"] == "succeeded"
+    # No result in response → terminal-no-result fallback
+    assert result["status"] == "error"
+    assert "succeeded" in result["reason"]
     assert stop_calls == []  # persistent mode: no container to stop
     await svc.aclose()
 
@@ -518,10 +537,11 @@ async def test_check_status_terminal_with_mismatched_job_id() -> None:
         )
 
     svc = HTTPPerformerService(_persistent_config(), client=_client(handler))
-    svc._current_job_id = "job-current"  # different from queried job
     result = await svc.check_status("job-other")
-    assert result["state"] == "succeeded"
-    assert svc._current_job_id == "job-current"  # unchanged — IDs didn't match
+    # Terminal with no result → error fallback; _active_jobs is empty (persistent mode)
+    assert result["status"] == "error"
+    assert "succeeded" in result["reason"]
+    assert svc._active_jobs == {}
     await svc.aclose()
 
 
@@ -565,7 +585,7 @@ async def test_dispatch_includes_github_token_in_secrets() -> None:
 async def test_ensure_client_no_endpoint_returns_unknown_health() -> None:
     """_ensure_client raises TransportError when _endpoint is None; check_health catches it."""
     svc = HTTPPerformerService(_persistent_config())
-    svc._endpoint = None  # force None — bypasses persistent config's endpoint
+    svc._persistent_endpoint = None  # force None — bypasses persistent config's endpoint
     # The TransportError from _ensure_client is caught by check_health's broad handler
     result = await svc.check_health()
     assert result["status"] in {"unknown", "error"}
@@ -576,28 +596,8 @@ async def test_ensure_client_no_endpoint_returns_unknown_health() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cleanup_ephemeral_no_container_id_still_closes_client() -> None:
-    """_cleanup_ephemeral when container_id is already None still cleans up _client."""
-    closed: list[str] = []
-
-    class FakeClient:
-        async def aclose(self) -> None:
-            closed.append("closed")
-
-    svc = HTTPPerformerService(_ephemeral_config())
-    svc._container_id = None  # already gone
-    svc._client = FakeClient()  # _injected_client remains None
-
-    await svc._cleanup_ephemeral()
-
-    assert closed == ["closed"]  # lines 261-262 ran
-    assert svc._client is None
-    assert svc._endpoint is None
-
-
-@pytest.mark.asyncio
-async def test_cleanup_ephemeral_with_container_and_client(monkeypatch) -> None:
-    """_cleanup_ephemeral stops the container AND closes _client when both are set."""
+async def test_cleanup_ephemeral_job_closes_client(monkeypatch) -> None:
+    """_cleanup_ephemeral_job stops the container and closes the per-job client."""
     closed: list[str] = []
     stopped: list[str] = []
 
@@ -610,16 +610,105 @@ async def test_cleanup_ephemeral_with_container_and_client(monkeypatch) -> None:
 
     monkeypatch.setattr(hps_mod.performer_lifecycle, "stop", fake_stop)
 
-    svc = HTTPPerformerService(_ephemeral_config())
-    svc._container_id = "ctr-clean"
-    svc._client = FakeClient()
+    from coordinare.services.http_performer_service import _EphemeralJob
 
-    await svc._cleanup_ephemeral()
+    svc = HTTPPerformerService(_ephemeral_config())
+    job = _EphemeralJob(
+        container_id="ctr-clean",
+        endpoint="http://127.0.0.1:9999",
+        client=FakeClient(),  # type: ignore[arg-type]
+    )
+
+    await svc._cleanup_ephemeral_job(job)
 
     assert stopped == ["ctr-clean"]
     assert closed == ["closed"]
-    assert svc._client is None
-    assert svc._endpoint is None
+
+
+@pytest.mark.asyncio
+async def test_cleanup_ephemeral_job_by_id_removes_from_active_jobs(monkeypatch) -> None:
+    """_cleanup_ephemeral_job_by_id pops the job from _active_jobs and cleans it up."""
+    stopped: list[str] = []
+
+    class FakeClient:
+        async def aclose(self) -> None:
+            pass
+
+    async def fake_stop(container_id: str, **_: object) -> None:
+        stopped.append(container_id)
+
+    monkeypatch.setattr(hps_mod.performer_lifecycle, "stop", fake_stop)
+
+    from coordinare.services.http_performer_service import _EphemeralJob
+
+    svc = HTTPPerformerService(_ephemeral_config())
+    svc._active_jobs["job-xyz"] = _EphemeralJob(
+        container_id="ctr-xyz",
+        endpoint="http://127.0.0.1:9999",
+        client=FakeClient(),  # type: ignore[arg-type]
+    )
+
+    await svc._cleanup_ephemeral_job_by_id("job-xyz")
+
+    assert stopped == ["ctr-xyz"]
+    assert "job-xyz" not in svc._active_jobs
+
+
+@pytest.mark.asyncio
+async def test_cleanup_ephemeral_job_by_id_cancels_poll_task(monkeypatch) -> None:
+    """_cleanup_ephemeral_job_by_id cancels the associated log poll task."""
+    monkeypatch.setattr(hps_mod.performer_lifecycle, "stop", AsyncMock())
+
+    from coordinare.services.http_performer_service import _EphemeralJob
+
+    svc = HTTPPerformerService(_ephemeral_config())
+
+    # Plant a never-completing task to simulate a running poll loop.
+    async def _hang() -> None:
+        await asyncio.sleep(3600)
+
+    task: asyncio.Task[None] = asyncio.create_task(_hang())
+    svc._log_poll_tasks["job-abc"] = task
+    svc._active_jobs["job-abc"] = _EphemeralJob(
+        container_id="ctr-abc",
+        endpoint="http://127.0.0.1:9999",
+        client=AsyncMock(),  # type: ignore[arg-type]
+    )
+
+    await svc._cleanup_ephemeral_job_by_id("job-abc")
+    await asyncio.sleep(0)  # let the event loop propagate the cancellation
+
+    assert task.cancelled()
+    assert "job-abc" not in svc._log_poll_tasks
+    assert "job-abc" not in svc._active_jobs
+
+
+@pytest.mark.asyncio
+async def test_aclose_cancels_poll_tasks(monkeypatch) -> None:
+    """aclose() cancels all in-flight log poll tasks before tearing down containers."""
+    monkeypatch.setattr(hps_mod.performer_lifecycle, "stop", AsyncMock())
+
+    from coordinare.services.http_performer_service import _EphemeralJob
+
+    svc = HTTPPerformerService(_ephemeral_config())
+
+    async def _hang() -> None:
+        await asyncio.sleep(3600)
+
+    task1: asyncio.Task[None] = asyncio.create_task(_hang())
+    task2: asyncio.Task[None] = asyncio.create_task(_hang())
+    svc._log_poll_tasks["job-1"] = task1
+    svc._log_poll_tasks["job-2"] = task2
+    svc._active_jobs["job-1"] = _EphemeralJob("ctr-1", "http://127.0.0.1:9001", AsyncMock())  # type: ignore[arg-type]
+    svc._active_jobs["job-2"] = _EphemeralJob("ctr-2", "http://127.0.0.1:9002", AsyncMock())  # type: ignore[arg-type]
+
+    await svc.aclose()
+    await asyncio.sleep(0)  # let the event loop propagate cancellations
+
+    assert task1.cancelled()
+    assert task2.cancelled()
+    assert not svc._log_poll_tasks
+    assert not svc._active_jobs
 
 
 # ---------------------------- dispatch with workspace_info=None --------------
@@ -646,23 +735,28 @@ async def test_dispatch_persistent_workspace_none_uses_card_urls() -> None:
 
 
 @pytest.mark.asyncio
-async def test_dispatch_ephemeral_closes_stale_client_on_new_start(monkeypatch) -> None:
-    """When ephemeral dispatch finds a stale _client, it closes it before the new container."""
-    closed: list[str] = []
-
-    class StaleClient:
-        async def aclose(self) -> None:
-            closed.append("stale_closed")
+async def test_dispatch_ephemeral_tracks_job_in_active_jobs(monkeypatch) -> None:
+    """Each ephemeral dispatch creates an independent entry in _active_jobs."""
+    call_count = 0
 
     async def fake_start(config):
-        return StartedContainer(container_id="ctr-fresh", endpoint="http://127.0.0.1:55558")
+        nonlocal call_count
+        call_count += 1
+        return StartedContainer(
+            container_id=f"ctr-{call_count}",
+            endpoint=f"http://127.0.0.1:{55557 + call_count}",
+        )
 
     async def fake_wait_ready(endpoint, auth_token, *, timeout, performer_id, **_):
         return None
 
+    job_counter = 0
+
     class FakePostClient:
         async def post_job(self, payload):
-            return type("Resp", (), {"accepted": True, "job_id": "job-fresh"})()
+            nonlocal job_counter
+            job_counter += 1
+            return type("Resp", (), {"accepted": True, "job_id": f"job-{job_counter}"})()
 
         async def aclose(self) -> None:
             pass
@@ -671,11 +765,384 @@ async def test_dispatch_ephemeral_closes_stale_client_on_new_start(monkeypatch) 
     monkeypatch.setattr(hps_mod.performer_lifecycle, "wait_ready", fake_wait_ready)
     monkeypatch.setattr(hps_mod, "PerformerHTTPClient", lambda *a, **kw: FakePostClient())
 
-    svc = HTTPPerformerService(_ephemeral_config())  # no injected client
-    svc._client = StaleClient()  # simulate pre-existing stale client
+    svc = HTTPPerformerService(_ephemeral_config())
 
+    async def _noop_log_poll(container_id: str, job_id: str) -> None:
+        return
+
+    monkeypatch.setattr(svc, "_poll_container_logs", _noop_log_poll)
+    r1 = await svc.dispatch_card(_card(), _workspace())
+    r2 = await svc.dispatch_card(_card(), _workspace())
+
+    assert r1["status"] == "ok"
+    assert r2["status"] == "ok"
+    # Each dispatch tracked independently — no overwrite
+    assert r1["job_id"] != r2["job_id"]
+    assert r1["job_id"] in svc._active_jobs
+    assert r2["job_id"] in svc._active_jobs
+
+
+# ---------------------------------------------------------------------------
+# Missing repo_url/branch in _build_job_payload
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dispatch_card_missing_repo_url_returns_error() -> None:
+    """dispatch_card with missing repo_url returns error without raising."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"accepted": True, "job_id": "job-1"})
+
+    svc = HTTPPerformerService(_persistent_config(), client=_client(handler))
+    ws = WorkspaceInfo(path=None, repo_url=None, branch="main", github_token="ghs_x")
+    result = await svc.dispatch_card(_card(), ws)
+
+    assert result["status"] == "error"
+    assert "missing" in result["reason"].lower()
+    await svc.aclose()
+
+
+# ---------------------------------------------------------------------------
+# Ephemeral mode: ensure_client with active job
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ensure_client_ephemeral_with_active_job(monkeypatch) -> None:
+    """_ensure_client(job_id=...) in ephemeral mode returns per-job client."""
+    async def fake_start(config):
+        return StartedContainer(
+            container_id="container-123",
+            endpoint="http://localhost:8080",
+        )
+
+    class FakeClient:
+        def __init__(self, endpoint: str, **kwargs):
+            self.endpoint = endpoint
+
+    async def fake_wait_ready(endpoint, auth_token, *, timeout, performer_id, **_):
+        return None
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(202, json={"accepted": True, "job_id": "job-X", "started_at": "2026-04-28T00:00:00Z"})
+
+    monkeypatch.setattr(hps_mod.performer_lifecycle, "start_ephemeral", fake_start)
+    monkeypatch.setattr(hps_mod.performer_lifecycle, "wait_ready", fake_wait_ready)
+    monkeypatch.setattr(hps_mod, "PerformerHTTPClient", FakeClient)
+
+    svc = HTTPPerformerService(_ephemeral_config(), client=_client(handler))
+
+    async def _noop_log_poll(container_id: str, job_id: str) -> None:
+        return
+
+    monkeypatch.setattr(svc, "_poll_container_logs", _noop_log_poll)
+
+    # Dispatch a card to populate _active_jobs
+    dispatch_result = await svc.dispatch_card(_card(), _workspace())
+    job_id = dispatch_result["job_id"]
+
+    # Now ensure_client with that job_id should return the cached client
+    client = svc._ensure_client(job_id=job_id)
+    assert client is not None
+
+
+# ---------------------------------------------------------------------------
+# Secrets injection: OPENAI_API_KEY and ANTHROPIC_API_KEY
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dispatch_includes_openai_api_key_in_secrets(monkeypatch) -> None:
+    """OPENAI_API_KEY from env is injected into job secrets."""
+    payloads: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json as _json
+        payloads.append(_json.loads(request.content))
+        return httpx.Response(
+            202,
+            json={
+                "accepted": True,
+                "job_id": "job-oai",
+                "started_at": "2026-04-28T00:00:00Z",
+            },
+        )
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-openai-key")
+
+    codex_card = {**_card(), "backend": "codex"}
+    svc = HTTPPerformerService(_persistent_config(), client=_client(handler))
+    await svc.dispatch_card(codex_card, _workspace())
+
+    assert payloads, "no POST /jobs payload captured"
+    assert payloads[0].get("secrets", {}).get("OPENAI_API_KEY") == "sk-test-openai-key"
+    await svc.aclose()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_includes_anthropic_api_key_in_secrets(monkeypatch) -> None:
+    """ANTHROPIC_API_KEY from env is injected into job secrets."""
+    payloads: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json as _json
+        payloads.append(_json.loads(request.content))
+        return httpx.Response(
+            202,
+            json={
+                "accepted": True,
+                "job_id": "job-ant",
+                "started_at": "2026-04-28T00:00:00Z",
+            },
+        )
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+
+    svc = HTTPPerformerService(_persistent_config(), client=_client(handler))
+    await svc.dispatch_card(_card(), _workspace())
+
+    assert payloads, "no POST /jobs payload captured"
+    assert payloads[0].get("secrets", {}).get("ANTHROPIC_API_KEY") == "sk-ant-test-key"
+    await svc.aclose()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_injects_both_api_keys_for_opencode_backends(monkeypatch) -> None:
+    """opencode/junie/cursor receive both OPENAI_API_KEY and ANTHROPIC_API_KEY when set."""
+    payloads: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json as _json
+        payloads.append(_json.loads(request.content))
+        return httpx.Response(
+            202,
+            json={"accepted": True, "job_id": "job-oc", "started_at": "2026-04-28T00:00:00Z"},
+        )
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+    for backend in ("opencode", "junie", "cursor"):
+        payloads.clear()
+        card = {**_card(), "backend": backend}
+        svc = HTTPPerformerService(_persistent_config(), client=_client(handler))
+        await svc.dispatch_card(card, _workspace())
+        assert payloads, f"no POST /jobs payload captured for {backend}"
+        secrets = payloads[0].get("secrets", {})
+        assert secrets.get("OPENAI_API_KEY") == "sk-openai-test", f"{backend} missing OPENAI_API_KEY"
+        assert secrets.get("ANTHROPIC_API_KEY") == "sk-ant-test", f"{backend} missing ANTHROPIC_API_KEY"
+        await svc.aclose()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_does_not_inject_api_keys_for_unknown_backends(monkeypatch) -> None:
+    """Unknown backends receive no provider API keys."""
+    payloads: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json as _json
+        payloads.append(_json.loads(request.content))
+        return httpx.Response(
+            202,
+            json={"accepted": True, "job_id": "job-unk", "started_at": "2026-04-28T00:00:00Z"},
+        )
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-should-not-appear")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-should-not-appear")
+
+    unknown_card = {**_card(), "backend": "unknown_backend"}
+    svc = HTTPPerformerService(_persistent_config(), client=_client(handler))
+    await svc.dispatch_card(unknown_card, _workspace())
+
+    assert payloads, "no POST /jobs payload captured"
+    secrets = payloads[0].get("secrets", {})
+    assert "OPENAI_API_KEY" not in secrets
+    assert "ANTHROPIC_API_KEY" not in secrets
+    await svc.aclose()
+
+
+# ---------------------------------------------------------------------------
+# Ephemeral dispatch error handling
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dispatch_card_ephemeral_transport_error_on_post_job(monkeypatch) -> None:
+    """TransportError from post_job in ephemeral mode cleans up container."""
+    from coordinare.transport.base import TransportError
+
+    async def fake_start(config):
+        return StartedContainer(
+            container_id="container-456",
+            endpoint="http://localhost:9090",
+        )
+
+    async def fake_wait_ready(endpoint, auth_token, *, timeout, performer_id, **_):
+        return None
+
+    stopped_containers: list[str] = []
+
+    async def fake_stop(container_id: str):
+        stopped_containers.append(container_id)
+
+    class ErrorClient:
+        async def post_job(self, payload):
+            raise TransportError("connection lost")
+
+        async def aclose(self) -> None:
+            pass
+
+    monkeypatch.setattr(hps_mod.performer_lifecycle, "start_ephemeral", fake_start)
+    monkeypatch.setattr(hps_mod.performer_lifecycle, "wait_ready", fake_wait_ready)
+    monkeypatch.setattr(hps_mod.performer_lifecycle, "stop", fake_stop)
+    monkeypatch.setattr(hps_mod, "PerformerHTTPClient", lambda *a, **kw: ErrorClient())
+
+    svc = HTTPPerformerService(_ephemeral_config())
     result = await svc.dispatch_card(_card(), _workspace())
 
-    assert "stale_closed" in closed  # lines 150-151 executed
-    assert result["status"] == "ok"
-    await svc.aclose()
+    assert result["status"] == "error"
+    assert "container-456" in stopped_containers
+
+
+@pytest.mark.asyncio
+async def test_dispatch_card_ephemeral_not_accepted_cleans_up(monkeypatch) -> None:
+    """When performer returns 409 busy in ephemeral mode, container is stopped."""
+    async def fake_start(config):
+        return StartedContainer(
+            container_id="container-789",
+            endpoint="http://localhost:8888",
+        )
+
+    async def fake_wait_ready(endpoint, auth_token, *, timeout, performer_id, **_):
+        return None
+
+    stopped_containers: list[str] = []
+
+    async def fake_stop(container_id: str):
+        stopped_containers.append(container_id)
+
+    class BusyClient:
+        async def post_job(self, payload):
+            return type("Resp", (), {"accepted": False, "reason": "busy", "detail": "slot taken"})()
+
+        async def aclose(self) -> None:
+            pass
+
+    monkeypatch.setattr(hps_mod.performer_lifecycle, "start_ephemeral", fake_start)
+    monkeypatch.setattr(hps_mod.performer_lifecycle, "wait_ready", fake_wait_ready)
+    monkeypatch.setattr(hps_mod.performer_lifecycle, "stop", fake_stop)
+    monkeypatch.setattr(hps_mod, "PerformerHTTPClient", lambda *a, **kw: BusyClient())
+
+    svc = HTTPPerformerService(_ephemeral_config())
+    result = await svc.dispatch_card(_card(), _workspace())
+
+    assert result["status"] == "error"
+    assert "performer busy" in result["reason"]
+    assert "container-789" in stopped_containers
+
+
+# ---------------------------------------------------------------------------
+# check_status for ephemeral: unreachable container
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_check_status_ephemeral_unreachable_cleanup(monkeypatch) -> None:
+    """When get_job fails for ephemeral job, cleanup is called."""
+    from coordinare.transport.base import TransportError
+
+    stopped_containers: list[str] = []
+
+    async def fake_stop(container_id: str):
+        stopped_containers.append(container_id)
+
+    class UnreachableClient:
+        async def get_job(self, job_id: str):
+            raise TransportError("container unreachable")
+
+        async def aclose(self) -> None:
+            pass
+
+    monkeypatch.setattr(hps_mod.performer_lifecycle, "stop", fake_stop)
+
+    svc = HTTPPerformerService(_ephemeral_config())
+    # Manually populate _active_jobs to simulate an active ephemeral job
+    svc._active_jobs["job-X"] = hps_mod._EphemeralJob(
+        container_id="dead-container",
+        endpoint="http://dead:9090",
+        client=UnreachableClient(),
+    )
+
+    # check_status should cleanup on TransportError
+    with pytest.raises(TransportError):
+        await svc.check_status("job-X")
+
+    # Verify cleanup was called
+    assert "dead-container" in stopped_containers
+    assert "job-X" not in svc._active_jobs
+
+
+@pytest.mark.asyncio
+async def test_check_status_ensure_client_transport_error() -> None:
+    """When _ensure_client raises TransportError for persistent mode (no injected client), it's re-raised."""
+    from coordinare.transport.base import TransportError
+
+    config = _persistent_config()
+    svc = HTTPPerformerService(config)
+    # Manually reset the endpoint to force _ensure_client to fail
+    svc._persistent_endpoint = None
+    # _ensure_client will raise TransportError when endpoint is None
+    with pytest.raises(TransportError):
+        await svc.check_status("job-1")
+
+
+@pytest.mark.asyncio
+async def test_dispatch_persistent_payload_error() -> None:
+    """When _build_job_payload raises ValueError in persistent mode, no cleanup happens."""
+    config = _persistent_config()
+    svc = HTTPPerformerService(config)
+
+    # Missing branch in card_context triggers ValueError
+    card = {
+        "id": "card-1",
+        "role": "implementer",
+        "backend": "claude_code",
+        "persona_instructions": "stub",
+        # Missing repo_url and branch
+    }
+
+    result = await svc.dispatch_card(card, workspace_info=None)
+    assert result["status"] == "error"
+    assert "repo_url or branch" in result["reason"]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_persistent_post_job_error(monkeypatch) -> None:
+    """When post_job raises exception in persistent mode, no ephemeral cleanup happens."""
+    from coordinare.transport.http_transport import PerformerUnreachableError
+
+    class FailingClient:
+        async def post_job(self, payload):
+            raise PerformerUnreachableError("performer unreachable")
+
+    config = _persistent_config()
+    svc = HTTPPerformerService(config, client=FailingClient())
+
+    from coordinare.workspace import WorkspaceInfo
+
+    card = {
+        "id": "card-1",
+        "role": "implementer",
+        "backend": "claude_code",
+        "persona_instructions": "stub",
+    }
+    workspace = WorkspaceInfo(
+        path=None,
+        repo_url="https://github.com/x/y",
+        branch="main",
+        github_token="ghs_xxx",
+    )
+
+    result = await svc.dispatch_card(card, workspace)
+    assert result["status"] == "error"
+    assert "unreachable" in result["reason"]

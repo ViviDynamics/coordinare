@@ -393,6 +393,7 @@ class GitHubService:
 
         self._client: Client | None = None
         self._last_token: str | None = None
+        self._gql_lock: asyncio.Lock = asyncio.Lock()
         self.project_id: str | None = None
         self.project_title: str | None = None
         self.field_cache: dict[str, Any] = {}
@@ -428,16 +429,21 @@ class GitHubService:
             self._client = None
 
     async def _execute(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
-        token = await self._current_token()
-        if self._client is None or token != self._last_token:
-            self._client = self._build_client(token)
-            self._last_token = token
+        async with self._gql_lock:
+            token = await self._current_token()
+            if self._client is None or token != self._last_token:
+                self._client = self._build_client(token)
+                self._last_token = token
+            client = self._client
+        return await self._execute_request(client, query, variables)
+
+    async def _execute_request(self, client: Any, query: str, variables: dict[str, Any]) -> dict[str, Any]:
         document = gql(query)
         try:
-            if hasattr(self._client, "execute_async"):
-                result = await self._client.execute_async(document, variable_values=variables)
+            if hasattr(client, "execute_async"):
+                result = await client.execute_async(document, variable_values=variables)
             else:
-                result_or_awaitable = self._client.execute(document, variable_values=variables)
+                result_or_awaitable = client.execute(document, variable_values=variables)
                 if inspect.isawaitable(result_or_awaitable):
                     result = await result_or_awaitable
                 else:

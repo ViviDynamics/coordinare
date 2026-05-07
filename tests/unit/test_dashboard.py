@@ -106,11 +106,12 @@ def test_dashboard_multi_page_routes_return_html_shell() -> None:
         assert res.text == root_html, f"{path} returned different HTML than /"
 
 
-def test_dashboard_html_under_80kb() -> None:
-    """T036: _DASHBOARD_HTML must not exceed the 80 KB size budget (raised to accommodate
-    multi-page layout, navbar, active-performer tiles, performers/personas/history pages — 049)."""
+def test_dashboard_html_under_96kb() -> None:
+    """T036: _DASHBOARD_HTML must not exceed the 96 KB size budget (raised to accommodate
+    multi-page layout, navbar, active-performer tiles, performers/personas/history pages — 049,
+    and the Global Config edit page — 058)."""
     size = len(_DASHBOARD_HTML.encode())
-    assert size < 80 * 1024, f"_DASHBOARD_HTML is {size} bytes (limit: {80 * 1024})"
+    assert size < 96 * 1024, f"_DASHBOARD_HTML is {size} bytes (limit: {96 * 1024})"
 
 
 def test_history_page_is_live_container_not_coming_soon_stub() -> None:
@@ -1413,3 +1414,193 @@ def test_build_snapshot_session_skip_reasons_is_copy() -> None:
     snap["session_skip_reasons"]["card-Y"] = {"reason": "extra"}
 
     assert "card-Y" not in original
+
+
+# ---------------------------------------------------------------------------
+# 057/058 — Symphony CRUD HTTP endpoint tests (FR-008 to FR-011)
+# ---------------------------------------------------------------------------
+
+
+def _make_symphony_app(tmp_path):
+    """Build a TestClient with two pre-loaded symphonies."""
+    import yaml
+
+    from coordinare.config import SymphonyConfig
+    from coordinare.dashboard import DashboardStore, create_dashboard_app
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.dump({
+        "github_org": "acme",
+        "github_token": "tok",
+        "human_reviewers": ["alice"],
+        "symphonies": [
+            {"name": "alpha", "github_project_number": 10},
+            {"name": "beta", "github_project_number": 20},
+        ],
+    }))
+
+    daemon = _make_mock_daemon()
+    daemon.state["symphony_configs"] = {
+        "alpha": SymphonyConfig(name="alpha", github_project_number=10),
+        "beta": SymphonyConfig(name="beta", github_project_number=20),
+    }
+
+    store = DashboardStore()
+    health = _make_mock_health()
+    metrics = _make_mock_metrics()
+    app = create_dashboard_app(store, daemon, metrics, health, config_path=config_path)
+    return TestClient(app), daemon
+
+
+def test_post_symphony_creates_new_entry(tmp_path) -> None:
+    """058 FR-008: POST /api/symphonies creates a new symphony and returns 201."""
+    client, daemon = _make_symphony_app(tmp_path)
+    res = client.post("/api/symphonies", json={"name": "gamma", "github_project_number": 30})
+    assert res.status_code == 201
+    data = res.json()
+    assert data["name"] == "gamma"
+    assert data["github_project_number"] == 30
+    assert "gamma" in daemon.state["symphony_configs"]
+
+
+def test_post_symphony_duplicate_name_returns_409(tmp_path) -> None:
+    """058 FR-008: POST /api/symphonies with an existing name returns 409."""
+    client, _ = _make_symphony_app(tmp_path)
+    res = client.post("/api/symphonies", json={"name": "alpha", "github_project_number": 99})
+    assert res.status_code == 409
+
+
+def test_post_symphony_missing_name_returns_400(tmp_path) -> None:
+    """058 FR-008: POST /api/symphonies without name returns 400."""
+    client, _ = _make_symphony_app(tmp_path)
+    res = client.post("/api/symphonies", json={"github_project_number": 30})
+    assert res.status_code == 400
+    assert "name" in res.json()["error"].lower()
+
+
+def test_post_symphony_missing_project_number_returns_400(tmp_path) -> None:
+    """058 FR-008: POST /api/symphonies without github_project_number returns 400."""
+    client, _ = _make_symphony_app(tmp_path)
+    res = client.post("/api/symphonies", json={"name": "delta"})
+    assert res.status_code == 400
+
+
+def test_post_symphony_cycle_active_returns_409(tmp_path) -> None:
+    """058 FR-008: POST /api/symphonies returns 409 when a cycle is running."""
+    client, daemon = _make_symphony_app(tmp_path)
+    daemon._cycle_active = True
+    res = client.post("/api/symphonies", json={"name": "new", "github_project_number": 50})
+    assert res.status_code == 409
+
+
+def test_put_symphony_updates_enabled_flag(tmp_path) -> None:
+    """058 FR-009: PUT /api/symphonies/{name} with enabled=False disables the symphony."""
+    client, daemon = _make_symphony_app(tmp_path)
+    res = client.put("/api/symphonies/alpha", json={"enabled": False})
+    assert res.status_code == 200
+    data = res.json()
+    assert data["enabled"] is False
+    assert daemon.state["symphony_configs"]["alpha"].enabled is False
+
+
+def test_put_symphony_updates_overrides(tmp_path) -> None:
+    """058 FR-009: PUT /api/symphonies/{name} accepts and persists overrides."""
+    client, _daemon = _make_symphony_app(tmp_path)
+    res = client.put("/api/symphonies/beta", json={"overrides": {"poll_interval_seconds": 45}})
+    assert res.status_code == 200
+    data = res.json()
+    assert data["overrides"]["poll_interval_seconds"] == 45
+
+
+def test_put_symphony_not_found_returns_404(tmp_path) -> None:
+    """058 FR-009: PUT /api/symphonies/{name} for unknown name returns 404."""
+    client, _ = _make_symphony_app(tmp_path)
+    res = client.put("/api/symphonies/nonexistent", json={"enabled": True})
+    assert res.status_code == 404
+
+
+def test_put_symphony_cycle_active_returns_409(tmp_path) -> None:
+    """058 FR-009: PUT /api/symphonies/{name} returns 409 when a cycle is running."""
+    client, daemon = _make_symphony_app(tmp_path)
+    daemon._cycle_active = True
+    res = client.put("/api/symphonies/alpha", json={"enabled": False})
+    assert res.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# GET /api/config/global
+# ---------------------------------------------------------------------------
+
+
+def test_get_global_config_returns_editable_fields() -> None:
+    """GET /api/config/global returns the editable global config fields from state."""
+    daemon = _make_mock_daemon()
+    cfg = MagicMock()
+    cfg.poll_interval_seconds = 30
+    cfg.max_concurrent_cards = 2
+    cfg.log_level = "INFO"
+    for attr in ("heartbeat_interval_seconds", "max_feedback_cycles",
+                 "max_closed_pr_attempts_per_issue", "output_mode",
+                 "assessment_backend", "assignee_filter",
+                 "human_reviewers", "trusted_bot_reviewers"):
+        setattr(cfg, attr, None)
+    daemon.state["config"] = cfg
+    client = _make_app(daemon=daemon)
+    resp = client.get("/api/config/global")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["poll_interval_seconds"] == 30
+    assert data["max_concurrent_cards"] == 2
+    assert data["log_level"] == "INFO"
+
+
+def test_get_global_config_no_config_returns_500() -> None:
+    """GET /api/config/global returns 500 when config is unavailable."""
+    daemon = _make_mock_daemon()
+    daemon.state.pop("config", None)
+    client = _make_app(daemon=daemon)
+    resp = client.get("/api/config/global")
+    assert resp.status_code == 500
+
+
+# ---------------------------------------------------------------------------
+# PUT /api/config/global
+# ---------------------------------------------------------------------------
+
+
+def test_put_global_config_no_config_path_returns_503() -> None:
+    """PUT /api/config/global returns 503 when no config file is configured."""
+    client = _make_app()
+    resp = client.put("/api/config/global", json={"max_concurrent_cards": 3})
+    assert resp.status_code == 503
+
+
+def test_put_global_config_unknown_field_returns_400(tmp_path) -> None:
+    """PUT /api/config/global rejects unknown (non-editable) fields."""
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text("github_org: testorg\ngithub_project_number: 1\n")
+    store = DashboardStore()
+    daemon = _make_mock_daemon()
+    app = create_dashboard_app(store, daemon, _make_mock_metrics(), _make_mock_health(), config_path=config_file)
+    resp = TestClient(app).put("/api/config/global", json={"not_a_real_field": "value"})
+    assert resp.status_code == 400
+    assert "not_a_real_field" in resp.json()["error"]
+
+
+def test_put_global_config_persists_valid_field(tmp_path) -> None:
+    """PUT /api/config/global writes updated fields to config.yaml."""
+    import yaml
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        "github_org: testorg\ngithub_project_number: 1\n"
+        "poll_interval_seconds: 30\nhuman_reviewers:\n  - reviewer1\n"
+        "github_token: dummy_token\n"
+    )
+    store = DashboardStore()
+    daemon = _make_mock_daemon()
+    app = create_dashboard_app(store, daemon, _make_mock_metrics(), _make_mock_health(), config_path=config_file)
+    resp = TestClient(app).put("/api/config/global", json={"poll_interval_seconds": 60})
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "saved"
+    saved = yaml.safe_load(config_file.read_text())
+    assert saved["poll_interval_seconds"] == 60

@@ -17,7 +17,7 @@ from performer.server.models import PerformerCapabilities
 _BACKEND_BINARIES: dict[str, str] = {
     "claude_code": "claude",
     "codex": "codex",
-    "cursor": "cursor",
+    "cursor": "cursor-agent",
     "junie": "junie",
     "opencode": "opencode",
 }

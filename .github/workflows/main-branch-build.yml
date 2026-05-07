@@ -1,0 +1,272 @@
+name: Main Branch Build
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: main-branch-build
+  cancel-in-progress: false
+
+jobs:
+  validate-version:
+    name: Validate Version
+    runs-on:
+      - self-hosted
+      - linux
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.finalise.outputs.version }}
+      sha: ${{ steps.finalise.outputs.sha }}
+    steps:
+      - name: Assert main branch
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "ERROR: This workflow must only run on main (got $GITHUB_REF). Aborting to prevent releasing unmerged code."
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fetch tags
+        run: git fetch --tags
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Validate and auto-bump if needed
+        run: |
+          if python3 bin/validate-version; then
+            echo "Version is valid — no bump needed"
+          else
+            echo "Validation failed — auto-bumping version"
+            # Loop until valid: on busy days the same-day tag counter may be >1
+            # above the current version, so a single bump is not always enough.
+            bumped=false
+            for attempt in $(seq 1 10); do
+              python3 bin/update-version
+              if python3 bin/validate-version 2>/dev/null; then
+                bumped=true
+                break
+              fi
+            done
+            if [ "$bumped" = "false" ]; then
+              echo "ERROR: could not find a valid version after 10 bumps"
+              python3 bin/validate-version  # hard fail with details
+            fi
+            git add version
+            git commit -m "[ci] Bump version to $(cat version)"
+            # GITHUB_TOKEN push: intentionally does not re-trigger this workflow
+            git push
+          fi
+
+      - name: Output final version
+        id: finalise
+        run: |
+          echo "version=$(cat version)" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  lint:
+    name: Lint
+    runs-on:
+      - self-hosted
+      - linux
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Run Ruff
+        run: uv run --extra dev ruff check src tests
+
+  test:
+    name: Test
+    runs-on:
+      - self-hosted
+      - linux
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Run pytest
+        run: uv run --extra dev pytest
+
+  coverage:
+    name: Coverage
+    runs-on:
+      - self-hosted
+      - linux
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Run coverage
+        run: uv run --extra dev pytest --cov=coordinare --cov-report=term-missing --cov-fail-under=90
+
+  create-tag:
+    name: Create Release Tag
+    needs:
+      - validate-version
+      - lint
+      - test
+      - coverage
+    runs-on:
+      - self-hosted
+      - linux
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ needs.validate-version.outputs.version }}
+      sha: ${{ needs.validate-version.outputs.sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create GitHub release and tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=${{ needs.validate-version.outputs.version }}
+          TARGET_SHA=${{ needs.validate-version.outputs.sha }}
+          if gh release view "$VERSION" &>/dev/null; then
+            echo "Release $VERSION already exists — skipping creation"
+          else
+            gh release create "$VERSION" --target "$TARGET_SHA" --title "$VERSION" --notes "$(git log -1 --pretty=format:'%s%n%n%b' "$TARGET_SHA")"
+          fi
+
+  build-base:
+    name: Build and Push Base Image
+    needs: create-tag
+    runs-on:
+      - self-hosted
+      - linux
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Check out the release tag so the image always matches the exact
+          # commit that was validated — not the moving branch head.
+          ref: ${{ needs.create-tag.outputs.version }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push base image
+        run: |
+          REGISTRY=$(cat registry)
+          VERSION=${{ needs.create-tag.outputs.version }}
+
+          docker build -t "${REGISTRY}-base:${VERSION}" -f agent/performer/Dockerfile.base agent/performer/
+          docker push "${REGISTRY}-base:${VERSION}"
+          echo "Pushed ${REGISTRY}-base:${VERSION}"
+
+  build-full:
+    name: Build and Push Full Image
+    needs: create-tag
+    runs-on:
+      - self-hosted
+      - linux
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Check out the release tag so the image always matches the exact
+          # commit that was validated — not the moving branch head.
+          ref: ${{ needs.create-tag.outputs.version }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push full image
+        run: |
+          REGISTRY=$(cat registry)
+          VERSION=${{ needs.create-tag.outputs.version }}
+
+          docker build -t "${REGISTRY}-full:${VERSION}" -f agent/performer/Dockerfile.full agent/performer/
+          docker push "${REGISTRY}-full:${VERSION}"
+          echo "Pushed ${REGISTRY}-full:${VERSION}"
+
+  tag-latest:
+    name: Tag Latest
+    needs:
+      - create-tag
+      - build-base
+      - build-full
+    runs-on:
+      - self-hosted
+      - linux
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag base and full images as latest
+        run: |
+          REGISTRY=$(cat registry)
+          VERSION=${{ needs.create-tag.outputs.version }}
+
+          docker pull "${REGISTRY}-base:${VERSION}"
+          docker tag "${REGISTRY}-base:${VERSION}" "${REGISTRY}-base:latest"
+          docker push "${REGISTRY}-base:latest"
+
+          docker pull "${REGISTRY}-full:${VERSION}"
+          docker tag "${REGISTRY}-full:${VERSION}" "${REGISTRY}-full:latest"
+          docker push "${REGISTRY}-full:latest"
+
+          echo "Tagged ${REGISTRY}-base:latest → ${VERSION}"
+          echo "Tagged ${REGISTRY}-full:latest → ${VERSION}"

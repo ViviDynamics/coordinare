@@ -320,3 +320,26 @@ async def test_blocked_notification_without_dependencies_uses_questions() -> Non
     summary = fake.dispatched[0].payload["summary"]
     assert "What API" in summary
     assert "waiting on" not in summary
+
+
+@pytest.mark.asyncio
+async def test_notify_card_transition_with_status_change() -> None:
+    """When prev_status and status are both present and different,
+    emit a card_transition event with status change in summary."""
+    fake = FakeNotificationService()
+    state = initial_state()
+    state["current_card"] = {
+        "id": "CARD_3",
+        "title": "Feature X",
+        "status": "IN_REVIEW",
+        "previous_status": "IN_PROGRESS",
+    }
+    state["notification_service"] = fake
+    state["phase"] = "monitoring_pr"
+
+    await notify(state)
+
+    assert len(fake.dispatched) == 1
+    event = fake.dispatched[0]
+    assert event.event_type == EventType.card_transition
+    assert "IN_PROGRESS → IN_REVIEW" in event.payload["summary"]

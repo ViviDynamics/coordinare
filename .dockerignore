@@ -21,6 +21,8 @@ venv/
 .ruff_cache/
 .coverage
 coverage/
+coverage.json
+coverage.xml
 htmlcov/
 
 # VCS and local tooling

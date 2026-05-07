@@ -329,9 +329,13 @@ class DashboardStore:
             _sess_raw_stage = sess.get("performer_stage")
             _sess_stage = _sess_raw_stage if isinstance(_sess_raw_stage, str) else ""
             _sess_dispatch = sess.get("agent_dispatch_at")
+            _sess_agent_dispatch = sess.get("agent_dispatch") or {}
             active_session_summaries.append({
                 "card_id": sid,
                 "card_title": str(sess_card.get("title", "")),
+                "issue_number": sess_card.get("issue_number"),
+                "issue_url": str(sess_card.get("issue_url", "")) or None,
+                "pr_url": str(sess_card.get("pr_url", "")) or None,
                 "phase": str(sess.get("phase", "idle")),
                 "performer_stage": _sess_stage,
                 "card_tokens_total": sess.get("card_tokens_total", 0),
@@ -341,6 +345,7 @@ class DashboardStore:
                     if isinstance(_sess_dispatch, datetime)
                     else None
                 ),
+                "container_id": _sess_agent_dispatch.get("container_id"),
             })
         # Single-session mode compatibility: when multi-card ``active_sessions``
         # is empty but we're actively monitoring a performer, synthesize one
@@ -360,6 +365,9 @@ class DashboardStore:
             active_session_summaries.append({
                 "card_id": _top_card_id,
                 "card_title": _top_card_title,
+                "issue_number": card_dict.get("issue_number"),
+                "issue_url": str(card_dict.get("issue_url", "")) or None,
+                "pr_url": str(card_dict.get("pr_url", "")) or (snapshot.pr_url if snapshot else None),
                 "phase": phase,
                 "performer_stage": _top_stage,
                 "card_tokens_total": daemon.state.get("card_tokens_total", 0),
@@ -369,6 +377,7 @@ class DashboardStore:
                     if isinstance(_top_dispatch, datetime)
                     else None
                 ),
+                "container_id": _dispatch.get("container_id"),
             })
         active_session_count = len(active_session_summaries)
 
@@ -485,19 +494,18 @@ class DashboardStore:
         symphonies_data = []
         for i, (sym_name, sym_cfg) in enumerate(symphony_configs.items()):
             sym_state = symphony_states.get(sym_name)
+            last_poll_raw = getattr(sym_state, "last_poll_at", None) if sym_state else None
             sym_entry = {
                 "name": sym_name,
                 "priority": i,
                 "github_project_number": getattr(sym_cfg, "github_project_number", None),
+                "cycle_count": getattr(sym_state, "cycle_count", 0) if sym_state else 0,
+                "error_count": getattr(sym_state, "error_count", 0) if sym_state else 0,
+                "last_poll_at": (
+                    last_poll_raw.isoformat() if isinstance(last_poll_raw, datetime) else None
+                ),
                 "state": {
-                    "cycle_count": getattr(sym_state, "cycle_count", 0) if sym_state else 0,
-                    "error_count": getattr(sym_state, "error_count", 0) if sym_state else 0,
                     "last_error": getattr(sym_state, "last_error", None) if sym_state else None,
-                    "last_poll_at": (
-                        getattr(sym_state, "last_poll_at", None).isoformat()
-                        if sym_state and isinstance(getattr(sym_state, "last_poll_at", None), datetime)
-                        else None
-                    ),
                     "active_card": getattr(sym_state, "active_card", None) if sym_state else None,
                     "board_snapshot": getattr(sym_state, "board_snapshot", None) if sym_state else None,
                 } if sym_state is not None else None,
@@ -674,7 +682,7 @@ td { padding: 4px 8px; border-bottom: 1px solid #21262d; }
     <a href="/personas" class="nav-link" onclick="navigate(event,'/personas')">Personas</a>
     <a href="/history" class="nav-link" onclick="navigate(event,'/history')">History</a>
     <a href="/symphonies" class="nav-link" onclick="navigate(event,'/symphonies')">Symphonies</a>
-    <a href="/admin/config" class="nav-link" onclick="navigate(event,'/admin/config')">Admin Config</a>
+    <a href="/admin/config" class="nav-link" onclick="navigate(event,'/admin/config')">Global Config</a>
   </div>
   <span class="nav-spacer"></span>
   <span><span id="nav-sse-dot" class="nav-status-dot"></span><span id="project-link" style="font-size:12px;color:#8b949e"></span></span>
@@ -699,11 +707,16 @@ td { padding: 4px 8px; border-bottom: 1px solid #21262d; }
   <div id="force-poll-msg" class="action-msg"></div>
 </div>
 
-<div class="card">
-  <h2>Active Card</h2>
-  <div id="card-section">
-    <span class="empty-state">No active card</span>
+<div class="card" id="active-work-card">
+  <h2>Active Work</h2>
+  <div id="active-work-section">
+    <span class="empty-state">No performers running</span>
   </div>
+</div>
+
+<div class="card" id="awaiting-review-card" style="display:none">
+  <h2>Awaiting Human Review</h2>
+  <div id="awaiting-review-section"></div>
 </div>
 
 <div class="card">
@@ -753,14 +766,14 @@ td { padding: 4px 8px; border-bottom: 1px solid #21262d; }
   </div>
 </div>
 
-<div id="questions-card" class="card full" style="display:none">
+<div id="questions-card" class="card" style="display:none">
   <h2>Open Questions</h2>
   <ul id="questions-list" style="padding-left:20px;line-height:1.8"></ul>
 </div>
 
 <div id="clarifications-card" class="card" style="display:none">
   <h2>Clarification History</h2>
-  <div id="clarifications-list"></div>
+  <div id="clarifications-list" style="max-height:300px;overflow-y:auto"></div>
 </div>
 
 <div class="card">
@@ -859,8 +872,8 @@ td { padding: 4px 8px; border-bottom: 1px solid #21262d; }
 
 <div id="admin-config-page" style="display:none">
   <div class="card">
-    <h2>Admin Config</h2>
-    <div id="admin-config-page-section"><span class="empty-state">Configuration management panel — coming soon.</span></div>
+    <h2>Global Config</h2>
+    <div id="admin-config-page-section"><span class="empty-state">Loading...</span></div>
   </div>
 </div>
 
@@ -1052,28 +1065,8 @@ function renderState(s) {
   // Flowchart (async)
   updateFlowChart(s.phase);
 
-  // Active card
-  var cardEl = document.getElementById('card-section');
-  var cardContainer = cardEl.closest('.card');
-  if (s.active_card_title) {
-    cardContainer.classList.remove('card-warning');
-    var prPart = s.pr_url && /^https?:\\/\\//i.test(s.pr_url)
-      ? '<a href="' + esc(s.pr_url) + '" target="_blank" rel="noopener">Open PR &#8599;</a>'
-      : '<span class="label">No PR yet</span>';
-    var issuePart = s.active_card_issue_url && /^https?:\\/\\//i.test(s.active_card_issue_url)
-      ? ' <a href="' + esc(s.active_card_issue_url) + '" target="_blank" rel="noopener">View on GitHub &#8599;</a>'
-      : '';
-    cardEl.innerHTML =
-      '<div><span class="label">Title:</span>' + esc(s.active_card_title) + issuePart + '</div>' +
-      '<div style="margin-top:4px"><span class="label">Column:</span>' +
-        '<span class="badge badge-required">' + esc(s.active_card_column || '') + '</span>' + prPart + '</div>';
-  } else if (s.phase === 'idle') {
-    cardContainer.classList.add('card-warning');
-    cardEl.innerHTML = '<span class="empty-state-warning">&#9888; No cards in the TODO column &mdash; add a card to your GitHub Project board with status <code>TODO</code> to start work.</span>';
-  } else {
-    cardContainer.classList.remove('card-warning');
-    cardEl.innerHTML = '<span class="empty-state">No active card</span>';
-  }
+  // Active Work + Awaiting Review panels
+  renderActiveWorkPanels(s);
 
   // 046: Dependency blockers
   var depCard = document.getElementById('dependency-blockers-card');
@@ -1132,8 +1125,12 @@ function renderState(s) {
   var qList = document.getElementById('questions-list');
   if (s.open_questions && s.open_questions.length > 0) {
     qCard.style.display = '';
+    var issueHref = s.issue_url && /^https?:\\/\\//i.test(s.issue_url) ? s.issue_url : null;
     qList.innerHTML = s.open_questions.map(function(q) {
-      return '<li>' + esc(q) + '</li>';
+      var link = issueHref
+        ? ' <a href="' + esc(issueHref) + '" target="_blank" rel="noopener" style="font-size:0.85em;white-space:nowrap">View issue &#8599;</a>'
+        : '';
+      return '<li>' + esc(q) + link + '</li>';
     }).join('');
   } else {
     qCard.style.display = 'none';
@@ -1541,7 +1538,7 @@ function updateNavActive(path) {
     var active = (path === '/' && href === '/') || (path !== '/' && href !== '/' && path.startsWith(href));
     link.classList.toggle('nav-active', active);
   });
-  var titles = {'/':'Dashboard — Coordinare','/performers':'Performers — Coordinare','/personas':'Personas — Coordinare','/history':'History — Coordinare','/symphonies':'Symphonies — Coordinare','/admin/config':'Admin Config — Coordinare'};
+  var titles = {'/':'Dashboard — Coordinare','/performers':'Performers — Coordinare','/personas':'Personas — Coordinare','/history':'History — Coordinare','/symphonies':'Symphonies — Coordinare','/admin/config':'Global Config — Coordinare'};
   document.title = titles[path] || (path.startsWith('/symphonies/') ? 'Symphony — Coordinare' : 'Coordinare');
 }
 
@@ -1552,34 +1549,302 @@ function renderSymphoniesPage(s) {
   var path = location.pathname;
   var detail = path.startsWith('/symphonies/') ? decodeURIComponent(path.slice('/symphonies/'.length)) : null;
   if (detail) {
+    // On SSE updates, avoid re-fetching if the page is already rendered:
+    // update only the volatile status table cells from the SSE state payload.
     var sym = syms.find(function(x) { return x.name === detail; });
-    if (!sym) { el.innerHTML = '<span class="empty-state">Symphony not found: ' + esc(detail) + '</span>'; return; }
-    var st = sym.state || {};
-    el.innerHTML = '<a href="/symphonies" onclick="navigate(event,\\'/symphonies\\')" style="color:#58a6ff;font-size:13px">&#8592; All symphonies</a>'
-      + '<h3 style="margin:12px 0 8px">' + esc(sym.name) + '</h3>'
-      + '<table style="font-size:12px;width:100%"><tbody>'
-      + '<tr><th style="text-align:left;padding:4px 8px 4px 0;color:#8b949e">Priority</th><td>' + (sym.priority != null ? sym.priority : '—') + '</td></tr>'
-      + '<tr><th style="text-align:left;padding:4px 8px 4px 0;color:#8b949e">Cycles</th><td>' + (st.cycle_count != null ? st.cycle_count : '—') + '</td></tr>'
-      + '<tr><th style="text-align:left;padding:4px 8px 4px 0;color:#8b949e">Errors</th><td>' + (st.error_count != null ? st.error_count : '—') + '</td></tr>'
-      + '<tr><th style="text-align:left;padding:4px 8px 4px 0;color:#8b949e">Active card</th><td>' + (st.active_card ? esc(st.active_card.title || st.active_card.id || '') : '—') + '</td></tr>'
-      + '<tr><th style="text-align:left;padding:4px 8px 4px 0;color:#8b949e">Last poll</th><td>' + (st.last_poll_at ? esc(st.last_poll_at) : '—') + '</td></tr>'
-      + '</tbody></table>';
+    var tbl = el.querySelector('table[data-detail]');
+    if (tbl && sym) {
+      var rows = tbl.querySelectorAll('tbody tr');
+      function _setTd(row, val) { if (row) { var td = row.querySelector('td'); if (td) td.textContent = val; } }
+      _setTd(rows[1], sym.cycle_count != null ? sym.cycle_count : '—');
+      _setTd(rows[2], sym.error_count != null ? sym.error_count : '—');
+      _setTd(rows[3], sym.state && sym.state.active_card ? (sym.state.active_card.title || sym.state.active_card.id || '') : '—');
+      _setTd(rows[4], sym.last_poll_at ? fmtTime(sym.last_poll_at) : '—');
+      return;
+    }
+    loadSymphonyDetail(detail, el);
     return;
   }
-  if (!syms.length) { el.innerHTML = '<span class="empty-state">No symphonies configured.</span>'; return; }
+  // List view
+  var addFormHtml = '<div id="sym-add-form" style="display:none;margin-top:16px;padding:12px;background:#161b22;border:1px solid #30363d;border-radius:6px">'
+    + '<div style="font-weight:bold;color:#c9d1d9;margin-bottom:10px;font-size:13px">Add Symphony</div>'
+    + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">'
+    + '<div><label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">Name (alphanumeric + dash)</label>'
+    + '<input id="sym-add-name" type="text" placeholder="e.g. frontend" style="width:100%;box-sizing:border-box;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:5px 8px;font-size:12px"></div>'
+    + '<div><label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">GitHub Project Number</label>'
+    + '<input id="sym-add-proj" type="number" min="1" placeholder="e.g. 42" style="width:100%;box-sizing:border-box;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:5px 8px;font-size:12px"></div>'
+    + '</div>'
+    + '<div style="display:flex;gap:8px;align-items:center">'
+    + '<button class="action-btn" onclick="submitAddSymphony()">Add</button>'
+    + '<button class="action-btn" onclick="document.getElementById(\\'sym-add-form\\').style.display=\\'none\\'">Cancel</button>'
+    + '<span id="sym-add-msg" class="action-msg"></span>'
+    + '</div></div>';
+  if (!syms.length) {
+    el.innerHTML = '<span class="empty-state">No symphonies configured.</span>'
+      + '<div style="margin-top:12px"><button class="action-btn" onclick="document.getElementById(\\'sym-add-form\\').style.display=\\'block\\'">+ Add Symphony</button></div>'
+      + addFormHtml;
+    return;
+  }
   var rows = syms.map(function(sym) {
-    var st = sym.state || {};
     return '<tr>'
-      + '<td><a href="/symphonies/' + encodeURIComponent(sym.name) + '" onclick="navigate(event,\\'/symphonies/' + encodeURIComponent(sym.name) + '\\')" style="color:#58a6ff">' + esc(sym.name) + '</a></td>'
+      + '<td><a href="/symphonies/' + encodeURIComponent(sym.name) + '" onclick="navigate(event,this.pathname)" style="color:#58a6ff">' + esc(sym.name) + '</a></td>'
+      + '<td style="color:#8b949e">' + (sym.github_project_number != null ? '#' + sym.github_project_number : '—') + '</td>'
       + '<td>' + (sym.priority != null ? sym.priority : '—') + '</td>'
-      + '<td>' + (st.cycle_count != null ? st.cycle_count : '—') + '</td>'
-      + '<td>' + (st.error_count != null ? st.error_count : '—') + '</td>'
-      + '<td>' + (st.active_card ? esc(st.active_card.title || st.active_card.id || '') : '—') + '</td>'
+      + '<td>' + (sym.cycle_count != null ? sym.cycle_count : '—') + '</td>'
+      + '<td>' + (sym.error_count != null ? sym.error_count : '—') + '</td>'
+      + '<td>' + (sym.last_poll_at ? esc(fmtTime(sym.last_poll_at)) : '—') + '</td>'
       + '</tr>';
   }).join('');
   el.innerHTML = '<table style="width:100%;font-size:12px"><thead><tr>'
-    + '<th style="text-align:left">Name</th><th style="text-align:left">Priority</th><th style="text-align:left">Cycles</th><th style="text-align:left">Errors</th><th style="text-align:left">Active card</th>'
-    + '</tr></thead><tbody>' + rows + '</tbody></table>';
+    + '<th style="text-align:left">Name</th><th style="text-align:left">Project</th><th style="text-align:left">Priority</th><th style="text-align:left">Cycles</th><th style="text-align:left">Errors</th><th style="text-align:left">Last poll</th>'
+    + '</tr></thead><tbody>' + rows + '</tbody></table>'
+    + '<div style="margin-top:14px"><button class="action-btn" onclick="document.getElementById(\\'sym-add-form\\').style.display=\\'block\\'">+ Add Symphony</button></div>'
+    + addFormHtml;
+}
+
+async function loadSymphonyDetail(name, el) {
+  el.innerHTML = '<span class="empty-state">Loading...</span>';
+  var backLink = '<a href="/symphonies" onclick="navigate(event,this.pathname)" style="color:#58a6ff;font-size:13px">&#8592; All symphonies</a>';
+  var res, data;
+  try {
+    res = await fetch('/api/symphonies/' + encodeURIComponent(name));
+    data = await res.json();
+  } catch(e) {
+    el.innerHTML = backLink + '<div class="empty-state" style="margin-top:12px">Failed to load symphony</div>';
+    return;
+  }
+  if (!res.ok) {
+    el.innerHTML = backLink + '<div class="empty-state" style="margin-top:12px">' + esc(data.error || 'Symphony not found') + '</div>';
+    return;
+  }
+  var st = data.state || {};
+  var ov = data.overrides || {};
+  var personas = data.personas || {};
+  var overrideFields = [
+    {key:'max_concurrent_cards', label:'Max concurrent cards', type:'number', placeholder:'1'},
+    {key:'poll_interval_seconds', label:'Poll interval (seconds)', type:'number', placeholder:'30'},
+    {key:'max_feedback_cycles', label:'Max feedback cycles', type:'number', placeholder:'5'},
+    {key:'max_closed_pr_attempts_per_issue', label:'Max closed PR attempts', type:'number', placeholder:'3'},
+    {key:'assignee_filter', label:'Assignee filter (GitHub login)', type:'text', placeholder:'(no filter)'},
+    {key:'assessment_backend', label:'Assessment backend', type:'text', placeholder:'anthropic_api'},
+  ];
+  var personaRoles = ['assessor','architect','implementer','reviewer','security','qa','tech_writer','closer'];
+  var statusRows = [
+    ['GitHub project', data.github_project_number != null ? '#' + data.github_project_number : '—'],
+    ['Cycles', st.cycle_count != null ? st.cycle_count : '—'],
+    ['Errors', st.error_count != null ? st.error_count : '—'],
+    ['Active card', st.active_card ? esc(st.active_card.title || st.active_card.id || '') : '—'],
+    ['Last poll', st.last_poll_at ? esc(fmtTime(st.last_poll_at)) : '—'],
+    ['Last error', st.last_error ? esc(st.last_error) : '—'],
+  ].map(function(r) {
+    return '<tr><th style="text-align:left;padding:3px 10px 3px 0;color:#8b949e;font-weight:normal;white-space:nowrap">' + r[0] + '</th><td style="font-size:12px">' + r[1] + '</td></tr>';
+  }).join('');
+  var overrideInputs = overrideFields.map(function(f) {
+    var val = ov[f.key] != null ? ov[f.key] : '';
+    return '<div style="margin-bottom:8px">'
+      + '<label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">' + esc(f.label) + '</label>'
+      + '<input data-override-key="' + esc(f.key) + '" type="' + f.type + '" value="' + esc(String(val)) + '" placeholder="' + esc(f.placeholder) + '" style="width:100%;box-sizing:border-box;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:5px 8px;font-size:12px">'
+      + '</div>';
+  }).join('');
+  var enabledChecked = data.enabled !== false ? 'checked' : '';
+  var personaInputs = personaRoles.map(function(role) {
+    var instr = (personas[role] && personas[role].instructions) ? personas[role].instructions : '';
+    return '<div style="margin-bottom:10px">'
+      + '<label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">' + esc(role) + '</label>'
+      + '<textarea data-persona-role="' + esc(role) + '" rows="3" placeholder="(inherits global default)" style="width:100%;box-sizing:border-box;font-family:monospace;font-size:11px;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:6px 8px;resize:vertical">' + esc(instr) + '</textarea>'
+      + '</div>';
+  }).join('');
+  el.innerHTML = backLink
+    + '<h3 style="margin:12px 0 4px">' + esc(name) + '</h3>'
+    + '<table data-detail style="font-size:12px;margin-bottom:18px"><tbody>' + statusRows + '</tbody></table>'
+    + '<div style="background:#161b22;border:1px solid #30363d;border-radius:6px;padding:14px;margin-bottom:14px">'
+    + '<div style="font-weight:bold;color:#c9d1d9;margin-bottom:12px;font-size:13px">Configuration</div>'
+    + '<div style="margin-bottom:10px">'
+    + '<label style="display:flex;align-items:center;gap:8px;font-size:12px;color:#c9d1d9;cursor:pointer">'
+    + '<input id="sym-enabled" type="checkbox" ' + enabledChecked + '> Enabled</label>'
+    + '</div>'
+    + overrideInputs
+    + '<div style="margin-top:4px;border-top:1px solid #21262d;padding-top:12px">'
+    + '<div style="font-size:12px;color:#8b949e;margin-bottom:8px">Per-symphony persona overrides (leave blank to inherit global defaults)</div>'
+    + personaInputs
+    + '</div>'
+    + '<div style="display:flex;gap:8px;align-items:center;margin-top:4px">'
+    + '<button class="action-btn" id="sym-save-btn">Save</button>'
+    + '<button class="action-btn" id="sym-delete-btn" style="background:#3d1f1f;border-color:#6e2e2e;color:#f85149">Delete symphony</button>'
+    + '<span id="sym-save-msg" class="action-msg"></span>'
+    + '</div>'
+    + '</div>';
+  document.getElementById('sym-save-btn').addEventListener('click', async function() {
+    var msg = document.getElementById('sym-save-msg');
+    var overrides = {};
+    el.querySelectorAll('[data-override-key]').forEach(function(inp) {
+      var k = inp.getAttribute('data-override-key');
+      var v = inp.value.trim();
+      if (v === '') return;
+      var numFields = ['max_concurrent_cards','poll_interval_seconds','max_feedback_cycles','max_closed_pr_attempts_per_issue'];
+      overrides[k] = numFields.includes(k) ? Number(v) : v;
+    });
+    var personas = {};
+    el.querySelectorAll('[data-persona-role]').forEach(function(ta) {
+      var role = ta.getAttribute('data-persona-role');
+      var v = ta.value.trim();
+      if (v) personas[role] = {instructions: v};
+    });
+    var enabled = document.getElementById('sym-enabled').checked;
+    try {
+      var r = await fetch('/api/symphonies/' + encodeURIComponent(name), {
+        method: 'PUT',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({overrides: Object.keys(overrides).length ? overrides : null, personas: Object.keys(personas).length ? personas : null, enabled: enabled}),
+      });
+      var d = await r.json();
+      if (r.ok) {
+        msg.textContent = 'Saved';
+        msg.style.color = '#3fb950';
+      } else {
+        msg.textContent = d.error || ('Error ' + r.status);
+        msg.style.color = '#f85149';
+      }
+    } catch(e) { msg.textContent = 'Network error'; msg.style.color = '#f85149'; }
+    setTimeout(function(){ if(msg) msg.textContent=''; }, 4000);
+  });
+  document.getElementById('sym-delete-btn').addEventListener('click', async function() {
+    if (!confirm('Delete symphony "' + name + '"? This cannot be undone.')) return;
+    var msg = document.getElementById('sym-save-msg');
+    try {
+      var r = await fetch('/api/symphonies/' + encodeURIComponent(name), {method: 'DELETE'});
+      var d = await r.json();
+      if (r.ok) {
+        navigate(null, '/symphonies');
+      } else {
+        msg.textContent = d.error || ('Error ' + r.status);
+        msg.style.color = '#f85149';
+      }
+    } catch(e) { msg.textContent = 'Network error'; msg.style.color = '#f85149'; }
+  });
+}
+
+async function submitAddSymphony() {
+  var nameVal = (document.getElementById('sym-add-name') || {}).value || '';
+  var projVal = (document.getElementById('sym-add-proj') || {}).value || '';
+  var msg = document.getElementById('sym-add-msg');
+  if (!nameVal.trim() || !projVal.trim()) { msg.textContent = 'Name and project number are required'; msg.style.color='#f85149'; return; }
+  try {
+    var r = await fetch('/api/symphonies', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({name: nameVal.trim(), github_project_number: Number(projVal)}),
+    });
+    var d = await r.json();
+    if (r.ok) {
+      navigate(null, '/symphonies/' + encodeURIComponent(nameVal.trim()));
+    } else {
+      msg.textContent = d.error || ('Error ' + r.status);
+      msg.style.color = '#f85149';
+    }
+  } catch(e) { msg.textContent = 'Network error'; msg.style.color='#f85149'; }
+}
+
+async function loadGlobalConfigPage() {
+  var el = document.getElementById('admin-config-page-section');
+  el.innerHTML = '<span class="empty-state">Loading...</span>';
+  var res, data;
+  try {
+    res = await fetch('/api/config/global');
+    data = await res.json();
+  } catch(e) {
+    el.innerHTML = '<div class="empty-state">Failed to load config</div>';
+    return;
+  }
+  if (!res.ok) {
+    el.innerHTML = '<div class="empty-state">' + esc(data.error || 'Error loading config') + '</div>';
+    return;
+  }
+  var numFields = [
+    {key:'poll_interval_seconds', label:'Poll interval (seconds)', min:0, max:3600},
+    {key:'heartbeat_interval_seconds', label:'Heartbeat interval (seconds)', min:5, max:300},
+    {key:'max_concurrent_cards', label:'Max concurrent cards', min:1, max:20},
+    {key:'max_feedback_cycles', label:'Max feedback cycles', min:0, max:50},
+    {key:'max_closed_pr_attempts_per_issue', label:'Max closed PR attempts per issue', min:0, max:100},
+  ];
+  var selectFields = [
+    {key:'log_level', label:'Log level', options:['debug','info','warning','error']},
+    {key:'output_mode', label:'Output mode', options:['human','structured']},
+    {key:'assessment_backend', label:'Assessment backend', options:['anthropic_api','claude_cli','opencode','none']},
+  ];
+  var textFields = [
+    {key:'assignee_filter', label:'Assignee filter (GitHub login)', placeholder:'(no filter)'},
+  ];
+  var listFields = [
+    {key:'human_reviewers', label:'Human reviewers (comma-separated GitHub logins)'},
+    {key:'trusted_bot_reviewers', label:'Trusted bot reviewers (comma-separated)'},
+  ];
+  function fieldRow(label, inputHtml) {
+    return '<div style="margin-bottom:10px">'
+      + '<label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">' + esc(label) + '</label>'
+      + inputHtml
+      + '</div>';
+  }
+  var inp_style = 'width:100%;box-sizing:border-box;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:5px 8px;font-size:12px';
+  var numHtml = numFields.map(function(f) {
+    return fieldRow(f.label, '<input data-cfg-key="' + esc(f.key) + '" data-cfg-type="number" type="number" min="' + f.min + '" max="' + f.max + '" value="' + esc(String(data[f.key] != null ? data[f.key] : '')) + '" style="' + inp_style + '">');
+  }).join('');
+  var selHtml = selectFields.map(function(f) {
+    var opts = f.options.map(function(o) {
+      return '<option value="' + esc(o) + '"' + (String(data[f.key] != null ? data[f.key] : '').toLowerCase() === o ? ' selected' : '') + '>' + esc(o) + '</option>';
+    }).join('');
+    return fieldRow(f.label, '<select data-cfg-key="' + esc(f.key) + '" data-cfg-type="select" style="' + inp_style + '">' + opts + '</select>');
+  }).join('');
+  var txtHtml = textFields.map(function(f) {
+    var v = data[f.key] != null ? data[f.key] : '';
+    return fieldRow(f.label, '<input data-cfg-key="' + esc(f.key) + '" data-cfg-type="text" type="text" value="' + esc(String(v)) + '" placeholder="' + esc(f.placeholder || '') + '" style="' + inp_style + '">');
+  }).join('');
+  var lstHtml = listFields.map(function(f) {
+    var v = Array.isArray(data[f.key]) ? data[f.key].join(', ') : (data[f.key] || '');
+    return fieldRow(f.label, '<input data-cfg-key="' + esc(f.key) + '" data-cfg-type="list" type="text" value="' + esc(v) + '" style="' + inp_style + '">');
+  }).join('');
+  el.innerHTML = '<div style="background:#161b22;border:1px solid #30363d;border-radius:6px;padding:14px">'
+    + '<div style="font-weight:bold;color:#c9d1d9;margin-bottom:14px;font-size:13px">Operational</div>'
+    + numHtml
+    + '<div style="border-top:1px solid #21262d;margin:14px 0"></div>'
+    + '<div style="font-weight:bold;color:#c9d1d9;margin-bottom:14px;font-size:13px">Behavior</div>'
+    + selHtml + txtHtml
+    + '<div style="border-top:1px solid #21262d;margin:14px 0"></div>'
+    + '<div style="font-weight:bold;color:#c9d1d9;margin-bottom:14px;font-size:13px">Reviewers</div>'
+    + lstHtml
+    + '<div style="display:flex;gap:8px;align-items:center;margin-top:8px">'
+    + '<button class="action-btn" id="gcfg-save-btn">Save</button>'
+    + '<span id="gcfg-save-msg" class="action-msg"></span>'
+    + '</div>'
+    + '</div>';
+  document.getElementById('gcfg-save-btn').addEventListener('click', async function() {
+    var msg = document.getElementById('gcfg-save-msg');
+    var payload = {};
+    el.querySelectorAll('[data-cfg-key]').forEach(function(inp) {
+      var k = inp.getAttribute('data-cfg-key');
+      var t = inp.getAttribute('data-cfg-type');
+      var v = inp.value.trim();
+      if (t === 'number') payload[k] = v === '' ? null : Number(v);
+      else if (t === 'list') payload[k] = v ? v.split(',').map(function(s){ return s.trim(); }).filter(Boolean) : [];
+      else payload[k] = v === '' ? null : v;
+    });
+    try {
+      var r = await fetch('/api/config/global', {
+        method: 'PUT',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify(payload),
+      });
+      var d = await r.json();
+      if (r.ok) {
+        msg.textContent = 'Saved — reload triggered';
+        msg.style.color = '#3fb950';
+      } else {
+        msg.textContent = d.error || ('Error ' + r.status);
+        msg.style.color = '#f85149';
+      }
+    } catch(e) { msg.textContent = 'Network error'; msg.style.color = '#f85149'; }
+    setTimeout(function(){ if(msg) msg.textContent=''; }, 5000);
+  });
 }
 
 function router() {
@@ -1599,6 +1864,7 @@ function router() {
     if (_lastState) renderSymphoniesPage(_lastState);
   } else if (path === '/admin/config') {
     showPage('admin-config-page');
+    loadGlobalConfigPage();
   } else {
     showPage('dashboard-page');
     if (_lastState) renderDashboardExtras(_lastState);
@@ -1621,6 +1887,120 @@ function toggleNavMenu() {
 window.addEventListener('popstate', function() { router(); });
 
 // 049: Active-performer tiles
+function renderActiveWorkPanels(s) {
+  var sessions = Array.isArray(s.active_sessions) ? s.active_sessions : [];
+  var ACTIVE_PHASES = {'monitoring_performer': true, 'monitoring_agent': true, 'relay_feedback': true};
+  var REVIEW_PHASES = {'monitoring_pr': true};
+
+  var activeSessions = sessions.filter(function(sess) { return ACTIVE_PHASES[sess.phase]; });
+  var reviewSessions = sessions.filter(function(sess) { return REVIEW_PHASES[sess.phase]; });
+
+  // In symphony mode, active_sessions is empty between cycles but each symphony
+  // keeps its current card in state.active_card. Pull those in so the panels
+  // stay populated while coordinare is idle-polling between dispatch cycles.
+  var seenCardIds = {};
+  sessions.forEach(function(sess) { seenCardIds[sess.card_id] = true; });
+  var symphonies = Array.isArray(s.symphonies) ? s.symphonies : [];
+  symphonies.forEach(function(sym) {
+    var card = sym.state && sym.state.active_card;
+    if (!card || seenCardIds[card.id]) return;
+    seenCardIds[card.id] = true;
+    var synth = {
+      card_id: card.id,
+      card_title: card.title || '',
+      issue_number: card.issue_number,
+      issue_url: card.issue_url || null,
+      pr_url: card.pr_url || null,
+      performer_stage: '',
+      agent_dispatch_at: null,
+      card_cost_estimate: 0,
+    };
+    if (card.status === 'IN_PROGRESS') {
+      synth.phase = 'monitoring_performer';
+      activeSessions.push(synth);
+    }
+  });
+
+  // --- Active Work panel ---
+  var workEl = document.getElementById('active-work-section');
+  var workCard = document.getElementById('active-work-card');
+  if (workEl) {
+    if (activeSessions.length === 0) {
+      // Only show the "No TODO cards" warning when there is genuinely nothing
+      // happening — not when cards are just waiting in review.
+      var totalCards = activeSessions.length + reviewSessions.length;
+      var showTodoWarning = s.phase === 'idle' && totalCards === 0;
+      var hint = showTodoWarning
+        ? '<span class="empty-state-warning">&#9888; No cards in the TODO column &mdash; add a card to your GitHub Project board with status <code>TODO</code> to start work.</span>'
+        : '<span class="empty-state">No performers running</span>';
+      workEl.innerHTML = hint;
+      if (workCard) workCard.classList.toggle('card-warning', showTodoWarning);
+    } else {
+      if (workCard) workCard.classList.remove('card-warning');
+      var rows = activeSessions.map(function(sess) {
+        var issueLink = sess.issue_url && /^https?:\\/\\//i.test(sess.issue_url)
+          ? '<a href="' + esc(sess.issue_url) + '" target="_blank" rel="noopener">#' + esc(String(sess.issue_number || '')) + ' ' + esc(sess.card_title || '—') + ' &#8599;</a>'
+          : esc(sess.card_title || sess.card_id || '—');
+        var stage = sess.performer_stage || '—';
+        var elapsed = sess.agent_dispatch_at ? (fmtAge(sess.agent_dispatch_at) || '—') : '—';
+        var cost = typeof sess.card_cost_estimate === 'number' && sess.card_cost_estimate > 0
+          ? '$' + sess.card_cost_estimate.toFixed(4)
+          : '—';
+        return '<tr>' +
+          '<td style="padding:6px 10px">' + issueLink + '</td>' +
+          '<td style="padding:6px 10px;white-space:nowrap"><code>' + esc(stage) + '</code></td>' +
+          '<td style="padding:6px 10px;white-space:nowrap">' + esc(elapsed) + '</td>' +
+          '<td style="padding:6px 10px;white-space:nowrap;color:#8b949e">' + esc(cost) + '</td>' +
+          '</tr>';
+      }).join('');
+      workEl.innerHTML =
+        '<table style="width:100%;border-collapse:collapse;font-size:13px">' +
+          '<thead><tr style="color:#8b949e;font-size:11px;text-transform:uppercase;letter-spacing:0.05em">' +
+            '<th style="padding:4px 10px;text-align:left;font-weight:normal">Card</th>' +
+            '<th style="padding:4px 10px;text-align:left;font-weight:normal">Stage</th>' +
+            '<th style="padding:4px 10px;text-align:left;font-weight:normal">Elapsed</th>' +
+            '<th style="padding:4px 10px;text-align:left;font-weight:normal">Cost</th>' +
+          '</tr></thead>' +
+          '<tbody>' + rows + '</tbody>' +
+        '</table>';
+    }
+  }
+
+  // --- Awaiting Human Review panel ---
+  var reviewEl = document.getElementById('awaiting-review-section');
+  var reviewCard = document.getElementById('awaiting-review-card');
+  if (reviewCard) {
+    if (reviewSessions.length === 0) {
+      reviewCard.style.display = 'none';
+    } else {
+      reviewCard.style.display = '';
+      var reviewRows = reviewSessions.map(function(sess) {
+        var issueLink = sess.issue_url && /^https?:\\/\\//i.test(sess.issue_url)
+          ? '<a href="' + esc(sess.issue_url) + '" target="_blank" rel="noopener">#' + esc(String(sess.issue_number || '')) + ' ' + esc(sess.card_title || '—') + ' &#8599;</a>'
+          : esc(sess.card_title || sess.card_id || '—');
+        var prLink = sess.pr_url && /^https?:\\/\\//i.test(sess.pr_url)
+          ? '<a href="' + esc(sess.pr_url) + '" target="_blank" rel="noopener">Open PR &#8599;</a>'
+          : '<span style="color:#8b949e">No PR</span>';
+        var waiting = sess.agent_dispatch_at ? (fmtAge(sess.agent_dispatch_at) || '—') : '—';
+        return '<tr>' +
+          '<td style="padding:6px 10px">' + issueLink + '</td>' +
+          '<td style="padding:6px 10px">' + prLink + '</td>' +
+          '<td style="padding:6px 10px;white-space:nowrap;color:#8b949e">' + esc(waiting) + '</td>' +
+          '</tr>';
+      }).join('');
+      if (reviewEl) reviewEl.innerHTML =
+        '<table style="width:100%;border-collapse:collapse;font-size:13px">' +
+          '<thead><tr style="color:#8b949e;font-size:11px;text-transform:uppercase;letter-spacing:0.05em">' +
+            '<th style="padding:4px 10px;text-align:left;font-weight:normal">Card</th>' +
+            '<th style="padding:4px 10px;text-align:left;font-weight:normal">PR</th>' +
+            '<th style="padding:4px 10px;text-align:left;font-weight:normal">Waiting</th>' +
+          '</tr></thead>' +
+          '<tbody>' + reviewRows + '</tbody>' +
+        '</table>';
+    }
+  }
+}
+
 function renderActivePerformers(s) {
   var container = document.getElementById('active-performer-tiles');
   var section = document.getElementById('active-performers');
@@ -1776,7 +2156,8 @@ function renderPerformersPage(s) {
   var statusBadge = '<span class="role-status-badge ' + (isSelectedRoleActive ? 'role-active' : 'role-idle') + ' detail-badge">' + (isSelectedRoleActive ? 'active' : 'idle') + '</span>';
   var roleCardsHtml = selectedSessions.length
     ? '<ul class="detail-list">' + selectedSessions.map(function(sess) {
-      return '<li>' + esc(sess.card_title || sess.card_id || '—') + '</li>';
+      var cid = sess.container_id ? ' <span class="muted" style="font-family:monospace;font-size:11px">[' + esc(sess.container_id.slice(0, 12)) + ']</span>' : '';
+      return '<li>' + esc(sess.card_title || sess.card_id || '—') + cid + '</li>';
     }).join('') + '</ul>'
     : '<div class="muted">No active session currently running for this role.</div>';
   var sessionStats = s.session_stats;
@@ -2036,7 +2417,7 @@ async function resetPersona(role) {
 // The new loadPersonasPage() targets #personas-page-section and uses event delegation.
 
 var banner = document.getElementById('disconnected-banner');
-var es = new EventSource('events');
+var es = new EventSource('/events');
 es.addEventListener('state_update', function(e) {
   try {
     _lastState = JSON.parse(e.data);
@@ -2180,7 +2561,10 @@ def create_dashboard_app(
         Returns 409 when a cycle is already in progress.
         """
         if daemon._cycle_active:
-            return JSONResponse({"status": "cycle_in_progress"}, status_code=409)
+            return JSONResponse(
+                    {"error": "A cycle is in progress — please try again shortly", "status": "cycle_in_progress"},
+                    status_code=409,
+                )
         daemon._webhook_trigger.set()
         return JSONResponse({"status": "accepted"}, status_code=202)
 
@@ -2192,7 +2576,10 @@ def create_dashboard_app(
         Returns 200 with cancellation result. Returns 409 if a cycle is active.
         """
         if daemon._cycle_active:
-            return JSONResponse({"status": "cycle_in_progress"}, status_code=409)
+            return JSONResponse(
+                    {"error": "A cycle is in progress — please try again shortly", "status": "cycle_in_progress"},
+                    status_code=409,
+                )
 
         from coordinare.cancel import cancel_active_card
 
@@ -2336,6 +2723,9 @@ def create_dashboard_app(
         return JSONResponse({
             "name": name,
             "github_project_number": getattr(cfg, "github_project_number", None),
+            "enabled": getattr(cfg, "enabled", True),
+            "overrides": getattr(cfg, "overrides", None) or {},
+            "personas": getattr(cfg, "personas", None) or {},
             "state": {
                 "cycle_count": getattr(state, "cycle_count", 0) if state else 0,
                 "error_count": getattr(state, "error_count", 0) if state else 0,
@@ -2349,6 +2739,102 @@ def create_dashboard_app(
                 "board_snapshot": getattr(state, "board_snapshot", None) if state else None,
             } if state is not None else None,
         })
+
+    @app.post("/api/symphonies")
+    async def create_symphony(request: Request) -> JSONResponse:
+        """Create a new symphony (Task 9)."""
+        from coordinare.config import SymphonyConfig
+
+        # Best-effort guard: rejects requests when a cycle is actively running.
+        # A race between this check and the daemon starting a new cycle is possible
+        # but harmless — the next cycle will load the persisted config anyway.
+        if daemon._cycle_active:
+            return JSONResponse(
+                    {"error": "A cycle is in progress — please try again shortly", "status": "cycle_in_progress"},
+                    status_code=409,
+                )
+
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "Request body must be a JSON object"}, status_code=400)
+
+        raw_name = body.get("name", "")
+        if not isinstance(raw_name, str):
+            return JSONResponse({"error": "name must be a string"}, status_code=400)
+        name = raw_name.strip()
+        if not name:
+            return JSONResponse({"error": "name is required"}, status_code=400)
+
+        github_project_number = body.get("github_project_number")
+        if not github_project_number:
+            return JSONResponse({"error": "github_project_number is required"}, status_code=400)
+        if isinstance(github_project_number, bool) or not isinstance(github_project_number, int):
+            return JSONResponse({"error": "github_project_number must be an integer"}, status_code=400)
+
+        symphony_configs = dict(daemon.state.get("symphony_configs") or {})
+
+        if name in symphony_configs:
+            return JSONResponse({"error": f"Symphony {name!r} already exists"}, status_code=409)
+
+        try:
+            new_cfg = SymphonyConfig(
+                name=name,
+                github_project_number=int(github_project_number),
+                overrides=body.get("overrides") or None,
+                personas=body.get("personas") or None,
+            )
+        except Exception:
+            _log.warning("symphony_create_validation_failed", name=name, exc_info=True)
+            return JSONResponse({"error": "Invalid symphony configuration"}, status_code=400)
+
+        coordinare_cfg = daemon.state.get("coordinare_config")
+        if coordinare_cfg is not None:
+            try:
+                new_cfg.effective_config(coordinare_cfg.global_config)
+            except Exception as exc:
+                _log.warning("symphony_effective_config_failed", name=name, exc_info=True)
+                from pydantic import ValidationError as PydanticValidationError
+                if isinstance(exc, PydanticValidationError):
+                    msg = "; ".join(
+                        f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}" for e in exc.errors()
+                    )
+                else:
+                    msg = str(exc)
+                return JSONResponse({"error": msg}, status_code=400)
+
+        saved_version = daemon.state.get("config_version", 0)
+        symphony_configs[name] = new_cfg
+        daemon.state["symphony_configs"] = symphony_configs
+        daemon.state["config_version"] = saved_version + 1
+
+        try:
+            _persist_symphony_configs(symphony_configs)
+        except ValueError:
+            _log.debug("symphony_create_persist_skipped_no_config_file", name=name)
+        except Exception:
+            # Roll back in-memory state so the API contract stays atomic.
+            del symphony_configs[name]
+            daemon.state["symphony_configs"] = symphony_configs
+            daemon.state["config_version"] = saved_version
+            _log.warning("symphony_persist_failed", name=name, exc_info=True)
+            return JSONResponse({"error": "Failed to persist symphony configuration"}, status_code=500)
+
+        if hasattr(daemon, "_config_reload_trigger"):
+            daemon._config_reload_trigger.set()
+        if hasattr(daemon, "_webhook_trigger"):
+            daemon._webhook_trigger.set()
+
+        return JSONResponse({
+            "name": name,
+            "github_project_number": new_cfg.github_project_number,
+            "enabled": new_cfg.enabled,
+            "overrides": new_cfg.overrides or {},
+            "personas": new_cfg.personas or {},
+        }, status_code=201)
 
     @app.post("/api/symphonies/{name}/validate")
     async def validate_symphony(name: str, request: Request) -> JSONResponse:
@@ -2427,7 +2913,10 @@ def create_dashboard_app(
         from coordinare.config import SymphonyConfig
 
         if daemon._cycle_active:
-            return JSONResponse({"status": "cycle_in_progress"}, status_code=409)
+            return JSONResponse(
+                    {"error": "A cycle is in progress — please try again shortly", "status": "cycle_in_progress"},
+                    status_code=409,
+                )
 
         symphony_configs = daemon.state.get("symphony_configs") or {}
 
@@ -2443,10 +2932,12 @@ def create_dashboard_app(
             return JSONResponse({"error": "Request body must be a JSON object"}, status_code=400)
 
         cfg = symphony_configs[name]
+        enabled = body.get("enabled", getattr(cfg, "enabled", True))
         try:
             updated = SymphonyConfig(
                 name=name,
                 github_project_number=getattr(cfg, "github_project_number", None),
+                enabled=enabled,
                 overrides=body.get("overrides", getattr(cfg, "overrides", None)),
                 personas=body.get("personas", getattr(cfg, "personas", None)),
             )
@@ -2469,29 +2960,48 @@ def create_dashboard_app(
                     msg = str(exc)
                 return JSONResponse({"error": msg}, status_code=400)
 
+        saved_version = daemon.state.get("config_version", 0)
+        previous_cfg = symphony_configs.get(name)
         symphony_configs[name] = updated
         daemon.state["symphony_configs"] = symphony_configs
-        daemon.state["config_version"] = daemon.state.get("config_version", 0) + 1
+        daemon.state["config_version"] = saved_version + 1
 
         try:
             _persist_symphony_configs(symphony_configs)
+        except ValueError:
+            # config_path is None or file doesn't exist — in-memory-only mode, not an error.
+            _log.debug("symphony_update_persist_skipped_no_config_file", name=name)
         except Exception:
+            # Actual I/O error — roll back so the in-memory state stays consistent.
+            if previous_cfg is not None:
+                symphony_configs[name] = previous_cfg
+            else:
+                del symphony_configs[name]
+            daemon.state["symphony_configs"] = symphony_configs
+            daemon.state["config_version"] = saved_version
             _log.warning("symphony_persist_failed", name=name, exc_info=True)
+            return JSONResponse({"error": "Failed to persist symphony configuration"}, status_code=500)
 
         if hasattr(daemon, "_config_reload_trigger"):
             daemon._config_reload_trigger.set()
+        if hasattr(daemon, "_webhook_trigger"):
+            daemon._webhook_trigger.set()
 
         return JSONResponse({
             "name": name,
-            "overrides": getattr(updated, "overrides", None),
-            "personas": getattr(updated, "personas", None),
+            "enabled": getattr(updated, "enabled", True),
+            "overrides": getattr(updated, "overrides", None) or {},
+            "personas": getattr(updated, "personas", None) or {},
         })
 
     @app.delete("/api/symphonies/{name}")
     async def delete_symphony(name: str) -> JSONResponse:
         """Remove a symphony (Task 9). Returns 409 if it would remove the last symphony."""
         if daemon._cycle_active:
-            return JSONResponse({"status": "cycle_in_progress"}, status_code=409)
+            return JSONResponse(
+                    {"error": "A cycle is in progress — please try again shortly", "status": "cycle_in_progress"},
+                    status_code=409,
+                )
 
         symphony_configs = daemon.state.get("symphony_configs") or {}
 
@@ -2515,20 +3025,33 @@ def create_dashboard_app(
                 status_code=409,
             )
 
+        saved_configs = dict(symphony_configs)
+        saved_states = dict(symphony_states)
+        saved_version = daemon.state.get("config_version", 0)
+
         del symphony_configs[name]
         daemon.state["symphony_configs"] = symphony_configs
-        daemon.state["config_version"] = daemon.state.get("config_version", 0) + 1
+        daemon.state["config_version"] = saved_version + 1
 
         symphony_states.pop(name, None)
         daemon.state["symphony_states"] = symphony_states
 
         try:
             _persist_symphony_configs(symphony_configs)
+        except ValueError:
+            _log.debug("symphony_persist_skipped_no_config_file", name=name)
         except Exception:
+            # Roll back in-memory state so the config and disk stay in sync.
+            daemon.state["symphony_configs"] = saved_configs
+            daemon.state["symphony_states"] = saved_states
+            daemon.state["config_version"] = saved_version
             _log.warning("symphony_persist_failed", name=name, exc_info=True)
+            return JSONResponse({"error": "Failed to persist config; delete rolled back"}, status_code=500)
 
         if hasattr(daemon, "_config_reload_trigger"):
             daemon._config_reload_trigger.set()
+        if hasattr(daemon, "_webhook_trigger"):
+            daemon._webhook_trigger.set()
 
         return JSONResponse({"deleted": name})
 
@@ -2593,6 +3116,99 @@ def create_dashboard_app(
             "status": "reload_triggered",
             "message": "Configuration reload in progress",
         }, status_code=202)
+
+    _global_cfg_editable = (
+        "poll_interval_seconds",
+        "heartbeat_interval_seconds",
+        "max_concurrent_cards",
+        "max_feedback_cycles",
+        "max_closed_pr_attempts_per_issue",
+        "log_level",
+        "output_mode",
+        "assessment_backend",
+        "assignee_filter",
+        "human_reviewers",
+        "trusted_bot_reviewers",
+    )
+
+    @app.get("/api/config/global")
+    async def get_global_config() -> JSONResponse:
+        """Return the editable global config fields."""
+        coordinare_cfg = daemon.state.get("coordinare_config")
+        cfg = coordinare_cfg.global_config if coordinare_cfg else daemon.state.get("config")
+        if not cfg:
+            return JSONResponse({"error": "Config not available"}, status_code=500)
+        return JSONResponse({k: getattr(cfg, k, None) for k in _global_cfg_editable})
+
+    @app.put("/api/config/global")
+    async def update_global_config(request: Request) -> JSONResponse:
+        """Persist editable global config fields to config.yaml and trigger reload."""
+        import os
+        import stat
+        import tempfile
+
+        import yaml
+
+        if config_path is None or not config_path.is_file():
+            return JSONResponse(
+                {"error": "Config file not available; changes cannot be persisted"},
+                status_code=503,
+            )
+
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "Request body must be a JSON object"}, status_code=400)
+
+        unknown = set(body) - set(_global_cfg_editable)
+        if unknown:
+            return JSONResponse({"error": f"Unknown fields: {sorted(unknown)}"}, status_code=400)
+
+        loaded = yaml.safe_load(config_path.read_text())
+        if not isinstance(loaded, dict):
+            return JSONResponse({"error": "Config file is not a YAML mapping"}, status_code=500)
+
+        for k, v in body.items():
+            if v is None:
+                loaded.pop(k, None)
+            else:
+                loaded[k] = v
+
+        # Validate by constructing a throwaway config. All editable fields are
+        # included even if they happen to be lists/dicts (e.g. human_reviewers);
+        # other nested sections (performers, symphonies, …) that ProjectConfiguration
+        # doesn't accept are stripped out so pydantic doesn't reject them.
+        try:
+            from coordinare.config import ProjectConfiguration
+            ProjectConfiguration(**{
+                kk: vv for kk, vv in loaded.items()
+                if not isinstance(vv, (dict, list)) or kk in _global_cfg_editable
+            })
+        except Exception as exc:
+            return JSONResponse({"error": f"Validation failed: {exc}"}, status_code=400)
+
+        dir_ = config_path.parent
+        fd, tmp = tempfile.mkstemp(dir=dir_, suffix=".yaml.tmp")
+        try:
+            with os.fdopen(fd, "w") as fh:
+                yaml.dump(loaded, fh, default_flow_style=False, allow_unicode=True)
+            original_mode = stat.S_IMODE(os.stat(config_path).st_mode)
+            os.chmod(tmp, original_mode)
+            os.replace(tmp, config_path)
+        except Exception:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(tmp)
+            raise
+
+        if hasattr(daemon, "_config_reload_trigger"):
+            daemon._config_reload_trigger.set()
+            if hasattr(daemon, "_webhook_trigger"):
+                daemon._webhook_trigger.set()
+
+        return JSONResponse({"status": "saved", "reload_triggered": hasattr(daemon, "_config_reload_trigger")})
 
     # -----------------------------------------------------------------------
     # 018 — Personas API endpoints

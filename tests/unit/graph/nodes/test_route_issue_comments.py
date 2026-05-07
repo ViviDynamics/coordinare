@@ -232,3 +232,21 @@ async def test_scope_change_entry_has_issue_source():
     entry = result["card_clarifications"][0]
     assert entry["source"] == "issue"
     assert entry["classification"] == "scope_change"
+
+
+@pytest.mark.asyncio
+async def test_blocker_update_not_appended_to_clarifications():
+    """blocker_update comments are logged but not added to clarifications."""
+    state = initial_state()
+    state["github_service"] = _GitHub(comments=[
+        {"id": 7000, "author": "alice", "body": "the dependency is unblocked now", "created_at": "2026-04-27T13:00:00Z"},
+    ])
+    state["current_card"] = {"id": "ITEM_1", "issue_number": 42}
+
+    result = await route_issue_comments(state)
+
+    # blocker_update comments should not appear in clarifications
+    clarifications = result.get("card_clarifications") or []
+    assert len(clarifications) == 0
+    # But the comment should still be marked as processed
+    assert 7000 in result["processed_issue_comment_ids"]

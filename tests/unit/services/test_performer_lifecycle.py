@@ -11,6 +11,7 @@ from coordinare.services.performer_lifecycle import (
     ContainerStartError,
     ReadinessTimeoutError,
     StartedContainer,
+    _redact_docker_args,
     _safe_stop,
     start_ephemeral,
     stop,
@@ -243,6 +244,199 @@ async def test_safe_stop_swallows_exception(monkeypatch) -> None:
 
     monkeypatch.setattr(lifecycle, "_run_docker", boom)
     await _safe_stop("ctr-dead")  # must not propagate
+
+
+# ---------------------------------------------------------------------------
+# stop — exception handling
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stop_logs_container_start_error(monkeypatch) -> None:
+    async def boom(*args: str, timeout: float = 30.0) -> tuple[int, str, str]:
+        raise ContainerStartError("docker command timed out")
+
+    monkeypatch.setattr(lifecycle, "_run_docker", boom)
+    # Must not raise — stop() is best-effort
+    await stop("ctr-timeout")
+
+
+# ---------------------------------------------------------------------------
+# _redact_docker_args
+# ---------------------------------------------------------------------------
+
+
+def test_redact_docker_args_preserves_non_env_args() -> None:
+    """Non -e args are preserved as-is."""
+    args = ("run", "-d", "--rm", "image:tag")
+    result = _redact_docker_args(args)
+    assert "run" in result
+    assert "-d" in result
+    assert "--rm" in result
+    assert "image:tag" in result
+
+
+def test_redact_docker_args_redacts_env_values() -> None:
+    """Environment variables are redacted."""
+    args = ("run", "-e", "SECRET_KEY=my-secret-value", "-d", "image:tag")
+    result = _redact_docker_args(args)
+    assert "SECRET_KEY" in result
+    assert "<redacted>" in result
+    assert "my-secret-value" not in result
+
+
+def test_redact_docker_args_multiple_env_variables() -> None:
+    """Multiple environment variables are all redacted."""
+    args = (
+        "run",
+        "-e",
+        "GITHUB_TOKEN=ghp_xxx",
+        "-e",
+        "OPENAI_KEY=sk_xxx",
+        "image:tag",
+    )
+    result = _redact_docker_args(args)
+    assert result.count("<redacted>") == 2
+    assert "ghp_xxx" not in result
+    assert "sk_xxx" not in result
+    assert "GITHUB_TOKEN" in result
+    assert "OPENAI_KEY" in result
+
+
+def test_redact_docker_args_env_at_end_without_value() -> None:
+    """Handle -e as final arg (no value following)."""
+    args = ("run", "-e")
+    result = _redact_docker_args(args)
+    assert "-e" in result
+    # No value to redact, so no <redacted> should appear
+    assert "<redacted>" not in result
+
+
+# ---------------------------------------------------------------------------
+# start_ephemeral — secret sources configuration
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_start_ephemeral_disables_secret_sources_when_disabled(
+    monkeypatch,
+) -> None:
+    args_seen: list[tuple[str, ...]] = []
+
+    async def fake_run_docker(*args: str, timeout: float = 30.0) -> tuple[int, str, str]:
+        args_seen.append(args)
+        if args[0] == "run":
+            return 0, "ctr-sources\n", ""
+        if args[0] == "port":
+            return 0, "0.0.0.0:8080\n", ""
+        raise AssertionError(f"unexpected: {args}")
+
+    monkeypatch.setattr(lifecycle, "_run_docker", fake_run_docker)
+
+    cfg = _ephemeral_config(
+        secret_sources={
+            "init_payload": False,
+            "env": False,
+            "creds_file": True,
+        }
+    )
+    await start_ephemeral(cfg)
+
+    run_args = list(args_seen[0])
+    # Check that disabled sources are set to 0
+    assert "PERFORMER_SECRET_SOURCE_INIT_PAYLOAD=0" in run_args
+    assert "PERFORMER_SECRET_SOURCE_ENV=0" in run_args
+    # creds_file is not disabled, so no =0 env var
+    assert "PERFORMER_SECRET_SOURCE_CREDS_FILE=0" not in run_args
+
+
+@pytest.mark.asyncio
+async def test_start_ephemeral_with_creds_file_path(monkeypatch) -> None:
+    args_seen: list[tuple[str, ...]] = []
+
+    async def fake_run_docker(*args: str, timeout: float = 30.0) -> tuple[int, str, str]:
+        args_seen.append(args)
+        if args[0] == "run":
+            return 0, "ctr-creds\n", ""
+        if args[0] == "port":
+            return 0, "0.0.0.0:8080\n", ""
+        raise AssertionError(f"unexpected: {args}")
+
+    monkeypatch.setattr(lifecycle, "_run_docker", fake_run_docker)
+
+    cfg = _ephemeral_config(
+        secret_sources={
+            "init_payload": True,
+            "env": True,
+            "creds_file": True,
+            "creds_file_path": "/etc/credentials.json",
+        }
+    )
+    await start_ephemeral(cfg)
+
+    run_args = list(args_seen[0])
+    # Check that creds_file_path is set when provided
+    assert "PERFORMER_CREDS_FILE=/etc/credentials.json" in run_args
+
+
+@pytest.mark.asyncio
+async def test_start_ephemeral_with_all_secret_sources_enabled(
+    monkeypatch,
+) -> None:
+    args_seen: list[tuple[str, ...]] = []
+
+    async def fake_run_docker(*args: str, timeout: float = 30.0) -> tuple[int, str, str]:
+        args_seen.append(args)
+        if args[0] == "run":
+            return 0, "ctr-all\n", ""
+        if args[0] == "port":
+            return 0, "0.0.0.0:8080\n", ""
+        raise AssertionError(f"unexpected: {args}")
+
+    monkeypatch.setattr(lifecycle, "_run_docker", fake_run_docker)
+
+    cfg = _ephemeral_config(
+        secret_sources={
+            "init_payload": True,
+            "env": True,
+            "creds_file": True,
+        }
+    )
+    await start_ephemeral(cfg)
+
+    run_args = list(args_seen[0])
+    # When all sources are enabled, no =0 env vars should be present
+    assert "PERFORMER_SECRET_SOURCE_INIT_PAYLOAD=0" not in run_args
+    assert "PERFORMER_SECRET_SOURCE_ENV=0" not in run_args
+    assert "PERFORMER_SECRET_SOURCE_CREDS_FILE=0" not in run_args
+
+
+@pytest.mark.asyncio
+async def test_start_ephemeral_disables_creds_file_when_false(monkeypatch) -> None:
+    args_seen: list[tuple[str, ...]] = []
+
+    async def fake_run_docker(*args: str, timeout: float = 30.0) -> tuple[int, str, str]:
+        args_seen.append(args)
+        if args[0] == "run":
+            return 0, "ctr-nocreds\n", ""
+        if args[0] == "port":
+            return 0, "0.0.0.0:8080\n", ""
+        raise AssertionError(f"unexpected: {args}")
+
+    monkeypatch.setattr(lifecycle, "_run_docker", fake_run_docker)
+
+    cfg = _ephemeral_config(
+        secret_sources={
+            "init_payload": True,
+            "env": True,
+            "creds_file": False,
+        }
+    )
+    await start_ephemeral(cfg)
+
+    run_args = list(args_seen[0])
+    # When creds_file is disabled, the =0 env var should be set
+    assert "PERFORMER_SECRET_SOURCE_CREDS_FILE=0" in run_args
 
 
 # ---------------------------------------------------------------------------

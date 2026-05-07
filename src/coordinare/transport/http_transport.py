@@ -109,8 +109,17 @@ class PerformerHTTPClient:
         r = await self._request("POST", "/jobs", json=body)
         if r.status_code == 202:
             return JobAcceptResponse.model_validate(r.json())
-        if r.status_code in {409, 422}:
+        if r.status_code == 409:
             return JobBusyResponse.model_validate(r.json())
+        if r.status_code == 422:
+            # 422 signals a permanent config error (e.g. secret_missing) — raise
+            # so the caller can block the card rather than retrying every cycle.
+            try:
+                _body = r.json()
+                detail = _body.get("detail") or _body.get("reason", "unknown")
+            except Exception:
+                detail = r.text or "unknown"
+            raise PerformerAuthError(f"permanent performer config error: {detail}")
         r.raise_for_status()
         raise TransportError(f"unexpected POST /jobs status {r.status_code}")
 

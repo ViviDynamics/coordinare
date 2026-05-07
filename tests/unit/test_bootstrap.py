@@ -112,8 +112,8 @@ class TestBuildPerformerServices:
         from coordinare.__main__ import _build_circuit_breakers, _build_performer_services
 
         config = _make_config(
-            implementer=PerformerRoleConfig(backend="opencode"),
-            reviewer=PerformerRoleConfig(backend="claude-code"),
+            implementer=PerformerRoleConfig(backend="opencode", executable="fake-binary"),
+            reviewer=PerformerRoleConfig(backend="claude-code", executable="fake-binary"),
         )
         cbs = _build_circuit_breakers(config)
         services = _build_performer_services(config, cbs)
@@ -125,8 +125,8 @@ class TestBuildPerformerServices:
         from coordinare.__main__ import _build_circuit_breakers, _build_performer_services
 
         config = _make_config(
-            implementer=PerformerRoleConfig(backend="opencode"),
-            security=PerformerRoleConfig(backend="claude-code"),
+            implementer=PerformerRoleConfig(backend="opencode", executable="fake-binary"),
+            security=PerformerRoleConfig(backend="claude-code", executable="fake-binary"),
         )
         cbs = _build_circuit_breakers(config)
         services = _build_performer_services(config, cbs)

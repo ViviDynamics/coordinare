@@ -24,7 +24,6 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from performer.server.job_runner import JobNotFoundError, JobRunner
 from performer.server.models import (
     JobAcceptResponse,
-    JobBusyResponse,
     JobInitPayload,
     JobStatus,
     PerformerCapabilities,

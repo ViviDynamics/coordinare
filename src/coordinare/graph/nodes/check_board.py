@@ -23,6 +23,10 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
+# Phases where coordinare is passively waiting for an external actor (human reviewer,
+# CI system) and the session is not consuming any active worker capacity.
+PASSIVE_PHASES: frozenset[str] = frozenset({"monitoring_pr"})
+
 
 def _sort_by_priority(
     item_ids: list[str],
@@ -317,104 +321,109 @@ async def check_board(state: CoordinareState) -> CoordinareState:
     if blocked:
         if state.get("system_error_notified"):
             state["phase"] = "idle"
-            return state
-        item = blocked[0]
-        titles = board.get("titles", {})
-        descriptions = board.get("descriptions", {})
-        issue_numbers = board.get("issue_numbers", {})
-        issue_urls = board.get("issue_urls", {})
-        content_node_ids = board.get("content_node_ids", {})
-        description = str(descriptions.get(item, ""))
-        state["current_card"] = {
-            "id": item,
-            "issue_id": str(content_node_ids.get(item, "")),
-            "issue_number": int(issue_numbers.get(item, 0)),
-            "issue_url": str(issue_urls.get(item, "")),
-            "title": str(titles.get(item, "")),
-            "description": description,
-            "acceptance_criteria": parse_acceptance_criteria(description),
-            "status": "BLOCKED",
-            "previous_status": "BLOCKED",
-        }
+            state["current_card"] = None
+            # Multi-card: don't return yet when there are TODO cards we could pick up.
+            if max_cards <= 1 or not todo:
+                return state
+            # else: fall through to TODO pickup below — skip blocked-card handling.
+        else:
+            item = blocked[0]
+            titles = board.get("titles", {})
+            descriptions = board.get("descriptions", {})
+            issue_numbers = board.get("issue_numbers", {})
+            issue_urls = board.get("issue_urls", {})
+            content_node_ids = board.get("content_node_ids", {})
+            description = str(descriptions.get(item, ""))
+            state["current_card"] = {
+                "id": item,
+                "issue_id": str(content_node_ids.get(item, "")),
+                "issue_number": int(issue_numbers.get(item, 0)),
+                "issue_url": str(issue_urls.get(item, "")),
+                "title": str(titles.get(item, "")),
+                "description": description,
+                "acceptance_criteria": parse_acceptance_criteria(description),
+                "status": "BLOCKED",
+                "previous_status": "BLOCKED",
+            }
 
-        last_notified = state.get("last_blocked_notified_at")
-        issue_node_id = str(content_node_ids.get(item, ""))
-        if last_notified is not None and isinstance(last_notified, datetime):
-            try:
-                details = await github.get_issue_details(issue_node_id or item)
-            except Exception as exc:
-                logger.warning("check_board.get_issue_details_failed", card_id=item, error=str(exc))
+            last_notified = state.get("last_blocked_notified_at")
+            issue_node_id = str(content_node_ids.get(item, ""))
+            if last_notified is not None and isinstance(last_notified, datetime):
+                try:
+                    details = await github.get_issue_details(issue_node_id or item)
+                except Exception as exc:
+                    logger.warning("check_board.get_issue_details_failed", card_id=item, error=str(exc))
+                    state["phase"] = "blocked"
+                    return state
+                comments_node = details.get("comments")
+                comments = (
+                    comments_node.get("nodes", [])
+                    if isinstance(comments_node, dict)
+                    else []
+                )
+                for comment in comments:
+                    if not isinstance(comment, dict):
+                        continue
+                    # 042: Skip comments authored by the coordinare bot itself.
+                    # GitHub's ``createdAt`` is second-precision while our local
+                    # ``last_blocked_notified_at`` is sub-second — so the bot's
+                    # own freshly-posted reminder comment can appear "newer than
+                    # the cutoff" due to rounding, get misread as a user answer,
+                    # and trigger an infinite blocked → dispatch loop.  Filtering
+                    # by author is the correct primary check (only humans can
+                    # supply answers); the timestamp remains a secondary guard
+                    # so very old human comments from prior rounds don't count.
+                    author = comment.get("author") or {}
+                    author_login = str(author.get("login", "")) if isinstance(author, dict) else ""
+                    if author_login.endswith("[bot]") or author_login == "vivi-coordinare":
+                        continue
+                    created_raw = comment.get("createdAt", "")
+                    if not isinstance(created_raw, str) or not created_raw:
+                        continue
+                    try:
+                        created_at = datetime.fromisoformat(
+                            created_raw.replace("Z", "+00:00")
+                        )
+                        if created_at > last_notified:
+                            # Record the user's answer alongside the questions that
+                            # were asked, so assess_card can pass the full Q&A history
+                            # to Claude and avoid asking the same questions again.
+                            answer_body = str(comment.get("body", "")).strip()
+                            prior_questions = [
+                                str(q) for q in (state.get("open_questions") or [])
+                            ]
+                            clarification: dict = {
+                                "questions": prior_questions,
+                                "answer": answer_body,
+                            }
+                            existing = state.get("card_clarifications") or []
+                            state["card_clarifications"] = [*existing, clarification]
+                            state["open_questions"] = []
+                            state["agent_dispatch"] = {}
+
+                            await github.move_card(item, "IN_PROGRESS")
+                            state["current_card"]["previous_status"] = "BLOCKED"
+                            state["current_card"]["status"] = "IN_PROGRESS"
+                            # Re-run assess_card with full Q&A history rather than
+                            # trying to check status on an already-terminated performer.
+                            state["phase"] = "dispatching"
+                            state["last_blocked_notified_at"] = None
+                            return state
+                    except (ValueError, TypeError):
+                        continue
+
+            raw_hours = state.get("blocked_reminder_hours", 24)
+            hours = raw_hours if isinstance(raw_hours, int) else 24
+            now = datetime.now(UTC)
+            if last_notified is None or (
+                isinstance(last_notified, datetime)
+                and now - last_notified >= timedelta(hours=hours)
+            ):
                 state["phase"] = "blocked"
                 return state
-            comments_node = details.get("comments")
-            comments = (
-                comments_node.get("nodes", [])
-                if isinstance(comments_node, dict)
-                else []
-            )
-            for comment in comments:
-                if not isinstance(comment, dict):
-                    continue
-                # 042: Skip comments authored by the coordinare bot itself.
-                # GitHub's ``createdAt`` is second-precision while our local
-                # ``last_blocked_notified_at`` is sub-second — so the bot's
-                # own freshly-posted reminder comment can appear "newer than
-                # the cutoff" due to rounding, get misread as a user answer,
-                # and trigger an infinite blocked → dispatch loop.  Filtering
-                # by author is the correct primary check (only humans can
-                # supply answers); the timestamp remains a secondary guard
-                # so very old human comments from prior rounds don't count.
-                author = comment.get("author") or {}
-                author_login = str(author.get("login", "")) if isinstance(author, dict) else ""
-                if author_login.endswith("[bot]") or author_login == "vivi-coordinare":
-                    continue
-                created_raw = comment.get("createdAt", "")
-                if not isinstance(created_raw, str) or not created_raw:
-                    continue
-                try:
-                    created_at = datetime.fromisoformat(
-                        created_raw.replace("Z", "+00:00")
-                    )
-                    if created_at > last_notified:
-                        # Record the user's answer alongside the questions that
-                        # were asked, so assess_card can pass the full Q&A history
-                        # to Claude and avoid asking the same questions again.
-                        answer_body = str(comment.get("body", "")).strip()
-                        prior_questions = [
-                            str(q) for q in (state.get("open_questions") or [])
-                        ]
-                        clarification: dict = {
-                            "questions": prior_questions,
-                            "answer": answer_body,
-                        }
-                        existing = state.get("card_clarifications") or []
-                        state["card_clarifications"] = [*existing, clarification]
-                        state["open_questions"] = []
-                        state["agent_dispatch"] = {}
 
-                        await github.move_card(item, "IN_PROGRESS")
-                        state["current_card"]["previous_status"] = "BLOCKED"
-                        state["current_card"]["status"] = "IN_PROGRESS"
-                        # Re-run assess_card with full Q&A history rather than
-                        # trying to check status on an already-terminated performer.
-                        state["phase"] = "dispatching"
-                        state["last_blocked_notified_at"] = None
-                        return state
-                except (ValueError, TypeError):
-                    continue
-
-        raw_hours = state.get("blocked_reminder_hours", 24)
-        hours = raw_hours if isinstance(raw_hours, int) else 24
-        now = datetime.now(UTC)
-        if last_notified is None or (
-            isinstance(last_notified, datetime)
-            and now - last_notified >= timedelta(hours=hours)
-        ):
-            state["phase"] = "blocked"
+            state["phase"] = "idle"
             return state
-
-        state["phase"] = "idle"
-        return state
     if todo:
         # Filter out items carrying advocate labels (FR-001a)
         advocate_labels = set()
@@ -624,7 +633,12 @@ async def check_board(state: CoordinareState) -> CoordinareState:
 
             if max_cards > 1:
                 # Multi-card mode: pick up cards into active_sessions
-                slots_available = max(0, max_cards - len(active_sessions))
+                # Passive-phase sessions (monitoring_pr) do not consume a concurrency slot.
+                active_count = sum(
+                    1 for sess in active_sessions.values()
+                    if sess.get("phase") not in PASSIVE_PHASES
+                )
+                slots_available = max(0, max_cards - active_count)
                 picked = 0
                 for item in eligible_todo:
                     if picked >= slots_available:

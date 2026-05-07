@@ -9,7 +9,11 @@ import re
 import sys
 import uuid
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse
+
+if TYPE_CHECKING:
+    from performer.server.models import JobInitPayload, JobResult
 
 import psutil
 import structlog
@@ -20,7 +24,13 @@ from performer.backends.base import BackendAdapter, BackendStatus
 from performer.config import Settings, get_settings
 from performer.github import GitHubAPIError, create_pull_request, get_check_runs, post_issue_comment, post_pr_comment, post_pull_request_review, resolve_pr_review_threads, summarise_check_runs
 from performer.models import Performance, Score, Stand, _redact_secrets
-from performer.protocol import PerformerMessage, PerformerMetrics, PerformerResponse
+from performer.protocol import (
+    FAILURE_STATUSES,
+    TERMINAL_STATUSES,
+    PerformerMessage,
+    PerformerMetrics,
+    PerformerResponse,
+)
 from performer.workspace import commit_file
 from performer.workspace import (
     BranchConflictError,
@@ -1860,6 +1870,96 @@ def _write_response(resp: PerformerResponse) -> None:  # pragma: no cover
     sys.stdout.flush()
 
 
+async def _perform_job(payload: "JobInitPayload") -> "JobResult":  # pragma: no cover
+    """Bridge between the spec-056 HTTP job protocol and handle_dispatch/handle_status.
+
+    Called by the job runner inside the performer HTTP server. Builds a
+    PerformerMessage from the JobInitPayload, drives handle_dispatch to clone
+    and start the backend, then polls handle_status until the session reaches a
+    terminal state. The final PerformerResponse is serialised as JSON into
+    JobResult.summary so that the coordinare-side check_status() can reconstruct
+    the rich response dict that monitor_performer.py expects.
+    """
+    from performer.server.models import JobResult  # local import — server subpackage
+
+    settings = get_settings()
+
+    # Snapshot env values that will be overwritten so we can restore them
+    # after the job (None means the key was absent before injection).
+    _pre_job_env: dict[str, str | None] = {
+        _k: os.environ.get(_k) for _k in payload.secrets
+    }
+    for _secret_name, _secret_val in payload.secrets.items():
+        os.environ[_secret_name] = _secret_val.get_secret_value()
+
+    try:
+        # Prefer the payload value; fall back to any env-baseline GITHUB_TOKEN
+        # (e.g. injected at container startup via the env fallback source).
+        github_token = (
+            payload.secrets["GITHUB_TOKEN"].get_secret_value()
+            if "GITHUB_TOKEN" in payload.secrets
+            else os.environ.get("GITHUB_TOKEN", "")
+        )
+
+        # Build Score-compatible dict: metadata carries title/description/etc.
+        score_dict: dict = {
+            **payload.metadata,
+            "repo_url": str(payload.repo_url),
+            "branch": payload.branch,
+            "role": payload.role,
+            "backend": payload.backend,
+            "github_token": github_token,
+        }
+        if payload.persona:
+            score_dict["persona_instructions"] = payload.persona
+
+        dispatch_msg = PerformerMessage(action="dispatch", payload=score_dict)
+        try:
+            _accepted_resp, perf = await handle_dispatch(dispatch_msg, settings)
+        except Exception as exc:
+            return JobResult(success=False, summary=_redact_secrets(f"dispatch failed: {type(exc).__name__}"), error_code="dispatch_error")
+
+        from performer.server.job_runner import _progress_cb_var  # local import — server subpackage
+
+        status_msg = PerformerMessage(action="status", session_id=perf.session_id)
+        resp = None
+        try:
+            while True:
+                await asyncio.sleep(2.0)
+                resp = await handle_status(status_msg, perf, settings)
+                _progress_cb = _progress_cb_var.get()
+                if _progress_cb is not None and resp.events:
+                    _progress_cb(
+                        [e if isinstance(e, dict) else e.model_dump(exclude_none=True) for e in resp.events],
+                        resp.metrics if isinstance(resp.metrics, dict) else (resp.metrics.model_dump() if resp.metrics is not None else None),
+                    )
+                if resp.status in TERMINAL_STATUSES:
+                    break
+        finally:
+            try:
+                await perf.backend.stop()
+            except Exception:
+                pass
+            cleanup_stand(perf.stand)
+
+        if resp is None:
+            return JobResult(success=False, summary="no status response", error_code="internal_error")
+
+        success = resp.status not in FAILURE_STATUSES
+        summary = resp.model_dump_json(exclude_none=True)
+        return JobResult(success=success, summary=summary, error_code=None if success else resp.status)
+    finally:
+        # Restore env to its pre-job state: remove keys that were absent before
+        # injection, or put back the original value for keys that were present.
+        # This preserves env-baseline secrets (e.g. GITHUB_TOKEN baked into the
+        # container image) for subsequent jobs and pre-flight checks.
+        for _k, _prev_val in _pre_job_env.items():
+            if _prev_val is None:
+                os.environ.pop(_k, None)
+            else:
+                os.environ[_k] = _prev_val
+
+
 def _run_server(port: int) -> None:  # pragma: no cover
     """Boot the FastAPI HTTP server (spec 056, T025).
 
@@ -1870,7 +1970,7 @@ def _run_server(port: int) -> None:  # pragma: no cover
 
     from performer.server import create_app_from_env
 
-    app = create_app_from_env()
+    app = create_app_from_env(executor=_perform_job)
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
 
 

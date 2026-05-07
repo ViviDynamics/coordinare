@@ -189,7 +189,7 @@ def test_s1_html_has_required_structure() -> None:
     # Structural IDs that JavaScript writes state into
     for element_id in (
         "phase",
-        "card-section",
+        "active-work-card",
         "questions-card",
         "cycles-completed",
         "last-duration",
@@ -202,7 +202,7 @@ def test_s1_html_has_required_structure() -> None:
         assert f'id="{element_id}"' in html, f"HTML is missing id={element_id!r}"
 
     # SSE connection wiring
-    assert "EventSource('events')" in html
+    assert "EventSource('/events')" in html
     assert "state_update" in html
 
 

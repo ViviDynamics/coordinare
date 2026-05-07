@@ -147,6 +147,7 @@ class ClaudeService:
                 return await self._client.messages.create(
                     model=self._model,
                     max_tokens=500,
+                    system="Respond ONLY with valid JSON. Do not include any prose, markdown, or code fences.",
                     messages=[
                         {
                             "role": "user",
@@ -199,13 +200,13 @@ class ClaudeService:
                 "rationale": str(parsed.get("rationale", text)),
             }
         except (json.JSONDecodeError, AttributeError):
-            # Fall back to heuristic if model response is not valid JSON
-            lowered = text.lower()
-            sufficient = '"sufficient": true' in lowered or "sufficient: true" in lowered
-            if sufficient:
-                return {"sufficient": True, "questions": [], "rationale": text}
+            # Model returned non-JSON (e.g. safety refusal or formatting error).
+            # Block the card so the operator can inspect rather than silently
+            # dispatching an unassessed card to implementation.
+            # Non-empty questions prevents assess_card's auto-promotion logic
+            # (not sufficient + no questions → treated as sufficient).
             return {
                 "sufficient": False,
-                "questions": ["Please clarify acceptance criteria."],
-                "rationale": text,
+                "questions": ["assessment parse error — model returned non-JSON"],
+                "rationale": f"assessment parse error: {text}",
             }

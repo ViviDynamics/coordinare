@@ -110,7 +110,7 @@ class TestForcePollEndpoint409:
         client = _make_client(daemon)
         resp = client.post("/api/force-poll")
         assert resp.status_code == 409
-        assert resp.json() == {"status": "cycle_in_progress"}
+        assert resp.json() == {"error": "A cycle is in progress — please try again shortly", "status": "cycle_in_progress"}
 
     def test_does_not_set_trigger_when_cycle_active(self) -> None:
         daemon = _make_daemon(cycle_active=True)

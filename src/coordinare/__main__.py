@@ -393,6 +393,11 @@ def _build_transport_for_role(
     )
     match transport_type:
         case "subprocess":
+            if not executable:
+                raise ValueError(
+                    "subprocess transport requires an executable — set agent_executable "
+                    "in config.yaml or role_config.executable"
+                )
             return SubprocessTransport(executable, timeout, config=config, github_token=github_token)
         case "ssh":
             return SshTransport()
@@ -439,6 +444,27 @@ def _build_performer_services(
             continue
 
         stage = _ROLE_TO_STAGE[role]
+
+        # Skip roles that have no transport configured at all — performer_endpoints
+        # will cover them via the HTTP service merge step below.  This avoids
+        # building a broken SubprocessTransport("") just to discard it.
+        from coordinare.config import PerformerRoleConfig
+        if isinstance(role_config, PerformerRoleConfig):
+            has_explicit_transport = bool(
+                role_config.transport
+                or role_config.executable
+                or config.agent_executable
+                or config.agent_transport != "subprocess"
+            )
+            if not has_explicit_transport:
+                logger.debug(
+                    "performer_role.no_subprocess_transport",
+                    role=role,
+                    stage=stage,
+                    msg=f"Role {role!r} has no subprocess transport — expecting performer_endpoints coverage",
+                )
+                continue
+
         max_concurrency = getattr(role_config, "max_concurrency", 1)
         if stage in SINGLETON_STAGES:
             max_concurrency = min(max_concurrency, 1)
@@ -631,6 +657,15 @@ async def _bootstrap_services(
 
     # 056 — Merge containerized (ephemeral / persistent) performers into the same
     # service lists before slot registration so each stage is registered once.
+    if any(ep.mode != "subprocess" for ep in config.performer_endpoints):
+        from coordinare.services.performer_lifecycle import cleanup_orphaned_containers
+        orphan_count = await cleanup_orphaned_containers()
+        if orphan_count:
+            logger.warning(
+                "performer_lifecycle.orphans_cleaned",
+                count=orphan_count,
+                hint="containers left by a previous coordinare crash",
+            )
     http_services_by_stage = _build_http_performer_services(config)
     for stage, http_services in http_services_by_stage.items():
         existing = service_lists.get(stage, [])

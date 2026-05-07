@@ -231,6 +231,38 @@ async def test_cancel_notification_exception_is_swallowed() -> None:
     assert result["card_id"] == "ITEM_1"
 
 
+@pytest.mark.asyncio
+async def test_cancel_performer_stop_exception_is_swallowed() -> None:
+    """Non-TimeoutError exception from performer stop is caught and logged; cancellation completes."""
+    state = initial_state()
+    state["phase"] = "monitoring_performer"
+    state["current_card"] = {"id": "ITEM_1", "title": "Card"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["agent_service"] = MagicMock(
+        relay_feedback=AsyncMock(side_effect=RuntimeError("performer API error"))
+    )
+    state["notification_service"] = MagicMock(dispatch=AsyncMock())
+
+    result = await cancel_active_card(state)
+
+    assert result["status"] == "cancelled"
+    assert state["phase"] == "idle"
+
+
+@pytest.mark.asyncio
+async def test_cancel_without_notification_service() -> None:
+    """Cancellation skips notification when notification_service is None."""
+    state = initial_state()
+    state["phase"] = "monitoring_performer"
+    state["current_card"] = {"id": "ITEM_1", "title": "Card"}
+    state["notification_service"] = None
+
+    result = await cancel_active_card(state)
+
+    assert result["status"] == "cancelled"
+    assert state["phase"] == "idle"
+
+
 def test_cancel_endpoint_idle_returns_no_active_card(tmp_path) -> None:
     """POST /api/cancel when idle returns no_active_card."""
     import asyncio

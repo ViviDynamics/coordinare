@@ -59,6 +59,7 @@ def _container_endpoint(container_id: str, port: int = 8080) -> str:
     return f"http://{ip}:{port}"
 STUB_SCRIPT = textwrap.dedent(
     """
+    import json
     import os
     import uvicorn
     from performer.server import create_app
@@ -66,7 +67,9 @@ STUB_SCRIPT = textwrap.dedent(
 
 
     async def stub_executor(payload: JobInitPayload) -> JobResult:
-        return JobResult(success=True, summary=f"stub ran {payload.job_id}")
+        # Return a JSON-serialized PerformerResponse as the summary (like a real performer would)
+        response = {"status": "assessment_complete", "session_id": payload.job_id}
+        return JobResult(success=True, summary=json.dumps(response))
 
 
     app = create_app(
@@ -193,7 +196,8 @@ async def test_persistent_container_dispatch_lifecycle(running_container: str) -
         final: dict | None = None
         while time.monotonic() < deadline:
             status = await svc.check_status(job_id)
-            state = status["state"]
+            # Working jobs have "job_state"; terminal jobs have "state" (from parsed result JSON)
+            state = status.get("job_state") or status.get("state") or "unknown"
             if not seen_states or seen_states[-1] != state:
                 seen_states.append(state)
             if state in {"succeeded", "failed", "cancelled"}:
@@ -201,7 +205,9 @@ async def test_persistent_container_dispatch_lifecycle(running_container: str) -
                 break
             await asyncio.sleep(0.25)
         assert final is not None, f"job never reached terminal state, saw {seen_states}"
-        assert final["state"] == "succeeded", final
+        # Terminal state may be in "state" field (from result JSON) or "job_state"
+        terminal = final.get("state") or final.get("job_state")
+        assert terminal == "succeeded", final
         # Stub job may complete fast enough that intermediate states are
         # collapsed; the terminal "succeeded" state alone is sufficient
         # evidence the dispatch → run → terminal pipeline works.
@@ -339,16 +345,18 @@ async def test_two_persistent_containers_run_in_parallel(
 
                 if not job1_done:
                     status1 = results[0]
-                    if status1["state"] in {"succeeded", "failed", "cancelled"}:
+                    state1 = status1.get("job_state") or status1.get("state")
+                    if state1 in {"succeeded", "failed", "cancelled"}:
                         job1_done = True
-                        assert status1["state"] == "succeeded", status1
+                        assert state1 == "succeeded", status1
 
                 if not job2_done and len(results) > (1 if not job1_done else 0):
                     idx = 1 if not job1_done else 0
                     status2 = results[idx]
-                    if status2["state"] in {"succeeded", "failed", "cancelled"}:
+                    state2 = status2.get("job_state") or status2.get("state")
+                    if state2 in {"succeeded", "failed", "cancelled"}:
                         job2_done = True
-                        assert status2["state"] == "succeeded", status2
+                        assert state2 == "succeeded", status2
 
                 await asyncio.sleep(0.25)
 
@@ -467,13 +475,14 @@ async def test_subprocess_and_container_coexist(
             final = None
             while time.monotonic() < deadline:
                 status = await container_svc.check_status(job_id)
-                if status["state"] in {"succeeded", "failed", "cancelled"}:
+                # Terminal statuses from PerformerResponse
+                if status.get("status") in {"ok", "error", "assessment_complete"}:
                     final = status
                     break
                 await asyncio.sleep(0.25)
 
             assert final is not None, "containerized job did not reach terminal state"
-            assert final["state"] == "succeeded", f"containerized job failed: {final}"
+            assert final["status"] == "assessment_complete", f"containerized job failed: {final}"
 
             # Verify: subprocess performers (if registered) are unaffected by this call chain.
             # In a full coordinare test, we'd verify no performer_pool events were emitted

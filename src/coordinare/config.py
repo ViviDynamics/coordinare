@@ -743,7 +743,13 @@ class SymphonyConfig(BaseModel):
 
     def effective_config(self, global_config: ProjectConfiguration) -> ProjectConfiguration:
         """Resolve effective config by merging global with overrides."""
-        base_dict = global_config.model_dump()
+        # Use exclude_unset=True so that fields which were never explicitly set
+        # (i.e. pure schema defaults) are omitted from the dict.  When
+        # ProjectConfiguration(**base_dict) is reconstructed below, pydantic will
+        # only mark those omitted fields as unset — preserving the model_fields_set
+        # state that resolved_role() relies on to distinguish explicit overrides
+        # from inherited defaults (fixing the backend-inheritance bug).
+        base_dict = global_config.model_dump(exclude_unset=True)
         if self.overrides:
             valid_fields = set(ProjectConfiguration.model_fields)
             # github_project_number is a reserved per-symphony field; it cannot be
