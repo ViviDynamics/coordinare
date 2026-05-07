@@ -168,6 +168,109 @@ All three fixes are independent and can be implemented in any order. No new depe
 
 ---
 
+## Task 11: Performer dispatch loop — 4 root causes
+
+**Files**: `agent/performer/src/performer/main.py`, `src/coordinare/services/http_performer_service.py`
+
+**Problem**: Ephemeral Docker performer containers accepted jobs but cards looped indefinitely — every dispatch cycle found the card still `IN_PROGRESS` and re-dispatched.
+
+**Root causes and fixes**:
+
+1. **No executor wired** — `create_app_from_env()` was called without an `executor=` argument, so the default stub returned `success=False, summary="no executor wired"` for every job. Fixed by passing `_perform_job` as `executor` in `main.py`.
+
+2. **Protocol shape mismatch** — `check_status()` returned a raw `JobStatus` dict, but `monitor_performer.py` expected a `PerformerResponse`-shaped dict with a `status` key. Fixed by translating `JobStatus` into the expected dict shape and deserialising the JSON-serialised `PerformerResponse` stored in `JobResult.summary`.
+
+3. **Shared instance state** — `_container_id`, `_endpoint`, and `_client` were instance-level attributes on `HTTPPerformerService`, so concurrent cards overwrote each other's state. Fixed by introducing `_EphemeralJob` dataclass and tracking per-job state in `_active_jobs: dict[str, _EphemeralJob]`.
+
+4. **Missing `OPENAI_API_KEY` in container** — The key wasn't forwarded in `_build_job_payload`, so the codex backend's three-source secret resolver couldn't find it. Fixed by adding `OPENAI_API_KEY` to the secrets dict.
+
+---
+
+## Task 12: Infrastructure fixes — SSE, GQL transport, SubprocessTransport
+
+**Files**: `src/coordinare/dashboard.py`, `src/coordinare/graph/github_transport.py`, `src/coordinare/services/subprocess_performer_service.py`
+
+**Fix 1 — SSE EventSource relative URL** (`dashboard.py`): The SSE client was constructed with a relative URL (`/events`). On sub-routes like `/admin/*` this resolved to `/admin/events`, which doesn't exist. Fixed by using an absolute URL (`window.location.origin + '/events'`) so SSE always connects to the correct endpoint regardless of the current page path.
+
+**Fix 2 — Concurrent GQL transport collision** (`github_transport.py`): The `AIOHTTPTransport` + `Client` pair was shared across concurrent coroutines without locking. Concurrent GitHub GraphQL calls collided on the shared session, causing intermittent transport errors. Fixed by wrapping transport access with `asyncio.Lock`.
+
+**Fix 3 — SubprocessTransport built with empty executable** (`subprocess_performer_service.py`): When `performer_endpoints` were configured, `SubprocessTransport.__init__` was called without resolving the performer binary path, producing an empty string. Fixed by guarding construction with an existence check so subprocess-mode performers are skipped when containerised performers are the primary backend.
+
+---
+
+## Task 13: Global Config page
+
+**File**: `src/coordinare/dashboard.py`
+
+**Problem**: The `/admin` route rendered a placeholder stub ("Admin Config — coming soon").
+
+**Fix**: Implemented a full Global Config page that reads and displays the live `ProjectConfiguration` as a structured, read-only JSON viewer. Sections: symphony list, performer endpoints, notification targets, and raw YAML download link.
+
+---
+
+## Task 14: Assessor and error-detail fixes
+
+**Files**: `src/coordinare/graph/assess_card.py`, `src/coordinare/graph/dispatch_performer.py`, `src/coordinare/services/http_performer_service.py`
+
+**Fix 1 — Assessor non-JSON fallback** (`assess_card.py`): The assessor LLM sometimes returned plain text instead of a JSON decision blob. The fallback path treated any non-empty response as a `PROCEED` signal, causing cards to be dispatched without a valid assessment. Fixed by treating any non-JSON response as an error — the card is blocked with an explanatory comment instead of silently proceeding.
+
+**Fix 2 — Error detail in blocked card comments** (`dispatch_performer.py`): Blocked card GitHub comments showed only a generic "coordinare encountered an error" message with no actionable detail. Fixed by including the raw error message and phase name in the comment body so operators can diagnose without reading logs.
+
+**Fix 3 — `check_health()` stale `_active_jobs`** (`http_performer_service.py`): `check_health()` on an ephemeral performer returned `unknown` even after a job completed, because it checked `_active_jobs` which was populated only during dispatch and never cleared on terminal job state. Fixed by clearing the stale entry on terminal status so subsequent health checks return `idle`.
+
+---
+
+## Task 15: Backend parameter wiring and CodexBackend fixes
+
+**Files**: `agent/performer/src/performer/backends/codex.py`, `agent/performer/tests/`
+
+**Fix — Missing CodexBackend params**: `CodexBackend.start()` accepted `effort`, `temperature`, and `max_tokens` in its signature but never forwarded them to the codex CLI invocation. Fixed by wiring all three into the command-line arguments passed to `codex`.
+
+**Tests — Backend parameter wiring**: Added a suite of wiring tests (`tests/backends/test_*_wiring.py`) covering each backend (codex, opencode, cursor, junie, claude) to assert that all `JobInitPayload` fields are correctly forwarded to the CLI invocation. Tests moved from coordinare unit suite to the performer package where the backend code lives.
+
+---
+
+## Task 16: API key injection for all backends
+
+**Files**: `src/coordinare/services/http_performer_service.py`, `agent/performer/src/performer/backends/*.py`, `config.example.yaml`
+
+**Problem**: Only `OPENAI_API_KEY` was forwarded to performer containers; other backends (`opencode`, `junie`, `cursor`) needed `ANTHROPIC_API_KEY`, and all needed their keys available in the container's secret resolver.
+
+**Fixes**:
+- `ANTHROPIC_API_KEY` added to the secrets forwarded in `_build_job_payload` alongside `OPENAI_API_KEY`
+- Opencode, Junie, and Cursor backends updated to inject `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` from the resolved secrets dict into the subprocess environment
+- `config.example.yaml` updated with volume-mount examples for Cursor and Junie (which require host-side credential files), with inline comments explaining the auth flow
+
+---
+
+## Task 17: CalVer versioning and GHCR CI pipeline
+
+**Files**: `version`, `registry`, `bin/validate-version`, `bin/update-version`, `.github/workflows/pr-ci.yml`, `.github/workflows/main-branch-build.yml`
+
+**Problem**: Performer Docker images had no versioning or automated publishing; there was no way to reference a specific image in production.
+
+**Solution**: CalVer scheme (`YYYY.MM.DD[.N]`) with automated GHCR publishing.
+
+- `version` file — current CalVer string (e.g. `2026.05.05`); single source of truth
+- `registry` file — GHCR image prefix (`ghcr.io/vividynamics/coordinare-performer`)
+- `bin/validate-version` — checks format, valid date, not already tagged, not older than latest tag; run in CI
+- `bin/update-version` — increments the build suffix (`YYYY.MM.DD.N+1`) or rolls to a new day
+- `pr-ci.yml` update — after SC-007 size-gap check passes, builds and pushes `-base` and `-full` snapshot images to GHCR tagged with the branch name
+- `main-branch-build.yml` (new) — full release pipeline: `validate-version` → lint/test/coverage → create GitHub release + git tag → build+push versioned base and full images → retag both as `latest`
+- `sync-version-to-prs` — gracefully handles push rejections (branch protection, concurrent pushes) without failing the workflow
+
+---
+
+## Task 18: Dashboard UX improvements
+
+**File**: `src/coordinare/dashboard.py`
+
+**Fix 1 — Open Questions panel width**: `questions-card` was `class="card full"` (spanning all columns). Changed to `class="card"` so it occupies one column alongside other panels.
+
+**Fix 2 — Open Questions issue link**: Each open question now renders a "View issue ↗" link pointing to `s.issue_url` (the active card's GitHub issue URL). Previously questions were plain text with no path to the source. If no issue URL is available the question renders as plain text as before.
+
+---
+
 ## Completion Criteria
 
 All items in `tasks.md` marked complete, all new tests pass, `ruff check` clean.

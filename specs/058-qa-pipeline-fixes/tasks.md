@@ -90,6 +90,56 @@
 - [X] Change `active-work-card` and `awaiting-review-card` from `class="card full"` to `class="card"` (one column each)
 - [X] Fix symphony-fallback card misclassification: remove `pr_url`-based `monitoring_pr` inference; always route `IN_PROGRESS` fallback cards to Active Work
 
+## Task 11 — Performer dispatch loop (4 root causes)
+
+- [X] Wire `_perform_job` as `executor` in `agent/performer/src/performer/main.py` — fixes "no executor wired" silent failure
+- [X] Fix `check_status()` protocol shape: translate `JobStatus` → `PerformerResponse`-style dict with `status` key
+- [X] Fix shared instance state: introduce `_EphemeralJob` dataclass + `_active_jobs: dict[str, _EphemeralJob]`
+- [X] Pass `OPENAI_API_KEY` in `_build_job_payload` secrets so codex backend can resolve it inside the container
+
+## Task 12 — Infrastructure fixes (SSE, GQL transport, SubprocessTransport)
+
+- [X] Fix SSE EventSource relative URL: use `window.location.origin + '/events'` to avoid `/admin/events` resolution
+- [X] Fix concurrent GQL transport collision: wrap `AIOHTTPTransport` + `Client` access with `asyncio.Lock`
+- [X] Fix SubprocessTransport built with empty executable when `performer_endpoints` configured
+
+## Task 13 — Global Config page
+
+- [X] Implement `/admin` Global Config page: structured read-only view of live `ProjectConfiguration`
+
+## Task 14 — Assessor and error-detail fixes
+
+- [X] Fix assessor non-JSON fallback: treat non-JSON LLM response as error → block card with comment
+- [X] Improve error detail in blocked card GitHub comments: include raw error message and phase name
+- [X] Fix `check_health()` stale `_active_jobs`: clear terminal job entries so `idle` is returned correctly
+
+## Task 15 — Backend parameter wiring and CodexBackend fixes
+
+- [X] Fix `CodexBackend.start()`: wire `effort`, `temperature`, `max_tokens` into CLI invocation
+- [X] Add backend parameter wiring tests for all backends (codex, opencode, cursor, junie, claude)
+- [X] Move backend wiring/conformance tests from coordinare unit suite to performer package
+
+## Task 16 — API key injection for all backends
+
+- [X] Forward `ANTHROPIC_API_KEY` to ephemeral performer containers in `_build_job_payload`
+- [X] Inject `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` into subprocess env for opencode, junie, cursor backends
+- [X] Document Cursor and Junie volume-mount auth in `config.example.yaml`
+
+## Task 17 — CalVer versioning and GHCR CI pipeline
+
+- [X] Add `version` file (CalVer `YYYY.MM.DD[.N]`) and `registry` file (GHCR prefix)
+- [X] Add `bin/validate-version`: format check, valid date, not already tagged, not older than latest tag
+- [X] Add `bin/update-version`: day-roll and build-increment helpers
+- [X] Update `pr-ci.yml`: push snapshot `-base` and `-full` images to GHCR after SC-007 check
+- [X] Add `main-branch-build.yml`: validate-version → lint/test → GitHub release + tag → build+push versioned images → retag as `latest`
+- [X] Gracefully handle push rejection in `sync-version-to-prs` step
+- [X] Populate GitHub release notes body from merge commit message
+
+## Task 18 — Dashboard UX improvements
+
+- [X] Change `questions-card` from `class="card full"` to `class="card"` (one column)
+- [X] Render "View issue ↗" link per open question using `s.issue_url`
+
 ## CI / coverage housekeeping
 
 - [X] Fix `test_github_retry.py`: correct arg order for `RateLimitedGitHubError(retry_after, message)`
