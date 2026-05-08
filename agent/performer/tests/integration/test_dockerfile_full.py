@@ -6,12 +6,12 @@ plus the full tool flag set including browser.
 
 from __future__ import annotations
 
-import asyncio
-import json
 import subprocess
 import uuid
 
 import pytest
+
+from tests.conftest import wait_for_status
 
 
 @pytest.mark.asyncio
@@ -62,7 +62,7 @@ async def test_dockerfile_full_advertises_all_capabilities(require_docker: None,
     )
 
     if build_result.returncode != 0:
-        pytest.skip(f"docker build failed: {build_result.stderr.decode()}")
+        pytest.fail(f"docker build failed: {build_result.stderr.decode()}")
 
     # Test each backend individually (entrypoint.sh installs per BACKEND env var)
     # and verify that tool flags are present in all cases.
@@ -74,17 +74,11 @@ async def test_dockerfile_full_advertises_all_capabilities(require_docker: None,
         container_id: str | None = None
 
         try:
-            # Start container with BACKEND set (matching entrypoint.sh case statement)
             backend_name = "claude" if backend == "claude_code" else backend
             run_result = subprocess.run(
                 [
-                    "docker",
-                    "run",
-                    "-d",
-                    "-p",
-                    "0:8088",
-                    "-e",
-                    f"BACKEND={backend_name}",
+                    "docker", "run", "-d", "-p", "0:8088",
+                    "-e", f"BACKEND={backend_name}",
                     tag,
                 ],
                 capture_output=True,
@@ -93,11 +87,10 @@ async def test_dockerfile_full_advertises_all_capabilities(require_docker: None,
             )
 
             if run_result.returncode != 0:
-                pytest.skip(f"docker run with BACKEND={backend_name} failed: {run_result.stderr}")
+                pytest.fail(f"docker run with BACKEND={backend_name} failed: {run_result.stderr}")
 
             container_id = run_result.stdout.strip()
 
-            # Get port
             port_result = subprocess.run(
                 ["docker", "port", container_id, "8088/tcp"],
                 capture_output=True,
@@ -106,28 +99,13 @@ async def test_dockerfile_full_advertises_all_capabilities(require_docker: None,
             )
 
             if port_result.returncode != 0:
-                pytest.skip(f"docker port failed: {port_result.stderr}")
+                pytest.fail(f"docker port failed: {port_result.stderr}")
 
-            port_line = port_result.stdout.strip().split("\n")[0]
-            port = port_line.split(":")[-1]
+            port = port_result.stdout.strip().split("\n")[0].split(":")[-1]
 
-            # Wait for server startup and backend installation (npm/curl installs can be slow)
-            await asyncio.sleep(10)
+            # Poll until ready — npm/curl installs can take >10s
+            status_data = await wait_for_status(port, timeout=120.0)
 
-            # Hit /status
-            status_result = subprocess.run(
-                ["curl", "-s", "-f", f"http://127.0.0.1:{port}/status"],
-                capture_output=True,
-                timeout=5,
-                text=True,
-            )
-
-            if status_result.returncode != 0:
-                pytest.skip(f"curl /status failed for BACKEND={backend_name}: {status_result.stderr}")
-
-            status_data = json.loads(status_result.stdout)
-
-            # Collect backends and tool flags advertised across all backend configurations
             backends = status_data.get("capabilities", {}).get("backends", [])
             advertised_backends.update(backends)
             tool_flags = status_data.get("capabilities", {}).get("tool_flags", [])

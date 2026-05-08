@@ -14,7 +14,7 @@ RUN if [ "$BACKEND" = "claude_code" ]; then \
     elif [ "$BACKEND" = "codex" ]; then \
       printf '#!/bin/sh\n' > /usr/local/bin/codex && chmod +x /usr/local/bin/codex; \
     elif [ "$BACKEND" = "cursor" ]; then \
-      printf '#!/bin/sh\n' > /usr/local/bin/cursor && chmod +x /usr/local/bin/cursor; \
+      printf '#!/bin/sh\n' > /usr/local/bin/cursor-agent && chmod +x /usr/local/bin/cursor-agent; \
     elif [ "$BACKEND" = "junie" ]; then \
       printf '#!/bin/sh\n' > /usr/local/bin/junie && chmod +x /usr/local/bin/junie; \
     elif [ "$BACKEND" = "opencode" ]; then \

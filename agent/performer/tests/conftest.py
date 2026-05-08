@@ -1,8 +1,11 @@
 """Shared pytest fixtures for the performer test suite."""
 from __future__ import annotations
 
+import asyncio
+import json
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -63,7 +66,7 @@ def performer_base_image_built(docker_available: bool) -> str:
         check=False,
     )
     if result.returncode != 0:
-        pytest.skip(
+        pytest.fail(
             f"failed to build {BASE_IMAGE_TAG}: {result.stderr.decode()[-500:]}"
         )
     return BASE_IMAGE_TAG
@@ -72,3 +75,29 @@ def performer_base_image_built(docker_available: bool) -> str:
 @pytest.fixture
 def anyio_backend() -> str:
     return "asyncio"
+
+
+async def wait_for_status(port: str, timeout: float = 90.0) -> dict:
+    """Poll GET /status until the server responds or *timeout* seconds elapse.
+
+    Raises pytest.fail (not skip) on timeout so the test counts as a failure.
+    Uses a 2-second interval; the first attempt fires immediately.
+    """
+    deadline = time.monotonic() + timeout
+    last_stderr = ""
+    while True:
+        result = subprocess.run(
+            ["curl", "-s", "-f", f"http://127.0.0.1:{port}/status"],
+            capture_output=True,
+            timeout=5,
+            text=True,
+        )
+        if result.returncode == 0:
+            return json.loads(result.stdout)
+        last_stderr = result.stderr
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            pytest.fail(
+                f"Server on port {port} did not respond within {timeout:.0f}s: {last_stderr}"
+            )
+        await asyncio.sleep(min(2.0, remaining))

@@ -224,7 +224,9 @@ jobs:
 
   build-full:
     name: Build and Push Full Image
-    needs: create-tag
+    needs:
+      - create-tag
+      - build-base
     runs-on:
       - self-hosted
       - linux
@@ -251,7 +253,11 @@ jobs:
           REGISTRY=$(cat registry)
           VERSION=${{ needs.create-tag.outputs.version }}
 
-          docker build -t "${REGISTRY}-full:${VERSION}" -f agent/performer/Dockerfile.full agent/performer/
+          docker build \
+            --build-arg BASE_IMAGE="${REGISTRY}-base:${VERSION}" \
+            -t "${REGISTRY}-full:${VERSION}" \
+            -f agent/performer/Dockerfile.full \
+            agent/performer/
           docker push "${REGISTRY}-full:${VERSION}"
           echo "Pushed ${REGISTRY}-full:${VERSION}"
 

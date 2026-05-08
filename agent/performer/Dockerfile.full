@@ -1,4 +1,5 @@
-FROM coordinare-performer:base
+ARG BASE_IMAGE=coordinare-performer:base
+FROM $BASE_IMAGE
 
 # Install Playwright + Chromium for browser automation
 RUN pip install --no-cache-dir playwright && \

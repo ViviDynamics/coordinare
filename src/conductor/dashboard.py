@@ -46,6 +46,33 @@ def format_phase_label(phase: str) -> str:
     return phase.replace("_", " ").title()
 
 
+def is_session_stale(agent_dispatch_at_iso: str | None, threshold_minutes: int = 30) -> bool:
+    """Return True if the session has been running longer than threshold_minutes."""
+    if not agent_dispatch_at_iso:
+        return False
+    try:
+        dispatched = datetime.fromisoformat(agent_dispatch_at_iso.replace("Z", "+00:00"))
+        elapsed = datetime.now(UTC) - dispatched
+        return elapsed.total_seconds() > threshold_minutes * 60
+    except (ValueError, TypeError):
+        return False
+
+
+def compute_overall_health(subsystems: list[dict]) -> str:
+    """Return overall health of required subsystems.
+
+    Returns "healthy", "degraded", or "unavailable".
+    Non-required subsystems are excluded from the computation.
+    """
+    required = [s for s in subsystems if s.get("required")]
+    # Empty required list (no required subsystems) is intentionally "healthy"
+    if not required or all(s.get("status") == "healthy" for s in required):
+        return "healthy"
+    if any(s.get("status") == "unavailable" for s in required):
+        return "unavailable"
+    return "degraded"
+
+
 # ---------------------------------------------------------------------------
 # Performer pool widget (spec 056, T040)
 # ---------------------------------------------------------------------------
@@ -312,8 +339,31 @@ class DashboardStore:
         active_sessions_raw = daemon.state.get("active_sessions") or {}
         active_session_count = len(active_sessions_raw)
         active_session_summaries = []
-        board_summary = self._build_board_summary(daemon.state.get("board_snapshot"))
+        # Aggregate board snapshots: top-level first, then symphony states as fallback.
+        # When coordinare runs in symphony mode it has no top-level board of its own,
+        # so we must fold symphony board_snapshots together to get accurate counts.
+        _top_board = daemon.state.get("board_snapshot")
+        if not _top_board:
+            _agg_board: dict[str, list] = {}
+            for _ss in (daemon.state.get("symphony_states") or {}).values():
+                _sb = getattr(_ss, "board_snapshot", None)
+                if isinstance(_sb, dict):
+                    for _col, _items in _sb.items():
+                        if isinstance(_items, list):
+                            _agg_board.setdefault(_col, []).extend(_items)
+            # Use None (not {}) so _build_board_summary treats missing board correctly.
+            _top_board = _agg_board or None
+        board_summary = self._build_board_summary(_top_board)
+        # Prefer top-level last_poll_at; fall back to the most-recent symphony poll.
+        # The outer `is None` guard means last_poll_at_raw starts as None in the loop
+        # and is only ever set to a datetime (isinstance check on _sp), so the
+        # `_sp > last_poll_at_raw` comparison is always datetime vs datetime — safe.
         last_poll_at_raw = daemon.state.get("last_poll_at")
+        if last_poll_at_raw is None:
+            for _ss in (daemon.state.get("symphony_states") or {}).values():
+                _sp = getattr(_ss, "last_poll_at", None)
+                if isinstance(_sp, datetime) and (last_poll_at_raw is None or _sp > last_poll_at_raw):
+                    last_poll_at_raw = _sp
         last_poll_at = (
             last_poll_at_raw.isoformat()
             if isinstance(last_poll_at_raw, datetime)
@@ -354,6 +404,7 @@ class DashboardStore:
         if not active_session_summaries and phase in {
             "monitoring_agent",
             "monitoring_performer",
+            "monitoring_pr",   # performer pushed a PR and is now watching CI/review
             "relay_feedback",
         }:
             _top_stage_raw = daemon.state.get("performer_stage")
@@ -411,6 +462,7 @@ class DashboardStore:
             "active_session_count": active_session_count,
             "active_sessions": active_session_summaries,
             "subsystems": subsystems,
+            "overall_health": compute_overall_health(subsystems),
             "project_name": getattr(_cfg, "project_name", "") if (_cfg := daemon.state.get("config")) else "",
             "project_board_url": f"https://github.com/orgs/{_cfg.github_org}/projects/{_cfg.github_project_number}" if _cfg else "",
             "cycles_completed": cycles_completed,
@@ -526,104 +578,141 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
 <title>Coordinare Dashboard</title>
 <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
 <style>
+:root {
+  --color-bg-base:            #0d1117;
+  --color-bg-surface:         #161b22;
+  --color-bg-elevated:        #21262d;
+  --color-border:             #30363d;
+  --color-border-subtle:      #21262d;
+  --color-text-primary:       #c9d1d9;
+  --color-text-muted:         #8b949e;
+  --color-accent-blue:        #58a6ff;
+  --color-accent-green:       #3fb950;
+  --color-accent-yellow:      #d29922;
+  --color-accent-red:         #f85149;
+  --color-accent-orange:      #f0883e;
+  --color-healthy:            var(--color-accent-green);
+  --color-degraded:           var(--color-accent-yellow);
+  --color-error:              var(--color-accent-red);
+  --color-active:             var(--color-accent-blue);
+  --color-bg-healthy:         #1f4a1f;
+  --color-bg-degraded:        #4a3a1f;
+  --color-bg-error:           #4a1f1f;
+  --color-bg-accent:          #1a2a3a;
+  --color-bg-subtle:          #1e1e2e;
+  --color-ev-progress:        #1a2a1a;
+  --color-ev-thinking:        #2a2a1a;
+  --color-ev-error:           #2a1a1a;
+  --color-ev-output:          #1e1e1e;
+  --color-bg-row-hover:       #132035;
+  --color-bg-row-selected:    #1b2940;
+  --color-bg-pill:            #111827;
+  --color-accent-blue-subtle: #58a6ff33;
+  --color-bar-track:          #333;
+  --color-bar-fill:           #27ae60;
+  --color-bar-full:           #e74c3c;
+  --color-btn-success:        #238636;
+  --color-bg-delete:          #3d1f1f;
+  --color-border-delete:      #6e2e2e;
+}
 * { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: monospace; font-size: 14px; background: #0d1117; color: #c9d1d9; padding: 16px; }
-h1 { font-size: 18px; color: #58a6ff; margin-bottom: 16px; }
-h2 { font-size: 13px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 8px; margin-top: 16px; }
+body { font-family: monospace; font-size: 14px; background: var(--color-bg-base); color: var(--color-text-primary); padding: 16px; }
+h1 { font-size: 18px; color: var(--color-accent-blue); margin-bottom: 16px; }
+h2 { font-size: 13px; color: var(--color-text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 8px; margin-top: 16px; }
 .grid { display: grid; grid-template-columns: 1fr; gap: 12px; }
 @media (min-width: 900px) {
   .grid { grid-template-columns: 1fr 1fr; }
   .full { grid-column: 1 / -1; }
 }
-.card { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 12px; }
+.card { background: var(--color-bg-surface); border: 1px solid var(--color-border); border-radius: 6px; padding: 12px; }
 .phase { font-size: 22px; font-weight: bold; }
-.phase-idle { color: #8b949e; }
-.phase-dispatching, .phase-monitoring { color: #58a6ff; }
-.phase-merging { color: #3fb950; }
-.phase-blocked { color: #d29922; }
-.phase-recovery { color: #f85149; }
-.phase-desc { font-size: 12px; color: #8b949e; margin-top: 4px; }
+.phase-idle { color: var(--color-text-muted); }
+.phase-dispatching, .phase-monitoring { color: var(--color-accent-blue); }
+.phase-merging { color: var(--color-accent-green); }
+.phase-blocked { color: var(--color-accent-yellow); }
+.phase-recovery { color: var(--color-accent-red); }
+.phase-desc { font-size: 12px; color: var(--color-text-muted); margin-top: 4px; }
 .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px; margin-right: 4px; }
-.badge-healthy { background: #1f4a1f; color: #3fb950; }
-.badge-degraded { background: #4a3a1f; color: #d29922; }
-.badge-unavailable { background: #4a1f1f; color: #f85149; }
-.badge-success { background: #1f4a1f; color: #3fb950; }
-.badge-error { background: #4a1f1f; color: #f85149; }
-.badge-required { background: #1a2a3a; color: #58a6ff; }
-.badge-optional { background: #1e1e2e; color: #8b949e; }
-.label { color: #8b949e; margin-right: 6px; }
-a { color: #58a6ff; text-decoration: none; }
+.badge-healthy { background: var(--color-bg-healthy); color: var(--color-accent-green); }
+.badge-degraded { background: var(--color-bg-degraded); color: var(--color-accent-yellow); }
+.badge-unavailable { background: var(--color-bg-error); color: var(--color-accent-red); }
+.badge-success { background: var(--color-bg-healthy); color: var(--color-accent-green); }
+.badge-error { background: var(--color-bg-error); color: var(--color-accent-red); }
+.badge-required { background: var(--color-bg-accent); color: var(--color-accent-blue); }
+.badge-optional { background: var(--color-bg-subtle); color: var(--color-text-muted); }
+.label { color: var(--color-text-muted); margin-right: 6px; }
+a { color: var(--color-accent-blue); text-decoration: none; }
 a:hover { text-decoration: underline; }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
-th { text-align: left; color: #8b949e; padding: 4px 8px; border-bottom: 1px solid #30363d; }
-td { padding: 4px 8px; border-bottom: 1px solid #21262d; }
-.empty-state { color: #8b949e; font-style: italic; padding: 8px 0; }
-.card-warning { border-color: #d29922 !important; }
-.empty-state-warning { color: #d29922; font-weight: bold; padding: 8px 0; }
+th { text-align: left; color: var(--color-text-muted); padding: 4px 8px; border-bottom: 1px solid var(--color-border); }
+td { padding: 4px 8px; border-bottom: 1px solid var(--color-bg-elevated); }
+.empty-state { color: var(--color-text-muted); font-style: italic; padding: 8px 0; }
+.card-warning { border-color: var(--color-accent-yellow) !important; }
+.empty-state-warning { color: var(--color-accent-yellow); font-weight: bold; padding: 8px 0; }
 .metric-row { display: flex; gap: 24px; flex-wrap: wrap; }
 .metric { display: flex; flex-direction: column; }
-.metric-value { font-size: 20px; font-weight: bold; color: #c9d1d9; }
-.metric-label { font-size: 11px; color: #8b949e; }
-.daemon-start { font-size: 13px; color: #8b949e; margin-top: 8px; }
-.daemon-start strong { color: #d29922; }
+.metric-value { font-size: 20px; font-weight: bold; color: var(--color-text-primary); }
+.metric-label { font-size: 11px; color: var(--color-text-muted); }
+.daemon-start { font-size: 13px; color: var(--color-text-muted); margin-top: 8px; }
+.daemon-start strong { color: var(--color-accent-yellow); }
 .action-btn {
   margin-top: 10px; padding: 5px 12px; font-size: 12px; font-weight: 600;
-  background: #21262d; color: #58a6ff; border: 1px solid #30363d;
+  background: var(--color-bg-elevated); color: var(--color-accent-blue); border: 1px solid var(--color-border);
   border-radius: 6px; cursor: pointer;
 }
-.action-btn:hover:not(:disabled) { background: #30363d; }
+.action-btn:hover:not(:disabled) { background: var(--color-border); }
 .action-btn:disabled { opacity: 0.45; cursor: not-allowed; }
-.action-msg { font-size: 11px; color: #8b949e; margin-top: 4px; min-height: 14px; }
+.action-msg { font-size: 11px; color: var(--color-text-muted); margin-top: 4px; min-height: 14px; }
 #disconnected-banner {
   display: none; position: fixed; top: 0; left: 0; right: 0;
-  background: #4a1f1f; color: #f85149; text-align: center;
+  background: var(--color-bg-error); color: var(--color-accent-red); text-align: center;
   padding: 8px; font-weight: bold; z-index: 999;
 }
 #flow-chart { overflow-x: auto; }
 #flow-chart svg { max-width: 100%; height: auto; }
-.qa-round { margin-bottom: 10px; padding: 8px; background: #0d1117; border-radius: 4px; border-left: 3px solid #30363d; }
-.qa-round-q { color: #8b949e; font-size: 12px; margin-bottom: 4px; }
+.qa-round { margin-bottom: 10px; padding: 8px; background: var(--color-bg-base); border-radius: 4px; border-left: 3px solid var(--color-border); }
+.qa-round-q { color: var(--color-text-muted); font-size: 12px; margin-bottom: 4px; }
 .qa-round-q li { margin-left: 16px; line-height: 1.6; }
-.qa-round-a { color: #c9d1d9; font-size: 13px; margin-top: 4px; white-space: pre-wrap; }
-.session-age { font-size: 12px; color: #58a6ff; margin-top: 6px; }
-.ev-progress  { background: #1a2a1a; color: #3fb950; }
-.ev-tool_use  { background: #1a2a3a; color: #58a6ff; }
-.ev-thinking  { background: #2a2a1a; color: #d29922; }
-.ev-cost      { background: #1e1e2e; color: #8b949e; }
-.ev-error     { background: #2a1a1a; color: #f85149; }
-.ev-output    { background: #1e1e1e; color: #8b949e; }
+.qa-round-a { color: var(--color-text-primary); font-size: 13px; margin-top: 4px; white-space: pre-wrap; }
+.session-age { font-size: 12px; color: var(--color-accent-blue); margin-top: 6px; }
+.ev-progress  { background: var(--color-ev-progress); color: var(--color-accent-green); }
+.ev-tool_use  { background: var(--color-bg-accent); color: var(--color-accent-blue); }
+.ev-thinking  { background: var(--color-ev-thinking); color: var(--color-accent-yellow); }
+.ev-cost      { background: var(--color-bg-subtle); color: var(--color-text-muted); }
+.ev-error     { background: var(--color-ev-error); color: var(--color-accent-red); }
+.ev-output    { background: var(--color-ev-output); color: var(--color-text-muted); }
 /* Performers card */
 .perf-header { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
 .perf-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
-.perf-running { background: #3fb950; animation: pulse-dot 1.5s ease-in-out infinite; }
-.perf-idle    { background: #8b949e; }
-.perf-error   { background: #f85149; }
+.perf-running { background: var(--color-accent-green); animation: pulse-dot 1.5s ease-in-out infinite; }
+.perf-idle    { background: var(--color-text-muted); }
+.perf-error   { background: var(--color-accent-red); }
 @keyframes pulse-dot { 0%,100% { opacity: 1; box-shadow: 0 0 0 0 rgba(63,185,80,.5); } 50% { opacity: 0.8; box-shadow: 0 0 0 5px rgba(63,185,80,0); } }
-.perf-metrics { display: flex; gap: 20px; flex-wrap: wrap; font-size: 12px; margin-bottom: 10px; padding: 8px; background: #0d1117; border-radius: 4px; }
+.perf-metrics { display: flex; gap: 20px; flex-wrap: wrap; font-size: 12px; margin-bottom: 10px; padding: 8px; background: var(--color-bg-base); border-radius: 4px; }
 .perf-metric { display: flex; flex-direction: column; }
-.perf-metric-value { font-size: 15px; font-weight: bold; color: #c9d1d9; }
-.perf-metric-label { font-size: 10px; color: #8b949e; }
-.perf-log-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; font-size: 12px; color: #8b949e; border-top: 1px solid #21262d; padding-top: 8px; }
-.perf-log { max-height: 300px; overflow-y: auto; background: #0d1117; border: 1px solid #21262d; border-radius: 4px; font-size: 12px; }
-.perf-log-row { display: grid; grid-template-columns: 68px 82px 1fr; gap: 4px; padding: 3px 6px; border-bottom: 1px solid #161b22; align-items: start; }
+.perf-metric-value { font-size: 15px; font-weight: bold; color: var(--color-text-primary); }
+.perf-metric-label { font-size: 10px; color: var(--color-text-muted); }
+.perf-log-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; font-size: 12px; color: var(--color-text-muted); border-top: 1px solid var(--color-bg-elevated); padding-top: 8px; }
+.perf-log { max-height: 300px; overflow-y: auto; background: var(--color-bg-base); border: 1px solid var(--color-bg-elevated); border-radius: 4px; font-size: 12px; }
+.perf-log-row { display: grid; grid-template-columns: 68px 82px 1fr; gap: 4px; padding: 3px 6px; border-bottom: 1px solid var(--color-bg-surface); align-items: start; }
 .perf-log-row:last-child { border-bottom: none; }
-.perf-log-time { color: #8b949e; white-space: nowrap; font-size: 11px; padding-top: 2px; }
-.perf-log-text { word-break: break-word; color: #c9d1d9; }
-.jump-btn { background: #21262d; border: 1px solid #30363d; color: #58a6ff; border-radius: 3px; padding: 2px 8px; cursor: pointer; font-size: 11px; font-family: monospace; }
-.perf-list-row { display: flex; align-items: center; gap: 10px; padding: 10px; background: #0d1117; border: 1px solid #21262d; border-radius: 4px; cursor: pointer; transition: border-color .15s; }
-.perf-list-row:hover { border-color: #58a6ff; }
-.perf-list-chevron { margin-left: auto; color: #8b949e; font-size: 14px; }
-.perf-back-btn { background: none; border: none; color: #58a6ff; cursor: pointer; font-size: 13px; font-family: monospace; padding: 0; margin-bottom: 10px; display: flex; align-items: center; gap: 4px; }
+.perf-log-time { color: var(--color-text-muted); white-space: nowrap; font-size: 11px; padding-top: 2px; }
+.perf-log-text { word-break: break-word; color: var(--color-text-primary); }
+.jump-btn { background: var(--color-bg-elevated); border: 1px solid var(--color-border); color: var(--color-accent-blue); border-radius: 3px; padding: 2px 8px; cursor: pointer; font-size: 11px; font-family: monospace; }
+.perf-list-row { display: flex; align-items: center; gap: 10px; padding: 10px; background: var(--color-bg-base); border: 1px solid var(--color-bg-elevated); border-radius: 4px; cursor: pointer; transition: border-color .15s; }
+.perf-list-row:hover { border-color: var(--color-accent-blue); }
+.perf-list-chevron { margin-left: auto; color: var(--color-text-muted); font-size: 14px; }
+.perf-back-btn { background: none; border: none; color: var(--color-accent-blue); cursor: pointer; font-size: 13px; font-family: monospace; padding: 0; margin-bottom: 10px; display: flex; align-items: center; gap: 4px; }
 /* 049: Navbar */
-#navbar { display: flex; align-items: center; gap: 0; background: #161b22; border-bottom: 1px solid #30363d; padding: 0 16px; margin: -16px -16px 16px -16px; position: sticky; top: 0; z-index: 100; }
-#navbar .nav-brand { color: #58a6ff; font-weight: bold; font-size: 15px; padding: 12px 16px 12px 0; margin-right: 8px; border-right: 1px solid #30363d; white-space: nowrap; }
-#navbar a.nav-link { color: #8b949e; text-decoration: none; padding: 12px 14px; font-size: 13px; border-bottom: 2px solid transparent; transition: color .15s, border-color .15s; display: inline-block; }
-#navbar a.nav-link:hover { color: #c9d1d9; text-decoration: none; }
-#navbar a.nav-link.nav-active { color: #58a6ff; border-bottom-color: #58a6ff; }
+#navbar { display: flex; align-items: center; gap: 0; background: var(--color-bg-surface); border-bottom: 1px solid var(--color-border); padding: 0 16px; margin: -16px -16px 16px -16px; position: sticky; top: 0; z-index: 100; }
+#navbar .nav-brand { color: var(--color-accent-blue); font-weight: bold; font-size: 15px; padding: 12px 16px 12px 0; margin-right: 8px; border-right: 1px solid var(--color-border); white-space: nowrap; }
+#navbar a.nav-link { color: var(--color-text-muted); text-decoration: none; padding: 12px 14px; font-size: 13px; border-bottom: 2px solid transparent; transition: color .15s, border-color .15s; display: inline-block; }
+#navbar a.nav-link:hover { color: var(--color-text-primary); text-decoration: none; }
+#navbar a.nav-link.nav-active { color: var(--color-accent-blue); border-bottom-color: var(--color-accent-blue); }
 #navbar .nav-spacer { flex: 1; }
-#navbar .nav-status-dot { width: 8px; height: 8px; border-radius: 50%; background: #3fb950; display: inline-block; margin-right: 6px; }
-#navbar .nav-status-dot.disconnected { background: #f85149; }
-#navbar-hamburger { display: none; background: none; border: none; color: #8b949e; cursor: pointer; font-size: 20px; padding: 10px; margin-left: auto; }
+#navbar .nav-status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--color-accent-green); display: inline-block; margin-right: 6px; }
+#navbar .nav-status-dot.disconnected { background: var(--color-accent-red); }
+#navbar-hamburger { display: none; background: none; border: none; color: var(--color-text-muted); cursor: pointer; font-size: 20px; padding: 10px; margin-left: auto; }
 #navbar-menu { display: flex; align-items: center; gap: 0; }
 @media (max-width: 767px) {
   #navbar { flex-wrap: wrap; }
@@ -635,18 +724,18 @@ td { padding: 4px 8px; border-bottom: 1px solid #21262d; }
 /* 049: Active-performer tiles */
 #active-performers { margin-bottom: 4px; }
 .ap-tiles { display: grid; grid-template-columns: 1fr; gap: 10px; }
-.ap-tile { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 12px; transition: border-color .15s; }
-.ap-tile:hover { border-color: #58a6ff33; }
+.ap-tile { background: var(--color-bg-base); border: 1px solid var(--color-border); border-radius: 6px; padding: 12px; transition: border-color .15s; }
+.ap-tile:hover { border-color: var(--color-accent-blue-subtle); }
 .ap-tile-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
-.ap-tile-role { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: #8b949e; display: flex; align-items: center; gap: 6px; }
-.ap-tile-phase { font-size: 11px; color: #8b949e; background: #161b22; border: 1px solid #30363d; border-radius: 999px; padding: 2px 8px; }
-.ap-tile-title { font-size: 14px; font-weight: bold; color: #c9d1d9; margin-bottom: 8px; line-height: 1.35; word-break: break-word; }
+.ap-tile-role { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--color-text-muted); display: flex; align-items: center; gap: 6px; }
+.ap-tile-phase { font-size: 11px; color: var(--color-text-muted); background: var(--color-bg-surface); border: 1px solid var(--color-border); border-radius: 999px; padding: 2px 8px; }
+.ap-tile-title { font-size: 14px; font-weight: bold; color: var(--color-text-primary); margin-bottom: 8px; line-height: 1.35; word-break: break-word; }
 .ap-tile-meta { display: flex; gap: 8px; flex-wrap: wrap; }
-.ap-pill { display: inline-flex; align-items: center; gap: 4px; border: 1px solid #30363d; border-radius: 999px; padding: 2px 8px; font-size: 11px; color: #8b949e; background: #111827; }
-.ap-pill strong { color: #c9d1d9; font-weight: 600; }
-.ap-tile-elapsed { color: #58a6ff; }
-.ap-idle { background: #0d1117; border: 1px dashed #30363d; border-radius: 6px; padding: 12px; }
-.ap-idle-title { color: #c9d1d9; font-size: 13px; font-weight: bold; margin-bottom: 8px; }
+.ap-pill { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--color-border); border-radius: 999px; padding: 2px 8px; font-size: 11px; color: var(--color-text-muted); background: var(--color-bg-pill); }
+.ap-pill strong { color: var(--color-text-primary); font-weight: 600; }
+.ap-tile-elapsed { color: var(--color-accent-blue); }
+.ap-idle { background: var(--color-bg-base); border: 1px dashed var(--color-border); border-radius: 6px; padding: 12px; }
+.ap-idle-title { color: var(--color-text-primary); font-size: 13px; font-weight: bold; margin-bottom: 8px; }
 .ap-idle-rows { display: flex; flex-direction: column; gap: 8px; }
 .ap-idle-row { display: flex; gap: 8px; flex-wrap: wrap; }
 /* 053: Workflow card readability without expand/collapse controls */
@@ -654,21 +743,21 @@ td { padding: 4px 8px; border-bottom: 1px solid #21262d; }
 /* 053: Performers page list/detail drilldown */
 #performers-page-content table { table-layout: fixed; }
 #performers-page tbody tr.performers-row { cursor: pointer; }
-#performers-page tbody tr.performers-row:hover { background: #132035; }
-#performers-page tbody tr.performers-row.row-selected { background: #1b2940; }
-#performers-page tbody tr.performers-row:focus-visible { outline: 2px solid #58a6ff; outline-offset: -2px; }
-#performers-page-detail-view { margin-top: 12px; border-top: 1px solid #30363d; padding-top: 12px; }
+#performers-page tbody tr.performers-row:hover { background: var(--color-bg-row-hover); }
+#performers-page tbody tr.performers-row.row-selected { background: var(--color-bg-row-selected); }
+#performers-page tbody tr.performers-row:focus-visible { outline: 2px solid var(--color-accent-blue); outline-offset: -2px; }
+#performers-page-detail-view { margin-top: 12px; border-top: 1px solid var(--color-border); padding-top: 12px; }
 #performers-page-detail { font-size: 12px; line-height: 1.5; }
-#performers-page-back:focus-visible { outline: 2px solid #58a6ff; outline-offset: 2px; border-radius: 3px; }
-#performers-page .muted { color: #8b949e; }
+#performers-page-back:focus-visible { outline: 2px solid var(--color-accent-blue); outline-offset: 2px; border-radius: 3px; }
+#performers-page .muted { color: var(--color-text-muted); }
 #performers-page .detail-badge { display: inline-block; margin-left: 8px; }
-#performers-page .detail-block { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 10px; margin-top: 10px; }
+#performers-page .detail-block { background: var(--color-bg-base); border: 1px solid var(--color-border); border-radius: 6px; padding: 10px; margin-top: 10px; }
 #performers-page .detail-log { max-height: 160px; overflow-y: auto; font-family: monospace; font-size: 11px; }
 #performers-page .detail-list { margin: 6px 0 0 0; padding-left: 18px; }
 .role-status-badge { display: inline-block; padding: 1px 7px; border-radius: 3px; font-size: 11px; font-weight: bold; }
-.role-active { background: #1f4a1f; color: #3fb950; }
-.role-idle { background: #1e1e2e; color: #8b949e; }
-.perf-page-events { max-height: 120px; overflow-y: auto; font-size: 11px; color: #8b949e; }
+.role-active { background: var(--color-bg-healthy); color: var(--color-accent-green); }
+.role-idle { background: var(--color-bg-subtle); color: var(--color-text-muted); }
+.perf-page-events { max-height: 120px; overflow-y: auto; font-size: 11px; color: var(--color-text-muted); }
 </style>
 </head>
 <body>
@@ -685,7 +774,7 @@ td { padding: 4px 8px; border-bottom: 1px solid #21262d; }
     <a href="/admin/config" class="nav-link" onclick="navigate(event,'/admin/config')">Global Config</a>
   </div>
   <span class="nav-spacer"></span>
-  <span><span id="nav-sse-dot" class="nav-status-dot"></span><span id="project-link" style="font-size:12px;color:#8b949e"></span></span>
+  <span role="status" aria-live="polite"><span id="nav-sse-dot" class="nav-status-dot" title="SSE connected"></span><span id="project-link" style="font-size:12px;color:var(--color-text-muted)"></span></span>
 </nav>
 <div id="main-content">
 <!-- 049: Dashboard page -->
@@ -712,11 +801,20 @@ td { padding: 4px 8px; border-bottom: 1px solid #21262d; }
   <div id="active-work-section">
     <span class="empty-state">No performers running</span>
   </div>
+  <div id="card-detail-view" style="display:none">
+    <button class="perf-back-btn" onclick="closeCardDetail()">&#8592; Active Work</button>
+    <div id="card-detail-content"></div>
+  </div>
 </div>
 
-<div class="card" id="awaiting-review-card" style="display:none">
-  <h2>Awaiting Human Review</h2>
+<div class="card" id="awaiting-review-card" style="display:none;border-left:3px solid var(--color-accent-yellow)">
+  <h2 style="color:var(--color-accent-yellow)">&#9888; Awaiting Your Review</h2>
   <div id="awaiting-review-section"></div>
+</div>
+
+<div id="idle-panel" class="card" style="display:none">
+  <h2>Coordinare is Idle</h2>
+  <div id="idle-panel-content"></div>
 </div>
 
 <div class="card">
@@ -736,13 +834,13 @@ td { padding: 4px 8px; border-bottom: 1px solid #21262d; }
     <div class="perf-header">
       <span id="perf-dot" class="perf-dot perf-running"></span>
       <span id="perf-backend" class="badge badge-required">performer</span>
-      <span class="label">Session:</span><code id="perf-session" style="font-size:12px;color:#c9d1d9">—</code>
-      <span class="label" style="margin-left:8px">Uptime:</span><span id="perf-age" style="color:#58a6ff;font-size:12px">—</span>
+      <span class="label">Session:</span><code id="perf-session" style="font-size:12px;color:var(--color-text-primary)">—</code>
+      <span class="label" style="margin-left:8px">Uptime:</span><span id="perf-age" style="color:var(--color-accent-blue);font-size:12px">—</span>
     </div>
     <div style="padding:4px 0 2px 0;min-height:1.4em">
       <span id="perf-backend-url" style="font-size:12px"></span>
     </div>
-    <div style="padding:2px 0 4px 0;min-height:1.2em;font-size:12px;color:#8b949e">
+    <div style="padding:2px 0 4px 0;min-height:1.2em;font-size:12px;color:var(--color-text-muted)">
       <span id="perf-session-stats"></span>
     </div>
     <div class="perf-metrics">
@@ -755,13 +853,13 @@ td { padding: 4px 8px; border-bottom: 1px solid #21262d; }
       <span>Live Activity Log</span>
       <button id="perf-jump-btn" class="jump-btn" style="display:none" onclick="jumpToLatest()">&#8595; Jump to latest</button>
     </div>
-    <div id="perf-log" class="perf-log"><div style="padding:8px;color:#8b949e;font-style:italic">Waiting for events&hellip;</div></div>
+    <div id="perf-log" class="perf-log"><div style="padding:8px;color:var(--color-text-muted);font-style:italic">Waiting for events&hellip;</div></div>
     <details id="perf-logs-details" style="margin-top:10px">
-      <summary style="cursor:pointer;font-size:12px;color:#8b949e;user-select:none">Process Logs (stderr) <span id="perf-logs-count"></span></summary>
+      <summary style="cursor:pointer;font-size:12px;color:var(--color-text-muted);user-select:none">Process Logs (stderr) <span id="perf-logs-count"></span></summary>
       <div id="perf-logs-jump-wrap" style="display:none;text-align:right;padding:2px 0">
         <button class="jump-btn" onclick="jumpToLatestLogs()">&#8595; Jump to latest</button>
       </div>
-      <div id="perf-logs" class="perf-log" style="margin-top:4px;font-family:monospace;font-size:11px"><div style="padding:8px;color:#8b949e;font-style:italic">No logs yet&hellip;</div></div>
+      <div id="perf-logs" class="perf-log" style="margin-top:4px;font-family:monospace;font-size:11px"><div style="padding:8px;color:var(--color-text-muted);font-style:italic">No logs yet&hellip;</div></div>
     </details>
   </div>
 </div>
@@ -1012,6 +1110,19 @@ function fmtAge(iso) {
 function humanPhase(phase) {
   return esc(String(phase || '').replace(/_/g, ' ').replace(/\\b\\w/g, function(c) { return c.toUpperCase(); }));
 }
+var formatPhaseLabel = humanPhase;
+
+function computeOverallHealth(subsystems) {
+  var required = (subsystems || []).filter(function(s) { return s.required; });
+  if (!required.length || required.every(function(s) { return s.status === 'healthy'; })) return 'healthy';
+  if (required.some(function(s) { return s.status === 'unavailable'; })) return 'unavailable';
+  return 'degraded';
+}
+
+function isIdle(s) {
+  var sessions = Array.isArray(s.active_sessions) ? s.active_sessions : [];
+  return sessions.length === 0 && s.phase === 'idle';
+}
 
 function renderCycleHistoryInto(container, cycleHistory) {
   if (!container) return;
@@ -1020,7 +1131,7 @@ function renderCycleHistoryInto(container, cycleHistory) {
     container.innerHTML = '<span class="empty-state">No cycles completed yet</span>';
     return;
   }
-  container.innerHTML = '<table><thead><tr>' +
+  container.innerHTML = '<div style="overflow-x:auto"><table><thead><tr>' +
     '<th>Time</th><th>Phase</th><th>Duration</th><th>Outcome</th>' +
     '</tr></thead><tbody>' +
     history.map(function(e) {
@@ -1031,7 +1142,7 @@ function renderCycleHistoryInto(container, cycleHistory) {
         '<td><span class="badge badge-' + esc(e.outcome || 'success') + '">' + esc(e.outcome || 'success') + '</span></td>' +
         '</tr>';
     }).join('') +
-    '</tbody></table>';
+    '</tbody></table></div>';
 }
 
 function renderState(s) {
@@ -1067,6 +1178,50 @@ function renderState(s) {
 
   // Active Work + Awaiting Review panels
   renderActiveWorkPanels(s);
+
+  // Idle state panel (059 Phase G)
+  var idlePanel = document.getElementById('idle-panel');
+  var workCard = document.getElementById('active-work-card');
+  if (idlePanel) {
+    if (isIdle(s)) {
+      idlePanel.style.display = '';
+      if (workCard) workCard.style.display = 'none';
+      var idleSummary = (s.board_summary && typeof s.board_summary === 'object') ? s.board_summary : {};
+      var bCount = function(k) { var v = idleSummary[k]; return Number.isFinite(v) ? v : 0; };
+      var idleTotal = bCount('TODO') + bCount('IN_PROGRESS') + bCount('IN_REVIEW') + bCount('DONE');
+      var idleInProg = bCount('IN_PROGRESS');
+      var idlePoll = s.last_poll_at ? esc(fmtTime(s.last_poll_at)) : '\\u2014';
+      var idleCycles = s.cycles_completed != null ? esc(String(s.cycles_completed)) : '\\u2014';
+      var idleFilter = s.assignee_filter ? ' <span style="color:var(--color-text-muted);font-size:12px">(filter: ' + esc(s.assignee_filter) + ')</span>' : '';
+      document.getElementById('idle-panel-content').innerHTML =
+        '<table style="border-collapse:collapse;font-size:13px">' +
+          '<tr><td style="padding:4px 12px 4px 0;color:var(--color-text-muted)">Board total</td>' +
+              '<td style="padding:4px 0"><strong>' + idleTotal + '</strong>' + idleFilter + '</td></tr>' +
+          '<tr><td style="padding:4px 12px 4px 0;color:var(--color-text-muted)">In progress</td>' +
+              '<td style="padding:4px 0"><strong>' + idleInProg + '</strong></td></tr>' +
+          '<tr><td style="padding:4px 12px 4px 0;color:var(--color-text-muted)">Last poll</td>' +
+              '<td style="padding:4px 0"><strong>' + idlePoll + '</strong></td></tr>' +
+          '<tr><td style="padding:4px 12px 4px 0;color:var(--color-text-muted)">Cycles completed</td>' +
+              '<td style="padding:4px 0"><strong>' + idleCycles + '</strong></td></tr>' +
+        '</table>';
+    } else {
+      idlePanel.style.display = 'none';
+      if (workCard) workCard.style.display = '';
+    }
+  }
+
+  // T032: Live-update card detail view if one is open
+  if (_selectedCardId) {
+    var sessions = Array.isArray(s.active_sessions) ? s.active_sessions : [];
+    var activeSess = sessions.find(function(ss) { return ss.card_id === _selectedCardId; });
+    if (activeSess) {
+      var detailContent = document.getElementById('card-detail-content');
+      if (detailContent) detailContent.innerHTML = renderCardDetailContent(activeSess, s);
+    } else {
+      // Session ended while detail was open — close back to the list.
+      closeCardDetail();
+    }
+  }
 
   // 046: Dependency blockers
   var depCard = document.getElementById('dependency-blockers-card');
@@ -1113,7 +1268,7 @@ function renderState(s) {
     utilCard.style.display = '';
     utilTbody.innerHTML = s.role_utilization.map(function(r) {
       var pct = r.max > 0 ? Math.min(100, Math.round(r.active / r.max * 100)) : 0;
-      var bar = '<div style="background:#ddd;border-radius:3px;height:8px;width:60px;display:inline-block;vertical-align:middle"><div style="background:' + (pct >= 100 ? '#e74c3c' : '#27ae60') + ';height:100%;width:' + pct + '%;border-radius:3px"></div></div>';
+      var bar = '<div style="background:var(--color-bar-track);border-radius:3px;height:8px;width:60px;display:inline-block;vertical-align:middle"><div style="background:' + (pct >= 100 ? 'var(--color-bar-full)' : 'var(--color-bar-fill)') + ';height:100%;width:' + pct + '%;border-radius:3px"></div></div>';
       return '<tr><td>' + esc(r.role) + '</td><td>' + bar + ' ' + r.active + ' / ' + r.max + '</td><td>' + (r.queued || 0) + '</td></tr>';
     }).join('');
   } else {
@@ -1181,7 +1336,7 @@ function renderState(s) {
       }).join('');
       var ans = round.answer ? '<div class="qa-round-a">&#x1F4AC; ' + esc(round.answer) + '</div>' : '';
       return '<div class="qa-round">' +
-        '<div style="font-size:11px;color:#8b949e;margin-bottom:4px">Round ' + (i+1) + '</div>' +
+        '<div style="font-size:11px;color:var(--color-text-muted);margin-bottom:4px">Round ' + (i+1) + '</div>' +
         (qs ? '<div class="qa-round-q"><ul>' + qs + '</ul></div>' : '') +
         ans +
         '</div>';
@@ -1202,7 +1357,7 @@ function renderState(s) {
     a.href = s.project_board_url;
     a.target = '_blank';
     a.rel = 'noopener';
-    a.style.cssText = 'color:#58a6ff;text-decoration:none';
+    a.style.cssText = 'color:var(--color-accent-blue);text-decoration:none';
     a.textContent = s.project_name + ' Board';
     linkEl.appendChild(a);
   }
@@ -1230,19 +1385,35 @@ function renderState(s) {
   if (!s.subsystems || s.subsystems.length === 0) {
     subsEl.innerHTML = '<span class="empty-state">No subsystems registered</span>';
   } else {
-    subsEl.innerHTML = '<table><thead><tr>' +
-      '<th>Subsystem</th><th>Status</th><th>Required</th><th>Details</th>' +
-      '</tr></thead><tbody>' +
-      s.subsystems.map(function(sub) {
-        return '<tr>' +
-          '<td>' + esc(sub.name) + '</td>' +
-          '<td><span class="badge badge-' + sub.status + '">' + sub.status + '</span></td>' +
-          '<td><span class="badge ' + (sub.required ? 'badge-required' : 'badge-optional') + '">' +
-            (sub.required ? 'required' : 'optional') + '</span></td>' +
-          '<td>' + esc(sub.details || '') + '</td>' +
-          '</tr>';
-      }).join('') +
-      '</tbody></table>';
+    var overall = s.overall_health || computeOverallHealth(s.subsystems);
+    var isHealthy = overall === 'healthy';
+    var summaryIcon = isHealthy ? '&#9679;' : (overall === 'unavailable' ? '&#10005;' : '&#9888;');
+    var summaryClass = isHealthy ? 'color:var(--color-healthy)' : (overall === 'unavailable' ? 'color:var(--color-error)' : 'color:var(--color-degraded)');
+    var degradedCount = s.subsystems.filter(function(sub) { return sub.required && sub.status !== 'healthy'; }).length;
+    var summaryText = isHealthy
+      ? 'All systems healthy'
+      : (degradedCount + (degradedCount === 1 ? ' system ' : ' systems ') + (overall === 'unavailable' ? 'unavailable' : 'degraded'));
+    var rows = s.subsystems.map(function(sub) {
+      var rowStyle = sub.status !== 'healthy' ? ' style="background:var(--color-bg-' + (sub.status === 'unavailable' ? 'error' : 'degraded') + ')"' : '';
+      return '<tr' + rowStyle + '>' +
+        '<td>' + esc(sub.name) + '</td>' +
+        '<td><span class="badge badge-' + esc(sub.status) + '">' + esc(sub.status) + '</span></td>' +
+        '<td><span class="badge ' + (sub.required ? 'badge-required' : 'badge-optional') + '">' +
+          (sub.required ? 'required' : 'optional') + '</span></td>' +
+        '<td>' + esc(sub.details || '') + '</td>' +
+        '</tr>';
+    }).join('');
+    subsEl.innerHTML =
+      '<details' + (isHealthy ? '' : ' open') + '>' +
+        '<summary style="cursor:pointer;list-style:none;padding:2px 0">' +
+          '<span style="' + summaryClass + '">' + summaryIcon + ' ' + esc(summaryText) + '</span>' +
+        '</summary>' +
+        '<div style="margin-top:8px">' +
+          '<table><thead><tr>' +
+            '<th>Subsystem</th><th>Status</th><th>Required</th><th>Details</th>' +
+          '</tr></thead><tbody>' + rows + '</tbody></table>' +
+        '</div>' +
+      '</details>';
   }
 
   // Force-poll button state (016-force-poll)
@@ -1269,11 +1440,14 @@ function fmtBytes(b) {
   return (b/1048576).toFixed(1) + ' MB';
 }
 
+var STALE_THRESHOLD_MS = 30 * 60 * 1000;  // 30 minutes
+
 // ---- Performers card ----
 var _perfSessionId = null;
 var _perfEventCount = 0;
 var _perfAutoScroll = true;
 var _perfDetailOpen = false;  // true when the detail view is visible
+var _selectedCardId = null;   // card_id shown in card-detail-view
 
 function showPerfList(clearPreference) {
   _perfDetailOpen = false;
@@ -1367,7 +1541,7 @@ function updatePerformerLogs(logs) {
     if (_perfLogsCount === 0) logsEl.innerHTML = '';
     newLines.forEach(function(line) {
       var row = document.createElement('div');
-      row.style.cssText = 'padding:1px 6px;border-bottom:1px solid #161b22;word-break:break-all;color:#8b949e;white-space:pre-wrap';
+      row.style.cssText = 'padding:1px 6px;border-bottom:1px solid var(--color-bg-surface);word-break:break-all;color:var(--color-text-muted);white-space:pre-wrap';
       row.textContent = line;
       logsEl.appendChild(row);
     });
@@ -1403,9 +1577,9 @@ function updatePerformers(s) {
     _perfLogsCount = 0;
     _perfLogsAutoScroll = true;
     document.getElementById('perf-log').innerHTML =
-      '<div style="padding:8px;color:#8b949e;font-style:italic">Waiting for events&hellip;</div>';
+      '<div style="padding:8px;color:var(--color-text-muted);font-style:italic">Waiting for events&hellip;</div>';
     document.getElementById('perf-logs').innerHTML =
-      '<div style="padding:8px;color:#8b949e;font-style:italic">No logs yet&hellip;</div>';
+      '<div style="padding:8px;color:var(--color-text-muted);font-style:italic">No logs yet&hellip;</div>';
     // Restore detail view if the user had it open before refresh
     if (sessionStorage.getItem('perfDetailOpen')) {
       showPerfDetail();
@@ -1428,8 +1602,8 @@ function updatePerformers(s) {
     '<div class="perf-list-row" onclick="showPerfDetail()">' +
       '<span class="' + dotCls + '"></span>' +
       '<span class="badge badge-required">' + esc(stageLabel) + '</span>' +
-      '<span style="font-size:12px;color:#8b949e">' + esc(backend) + '</span>' +
-      '<span style="font-size:12px;color:#58a6ff">' + esc(age) + '</span>' +
+      '<span style="font-size:12px;color:var(--color-text-muted)">' + esc(backend) + '</span>' +
+      '<span style="font-size:12px;color:var(--color-accent-blue)">' + esc(age) + '</span>' +
       '<span class="perf-list-chevron">&#8250;</span>' +
     '</div>';
 
@@ -1465,7 +1639,7 @@ function updatePerformers(s) {
           backendLink.href = parsedBackendUrl.href;
           backendLink.target = '_blank';
           backendLink.rel = 'noopener noreferrer';
-          backendLink.style.color = '#58a6ff';
+          backendLink.style.color = 'var(--color-accent-blue)';
           backendLink.textContent = 'Open in browser ↗';
           backendUrlEl.appendChild(backendLink);
         }
@@ -1531,13 +1705,19 @@ function showPage(pageId) {
   });
 }
 
-function updateNavActive(path) {
+function setActiveNav(path) {
   var links = document.querySelectorAll('.nav-link');
   links.forEach(function(link) {
     var href = link.getAttribute('href');
     var active = (path === '/' && href === '/') || (path !== '/' && href !== '/' && path.startsWith(href));
     link.classList.toggle('nav-active', active);
+    if (active) { link.setAttribute('aria-current', 'page'); }
+    else { link.removeAttribute('aria-current'); }
   });
+}
+
+function updateNavActive(path) {
+  setActiveNav(path);
   var titles = {'/':'Dashboard — Coordinare','/performers':'Performers — Coordinare','/personas':'Personas — Coordinare','/history':'History — Coordinare','/symphonies':'Symphonies — Coordinare','/admin/config':'Global Config — Coordinare'};
   document.title = titles[path] || (path.startsWith('/symphonies/') ? 'Symphony — Coordinare' : 'Coordinare');
 }
@@ -1566,13 +1746,13 @@ function renderSymphoniesPage(s) {
     return;
   }
   // List view
-  var addFormHtml = '<div id="sym-add-form" style="display:none;margin-top:16px;padding:12px;background:#161b22;border:1px solid #30363d;border-radius:6px">'
-    + '<div style="font-weight:bold;color:#c9d1d9;margin-bottom:10px;font-size:13px">Add Symphony</div>'
+  var addFormHtml = '<div id="sym-add-form" style="display:none;margin-top:16px;padding:12px;background:var(--color-bg-surface);border:1px solid var(--color-border);border-radius:6px">'
+    + '<div style="font-weight:bold;color:var(--color-text-primary);margin-bottom:10px;font-size:13px">Add Symphony</div>'
     + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">'
-    + '<div><label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">Name (alphanumeric + dash)</label>'
-    + '<input id="sym-add-name" type="text" placeholder="e.g. frontend" style="width:100%;box-sizing:border-box;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:5px 8px;font-size:12px"></div>'
-    + '<div><label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">GitHub Project Number</label>'
-    + '<input id="sym-add-proj" type="number" min="1" placeholder="e.g. 42" style="width:100%;box-sizing:border-box;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:5px 8px;font-size:12px"></div>'
+    + '<div><label style="font-size:11px;color:var(--color-text-muted);display:block;margin-bottom:3px">Name (alphanumeric + dash)</label>'
+    + '<input id="sym-add-name" type="text" placeholder="e.g. frontend" style="width:100%;box-sizing:border-box;background:var(--color-bg-base);color:var(--color-text-primary);border:1px solid var(--color-border);border-radius:4px;padding:5px 8px;font-size:12px"></div>'
+    + '<div><label style="font-size:11px;color:var(--color-text-muted);display:block;margin-bottom:3px">GitHub Project Number</label>'
+    + '<input id="sym-add-proj" type="number" min="1" placeholder="e.g. 42" style="width:100%;box-sizing:border-box;background:var(--color-bg-base);color:var(--color-text-primary);border:1px solid var(--color-border);border-radius:4px;padding:5px 8px;font-size:12px"></div>'
     + '</div>'
     + '<div style="display:flex;gap:8px;align-items:center">'
     + '<button class="action-btn" onclick="submitAddSymphony()">Add</button>'
@@ -1587,24 +1767,24 @@ function renderSymphoniesPage(s) {
   }
   var rows = syms.map(function(sym) {
     return '<tr>'
-      + '<td><a href="/symphonies/' + encodeURIComponent(sym.name) + '" onclick="navigate(event,this.pathname)" style="color:#58a6ff">' + esc(sym.name) + '</a></td>'
-      + '<td style="color:#8b949e">' + (sym.github_project_number != null ? '#' + sym.github_project_number : '—') + '</td>'
+      + '<td><a href="/symphonies/' + encodeURIComponent(sym.name) + '" onclick="navigate(event,this.pathname)" style="color:var(--color-accent-blue)">' + esc(sym.name) + '</a></td>'
+      + '<td style="color:var(--color-text-muted)">' + (sym.github_project_number != null ? '#' + sym.github_project_number : '—') + '</td>'
       + '<td>' + (sym.priority != null ? sym.priority : '—') + '</td>'
       + '<td>' + (sym.cycle_count != null ? sym.cycle_count : '—') + '</td>'
       + '<td>' + (sym.error_count != null ? sym.error_count : '—') + '</td>'
       + '<td>' + (sym.last_poll_at ? esc(fmtTime(sym.last_poll_at)) : '—') + '</td>'
       + '</tr>';
   }).join('');
-  el.innerHTML = '<table style="width:100%;font-size:12px"><thead><tr>'
+  el.innerHTML = '<div style="overflow-x:auto"><table style="width:100%;font-size:12px"><thead><tr>'
     + '<th style="text-align:left">Name</th><th style="text-align:left">Project</th><th style="text-align:left">Priority</th><th style="text-align:left">Cycles</th><th style="text-align:left">Errors</th><th style="text-align:left">Last poll</th>'
-    + '</tr></thead><tbody>' + rows + '</tbody></table>'
+    + '</tr></thead><tbody>' + rows + '</tbody></table></div>'
     + '<div style="margin-top:14px"><button class="action-btn" onclick="document.getElementById(\\'sym-add-form\\').style.display=\\'block\\'">+ Add Symphony</button></div>'
     + addFormHtml;
 }
 
 async function loadSymphonyDetail(name, el) {
   el.innerHTML = '<span class="empty-state">Loading...</span>';
-  var backLink = '<a href="/symphonies" onclick="navigate(event,this.pathname)" style="color:#58a6ff;font-size:13px">&#8592; All symphonies</a>';
+  var backLink = '<a href="/symphonies" onclick="navigate(event,this.pathname)" style="color:var(--color-accent-blue);font-size:13px">&#8592; All symphonies</a>';
   var res, data;
   try {
     res = await fetch('/api/symphonies/' + encodeURIComponent(name));
@@ -1637,40 +1817,40 @@ async function loadSymphonyDetail(name, el) {
     ['Last poll', st.last_poll_at ? esc(fmtTime(st.last_poll_at)) : '—'],
     ['Last error', st.last_error ? esc(st.last_error) : '—'],
   ].map(function(r) {
-    return '<tr><th style="text-align:left;padding:3px 10px 3px 0;color:#8b949e;font-weight:normal;white-space:nowrap">' + r[0] + '</th><td style="font-size:12px">' + r[1] + '</td></tr>';
+    return '<tr><th style="text-align:left;padding:3px 10px 3px 0;color:var(--color-text-muted);font-weight:normal;white-space:nowrap">' + r[0] + '</th><td style="font-size:12px">' + r[1] + '</td></tr>';
   }).join('');
   var overrideInputs = overrideFields.map(function(f) {
     var val = ov[f.key] != null ? ov[f.key] : '';
     return '<div style="margin-bottom:8px">'
-      + '<label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">' + esc(f.label) + '</label>'
-      + '<input data-override-key="' + esc(f.key) + '" type="' + f.type + '" value="' + esc(String(val)) + '" placeholder="' + esc(f.placeholder) + '" style="width:100%;box-sizing:border-box;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:5px 8px;font-size:12px">'
+      + '<label style="font-size:11px;color:var(--color-text-muted);display:block;margin-bottom:3px">' + esc(f.label) + '</label>'
+      + '<input data-override-key="' + esc(f.key) + '" type="' + f.type + '" value="' + esc(String(val)) + '" placeholder="' + esc(f.placeholder) + '" style="width:100%;box-sizing:border-box;background:var(--color-bg-base);color:var(--color-text-primary);border:1px solid var(--color-border);border-radius:4px;padding:5px 8px;font-size:12px">'
       + '</div>';
   }).join('');
   var enabledChecked = data.enabled !== false ? 'checked' : '';
   var personaInputs = personaRoles.map(function(role) {
     var instr = (personas[role] && personas[role].instructions) ? personas[role].instructions : '';
     return '<div style="margin-bottom:10px">'
-      + '<label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">' + esc(role) + '</label>'
-      + '<textarea data-persona-role="' + esc(role) + '" rows="3" placeholder="(inherits global default)" style="width:100%;box-sizing:border-box;font-family:monospace;font-size:11px;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:6px 8px;resize:vertical">' + esc(instr) + '</textarea>'
+      + '<label style="font-size:11px;color:var(--color-text-muted);display:block;margin-bottom:3px">' + esc(role) + '</label>'
+      + '<textarea data-persona-role="' + esc(role) + '" rows="3" placeholder="(inherits global default)" style="width:100%;box-sizing:border-box;font-family:monospace;font-size:11px;background:var(--color-bg-base);color:var(--color-text-primary);border:1px solid var(--color-border);border-radius:4px;padding:6px 8px;resize:vertical">' + esc(instr) + '</textarea>'
       + '</div>';
   }).join('');
   el.innerHTML = backLink
     + '<h3 style="margin:12px 0 4px">' + esc(name) + '</h3>'
     + '<table data-detail style="font-size:12px;margin-bottom:18px"><tbody>' + statusRows + '</tbody></table>'
-    + '<div style="background:#161b22;border:1px solid #30363d;border-radius:6px;padding:14px;margin-bottom:14px">'
-    + '<div style="font-weight:bold;color:#c9d1d9;margin-bottom:12px;font-size:13px">Configuration</div>'
+    + '<div style="background:var(--color-bg-surface);border:1px solid var(--color-border);border-radius:6px;padding:14px;margin-bottom:14px">'
+    + '<div style="font-weight:bold;color:var(--color-text-primary);margin-bottom:12px;font-size:13px">Configuration</div>'
     + '<div style="margin-bottom:10px">'
-    + '<label style="display:flex;align-items:center;gap:8px;font-size:12px;color:#c9d1d9;cursor:pointer">'
+    + '<label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--color-text-primary);cursor:pointer">'
     + '<input id="sym-enabled" type="checkbox" ' + enabledChecked + '> Enabled</label>'
     + '</div>'
     + overrideInputs
-    + '<div style="margin-top:4px;border-top:1px solid #21262d;padding-top:12px">'
-    + '<div style="font-size:12px;color:#8b949e;margin-bottom:8px">Per-symphony persona overrides (leave blank to inherit global defaults)</div>'
+    + '<div style="margin-top:4px;border-top:1px solid var(--color-bg-elevated);padding-top:12px">'
+    + '<div style="font-size:12px;color:var(--color-text-muted);margin-bottom:8px">Per-symphony persona overrides (leave blank to inherit global defaults)</div>'
     + personaInputs
     + '</div>'
     + '<div style="display:flex;gap:8px;align-items:center;margin-top:4px">'
     + '<button class="action-btn" id="sym-save-btn">Save</button>'
-    + '<button class="action-btn" id="sym-delete-btn" style="background:#3d1f1f;border-color:#6e2e2e;color:#f85149">Delete symphony</button>'
+    + '<button class="action-btn" id="sym-delete-btn" style="background:var(--color-bg-delete);border-color:var(--color-border-delete);color:var(--color-accent-red)">Delete symphony</button>'
     + '<span id="sym-save-msg" class="action-msg"></span>'
     + '</div>'
     + '</div>';
@@ -1700,12 +1880,12 @@ async function loadSymphonyDetail(name, el) {
       var d = await r.json();
       if (r.ok) {
         msg.textContent = 'Saved';
-        msg.style.color = '#3fb950';
+        msg.style.color = 'var(--color-accent-green)';
       } else {
         msg.textContent = d.error || ('Error ' + r.status);
-        msg.style.color = '#f85149';
+        msg.style.color = 'var(--color-accent-red)';
       }
-    } catch(e) { msg.textContent = 'Network error'; msg.style.color = '#f85149'; }
+    } catch(e) { msg.textContent = 'Network error'; msg.style.color = 'var(--color-accent-red)'; }
     setTimeout(function(){ if(msg) msg.textContent=''; }, 4000);
   });
   document.getElementById('sym-delete-btn').addEventListener('click', async function() {
@@ -1718,9 +1898,9 @@ async function loadSymphonyDetail(name, el) {
         navigate(null, '/symphonies');
       } else {
         msg.textContent = d.error || ('Error ' + r.status);
-        msg.style.color = '#f85149';
+        msg.style.color = 'var(--color-accent-red)';
       }
-    } catch(e) { msg.textContent = 'Network error'; msg.style.color = '#f85149'; }
+    } catch(e) { msg.textContent = 'Network error'; msg.style.color = 'var(--color-accent-red)'; }
   });
 }
 
@@ -1728,7 +1908,7 @@ async function submitAddSymphony() {
   var nameVal = (document.getElementById('sym-add-name') || {}).value || '';
   var projVal = (document.getElementById('sym-add-proj') || {}).value || '';
   var msg = document.getElementById('sym-add-msg');
-  if (!nameVal.trim() || !projVal.trim()) { msg.textContent = 'Name and project number are required'; msg.style.color='#f85149'; return; }
+  if (!nameVal.trim() || !projVal.trim()) { msg.textContent = 'Name and project number are required'; msg.style.color='var(--color-accent-red)'; return; }
   try {
     var r = await fetch('/api/symphonies', {
       method: 'POST',
@@ -1740,9 +1920,9 @@ async function submitAddSymphony() {
       navigate(null, '/symphonies/' + encodeURIComponent(nameVal.trim()));
     } else {
       msg.textContent = d.error || ('Error ' + r.status);
-      msg.style.color = '#f85149';
+      msg.style.color = 'var(--color-accent-red)';
     }
-  } catch(e) { msg.textContent = 'Network error'; msg.style.color='#f85149'; }
+  } catch(e) { msg.textContent = 'Network error'; msg.style.color='var(--color-accent-red)'; }
 }
 
 async function loadGlobalConfigPage() {
@@ -1781,11 +1961,11 @@ async function loadGlobalConfigPage() {
   ];
   function fieldRow(label, inputHtml) {
     return '<div style="margin-bottom:10px">'
-      + '<label style="font-size:11px;color:#8b949e;display:block;margin-bottom:3px">' + esc(label) + '</label>'
+      + '<label style="font-size:11px;color:var(--color-text-muted);display:block;margin-bottom:3px">' + esc(label) + '</label>'
       + inputHtml
       + '</div>';
   }
-  var inp_style = 'width:100%;box-sizing:border-box;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:5px 8px;font-size:12px';
+  var inp_style = 'width:100%;box-sizing:border-box;background:var(--color-bg-base);color:var(--color-text-primary);border:1px solid var(--color-border);border-radius:4px;padding:5px 8px;font-size:12px';
   var numHtml = numFields.map(function(f) {
     return fieldRow(f.label, '<input data-cfg-key="' + esc(f.key) + '" data-cfg-type="number" type="number" min="' + f.min + '" max="' + f.max + '" value="' + esc(String(data[f.key] != null ? data[f.key] : '')) + '" style="' + inp_style + '">');
   }).join('');
@@ -1803,14 +1983,14 @@ async function loadGlobalConfigPage() {
     var v = Array.isArray(data[f.key]) ? data[f.key].join(', ') : (data[f.key] || '');
     return fieldRow(f.label, '<input data-cfg-key="' + esc(f.key) + '" data-cfg-type="list" type="text" value="' + esc(v) + '" style="' + inp_style + '">');
   }).join('');
-  el.innerHTML = '<div style="background:#161b22;border:1px solid #30363d;border-radius:6px;padding:14px">'
-    + '<div style="font-weight:bold;color:#c9d1d9;margin-bottom:14px;font-size:13px">Operational</div>'
+  el.innerHTML = '<div style="background:var(--color-bg-surface);border:1px solid var(--color-border);border-radius:6px;padding:14px">'
+    + '<div style="font-weight:bold;color:var(--color-text-primary);margin-bottom:14px;font-size:13px">Operational</div>'
     + numHtml
-    + '<div style="border-top:1px solid #21262d;margin:14px 0"></div>'
-    + '<div style="font-weight:bold;color:#c9d1d9;margin-bottom:14px;font-size:13px">Behavior</div>'
+    + '<div style="border-top:1px solid var(--color-bg-elevated);margin:14px 0"></div>'
+    + '<div style="font-weight:bold;color:var(--color-text-primary);margin-bottom:14px;font-size:13px">Behavior</div>'
     + selHtml + txtHtml
-    + '<div style="border-top:1px solid #21262d;margin:14px 0"></div>'
-    + '<div style="font-weight:bold;color:#c9d1d9;margin-bottom:14px;font-size:13px">Reviewers</div>'
+    + '<div style="border-top:1px solid var(--color-bg-elevated);margin:14px 0"></div>'
+    + '<div style="font-weight:bold;color:var(--color-text-primary);margin-bottom:14px;font-size:13px">Reviewers</div>'
     + lstHtml
     + '<div style="display:flex;gap:8px;align-items:center;margin-top:8px">'
     + '<button class="action-btn" id="gcfg-save-btn">Save</button>'
@@ -1837,12 +2017,12 @@ async function loadGlobalConfigPage() {
       var d = await r.json();
       if (r.ok) {
         msg.textContent = 'Saved — reload triggered';
-        msg.style.color = '#3fb950';
+        msg.style.color = 'var(--color-accent-green)';
       } else {
         msg.textContent = d.error || ('Error ' + r.status);
-        msg.style.color = '#f85149';
+        msg.style.color = 'var(--color-accent-red)';
       }
-    } catch(e) { msg.textContent = 'Network error'; msg.style.color = '#f85149'; }
+    } catch(e) { msg.textContent = 'Network error'; msg.style.color = 'var(--color-accent-red)'; }
     setTimeout(function(){ if(msg) msg.textContent=''; }, 5000);
   });
 }
@@ -1876,6 +2056,8 @@ function navigate(e, path) {
   if (e && (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button !== 0)) return;
   if (e) { e.preventDefault(); }
   history.pushState(null, '', path);
+  var menu = document.getElementById('navbar-menu');
+  if (menu) menu.classList.remove('open');
   router();
 }
 
@@ -1941,22 +2123,29 @@ function renderActiveWorkPanels(s) {
         var issueLink = sess.issue_url && /^https?:\\/\\//i.test(sess.issue_url)
           ? '<a href="' + esc(sess.issue_url) + '" target="_blank" rel="noopener">#' + esc(String(sess.issue_number || '')) + ' ' + esc(sess.card_title || '—') + ' &#8599;</a>'
           : esc(sess.card_title || sess.card_id || '—');
-        var stage = sess.performer_stage || '—';
-        var elapsed = sess.agent_dispatch_at ? (fmtAge(sess.agent_dispatch_at) || '—') : '—';
-        var cost = typeof sess.card_cost_estimate === 'number' && sess.card_cost_estimate > 0
-          ? '$' + sess.card_cost_estimate.toFixed(4)
+        var stage = sess.performer_stage ? formatPhaseLabel(sess.performer_stage) : '—';
+        var phaseLabel = formatPhaseLabel(sess.phase || '');
+        var rawElapsed = sess.agent_dispatch_at ? (fmtAge(sess.agent_dispatch_at) || '—') : '—';
+        var stale = sess.agent_dispatch_at && (Date.now() - new Date(sess.agent_dispatch_at).getTime()) > STALE_THRESHOLD_MS;
+        var elapsedHtml = stale
+          ? '<span style="color:var(--color-degraded)">⚠ ' + esc(rawElapsed) + '</span>'
+          : esc(rawElapsed);
+        var cost = sess.agent_dispatch_at
+          ? '$' + (sess.card_cost_estimate || 0).toFixed(4)
           : '—';
-        return '<tr>' +
+        return '<tr style="cursor:pointer" tabindex="0" data-card-id="' + esc(sess.card_id || '') + '" aria-label="' + esc(sess.card_title || sess.card_id || '') + '" onclick="showPerformerDetail(this.getAttribute(&quot;data-card-id&quot;))" onkeydown="if(event.key===&quot;Enter&quot;||event.key===&quot; &quot;){showPerformerDetail(this.getAttribute(&quot;data-card-id&quot;))}">' +
           '<td style="padding:6px 10px">' + issueLink + '</td>' +
-          '<td style="padding:6px 10px;white-space:nowrap"><code>' + esc(stage) + '</code></td>' +
-          '<td style="padding:6px 10px;white-space:nowrap">' + esc(elapsed) + '</td>' +
-          '<td style="padding:6px 10px;white-space:nowrap;color:#8b949e">' + esc(cost) + '</td>' +
+          '<td style="padding:6px 10px;white-space:nowrap">' + phaseLabel + '</td>' +
+          '<td style="padding:6px 10px;white-space:nowrap"><code>' + stage + '</code></td>' +
+          '<td style="padding:6px 10px;white-space:nowrap">' + elapsedHtml + '</td>' +
+          '<td style="padding:6px 10px;white-space:nowrap;color:var(--color-text-muted)">' + esc(cost) + '</td>' +
           '</tr>';
       }).join('');
       workEl.innerHTML =
         '<table style="width:100%;border-collapse:collapse;font-size:13px">' +
-          '<thead><tr style="color:#8b949e;font-size:11px;text-transform:uppercase;letter-spacing:0.05em">' +
+          '<thead><tr style="color:var(--color-text-muted);font-size:11px;text-transform:uppercase;letter-spacing:0.05em">' +
             '<th style="padding:4px 10px;text-align:left;font-weight:normal">Card</th>' +
+            '<th style="padding:4px 10px;text-align:left;font-weight:normal">Phase</th>' +
             '<th style="padding:4px 10px;text-align:left;font-weight:normal">Stage</th>' +
             '<th style="padding:4px 10px;text-align:left;font-weight:normal">Elapsed</th>' +
             '<th style="padding:4px 10px;text-align:left;font-weight:normal">Cost</th>' +
@@ -1980,17 +2169,17 @@ function renderActiveWorkPanels(s) {
           : esc(sess.card_title || sess.card_id || '—');
         var prLink = sess.pr_url && /^https?:\\/\\//i.test(sess.pr_url)
           ? '<a href="' + esc(sess.pr_url) + '" target="_blank" rel="noopener">Open PR &#8599;</a>'
-          : '<span style="color:#8b949e">No PR</span>';
+          : '<span style="color:var(--color-text-muted)">No PR</span>';
         var waiting = sess.agent_dispatch_at ? (fmtAge(sess.agent_dispatch_at) || '—') : '—';
         return '<tr>' +
           '<td style="padding:6px 10px">' + issueLink + '</td>' +
           '<td style="padding:6px 10px">' + prLink + '</td>' +
-          '<td style="padding:6px 10px;white-space:nowrap;color:#8b949e">' + esc(waiting) + '</td>' +
+          '<td style="padding:6px 10px;white-space:nowrap;color:var(--color-text-muted)">' + esc(waiting) + '</td>' +
           '</tr>';
       }).join('');
       if (reviewEl) reviewEl.innerHTML =
         '<table style="width:100%;border-collapse:collapse;font-size:13px">' +
-          '<thead><tr style="color:#8b949e;font-size:11px;text-transform:uppercase;letter-spacing:0.05em">' +
+          '<thead><tr style="color:var(--color-text-muted);font-size:11px;text-transform:uppercase;letter-spacing:0.05em">' +
             '<th style="padding:4px 10px;text-align:left;font-weight:normal">Card</th>' +
             '<th style="padding:4px 10px;text-align:left;font-weight:normal">PR</th>' +
             '<th style="padding:4px 10px;text-align:left;font-weight:normal">Waiting</th>' +
@@ -1999,6 +2188,62 @@ function renderActiveWorkPanels(s) {
         '</table>';
     }
   }
+}
+
+function renderCardDetailContent(sess, s) {
+  var phaseLabel = formatPhaseLabel(sess.phase || '');
+  var cardLink = sess.issue_url && /^https?:\\/\\//i.test(sess.issue_url)
+    ? '<a href="' + esc(sess.issue_url) + '" target="_blank" rel="noopener">#' + esc(String(sess.issue_number || '')) + ' ' + esc(sess.card_title || '—') + ' &#8599;</a>'
+    : esc(sess.card_title || sess.card_id || '—');
+  var rawElapsed = sess.agent_dispatch_at ? (fmtAge(sess.agent_dispatch_at) || '—') : '—';
+  var stale = sess.agent_dispatch_at && (Date.now() - new Date(sess.agent_dispatch_at).getTime()) > STALE_THRESHOLD_MS;
+  var elapsedHtml = stale
+    ? '<span style="color:var(--color-degraded)">⚠ ' + esc(rawElapsed) + '</span>'
+    : esc(rawElapsed);
+  var cost = sess.agent_dispatch_at
+    ? '$' + (sess.card_cost_estimate || 0).toFixed(4) : '—';
+  // TODO(054): performer_logs is a flat list from the single agent service; when
+  // multi-card is fully live this should be keyed by sess.card_id.
+  var logs = Array.isArray(s.performer_logs) ? s.performer_logs.slice(-20) : [];
+  var logsHtml = logs.length
+    ? logs.map(function(line) { return '<div style="font-family:monospace;font-size:11px;padding:1px 0;white-space:pre-wrap;word-break:break-all">' + esc(line) + '</div>'; }).join('')
+    : '<div style="color:var(--color-text-muted);font-style:italic;padding:4px 0">No log entries yet.</div>';
+  return '<table style="border-collapse:collapse;font-size:13px;margin-bottom:10px">' +
+    '<tr><td style="padding:3px 12px 3px 0;color:var(--color-text-muted)">Phase</td><td style="padding:3px 0">' + phaseLabel + '</td></tr>' +
+    '<tr><td style="padding:3px 12px 3px 0;color:var(--color-text-muted)">Card</td><td style="padding:3px 0">' + cardLink + '</td></tr>' +
+    '<tr><td style="padding:3px 12px 3px 0;color:var(--color-text-muted)">Elapsed</td><td style="padding:3px 0">' + elapsedHtml + '</td></tr>' +
+    '<tr><td style="padding:3px 12px 3px 0;color:var(--color-text-muted)">Cost</td><td style="padding:3px 0">' + esc(cost) + '</td></tr>' +
+    '</table>' +
+    '<div style="font-size:12px;color:var(--color-text-muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:0.05em">Live Log (last 20 lines)</div>' +
+    '<div style="background:var(--color-bg-base);border:1px solid var(--color-border);border-radius:4px;padding:8px;max-height:240px;overflow-y:auto">' + logsHtml + '</div>';
+}
+
+function showPerformerDetail(cardId) {
+  _selectedCardId = cardId;
+  var workSection = document.getElementById('active-work-section');
+  var detailView = document.getElementById('card-detail-view');
+  if (workSection) workSection.style.display = 'none';
+  if (detailView) {
+    detailView.style.display = '';
+    var content = document.getElementById('card-detail-content');
+    if (!_lastState) {
+      if (content) content.innerHTML = '<span class="empty-state">Loading&hellip;</span>';
+      return;
+    }
+    var sessions = Array.isArray(_lastState.active_sessions) ? _lastState.active_sessions : [];
+    var sess = sessions.find(function(s) { return s.card_id === cardId; });
+    if (sess) {
+      if (content) content.innerHTML = renderCardDetailContent(sess, _lastState);
+    }
+  }
+}
+
+function closeCardDetail() {
+  _selectedCardId = null;
+  var workSection = document.getElementById('active-work-section');
+  var detailView = document.getElementById('card-detail-view');
+  if (workSection) workSection.style.display = '';
+  if (detailView) detailView.style.display = 'none';
 }
 
 function renderActivePerformers(s) {
@@ -2044,16 +2289,16 @@ function renderActivePerformers(s) {
   section.style.display = '';
   var html = '';
   activeSessions.forEach(function(sess) {
-    var stage = sess.performer_stage || '—';
+    var stage = sess.performer_stage ? formatPhaseLabel(sess.performer_stage) : '—';
     var title = sess.card_title || sess.card_id || '—';
     var dispatchAt = sess.agent_dispatch_at || s.agent_dispatch_at;
     var elapsed = dispatchAt ? (fmtAge(dispatchAt) || '—') : '—';
-    var phaseLabel = (sess.phase || '').replace(/_/g, ' ').toUpperCase();
+    var phaseLabel = formatPhaseLabel(sess.phase || 'active');
     var cardId = sess.card_id || '—';
     html += '<div class="ap-tile">' +
       '<div class="ap-tile-header">' +
-        '<div class="ap-tile-role"><span class="perf-dot perf-running"></span>' + esc(stage) + '</div>' +
-        '<div class="ap-tile-phase">' + esc(phaseLabel || 'ACTIVE') + '</div>' +
+        '<div class="ap-tile-role"><span class="perf-dot perf-running"></span>' + stage + '</div>' +
+        '<div class="ap-tile-phase">' + phaseLabel + '</div>' +
       '</div>' +
       '<div class="ap-tile-title">' + esc(title) + '</div>' +
       '<div class="ap-tile-meta">' +
@@ -2123,7 +2368,7 @@ function renderPerformersPage(s) {
       return esc((sess.card_title || sess.card_id || '').substring(0, 40));
     }).join('<br>') || '<span class="empty-state">—</span>';
     var utilStr = r.max > 1 ? r.active + ' / ' + r.max : (isActive ? '1 / 1' : '0 / 1');
-    var queued = r.queued > 0 ? ' <span style="color:#d29922">(+' + r.queued + ' queued)</span>' : '';
+    var queued = r.queued > 0 ? ' <span style="color:var(--color-accent-yellow)">(+' + r.queued + ' queued)</span>' : '';
     return '<tr class="performers-row' + (isSelected ? ' row-selected' : '') + '" data-role="' + esc(r.role) + '" tabindex="0" role="button" aria-label="Open details for ' + esc(r.role) + '">' +
       '<td style="font-weight:bold">' + esc(r.role) + '</td><td>' + badge + '</td><td style="font-size:12px">' + cards + '</td><td>' + utilStr + queued + '</td></tr>';
   }).join('');
@@ -2180,6 +2425,8 @@ function renderPerformersPage(s) {
       return '<li><strong>' + esc(ev.type || 'event') + ':</strong> ' + esc(ev.text || '') + '</li>';
     }).join('') + '</ul>'
     : '<div class="muted">No live events yet.</div>';
+  // TODO(054): performer_logs is a flat list from the single agent service; when
+  // multi-card is fully live this should be keyed by the active session's card_id.
   var logs = Array.isArray(s.performer_logs) ? s.performer_logs.slice(-20) : [];
   var logsHtml = logs.length
     ? '<div class="detail-log">' + logs.map(function(line) { return '<div>' + esc(line) + '</div>'; }).join('') + '</div>'
@@ -2208,14 +2455,14 @@ function renderPerformersPage(s) {
         var label = esc(r.reason || 'skipped');
         var blockers = Array.isArray(r.blockers) && r.blockers.length
           ? ' (blocked by #' + r.blockers.map(function(n) { return esc(String(n)); }).join(', #') + ')' : '';
-        return '<li><span style="color:#f0883e">' + esc(sr.card) + '</span> — ' + label + blockers + '</li>';
+        return '<li><span style="color:var(--color-accent-orange)">' + esc(sr.card) + '</span> — ' + label + blockers + '</li>';
       }).join('') + '</ul>'
     : '';
 
   detailEl.innerHTML =
     '<div><strong>' + humanPhase(selectedRole) + '</strong>' + statusBadge + '</div>' +
     '<div class="muted" style="margin-top:4px">Active/Max: ' + String(row.active != null ? row.active : 0) + ' / ' + String(row.max != null ? row.max : 0) + ' &middot; Queued: ' + String(row.queued != null ? row.queued : 0) + '</div>' +
-    '<div class="detail-block"><strong>Card Context</strong>' + roleCardsHtml + (skipHtml ? '<div style="margin-top:8px"><span style="color:#d29922;font-size:12px">Skipped this cycle:</span>' + skipHtml + '</div>' : '') + '</div>' +
+    '<div class="detail-block"><strong>Card Context</strong>' + roleCardsHtml + (skipHtml ? '<div style="margin-top:8px"><span style="color:var(--color-accent-yellow);font-size:12px">Skipped this cycle:</span>' + skipHtml + '</div>' : '') + '</div>' +
     '<div class="detail-block"><strong>Session</strong><div class="muted" style="margin-top:4px">Session: ' + esc(s.agent_session_id || '—') + ' &middot; Uptime: ' + esc(fmtAge(s.agent_dispatch_at) || '—') + '</div><div class="muted" style="margin-top:4px">' + backendLine + '</div><div class="muted" style="margin-top:4px">' + statsLine + '</div></div>' +
     '<div class="detail-block"><strong>Metrics</strong><div class="muted" style="margin-top:4px">' + metricsLine + '</div></div>' +
     '<div class="detail-block"><strong>Live Events</strong>' + eventsHtml + '</div>' +
@@ -2239,8 +2486,8 @@ function loadPersonasPage(force) {
   fetch('/api/personas').then(function(r){ return r.json(); }).then(function(data) {
     var html = data.map(function(p, idx) {
       return '<div style="margin-bottom:16px" data-persona-idx="' + idx + '">' +
-        '<label style="font-weight:bold;color:#c9d1d9;display:block;margin-bottom:4px">' + esc(p.role) + '</label>' +
-        '<textarea class="persona-page-ta" rows="4" style="width:100%;font-family:monospace;font-size:12px;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;padding:8px;resize:vertical">' + esc(p.instructions || '') + '</textarea>' +
+        '<label style="font-weight:bold;color:var(--color-text-primary);display:block;margin-bottom:4px">' + esc(p.role) + '</label>' +
+        '<textarea class="persona-page-ta" rows="4" style="width:100%;font-family:monospace;font-size:12px;background:var(--color-bg-base);color:var(--color-text-primary);border:1px solid var(--color-border);border-radius:4px;padding:8px;resize:vertical">' + esc(p.instructions || '') + '</textarea>' +
         '<div style="margin-top:4px;display:flex;gap:8px">' +
         '<button class="action-btn persona-save-btn">Save</button>' +
         '<button class="action-btn persona-reset-btn">Reset</button>' +
@@ -2331,25 +2578,25 @@ function renderPersonas(personas) {
   if (!section) return;
   var rows = personas.map(function(p) {
     var badge = p.is_default
-      ? '<span style="font-size:11px;color:#8b949e;margin-left:6px">using default</span>'
-      : '<span style="font-size:11px;color:#58a6ff;margin-left:6px">custom</span>';
-    return '<div style="margin-bottom:16px;border-bottom:1px solid #21262d;padding-bottom:14px">' +
+      ? '<span style="font-size:11px;color:var(--color-text-muted);margin-left:6px">using default</span>'
+      : '<span style="font-size:11px;color:var(--color-accent-blue);margin-left:6px">custom</span>';
+    return '<div style="margin-bottom:16px;border-bottom:1px solid var(--color-bg-elevated);padding-bottom:14px">' +
       '<div style="display:flex;align-items:center;margin-bottom:6px">' +
         '<strong style="font-size:13px">' + esc(p.role) + '</strong>' + badge +
       '</div>' +
       '<textarea id="persona-ta-' + esc(p.role) + '" rows="4" style="width:100%;box-sizing:border-box;' +
-        'background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:6px;font-family:monospace;' +
+        'background:var(--color-bg-base);border:1px solid var(--color-border);color:var(--color-text-primary);padding:6px;font-family:monospace;' +
         'font-size:12px;border-radius:4px;resize:vertical">' + esc(p.instructions) + '</textarea>' +
       '<div style="margin-top:6px;display:flex;gap:8px;align-items:center">' +
         '<button onclick="savePersona(\\\'' + esc(p.role) + '\\\')" ' +
           'id="persona-save-' + esc(p.role) + '" ' +
-          'style="background:#238636;border:none;color:#fff;padding:4px 12px;border-radius:4px;cursor:pointer">' +
+          'style="background:var(--color-btn-success);border:none;color:var(--color-text-primary);padding:4px 12px;border-radius:4px;cursor:pointer">' +
           'Save</button>' +
         '<button onclick="resetPersona(\\\'' + esc(p.role) + '\\\')" ' +
           'id="persona-reset-' + esc(p.role) + '" ' +
-          'style="background:#21262d;border:1px solid #30363d;color:#c9d1d9;padding:4px 12px;' +
+          'style="background:var(--color-bg-elevated);border:1px solid var(--color-border);color:var(--color-text-primary);padding:4px 12px;' +
           'border-radius:4px;cursor:pointer">Reset to defaults</button>' +
-        '<span id="persona-msg-' + esc(p.role) + '" style="font-size:12px;color:#8b949e"></span>' +
+        '<span id="persona-msg-' + esc(p.role) + '" style="font-size:12px;color:var(--color-text-muted)"></span>' +
       '</div>' +
     '</div>';
   }).join('');
@@ -2373,16 +2620,16 @@ async function savePersona(role) {
       ? await res.json() : {};
     if (!res.ok) {
       msg.textContent = 'Error: ' + (data.error || res.statusText || res.status);
-      msg.style.color = '#f85149';
+      msg.style.color = 'var(--color-accent-red)';
     } else {
       msg.textContent = 'Saved.';
-      msg.style.color = '#3fb950';
-      setTimeout(function() { if (msg) { msg.textContent = ''; msg.style.color = '#8b949e'; }}, 3000);
+      msg.style.color = 'var(--color-accent-green)';
+      setTimeout(function() { if (msg) { msg.textContent = ''; msg.style.color = 'var(--color-text-muted)'; }}, 3000);
       loadPersonas();
     }
   } catch(err) {
     msg.textContent = 'Network error';
-    msg.style.color = '#f85149';
+    msg.style.color = 'var(--color-accent-red)';
   }
   btn.disabled = false;
 }
@@ -2397,17 +2644,17 @@ async function resetPersona(role) {
     var res = await fetch('/api/personas/' + encodeURIComponent(role), {method: 'DELETE'});
     if (res.status === 204 || res.ok) {
       msg.textContent = 'Reset to defaults.';
-      msg.style.color = '#3fb950';
-      setTimeout(function() { if (msg) { msg.textContent = ''; msg.style.color = '#8b949e'; }}, 3000);
+      msg.style.color = 'var(--color-accent-green)';
+      setTimeout(function() { if (msg) { msg.textContent = ''; msg.style.color = 'var(--color-text-muted)'; }}, 3000);
       loadPersonas();
     } else {
       var data = await res.json().catch(function() { return {}; });
       msg.textContent = 'Error: ' + (data.error || res.status);
-      msg.style.color = '#f85149';
+      msg.style.color = 'var(--color-accent-red)';
     }
   } catch(err) {
     msg.textContent = 'Network error';
-    msg.style.color = '#f85149';
+    msg.style.color = 'var(--color-accent-red)';
   }
   btn.disabled = false;
 }
@@ -2433,18 +2680,22 @@ es.addEventListener('state_update', function(e) {
 es.onerror = function() {
   banner.style.display = 'block';
   var dot = document.getElementById('nav-sse-dot');
-  if (dot) dot.classList.add('disconnected');
+  if (dot) { dot.classList.add('disconnected'); dot.title = 'SSE disconnected — reconnecting'; }
   var fpBtn = document.getElementById('force-poll-btn');
   if (fpBtn) fpBtn.disabled = true;
 };
 es.onopen = function() {
   banner.style.display = 'none';
   var dot = document.getElementById('nav-sse-dot');
-  if (dot) dot.classList.remove('disconnected');
+  if (dot) { dot.classList.remove('disconnected'); dot.title = 'SSE connected'; }
 };
 
 document.addEventListener('DOMContentLoaded', function() {
   router(); // initial route
+});
+
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape' && _selectedCardId) closeCardDetail();
 });
 </script>
 </body>

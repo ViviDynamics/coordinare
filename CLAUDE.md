@@ -47,6 +47,8 @@ Auto-generated from all feature plans. Last updated: 2026-04-28
 - In-memory only; `session_skip_reasons` dict added to `CoordinareState`; resets each cycle (054-async-multi-card-orchestration)
 - Python 3.12+ + FastAPI + Starlette (performer HTTP server — already used in coordinare's dashboard), httpx (coordinare → performer client — existing), pydantic + pydantic-settings (config + payload models — existing), structlog (logging — existing), Docker Engine API via the local `docker` CLI invoked through `asyncio.create_subprocess_exec` (no new SDK dependency); Playwright + browser binaries baked into `full` image (056-performer-containerization)
 - N/A — performer registry, pool state, and last-known status held in memory; resets on coordinare restart. Existing `CoordinareState` extended with `performer_endpoints: dict[str, PerformerEndpointState]` (056-performer-containerization)
+- Python 3.12+ + FastAPI + Starlette (existing), vanilla JavaScript (inline), CSS custom properties (no build step) (059-dashboard-ux)
+- N/A — display layer only; all data from existing SSE snapshot (059-dashboard-ux)
 
 - Python 3.12+ + LangGraph (>=0.2), anthropic (>=0.40), gql[aiohttp], FastAPI, structlog, slack-sdk, aiosmtplib, prometheus-client, pydantic-settings (001-board-orchestrator)
 - Python 3.12+ + Pydantic v2 (existing), `asyncio.create_subprocess_exec` (stdlib), `structlog` (existing); `asyncssh` removed — replaced by pluggable transport architecture (004-agent-protocol)
@@ -67,9 +69,9 @@ cd src [ONLY COMMANDS FOR ACTIVE TECHNOLOGIES][ONLY COMMANDS FOR ACTIVE TECHNOLO
 Python 3.12+: Follow standard conventions
 
 ## Recent Changes
+- 059-dashboard-ux: Added Python 3.12+ + FastAPI + Starlette (existing), vanilla JavaScript (inline), CSS custom properties (no build step)
 - 056-performer-containerization: Added Python 3.12+ + FastAPI + Starlette (performer HTTP server — already used in coordinare's dashboard), httpx (coordinare → performer client — existing), pydantic + pydantic-settings (config + payload models — existing), structlog (logging — existing), Docker Engine API via the local `docker` CLI invoked through `asyncio.create_subprocess_exec` (no new SDK dependency); Playwright + browser binaries baked into `full` image
 - 054-async-multi-card-orchestration: Added Python 3.12+ + `asyncio` (stdlib), `structlog` (existing), `pydantic` (existing), `LangGraph ≥ 0.2` (existing) — no new dependencies
-- 052-operational-visibility-hygiene: Added Python 3.12+ + httpx (existing), pydantic-settings (existing), FastAPI/SSE (existing), vanilla JS (existing) — no new dependencies required
 
 
 <!-- MANUAL ADDITIONS START -->

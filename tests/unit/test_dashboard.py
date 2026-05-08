@@ -15,8 +15,11 @@ from coordinare.dashboard import (
     DashboardStore,
     SSEBroadcaster,
     check_port_available,
+    compute_overall_health,
     create_dashboard_app,
     format_phase_label,
+    is_session_stale,
+    render_performer_pool_widget,
 )
 
 # ---------------------------------------------------------------------------
@@ -106,12 +109,12 @@ def test_dashboard_multi_page_routes_return_html_shell() -> None:
         assert res.text == root_html, f"{path} returned different HTML than /"
 
 
-def test_dashboard_html_under_96kb() -> None:
-    """T036: _DASHBOARD_HTML must not exceed the 96 KB size budget (raised to accommodate
+def test_dashboard_html_under_112kb() -> None:
+    """T036: _DASHBOARD_HTML must not exceed the 112 KB size budget (raised to accommodate
     multi-page layout, navbar, active-performer tiles, performers/personas/history pages — 049,
-    and the Global Config edit page — 058)."""
+    Global Config edit page — 058, and CSS design tokens + phase-label + health widget — 059)."""
     size = len(_DASHBOARD_HTML.encode())
-    assert size < 96 * 1024, f"_DASHBOARD_HTML is {size} bytes (limit: {96 * 1024})"
+    assert size < 112 * 1024, f"_DASHBOARD_HTML is {size} bytes (limit: {112 * 1024})"
 
 
 def test_history_page_is_live_container_not_coming_soon_stub() -> None:
@@ -146,6 +149,7 @@ def test_dashboard_cards_use_single_column_layout_where_expected() -> None:
 @pytest.mark.parametrize(
     ("phase", "expected"),
     [
+        # Standard snake_case phases
         ("monitoring_agent", "Monitoring Agent"),
         ("relay_feedback", "Relay Feedback"),
         ("idle", "Idle"),
@@ -153,10 +157,92 @@ def test_dashboard_cards_use_single_column_layout_where_expected() -> None:
         ("blocked", "Blocked"),
         ("merging", "Merging"),
         ("unknown_future_phase", "Unknown Future Phase"),
+        # Edge cases
+        ("", ""),
+        ("singleword", "Singleword"),
+        ("Already Title", "Already Title"),
+        ("mixed-separator_phase", "Mixed-Separator Phase"),
     ],
 )
 def test_format_phase_label(phase: str, expected: str) -> None:
     assert format_phase_label(phase) == expected
+
+
+def test_format_phase_label_none_returns_empty() -> None:
+    # None is not a valid str; callers must coerce — but the Python helper
+    # accepts only str per its signature. Verify it does not raise on "".
+    assert format_phase_label("") == ""
+
+
+# ---------------------------------------------------------------------------
+# compute_overall_health
+# ---------------------------------------------------------------------------
+
+
+def _sub(name: str, status: str, required: bool = True) -> dict:
+    return {"name": name, "status": status, "required": required}
+
+
+def test_compute_overall_health_all_healthy() -> None:
+    assert compute_overall_health([_sub("db", "healthy"), _sub("gh", "healthy")]) == "healthy"
+
+
+def test_compute_overall_health_empty_list() -> None:
+    assert compute_overall_health([]) == "healthy"
+
+
+def test_compute_overall_health_optional_unhealthy_ignored() -> None:
+    assert compute_overall_health([_sub("db", "healthy"), _sub("opt", "degraded", required=False)]) == "healthy"
+
+
+def test_compute_overall_health_one_degraded() -> None:
+    assert compute_overall_health([_sub("db", "healthy"), _sub("gh", "degraded")]) == "degraded"
+
+
+def test_compute_overall_health_one_unavailable() -> None:
+    assert compute_overall_health([_sub("db", "healthy"), _sub("gh", "unavailable")]) == "unavailable"
+
+
+def test_compute_overall_health_unavailable_beats_degraded() -> None:
+    subs = [_sub("db", "degraded"), _sub("gh", "unavailable"), _sub("ci", "healthy")]
+    assert compute_overall_health(subs) == "unavailable"
+
+
+# ---------------------------------------------------------------------------
+# is_session_stale (059 Phase E)
+# ---------------------------------------------------------------------------
+
+
+def _iso_ago(minutes: float) -> str:
+    from datetime import timedelta
+
+    return (datetime.now(UTC) - timedelta(minutes=minutes)).isoformat()
+
+
+def test_is_session_stale_none_returns_false() -> None:
+    assert is_session_stale(None) is False
+
+
+def test_is_session_stale_below_threshold() -> None:
+    assert is_session_stale(_iso_ago(10)) is False
+
+
+def test_is_session_stale_at_threshold_not_stale() -> None:
+    # Just under threshold — the check is strict >, so 30 min exactly is not stale.
+    # Use 29.9 min to avoid a timing race between timestamp creation and the call.
+    assert is_session_stale(_iso_ago(29.9)) is False
+
+
+def test_is_session_stale_above_threshold() -> None:
+    assert is_session_stale(_iso_ago(31)) is True
+
+
+def test_is_session_stale_custom_threshold() -> None:
+    assert is_session_stale(_iso_ago(6), threshold_minutes=5) is True
+
+
+def test_is_session_stale_invalid_iso_returns_false() -> None:
+    assert is_session_stale("not-a-date") is False
 
 
 # ---------------------------------------------------------------------------
@@ -328,6 +414,59 @@ def test_build_snapshot_board_summary_defaults_missing_columns_to_zero() -> None
     assert snap["board_summary"]["IN_REVIEW"] == 0
     assert snap["board_summary"]["DONE"] == 0
     assert snap["board_summary"]["BLOCKED"] == 1
+
+
+def test_build_snapshot_board_summary_aggregates_symphony_boards() -> None:
+    """Symphony-mode: no top-level board_snapshot; counts must come from symphony states."""
+    store = DashboardStore()
+    daemon = _make_mock_daemon()
+    # No top-level board — simulates symphony-only mode
+    daemon.state["board_snapshot"] = None
+
+    sym_a = MagicMock()
+    sym_a.board_snapshot = {"TODO": ["1", "2"], "IN_REVIEW": ["3"], "DONE": []}
+    sym_b = MagicMock()
+    sym_b.board_snapshot = {"TODO": ["4"], "IN_PROGRESS": ["5"], "IN_REVIEW": ["6"]}
+    daemon.state["symphony_states"] = {"website": sym_a, "other": sym_b}
+
+    metrics = _make_mock_metrics()
+    health = _make_mock_health()
+
+    snap = store.build_snapshot(daemon, metrics, health)
+
+    # Aggregated across both symphonies
+    assert snap["board_summary"]["TODO"] == 3
+    assert snap["board_summary"]["IN_PROGRESS"] == 1
+    assert snap["board_summary"]["IN_REVIEW"] == 2
+    assert snap["board_summary"]["DONE"] == 0
+
+
+def test_build_snapshot_last_poll_at_falls_back_to_symphony() -> None:
+    """Symphony-mode: top-level last_poll_at is None; most-recent symphony poll used."""
+    from datetime import UTC, datetime
+
+    store = DashboardStore()
+    daemon = _make_mock_daemon()
+    daemon.state["last_poll_at"] = None
+    daemon.state["board_snapshot"] = None
+
+    older = datetime(2026, 5, 7, 10, 0, 0, tzinfo=UTC)
+    newer = datetime(2026, 5, 7, 12, 0, 0, tzinfo=UTC)
+
+    sym_a = MagicMock()
+    sym_a.board_snapshot = {}
+    sym_a.last_poll_at = older
+    sym_b = MagicMock()
+    sym_b.board_snapshot = {}
+    sym_b.last_poll_at = newer
+    daemon.state["symphony_states"] = {"alpha": sym_a, "beta": sym_b}
+
+    metrics = _make_mock_metrics()
+    health = _make_mock_health()
+
+    snap = store.build_snapshot(daemon, metrics, health)
+
+    assert snap["last_poll_at"] == newer.isoformat()
 
 
 def test_build_snapshot_idle_nulls() -> None:
@@ -1604,3 +1743,74 @@ def test_put_global_config_persists_valid_field(tmp_path) -> None:
     assert resp.json()["status"] == "saved"
     saved = yaml.safe_load(config_file.read_text())
     assert saved["poll_interval_seconds"] == 60
+
+
+# ---------------------------------------------------------------------------
+# render_performer_pool_widget
+# ---------------------------------------------------------------------------
+
+
+class _FakeState:
+    def __init__(self, id: str, availability: str, excluded: bool = False) -> None:
+        self.id = id
+        self.mode = "local"
+        self.availability = availability
+        self.endpoint = None
+        self.current_job_id = None
+        self.capabilities = None
+        self.consecutive_failures = 0
+        self.excluded_until_recovery = excluded
+        self.last_status_at = None
+
+
+class _FakePool:
+    def __init__(self, states: list) -> None:
+        self._states = states
+
+    def list_all(self) -> list:
+        return self._states
+
+
+def test_render_performer_pool_widget_none_pool() -> None:
+    result = render_performer_pool_widget(None)
+    assert result["total_registered"] == 0
+    assert result["total_idle"] == 0
+    assert result["total_busy"] == 0
+    assert result["total_excluded"] == 0
+    assert result["performers"] == []
+
+
+def test_render_performer_pool_widget_idle() -> None:
+    pool = _FakePool([_FakeState("p1", "idle")])
+    result = render_performer_pool_widget(pool)
+    assert result["total_registered"] == 1
+    assert result["total_idle"] == 1
+    assert result["total_busy"] == 0
+    assert result["total_excluded"] == 0
+
+
+def test_render_performer_pool_widget_busy() -> None:
+    pool = _FakePool([_FakeState("p1", "busy")])
+    result = render_performer_pool_widget(pool)
+    assert result["total_busy"] == 1
+    assert result["total_idle"] == 0
+
+
+def test_render_performer_pool_widget_excluded() -> None:
+    pool = _FakePool([_FakeState("p1", "idle", excluded=True)])
+    result = render_performer_pool_widget(pool)
+    assert result["total_excluded"] == 1
+    assert result["performers"][0]["excluded_until_recovery"] is True
+
+
+def test_render_performer_pool_widget_mixed() -> None:
+    pool = _FakePool([
+        _FakeState("p1", "idle"),
+        _FakeState("p2", "busy"),
+        _FakeState("p3", "idle", excluded=True),
+    ])
+    result = render_performer_pool_widget(pool)
+    assert result["total_registered"] == 3
+    assert result["total_idle"] == 2
+    assert result["total_busy"] == 1
+    assert result["total_excluded"] == 1

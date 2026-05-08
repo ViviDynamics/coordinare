@@ -15,7 +15,7 @@ case "${BACKEND:-}" in
       || echo "WARNING: claude-code upgrade failed, continuing with installed version" >&2
     ;;
   opencode)
-    curl -fsSL https://opencode.ai/install.sh | sh 2>&1 \
+    npm install -g opencode-ai@latest --no-fund --no-audit 2>&1 \
       || echo "WARNING: opencode upgrade failed, continuing with installed version" >&2
     ;;
   junie)
