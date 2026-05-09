@@ -7,10 +7,20 @@ import os
 import platform
 import signal
 import sys
+import warnings
 from datetime import UTC, datetime
 from pathlib import Path
 from time import perf_counter
 from typing import TYPE_CHECKING, Any, Literal
+
+# langchain-core imports pydantic.v1 internals that are not supported on
+# Python 3.14+; pydantic emits a UserWarning at import time. Suppress it
+# here — the v1 shim still works despite the warning.
+warnings.filterwarnings(
+    "ignore",
+    message="Core Pydantic V1 functionality",
+    category=UserWarning,
+)
 
 import structlog
 import uvicorn
@@ -888,6 +898,16 @@ async def _run(
                 )
                 _sym_workspace_managers[_sym.name] = _sym_wm
             daemon.state["symphony_workspace_managers"] = _sym_workspace_managers
+
+        # T012/T013: Instantiate and seed the env-cache service for all symphonies
+        # that have env_bootstrap_performer_id configured.
+        from coordinare.services.env_cache import EnvCacheService
+        _env_cache_service = EnvCacheService(coordinare_config)
+        await _env_cache_service.initialise(
+            daemon.state["env_cache"],
+            daemon.state.get("symphony_github_services", {}),
+        )
+        daemon.state["env_cache_service"] = _env_cache_service
 
     app = _create_health_app(daemon, circuit_breakers=circuit_breakers)
     server = uvicorn.Server(

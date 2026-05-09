@@ -1,0 +1,16 @@
+# Contract: GET_FILE_BLOB_SHA_QUERY
+#
+# New GraphQL query added to services/github.py.
+# Returns only the blob OID (SHA1) for a file reference.
+# Used by EnvCacheService on each poll cycle to detect README changes
+# without fetching file content.
+
+query GetFileBlobSha($owner: String!, $repo: String!, $expression: String!) {
+  repository(owner: $owner, name: $repo) {
+    object(expression: $expression) {
+      ... on Blob {
+        oid
+      }
+    }
+  }
+}

@@ -284,6 +284,18 @@ query GetFileContent($owner: String!, $repo: String!, $expression: String!) {
 }
 """
 
+GET_FILE_BLOB_SHA_QUERY = """
+query GetFileBlobSha($owner: String!, $repo: String!, $expression: String!) {
+  repository(owner: $owner, name: $repo) {
+    object(expression: $expression) {
+      ... on Blob {
+        oid
+      }
+    }
+  }
+}
+"""
+
 GET_REPOSITORY_ID_QUERY = """
 query GetRepositoryId($owner: String!, $repo: String!) {
   repository(owner: $owner, name: $repo) {
@@ -1247,4 +1259,17 @@ class GitHubService:
         obj = result.get("repository", {}).get("object")
         if isinstance(obj, dict):
             return obj.get("text")
+        return None
+
+    async def get_file_blob_sha(
+        self, owner: str, repo: str, path: str, ref: str = "HEAD"
+    ) -> str | None:
+        expression = f"{ref}:{path}"
+        result = await self._guarded_execute(
+            GET_FILE_BLOB_SHA_QUERY,
+            {"owner": owner, "repo": repo, "expression": expression},
+        )
+        obj = result.get("repository", {}).get("object")
+        if isinstance(obj, dict):
+            return obj.get("oid")
         return None

@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# bin/stop — stop the coordinare daemon
+#
+# Kills by port (unambiguous) then by name pattern, so it works regardless of
+# how coordinare was launched (nohup, detached terminal, direct bin/start, etc.).
+# Kills the uv run wrapper before the Python child to prevent respawn.
+#
+# Usage:
+#   bin/stop
+set -euo pipefail
+
+LABEL="com.vividynamics.coordinare"
+PLIST="$HOME/Library/LaunchAgents/${LABEL}.plist"
+
+# If installed as a LaunchAgent, tell launchd to stop it (prevents respawn).
+# launchctl stop signals the process; we then do our own kill sweep below to
+# make sure ports are released even if the signal is slow.
+if [[ -f "$PLIST" ]]; then
+  launchctl stop "$LABEL" 2>/dev/null || true
+fi
+
+_any_killed=0
+
+_kill_with_parent() {
+  local pid="$1"
+  kill -0 "$pid" 2>/dev/null || return 0
+  local ppid
+  ppid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ') || return 0
+  # Kill the uv run wrapper first (if it has one beyond launchd/init).
+  if [[ -n "$ppid" && "$ppid" -gt 1 ]]; then
+    kill -9 "$ppid" 2>/dev/null || true
+    _any_killed=1
+  fi
+  kill -9 "$pid" 2>/dev/null || true
+  _any_killed=1
+}
+
+# Primary: find by port — works regardless of process name or launch method.
+for port in 9090 9091; do
+  while IFS= read -r pid; do
+    [[ -z "$pid" ]] && continue
+    cmd=$(ps -o command= -p "$pid" 2>/dev/null || true)
+    # Only kill Python/uv coordinare processes, not unrelated apps on the port.
+    if echo "$cmd" | grep -qE "coordinare|uv run"; then
+      _kill_with_parent "$pid"
+    fi
+  done < <(lsof -ti :"$port" 2>/dev/null || true)
+done
+
+# Secondary: name-pattern sweep for detached instances not yet bound to a port.
+if pkill -9 -f "uv run.*python -m coordinare" 2>/dev/null; then _any_killed=1; fi
+if pkill -9 -f "python -m coordinare" 2>/dev/null; then _any_killed=1; fi
+if pkill -9 -f "python.*coordinare.__main__" 2>/dev/null; then _any_killed=1; fi
+
+if [[ $_any_killed -eq 0 ]]; then
+  echo "coordinare is not running"
+  exit 0
+fi
+
+# Wait up to 5 s for ports to clear.
+for _i in 1 2 3 4 5; do
+  sleep 1
+  if ! lsof -ti :9090 >/dev/null 2>&1; then
+    echo "coordinare stopped"
+    exit 0
+  fi
+done
+
+echo "coordinare stopped (ports may still be in TIME_WAIT — safe to ignore)"

@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from coordinare.models.performer_endpoint import (
         JobInitPayload,
         PerformerEndpointConfig,
+        VolumeMount,
     )
     from coordinare.workspace import WorkspaceInfo
 
@@ -87,6 +88,10 @@ class HTTPPerformerService:
     @property
     def mode(self) -> str:
         return self._config.mode
+
+    @property
+    def devenv_root(self) -> str:
+        return self._config.container_devenv_root
 
     def _auth_token(self) -> str | None:
         if self._config.auth_token is None:
@@ -166,21 +171,31 @@ class HTTPPerformerService:
         self,
         card_context: dict[str, Any],
         workspace_info: WorkspaceInfo | None = None,
+        extra_volumes: list[VolumeMount] | None = None,
     ) -> dict[str, Any]:
         async with self._dispatch_lock:
-            return await self._dispatch_card_locked(card_context, workspace_info)
+            return await self._dispatch_card_locked(card_context, workspace_info, extra_volumes)
 
     async def _dispatch_card_locked(
         self,
         card_context: dict[str, Any],
         workspace_info: WorkspaceInfo | None = None,
+        extra_volumes: list[VolumeMount] | None = None,
     ) -> dict[str, Any]:
         ephemeral_job: _EphemeralJob | None = None
+
+        # Resolve the effective config: if extra_volumes are provided, create a
+        # shallow copy with the updated volumes list (containerized performers only).
+        effective_config = self._config
+        if extra_volumes and self._config.mode != "subprocess":
+            effective_config = self._config.model_copy(
+                update={"volumes": list(self._config.volumes) + list(extra_volumes)}
+            )
 
         # Ephemeral mode: spin up a fresh container before dispatching.
         if self._config.mode == "ephemeral":
             try:
-                started = await performer_lifecycle.start_ephemeral(self._config)
+                started = await performer_lifecycle.start_ephemeral(effective_config)
             except performer_lifecycle.LifecycleError as exc:
                 logger.warning(
                     "http_performer.start_failed",
@@ -299,6 +314,8 @@ class HTTPPerformerService:
             )
             if self._config.mode == "ephemeral":
                 await self._cleanup_ephemeral_job_by_id(session_id)
+            elif self._config.mode == "persistent":
+                await self.call_reset()
 
         # Translate JobStatus → PerformerResponse-style dict that monitor_performer.py
         # expects (it reads `status.get("status", "working")`).
@@ -326,6 +343,38 @@ class HTTPPerformerService:
 
         # Terminal but no result (cancelled or internal failure).
         return {"status": "error", "reason": f"job ended in state '{status.state}' with no result", "job_id": session_id, "state": status.state}
+
+    async def call_reset(self) -> bool:
+        """POST /reset to the persistent performer endpoint.
+
+        Returns True on 2xx, False (with a warning log) on any non-2xx or
+        network error. Never raises — caller can always proceed with next
+        dispatch regardless of reset outcome.
+        """
+        if self._config.mode != "persistent":
+            return True
+        try:
+            client = self._ensure_client()
+            resp = await client.post_reset()
+            if resp.is_success:
+                logger.info(
+                    "http_performer.reset_ok",
+                    performer_id=self._config.id,
+                )
+                return True
+            logger.warning(
+                "http_performer.reset_failed",
+                performer_id=self._config.id,
+                status_code=resp.status_code,
+            )
+            return False
+        except Exception as exc:
+            logger.warning(
+                "http_performer.reset_error",
+                performer_id=self._config.id,
+                error=str(exc),
+            )
+            return False
 
     async def relay_feedback(self, review_payload: dict[str, Any]) -> dict[str, Any]:
         # Containerized performers receive feedback as part of the next

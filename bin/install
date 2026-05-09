@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+# bin/install — install coordinare as a macOS LaunchAgent (auto-start on login)
+#
+# Creates ~/Library/LaunchAgents/com.vividynamics.coordinare.plist and loads it
+# so coordinare starts immediately and restarts automatically on login.
+#
+# Usage:
+#   bin/install
+#   bin/install --env .env.local
+#   bin/install --env .env --config config.local.yaml
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+LABEL="com.vividynamics.coordinare"
+PLIST="$HOME/Library/LaunchAgents/${LABEL}.plist"
+
+# ---------------------------------------------------------------------------
+# Parse args (passed through to run-coordinare in the plist)
+# ---------------------------------------------------------------------------
+ENV_ARG=""
+CONFIG_ARG=""
+EXTRA_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --env)
+      ENV_ARG="$2"; shift 2 ;;
+    --config)
+      CONFIG_ARG="$2"; shift 2 ;;
+    *)
+      EXTRA_ARGS+=("$1"); shift ;;
+  esac
+done
+
+# Resolve env file
+if [[ -z "$ENV_ARG" && -f "${ROOT_DIR}/.env" ]]; then
+  ENV_ARG=".env"
+fi
+if [[ -z "$CONFIG_ARG" ]]; then
+  CONFIG_ARG="config.yaml"
+fi
+
+# Verify .env exists before embedding it in the plist
+if [[ -n "$ENV_ARG" ]]; then
+  env_abs="${ENV_ARG}"
+  [[ "${ENV_ARG:0:1}" != "/" ]] && env_abs="${ROOT_DIR}/${ENV_ARG}"
+  if [[ ! -f "$env_abs" ]]; then
+    echo "error: env file not found: $env_abs" >&2
+    exit 1
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Build ProgramArguments XML fragment
+# ---------------------------------------------------------------------------
+_plist_arg() { printf "      <string>%s</string>\n" "$1"; }
+
+prog_args="$(_plist_arg "${ROOT_DIR}/bin/run-coordinare")"
+if [[ -n "$ENV_ARG" ]]; then
+  prog_args+=$'\n'"$(_plist_arg "--env")"
+  prog_args+=$'\n'"$(_plist_arg "$ENV_ARG")"
+fi
+if [[ -n "$CONFIG_ARG" ]]; then
+  prog_args+=$'\n'"$(_plist_arg "--config")"
+  prog_args+=$'\n'"$(_plist_arg "$CONFIG_ARG")"
+fi
+for arg in "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"; do
+  prog_args+=$'\n'"$(_plist_arg "$arg")"
+done
+
+# ---------------------------------------------------------------------------
+# Write plist
+# ---------------------------------------------------------------------------
+mkdir -p "$HOME/Library/LaunchAgents"
+
+cat > "$PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>${LABEL}</string>
+
+    <key>WorkingDirectory</key>
+    <string>${ROOT_DIR}</string>
+
+    <key>ProgramArguments</key>
+    <array>
+${prog_args}
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>${ROOT_DIR}/coordinare.log</string>
+    <key>StandardErrorPath</key>
+    <string>${ROOT_DIR}/coordinare.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>PATH</key>
+      <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${HOME}/.local/bin</string>
+      <key>PYTHONPATH</key>
+      <string>${ROOT_DIR}/src</string>
+      <key>COORDINARE_RUN_MODE</key>
+      <string>shell</string>
+    </dict>
+  </dict>
+</plist>
+EOF
+
+# ---------------------------------------------------------------------------
+# Load (or reload) the service
+# ---------------------------------------------------------------------------
+
+# Unload first if already registered (ignore errors — may not be loaded)
+launchctl unload "$PLIST" 2>/dev/null || true
+
+launchctl load "$PLIST"
+
+echo "installed: ${LABEL}"
+echo "plist:     ${PLIST}"
+echo "log:       ${ROOT_DIR}/coordinare.log"
+echo ""
+echo "coordinare is now running and will restart automatically on login."
+echo "To stop without uninstalling:  launchctl stop ${LABEL}"
+echo "To uninstall:                  bin/uninstall"

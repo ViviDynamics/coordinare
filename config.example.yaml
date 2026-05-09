@@ -214,6 +214,31 @@ agent_executable: "/usr/local/bin/performer"  # path to the performer binary
 #     image: coordinare-performer:gpu
 #     endpoint: "http://gpu-host:8080"   # must be reachable from coordinare
 
+#   # -------------------------------------------------------------------------
+#   # Env-bootstrap performer (spec 060) — installs per-symphony tooling into a
+#   # host-path volume that other performers then receive read-only.
+#   #
+#   # How it works:
+#   #   1. Coordinare polls the SHA of each symphony's env_spec_files (e.g. README.md).
+#   #   2. When a change is detected it dispatches an "env_bootstrap" job to this
+#   #      performer with the file content as the payload.
+#   #   3. The performer reads the spec, installs tools/deps into /devenv/<name>,
+#   #      and exits.  The directory is then mounted read-only into every subsequent
+#   #      card job for that symphony.
+#   #
+#   # Requirements:
+#   #   - The image must contain whatever tooling the bootstrap script needs
+#   #     (apt, pip, nix, asdf, etc.).
+#   #   - coordinare needs write access to env_cache_root on the host; it creates
+#   #     the per-symphony subdirectory automatically before dispatching.
+#   #   - Reference this entry's `id` in each symphony's `env_bootstrap_performer_id`.
+#   # -------------------------------------------------------------------------
+#   - id: bootstrap-env
+#     mode: ephemeral
+#     roles: []                          # env_bootstrap jobs are not tied to a lifecycle role
+#     image: coordinare-performer:full    # swap for a custom image if extra tools are needed
+#     readiness_timeout_s: 300           # bootstrap jobs can be slow; give the container time
+
 # --- Reviewers ---
 
 human_reviewers:                    # Required. GitHub logins who can approve PRs.
@@ -370,6 +395,14 @@ assessment_backend: "anthropic_api"   # "anthropic_api" | "claude_cli" | "openco
 # --- Workspace ---
 # Root directory for performer workspaces (cloned repos). Defaults to system temp dir.
 # workspace_root: "/var/coordinare/workspaces"
+
+# --- Performer Environment Caching (spec 060) ---
+# Host directory under which per-symphony dev-environment cache subdirectories are created.
+# Each enabled symphony gets its own subdirectory: <env_cache_root>/<sanitised-name>/
+# The bootstrap performer writes tooling into this directory (read-write); all other
+# performers receive it as a read-only mount at /devenv/<sanitised-name> inside the container.
+# Defaults to ~/.coordinare/env-caches/ — set an explicit path if you need a specific location.
+# env_cache_root: "~/.coordinare/env-caches"
 
 # Git identity used for all performer commits.
 # bot_identity:
@@ -536,6 +569,10 @@ symphonies:
   - name: backend
     github_project_number: 43
     # enabled: true                   # default; set false to pause without removing
+    # env_bootstrap_performer_id: bootstrap-env   # enables env-caching for this symphony;
+    #                                             # must match a performer_endpoints id above
+    # env_spec_files: [README.md]     # files whose SHA change triggers a fresh bootstrap;
+    #                                 # defaults to [README.md]; relative to repo root
     # overrides:
     #   max_concurrent_cards: 2       # range 1–20
     #   poll_interval_seconds: 60

@@ -1827,6 +1827,13 @@ async function loadSymphonyDetail(name, el) {
       + '</div>';
   }).join('');
   var enabledChecked = data.enabled !== false ? 'checked' : '';
+  var specFiles = data.env_spec_files || ['README.md'];
+  var specFileTags = specFiles.map(function(f) {
+    return '<span data-spec-file="' + esc(f) + '" style="display:inline-flex;align-items:center;gap:4px;background:var(--color-bg-elevated);border:1px solid var(--color-border);border-radius:12px;padding:2px 8px;font-size:11px;margin:2px">'
+      + esc(f)
+      + '<button type="button" onclick="this.parentElement.remove()" style="background:none;border:none;cursor:pointer;color:var(--color-text-muted);font-size:13px;padding:0 0 0 2px;line-height:1">&times;</button>'
+      + '</span>';
+  }).join('');
   var personaInputs = personaRoles.map(function(role) {
     var instr = (personas[role] && personas[role].instructions) ? personas[role].instructions : '';
     return '<div style="margin-bottom:10px">'
@@ -1848,12 +1855,32 @@ async function loadSymphonyDetail(name, el) {
     + '<div style="font-size:12px;color:var(--color-text-muted);margin-bottom:8px">Per-symphony persona overrides (leave blank to inherit global defaults)</div>'
     + personaInputs
     + '</div>'
+    + '<div style="margin-top:4px;border-top:1px solid var(--color-bg-elevated);padding-top:12px">'
+    + '<div style="font-size:12px;color:var(--color-text-muted);margin-bottom:6px">Env spec files (any change triggers a bootstrap)</div>'
+    + '<div id="sym-spec-files-list" style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px">' + specFileTags + '</div>'
+    + '<div style="display:flex;gap:6px">'
+    + '<input id="sym-spec-file-input" type="text" placeholder="e.g. pyproject.toml" style="flex:1;background:var(--color-bg-base);color:var(--color-text-primary);border:1px solid var(--color-border);border-radius:4px;padding:4px 8px;font-size:12px">'
+    + '<button type="button" class="action-btn" id="sym-spec-file-add-btn" style="padding:4px 10px;font-size:12px">Add</button>'
+    + '</div>'
+    + '</div>'
     + '<div style="display:flex;gap:8px;align-items:center;margin-top:4px">'
     + '<button class="action-btn" id="sym-save-btn">Save</button>'
     + '<button class="action-btn" id="sym-delete-btn" style="background:var(--color-bg-delete);border-color:var(--color-border-delete);color:var(--color-accent-red)">Delete symphony</button>'
     + '<span id="sym-save-msg" class="action-msg"></span>'
     + '</div>'
     + '</div>';
+  document.getElementById('sym-spec-file-add-btn').addEventListener('click', function() {
+    var inp = document.getElementById('sym-spec-file-input');
+    var val = inp.value.trim();
+    if (!val) return;
+    var list = document.getElementById('sym-spec-files-list');
+    var tag = document.createElement('span');
+    tag.setAttribute('data-spec-file', val);
+    tag.setAttribute('style', 'display:inline-flex;align-items:center;gap:4px;background:var(--color-bg-elevated);border:1px solid var(--color-border);border-radius:12px;padding:2px 8px;font-size:11px;margin:2px');
+    tag.innerHTML = esc(val) + '<button type="button" onclick="this.parentElement.remove()" style="background:none;border:none;cursor:pointer;color:var(--color-text-muted);font-size:13px;padding:0 0 0 2px;line-height:1">&times;</button>';
+    list.appendChild(tag);
+    inp.value = '';
+  });
   document.getElementById('sym-save-btn').addEventListener('click', async function() {
     var msg = document.getElementById('sym-save-msg');
     var overrides = {};
@@ -1870,12 +1897,17 @@ async function loadSymphonyDetail(name, el) {
       var v = ta.value.trim();
       if (v) personas[role] = {instructions: v};
     });
+    var specFilesList = [];
+    el.querySelectorAll('[data-spec-file]').forEach(function(tag) {
+      specFilesList.push(tag.getAttribute('data-spec-file'));
+    });
+    if (specFilesList.length === 0) specFilesList = ['README.md'];
     var enabled = document.getElementById('sym-enabled').checked;
     try {
       var r = await fetch('/api/symphonies/' + encodeURIComponent(name), {
         method: 'PUT',
         headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({overrides: Object.keys(overrides).length ? overrides : null, personas: Object.keys(personas).length ? personas : null, enabled: enabled}),
+        body: JSON.stringify({overrides: Object.keys(overrides).length ? overrides : null, personas: Object.keys(personas).length ? personas : null, enabled: enabled, env_spec_files: specFilesList}),
       });
       var d = await r.json();
       if (r.ok) {
@@ -1959,6 +1991,9 @@ async function loadGlobalConfigPage() {
     {key:'human_reviewers', label:'Human reviewers (comma-separated GitHub logins)'},
     {key:'trusted_bot_reviewers', label:'Trusted bot reviewers (comma-separated)'},
   ];
+  var envCacheFields = [
+    {key:'env_cache_root', label:'Env cache root (host path)', placeholder:'~/.coordinare/env-caches'},
+  ];
   function fieldRow(label, inputHtml) {
     return '<div style="margin-bottom:10px">'
       + '<label style="font-size:11px;color:var(--color-text-muted);display:block;margin-bottom:3px">' + esc(label) + '</label>'
@@ -1983,6 +2018,10 @@ async function loadGlobalConfigPage() {
     var v = Array.isArray(data[f.key]) ? data[f.key].join(', ') : (data[f.key] || '');
     return fieldRow(f.label, '<input data-cfg-key="' + esc(f.key) + '" data-cfg-type="list" type="text" value="' + esc(v) + '" style="' + inp_style + '">');
   }).join('');
+  var envCacheHtml = envCacheFields.map(function(f) {
+    var v = data[f.key] != null ? data[f.key] : '';
+    return fieldRow(f.label, '<input data-cfg-key="' + esc(f.key) + '" data-cfg-type="text" type="text" value="' + esc(String(v)) + '" placeholder="' + esc(f.placeholder || '') + '" style="' + inp_style + '">');
+  }).join('');
   el.innerHTML = '<div style="background:var(--color-bg-surface);border:1px solid var(--color-border);border-radius:6px;padding:14px">'
     + '<div style="font-weight:bold;color:var(--color-text-primary);margin-bottom:14px;font-size:13px">Operational</div>'
     + numHtml
@@ -1992,6 +2031,9 @@ async function loadGlobalConfigPage() {
     + '<div style="border-top:1px solid var(--color-bg-elevated);margin:14px 0"></div>'
     + '<div style="font-weight:bold;color:var(--color-text-primary);margin-bottom:14px;font-size:13px">Reviewers</div>'
     + lstHtml
+    + '<div style="border-top:1px solid var(--color-bg-elevated);margin:14px 0"></div>'
+    + '<div style="font-weight:bold;color:var(--color-text-primary);margin-bottom:14px;font-size:13px">Environment Caching</div>'
+    + envCacheHtml
     + '<div style="display:flex;gap:8px;align-items:center;margin-top:8px">'
     + '<button class="action-btn" id="gcfg-save-btn">Save</button>'
     + '<span id="gcfg-save-msg" class="action-msg"></span>'
@@ -2977,6 +3019,7 @@ def create_dashboard_app(
             "enabled": getattr(cfg, "enabled", True),
             "overrides": getattr(cfg, "overrides", None) or {},
             "personas": getattr(cfg, "personas", None) or {},
+            "env_spec_files": getattr(cfg, "env_spec_files", None) or ["README.md"],
             "state": {
                 "cycle_count": getattr(state, "cycle_count", 0) if state else 0,
                 "error_count": getattr(state, "error_count", 0) if state else 0,
@@ -3037,6 +3080,7 @@ def create_dashboard_app(
                 github_project_number=int(github_project_number),
                 overrides=body.get("overrides") or None,
                 personas=body.get("personas") or None,
+                env_spec_files=body.get("env_spec_files") or ["README.md"],
             )
         except Exception:
             _log.warning("symphony_create_validation_failed", name=name, exc_info=True)
@@ -3085,6 +3129,7 @@ def create_dashboard_app(
             "enabled": new_cfg.enabled,
             "overrides": new_cfg.overrides or {},
             "personas": new_cfg.personas or {},
+            "env_spec_files": new_cfg.env_spec_files,
         }, status_code=201)
 
     @app.post("/api/symphonies/{name}/validate")
@@ -3191,6 +3236,7 @@ def create_dashboard_app(
                 enabled=enabled,
                 overrides=body.get("overrides", getattr(cfg, "overrides", None)),
                 personas=body.get("personas", getattr(cfg, "personas", None)),
+                env_spec_files=body.get("env_spec_files", getattr(cfg, "env_spec_files", ["README.md"])),
             )
         except Exception:
             _log.warning("symphony_config_validation_failed", name=name, exc_info=True)
@@ -3243,6 +3289,7 @@ def create_dashboard_app(
             "enabled": getattr(updated, "enabled", True),
             "overrides": getattr(updated, "overrides", None) or {},
             "personas": getattr(updated, "personas", None) or {},
+            "env_spec_files": getattr(updated, "env_spec_files", ["README.md"]),
         })
 
     @app.delete("/api/symphonies/{name}")
@@ -3380,6 +3427,7 @@ def create_dashboard_app(
         "assignee_filter",
         "human_reviewers",
         "trusted_bot_reviewers",
+        "env_cache_root",
     )
 
     @app.get("/api/config/global")
@@ -3389,7 +3437,10 @@ def create_dashboard_app(
         cfg = coordinare_cfg.global_config if coordinare_cfg else daemon.state.get("config")
         if not cfg:
             return JSONResponse({"error": "Config not available"}, status_code=500)
-        return JSONResponse({k: getattr(cfg, k, None) for k in _global_cfg_editable})
+        def _serialize(v: object) -> object:
+            from pathlib import Path as _Path
+            return str(v) if isinstance(v, _Path) else v
+        return JSONResponse({k: _serialize(getattr(cfg, k, None)) for k in _global_cfg_editable})
 
     @app.put("/api/config/global")
     async def update_global_config(request: Request) -> JSONResponse:

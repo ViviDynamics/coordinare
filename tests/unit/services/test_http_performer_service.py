@@ -1146,3 +1146,95 @@ async def test_dispatch_persistent_post_job_error(monkeypatch) -> None:
     result = await svc.dispatch_card(card, workspace)
     assert result["status"] == "error"
     assert "unreachable" in result["reason"]
+
+
+# ---------------------------------------------------------------------------
+# T043 (060): call_reset()
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_call_reset_returns_true_on_2xx() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/reset":
+            return httpx.Response(200, json={"ok": True})
+        return httpx.Response(404)
+
+    svc = HTTPPerformerService(_persistent_config(), client=_client(handler))
+    result = await svc.call_reset()
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_call_reset_returns_false_on_non_2xx() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/reset":
+            return httpx.Response(500)
+        return httpx.Response(404)
+
+    svc = HTTPPerformerService(_persistent_config(), client=_client(handler))
+    result = await svc.call_reset()
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_call_reset_returns_false_on_network_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused")
+
+    svc = HTTPPerformerService(_persistent_config(), client=_client(handler))
+    result = await svc.call_reset()
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_call_reset_no_op_for_ephemeral() -> None:
+    """call_reset() is a no-op for ephemeral performers — always returns True."""
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        return httpx.Response(200)
+
+    async def _fake_start(*args, **kwargs):
+        from coordinare.services.performer_lifecycle import StartedContainer
+        return StartedContainer(container_id="c1", endpoint="http://127.0.0.1:9999")
+
+    async def _fake_wait(*args, **kwargs):
+        return "http://127.0.0.1:9999"
+
+    svc = HTTPPerformerService(_ephemeral_config())
+    result = await svc.call_reset()
+    assert result is True
+    assert "/reset" not in calls
+
+
+@pytest.mark.asyncio
+async def test_check_status_terminal_persistent_calls_reset() -> None:
+    reset_called: list[bool] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/jobs":
+            return httpx.Response(
+                202,
+                json={"accepted": True, "job_id": "job-PR", "started_at": "2026-04-28T00:00:00Z"},
+            )
+        if request.url.path == "/reset":
+            reset_called.append(True)
+            return httpx.Response(200, json={"ok": True})
+        return httpx.Response(
+            200,
+            json={
+                "job_id": "job-PR",
+                "state": "succeeded",
+                "started_at": "2026-04-28T00:00:00Z",
+                "finished_at": "2026-04-28T00:01:00Z",
+            },
+        )
+
+    svc = HTTPPerformerService(_persistent_config(), client=_client(handler))
+    await svc.dispatch_card(_card(), _workspace())
+    await svc.check_status("job-PR")
+
+    assert reset_called == [True]
+    await svc.aclose()

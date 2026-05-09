@@ -535,9 +535,54 @@ async def dispatch_performer(state: CoordinareState) -> CoordinareState:
             card_context.update(translate_tuning(role_config))
 
     # --- Dispatch ---
+    # T022/T033/T037 (060): Attach per-symphony env-cache volume so performers find
+    # pre-built dev environments without burning tokens on re-installation.
+    _extra_volumes = None
+    _symphony_name_for_ec = state.get("current_symphony")
+    _env_cache_for_ec = state.get("env_cache")
+    if _symphony_name_for_ec is not None and _env_cache_for_ec:
+        from coordinare.models.env_cache import EnvCacheState
+        from coordinare.services.env_cache import DEFAULT_DEVENV_ROOT, get_env_volume_for_symphony
+        from coordinare.services.http_performer_service import HTTPPerformerService
+        _devenv_root = DEFAULT_DEVENV_ROOT
+        if isinstance(service, HTTPPerformerService):
+            _devenv_root = service.devenv_root
+        if isinstance(service, HTTPPerformerService) and service.mode == "persistent":
+            _has_ready_caches = any(
+                isinstance(s, EnvCacheState) and s.cache_dir_ready
+                for s in _env_cache_for_ec.values()
+            )
+            if _has_ready_caches:
+                logger.warning(
+                    "env_cache.persistent_performer_volumes_not_live_mountable",
+                    performer_stage=performer_stage,
+                    detail=(
+                        "Env-cache volumes cannot be added to a running persistent container. "
+                        "Restart the performer container to pick up the mount."
+                    ),
+                )
+            # Do not pass volumes to persistent performers — the container is
+            # already running and Docker cannot hot-add mounts.
+        else:
+            _ec_result = get_env_volume_for_symphony(
+                _symphony_name_for_ec,
+                _env_cache_for_ec,
+                is_bootstrap=False,
+                container_devenv_root=_devenv_root,
+            )
+            if _ec_result is not None:
+                _ec_vol, _ec_container_path = _ec_result
+                _extra_volumes = [_ec_vol]
+                card_context["env_cache_path"] = _ec_container_path
+
     try:
         await github.move_card(card_id, "IN_PROGRESS")
-        result = await service.dispatch_card(card_context, workspace_info=workspace_info)
+        _dispatch_kwargs: dict = {"workspace_info": workspace_info}
+        if _extra_volumes is not None:
+            from coordinare.services.http_performer_service import HTTPPerformerService
+            if isinstance(service, HTTPPerformerService):
+                _dispatch_kwargs["extra_volumes"] = _extra_volumes
+        result = await service.dispatch_card(card_context, **_dispatch_kwargs)
     except PerformerAuthError as exc:
         logger.error(
             "dispatch_performer.permanent_config_error",

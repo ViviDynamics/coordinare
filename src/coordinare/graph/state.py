@@ -192,6 +192,9 @@ class CoordinareState(TypedDict, total=False):
     symphony_github_services: dict[str, Any]   # name → GitHubService
     symphony_workspace_managers: dict[str, Any]  # name → WorkspaceManager
 
+    # 060: Per-symphony env-cache state (name → EnvCacheState)
+    env_cache: dict[str, Any]
+
 
 def initial_state() -> CoordinareState:
     return {
@@ -246,4 +249,5 @@ def initial_state() -> CoordinareState:
         "config_mode": "legacy",
         "symphony_github_services": {},
         "symphony_workspace_managers": {},
+        "env_cache": {},
     }

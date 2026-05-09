@@ -52,6 +52,15 @@ authoritative schema — any field not on `Score` is silently dropped by pydanti
 | `architecture_plan_path` | str | no | dispatch_performer (from card) | backend prompt — reference architect's plan |
 | `clarifications` | list[dict] | no | assess_card (embedded in card) | backend prompt — Q&A history |
 
+### Environment Cache (set by dispatch_performer, feature 060)
+
+> **Transport note**: These fields are delivered via `JobInitPayload` over HTTP to containerized (Docker) performers. Subprocess performers receive them through the `Score` model pathway above. The `metadata` dict is a free-form extension point; performer images MUST declare any keys they read as explicit fields on their job-init model to avoid silent drops.
+
+| Field | Type | Required | Set by | Used by |
+|-------|------|----------|--------|---------|
+| `metadata` | dict[str, str] | no | dispatch_performer | extension point for per-job context |
+| `metadata.env_cache_path` | str (within metadata) | no | dispatch_performer (when env cache ready) | performer activation — path to symphony's env cache subdirectory inside the container (e.g. `/devenv/my-project-a1b2c3`); absent when no cache configured or cache dir not yet ready |
+
 ### Backend Selection (set by dispatch_performer, feature 037)
 
 | Field | Type | Required | Set by | Used by |

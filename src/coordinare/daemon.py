@@ -33,6 +33,7 @@ from coordinare.state_store import StateLoadError, WorkflowPhase, WorkflowSnapsh
 if TYPE_CHECKING:
     from coordinare.dashboard import DashboardStore
     from coordinare.models.dependency import DependencyGraph
+    from coordinare.models.env_cache import BootstrapJobPayload
     from coordinare.state_store import StateStore
 
 logger = structlog.get_logger(__name__)
@@ -159,6 +160,7 @@ _PHASE_TRANSITION_METRIC: dict[tuple[str, str], str] = {
 # rely on _wait_for_next_cycle() for recovery — no webhook will arrive if
 # GitHub is down. Use a fixed backoff so the circuit can probe-recover.
 _CIRCUIT_OPEN_BACKOFF_SECONDS: int = 60
+_BOOTSTRAP_POLL_MAX_ATTEMPTS: int = 720  # 720 x 10 s = 7200 s ~= 2 h
 
 _CIRCUIT_TO_HEALTH_SUBSYSTEM: dict[str, str] = {
     "github": "github",
@@ -207,6 +209,8 @@ class CoordinareDaemon:
         self._dashboard_store = dashboard_store
         self._main_task: asyncio.Task[None] | None = None
         self._config_reload_trigger: asyncio.Event = asyncio.Event()
+        # 060: References to in-flight bootstrap poll tasks (prevents GC).
+        self._bootstrap_poll_tasks: set[asyncio.Task[None]] = set()
 
     @property
     def running(self) -> bool:
@@ -317,8 +321,17 @@ class CoordinareDaemon:
     async def _reconcile_with_board(self, snapshot: WorkflowSnapshot) -> None:
         """Query the live board and reconcile restored state against it."""
         github = self._state.get("github_service")
-        if github is None:
-            return
+        # In multi-symphony mode the global github_service exists but is not
+        # initialized (project_id=0, no field_cache — project_number lives
+        # per-symphony). Fall back to any per-symphony service that is ready.
+        if not getattr(github, "project_id", None):
+            sym_svcs = self._state.get("symphony_github_services") or {}
+            github = next(
+                (svc for svc in sym_svcs.values() if getattr(svc, "project_id", None)),
+                None,
+            )
+            if github is None:
+                return
         try:
             board = await github.poll_board()
             board_snapshot = board.get("snapshot", {})
@@ -1129,6 +1142,102 @@ class CoordinareDaemon:
         else:
             logger.info("runtime_event", **event)
 
+    async def _poll_bootstrap_completion(
+        self, svc: Any, job_id: str, symphony_name: str, env_cache_svc: Any
+    ) -> None:
+        """Poll a bootstrap job to completion and fire on_bootstrap_complete.
+
+        Runs for at most _BOOTSTRAP_POLL_MAX_ATTEMPTS iterations (720 x 10 s ~= 2 h).
+        """
+        for _attempt in range(_BOOTSTRAP_POLL_MAX_ATTEMPTS):
+            await asyncio.sleep(10)
+            try:
+                status_result = await svc.check_status(job_id)
+            except Exception as exc:
+                logger.warning(
+                    "env_cache.bootstrap_poll_failed",
+                    symphony=symphony_name,
+                    error=str(exc),
+                )
+                env_cache_svc.on_bootstrap_complete(symphony_name, False, self._state)
+                return
+            if status_result.get("status") not in ("working", None):
+                ok = status_result.get("status") == "ok"
+                env_cache_svc.on_bootstrap_complete(symphony_name, ok, self._state)
+                if ok:
+                    from coordinare.services.http_performer_service import HTTPPerformerService
+                    _performer_svcs = self._state.get("performer_services") or {}
+                    for _pid, _psvc in _performer_svcs.items():
+                        if (
+                            isinstance(_psvc, HTTPPerformerService)
+                            and _psvc.mode == "persistent"
+                        ):
+                            logger.warning(
+                                "env_cache.persistent_mount_skipped",
+                                symphony=symphony_name,
+                                performer_id=_pid,
+                                detail=(
+                                    "Env cache became ready after persistent performer started; "
+                                    "restart the performer container to pick up the new mount."
+                                ),
+                            )
+                return
+        logger.warning("env_cache.bootstrap_poll_timeout", symphony=symphony_name)
+        env_cache_svc.on_bootstrap_complete(symphony_name, False, self._state)
+
+    async def _execute_bootstrap_dispatch(
+        self,
+        performer_id: str,
+        payload: BootstrapJobPayload,
+        symphony_name: str,
+        performer_svcs: dict[str, Any],
+        env_cache_svc: Any,
+    ) -> None:
+        """Dispatch an env_bootstrap job to a performer and start polling for completion."""
+        from coordinare.services.env_cache import DEFAULT_DEVENV_ROOT, get_env_volume_for_symphony
+        from coordinare.services.http_performer_service import HTTPPerformerService
+
+        svc = performer_svcs.get(performer_id)
+        if svc is None:
+            logger.warning(
+                "env_cache.bootstrap_svc_not_found",
+                performer_id=performer_id,
+                symphony=symphony_name,
+            )
+            return
+        devenv_root = DEFAULT_DEVENV_ROOT
+        if isinstance(svc, HTTPPerformerService):
+            devenv_root = svc.devenv_root
+        # env_cache read live so we see entries that became ready mid-cycle.
+        ec_result = get_env_volume_for_symphony(
+            symphony_name,
+            self._state.get("env_cache") or {},
+            is_bootstrap=True,
+            container_devenv_root=devenv_root,
+        )
+        extra = [ec_result[0]] if ec_result is not None else []
+        dispatch_kw: dict[str, Any] = {}
+        if isinstance(svc, HTTPPerformerService) and extra:
+            dispatch_kw["extra_volumes"] = extra
+        # dispatch_card takes dict[str, Any]; model_dump() is an intentional demotion
+        # because the performer HTTP API is untyped at the wire level.
+        result = await svc.dispatch_card(payload.model_dump(), **dispatch_kw)
+        job_id = (result or {}).get("session_id") or (result or {}).get("job_id")
+        if job_id and hasattr(svc, "check_status"):
+            bootstrap_task = asyncio.create_task(
+                self._poll_bootstrap_completion(svc, job_id, symphony_name, env_cache_svc),
+                name=f"bootstrap_poll_{symphony_name}",
+            )
+            self._bootstrap_poll_tasks.add(bootstrap_task)
+            bootstrap_task.add_done_callback(self._bootstrap_poll_tasks.discard)
+        else:
+            logger.warning(
+                "env_cache.bootstrap_no_job_id",
+                symphony=symphony_name,
+                performer_id=performer_id,
+            )
+            env_cache_svc.on_bootstrap_complete(symphony_name, False, self._state)
+
     async def start(self) -> None:
         self._main_task = asyncio.current_task()
         self._running = True
@@ -1241,6 +1350,54 @@ class CoordinareDaemon:
                 symphony_configs = self._state.get("symphony_configs") or {}
                 _multi_symphony = bool(symphony_configs)
                 if symphony_configs:
+                    # 060: Env-cache SHA check — run once per cycle before orchestration.
+                    _env_cache_svc = self._state.get("env_cache_service")
+                    if _env_cache_svc is not None:
+                        _sym_gh_svcs = self._state.get("symphony_github_services") or {}
+                        # Snapshot performer services once before the loop so the
+                        # closure captures a stable mapping even if the state dict
+                        # is mutated mid-cycle by a performer reconnect.
+                        # env_cache is read live inside the closure because it only
+                        # exists after initialise() runs and its entries grow as
+                        # cache dirs are created — snapshotting it here would miss
+                        # caches that became ready during this cycle.
+                        _ec_performer_svcs = dict(self._state.get("performer_services") or {})
+                        for _ec_sym_name, _ec_sym_cfg in symphony_configs.items():
+                            _ec_gh_svc = _sym_gh_svcs.get(_ec_sym_name)
+                            if _ec_gh_svc is None:
+                                continue
+
+                            async def _bootstrap_dispatch_fn(
+                                performer_id: str,
+                                payload: BootstrapJobPayload,
+                                _sym: str = _ec_sym_name,
+                                _svc_map: dict[str, Any] = _ec_performer_svcs,
+                                _ec_svc: Any = _env_cache_svc,
+                            ) -> None:
+                                await self._execute_bootstrap_dispatch(
+                                    performer_id, payload, _sym, _svc_map, _ec_svc
+                                )
+
+                            from coordinare.services.env_cache import DEFAULT_DEVENV_ROOT
+                            _bootstrap_devenv_root = DEFAULT_DEVENV_ROOT
+                            _bootstrap_svc = _ec_performer_svcs.get(
+                                _ec_sym_cfg.env_bootstrap_performer_id or ""
+                            )
+                            if _bootstrap_svc is not None:
+                                from coordinare.services.http_performer_service import (
+                                    HTTPPerformerService,
+                                )
+                                if isinstance(_bootstrap_svc, HTTPPerformerService):
+                                    _bootstrap_devenv_root = _bootstrap_svc.devenv_root
+                            await _env_cache_svc.check_and_trigger(
+                                symphony_name=_ec_sym_name,
+                                symphony_config=_ec_sym_cfg,
+                                github_service=_ec_gh_svc,
+                                state=self._state,
+                                dispatch_fn=_bootstrap_dispatch_fn,
+                                container_devenv_root=_bootstrap_devenv_root,
+                            )
+
                     for sym_name, sym_cfg in symphony_configs.items():
                         if not self._running or self._stop_event.is_set():
                             break

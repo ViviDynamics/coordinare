@@ -90,6 +90,7 @@ class PerformerEndpointConfig(BaseModel):
     volumes: list[VolumeMount] = Field(default_factory=list)
     env: dict[str, str] = Field(default_factory=dict)
     capability_overrides: CapabilityOverride | None = None
+    container_devenv_root: str = "/devenv"
 
     @field_validator("readiness_timeout_s")
     @classmethod
@@ -123,6 +124,8 @@ class PerformerEndpointConfig(BaseModel):
                 set_fields.append("env")
             if self.secret_sources != SecretSourceConfig():
                 set_fields.append("secret_sources")
+            if self.container_devenv_root != "/devenv":
+                set_fields.append("container_devenv_root")
             if set_fields:
                 raise ValueError(
                     f"subprocess performers must not set: {', '.join(set_fields)}"

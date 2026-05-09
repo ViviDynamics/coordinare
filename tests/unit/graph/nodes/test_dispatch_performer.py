@@ -1218,3 +1218,188 @@ async def test_dispatch_omits_model_when_not_set() -> None:
     card_context = svc.dispatched[0]
     assert card_context.get("backend") == "opencode"
     assert "model" not in card_context
+
+
+# ---------------------------------------------------------------------------
+# Env-cache volume injection (spec 060)
+# ---------------------------------------------------------------------------
+
+
+def _make_http_service(*, mode: str = "ephemeral", devenv_root: str = "/devenv") -> Any:
+    """Return a MagicMock(spec=HTTPPerformerService) with minimal attrs set."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from coordinare.services.http_performer_service import HTTPPerformerService
+
+    svc = MagicMock(spec=HTTPPerformerService)
+    svc.mode = mode
+    svc.devenv_root = devenv_root
+    svc.check_health = AsyncMock(return_value={"status": "accepted"})
+    svc.dispatch_card = AsyncMock(return_value={"status": "accepted", "session_id": "sess-1"})
+    return svc
+
+
+def _ready_env_cache(tmp_path: Path, symphony_name: str = "my-project") -> dict:
+    """Return an env_cache dict with one ready EnvCacheState."""
+    from coordinare.models.env_cache import EnvCacheState
+    from coordinare.services.env_cache import sanitise_symphony_name
+
+    sanitised = sanitise_symphony_name(symphony_name)
+    cache_dir = tmp_path / sanitised
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    state = EnvCacheState(
+        symphony_name=symphony_name,
+        sanitised_name=sanitised,
+        cache_dir=cache_dir,
+        readme_sha="abc123",
+        cache_dir_ready=True,
+    )
+    return {symphony_name: state}
+
+
+@pytest.mark.asyncio
+async def test_env_cache_volume_injected_for_ephemeral_http_service(tmp_path: Path) -> None:
+    """Ephemeral HTTP service gets env-cache volume + env_cache_path in card context."""
+    svc = _make_http_service(mode="ephemeral")
+    symphony_name = "my-project"
+    env_cache = _ready_env_cache(tmp_path, symphony_name)
+
+    state = _base_state(
+        performer_services={"implementing": svc},
+        performer_stage="implementing",
+        lifecycle_sequence=["implementing"],
+        current_symphony=symphony_name,
+        env_cache=env_cache,
+    )
+
+    await dispatch_performer(state)
+
+    assert svc.dispatch_card.called
+    call_kwargs = svc.dispatch_card.call_args.kwargs
+    extra_vols = call_kwargs.get("extra_volumes")
+    assert extra_vols is not None and len(extra_vols) == 1
+    assert extra_vols[0].mode == "ro"
+
+    card_context = svc.dispatch_card.call_args.args[0]
+    assert "env_cache_path" in card_context
+    assert card_context["env_cache_path"].startswith("/devenv/")
+
+
+@pytest.mark.asyncio
+async def test_env_cache_no_volume_when_cache_not_ready(tmp_path: Path) -> None:
+    """When cache_dir_ready=False the env cache is not injected."""
+    from coordinare.models.env_cache import EnvCacheState
+    from coordinare.services.env_cache import sanitise_symphony_name
+
+    symphony_name = "my-project"
+    sanitised = sanitise_symphony_name(symphony_name)
+    cache_dir = tmp_path / sanitised
+    not_ready_state = EnvCacheState(
+        symphony_name=symphony_name,
+        sanitised_name=sanitised,
+        cache_dir=cache_dir,
+        cache_dir_ready=False,
+    )
+    env_cache = {symphony_name: not_ready_state}
+
+    svc = _make_http_service(mode="ephemeral")
+    state = _base_state(
+        performer_services={"implementing": svc},
+        performer_stage="implementing",
+        lifecycle_sequence=["implementing"],
+        current_symphony=symphony_name,
+        env_cache=env_cache,
+    )
+
+    await dispatch_performer(state)
+
+    assert svc.dispatch_card.called
+    call_kwargs = svc.dispatch_card.call_args.kwargs
+    assert call_kwargs.get("extra_volumes") is None
+    card_context = svc.dispatch_card.call_args.args[0]
+    assert "env_cache_path" not in card_context
+
+
+@pytest.mark.asyncio
+async def test_env_cache_persistent_http_service_warns_and_skips_volumes(
+    tmp_path: Path,
+) -> None:
+    """Persistent HTTP service: warning logged, no volumes passed (Docker can't hot-add mounts)."""
+    svc = _make_http_service(mode="persistent")
+    symphony_name = "my-project"
+    env_cache = _ready_env_cache(tmp_path, symphony_name)
+
+    state = _base_state(
+        performer_services={"implementing": svc},
+        performer_stage="implementing",
+        lifecycle_sequence=["implementing"],
+        current_symphony=symphony_name,
+        env_cache=env_cache,
+    )
+
+    await dispatch_performer(state)
+
+    assert svc.dispatch_card.called
+    call_kwargs = svc.dispatch_card.call_args.kwargs
+    # Volumes are NOT passed — Docker cannot hot-add mounts to a running container.
+    assert call_kwargs.get("extra_volumes") is None
+    card_context = svc.dispatch_card.call_args.args[0]
+    assert "env_cache_path" not in card_context
+
+
+@pytest.mark.asyncio
+async def test_env_cache_persistent_http_service_no_volumes_when_no_ready_cache(
+    tmp_path: Path,
+) -> None:
+    """Persistent HTTP service with no ready cache passes no extra_volumes."""
+    from coordinare.models.env_cache import EnvCacheState
+    from coordinare.services.env_cache import sanitise_symphony_name
+
+    symphony_name = "my-project"
+    sanitised = sanitise_symphony_name(symphony_name)
+    cache_dir = tmp_path / sanitised
+    not_ready = EnvCacheState(
+        symphony_name=symphony_name,
+        sanitised_name=sanitised,
+        cache_dir=cache_dir,
+        cache_dir_ready=False,
+    )
+    env_cache = {symphony_name: not_ready}
+
+    svc = _make_http_service(mode="persistent")
+    state = _base_state(
+        performer_services={"implementing": svc},
+        performer_stage="implementing",
+        lifecycle_sequence=["implementing"],
+        current_symphony=symphony_name,
+        env_cache=env_cache,
+    )
+
+    await dispatch_performer(state)
+
+    assert svc.dispatch_card.called
+    call_kwargs = svc.dispatch_card.call_args.kwargs
+    assert call_kwargs.get("extra_volumes") is None
+
+
+@pytest.mark.asyncio
+async def test_env_cache_non_http_service_no_extra_volumes(tmp_path: Path) -> None:
+    """Non-HTTP service (_Service) gets env_cache_path in card context but no extra_volumes kwarg."""
+    symphony_name = "my-project"
+    env_cache = _ready_env_cache(tmp_path, symphony_name)
+
+    svc = _Service()
+    state = _base_state(
+        performer_services={"implementing": svc},
+        performer_stage="implementing",
+        lifecycle_sequence=["implementing"],
+        current_symphony=symphony_name,
+        env_cache=env_cache,
+    )
+
+    await dispatch_performer(state)
+
+    assert len(svc.dispatched) == 1
+    # _Service.dispatch_card doesn't accept extra_volumes and must not be called with it
+    # (the node guards with isinstance(service, HTTPPerformerService) before passing extra_volumes)
+    assert svc.last_workspace_info is not None  # workspace was still prepared

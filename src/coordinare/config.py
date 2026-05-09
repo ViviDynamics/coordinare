@@ -583,6 +583,19 @@ class ProjectConfiguration(BaseSettings):
     # only id + roles (no image/endpoint/auth_token).
     performer_endpoints: list[PerformerEndpointConfig] = Field(default_factory=list)
 
+    # 060 — Performer environment caching.
+    # Root directory under which per-symphony env-cache subdirectories are created.
+    # Expanded to an absolute path at load time.
+    # Lives here on ProjectConfiguration (the global-defaults layer) rather than in a
+    # separate GlobalConfig model because per-symphony configs already overlay this via
+    # effective_config() — there is no architectural need for another indirection.
+    env_cache_root: Path = Path("~/.coordinare/env-caches/")
+
+    @field_validator("env_cache_root", mode="after")
+    @classmethod
+    def _expand_env_cache_root(cls, v: Path) -> Path:
+        return v.expanduser()
+
     @model_validator(mode="after")
     def _validate_performer_endpoints(self) -> ProjectConfiguration:
         ids = [cfg.id for cfg in self.performer_endpoints]
@@ -733,6 +746,19 @@ class SymphonyConfig(BaseModel):
     overrides: dict[str, Any] | None = None   # partial ProjectConfiguration fields merged with global
     personas: dict[str, Any] | None = None    # per-symphony persona overrides
 
+    # 060 — Performer environment caching per symphony.
+    env_bootstrap_performer_id: str | None = None
+    env_spec_files: list[str] = Field(default_factory=lambda: ["README.md"])
+
+    @field_validator("env_spec_files")
+    @classmethod
+    def _validate_env_spec_files(cls, v: list[str]) -> list[str]:
+        for entry in v:
+            if entry.startswith("/"):
+                msg = f"env_spec_files entries must be relative paths, got: {entry!r}"
+                raise ValueError(msg)
+        return v
+
     @field_validator("name")
     @classmethod
     def validate_name(cls, v: str) -> str:
@@ -821,4 +847,19 @@ class CoordinareConfiguration(BaseModel):
             msg = "symphony project numbers must be unique"
             raise ValueError(msg)
         return v
+
+    @model_validator(mode="after")
+    def validate_env_bootstrap_performer_ids(self) -> CoordinareConfiguration:
+        known_ids = {p.id for p in self.global_config.performer_endpoints if hasattr(p, "id")}
+        for symphony in self.symphonies:
+            if (
+                symphony.env_bootstrap_performer_id is not None
+                and symphony.env_bootstrap_performer_id not in known_ids
+            ):
+                msg = (
+                    f"Symphony '{symphony.name}' env_bootstrap_performer_id "
+                    f"'{symphony.env_bootstrap_performer_id}' not found in performer_endpoints"
+                )
+                raise ValueError(msg)
+        return self
 

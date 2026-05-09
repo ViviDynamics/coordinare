@@ -1681,7 +1681,8 @@ def test_get_global_config_returns_editable_fields() -> None:
     for attr in ("heartbeat_interval_seconds", "max_feedback_cycles",
                  "max_closed_pr_attempts_per_issue", "output_mode",
                  "assessment_backend", "assignee_filter",
-                 "human_reviewers", "trusted_bot_reviewers"):
+                 "human_reviewers", "trusted_bot_reviewers",
+                 "env_cache_root"):
         setattr(cfg, attr, None)
     daemon.state["config"] = cfg
     client = _make_app(daemon=daemon)

@@ -133,6 +133,10 @@ class PerformerHTTPClient:
         r.raise_for_status()
         return CancelResponse.model_validate(r.json())
 
+    async def post_reset(self) -> httpx.Response:
+        """POST /reset — asks a persistent performer to clear session state."""
+        return await self._request("POST", "/reset")
+
     async def stream_job(self, job_id: str) -> AsyncIterator[JobStatus]:
         """Yield ``JobStatus`` objects parsed from the SSE stream until terminal."""
         url = f"{self._base_url}/jobs/{job_id}/stream"

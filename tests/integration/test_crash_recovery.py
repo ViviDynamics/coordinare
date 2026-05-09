@@ -39,6 +39,8 @@ class _Graph:
 class _GitHub:
     """Mock github service returning a configurable board snapshot."""
 
+    project_id: int = 1  # non-zero so _reconcile_with_board treats it as initialized
+
     def __init__(self, board_snapshot: dict | None = None):
         self._board_snapshot = board_snapshot or {}
 

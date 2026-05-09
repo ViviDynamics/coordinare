@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# bin/uninstall — remove the coordinare LaunchAgent and stop any running instance
+#
+# Unloads the service so launchd stops managing it, then removes the plist.
+# Any currently running coordinare process is stopped cleanly first.
+#
+# Usage:
+#   bin/uninstall
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+LABEL="com.vividynamics.coordinare"
+PLIST="$HOME/Library/LaunchAgents/${LABEL}.plist"
+
+if [[ ! -f "$PLIST" ]]; then
+  echo "coordinare is not installed as a LaunchAgent"
+  # Still run bin/stop in case a manually-started instance is running.
+  "${ROOT_DIR}/bin/stop"
+  exit 0
+fi
+
+# Unload stops the service and prevents launchd from respawning it.
+launchctl unload "$PLIST" 2>/dev/null || true
+
+rm -f "$PLIST"
+
+echo "uninstalled: ${LABEL}"
+echo "removed:     ${PLIST}"
+
+# Kill any stray processes not caught by launchctl unload.
+"${ROOT_DIR}/bin/stop"
