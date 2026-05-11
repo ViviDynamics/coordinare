@@ -92,15 +92,29 @@ async def test_full_lifecycle(tmp_path: Path) -> None:
 
     assert sym_name in env_cache
     state: EnvCacheState = env_cache[sym_name]
-    assert state.cache_dir_ready is True
+    # 061: post-init the cache dir exists but is not ready and SHA is unseeded;
+    # readiness only flips after a successful bootstrap.
+    assert state.cache_dir_ready is False
+    assert state.readme_sha is None
     assert state.cache_dir.is_dir()
     assert state.sanitised_name == sanitised
-    expected_initial = _combined_sha({"README.md": initial_sha})
-    assert state.readme_sha == expected_initial
 
-    # ---- 2. check_and_trigger() — SHA unchanged, no dispatch ----
+    # ---- 2. First check_and_trigger() — readme_sha is None, dispatches bootstrap ----
     dispatch_fn = AsyncMock()
     full_state = {"env_cache": env_cache}
+    await svc.check_and_trigger(sym_name, sym_cfg, github, full_state, dispatch_fn)
+    dispatch_fn.assert_called_once()
+    expected_initial = _combined_sha({"README.md": initial_sha})
+    assert state.readme_sha == expected_initial
+    assert state.bootstrap_in_flight is True
+
+    # First bootstrap completes successfully — cache becomes ready.
+    svc.on_bootstrap_complete(sym_name, success=True, state=full_state)
+    assert state.cache_dir_ready is True
+    assert state.bootstrap_in_flight is False
+
+    # ---- 2b. check_and_trigger() — SHA unchanged, no dispatch ----
+    dispatch_fn.reset_mock()
     await svc.check_and_trigger(sym_name, sym_cfg, github, full_state, dispatch_fn)
     dispatch_fn.assert_not_called()
     assert state.bootstrap_in_flight is False
@@ -166,11 +180,16 @@ async def test_pending_sha_queued_while_bootstrap_in_flight(tmp_path: Path) -> N
     await svc.initialise(env_cache, {sym_name: github})
     state: EnvCacheState = env_cache[sym_name]
 
+    # 061: drive the first bootstrap to completion so the cache is "ready".
+    dispatch_fn = AsyncMock()
+    full_state = {"env_cache": env_cache}
+    await svc.check_and_trigger(sym_name, sym_cfg, github, full_state, dispatch_fn)
+    svc.on_bootstrap_complete(sym_name, success=True, state=full_state)
+
     # Start a bootstrap for sha-v2.
     github.get_file_blob_sha = AsyncMock(return_value="sha-v2")
     github.get_file_content = AsyncMock(return_value="v2 content")
-    dispatch_fn = AsyncMock()
-    full_state = {"env_cache": env_cache}
+    dispatch_fn.reset_mock()
     await svc.check_and_trigger(sym_name, sym_cfg, github, full_state, dispatch_fn)
     assert state.bootstrap_in_flight is True
     dispatch_fn.assert_called_once()
@@ -205,10 +224,16 @@ async def test_bootstrap_failure_clears_sha_for_retry(tmp_path: Path) -> None:
     await svc.initialise(env_cache, {sym_name: github})
     state: EnvCacheState = env_cache[sym_name]
 
-    github.get_file_blob_sha = AsyncMock(return_value="sha-v2")
-    github.get_file_content = AsyncMock(return_value="v2 content")
+    # 061: drive the first bootstrap to completion so we exercise failure
+    # against an already-ready cache.
     dispatch_fn = AsyncMock()
     full_state = {"env_cache": env_cache}
+    await svc.check_and_trigger(sym_name, sym_cfg, github, full_state, dispatch_fn)
+    svc.on_bootstrap_complete(sym_name, success=True, state=full_state)
+
+    github.get_file_blob_sha = AsyncMock(return_value="sha-v2")
+    github.get_file_content = AsyncMock(return_value="v2 content")
+    dispatch_fn.reset_mock()
     await svc.check_and_trigger(sym_name, sym_cfg, github, full_state, dispatch_fn)
     assert state.bootstrap_in_flight is True
 
@@ -269,15 +294,23 @@ async def test_multi_file_combined_sha(tmp_path: Path) -> None:
     svc = EnvCacheService(coordinare_cfg)
     await svc.initialise(env_cache, {sym_name: github})
     state = env_cache[sym_name]
+    # 061: post-init state is unseeded — first check_and_trigger drives the
+    # initial combined-SHA fetch and dispatches the first bootstrap.
+    assert state.readme_sha is None
+
+    dispatch_fn = AsyncMock()
+    full_state = {"env_cache": env_cache}
+    await svc.check_and_trigger(sym_name, sym_cfg, github, full_state, dispatch_fn)
     initial_combined = _combined_sha({"README.md": "readme-sha-1", "pyproject.toml": "toml-sha-1"})
     assert state.readme_sha == initial_combined
+    dispatch_fn.assert_called_once()
+    svc.on_bootstrap_complete(sym_name, success=True, state=full_state)
 
     # Only pyproject.toml changes — combined SHA must differ → dispatch.
     github.get_file_blob_sha = AsyncMock(side_effect=lambda org, repo, f: {
         "README.md": "readme-sha-1", "pyproject.toml": "toml-sha-2"
     }[f])
-    dispatch_fn = AsyncMock()
-    full_state = {"env_cache": env_cache}
+    dispatch_fn.reset_mock()
     await svc.check_and_trigger(sym_name, sym_cfg, github, full_state, dispatch_fn)
     dispatch_fn.assert_called_once()
     _, payload = dispatch_fn.call_args.args

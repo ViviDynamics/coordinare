@@ -441,13 +441,17 @@ class GitHubService:
             self._client = None
 
     async def _execute(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:
+        # 061: Hold the lock for the full request, not just client construction.
+        # The underlying AIOHTTPTransport cannot service concurrent
+        # execute_async calls — overlapping callers produce
+        # "Transport is already connected" and poison the session for
+        # subsequent requests ("Connector is closed.").
         async with self._gql_lock:
             token = await self._current_token()
             if self._client is None or token != self._last_token:
                 self._client = self._build_client(token)
                 self._last_token = token
-            client = self._client
-        return await self._execute_request(client, query, variables)
+            return await self._execute_request(self._client, query, variables)
 
     async def _execute_request(self, client: Any, query: str, variables: dict[str, Any]) -> dict[str, Any]:
         document = gql(query)

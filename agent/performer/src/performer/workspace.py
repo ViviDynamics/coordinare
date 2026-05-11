@@ -6,6 +6,7 @@ import base64
 import errno
 import os
 import re
+import shlex
 import shutil
 import tempfile
 import time as _time
@@ -225,7 +226,98 @@ async def clone_repository(score: Score) -> Stand:
     log.info("cloned repository", repo_url=score.repo_url, branch=score.branch)
     stand = Stand(path=stand_path, branch=score.branch)
     stand.git_env = _git_credential_vars(score.effective_github_token)
+    stand.cache_env = await _activate_env_cache(score.env_cache_path)
     return stand
+
+
+async def _activate_env_cache(env_cache_path: str) -> dict[str, str]:
+    """Source ``<env_cache_path>/activate.sh`` and return the env-var delta.
+
+    Returns an empty dict if ``env_cache_path`` is empty. Logs a warning if
+    the path is set but ``activate.sh`` is missing or sourcing fails — the
+    cache exists but downstream tools won't find its binaries.
+    """
+    if not env_cache_path:
+        return {}
+    activate = Path(env_cache_path) / "activate.sh"
+    if not activate.exists():
+        log.warning(
+            "env_cache.activate_missing",
+            env_cache_path=env_cache_path,
+            detail=(
+                "Env-cache volume mounted but activate.sh is missing — consumer "
+                "tools will not see cached binaries. Bootstrap job did not write "
+                "the required activation script."
+            ),
+        )
+        return {}
+
+    # Diff env after sourcing against a reference env (same shell, no source)
+    # so we capture only the keys the script set/changed, not bash defaults.
+    script = (
+        f"source {shlex.quote(str(activate))} >/dev/null 2>&1 && "
+        f"env -0"
+    )
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "bash", "-c", script,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30.0)
+    except (OSError, asyncio.TimeoutError) as exc:
+        log.warning(
+            "env_cache.activate_failed",
+            env_cache_path=env_cache_path,
+            error=str(exc),
+        )
+        return {}
+    if proc.returncode != 0:
+        log.warning(
+            "env_cache.activate_nonzero",
+            env_cache_path=env_cache_path,
+            returncode=proc.returncode,
+            stderr=stderr.decode(errors="replace")[:500],
+        )
+        return {}
+
+    # Reference env: the same bash invocation without sourcing. Anything
+    # unchanged between the two is a bash default we should NOT propagate.
+    try:
+        ref_proc = await asyncio.create_subprocess_exec(
+            "bash", "-c", "env -0",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        ref_stdout, _ = await asyncio.wait_for(ref_proc.communicate(), timeout=10.0)
+    except (OSError, asyncio.TimeoutError):
+        ref_stdout = b""
+
+    def _parse(blob: bytes) -> dict[str, str]:
+        out: dict[str, str] = {}
+        for entry in blob.split(b"\x00"):
+            if not entry:
+                continue
+            try:
+                k, v = entry.decode("utf-8", errors="replace").split("=", 1)
+            except ValueError:
+                continue
+            out[k] = v
+        return out
+
+    sourced = _parse(stdout)
+    reference = _parse(ref_stdout)
+    delta: dict[str, str] = {}
+    for k, v in sourced.items():
+        if reference.get(k) != v:
+            delta[k] = v
+    log.info(
+        "env_cache.activated",
+        env_cache_path=env_cache_path,
+        var_count=len(delta),
+        keys=sorted(delta.keys()),
+    )
+    return delta
 
 
 async def push_branch(stand: Stand, score: Score) -> None:

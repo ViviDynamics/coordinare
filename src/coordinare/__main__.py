@@ -677,6 +677,7 @@ async def _bootstrap_services(
                 hint="containers left by a previous coordinare crash",
             )
     http_services_by_stage = _build_http_performer_services(config)
+    performer_services_by_id: dict[str, Any] = {}
     for stage, http_services in http_services_by_stage.items():
         existing = service_lists.get(stage, [])
         merged = existing + http_services
@@ -684,6 +685,10 @@ async def _bootstrap_services(
         if stage not in performer_services:
             performer_services[stage] = merged[0]
         stage_max_c[stage] = len(service_lists[stage])
+        for svc in http_services:
+            svc_id = getattr(getattr(svc, "_config", None), "id", None)
+            if svc_id:
+                performer_services_by_id[svc_id] = svc
 
     # Register all pools once after subprocess + HTTP services are merged.
     from coordinare.services.slot_manager import SlotManager
@@ -741,6 +746,7 @@ async def _bootstrap_services(
         "blocked_reminder_hours": config.blocked_reminder_hours,
         "workspace_manager": workspace_manager,
         "performer_services": performer_services,
+        "performer_services_by_id": performer_services_by_id,
         "lifecycle_sequence": lifecycle_sequence,
         "performer_stage": lifecycle_sequence[0] if lifecycle_sequence else "implementing",
         "role_timeouts": role_timeouts,

@@ -472,6 +472,124 @@ async def test_check_board_routes_to_monitoring_pr_for_in_review() -> None:
     assert result["phase"] == "monitoring_pr"
 
 
+class _GitHubInReviewWithTodo:
+    async def poll_board(self):
+        return {
+            "snapshot": {
+                "IN_REVIEW": ["ITEM_R"],
+                "TODO": ["ITEM_T"],
+                "IN_PROGRESS": [],
+                "BLOCKED": [],
+            },
+            "titles": {"ITEM_R": "Awaiting Review", "ITEM_T": "Fresh Work"},
+            "descriptions": {"ITEM_R": "", "ITEM_T": ""},
+            "issue_numbers": {"ITEM_R": 100, "ITEM_T": 101},
+            "issue_urls": {},
+            "content_node_ids": {},
+        }
+
+
+@pytest.mark.asyncio
+async def test_check_board_multicard_readopts_in_review_and_picks_up_todo() -> None:
+    """061: In multi-card mode, an orphaned IN_REVIEW card should be
+    re-adopted into active_sessions (phase=monitoring_pr) AND a fresh TODO
+    card should be picked up in the same cycle, since passive sessions
+    don't consume a concurrency slot.
+    """
+    from types import SimpleNamespace
+
+    state = initial_state()
+    state["github_service"] = _GitHubInReviewWithTodo()
+    state["config"] = SimpleNamespace(
+        github_org="acme",
+        project_name="repo",
+        max_concurrent_cards=2,
+        priority=SimpleNamespace(field_name="", priority_order=[]),
+        github_api_url="",
+        assignee_filter=None,
+    )
+    state["active_sessions"] = {}
+
+    result = await check_board(state)
+
+    sessions = result.get("active_sessions") or {}
+    assert "ITEM_R" in sessions, "IN_REVIEW card should be re-adopted into active_sessions"
+    assert "ITEM_T" in sessions, "TODO card should be picked up in same cycle"
+    assert sessions["ITEM_R"]["phase"] == "monitoring_pr"
+    assert sessions["ITEM_R"]["current_card"]["id"] == "ITEM_R"
+    assert sessions["ITEM_R"]["current_card"]["status"] == "IN_REVIEW"
+    assert sessions["ITEM_T"]["phase"] == "dispatching"
+    assert sessions["ITEM_T"]["current_card"]["id"] == "ITEM_T"
+
+
+@pytest.mark.asyncio
+async def test_check_board_multicard_per_session_in_review_preserves_monitoring_pr() -> None:
+    """Bug 16.1 regression: a per-session invocation whose current_card
+    is in IN_REVIEW (already tracked in active_sessions) must keep
+    phase="monitoring_pr" and must NOT fall through to a path that
+    overwrites the phase to "idle", which would cause routing to
+    re-dispatch a performer before the human has reviewed.
+    """
+    from types import SimpleNamespace
+
+    state = initial_state()
+    state["github_service"] = _GitHubInReviewWithTodo()
+    state["config"] = SimpleNamespace(
+        github_org="acme",
+        project_name="repo",
+        max_concurrent_cards=2,
+        priority=SimpleNamespace(field_name="", priority_order=[]),
+        github_api_url="",
+        assignee_filter=None,
+    )
+    # Simulate per-session invocation: ITEM_R already adopted, this call
+    # is for that session (current_card = ITEM_R, phase = monitoring_pr).
+    state["active_sessions"] = {
+        "ITEM_R": {
+            "current_card": {
+                "id": "ITEM_R",
+                "issue_number": 100,
+                "title": "Awaiting Review",
+                "status": "IN_REVIEW",
+            },
+            "phase": "monitoring_pr",
+        }
+    }
+    state["current_card"] = {
+        "id": "ITEM_R",
+        "issue_number": 100,
+        "title": "Awaiting Review",
+        "status": "IN_REVIEW",
+    }
+    state["phase"] = "monitoring_pr"
+
+    result = await check_board(state)
+
+    assert result["phase"] == "monitoring_pr", (
+        "IN_REVIEW per-session invocation must preserve monitoring_pr; "
+        f"got phase={result['phase']!r}"
+    )
+    # current_card must still be the same IN_REVIEW card (not switched
+    # to a TODO pickup card).
+    assert result["current_card"]["id"] == "ITEM_R"
+
+
+@pytest.mark.asyncio
+async def test_check_board_singlecard_in_review_still_short_circuits() -> None:
+    """061: Single-card mode keeps the original behavior — IN_REVIEW
+    routes to monitoring_pr without falling through to TODO pickup.
+    """
+    state = initial_state()
+    state["github_service"] = _GitHubInReviewWithTodo()
+    # No config / max_concurrent_cards defaults to 1
+
+    result = await check_board(state)
+
+    assert result["phase"] == "monitoring_pr"
+    # No active_sessions populated in single-card mode for IN_REVIEW.
+    assert not (result.get("active_sessions") or {})
+
+
 class _GitHubInProgress:
     async def poll_board(self):
         return {

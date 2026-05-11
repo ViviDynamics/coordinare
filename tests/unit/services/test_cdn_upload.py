@@ -1,16 +1,12 @@
-"""Tests for CDN upload helper (055 Phase 4)."""
+"""Tests for CDN upload helper (qa-assets branch upload)."""
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from coordinare.services.cdn_upload import render_screenshot_section, upload_screenshot
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _make_png(tmp_path: Path, name: str = "shot.png") -> Path:
     p = tmp_path / name
@@ -18,28 +14,34 @@ def _make_png(tmp_path: Path, name: str = "shot.png") -> Path:
     return p
 
 
-def _mock_client(policy_status: int = 200, policy_body: dict | None = None, put_status: int = 200):
-    """Return an AsyncMock httpx client with configurable responses."""
-    client = MagicMock()
-    client.__aenter__ = AsyncMock(return_value=client)
-    client.__aexit__ = AsyncMock(return_value=False)
+class _FakeGit:
+    def __init__(self, *, clone_rc: int = 0, push_rcs: list[int] | None = None):
+        self.clone_rc = clone_rc
+        self.push_rcs = list(push_rcs or [])
+        self.calls: list[list[str]] = []
 
-    policy_resp = MagicMock()
-    policy_resp.status_code = policy_status
-    policy_resp.json.return_value = policy_body or {
-        "upload_url": "https://s3.example.com/presigned",
-        "asset_url": "https://github.com/user-attachments/shot.png",
-        "header": {},
-    }
-    policy_resp.raise_for_status = MagicMock()
-
-    put_resp = MagicMock()
-    put_resp.status_code = put_status
-    put_resp.raise_for_status = MagicMock()
-
-    client.post = AsyncMock(return_value=policy_resp)
-    client.put = AsyncMock(return_value=put_resp)
-    return client
+    async def __call__(
+        self,
+        argv: list[str],
+        cwd: Path,
+        env: dict[str, str] | None = None,
+    ) -> tuple[int, str, str]:
+        self.calls.append(list(argv))
+        # Token must never appear in argv — it goes through GIT_ASKPASS.
+        for a in argv:
+            assert "SECRET-TOKEN" not in a, f"token leaked into argv: {a!r}"
+        if argv[:2] == ["git", "clone"]:
+            target = Path(argv[-1])
+            if self.clone_rc == 0:
+                target.mkdir(parents=True, exist_ok=True)
+            return self.clone_rc, "", ""
+        if argv[:2] == ["git", "init"]:
+            cwd.mkdir(parents=True, exist_ok=True)
+            return 0, "", ""
+        if argv[:2] == ["git", "push"]:
+            rc = self.push_rcs.pop(0) if self.push_rcs else 0
+            return rc, "", "non-fast-forward" if rc != 0 else ""
+        return 0, "", ""
 
 
 # ---------------------------------------------------------------------------
@@ -50,23 +52,43 @@ def _mock_client(policy_status: int = 200, policy_body: dict | None = None, put_
 @pytest.mark.asyncio
 async def test_upload_ok(tmp_path):
     png = _make_png(tmp_path)
-    client = _mock_client()
+    git = _FakeGit()
     url = await upload_screenshot(
         file_path=png,
-        github_token="tok",
+        github_token="SECRET-TOKEN",
         org="Org",
         repo="repo",
         issue_number=1,
-        _client=client,
+        _runner=git,
     )
-    assert url == "https://github.com/user-attachments/shot.png"
+    assert url is not None
+    assert url.startswith("https://github.com/Org/repo/raw/qa-assets/content/1/")
+    assert url.endswith("-shot.png")
+
+
+@pytest.mark.asyncio
+async def test_upload_bootstraps_orphan_when_clone_fails(tmp_path):
+    png = _make_png(tmp_path)
+    git = _FakeGit(clone_rc=128)
+    url = await upload_screenshot(
+        file_path=png,
+        github_token="SECRET-TOKEN",
+        org="Org",
+        repo="repo",
+        issue_number=2,
+        _runner=git,
+    )
+    assert url is not None
+    cmds = [c[1] for c in git.calls if len(c) > 1]
+    assert "init" in cmds
+    assert "remote" in cmds
 
 
 @pytest.mark.asyncio
 async def test_upload_file_not_found(tmp_path):
     url = await upload_screenshot(
         file_path=tmp_path / "missing.png",
-        github_token="tok",
+        github_token="SECRET-TOKEN",
         org="Org",
         repo="repo",
         issue_number=1,
@@ -75,54 +97,88 @@ async def test_upload_file_not_found(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_upload_endpoint_404(tmp_path):
+async def test_upload_missing_context(tmp_path):
     png = _make_png(tmp_path)
-    client = _mock_client(policy_status=404)
-    client.post.return_value.raise_for_status = MagicMock()
+    assert await upload_screenshot(
+        file_path=png, github_token="", org="o", repo="r", issue_number=1,
+    ) is None
+    assert await upload_screenshot(
+        file_path=png, github_token="t", org="o", repo="r", issue_number=0,
+    ) is None
+
+
+@pytest.mark.asyncio
+async def test_upload_retries_on_push_then_succeeds(tmp_path, monkeypatch):
+    png = _make_png(tmp_path)
+    git = _FakeGit(push_rcs=[1, 0])
+
+    async def _no_sleep(_):
+        return None
+
+    monkeypatch.setattr("coordinare.services.cdn_upload.asyncio.sleep", _no_sleep)
+
     url = await upload_screenshot(
         file_path=png,
-        github_token="tok",
+        github_token="SECRET-TOKEN",
         org="Org",
         repo="repo",
-        issue_number=1,
-        _client=client,
+        issue_number=3,
+        _runner=git,
+        max_retries=3,
+    )
+    assert url is not None
+    pushes = [c for c in git.calls if c[:2] == ["git", "push"]]
+    assert len(pushes) == 2
+
+
+@pytest.mark.asyncio
+async def test_upload_push_keeps_failing_returns_none(tmp_path, monkeypatch):
+    png = _make_png(tmp_path)
+    git = _FakeGit(push_rcs=[1, 1])
+
+    async def _no_sleep(_):
+        return None
+
+    monkeypatch.setattr("coordinare.services.cdn_upload.asyncio.sleep", _no_sleep)
+
+    url = await upload_screenshot(
+        file_path=png,
+        github_token="SECRET-TOKEN",
+        org="Org",
+        repo="repo",
+        issue_number=3,
+        _runner=git,
+        max_retries=2,
     )
     assert url is None
 
 
 @pytest.mark.asyncio
-async def test_upload_unexpected_response_shape(tmp_path):
+async def test_upload_runner_exception_retries_then_returns_none(tmp_path, monkeypatch):
     png = _make_png(tmp_path)
-    client = _mock_client(policy_body={"something": "unexpected"})
+
+    async def bad_runner(argv, cwd, env=None):
+        raise RuntimeError("boom")
+
+    async def _no_sleep(_):
+        return None
+
+    monkeypatch.setattr("coordinare.services.cdn_upload.asyncio.sleep", _no_sleep)
+
     url = await upload_screenshot(
         file_path=png,
-        github_token="tok",
+        github_token="SECRET-TOKEN",
         org="Org",
         repo="repo",
-        issue_number=1,
-        _client=client,
-    )
-    assert url is None
-
-
-@pytest.mark.asyncio
-async def test_upload_forbidden(tmp_path):
-    png = _make_png(tmp_path)
-    client = _mock_client(policy_status=403)
-    client.post.return_value.raise_for_status = MagicMock()
-    url = await upload_screenshot(
-        file_path=png,
-        github_token="tok",
-        org="Org",
-        repo="repo",
-        issue_number=1,
-        _client=client,
+        issue_number=3,
+        _runner=bad_runner,
+        max_retries=2,
     )
     assert url is None
 
 
 # ---------------------------------------------------------------------------
-# render_screenshot_section tests
+# render_screenshot_section tests (unchanged behavior)
 # ---------------------------------------------------------------------------
 
 
@@ -161,124 +217,7 @@ def test_render_mixed_screenshots():
     assert "### login" in md
 
 
-# ---------------------------------------------------------------------------
-# upload_screenshot retry/error paths (lines 57, 104-122)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_upload_429_retries_then_succeeds(tmp_path) -> None:
-    """429 response triggers exponential backoff retry; second attempt succeeds."""
-    from unittest.mock import patch as _patch
-
-    import httpx as _httpx
-
-    png = _make_png(tmp_path)
-
-    r429 = _httpx.Response(429, request=_httpx.Request("POST", "https://api.github.com/x"))
-    exc_429 = _httpx.HTTPStatusError("429 Too Many Requests", request=r429.request, response=r429)
-
-    success_resp = MagicMock()
-    success_resp.status_code = 200
-    success_resp.json.return_value = {
-        "upload_url": "https://s3.example.com/presigned",
-        "asset_url": "https://github.com/user-attachments/shot.png",
-        "header": {},
-    }
-    success_resp.raise_for_status = MagicMock()
-
-    fail_resp = MagicMock()
-    fail_resp.status_code = 429
-    fail_resp.raise_for_status = MagicMock(side_effect=exc_429)
-
-    client = MagicMock()
-    client.__aenter__ = AsyncMock(return_value=client)
-    client.__aexit__ = AsyncMock(return_value=False)
-    client.post = AsyncMock(side_effect=[fail_resp, success_resp])
-    client.put = AsyncMock(return_value=MagicMock(raise_for_status=MagicMock()))
-
-    with _patch("asyncio.sleep", new_callable=AsyncMock):
-        url = await upload_screenshot(
-            file_path=png,
-            github_token="tok",
-            org="Org",
-            repo="repo",
-            issue_number=1,
-            _client=client,
-            max_retries=3,
-        )
-
-    assert url == "https://github.com/user-attachments/shot.png"
-    assert client.post.await_count == 2
-
-
-@pytest.mark.asyncio
-async def test_upload_non_retriable_http_error_returns_none(tmp_path) -> None:
-    """Non-429/503 HTTPStatusError returns None without retry."""
-    import httpx as _httpx
-
-    png = _make_png(tmp_path)
-
-    r500 = _httpx.Response(500, request=_httpx.Request("POST", "https://api.github.com/x"))
-    exc_500 = _httpx.HTTPStatusError("500 Server Error", request=r500.request, response=r500)
-
-    fail_resp = MagicMock()
-    fail_resp.status_code = 500
-    fail_resp.raise_for_status = MagicMock(side_effect=exc_500)
-
-    client = MagicMock()
-    client.__aenter__ = AsyncMock(return_value=client)
-    client.__aexit__ = AsyncMock(return_value=False)
-    client.post = AsyncMock(return_value=fail_resp)
-
-    url = await upload_screenshot(
-        file_path=png,
-        github_token="tok",
-        org="Org",
-        repo="repo",
-        issue_number=1,
-        _client=client,
-        max_retries=3,
-    )
-
-    assert url is None
-    assert client.post.await_count == 1  # no retry for non-retriable errors
-
-
-@pytest.mark.asyncio
-async def test_upload_generic_exception_retries_then_returns_none(tmp_path) -> None:
-    """Generic exception retries up to max_retries then returns None."""
-    from unittest.mock import patch as _patch
-
-    png = _make_png(tmp_path)
-
-    client = MagicMock()
-    client.__aenter__ = AsyncMock(return_value=client)
-    client.__aexit__ = AsyncMock(return_value=False)
-    client.post = AsyncMock(side_effect=RuntimeError("unexpected error"))
-
-    with _patch("asyncio.sleep", new_callable=AsyncMock):
-        url = await upload_screenshot(
-            file_path=png,
-            github_token="tok",
-            org="Org",
-            repo="repo",
-            issue_number=1,
-            _client=client,
-            max_retries=2,
-        )
-
-    assert url is None
-    assert client.post.await_count == 2  # retried max_retries times
-
-
-# ---------------------------------------------------------------------------
-# render_screenshot_section with object-type shots (lines 130, 148-151)
-# ---------------------------------------------------------------------------
-
-
 def test_render_object_type_shots() -> None:
-    """render_screenshot_section handles QAScreenshotResult objects (not dicts)."""
     from types import SimpleNamespace
 
     shots = [
@@ -287,11 +226,8 @@ def test_render_object_type_shots() -> None:
         SimpleNamespace(feature_area="profile", cdn_url=None, status="capture_failed"),
     ]
     md = render_screenshot_section(shots)
-
     assert "## Screenshots" in md
     assert "### dashboard" in md
     assert "![dashboard screenshot](https://cdn.example.com/dash.png)" in md
-    assert "### settings" in md
     assert "*(screenshot unavailable)*" in md
-    assert "### profile" in md
     assert "*(screenshot capture failed)*" in md

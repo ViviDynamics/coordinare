@@ -1238,3 +1238,95 @@ async def test_check_status_terminal_persistent_calls_reset() -> None:
 
     assert reset_called == [True]
     await svc.aclose()
+
+
+# ---------------------------- env_bootstrap (Option A) -----------------------
+
+
+def test_build_env_bootstrap_payload_synthesizes_workspace(monkeypatch) -> None:
+    """060/Option A: env_bootstrap dispatch builds JobInitPayload from
+    BootstrapJobPayload's symphony_org/repo + env_spec_contents, with no
+    WorkspaceInfo required."""
+    monkeypatch.setenv("GITHUB_TOKEN", "ghs_test")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    svc = HTTPPerformerService(
+        _persistent_config(), client=_client(lambda r: httpx.Response(204))
+    )
+    card_context = {
+        "job_type": "env_bootstrap",
+        "symphony_name": "website",
+        "symphony_org": "VividyNamics",
+        "symphony_repo": "vivi-website",
+        "env_spec_files": ["README.md"],
+        "env_spec_contents": {"README.md": "## Setup\nrun `npm install`"},
+        "cache_mount_path": "/devenv/website-abc123",
+    }
+
+    payload = svc._build_job_payload(card_context, None)
+
+    assert payload.role == "env_bootstrap"
+    assert str(payload.repo_url).startswith("https://github.com/VividyNamics/vivi-website")
+    assert payload.branch.startswith("env-bootstrap-")
+    assert payload.backend == "claude_code"
+    assert "/devenv/website-abc123" in payload.persona
+    assert "npm install" in payload.persona
+    assert "activate.sh" in payload.persona  # 060/Option B: persona must mandate activation script
+    assert "GITHUB_TOKEN" in payload.secrets
+    assert payload.secrets["GITHUB_TOKEN"].get_secret_value() == "ghs_test"
+    assert "ANTHROPIC_API_KEY" in payload.secrets
+
+
+def test_build_job_payload_forwards_env_cache_path(monkeypatch) -> None:
+    """060/Option B: env_cache_path on card_context must flow into JobInitPayload."""
+    from coordinare.workspace import WorkspaceInfo
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    svc = HTTPPerformerService(
+        _persistent_config(), client=_client(lambda r: httpx.Response(204))
+    )
+    card_context = {
+        "id": "card-1",
+        "role": "implementing",
+        "backend": "claude_code",
+        "persona_instructions": "do the thing",
+        "env_cache_path": "/devenv/website-abc123",
+    }
+    workspace_info = WorkspaceInfo(
+        path=None,
+        repo_url="https://github.com/org/repo",
+        branch="feat/x",
+        github_token="ghs_test",
+    )
+    payload = svc._build_job_payload(card_context, workspace_info)
+    assert payload.env_cache_path == "/devenv/website-abc123"
+
+
+def test_build_job_payload_omits_empty_env_cache_path(monkeypatch) -> None:
+    from coordinare.workspace import WorkspaceInfo
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    svc = HTTPPerformerService(
+        _persistent_config(), client=_client(lambda r: httpx.Response(204))
+    )
+    workspace_info = WorkspaceInfo(
+        path=None,
+        repo_url="https://github.com/org/repo",
+        branch="feat/x",
+        github_token="ghs_test",
+    )
+    payload = svc._build_job_payload(
+        {"id": "c", "role": "r", "backend": "claude_code"}, workspace_info
+    )
+    assert payload.env_cache_path is None
+
+
+def test_build_env_bootstrap_payload_missing_org_raises() -> None:
+    svc = HTTPPerformerService(
+        _persistent_config(), client=_client(lambda r: httpx.Response(204))
+    )
+    with pytest.raises(ValueError, match="symphony_org"):
+        svc._build_job_payload(
+            {"job_type": "env_bootstrap", "symphony_repo": "x"}, None
+        )

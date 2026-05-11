@@ -104,7 +104,7 @@ class OpenCodeAdapter:
             stderr=asyncio.subprocess.STDOUT,
             cwd=str(stand.path),
             start_new_session=True,
-            env={**os.environ, **stand.git_env},
+            env={**os.environ, **stand.cache_env, **stand.git_env, **score.tool_env},
         )
 
         # Drain server logs in background (prevents pipe buffer fill)
@@ -431,6 +431,16 @@ def _build_task_prompt(score: Score) -> str:
                 "Include `visual_evidence` entries when screenshots/GIFs/videos/artifacts are available.",
                 "Include exact capture attempts in `visual_capture_commands` (commands/scripts you ran).",
                 "If visual evidence cannot be captured, include `demo_setup_steps` and `visual_capture_blockers` with concrete details.",
+                (
+                    "Screenshot uploads: after capturing a screenshot to disk, run "
+                    "`performer-upload-screenshot <path>` (available on $PATH). It "
+                    "uploads the file to GitHub's user-attachments CDN and prints "
+                    "an https://github.com/user-attachments/assets/... URL on stdout. "
+                    "Use that URL as `path_or_url` in your `visual_evidence` entry so "
+                    "the image renders inline in the PR comment. If the upload command "
+                    "is unavailable or fails, keep the local path — the performer "
+                    "wrapper will retry the upload before posting."
+                ),
             ]
     else:
         parts += [

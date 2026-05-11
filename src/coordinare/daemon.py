@@ -1143,14 +1143,38 @@ class CoordinareDaemon:
             logger.info("runtime_event", **event)
 
     async def _poll_bootstrap_completion(
-        self, svc: Any, job_id: str, symphony_name: str, env_cache_svc: Any
+        self,
+        svc: Any,
+        job_id: str,
+        symphony_name: str,
+        env_cache_svc: Any,
+        container_id: str | None = None,
     ) -> None:
         """Poll a bootstrap job to completion and fire on_bootstrap_complete.
 
         Runs for at most _BOOTSTRAP_POLL_MAX_ATTEMPTS iterations (720 x 10 s ~= 2 h).
         """
+        last_logs_snapshot: list[str] = []
         for _attempt in range(_BOOTSTRAP_POLL_MAX_ATTEMPTS):
             await asyncio.sleep(10)
+            # Snapshot container logs *before* check_status, because a terminal
+            # status causes HTTPPerformerService to stop and `--rm`-remove the
+            # container, after which `docker logs` returns nothing.
+            if container_id:
+                try:
+                    proc = await asyncio.create_subprocess_exec(
+                        "docker", "logs", "--tail", "200", container_id,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.STDOUT,
+                    )
+                    stdout_b, _ = await asyncio.wait_for(
+                        proc.communicate(), timeout=5.0
+                    )
+                    snap = stdout_b.decode(errors="replace").splitlines()
+                    if snap:
+                        last_logs_snapshot = snap[-200:]
+                except Exception:
+                    pass
             try:
                 status_result = await svc.check_status(job_id)
             except Exception as exc:
@@ -1162,7 +1186,68 @@ class CoordinareDaemon:
                 env_cache_svc.on_bootstrap_complete(symphony_name, False, self._state)
                 return
             if status_result.get("status") not in ("working", None):
-                ok = status_result.get("status") == "ok"
+                # 060/Option A: performer reports a terminal status when the
+                # bootstrap session ends. "env_bootstrap_complete" is the
+                # success marker emitted by the performer's env_bootstrap
+                # role; "ok" is retained for backwards compat with the
+                # earlier coordinare-driven contract. Anything else is failure.
+                ok = status_result.get("status") in ("env_bootstrap_complete", "ok")
+                if not ok:
+                    logs_tail: list[str] = list(last_logs_snapshot[-60:]) if last_logs_snapshot else []
+                    # Pull logs directly from the bootstrap container by id.
+                    # The shared `_log_buffer` is unreliable here because a
+                    # single HTTPPerformerService is used for both bootstrap
+                    # and implementing dispatches, so the implementing job's
+                    # poll task may have overwritten the buffer before we
+                    # observed bootstrap's terminal status.
+                    bootstrap_cid: str | None = container_id
+                    if bootstrap_cid is None:
+                        try:
+                            active_jobs = getattr(svc, "_active_jobs", {}) or {}
+                            job_obj = active_jobs.get(job_id)
+                            if job_obj is not None:
+                                bootstrap_cid = getattr(job_obj, "container_id", None)
+                        except Exception:
+                            bootstrap_cid = None
+                    if bootstrap_cid and not logs_tail:
+                        try:
+                            proc = await asyncio.create_subprocess_exec(
+                                "docker", "logs", "--tail", "100", bootstrap_cid,
+                                stdout=asyncio.subprocess.PIPE,
+                                stderr=asyncio.subprocess.STDOUT,
+                            )
+                            stdout_b, _ = await asyncio.wait_for(
+                                proc.communicate(), timeout=5.0
+                            )
+                            logs_tail = [
+                                line for line in stdout_b.decode(errors="replace").splitlines()
+                            ][-60:]
+                        except Exception as exc:
+                            logs_tail = [f"<docker logs failed: {exc}>"]
+                    if not logs_tail and hasattr(svc, "get_agent_logs"):
+                        try:
+                            raw_logs = svc.get_agent_logs()
+                            if isinstance(raw_logs, list):
+                                logs_tail = [str(line) for line in raw_logs[-40:]]
+                            elif isinstance(raw_logs, str):
+                                logs_tail = raw_logs.splitlines()[-40:]
+                        except Exception as exc:
+                            logs_tail = [f"<get_agent_logs failed: {exc}>"]
+                    logger.warning(
+                        "env_cache.bootstrap_terminal_failure",
+                        symphony=symphony_name,
+                        job_id=job_id,
+                        status=status_result.get("status"),
+                        availability=status_result.get("availability"),
+                        error=status_result.get("error")
+                        or status_result.get("message")
+                        or status_result.get("reason"),
+                        status_keys=sorted(status_result.keys())
+                        if isinstance(status_result, dict)
+                        else None,
+                        logs_tail=logs_tail[-10:],
+                        logs_tail_truncated=len(logs_tail) > 10,
+                    )
                 env_cache_svc.on_bootstrap_complete(symphony_name, ok, self._state)
                 if ok:
                     from coordinare.services.http_performer_service import HTTPPerformerService
@@ -1219,13 +1304,66 @@ class CoordinareDaemon:
         dispatch_kw: dict[str, Any] = {}
         if isinstance(svc, HTTPPerformerService) and extra:
             dispatch_kw["extra_volumes"] = extra
+        ec_state = (self._state.get("env_cache") or {}).get(symphony_name)
+        logger.debug(
+            "env_cache.bootstrap_dispatch_volume",
+            symphony=symphony_name,
+            performer_id=performer_id,
+            svc_type=type(svc).__name__,
+            svc_mode=getattr(getattr(svc, "_config", None), "mode", None),
+            devenv_root=devenv_root,
+            ec_state_type=type(ec_state).__name__ if ec_state is not None else None,
+            ec_state_cache_dir=str(getattr(ec_state, "cache_dir", None)) if ec_state else None,
+            ec_state_sanitised=getattr(ec_state, "sanitised_name", None) if ec_state else None,
+            ec_result_present=ec_result is not None,
+            host_path=str(ec_result[0].host_path) if ec_result else None,
+            container_path=str(ec_result[0].container_path) if ec_result else None,
+            mount_mode=ec_result[0].mode if ec_result else None,
+            extra_volumes_attached=bool(dispatch_kw.get("extra_volumes")),
+        )
         # dispatch_card takes dict[str, Any]; model_dump() is an intentional demotion
         # because the performer HTTP API is untyped at the wire level.
-        result = await svc.dispatch_card(payload.model_dump(), **dispatch_kw)
+        dispatch_dict = payload.model_dump()
+        # Resolve backend for env_bootstrap from the symphony's role config so the
+        # performer matches the same agent backend used for implementing/etc.
+        # Default to "codex" (matches coordinare-performer:full image) when no
+        # role config is available.
+        bootstrap_backend = "codex"
+        cfg = self._state.get("config")
+        if cfg is not None and hasattr(cfg, "performers"):
+            for _probe_role in ("implementer", "architect", "assessor"):
+                rc = cfg.performers.resolved_role(_probe_role)
+                if rc is not None and getattr(rc, "backend", None):
+                    bootstrap_backend = rc.backend
+                    break
+        dispatch_dict["backend"] = bootstrap_backend
+        # 060: Bootstrap dispatches don't flow through WorkspaceManager.prepare(),
+        # so fetch a fresh GitHub token here from the symphony's workspace manager
+        # (App installation token or static PAT) and inject it for the performer
+        # to use when cloning the symphony repo. Falls back to env if unavailable.
+        sym_wms = self._state.get("symphony_workspace_managers") or {}
+        sym_wm = sym_wms.get(symphony_name)
+        gh_token: str | None = None
+        if sym_wm is not None and hasattr(sym_wm, "get_fresh_github_token"):
+            try:
+                gh_token = await sym_wm.get_fresh_github_token()
+            except Exception as exc:
+                logger.warning(
+                    "env_cache.bootstrap_token_fetch_failed",
+                    symphony=symphony_name,
+                    error=str(exc),
+                )
+        if gh_token:
+            dispatch_dict["_github_token"] = gh_token
+        result = await svc.dispatch_card(dispatch_dict, **dispatch_kw)
         job_id = (result or {}).get("session_id") or (result or {}).get("job_id")
+        bootstrap_container_id = (result or {}).get("container_id")
         if job_id and hasattr(svc, "check_status"):
             bootstrap_task = asyncio.create_task(
-                self._poll_bootstrap_completion(svc, job_id, symphony_name, env_cache_svc),
+                self._poll_bootstrap_completion(
+                    svc, job_id, symphony_name, env_cache_svc,
+                    container_id=bootstrap_container_id,
+                ),
                 name=f"bootstrap_poll_{symphony_name}",
             )
             self._bootstrap_poll_tasks.add(bootstrap_task)
@@ -1361,7 +1499,11 @@ class CoordinareDaemon:
                         # exists after initialise() runs and its entries grow as
                         # cache dirs are created — snapshotting it here would miss
                         # caches that became ready during this cycle.
-                        _ec_performer_svcs = dict(self._state.get("performer_services") or {})
+                        # Bootstrap dispatch looks up by performer *id* (e.g. "codex-ephemeral"),
+                        # not by lifecycle stage — so use the id-keyed map populated at startup.
+                        _ec_performer_svcs = dict(
+                            self._state.get("performer_services_by_id") or {}
+                        )
                         for _ec_sym_name, _ec_sym_cfg in symphony_configs.items():
                             _ec_gh_svc = _sym_gh_svcs.get(_ec_sym_name)
                             if _ec_gh_svc is None:

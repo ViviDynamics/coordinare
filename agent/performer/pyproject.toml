@@ -30,6 +30,7 @@ dev = [
 
 [project.scripts]
 performer = "performer.main:main"
+performer-upload-screenshot = "performer.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

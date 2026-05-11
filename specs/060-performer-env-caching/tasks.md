@@ -191,6 +191,57 @@ Tests covering the follow-up user stories (US5–US7) and the activation contrac
 
 ---
 
+## Phase 15: Post-Phase-14 Stabilization & Coverage
+
+- [X] T061 Fix env_bootstrap dispatch terminal failure: skip push/PR creation for `env_bootstrap` role and use synthetic `env-bootstrap-<uuid>` branch in `src/coordinare/services/http_performer_service.py`; seed Score-required title/description in bootstrap metadata so `Score(**msg.payload)` validation passes inside the performer (commit `b8d618c`)
+- [X] T062 [P] Add backend regression tests asserting `cache_env` keys reach `create_subprocess_exec` and `git_env` wins on conflict — `agent/performer/tests/unit/backends/test_claude_code.py`, `test_codex.py`, `test_opencode.py` (commit `77cd4a7`)
+- [X] T063 [P] Add `TestPollBootstrapCompletion` to `tests/unit/test_060_env_cache.py` — 8 tests covering success, failure with `get_agent_logs` fallback, `check_status` exception, `container_id` snapshot branch, persistent-performer warning loop; restore coverage to ≥ 90% (commit `06ed156`)
+- [X] T064 Live-run validation: bootstrap completes, cache flips ready, subsequent stages mount `:ro` and reuse the cache; full suite `2434 passed`, lint clean, coverage 90.41%
+
+**Checkpoint**: Phase 15 complete — bootstrap dispatch reliably populates cache, backend env precedence covered, polling paths covered above gate.
+
+---
+
+## Phase 16: Known Follow-up Bugs (Open)
+
+See `plan.md` § "Phase 16 — Known Follow-up Bugs" for full root-cause analysis.
+
+- [X] T065 [Bug 16.1] Fix IN_REVIEW re-dispatch bug in `src/coordinare/graph/nodes/check_board.py`: added a post-re-adoption early `return state` (preserving `phase="monitoring_pr"`) when the per-session `current_card.id` is in `in_review`. Prevents IN_REVIEW cards in `active_sessions` from falling through to the column branches and getting their phase overwritten to `"idle"`.
+- [X] T066 [P][Bug 16.1] Regression test `test_check_board_multicard_per_session_in_review_preserves_monitoring_pr` added in `tests/unit/graph/nodes/test_check_board.py`: per-session invocation with an IN_REVIEW card already in `active_sessions` preserves `phase="monitoring_pr"` and does not re-dispatch.
+- [X] T067 [Bug 16.2] Added `agent/performer/src/performer/cdn_upload.py` mirroring `src/coordinare/services/cdn_upload.py`. Exposes `upload_screenshot(file_path, github_token, org, repo, issue_number)` (GitHub user-attachments CDN — POST `/repos/{org}/{repo}/issues/{issue_number}/asset-upload-url`, then PUT presigned URL) and `resolve_visual_evidence_urls(...)` which replaces container-local paths in QA `visual_evidence` with returned `https://github.com/user-attachments/assets/...` URLs.
+- [X] T068 [Bug 16.2] Wired `resolve_visual_evidence_urls` into `agent/performer/src/performer/main.py` immediately before `_build_qa_pr_comment`, and updated the renderer in `_build_qa_pr_comment` to emit `![label](url)` image markdown for screenshot/image entries with http(s) `path_or_url` (falling back to backticked path for raw local paths so degraded mode still renders). No QA-persona-prompt change required — the existing JSON shape carries through.
+- [ ] T069 [P][Bug 16.2] Coordinare egress: confirm/extend the performer container's network allowlist (spec 056) for `api.github.com` and S3 presigned host. *Open* — depends on spec 056 work; current Dockerfiles already allow `api.github.com`, S3 PUTs may need verification in deployed runtime.
+- [X] T070 [P][Bug 16.2] Added `agent/performer/tests/unit/test_cdn_upload.py` (upload helper unit tests — success, missing file, policy 404, evidence resolution success/missing-prereqs/failure paths) and `test_qa_local_screenshot_uploaded_to_cdn_before_posting` in `test_main.py` (asserts posted PR body contains the CDN URL and never the original `/tmp/...` path, and that image-kind entries render as embedded `![](url)` markdown).
+
+**Checkpoint**: Phase 16 complete — IN_REVIEW cards stay in monitoring_pr until a real human review arrives; QA screenshots render inline on GitHub PR comments via public URLs.
+
+---
+
+## Phase 17: Agent-Callable Screenshot Upload Tool (Bug 16.2 follow-up)
+
+Two-layer defence so the QA agent can produce embeddable URLs *during* its run (primary), while the post-process resolver from Phase 16 stays as a fallback for runs where the agent forgets to call the tool or the upload fails inside the agent's run.
+
+- [X] T071 [Bug 16.2] Added `agent/performer/src/performer/cli.py` with `upload_screenshot_cli` and `performer-upload-screenshot` entry point in `pyproject.toml [project.scripts]`. CLI reads `PERFORMER_GH_TOKEN/OWNER/REPO/ISSUE` from env, calls `cdn_upload.upload_screenshot`, prints the resulting `https://github.com/user-attachments/assets/...` URL to stdout, exits 0/1/2 (success / missing context / upload failed).
+- [X] T072 [Bug 16.2] Added `Score.tool_env` property in `agent/performer/src/performer/models.py` returning `{PERFORMER_GH_TOKEN, PERFORMER_GH_OWNER, PERFORMER_GH_REPO, PERFORMER_GH_ISSUE}`. PR number (parsed from `pr_url`) takes precedence over `issue_number`; empty fields are omitted so missing-context detection in the CLI works.
+- [X] T073 [Bug 16.2] Wired `score.tool_env` into the subprocess `env=` dict in `claude_code.py`, `opencode.py`, and `codex.py` (merged after `cache_env` and `git_env`; preserves existing precedence — git auth still wins). Added a QA-prompt reminder line in each backend instructing the agent to run `performer-upload-screenshot <path>` and use the returned URL as `path_or_url`.
+- [X] T074 [P][Bug 16.2] Unit tests: `agent/performer/tests/unit/test_cli.py` (success, missing context → exit 1, upload returns None → exit 2, upload raises → exit 2), `test_models.py::TestScore` (PR-URL precedence, issue_number fallback, omitted-when-empty, env-var token fallback), and `test_claude_code.py::test_start_injects_tool_env_for_cli_shims` verifying subprocess `env` contains the `PERFORMER_GH_*` keys.
+
+**Checkpoint**: Phase 17 complete — the QA agent can upload screenshots itself during its run via `performer-upload-screenshot`; the Phase 16 `resolve_visual_evidence_urls` post-process remains as a fallback for any local paths the agent leaves behind.
+
+---
+
+## Phase 18: Replace Broken REST Upload with `qa-assets` Branch Push (Bug 16.2 root-cause fix)
+
+The Phase 16 and 17 work both targeted `POST /repos/{org}/{repo}/issues/{n}/asset-upload-url`. Manual `curl` against two production repos (`ViviDynamics/website#91`, `ViviDynamics/coordinare#79`) returned `404 Not Found` — the endpoint does not exist on GitHub's public REST surface. The only reliable, supported way to host arbitrary binary assets on GitHub from automation is to commit them to a branch.
+
+- [X] T075 [Bug 16.2] Rewrote `agent/performer/src/performer/cdn_upload.py::upload_screenshot` to commit the file to an orphan `qa-assets` branch under `content/<issue_number>/<UTC timestamp>-<sanitized name>`. Strategy: clone `qa-assets` with `--depth=1 --single-branch`; if that fails (branch doesn't exist yet) bootstrap with `git init -b qa-assets` + `git remote add origin`; configure local committer identity; copy the file, `git add`/`commit`/`push`. Retries on push failure (non-fast-forward) by re-cloning, since each commit adds a uniquely-timestamped file. Auth via `https://x-access-token:<TOKEN>@github.com/...` URL; tokens redacted from log output. Returns `https://github.com/<o>/<r>/raw/qa-assets/<asset_path>`. Public signature unchanged so `qa_screenshots.py` and `resolve_visual_evidence_urls` callers don't move; `_runner` injection point replaces the old `_client`.
+- [X] T076 [Bug 16.2] Mirrored the rewrite in `src/coordinare/services/cdn_upload.py::upload_screenshot`. `render_screenshot_section` and `_shot_field` preserved unchanged.
+- [X] T077 [P][Bug 16.2] Rewrote both test files to inject a stateful `_FakeGit` runner (records argv, simulates clone/init/push outcomes, materializes the workdir on clone) instead of mocking `httpx`. Covers: happy path via clone; orphan bootstrap when clone fails; missing file / missing context early-outs; push retry then success; push retry exhaustion → `None`; runner-raises → retried then `None`.
+
+**Checkpoint**: Phase 18 complete — the upload path now exercises a real GitHub mechanism (branch push) and tests validate it end-to-end with a fake git runner. The Phase 17 CLI and Phase 16 post-process both keep working without callsite changes since the public signature was preserved.
+
+---
+
 ## Dependencies & Execution Order
 
 ### Phase Dependencies

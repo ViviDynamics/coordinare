@@ -149,6 +149,58 @@ class TestScore:
         assert s.issue_number == 42
         assert s.issue_url == "https://github.com/org/repo/issues/42"
 
+    def test_tool_env_full_with_pr_url(self) -> None:
+        s = Score(
+            title="T",
+            repo_url="https://github.com/org/repo",
+            branch="feat/x",
+            github_token="ghp_abc",
+            pr_url="https://github.com/org/repo/pull/77",
+            issue_number=42,
+        )
+        env = s.tool_env
+        assert env["PERFORMER_GH_TOKEN"] == "ghp_abc"
+        assert env["PERFORMER_GH_OWNER"] == "org"
+        assert env["PERFORMER_GH_REPO"] == "repo"
+        # PR number takes precedence over issue_number
+        assert env["PERFORMER_GH_ISSUE"] == "77"
+
+    def test_tool_env_falls_back_to_issue_number(self) -> None:
+        s = Score(
+            title="T",
+            repo_url="https://github.com/org/repo",
+            branch="feat/x",
+            github_token="ghp_abc",
+            issue_number=42,
+        )
+        env = s.tool_env
+        assert env["PERFORMER_GH_ISSUE"] == "42"
+
+    def test_tool_env_omits_empty_fields(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        s = Score(
+            title="T",
+            repo_url="https://github.com/org/repo",
+            branch="feat/x",
+        )
+        env = s.tool_env
+        assert "PERFORMER_GH_TOKEN" not in env
+        assert "PERFORMER_GH_ISSUE" not in env
+        assert env["PERFORMER_GH_OWNER"] == "org"
+        assert env["PERFORMER_GH_REPO"] == "repo"
+
+    def test_tool_env_uses_env_token_when_payload_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("GITHUB_TOKEN", "ghp_env")
+        s = Score(
+            title="T",
+            repo_url="https://github.com/org/repo",
+            branch="feat/x",
+            issue_number=5,
+        )
+        env = s.tool_env
+        assert env["PERFORMER_GH_TOKEN"] == "ghp_env"
+        assert env["PERFORMER_GH_ISSUE"] == "5"
+
 
 class TestStand:
     def test_holds_fields(self) -> None:

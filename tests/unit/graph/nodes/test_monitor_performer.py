@@ -1716,6 +1716,29 @@ async def test_float_tokens_processed_rejected() -> None:
 
 
 @pytest.mark.asyncio
+async def test_none_tokens_processed_silently_ignored(caplog) -> None:
+    """tokens_processed=None is treated as not-reported, not invalid (no warning)."""
+    import logging
+
+    state = initial_state()
+    svc = _Performer(response={"status": "working", "metrics": {"tokens_processed": None}})
+    state["performer_services"] = {"implementing": svc}
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing"]
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["phase"] = "monitoring_performer"
+    state["card_tokens_total"] = 250
+
+    with caplog.at_level(logging.WARNING):
+        result = await monitor_performer(state)
+
+    assert result["card_tokens_total"] == 250  # unchanged
+    assert "invalid_tokens_processed" not in caplog.text
+    assert "non_integer_tokens_processed" not in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_non_numeric_tokens_ignored() -> None:
     """Non-numeric tokens_processed leaves card_tokens_total unchanged."""
     state = initial_state()

@@ -692,48 +692,6 @@ def test_workflow_diagram_visible_without_expand_toggle(page: Page, live_server_
 
 
 @pytest.mark.e2e
-def test_desktop_layout_workflow_and_performers_are_single_column_cards(
-    page: Page, live_server_url: str, store: DashboardStore
-) -> None:
-    """053: Workflow and Performers cards should be single-column grid cards."""
-    page.set_viewport_size({"width": 1200, "height": 900})
-    page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
-
-    store.broadcaster.broadcast(
-        _full_snapshot(
-            phase="monitoring_performer",
-            phase_label="Monitoring Performer",
-            active_sessions=[_active_session("PVTI_1", "Fix layout", "implementing")],
-            performer_events=[{"type": "progress", "text": "Working"}],
-            role_utilization=[{"role": "implementing", "active": 1, "max": 1, "queued": 0}],
-        )
-    )
-
-    expect(page.locator("#performers-card")).to_be_visible(timeout=_WAIT_LIVE)
-    layout = page.evaluate(
-        """() => {
-          const workflowCard = document.getElementById('flow-chart').closest('.card');
-          const performersCard = document.getElementById('performers-card');
-          const metricsCard = document.getElementById('cycles-completed').closest('.card');
-          const wf = workflowCard.getBoundingClientRect();
-          const pf = performersCard.getBoundingClientRect();
-          const mt = metricsCard.getBoundingClientRect();
-          return {
-            wfWidth: wf.width,
-            pfWidth: pf.width,
-            mtWidth: mt.width,
-            viewportWidth: window.innerWidth,
-          };
-        }"""
-    )
-    assert layout["wfWidth"] < layout["viewportWidth"] * 0.75
-    assert layout["pfWidth"] < layout["viewportWidth"] * 0.75
-    assert abs(layout["wfWidth"] - layout["mtWidth"]) < 120
-    assert abs(layout["pfWidth"] - layout["mtWidth"]) < 120
-
-
-@pytest.mark.e2e
 def test_desktop_layout_active_performers_is_single_column(
     page: Page, live_server_url: str, store: DashboardStore
 ) -> None:
@@ -1034,6 +992,37 @@ def test_symphonies_page_click_symphony_opens_detail(
     expect(page).to_have_url(re.compile(r"/symphonies/test-symphony"))
 
 
+@pytest.mark.e2e
+def test_symphonies_page_shows_env_bootstrap_button(
+    page: Page, live_server_url: str, store: DashboardStore
+) -> None:
+    """060: a symphony with env_bootstrap_performer_id renders a per-row Bootstrap
+    button on the list page; one without renders an em-dash placeholder."""
+    page.goto(f"{live_server_url}/symphonies")
+    expect(page.locator("#symphonies-page")).to_be_visible(timeout=_WAIT_NAV)
+    store.broadcaster.broadcast(
+        _full_snapshot(
+            symphonies=[
+                {
+                    "name": "with-bootstrap",
+                    "source_project": 42,
+                    "enabled": True,
+                    "env_bootstrap_performer_id": "codex-ephemeral",
+                },
+                {
+                    "name": "no-bootstrap",
+                    "source_project": 43,
+                    "enabled": True,
+                    "env_bootstrap_performer_id": None,
+                },
+            ]
+        )
+    )
+    expect(page.locator("#symphonies-page-section")).to_contain_text("with-bootstrap", timeout=_WAIT_LIVE)
+    expect(page.locator('button.sym-row-bootstrap[data-sym="with-bootstrap"]')).to_be_visible()
+    expect(page.locator('button.sym-row-bootstrap[data-sym="no-bootstrap"]')).to_have_count(0)
+
+
 # ---------------------------------------------------------------------------
 # Admin Config page tests
 # ---------------------------------------------------------------------------
@@ -1128,59 +1117,6 @@ def test_awaiting_review_card_appears_when_in_review_phase(
         )
     )
     expect(page.locator("#phase")).to_have_text("Awaiting Review", timeout=_WAIT_LIVE)
-
-
-# ---------------------------------------------------------------------------
-# Performer detail view interactions
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.e2e
-def test_performer_detail_shows_metrics(
-    page: Page, live_server_url: str, store: DashboardStore
-) -> None:
-    """Performer detail view displays memory, CPU, tokens, PID metrics."""
-    page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
-    store.broadcaster.broadcast(
-        _full_snapshot(
-            phase="monitoring_performer",
-            phase_label="Monitoring Performer",
-            performer_stage="implementing",
-            performer_metrics={
-                "memory_mb": 512,
-                "cpu_percent": 25,
-                "pid": 1234,
-            },
-        )
-    )
-    expect(page.locator("#performers-card")).to_be_visible(timeout=_WAIT_LIVE)
-    # Click on performer to open detail
-    page.click(".perf-list-row")
-    expect(page.locator("#perf-detail-view")).to_be_visible(timeout=_WAIT_LIVE)
-
-
-@pytest.mark.e2e
-def test_performer_detail_dot_indicates_running_state(
-    page: Page, live_server_url: str, store: DashboardStore
-) -> None:
-    """Performer detail view shows green animated dot when running."""
-    page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
-    store.broadcaster.broadcast(
-        _full_snapshot(
-            phase="monitoring_performer",
-            phase_label="Monitoring Performer",
-            performer_stage="implementing",
-            performer_events=[{"type": "progress", "text": "Running"}],
-        )
-    )
-    expect(page.locator("#performers-card")).to_be_visible(timeout=_WAIT_LIVE)
-    page.click(".perf-list-row")
-    expect(page.locator("#perf-detail-view")).to_be_visible(timeout=_WAIT_LIVE)
-    # Check for animated dot (perf-running class)
-    dot = page.locator("#perf-dot")
-    expect(dot).to_have_class(re.compile(r"perf-running"))
 
 
 # ---------------------------------------------------------------------------

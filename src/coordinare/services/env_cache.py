@@ -57,13 +57,20 @@ def get_env_volume_for_symphony(
     Returns None if the symphony has no env cache state or the cache dir
     does not yet exist on disk. The container_path is
     ``{container_devenv_root}/{sanitised_name}``.
+
+    The ``cache_dir_ready`` gate only applies to consumer (ro) mounts. Bootstrap
+    dispatches must mount the host cache dir rw even when it has not yet been
+    populated — that is precisely the run that populates it. Without this
+    carve-out the bootstrap container has no host volume backing
+    ``cache_mount_path``, so installs land in the ephemeral container fs and
+    the host cache stays empty forever (chicken-and-egg).
     """
     from coordinare.models.performer_endpoint import VolumeMount
 
     state = env_cache_states.get(symphony_name)
-    if state is None:
+    if state is None or not isinstance(state, EnvCacheState):
         return None
-    if not isinstance(state, EnvCacheState) or not state.cache_dir_ready:
+    if not is_bootstrap and not state.cache_dir_ready:
         return None
     container_path = f"{container_devenv_root}/{state.sanitised_name}"
     return VolumeMount(
@@ -138,30 +145,24 @@ class EnvCacheService:
                 )
                 continue
 
-            github = symphony_github_services.get(symphony.name)
-            readme_sha: str | None = None
-            if github is not None:
-                eff = symphony.effective_config(global_config)
-                readme_sha = await self._fetch_combined_sha(
-                    symphony.name,
-                    symphony.env_spec_files,
-                    github,
-                    eff.github_org,
-                    eff.project_name or symphony.name,
-                )
-
+            # 061: Do NOT seed readme_sha or mark cache_dir_ready here. The
+            # directory existing on disk is not the same as a successful
+            # bootstrap having populated it. Leaving readme_sha=None forces
+            # check_and_trigger to dispatch a bootstrap on the first cycle;
+            # cache_dir_ready flips to True only after on_bootstrap_complete
+            # records a success. Otherwise performers would mount an empty
+            # cache directory ro and find no installed tools.
             env_cache[symphony.name] = EnvCacheState(
                 symphony_name=symphony.name,
                 sanitised_name=sanitised,
                 cache_dir=cache_dir,
-                readme_sha=readme_sha,
-                cache_dir_ready=True,
+                readme_sha=None,
+                cache_dir_ready=False,
             )
             logger.info(
                 "env_cache.initialised",
                 symphony=symphony.name,
                 cache_dir=str(cache_dir),
-                readme_sha=readme_sha,
             )
 
     async def _fetch_combined_sha(
@@ -344,8 +345,17 @@ class EnvCacheService:
         cache_state.last_bootstrap_at = datetime.now(UTC)
         cache_state.last_bootstrap_succeeded = success
 
+        # 061: Mark the cache usable only after a successful bootstrap.
+        # cache_dir_ready stays False until at least one bootstrap succeeds,
+        # which prevents performers from mounting an unpopulated cache dir.
+        if success:
+            cache_state.cache_dir_ready = True
+
         # On failure, clear the recorded SHA so the next cycle sees a mismatch
         # and retries the bootstrap rather than leaving the cache poisoned.
+        # cache_dir_ready is intentionally NOT cleared on failure: if a prior
+        # bootstrap succeeded, the existing cache is still usable by consumers
+        # while we retry. Only an explicit success flips the gate on.
         if not success:
             cache_state.readme_sha = None
 

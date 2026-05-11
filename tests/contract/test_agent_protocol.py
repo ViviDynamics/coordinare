@@ -32,7 +32,7 @@ class TestSchemaContractValidation:
             "approved", "changes_requested",
             "security_passed", "security_failed",
             "qa_passed", "qa_failed",
-            "docs_committed", "assessment_complete",
+            "docs_committed", "env_bootstrap_complete", "assessment_complete",
             "blocked", "error", "unknown", "busy", "acknowledged",
             "session_expired", "token_limit", "healthy", "unhealthy",
         }

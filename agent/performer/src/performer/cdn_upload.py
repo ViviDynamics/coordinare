@@ -1,16 +1,21 @@
-"""GitHub CDN screenshot upload helper (coordinare side).
+"""GitHub CDN screenshot upload helper (performer side).
 
 Uploads screenshots by committing them to an orphan ``qa-assets`` branch
 under ``content/<issue_number>/<UTC timestamp>-<sanitized name>``. The
 returned URL is the raw GitHub URL for that path, which renders inline
 in PR/issue comments.
 
+Why a branch instead of the REST API: GitHub's ``/asset-upload-url``
+endpoint that the web UI uses is not available to Bearer-token clients
+(returns 404); the only reliable, supported way to host arbitrary
+binary assets on GitHub from automation is to push them to a branch.
+
 Authentication: the token is supplied to git via ``GIT_ASKPASS`` rather
 than embedded in the remote URL. git logs the remote URL on failure, so
 embedding the token there would leak it through subprocess stderr.
 
-Mirrors ``agent/performer/src/performer/cdn_upload.py`` so each side can
-be deployed independently. Keep changes in sync — both files share the
+Mirrors ``src/coordinare/services/cdn_upload.py`` so each side can be
+deployed independently. Keep changes in sync — both files share the
 same authentication scheme and URL format.
 """
 from __future__ import annotations
@@ -21,10 +26,9 @@ import re
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 import structlog
 
@@ -35,6 +39,8 @@ _RETRY_BASE_S = 1.0
 _BRANCH = "qa-assets"
 _BOT_EMAIL = "qa-bot@coordinare.local"
 _BOT_NAME = "Coordinare QA Bot"
+
+_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 GitRunner = Callable[
@@ -43,13 +49,29 @@ GitRunner = Callable[
 ]
 
 
+def is_local_path(loc: str) -> bool:
+    """Return True if ``loc`` looks like a local filesystem path rather
+    than an http(s) URL. Empty strings return False.
+    """
+    if not loc:
+        return False
+    lowered = loc.lower()
+    if lowered.startswith(("http://", "https://")):
+        return False
+    return True
+
+
+def is_image_path(loc: str) -> bool:
+    return Path(loc).suffix.lower() in _IMAGE_SUFFIXES
+
+
 def _sanitize_name(name: str) -> str:
     cleaned = _SAFE_NAME_RE.sub("-", name).strip("-.")
     return cleaned or "file"
 
 
 def _timestamp() -> str:
-    return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
 def _redact(text: str, token: str) -> str:
@@ -109,8 +131,9 @@ async def upload_screenshot(
 ) -> str | None:
     """Commit ``file_path`` to ``qa-assets`` branch and return its raw URL.
 
-    Returns ``None`` on any failure. Retries on push contention by
-    re-cloning, since each commit adds a uniquely timestamped file.
+    Returns ``None`` on any failure. Retries on push contention (non
+    fast-forward) by re-cloning, since each commit adds a uniquely
+    timestamped file.
     """
     if not file_path.exists():
         logger.warning("cdn_upload.file_not_found", path=str(file_path))
@@ -130,7 +153,7 @@ async def upload_screenshot(
         askpass = _write_askpass(tmp_root)
         env = _git_env(github_token, askpass)
         try:
-            clone_rc, _, _ = await runner(
+            clone_rc, _, clone_err = await runner(
                 ["git", "clone", "--depth=1", "--single-branch",
                  "--branch", _BRANCH, remote_url, str(work)],
                 tmp_root,
@@ -222,43 +245,53 @@ async def upload_screenshot(
     return None
 
 
-def _shot_field(shot: Any, key: str, default: Any = None) -> Any:
-    if isinstance(shot, dict):
-        return shot.get(key, default)
-    return getattr(shot, key, default)
+async def resolve_visual_evidence_urls(
+    visual_evidence: list[dict[str, str]],
+    *,
+    workspace_root: Path,
+    github_token: str,
+    org: str,
+    repo: str,
+    issue_number: int,
+    uploader: Any = None,
+) -> list[dict[str, str]]:
+    """Replace container-local ``path_or_url`` entries with CDN URLs.
 
+    For each entry in ``visual_evidence``:
+      - Leave http(s) URLs alone.
+      - For non-URL values, resolve against ``workspace_root`` (if relative)
+        or use the path as-is (if absolute), and try to upload.
+        On success, replace ``path_or_url`` with the returned URL.
+        On failure, leave the entry unchanged.
 
-def render_screenshot_section(screenshots: list[Any]) -> str:
-    """Render a markdown screenshot section for a QA comment.
-
-    Accepts either ``QAScreenshotResult`` dataclasses or plain dicts with
-    keys ``feature_area`` / ``cdn_url`` / ``status``. Groups by feature_area
-    so repeated areas share a single heading.
+    ``uploader`` is injected for tests.
     """
-    if not screenshots:
-        return ""
+    if not visual_evidence:
+        return visual_evidence
+    if issue_number <= 0 or not github_token or not org or not repo:
+        return visual_evidence
 
-    grouped: dict[str, list[Any]] = {}
-    order: list[str] = []
-    for shot in screenshots:
-        area = _shot_field(shot, "feature_area", "unknown")
-        if area not in grouped:
-            grouped[area] = []
-            order.append(area)
-        grouped[area].append(shot)
-
-    lines: list[str] = ["## Screenshots", ""]
-    for area in order:
-        lines.append(f"### {area}")
-        for shot in grouped[area]:
-            cdn_url = _shot_field(shot, "cdn_url")
-            status = _shot_field(shot, "status", "skipped")
-            if cdn_url:
-                lines.append(f"![{area} screenshot]({cdn_url})")
-            elif status == "capture_failed":
-                lines.append("*(screenshot capture failed)*")
-            else:
-                lines.append("*(screenshot unavailable)*")
-        lines.append("")
-
-    return "\n".join(lines)
+    upload = uploader or upload_screenshot
+    out: list[dict[str, str]] = []
+    for ev in visual_evidence:
+        ev2 = dict(ev)
+        loc = str(ev2.get("path_or_url", ""))
+        if loc and is_local_path(loc):
+            candidate = Path(loc)
+            if not candidate.is_absolute():
+                candidate = workspace_root / candidate
+            try:
+                url = await upload(
+                    candidate, github_token, org, repo, issue_number,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "cdn_upload.evidence_upload_failed",
+                    path=str(candidate),
+                    error=_redact(str(exc), github_token),
+                )
+                url = None
+            if url:
+                ev2["path_or_url"] = url
+        out.append(ev2)
+    return out

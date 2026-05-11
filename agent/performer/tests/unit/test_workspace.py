@@ -677,3 +677,47 @@ class TestRunCommand:
         assert isinstance(result, CIRunResult)
         with pytest.raises(AttributeError):
             result.success = False  # type: ignore[misc]
+
+
+class TestActivateEnvCache:
+    """Tests for _activate_env_cache (spec 060 Option B)."""
+
+    @pytest.mark.asyncio
+    async def test_empty_path_returns_empty(self) -> None:
+        from performer.workspace import _activate_env_cache
+        assert await _activate_env_cache("") == {}
+
+    @pytest.mark.asyncio
+    async def test_missing_activate_warns_and_returns_empty(
+        self, tmp_path: Path
+    ) -> None:
+        from performer.workspace import _activate_env_cache
+        # Cache dir exists but no activate.sh
+        result = await _activate_env_cache(str(tmp_path))
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_sources_activate_and_returns_delta(
+        self, tmp_path: Path
+    ) -> None:
+        from performer.workspace import _activate_env_cache
+        activate = tmp_path / "activate.sh"
+        activate.write_text(
+            'export PATH="/cache/bin:$PATH"\n'
+            'export VIRTUAL_ENV="/cache/.venv"\n'
+            'export TEST_CACHE_TOKEN="abc123"\n'
+        )
+        result = await _activate_env_cache(str(tmp_path))
+        assert result.get("VIRTUAL_ENV") == "/cache/.venv"
+        assert result.get("TEST_CACHE_TOKEN") == "abc123"
+        assert result.get("PATH", "").startswith("/cache/bin:")
+
+    @pytest.mark.asyncio
+    async def test_default_bash_vars_excluded(self, tmp_path: Path) -> None:
+        """Vars present in plain bash (PWD, SHLVL, etc.) shouldn't leak through."""
+        from performer.workspace import _activate_env_cache
+        activate = tmp_path / "activate.sh"
+        activate.write_text("# no-op\n")
+        result = await _activate_env_cache(str(tmp_path))
+        # Empty script → empty delta (PWD/SHLVL match the reference shell)
+        assert result == {}

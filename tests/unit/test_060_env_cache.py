@@ -167,6 +167,42 @@ class TestGetEnvVolumeForSymphony:
         vol, _ = result
         assert vol.mode == "rw"
 
+    def test_returns_rw_volume_for_bootstrap_when_cache_not_ready(
+        self, tmp_path: Path
+    ) -> None:
+        """Regression: bootstrap dispatch must mount the host cache rw even
+        when cache_dir_ready=False — that's the run that populates it.
+        Gating bootstrap on cache_dir_ready creates a chicken-and-egg where
+        the host cache never gets populated.
+        """
+        cache_dir = tmp_path / "env"
+        cache_dir.mkdir()
+        state = EnvCacheState(
+            symphony_name="s",
+            sanitised_name="s-abc",
+            cache_dir=cache_dir,
+            cache_dir_ready=False,
+        )
+        result = get_env_volume_for_symphony("s", {"s": state}, is_bootstrap=True)
+        assert result is not None
+        vol, _ = result
+        assert vol.mode == "rw"
+        assert vol.host_path == cache_dir
+
+    def test_returns_none_for_consumer_when_cache_not_ready(
+        self, tmp_path: Path
+    ) -> None:
+        cache_dir = tmp_path / "env"
+        cache_dir.mkdir()
+        state = EnvCacheState(
+            symphony_name="s",
+            sanitised_name="s-abc",
+            cache_dir=cache_dir,
+            cache_dir_ready=False,
+        )
+        result = get_env_volume_for_symphony("s", {"s": state}, is_bootstrap=False)
+        assert result is None
+
     def test_uses_custom_container_devenv_root(self, tmp_path: Path) -> None:
         cache_dir = tmp_path / "env"
         cache_dir.mkdir()
@@ -429,27 +465,32 @@ class TestEnvCacheServiceInitialise:
         assert "sym" in env_cache
         assert env_cache["sym"].readme_sha is None
         assert env_cache["sym"].cache_dir.exists()
+        # 061: cache_dir_ready must NOT be set on initialise — only after
+        # a bootstrap actually succeeds, otherwise performers mount an empty
+        # directory and find no installed tools.
+        assert env_cache["sym"].cache_dir_ready is False
 
     @pytest.mark.asyncio
-    async def test_fetches_initial_sha_when_github_available(self, tmp_path: Path) -> None:
+    async def test_does_not_seed_sha_or_mark_ready_when_github_available(
+        self, tmp_path: Path
+    ) -> None:
+        """061: initialise must leave readme_sha=None even when github is available.
+
+        Seeding the SHA on init causes check_and_trigger to skip the first
+        bootstrap (current_sha == cache_state.readme_sha), so the cache stays
+        empty and performers mount nothing. The first check_and_trigger cycle
+        is now responsible for fetching the SHA and dispatching the bootstrap.
+        """
         sym = self._make_symphony()
         svc = self._make_service(tmp_path, [sym])
         github = AsyncMock()
         github.get_file_blob_sha = AsyncMock(return_value="abc123")
         env_cache: dict = {}
         await svc.initialise(env_cache, {"sym": github})
-        assert env_cache["sym"].readme_sha == _combined_sha({"README.md": "abc123"})
-
-    @pytest.mark.asyncio
-    async def test_handles_sha_fetch_exception(self, tmp_path: Path) -> None:
-        sym = self._make_symphony()
-        svc = self._make_service(tmp_path, [sym])
-        github = AsyncMock()
-        github.get_file_blob_sha = AsyncMock(side_effect=RuntimeError("network error"))
-        env_cache: dict = {}
-        await svc.initialise(env_cache, {"sym": github})
-        assert "sym" in env_cache
         assert env_cache["sym"].readme_sha is None
+        assert env_cache["sym"].cache_dir_ready is False
+        # github SHA fetch must not be called during init
+        github.get_file_blob_sha.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_skips_symphony_on_mkdir_failure(self, tmp_path: Path) -> None:
@@ -548,6 +589,52 @@ class TestOnBootstrapComplete:
         svc.on_bootstrap_complete("sym", True, state)
         assert cache_state.last_bootstrap_succeeded is True
         assert cache_state.readme_sha == "sha1"
+
+    def test_marks_cache_ready_only_on_success(self, tmp_path: Path) -> None:
+        """061: cache_dir_ready must flip True only after a successful bootstrap.
+
+        Before this fix, initialise() set cache_dir_ready=True unconditionally,
+        causing performers to mount empty cache directories. The flag must
+        gate on actual bootstrap success.
+        """
+        svc = self._make_service()
+        cache_state = EnvCacheState(
+            symphony_name="sym",
+            sanitised_name="sym-abc",
+            cache_dir=tmp_path,
+            cache_dir_ready=False,
+        )
+        state = {"env_cache": {"sym": cache_state}}
+        svc.on_bootstrap_complete("sym", True, state)
+        assert cache_state.cache_dir_ready is True
+
+    def test_does_not_mark_cache_ready_on_failure(self, tmp_path: Path) -> None:
+        svc = self._make_service()
+        cache_state = EnvCacheState(
+            symphony_name="sym",
+            sanitised_name="sym-abc",
+            cache_dir=tmp_path,
+            cache_dir_ready=False,
+        )
+        state = {"env_cache": {"sym": cache_state}}
+        svc.on_bootstrap_complete("sym", False, state)
+        assert cache_state.cache_dir_ready is False
+
+    def test_keeps_cache_ready_true_across_bootstrap_failure(self, tmp_path: Path) -> None:
+        """A failed re-bootstrap on an already-populated cache must NOT
+        invalidate the cache — better to serve a stale cache than nothing.
+        """
+        svc = self._make_service()
+        cache_state = EnvCacheState(
+            symphony_name="sym",
+            sanitised_name="sym-abc",
+            cache_dir=tmp_path,
+            cache_dir_ready=True,
+            readme_sha="sha1",
+        )
+        state = {"env_cache": {"sym": cache_state}}
+        svc.on_bootstrap_complete("sym", False, state)
+        assert cache_state.cache_dir_ready is True
 
     def test_no_job_id_scenario_resolves_in_flight(self, tmp_path: Path) -> None:
         # Regression: when _bootstrap_dispatch_fn receives no job_id from the
@@ -709,7 +796,7 @@ class TestDaemonEnvCacheBootstrapLoop:
         daemon._state["symphony_states"] = {}
         daemon._state["env_cache_service"] = mock_svc
         daemon._state["symphony_github_services"] = {"alpha": mock_gh}
-        daemon._state["performer_services"] = {}
+        daemon._state["performer_services_by_id"] = {}
 
         await daemon.start()
 
@@ -729,7 +816,7 @@ class TestDaemonEnvCacheBootstrapLoop:
         daemon._state["symphony_states"] = {}
         daemon._state["env_cache_service"] = mock_svc
         daemon._state["symphony_github_services"] = {}  # no github service
-        daemon._state["performer_services"] = {}
+        daemon._state["performer_services_by_id"] = {}
 
         await daemon.start()
 
@@ -746,7 +833,7 @@ class TestDaemonEnvCacheBootstrapLoop:
         daemon._state["symphony_states"] = {}
         # env_cache_service intentionally absent
         daemon._state["symphony_github_services"] = {"gamma": mock_gh}
-        daemon._state["performer_services"] = {}
+        daemon._state["performer_services_by_id"] = {}
 
         # Should not raise even without env_cache_service
         await daemon.start()
@@ -801,7 +888,7 @@ class TestDaemonEnvCacheBootstrapLoop:
         daemon._state["symphony_states"] = {}
         daemon._state["env_cache_service"] = mock_ec_svc
         daemon._state["symphony_github_services"] = {sym_name: mock_gh}
-        daemon._state["performer_services"] = {"bp-1": performer_svc}
+        daemon._state["performer_services_by_id"] = {"bp-1": performer_svc}
 
         # Patch _poll_bootstrap_completion to avoid real polling
         daemon._poll_bootstrap_completion = AsyncMock()
@@ -860,7 +947,7 @@ class TestDaemonEnvCacheBootstrapLoop:
         daemon._state["symphony_states"] = {}
         daemon._state["env_cache_service"] = mock_ec_svc
         daemon._state["symphony_github_services"] = {sym_name: mock_gh}
-        daemon._state["performer_services"] = {"bp-1": performer_svc}
+        daemon._state["performer_services_by_id"] = {"bp-1": performer_svc}
 
         await daemon.start()
 
@@ -906,10 +993,169 @@ class TestDaemonEnvCacheBootstrapLoop:
         daemon._state["symphony_states"] = {}
         daemon._state["env_cache_service"] = mock_ec_svc
         daemon._state["symphony_github_services"] = {sym_name: mock_gh}
-        daemon._state["performer_services"] = {}  # performer absent
+        daemon._state["performer_services_by_id"] = {}  # performer absent
 
         # Should not raise
         await daemon.start()
+
+
+class TestPollBootstrapCompletion:
+    """Cover daemon.py:1145-1270 — _poll_bootstrap_completion success/failure paths."""
+
+    @pytest.fixture(autouse=True)
+    def _fast_sleep(self, monkeypatch):
+        """Patch asyncio.sleep in the daemon module to avoid real 10s delays."""
+        import coordinare.daemon as daemon_mod
+
+        async def _no_sleep(_):
+            return None
+
+        monkeypatch.setattr(daemon_mod.asyncio, "sleep", _no_sleep)
+
+    @pytest.mark.asyncio
+    async def test_success_path_calls_on_bootstrap_complete_true(self) -> None:
+        daemon = _make_daemon_for_env_cache()
+        svc = MagicMock()
+        svc.check_status = AsyncMock(return_value={"status": "env_bootstrap_complete"})
+        ec_svc = MagicMock()
+        ec_svc.on_bootstrap_complete = MagicMock()
+        # No persistent performers — skip the warning branch import side-effects
+        daemon._state["performer_services"] = {}
+
+        await daemon._poll_bootstrap_completion(svc, "job-1", "alpha", ec_svc)
+
+        ec_svc.on_bootstrap_complete.assert_called_once()
+        args = ec_svc.on_bootstrap_complete.call_args.args
+        assert args[0] == "alpha"
+        assert args[1] is True
+
+    @pytest.mark.asyncio
+    async def test_success_with_persistent_performer_logs_warning(self) -> None:
+        from coordinare.services.http_performer_service import HTTPPerformerService
+
+        daemon = _make_daemon_for_env_cache()
+        svc = MagicMock()
+        svc.check_status = AsyncMock(return_value={"status": "ok"})
+        ec_svc = MagicMock()
+
+        # Persistent HTTPPerformerService instance triggers the warning loop branch.
+        persistent = MagicMock(spec=HTTPPerformerService)
+        persistent.mode = "persistent"
+        daemon._state["performer_services"] = {"perf-1": persistent}
+
+        await daemon._poll_bootstrap_completion(svc, "job-1", "alpha", ec_svc)
+
+        ec_svc.on_bootstrap_complete.assert_called_once()
+        assert ec_svc.on_bootstrap_complete.call_args.args[1] is True
+
+    @pytest.mark.asyncio
+    async def test_failure_status_collects_logs_via_get_agent_logs(self) -> None:
+        daemon = _make_daemon_for_env_cache()
+        svc = MagicMock()
+        svc.check_status = AsyncMock(
+            return_value={"status": "error", "error": "boom", "availability": "stopped"}
+        )
+        # No container_id — falls through to get_agent_logs branch
+        svc.get_agent_logs = MagicMock(return_value=["line-a", "line-b"])
+        # Simulate no _active_jobs container_id either
+        svc._active_jobs = {}
+        ec_svc = MagicMock()
+
+        await daemon._poll_bootstrap_completion(svc, "job-1", "alpha", ec_svc)
+
+        ec_svc.on_bootstrap_complete.assert_called_once()
+        assert ec_svc.on_bootstrap_complete.call_args.args[1] is False
+
+    @pytest.mark.asyncio
+    async def test_failure_get_agent_logs_string_split(self) -> None:
+        daemon = _make_daemon_for_env_cache()
+        svc = MagicMock()
+        svc.check_status = AsyncMock(return_value={"status": "failed"})
+        svc.get_agent_logs = MagicMock(return_value="line-1\nline-2\nline-3")
+        svc._active_jobs = {}
+        ec_svc = MagicMock()
+
+        await daemon._poll_bootstrap_completion(svc, "job-1", "alpha", ec_svc)
+
+        ec_svc.on_bootstrap_complete.assert_called_once_with("alpha", False, daemon._state)
+
+    @pytest.mark.asyncio
+    async def test_failure_get_agent_logs_raises(self) -> None:
+        daemon = _make_daemon_for_env_cache()
+        svc = MagicMock()
+        svc.check_status = AsyncMock(return_value={"status": "failed"})
+        svc.get_agent_logs = MagicMock(side_effect=RuntimeError("boom"))
+        svc._active_jobs = {}
+        ec_svc = MagicMock()
+
+        await daemon._poll_bootstrap_completion(svc, "job-1", "alpha", ec_svc)
+
+        ec_svc.on_bootstrap_complete.assert_called_once_with("alpha", False, daemon._state)
+
+    @pytest.mark.asyncio
+    async def test_check_status_exception_marks_failure(self) -> None:
+        daemon = _make_daemon_for_env_cache()
+        svc = MagicMock()
+        svc.check_status = AsyncMock(side_effect=RuntimeError("connection lost"))
+        ec_svc = MagicMock()
+
+        await daemon._poll_bootstrap_completion(svc, "job-1", "alpha", ec_svc)
+
+        ec_svc.on_bootstrap_complete.assert_called_once_with("alpha", False, daemon._state)
+
+    @pytest.mark.asyncio
+    async def test_failure_uses_active_jobs_container_id_lookup(self, monkeypatch) -> None:
+        """When container_id is None but svc._active_jobs has the job, fallback path runs."""
+        daemon = _make_daemon_for_env_cache()
+        svc = MagicMock()
+        svc.check_status = AsyncMock(return_value={"status": "failed"})
+        # No get_agent_logs attribute — force docker logs path that errors out
+        del svc.get_agent_logs
+
+        job_obj = MagicMock()
+        job_obj.container_id = "abc123"
+        svc._active_jobs = {"job-1": job_obj}
+
+        # Stub asyncio.create_subprocess_exec in daemon module to raise so we hit
+        # the except-branch in the docker logs fallback.
+        import coordinare.daemon as daemon_mod
+
+        async def _fail_subproc(*_a, **_kw):
+            raise RuntimeError("docker missing")
+
+        monkeypatch.setattr(daemon_mod.asyncio, "create_subprocess_exec", _fail_subproc)
+
+        ec_svc = MagicMock()
+        await daemon._poll_bootstrap_completion(svc, "job-1", "alpha", ec_svc)
+
+        ec_svc.on_bootstrap_complete.assert_called_once_with("alpha", False, daemon._state)
+
+    @pytest.mark.asyncio
+    async def test_container_id_logs_snapshot_branch(self, monkeypatch) -> None:
+        """Pass container_id so the pre-check_status docker-logs snapshot block runs."""
+        daemon = _make_daemon_for_env_cache()
+        svc = MagicMock()
+        svc.check_status = AsyncMock(return_value={"status": "env_bootstrap_complete"})
+        daemon._state["performer_services"] = {}
+
+        # Stub create_subprocess_exec to return a fake proc with snapshot output.
+        class _FakeProc:
+            async def communicate(self):
+                return (b"snap-line-1\nsnap-line-2\n", b"")
+
+        async def _make_proc(*_a, **_kw):
+            return _FakeProc()
+
+        import coordinare.daemon as daemon_mod
+        monkeypatch.setattr(daemon_mod.asyncio, "create_subprocess_exec", _make_proc)
+
+        ec_svc = MagicMock()
+        await daemon._poll_bootstrap_completion(
+            svc, "job-1", "alpha", ec_svc, container_id="cid-xyz"
+        )
+
+        ec_svc.on_bootstrap_complete.assert_called_once()
+        assert ec_svc.on_bootstrap_complete.call_args.args[1] is True
 
 
 # ---------------------------------------------------------------------------

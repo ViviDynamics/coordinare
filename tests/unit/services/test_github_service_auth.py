@@ -128,3 +128,39 @@ async def test_legacy_token_kwarg_returns_correct_token() -> None:
     svc = GitHubService(org="acme", project_number=1, token="legacy-tok")
     result = await svc._current_token()
     assert result == "legacy-tok"
+
+
+@pytest.mark.asyncio
+async def test_execute_serializes_concurrent_callers() -> None:
+    """061: _execute must hold _gql_lock for the full request, not just
+    client construction. The underlying AIOHTTPTransport cannot service
+    concurrent execute_async calls — overlap produces 'Transport is
+    already connected' and poisons the connector. This test fakes the
+    request layer and asserts that two concurrent _execute calls never
+    overlap inside _execute_request.
+    """
+    import asyncio
+
+    svc = _make_service("tok")
+    svc._client = object()  # bypass real client construction
+    svc._last_token = "tok"
+
+    in_flight = 0
+    max_in_flight = 0
+
+    async def fake_execute_request(_client, _query, _vars):
+        nonlocal in_flight, max_in_flight
+        in_flight += 1
+        max_in_flight = max(max_in_flight, in_flight)
+        await asyncio.sleep(0.01)
+        in_flight -= 1
+        return {"ok": True}
+
+    svc._execute_request = fake_execute_request  # type: ignore[method-assign]
+
+    await asyncio.gather(*[svc._execute("q", {}) for _ in range(5)])
+
+    assert max_in_flight == 1, (
+        f"_execute calls overlapped (max_in_flight={max_in_flight}); "
+        "lock must guard the full request"
+    )

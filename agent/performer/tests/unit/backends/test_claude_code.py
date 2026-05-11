@@ -96,6 +96,74 @@ class TestClaudeCodeBackendStart:
         p_idx = list(args).index("-p")
         assert "Test Task" in args[p_idx + 1]
 
+    async def test_start_merges_cache_env_into_subprocess_env(self, tmp_path: Path) -> None:
+        """060: cache_env from activate.sh must be visible to the agent subprocess."""
+        proc = _fake_proc()
+        adapter = ClaudeCodeBackend()
+        stand = Stand(
+            path=tmp_path,
+            branch="main",
+            git_env={"GIT_AUTHOR_NAME": "performer"},
+            cache_env={"PATH": "/devenv/foo/bin:/usr/bin", "VIRTUAL_ENV": "/devenv/foo/.venv"},
+        )
+
+        with patch(
+            "performer.backends.claude_code.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=proc),
+        ) as mock_exec:
+            await adapter.start(stand, _score())
+
+        env = mock_exec.call_args[1]["env"]
+        assert env["VIRTUAL_ENV"] == "/devenv/foo/.venv"
+        assert env["PATH"] == "/devenv/foo/bin:/usr/bin"
+        assert env["GIT_AUTHOR_NAME"] == "performer"
+
+    async def test_start_git_env_overrides_cache_env_on_conflict(self, tmp_path: Path) -> None:
+        """060: precedence is os.environ < cache_env < git_env — git auth must win."""
+        proc = _fake_proc()
+        adapter = ClaudeCodeBackend()
+        stand = Stand(
+            path=tmp_path,
+            branch="main",
+            git_env={"GITHUB_TOKEN": "real-token"},
+            cache_env={"GITHUB_TOKEN": "stale-cached"},
+        )
+
+        with patch(
+            "performer.backends.claude_code.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=proc),
+        ) as mock_exec:
+            await adapter.start(stand, _score())
+
+        env = mock_exec.call_args[1]["env"]
+        assert env["GITHUB_TOKEN"] == "real-token"
+
+    async def test_start_injects_tool_env_for_cli_shims(self, tmp_path: Path) -> None:
+        """Bug 16.2: score.tool_env must be merged into the subprocess env so
+        in-container CLI shims (e.g. performer-upload-screenshot) can read
+        PERFORMER_GH_* context."""
+        proc = _fake_proc()
+        adapter = ClaudeCodeBackend()
+        stand = Stand(path=tmp_path, branch="main")
+        score = _score(
+            github_token="ghp_xyz",
+            pr_url="https://github.com/org/repo/pull/77",
+            issue_number=42,
+        )
+
+        with patch(
+            "performer.backends.claude_code.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=proc),
+        ) as mock_exec:
+            await adapter.start(stand, score)
+
+        env = mock_exec.call_args[1]["env"]
+        assert env["PERFORMER_GH_TOKEN"] == "ghp_xyz"
+        assert env["PERFORMER_GH_OWNER"] == "org"
+        assert env["PERFORMER_GH_REPO"] == "repo"
+        # PR number takes precedence over issue_number
+        assert env["PERFORMER_GH_ISSUE"] == "77"
+
 
 # ---------------------------------------------------------------------------
 # get_status() / drain_events()

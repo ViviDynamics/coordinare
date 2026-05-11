@@ -21,6 +21,7 @@ from pydantic import ValidationError
 
 from performer.backends import UnsupportedBackendError, get_backend
 from performer.backends.base import BackendAdapter, BackendStatus
+from performer.cdn_upload import resolve_visual_evidence_urls
 from performer.config import Settings, get_settings
 from performer.github import GitHubAPIError, create_pull_request, get_check_runs, post_issue_comment, post_pr_comment, post_pull_request_review, resolve_pr_review_threads, summarise_check_runs
 from performer.models import Performance, Score, Stand, _redact_secrets
@@ -412,9 +413,18 @@ def _build_qa_pr_comment(
             kind = ev.get("kind", "artifact")
             loc = ev.get("path_or_url", "")
             note = ev.get("note", "")
+            is_url = loc.lower().startswith(("http://", "https://"))
+            is_image = kind == "screenshot" or Path(loc).suffix.lower() in {
+                ".png", ".jpg", ".jpeg", ".gif", ".webp",
+            }
             line = f"- **{label}** ({kind})"
             if loc:
-                line += f": `{loc}`"
+                if is_url and is_image:
+                    line += f": [{loc}]({loc})\n\n  ![{label}]({loc})"
+                elif is_url:
+                    line += f": [{loc}]({loc})"
+                else:
+                    line += f": `{loc}`"
             if note:
                 line += f" — {note}"
             lines.append(line)
@@ -862,6 +872,11 @@ async def handle_status(
             status="docs_committed",
             session_id=perf.session_id,
             files_modified=perf.docs_files_modified,
+        )
+    if perf.state == "env_bootstrap_complete":
+        return PerformerResponse(
+            status="env_bootstrap_complete",
+            session_id=perf.session_id,
         )
     if perf.state == "blocked":
         return PerformerResponse(
@@ -1403,6 +1418,23 @@ async def handle_status(
             except Exception as exc:
                 log.warning("qa.commit_report_failed", error=str(exc))
 
+            # Bug 16.2: upload any container-local screenshots to GitHub's
+            # user-attachments CDN so the PR/issue comment renders embeddable
+            # images instead of container-local /tmp/... paths.
+            try:
+                owner_for_upload, repo_for_upload = perf.score.owner_repo
+                upload_issue_no = perf.score.issue_number or _extract_pr_number(perf.pr_url)
+                visual_evidence = await resolve_visual_evidence_urls(
+                    visual_evidence,
+                    workspace_root=perf.stand.path,
+                    github_token=perf.score.effective_github_token,
+                    org=owner_for_upload,
+                    repo=repo_for_upload,
+                    issue_number=upload_issue_no,
+                )
+            except Exception as exc:
+                log.warning("qa.visual_evidence_upload_failed", error=str(exc))
+
             qa_comment = _build_qa_pr_comment(
                 score=perf.score,
                 passed=qa_passed_flag,
@@ -1552,6 +1584,18 @@ async def handle_status(
                 status="docs_committed",
                 session_id=perf.session_id,
                 files_modified=perf.docs_files_modified,
+            )
+
+        # 060/Option A: env_bootstrap path — backend ran install commands
+        # into the mounted cache_mount_path. There is no PR to open and no
+        # commit to push; just report a terminal success status. Failures
+        # surface as backend_status.state == "error" and route through the
+        # generic error path elsewhere in this function.
+        if perf.role == "env_bootstrap":
+            perf.state = "env_bootstrap_complete"
+            return PerformerResponse(
+                status="env_bootstrap_complete",
+                session_id=perf.session_id,
             )
 
         # 043: Run lint before pushing — catch CI violations at the source
@@ -1912,6 +1956,8 @@ async def _perform_job(payload: "JobInitPayload") -> "JobResult":  # pragma: no 
         }
         if payload.persona:
             score_dict["persona_instructions"] = payload.persona
+        if payload.env_cache_path:
+            score_dict["env_cache_path"] = payload.env_cache_path
 
         dispatch_msg = PerformerMessage(action="dispatch", payload=score_dict)
         try:

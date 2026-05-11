@@ -551,6 +551,7 @@ class DashboardStore:
                 "name": sym_name,
                 "priority": i,
                 "github_project_number": getattr(sym_cfg, "github_project_number", None),
+                "env_bootstrap_performer_id": getattr(sym_cfg, "env_bootstrap_performer_id", None),
                 "cycle_count": getattr(sym_state, "cycle_count", 0) if sym_state else 0,
                 "error_count": getattr(sym_state, "error_count", 0) if sym_state else 0,
                 "last_poll_at": (
@@ -820,48 +821,6 @@ td { padding: 4px 8px; border-bottom: 1px solid var(--color-bg-elevated); }
 <div class="card">
   <h2>Workflow</h2>
   <div id="flow-chart"><span class="empty-state">Loading flowchart...</span></div>
-</div>
-
-<div id="performers-card" class="card" style="display:none">
-  <!-- List view: one row per active performer -->
-  <div id="perf-list-view">
-    <h2>Performers</h2>
-    <div id="perf-list"></div>
-  </div>
-  <!-- Detail view: shown when a performer row is clicked -->
-  <div id="perf-detail-view" style="display:none">
-    <button class="perf-back-btn" onclick="showPerfList()">&#8592; Performers</button>
-    <div class="perf-header">
-      <span id="perf-dot" class="perf-dot perf-running"></span>
-      <span id="perf-backend" class="badge badge-required">performer</span>
-      <span class="label">Session:</span><code id="perf-session" style="font-size:12px;color:var(--color-text-primary)">—</code>
-      <span class="label" style="margin-left:8px">Uptime:</span><span id="perf-age" style="color:var(--color-accent-blue);font-size:12px">—</span>
-    </div>
-    <div style="padding:4px 0 2px 0;min-height:1.4em">
-      <span id="perf-backend-url" style="font-size:12px"></span>
-    </div>
-    <div style="padding:2px 0 4px 0;min-height:1.2em;font-size:12px;color:var(--color-text-muted)">
-      <span id="perf-session-stats"></span>
-    </div>
-    <div class="perf-metrics">
-      <div class="perf-metric"><span class="perf-metric-value" id="perf-mem">—</span><span class="perf-metric-label">Memory</span></div>
-      <div class="perf-metric"><span class="perf-metric-value" id="perf-cpu">—</span><span class="perf-metric-label">CPU</span></div>
-      <div class="perf-metric"><span class="perf-metric-value" id="perf-tokens">—</span><span class="perf-metric-label">Tokens</span></div>
-      <div class="perf-metric"><span class="perf-metric-value" id="perf-pid">—</span><span class="perf-metric-label">PID</span></div>
-    </div>
-    <div class="perf-log-header">
-      <span>Live Activity Log</span>
-      <button id="perf-jump-btn" class="jump-btn" style="display:none" onclick="jumpToLatest()">&#8595; Jump to latest</button>
-    </div>
-    <div id="perf-log" class="perf-log"><div style="padding:8px;color:var(--color-text-muted);font-style:italic">Waiting for events&hellip;</div></div>
-    <details id="perf-logs-details" style="margin-top:10px">
-      <summary style="cursor:pointer;font-size:12px;color:var(--color-text-muted);user-select:none">Process Logs (stderr) <span id="perf-logs-count"></span></summary>
-      <div id="perf-logs-jump-wrap" style="display:none;text-align:right;padding:2px 0">
-        <button class="jump-btn" onclick="jumpToLatestLogs()">&#8595; Jump to latest</button>
-      </div>
-      <div id="perf-logs" class="perf-log" style="margin-top:4px;font-family:monospace;font-size:11px"><div style="padding:8px;color:var(--color-text-muted);font-style:italic">No logs yet&hellip;</div></div>
-    </details>
-  </div>
 </div>
 
 <div id="questions-card" class="card" style="display:none">
@@ -1145,11 +1104,30 @@ function renderCycleHistoryInto(container, cycleHistory) {
     '</tbody></table></div>';
 }
 
+function findActivePerformerSession(s) {
+  // Multi-card mode: flat top-level fields can reflect any session's last sync.
+  // For aggregate UI indicators, derive from active_sessions instead.
+  var sessions = Array.isArray(s.active_sessions) ? s.active_sessions : [];
+  for (var i = 0; i < sessions.length; i++) {
+    var p = sessions[i].phase;
+    if (p === 'monitoring_performer' || p === 'monitoring_agent' || p === 'relay_feedback') {
+      return sessions[i];
+    }
+  }
+  return null;
+}
+
 function renderState(s) {
-  // Phase
+  // Phase — prefer aggregate session state over flat top-level fields, which
+  // get clobbered by whichever session last synced to CoordinareState.
+  var activeSess = findActivePerformerSession(s);
+  var effectivePhase = activeSess ? activeSess.phase : s.phase;
+  var effectiveDispatchAt = activeSess ? activeSess.agent_dispatch_at : s.agent_dispatch_at;
   var phaseEl = document.getElementById('phase');
-  phaseEl.textContent = s.phase_label || s.phase;
-  phaseEl.className = 'phase ' + phaseClass(s.phase);
+  phaseEl.textContent = activeSess
+    ? (formatPhaseLabel(activeSess.phase) || s.phase_label || s.phase)
+    : (s.phase_label || s.phase);
+  phaseEl.className = 'phase ' + phaseClass(effectivePhase);
   var phaseDescriptions = {
     'idle':             'Waiting for a card to enter the TODO column on the GitHub Project board.',
     'running':          'Processing a work cycle.',
@@ -1162,13 +1140,13 @@ function renderState(s) {
     'relay_feedback':   'Relaying PR review feedback to the performer agent.',
     'recovery':         'A cycle error occurred; the daemon is recovering before retrying.',
   };
-  document.getElementById('phase-desc').textContent = phaseDescriptions[s.phase] || '';
+  document.getElementById('phase-desc').textContent = phaseDescriptions[effectivePhase] || '';
 
-  // Session age (shown when monitoring_agent)
+  // Session age (shown when a performer is actively running on any session)
   var ageEl = document.getElementById('session-age');
-  if ((s.phase === 'monitoring_agent' || s.phase === 'monitoring_performer') && s.agent_dispatch_at) {
+  if (activeSess && effectiveDispatchAt) {
     ageEl.style.display = '';
-    ageEl.textContent = 'Agent running for: ' + (fmtAge(s.agent_dispatch_at) || '—');
+    ageEl.textContent = 'Agent running for: ' + (fmtAge(effectiveDispatchAt) || '—');
   } else {
     ageEl.style.display = 'none';
   }
@@ -1299,9 +1277,9 @@ function renderState(s) {
     rebaseCard.className = 'card';
     rebaseCard.style.display = 'none';
     rebaseCard.innerHTML = '<h3>Last Rebase Round</h3><ul id="rebase-status-list"></ul>';
-    var performersCard = document.getElementById('performers-card');
-    if (performersCard && performersCard.parentNode) {
-      performersCard.parentNode.insertBefore(rebaseCard, performersCard);
+    var anchor = document.getElementById('questions-card');
+    if (anchor && anchor.parentNode) {
+      anchor.parentNode.insertBefore(rebaseCard, anchor);
     }
   }
   var rebaseList = document.getElementById('rebase-status-list');
@@ -1321,9 +1299,6 @@ function renderState(s) {
   } else {
     rebaseCard.style.display = 'none';
   }
-
-  // Performers card
-  updatePerformers(s);
 
   // Clarification history
   var clCard = document.getElementById('clarifications-card');
@@ -1442,30 +1417,7 @@ function fmtBytes(b) {
 
 var STALE_THRESHOLD_MS = 30 * 60 * 1000;  // 30 minutes
 
-// ---- Performers card ----
-var _perfSessionId = null;
-var _perfEventCount = 0;
-var _perfAutoScroll = true;
-var _perfDetailOpen = false;  // true when the detail view is visible
 var _selectedCardId = null;   // card_id shown in card-detail-view
-
-function showPerfList(clearPreference) {
-  _perfDetailOpen = false;
-  if (clearPreference !== false) {
-    sessionStorage.removeItem('perfDetailOpen');
-  }
-  document.getElementById('perf-list-view').style.display = '';
-  document.getElementById('perf-detail-view').style.display = 'none';
-}
-
-function showPerfDetail() {
-  _perfDetailOpen = true;
-  sessionStorage.setItem('perfDetailOpen', '1');
-  document.getElementById('perf-list-view').style.display = 'none';
-  document.getElementById('perf-detail-view').style.display = '';
-  // Render detail content immediately rather than waiting for the next SSE tick.
-  if (_lastState) updatePerformers(_lastState);
-}
 
 function parseTokenCount(text) {
   var msg = String(text || '');
@@ -1502,193 +1454,6 @@ function derivePerformerTokenTotal(s) {
     return Math.floor(s.card_tokens_total);
   }
   return null;
-}
-
-document.getElementById('perf-log').addEventListener('scroll', function() {
-  var el = this;
-  var atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 12;
-  _perfAutoScroll = atBottom;
-  document.getElementById('perf-jump-btn').style.display = atBottom ? 'none' : '';
-});
-
-function jumpToLatest() {
-  var log = document.getElementById('perf-log');
-  log.scrollTop = log.scrollHeight;
-  _perfAutoScroll = true;
-  document.getElementById('perf-jump-btn').style.display = 'none';
-}
-
-var _perfLogsCount = 0;
-var _perfLogsAutoScroll = true;
-
-document.getElementById('perf-logs').addEventListener('scroll', function() {
-  var el = this;
-  _perfLogsAutoScroll = el.scrollTop + el.clientHeight >= el.scrollHeight - 12;
-  document.getElementById('perf-logs-jump-wrap').style.display = _perfLogsAutoScroll ? 'none' : '';
-});
-
-function jumpToLatestLogs() {
-  var el = document.getElementById('perf-logs');
-  el.scrollTop = el.scrollHeight;
-  _perfLogsAutoScroll = true;
-  document.getElementById('perf-logs-jump-wrap').style.display = 'none';
-}
-
-function updatePerformerLogs(logs) {
-  var logsEl = document.getElementById('perf-logs');
-  var newLines = (logs || []).slice(_perfLogsCount);
-  if (newLines.length > 0) {
-    if (_perfLogsCount === 0) logsEl.innerHTML = '';
-    newLines.forEach(function(line) {
-      var row = document.createElement('div');
-      row.style.cssText = 'padding:1px 6px;border-bottom:1px solid var(--color-bg-surface);word-break:break-all;color:var(--color-text-muted);white-space:pre-wrap';
-      row.textContent = line;
-      logsEl.appendChild(row);
-    });
-    _perfLogsCount = logs.length;
-    if (_perfLogsAutoScroll) logsEl.scrollTop = logsEl.scrollHeight;
-  }
-  var countEl = document.getElementById('perf-logs-count');
-  if (countEl) countEl.textContent = _perfLogsCount > 0 ? '(' + _perfLogsCount + ' lines)' : '';
-  document.getElementById('perf-logs-jump-wrap').style.display =
-    (!_perfLogsAutoScroll && _perfLogsCount > 0) ? '' : 'none';
-}
-
-function updatePerformers(s) {
-  var card = document.getElementById('performers-card');
-  var isActive = (s.phase === 'monitoring_agent' || s.phase === 'monitoring_performer' || s.phase === 'relay_feedback');
-  var events = s.performer_events || [];
-  var logs = s.performer_logs || [];
-
-  if (!isActive && events.length === 0 && logs.length === 0) {
-    card.style.display = 'none';
-    // Keep the user's prior detail/list preference across idle gaps so the
-    // panel can restore itself on the next performer session.
-    showPerfList(false);
-    return;
-  }
-  card.style.display = '';
-
-  // Detect session change — reset both logs
-  if (s.agent_session_id !== _perfSessionId) {
-    _perfSessionId = s.agent_session_id;
-    _perfEventCount = 0;
-    _perfAutoScroll = true;
-    _perfLogsCount = 0;
-    _perfLogsAutoScroll = true;
-    document.getElementById('perf-log').innerHTML =
-      '<div style="padding:8px;color:var(--color-text-muted);font-style:italic">Waiting for events&hellip;</div>';
-    document.getElementById('perf-logs').innerHTML =
-      '<div style="padding:8px;color:var(--color-text-muted);font-style:italic">No logs yet&hellip;</div>';
-    // Restore detail view if the user had it open before refresh
-    if (sessionStorage.getItem('perfDetailOpen')) {
-      showPerfDetail();
-    } else {
-      showPerfList();
-    }
-  }
-
-  // Always render the list view row
-  var backend = s.performer_backend || 'performer';
-  var dotCls = isActive ? 'perf-dot perf-running' : 'perf-dot perf-idle';
-  var age = (isActive && s.agent_dispatch_at) ? fmtAge(s.agent_dispatch_at) : '—';
-  var sessionShort = s.agent_session_id ? s.agent_session_id.slice(0, 8) + '…' : '—';
-  var stage = s.performer_stage || '';
-  var lifecycle = s.lifecycle_sequence || [];
-  var stageIdx = lifecycle.indexOf(stage);
-  var stageLabel = stage ? (stage + (stageIdx >= 0 ? ' (' + (stageIdx + 1) + '/' + lifecycle.length + ')' : '')) : '—';
-  var listEl = document.getElementById('perf-list');
-  listEl.innerHTML =
-    '<div class="perf-list-row" onclick="showPerfDetail()">' +
-      '<span class="' + dotCls + '"></span>' +
-      '<span class="badge badge-required">' + esc(stageLabel) + '</span>' +
-      '<span style="font-size:12px;color:var(--color-text-muted)">' + esc(backend) + '</span>' +
-      '<span style="font-size:12px;color:var(--color-accent-blue)">' + esc(age) + '</span>' +
-      '<span class="perf-list-chevron">&#8250;</span>' +
-    '</div>';
-
-  // Only update detail view internals when it's open (avoid wasted renders)
-  if (!_perfDetailOpen) return;
-
-  // Process logs (stderr drain)
-  updatePerformerLogs(logs);
-
-  // Status dot
-  var dot = document.getElementById('perf-dot');
-  dot.className = 'perf-dot ' + (isActive ? 'perf-running' : 'perf-idle');
-
-  // Stage + Backend badge + session + uptime
-  var backend = s.performer_backend || 'performer';
-  document.getElementById('perf-backend').textContent = stageLabel + ' — ' + backend;
-  document.getElementById('perf-session').textContent = s.agent_session_id || '—';
-  document.getElementById('perf-age').textContent =
-    (isActive && s.agent_dispatch_at) ? (fmtAge(s.agent_dispatch_at) || '—') : '—';
-
-  // 052: Backend UI URL and session stats
-  var backendUrlEl = document.getElementById('perf-backend-url');
-  if (backendUrlEl) {
-    backendUrlEl.textContent = '';
-    if (s.backend_ui_url) {
-      try {
-        var parsedBackendUrl = new URL(s.backend_ui_url);
-        var isAllowedBackendUrl =
-          parsedBackendUrl.protocol === 'http:' &&
-          (parsedBackendUrl.hostname === '127.0.0.1' || parsedBackendUrl.hostname === 'localhost');
-        if (isAllowedBackendUrl) {
-          var backendLink = document.createElement('a');
-          backendLink.href = parsedBackendUrl.href;
-          backendLink.target = '_blank';
-          backendLink.rel = 'noopener noreferrer';
-          backendLink.style.color = 'var(--color-accent-blue)';
-          backendLink.textContent = 'Open in browser ↗';
-          backendUrlEl.appendChild(backendLink);
-        }
-      } catch (_err) {}
-    }
-  }
-  var statsEl = document.getElementById('perf-session-stats');
-  if (statsEl) {
-    var ss = s.session_stats;
-    if (ss) {
-      var title = ss.title || '';
-      var statsText = (title ? esc(title) + ' &middot; ' : '') +
-        ss.files_changed + ' files &middot; +' + ss.lines_added + '/-' + ss.lines_removed + ' lines';
-      statsEl.innerHTML = statsText;
-    } else {
-      statsEl.innerHTML = '';
-    }
-  }
-
-  // Metrics
-  var m = s.performer_metrics || {};
-  var tokenTotal = derivePerformerTokenTotal(s);
-  document.getElementById('perf-mem').textContent = fmtBytes(m.memory_bytes);
-  document.getElementById('perf-cpu').textContent =
-    m.cpu_percent != null ? m.cpu_percent.toFixed(1) + '%' : '—';
-  document.getElementById('perf-tokens').textContent =
-    tokenTotal != null ? tokenTotal.toLocaleString() : '—';
-  document.getElementById('perf-pid').textContent = m.pid != null ? String(m.pid) : '—';
-
-  // Append only new events (incremental)
-  var log = document.getElementById('perf-log');
-  var newEvents = events.slice(_perfEventCount);
-  if (newEvents.length > 0) {
-    // Clear placeholder if this is the first real event
-    if (_perfEventCount === 0) log.innerHTML = '';
-    newEvents.forEach(function(ev) {
-      var row = document.createElement('div');
-      row.className = 'perf-log-row';
-      var t = ev.timestamp ? new Date(ev.timestamp).toLocaleTimeString() : '';
-      var evType = ev.type || 'output';
-      row.innerHTML =
-        '<span class="perf-log-time">' + esc(t) + '</span>' +
-        '<span class="badge ev-' + esc(evType) + '">' + esc(evType.replace(/_/g,' ')) + '</span>' +
-        '<span class="perf-log-text">' + esc(ev.text || '') + '</span>';
-      log.appendChild(row);
-    });
-    _perfEventCount = events.length;
-    if (_perfAutoScroll) log.scrollTop = log.scrollHeight;
-  }
 }
 
 // Refresh session age counter every 10s while monitoring_agent
@@ -1766,6 +1531,9 @@ function renderSymphoniesPage(s) {
     return;
   }
   var rows = syms.map(function(sym) {
+    var bootBtn = sym.env_bootstrap_performer_id
+      ? '<button class="action-btn sym-row-bootstrap" data-sym="' + esc(sym.name) + '" style="padding:2px 8px;font-size:11px">Bootstrap</button>'
+      : '<span style="color:var(--color-text-muted)">—</span>';
     return '<tr>'
       + '<td><a href="/symphonies/' + encodeURIComponent(sym.name) + '" onclick="navigate(event,this.pathname)" style="color:var(--color-accent-blue)">' + esc(sym.name) + '</a></td>'
       + '<td style="color:var(--color-text-muted)">' + (sym.github_project_number != null ? '#' + sym.github_project_number : '—') + '</td>'
@@ -1773,13 +1541,31 @@ function renderSymphoniesPage(s) {
       + '<td>' + (sym.cycle_count != null ? sym.cycle_count : '—') + '</td>'
       + '<td>' + (sym.error_count != null ? sym.error_count : '—') + '</td>'
       + '<td>' + (sym.last_poll_at ? esc(fmtTime(sym.last_poll_at)) : '—') + '</td>'
+      + '<td>' + bootBtn + '</td>'
       + '</tr>';
   }).join('');
   el.innerHTML = '<div style="overflow-x:auto"><table style="width:100%;font-size:12px"><thead><tr>'
-    + '<th style="text-align:left">Name</th><th style="text-align:left">Project</th><th style="text-align:left">Priority</th><th style="text-align:left">Cycles</th><th style="text-align:left">Errors</th><th style="text-align:left">Last poll</th>'
+    + '<th style="text-align:left">Name</th><th style="text-align:left">Project</th><th style="text-align:left">Priority</th><th style="text-align:left">Cycles</th><th style="text-align:left">Errors</th><th style="text-align:left">Last poll</th><th style="text-align:left">Env</th>'
     + '</tr></thead><tbody>' + rows + '</tbody></table></div>'
+    + '<div id="sym-list-msg" class="action-msg" style="margin-top:8px"></div>'
     + '<div style="margin-top:14px"><button class="action-btn" onclick="document.getElementById(\\'sym-add-form\\').style.display=\\'block\\'">+ Add Symphony</button></div>'
     + addFormHtml;
+  el.querySelectorAll('.sym-row-bootstrap').forEach(function(b) {
+    b.addEventListener('click', async function() {
+      var n = b.getAttribute('data-sym');
+      var msg = document.getElementById('sym-list-msg');
+      b.disabled = true;
+      msg.textContent = 'Dispatching ' + n + '...';
+      msg.style.color = 'var(--color-text-muted)';
+      try {
+        var r = await fetch('/api/symphonies/' + encodeURIComponent(n) + '/env-bootstrap', {method: 'POST'});
+        var d = await r.json();
+        if (r.ok) { msg.textContent = n + ': accepted'; msg.style.color = 'var(--color-accent-green)'; }
+        else { msg.textContent = n + ': ' + (d.error || ('error ' + r.status)); msg.style.color = 'var(--color-accent-red)'; }
+      } catch(e) { msg.textContent = n + ': network error'; msg.style.color = 'var(--color-accent-red)'; }
+      b.disabled = false;
+    });
+  });
 }
 
 async function loadSymphonyDetail(name, el) {
@@ -1841,9 +1627,47 @@ async function loadSymphonyDetail(name, el) {
       + '<textarea data-persona-role="' + esc(role) + '" rows="3" placeholder="(inherits global default)" style="width:100%;box-sizing:border-box;font-family:monospace;font-size:11px;background:var(--color-bg-base);color:var(--color-text-primary);border:1px solid var(--color-border);border-radius:4px;padding:6px 8px;resize:vertical">' + esc(instr) + '</textarea>'
       + '</div>';
   }).join('');
+  var ec = data.env_cache;
+  var ecBootstrapId = data.env_bootstrap_performer_id;
+  var ecSection = '';
+  if (ecBootstrapId) {
+    var ecRows;
+    if (ec) {
+      var inFlight = ec.bootstrap_in_flight;
+      var ready = ec.cache_dir_ready;
+      var lastOk = ec.last_bootstrap_succeeded;
+      var statusColor;
+      var statusText;
+      if (inFlight) { statusColor = 'var(--color-accent-blue)'; statusText = 'in flight'; }
+      else if (lastOk === true && ready) { statusColor = 'var(--color-accent-green)'; statusText = 'ready'; }
+      else if (lastOk === false) { statusColor = 'var(--color-accent-red)'; statusText = 'last bootstrap failed'; }
+      else { statusColor = 'var(--color-text-muted)'; statusText = 'not yet bootstrapped'; }
+      ecRows = [
+        ['Status', '<span style="color:' + statusColor + '">' + statusText + '</span>'],
+        ['Performer', esc(ecBootstrapId)],
+        ['Cache dir', esc(ec.cache_dir || '—')],
+        ['Cache ready', ready ? 'yes' : 'no'],
+        ['Bootstrap in flight', inFlight ? 'yes' : 'no'],
+        ['Last bootstrap', ec.last_bootstrap_at ? esc(fmtTime(ec.last_bootstrap_at)) : '—'],
+        ['Recorded SHA', ec.readme_sha ? esc(ec.readme_sha) : '—'],
+      ].map(function(r) {
+        return '<tr><th style="text-align:left;padding:3px 10px 3px 0;color:var(--color-text-muted);font-weight:normal;white-space:nowrap">' + r[0] + '</th><td style="font-size:12px">' + r[1] + '</td></tr>';
+      }).join('');
+    } else {
+      ecRows = '<tr><td style="font-size:12px;color:var(--color-text-muted)">Env cache state not initialised yet.</td></tr>';
+    }
+    var disabled = (ec && ec.bootstrap_in_flight) ? 'disabled' : '';
+    ecSection = '<div class="card" style="margin-bottom:14px">'
+      + '<div style="font-weight:bold;margin-bottom:10px;font-size:13px">Env bootstrap</div>'
+      + '<table style="font-size:12px;margin-bottom:10px"><tbody>' + ecRows + '</tbody></table>'
+      + '<button class="action-btn" id="sym-env-bootstrap-btn" ' + disabled + '>Force bootstrap now</button>'
+      + ' <span id="sym-env-bootstrap-msg" class="action-msg"></span>'
+      + '</div>';
+  }
   el.innerHTML = backLink
     + '<h3 style="margin:12px 0 4px">' + esc(name) + '</h3>'
     + '<table data-detail style="font-size:12px;margin-bottom:18px"><tbody>' + statusRows + '</tbody></table>'
+    + ecSection
     + '<div style="background:var(--color-bg-surface);border:1px solid var(--color-border);border-radius:6px;padding:14px;margin-bottom:14px">'
     + '<div style="font-weight:bold;color:var(--color-text-primary);margin-bottom:12px;font-size:13px">Configuration</div>'
     + '<div style="margin-bottom:10px">'
@@ -1869,6 +1693,32 @@ async function loadSymphonyDetail(name, el) {
     + '<span id="sym-save-msg" class="action-msg"></span>'
     + '</div>'
     + '</div>';
+  var ecBtn = document.getElementById('sym-env-bootstrap-btn');
+  if (ecBtn) {
+    ecBtn.addEventListener('click', async function() {
+      var msg = document.getElementById('sym-env-bootstrap-msg');
+      ecBtn.disabled = true;
+      msg.textContent = 'Dispatching...';
+      msg.style.color = 'var(--color-text-muted)';
+      try {
+        var r = await fetch('/api/symphonies/' + encodeURIComponent(name) + '/env-bootstrap', {method: 'POST'});
+        var d = await r.json();
+        if (r.ok) {
+          msg.textContent = 'Accepted — bootstrap will fire on the next cycle';
+          msg.style.color = 'var(--color-accent-green)';
+          setTimeout(function() { loadSymphonyDetail(name, el); }, 1500);
+        } else {
+          msg.textContent = d.error || ('Error ' + r.status);
+          msg.style.color = 'var(--color-accent-red)';
+          ecBtn.disabled = false;
+        }
+      } catch(e) {
+        msg.textContent = 'Network error';
+        msg.style.color = 'var(--color-accent-red)';
+        ecBtn.disabled = false;
+      }
+    });
+  }
   document.getElementById('sym-spec-file-add-btn').addEventListener('click', function() {
     var inp = document.getElementById('sym-spec-file-input');
     var val = inp.value.trim();
@@ -2566,14 +2416,12 @@ function loadPersonasPage(force) {
 
 setInterval(function() {
   if (!_lastState) return;
-  if ((_lastState.phase === 'monitoring_agent' || _lastState.phase === 'monitoring_performer') && _lastState.agent_dispatch_at) {
-    var age = fmtAge(_lastState.agent_dispatch_at) || '—';
-    document.getElementById('session-age').textContent = 'Agent running for: ' + age;
-    // Refresh uptime in detail view header
-    var ageSpan = document.getElementById('perf-age');
-    if (ageSpan) ageSpan.textContent = age;
-    // Refresh uptime in list row (re-render cheaply)
-    if (!_perfDetailOpen) updatePerformers(_lastState);
+  var activeSess = findActivePerformerSession(_lastState);
+  var dispatchAt = activeSess ? activeSess.agent_dispatch_at : null;
+  if (dispatchAt) {
+    var age = fmtAge(dispatchAt) || '—';
+    var ageEl = document.getElementById('session-age');
+    if (ageEl) ageEl.textContent = 'Agent running for: ' + age;
   }
 }, 10000);
 
@@ -2983,6 +2831,7 @@ def create_dashboard_app(
                 "name": name,
                 "priority": i,
                 "github_project_number": getattr(cfg, "github_project_number", None),
+                "env_bootstrap_performer_id": getattr(cfg, "env_bootstrap_performer_id", None),
                 "cycle_count": getattr(state, "cycle_count", 0) if state else 0,
                 "error_count": getattr(state, "error_count", 0) if state else 0,
                 "last_error": getattr(state, "last_error", None) if state else None,
@@ -3013,6 +2862,24 @@ def create_dashboard_app(
         cfg = symphony_configs[name]
         state = symphony_states.get(name)
 
+        env_cache = daemon.state.get("env_cache") or {}
+        ec = env_cache.get(name)
+        env_cache_payload: dict | None = None
+        if ec is not None:
+            env_cache_payload = {
+                "sanitised_name": getattr(ec, "sanitised_name", None),
+                "cache_dir": str(getattr(ec, "cache_dir", "")) or None,
+                "readme_sha": getattr(ec, "readme_sha", None),
+                "bootstrap_in_flight": bool(getattr(ec, "bootstrap_in_flight", False)),
+                "cache_dir_ready": bool(getattr(ec, "cache_dir_ready", False)),
+                "last_bootstrap_at": (
+                    ec.last_bootstrap_at.isoformat()
+                    if isinstance(getattr(ec, "last_bootstrap_at", None), datetime)
+                    else None
+                ),
+                "last_bootstrap_succeeded": getattr(ec, "last_bootstrap_succeeded", None),
+            }
+
         return JSONResponse({
             "name": name,
             "github_project_number": getattr(cfg, "github_project_number", None),
@@ -3020,6 +2887,8 @@ def create_dashboard_app(
             "overrides": getattr(cfg, "overrides", None) or {},
             "personas": getattr(cfg, "personas", None) or {},
             "env_spec_files": getattr(cfg, "env_spec_files", None) or ["README.md"],
+            "env_bootstrap_performer_id": getattr(cfg, "env_bootstrap_performer_id", None),
+            "env_cache": env_cache_payload,
             "state": {
                 "cycle_count": getattr(state, "cycle_count", 0) if state else 0,
                 "error_count": getattr(state, "error_count", 0) if state else 0,
@@ -3352,6 +3221,74 @@ def create_dashboard_app(
             daemon._webhook_trigger.set()
 
         return JSONResponse({"deleted": name})
+
+    @app.post("/api/symphonies/{name}/env-bootstrap")
+    async def trigger_env_bootstrap(name: str) -> JSONResponse:
+        """Force an env_bootstrap dispatch for a symphony.
+
+        Clears the recorded readme_sha so the next env_cache cycle treats the
+        spec files as changed, then fires the cycle trigger. Returns 202 on
+        accept; 409 if a bootstrap is already in flight.
+        """
+        symphony_configs = daemon.state.get("symphony_configs") or {}
+        if name not in symphony_configs:
+            return JSONResponse(
+                {"error": f"Symphony {name!r} not found"}, status_code=404
+            )
+
+        sym_cfg = symphony_configs[name]
+        if getattr(sym_cfg, "env_bootstrap_performer_id", None) is None:
+            return JSONResponse(
+                {
+                    "error": (
+                        f"Symphony {name!r} has no env_bootstrap_performer_id "
+                        "configured"
+                    )
+                },
+                status_code=400,
+            )
+
+        env_cache_svc = daemon.state.get("env_cache_service")
+        if env_cache_svc is None:
+            return JSONResponse(
+                {"error": "Env cache service not available"}, status_code=503
+            )
+
+        env_cache = daemon.state.get("env_cache") or {}
+        cache_state = env_cache.get(name)
+        if cache_state is None:
+            return JSONResponse(
+                {
+                    "error": (
+                        f"Symphony {name!r} env cache state has not been "
+                        "initialised yet — wait one cycle and retry"
+                    )
+                },
+                status_code=503,
+            )
+
+        if getattr(cache_state, "bootstrap_in_flight", False):
+            return JSONResponse(
+                {
+                    "error": "A bootstrap is already in flight for this symphony",
+                    "status": "bootstrap_in_flight",
+                },
+                status_code=409,
+            )
+
+        # Force the next cycle to detect a SHA mismatch and re-dispatch.
+        cache_state.readme_sha = None
+        if hasattr(daemon, "_webhook_trigger"):
+            daemon._webhook_trigger.set()
+
+        return JSONResponse(
+            {
+                "status": "accepted",
+                "symphony": name,
+                "performer_id": sym_cfg.env_bootstrap_performer_id,
+            },
+            status_code=202,
+        )
 
     @app.get("/api/config/effective")
     async def get_effective_config(symphony: str | None = None) -> JSONResponse:

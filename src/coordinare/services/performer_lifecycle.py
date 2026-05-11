@@ -114,6 +114,14 @@ async def start_ephemeral(config: PerformerEndpointConfig) -> StartedContainer:
     elif ss.creds_file_path is not None:
         args += ["-e", f"PERFORMER_CREDS_FILE={ss.creds_file_path}"]
 
+    logger.info(
+        "performer_lifecycle.start_ephemeral_volumes",
+        performer_id=config.id,
+        volume_count=len(config.volumes),
+        volumes=[
+            f"{v.host_path}:{v.container_path}:{v.mode}" for v in config.volumes
+        ],
+    )
     for vol in config.volumes:
         args += ["-v", f"{vol.host_path}:{vol.container_path}:{vol.mode}"]
 

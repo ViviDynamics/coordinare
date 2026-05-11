@@ -101,6 +101,7 @@ class Score(BaseModel):
     issue_number: int = 0  # GitHub issue number for PR linkage
     issue_url: str = ""  # GitHub issue URL for PR body reference
     latest_main_sha: str = ""  # 054: used by QA to verify branch freshness
+    env_cache_path: str = ""  # 060: container path of mounted env-cache; sourced via activate.sh
 
     model_config = {"extra": "ignore"}  # silently drop unknown fields from coordinare
 
@@ -144,6 +145,40 @@ class Score(BaseModel):
         parts = path.split("/")
         return parts[-2], parts[-1]
 
+    @property
+    def tool_env(self) -> dict[str, str]:
+        """Env vars exported to the backend subprocess so in-container CLI
+        shims (e.g. ``performer-upload-screenshot``) can authenticate and
+        target the correct repo/issue. Only populated when the relevant
+        fields are present; empty values are omitted so the CLI's missing-
+        context check fails cleanly rather than sending empty headers.
+        """
+        env: dict[str, str] = {}
+        token = self.effective_github_token
+        if token:
+            env["PERFORMER_GH_TOKEN"] = token
+        try:
+            owner, repo = self.owner_repo
+        except (IndexError, ValueError):
+            owner = repo = ""
+        if owner:
+            env["PERFORMER_GH_OWNER"] = owner
+        if repo:
+            env["PERFORMER_GH_REPO"] = repo
+        # Prefer PR number when present (QA role), else issue number.
+        issue_for_upload = 0
+        if self.pr_url:
+            # extract trailing /pull/<N>
+            import re
+            m = re.search(r"/pull/(\d+)", self.pr_url)
+            if m:
+                issue_for_upload = int(m.group(1))
+        if issue_for_upload <= 0 and self.issue_number > 0:
+            issue_for_upload = self.issue_number
+        if issue_for_upload > 0:
+            env["PERFORMER_GH_ISSUE"] = str(issue_for_upload)
+        return env
+
 
 # ---------------------------------------------------------------------------
 # Stand — the ephemeral workspace
@@ -168,6 +203,7 @@ class Stand:
     branch: str
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     git_env: dict[str, str] = field(default_factory=dict)
+    cache_env: dict[str, str] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------

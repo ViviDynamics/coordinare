@@ -114,6 +114,82 @@ class TestOpenCodeAdapterStart:
         assert call_kwargs["cwd"] == str(tmp_path)
 
     @respx.mock
+    async def test_start_merges_cache_env_into_subprocess_env(self, tmp_path: Path) -> None:
+        """060: cache_env from activate.sh must be visible to the opencode subprocess."""
+        proc = _fake_proc()
+        port = 19907
+
+        respx.get(f"http://127.0.0.1:{port}/global/health").mock(
+            return_value=httpx.Response(200, json={"healthy": True})
+        )
+        respx.post(f"http://127.0.0.1:{port}/session").mock(
+            return_value=httpx.Response(200, json={"id": "sess-cache"})
+        )
+        respx.post(f"http://127.0.0.1:{port}/session/sess-cache/prompt_async").mock(
+            return_value=httpx.Response(204)
+        )
+        respx.get(f"http://127.0.0.1:{port}/event").mock(
+            return_value=httpx.Response(200, content=b"")
+        )
+
+        stand = Stand(
+            path=tmp_path,
+            branch="main",
+            git_env={"GIT_AUTHOR_NAME": "performer"},
+            cache_env={"PATH": "/devenv/foo/bin:/usr/bin", "VIRTUAL_ENV": "/devenv/foo/.venv"},
+        )
+
+        with patch(
+            "performer.backends.opencode.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=proc),
+        ) as mock_exec, patch(
+            "performer.backends.opencode._find_free_port", return_value=port
+        ):
+            await OpenCodeAdapter().start(stand, _score())
+
+        env = mock_exec.call_args[1]["env"]
+        assert env["VIRTUAL_ENV"] == "/devenv/foo/.venv"
+        assert env["PATH"] == "/devenv/foo/bin:/usr/bin"
+        assert env["GIT_AUTHOR_NAME"] == "performer"
+
+    @respx.mock
+    async def test_start_git_env_overrides_cache_env_on_conflict(self, tmp_path: Path) -> None:
+        """060: precedence is os.environ < cache_env < git_env — git auth must win."""
+        proc = _fake_proc()
+        port = 19908
+
+        respx.get(f"http://127.0.0.1:{port}/global/health").mock(
+            return_value=httpx.Response(200, json={"healthy": True})
+        )
+        respx.post(f"http://127.0.0.1:{port}/session").mock(
+            return_value=httpx.Response(200, json={"id": "sess-prec"})
+        )
+        respx.post(f"http://127.0.0.1:{port}/session/sess-prec/prompt_async").mock(
+            return_value=httpx.Response(204)
+        )
+        respx.get(f"http://127.0.0.1:{port}/event").mock(
+            return_value=httpx.Response(200, content=b"")
+        )
+
+        stand = Stand(
+            path=tmp_path,
+            branch="main",
+            git_env={"GITHUB_TOKEN": "real-token"},
+            cache_env={"GITHUB_TOKEN": "stale-cached"},
+        )
+
+        with patch(
+            "performer.backends.opencode.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=proc),
+        ) as mock_exec, patch(
+            "performer.backends.opencode._find_free_port", return_value=port
+        ):
+            await OpenCodeAdapter().start(stand, _score())
+
+        env = mock_exec.call_args[1]["env"]
+        assert env["GITHUB_TOKEN"] == "real-token"
+
+    @respx.mock
     async def test_start_does_not_pass_print_logs_flag(self, tmp_path: Path) -> None:
         proc = _fake_proc()
         port = 19906

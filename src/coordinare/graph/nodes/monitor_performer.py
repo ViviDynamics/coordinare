@@ -776,7 +776,12 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
         # 034: Accumulate token usage and estimate cost.
         # Spec: only accept real integers; treat floats/bools/other types as invalid.
         raw_tokens = (new_metrics or {}).get("tokens_processed", 0) if isinstance(new_metrics, dict) else 0
-        if isinstance(raw_tokens, bool):
+        # 061: performers may emit tokens_processed=None before any LLM call has
+        # been counted; treat that as "not reported" rather than invalid.
+        if raw_tokens is None:
+            logger.debug("monitor_performer.tokens_processed_unreported", card_id=card_id, performer_stage=stage)
+            tokens_delta = 0
+        elif isinstance(raw_tokens, bool):
             logger.warning("monitor_performer.invalid_tokens_processed", value=raw_tokens, card_id=card_id, performer_stage=stage)
             tokens_delta = 0
         elif isinstance(raw_tokens, float):

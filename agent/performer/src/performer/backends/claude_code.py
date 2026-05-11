@@ -58,6 +58,8 @@ class ClaudeCodeBackend:
         self._stand: Stand | None = None
         self._session_id: str | None = None  # captured from system/init event
         self._git_env: dict[str, str] = {}
+        self._cache_env: dict[str, str] = {}
+        self._tool_env: dict[str, str] = {}
         self._model: str | None = None  # 037: per-role model selection
         self._max_tokens: int | None = None  # 055: output token cap
 
@@ -78,6 +80,8 @@ class ClaudeCodeBackend:
         """Build the prompt and launch ``claude --print --output-format stream-json``."""
         self._stand = stand
         self._git_env = stand.git_env
+        self._cache_env = stand.cache_env
+        self._tool_env = score.tool_env
         self._model = model
         self._max_tokens = max_tokens
         prompt = _build_task_prompt(score)
@@ -165,7 +169,7 @@ class ClaudeCodeBackend:
             stderr=asyncio.subprocess.PIPE,
             cwd=str(self._stand.path) if self._stand else None,
             start_new_session=True,
-            env={**os.environ, **self._git_env},
+            env={**os.environ, **self._cache_env, **self._git_env, **self._tool_env},
         )
         self._reader_task = asyncio.create_task(
             self._event_reader_loop(), name="claude-code-reader"
@@ -354,6 +358,16 @@ def _build_task_prompt(score: Score) -> str:
                 "Include `visual_evidence` entries when screenshots/GIFs/videos/artifacts are available.",
                 "Include exact capture attempts in `visual_capture_commands` (commands/scripts you ran).",
                 "If visual evidence cannot be captured, include `demo_setup_steps` and `visual_capture_blockers` with concrete details.",
+                (
+                    "Screenshot uploads: after capturing a screenshot to disk, run "
+                    "`performer-upload-screenshot <path>` (available on $PATH). It "
+                    "uploads the file to GitHub's user-attachments CDN and prints "
+                    "an https://github.com/user-attachments/assets/... URL on stdout. "
+                    "Use that URL as `path_or_url` in your `visual_evidence` entry so "
+                    "the image renders inline in the PR comment. If the upload command "
+                    "is unavailable or fails, keep the local path — the performer "
+                    "wrapper will retry the upload before posting."
+                ),
             ]
     else:
         parts += [

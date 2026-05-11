@@ -461,6 +461,14 @@ class HTTPPerformerService:
     ) -> JobInitPayload:
         from coordinare.models.performer_endpoint import JobInitPayload
 
+        # 060/Option A: env_bootstrap dispatches do not flow through
+        # WorkspaceManager (no card, no workspace prep). Synthesize the
+        # workspace fields from BootstrapJobPayload so the performer's
+        # standard clone+dispatch flow can pick up the symphony repo and
+        # run install steps from env_spec_contents into cache_mount_path.
+        if card_context.get("job_type") == "env_bootstrap":
+            return self._build_env_bootstrap_payload(card_context)
+
         repo_url = (
             str(workspace_info.repo_url)
             if workspace_info is not None and workspace_info.repo_url
@@ -506,6 +514,7 @@ class HTTPPerformerService:
         # role/persona/relay_feedback/etc. without us forking the schema here.
         metadata = json.loads(json.dumps(dict(card_context), default=str))
 
+        env_cache_path = card_context.get("env_cache_path")
         return JobInitPayload.model_validate(
             {
                 "job_id": str(uuid.uuid4()),
@@ -513,6 +522,115 @@ class HTTPPerformerService:
                 "role": str(card_context.get("role", "")),
                 "backend": str(card_context.get("backend", "")),
                 "persona": str(card_context.get("persona_instructions", "")),
+                "repo_url": repo_url,
+                "branch": branch,
+                "secrets": secrets,
+                "metadata": metadata,
+                "env_cache_path": env_cache_path if env_cache_path else None,
+            }
+        )
+
+    def _build_env_bootstrap_payload(
+        self, card_context: dict[str, Any]
+    ) -> JobInitPayload:
+        """Synthesize a JobInitPayload for an env_bootstrap dispatch.
+
+        BootstrapJobPayload is coordinare-internal and does not carry the
+        repo_url/branch/secrets that JobInitPayload requires, so we derive
+        them here: the repo is the symphony's own GitHub repo (the agent
+        clones it to read env_spec_files), branch defaults to 'main', the
+        GitHub token comes from the coordinare's environment.
+        """
+        import os
+
+        from coordinare.models.performer_endpoint import JobInitPayload
+
+        symphony_org = str(card_context.get("symphony_org") or "")
+        symphony_repo = str(card_context.get("symphony_repo") or "")
+        if not symphony_org or not symphony_repo:
+            raise ValueError(
+                "env_bootstrap card_context missing symphony_org or symphony_repo"
+            )
+
+        repo_url = f"https://github.com/{symphony_org}/{symphony_repo}.git"
+        # Synthetic branch — bootstrap never pushes/PRs. clone_repository fetches
+        # ``origin {branch}:{branch}`` and, if the ref doesn't exist remotely,
+        # falls back to ``checkout -b`` from the shallow-cloned default branch.
+        # Using a real branch (e.g. "main") triggers git's "refusing to fetch
+        # into current branch" error, which surfaces as WorkspaceSetupError.
+        branch = f"env-bootstrap-{uuid.uuid4().hex[:8]}"
+
+        cache_mount_path = str(card_context.get("cache_mount_path") or "")
+        env_spec_files = list(card_context.get("env_spec_files") or [])
+        env_spec_contents: dict[str, str] = dict(
+            card_context.get("env_spec_contents") or {}
+        )
+
+        secrets: dict[str, str] = {}
+        # Prefer the daemon-injected token (fresh App installation token or
+        # configured PAT, sourced via WorkspaceManager.get_fresh_github_token);
+        # fall back to the coordinare process env only when not provided.
+        gh_token = str(card_context.get("_github_token") or "") or os.environ.get(
+            "GITHUB_TOKEN", ""
+        )
+        if gh_token:
+            secrets["GITHUB_TOKEN"] = gh_token
+        for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
+            val = os.environ.get(key, "")
+            if val:
+                secrets[key] = val
+
+        spec_block = "\n\n".join(
+            f"=== {path} ===\n{content}"
+            for path, content in env_spec_contents.items()
+        )
+        persona = (
+            "You are an environment bootstrap agent. Your job is to install "
+            f"all build/test/runtime dependencies for this project into "
+            f"the directory {cache_mount_path!r}, which is a writable volume "
+            "shared with later performer containers as a read-only devenv root.\n\n"
+            "Read the install/setup instructions from the following project "
+            "spec files and execute the commands they describe. Use "
+            f"{cache_mount_path} (NOT the repo root and NOT $HOME) as the "
+            "install prefix for language toolchains, virtualenvs, node_modules, "
+            "and any other generated artefacts that should persist across "
+            "performer runs. Do NOT modify the cloned repo working tree, do "
+            "NOT push commits, and do NOT open a PR — this job exists only to "
+            "populate the cache directory.\n\n"
+            "MANDATORY: After installing, write a sourceable shell script at "
+            f"{cache_mount_path}/activate.sh that consumer agents will source "
+            "before running their tools. It MUST export PATH (prepending any "
+            "bin directories you created, e.g. virtualenv bin, node_modules/.bin, "
+            "language toolchain bin), and any other env vars needed to use the "
+            "installed tooling (VIRTUAL_ENV, NODE_PATH, etc.). Without this "
+            "file the cache is unusable and downstream performers will reinstall. "
+            "Make it idempotent and safe to source repeatedly.\n\n"
+            f"Spec files ({', '.join(env_spec_files) or 'none'}):\n\n"
+            f"{spec_block}\n"
+        )
+
+        meta_src = {k: v for k, v in card_context.items() if k != "_github_token"}
+        # Score (performer-side dispatch payload model) requires a `title`
+        # field; BootstrapJobPayload doesn't carry one, so synthesize it from
+        # the symphony name. Also seed `description` from the spec block so the
+        # backend agent has user-facing context if it inspects the Score.
+        symphony_name = str(card_context.get("symphony_name") or "")
+        meta_src.setdefault(
+            "title", f"env_bootstrap: {symphony_name}" if symphony_name else "env_bootstrap"
+        )
+        meta_src.setdefault(
+            "description",
+            f"Install dev environment into {cache_mount_path} per project spec files.",
+        )
+        metadata = json.loads(json.dumps(meta_src, default=str))
+
+        return JobInitPayload.model_validate(
+            {
+                "job_id": str(uuid.uuid4()),
+                "card_id": f"env_bootstrap:{card_context.get('symphony_name', '')}",
+                "role": "env_bootstrap",
+                "backend": str(card_context.get("backend", "") or "claude_code"),
+                "persona": persona,
                 "repo_url": repo_url,
                 "branch": branch,
                 "secrets": secrets,

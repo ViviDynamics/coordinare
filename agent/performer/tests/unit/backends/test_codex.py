@@ -719,6 +719,80 @@ class TestStart:
         call_kwargs = mock_exec.call_args[1]
         assert call_kwargs["cwd"] == str(tmp_path)
 
+    async def test_start_merges_cache_env_into_subprocess_env(self, tmp_path: Path) -> None:
+        """060: cache_env from activate.sh must be visible to the codex subprocess."""
+        proc = _fake_proc()
+        proc.stdout.readline = AsyncMock(side_effect=[
+            b"  listening on: ws://127.0.0.1:4040\n",
+        ])
+        ws = _make_ws()
+        mock_session = MagicMock()
+        mock_session.ws_connect = AsyncMock(return_value=ws)
+
+        stand = Stand(
+            path=tmp_path,
+            branch="main",
+            git_env={"GIT_AUTHOR_NAME": "performer"},
+            cache_env={"PATH": "/devenv/foo/bin:/usr/bin", "NODE_PATH": "/devenv/foo/node_modules"},
+        )
+
+        with patch(
+            "performer.backends.codex.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=proc),
+        ) as mock_exec, patch(
+            "performer.backends.codex.aiohttp.ClientSession",
+            return_value=mock_session,
+        ):
+            adapter = CodexBackend()
+            rpc_resp = {
+                "initialize": {},
+                "thread/start": {"thread": {"id": "t1"}},
+                "turn/start": {"turn": {"id": "r1"}},
+            }
+            with patch.object(adapter, "_rpc", side_effect=lambda m, p: rpc_resp[m]):
+                await adapter.start(stand, _score())
+
+        env = mock_exec.call_args[1]["env"]
+        assert env["NODE_PATH"] == "/devenv/foo/node_modules"
+        assert env["PATH"] == "/devenv/foo/bin:/usr/bin"
+        assert env["GIT_AUTHOR_NAME"] == "performer"
+
+    async def test_start_git_env_overrides_cache_env_on_conflict(self, tmp_path: Path) -> None:
+        """060: precedence is os.environ < cache_env < git_env — git auth must win."""
+        proc = _fake_proc()
+        proc.stdout.readline = AsyncMock(side_effect=[
+            b"  listening on: ws://127.0.0.1:4040\n",
+        ])
+        ws = _make_ws()
+        mock_session = MagicMock()
+        mock_session.ws_connect = AsyncMock(return_value=ws)
+
+        stand = Stand(
+            path=tmp_path,
+            branch="main",
+            git_env={"GITHUB_TOKEN": "real-token"},
+            cache_env={"GITHUB_TOKEN": "stale-cached"},
+        )
+
+        with patch(
+            "performer.backends.codex.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=proc),
+        ) as mock_exec, patch(
+            "performer.backends.codex.aiohttp.ClientSession",
+            return_value=mock_session,
+        ):
+            adapter = CodexBackend()
+            rpc_resp = {
+                "initialize": {},
+                "thread/start": {"thread": {"id": "t1"}},
+                "turn/start": {"turn": {"id": "r1"}},
+            }
+            with patch.object(adapter, "_rpc", side_effect=lambda m, p: rpc_resp[m]):
+                await adapter.start(stand, _score())
+
+        env = mock_exec.call_args[1]["env"]
+        assert env["GITHUB_TOKEN"] == "real-token"
+
 
 # ---------------------------------------------------------------------------
 # _rpc / _notify

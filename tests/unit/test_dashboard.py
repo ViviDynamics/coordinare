@@ -109,12 +109,13 @@ def test_dashboard_multi_page_routes_return_html_shell() -> None:
         assert res.text == root_html, f"{path} returned different HTML than /"
 
 
-def test_dashboard_html_under_112kb() -> None:
-    """T036: _DASHBOARD_HTML must not exceed the 112 KB size budget (raised to accommodate
+def test_dashboard_html_under_116kb() -> None:
+    """T036: _DASHBOARD_HTML must not exceed the 116 KB size budget (raised to accommodate
     multi-page layout, navbar, active-performer tiles, performers/personas/history pages — 049,
-    Global Config edit page — 058, and CSS design tokens + phase-label + health widget — 059)."""
+    Global Config edit page — 058, CSS design tokens + phase-label + health widget — 059, and
+    env-bootstrap card + symphonies-list bootstrap button — 060)."""
     size = len(_DASHBOARD_HTML.encode())
-    assert size < 112 * 1024, f"_DASHBOARD_HTML is {size} bytes (limit: {112 * 1024})"
+    assert size < 116 * 1024, f"_DASHBOARD_HTML is {size} bytes (limit: {116 * 1024})"
 
 
 def test_history_page_is_live_container_not_coming_soon_stub() -> None:
@@ -1664,6 +1665,128 @@ def test_put_symphony_cycle_active_returns_409(tmp_path) -> None:
     daemon._cycle_active = True
     res = client.put("/api/symphonies/alpha", json={"enabled": False})
     assert res.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# 061 — Manual env_bootstrap trigger (POST /api/symphonies/{name}/env-bootstrap)
+# ---------------------------------------------------------------------------
+
+
+def _attach_env_cache(daemon, symphony: str, *, in_flight: bool = False) -> None:
+    """Configure the symphony for env_bootstrap and seed an EnvCacheState."""
+    from pathlib import Path
+
+    from coordinare.models.env_cache import EnvCacheState
+
+    cfg = daemon.state["symphony_configs"][symphony]
+    cfg.env_bootstrap_performer_id = "codex-ephemeral"
+    daemon.state["env_cache_service"] = MagicMock()
+    daemon.state["env_cache"] = {
+        symphony: EnvCacheState(
+            symphony_name=symphony,
+            sanitised_name=f"{symphony}-abc123",
+            cache_dir=Path(f"/tmp/env-caches/{symphony}-abc123"),
+            readme_sha="cafef00d",
+            bootstrap_in_flight=in_flight,
+        )
+    }
+    daemon._webhook_trigger = MagicMock()
+
+
+def test_force_env_bootstrap_clears_sha_and_fires_trigger(tmp_path) -> None:
+    client, daemon = _make_symphony_app(tmp_path)
+    _attach_env_cache(daemon, "alpha")
+    res = client.post("/api/symphonies/alpha/env-bootstrap")
+    assert res.status_code == 202
+    body = res.json()
+    assert body["status"] == "accepted"
+    assert body["symphony"] == "alpha"
+    assert body["performer_id"] == "codex-ephemeral"
+    assert daemon.state["env_cache"]["alpha"].readme_sha is None
+    daemon._webhook_trigger.set.assert_called_once()
+
+
+def test_force_env_bootstrap_unknown_symphony_returns_404(tmp_path) -> None:
+    client, _ = _make_symphony_app(tmp_path)
+    res = client.post("/api/symphonies/missing/env-bootstrap")
+    assert res.status_code == 404
+
+
+def test_force_env_bootstrap_no_performer_returns_400(tmp_path) -> None:
+    """Symphonies without env_bootstrap_performer_id can't be bootstrapped."""
+    client, _ = _make_symphony_app(tmp_path)
+    res = client.post("/api/symphonies/alpha/env-bootstrap")
+    assert res.status_code == 400
+
+
+def test_force_env_bootstrap_in_flight_returns_409(tmp_path) -> None:
+    client, daemon = _make_symphony_app(tmp_path)
+    _attach_env_cache(daemon, "alpha", in_flight=True)
+    res = client.post("/api/symphonies/alpha/env-bootstrap")
+    assert res.status_code == 409
+    # SHA must NOT be cleared while a bootstrap is in flight.
+    assert daemon.state["env_cache"]["alpha"].readme_sha == "cafef00d"
+
+
+def test_force_env_bootstrap_no_cache_state_returns_503(tmp_path) -> None:
+    """If initialise() hasn't run yet, return 503 rather than guessing."""
+    client, daemon = _make_symphony_app(tmp_path)
+    cfg = daemon.state["symphony_configs"]["alpha"]
+    cfg.env_bootstrap_performer_id = "codex-ephemeral"
+    daemon.state["env_cache_service"] = MagicMock()
+    daemon.state["env_cache"] = {}
+    res = client.post("/api/symphonies/alpha/env-bootstrap")
+    assert res.status_code == 503
+
+
+def test_get_symphony_includes_env_cache_state(tmp_path) -> None:
+    client, daemon = _make_symphony_app(tmp_path)
+    _attach_env_cache(daemon, "alpha")
+    res = client.get("/api/symphonies/alpha")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["env_bootstrap_performer_id"] == "codex-ephemeral"
+    assert body["env_cache"] is not None
+    assert body["env_cache"]["readme_sha"] == "cafef00d"
+    assert body["env_cache"]["sanitised_name"] == "alpha-abc123"
+    assert body["env_cache"]["bootstrap_in_flight"] is False
+
+
+def test_list_symphonies_includes_env_bootstrap_performer_id(tmp_path) -> None:
+    """060: GET /api/symphonies returns env_bootstrap_performer_id per row so the
+    list page can render the per-row Bootstrap button."""
+    client, daemon = _make_symphony_app(tmp_path)
+    cfg = daemon.state["symphony_configs"]["alpha"]
+    cfg.env_bootstrap_performer_id = "codex-ephemeral"
+    res = client.get("/api/symphonies")
+    assert res.status_code == 200
+    syms = res.json()["symphonies"]
+    alpha = next(s for s in syms if s["name"] == "alpha")
+    assert alpha["env_bootstrap_performer_id"] == "codex-ephemeral"
+
+
+def test_dashboard_html_renders_per_row_bootstrap_button() -> None:
+    """060: the symphonies list rendering includes the sym-row-bootstrap button class
+    and wires its click to the env-bootstrap endpoint."""
+    assert "sym-row-bootstrap" in _DASHBOARD_HTML
+    assert "/env-bootstrap" in _DASHBOARD_HTML
+
+
+def test_build_snapshot_symphonies_include_env_bootstrap_performer_id() -> None:
+    """060: SSE snapshot must include env_bootstrap_performer_id per symphony so
+    the symphonies list page renders the per-row Bootstrap button. Without this,
+    the button never appears even though the REST API returns the field."""
+    store = DashboardStore()
+    daemon = _make_mock_daemon()
+    cfg = MagicMock()
+    cfg.github_project_number = 42
+    cfg.env_bootstrap_performer_id = "codex-ephemeral"
+    daemon.state["symphony_configs"] = {"alpha": cfg}
+    daemon.state["symphony_states"] = {}
+    metrics = _make_mock_metrics()
+    health = _make_mock_health()
+    snap = store.build_snapshot(daemon, metrics, health)
+    assert snap["symphonies"][0]["env_bootstrap_performer_id"] == "codex-ephemeral"
 
 
 # ---------------------------------------------------------------------------

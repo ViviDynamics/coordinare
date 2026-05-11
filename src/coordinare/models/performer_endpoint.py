@@ -210,6 +210,7 @@ class JobInitPayload(BaseModel):
     branch: str
     secrets: dict[str, SecretStr] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    env_cache_path: str | None = None
 
 
 class JobAcceptResponse(BaseModel):

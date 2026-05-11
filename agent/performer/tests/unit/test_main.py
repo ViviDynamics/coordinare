@@ -1547,6 +1547,55 @@ class TestQAPerformer:
         ]
 
     @pytest.mark.asyncio
+    async def test_qa_local_screenshot_uploaded_to_cdn_before_posting(self) -> None:
+        """Bug 16.2: container-local screenshot paths must be uploaded and
+        replaced with the CDN URL before the PR comment is posted, so the
+        comment body never contains raw /tmp/... references."""
+        import json
+        perf = self._make_perf()
+        perf.score.title = "Refactor token parsing"
+        perf.pr_url = "https://github.com/acme/repo/pull/42"
+        perf.score.issue_number = 99
+        output = json.dumps({
+            "failures": [],
+            "criteria_checked": 1,
+            "criteria_passed": 1,
+            "visual_validation_required": False,
+            "verification_steps": ["Verify the screenshot."],
+            "visual_evidence": [
+                {
+                    "label": "After fix",
+                    "kind": "screenshot",
+                    "path_or_url": "/tmp/screenshots/after.png",
+                    "note": "Final state.",
+                },
+            ],
+        })
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+
+        async def fake_resolve(evidence, **kwargs):
+            return [
+                {**ev, "path_or_url": "https://github.com/user-attachments/assets/xyz"}
+                for ev in evidence
+            ]
+
+        mock_comment = AsyncMock(return_value={})
+        with (
+            patch("performer.main.commit_file", new=AsyncMock()),
+            patch("performer.main.post_pr_comment", new=mock_comment),
+            patch("performer.main.post_issue_comment", new=AsyncMock(return_value={})),
+            patch("performer.main.resolve_visual_evidence_urls", new=fake_resolve),
+        ):
+            await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+
+        assert mock_comment.called
+        posted_body = mock_comment.call_args.kwargs["body"]
+        assert "/tmp/screenshots/after.png" not in posted_body
+        assert "https://github.com/user-attachments/assets/xyz" in posted_body
+        # screenshot kind with http URL renders as embedded image markdown
+        assert "![After fix](https://github.com/user-attachments/assets/xyz)" in posted_body
+
+    @pytest.mark.asyncio
     async def test_qa_includes_visual_capture_setup_and_blockers_when_no_artifacts(self) -> None:
         import json
         perf = self._make_perf()

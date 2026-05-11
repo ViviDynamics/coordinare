@@ -22,6 +22,7 @@ StatusType = Literal[
     "qa_passed",
     "qa_failed",
     "docs_committed",
+    "env_bootstrap_complete",
     "assessment_complete",
     "blocked",
     "error",

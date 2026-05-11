@@ -239,19 +239,74 @@ async def check_board(state: CoordinareState) -> CoordinareState:
             return state
 
     if in_review:
-        # NOTE (035): In multi-card mode, check_board runs once per daemon
-        # cycle (not per-session).  Per-session routing is handled by
-        # _invoke_multi_session in the daemon; this early-return for
-        # IN_REVIEW / IN_PROGRESS columns is correct for both modes.
-        #
         # Preserve dispatching phase from classify_human_feedback even if
         # the GitHub move to IN_PROGRESS failed and the card is still in
         # IN_REVIEW.  The dispatch will move it on the next attempt.
         # Also preserve blocked phase from veto override (031).
         if state.get("phase") in ("dispatching", "blocked"):
             return state
-        state["phase"] = "monitoring_pr"
-        return state
+
+        if max_cards > 1:
+            # 061: Re-adopt orphaned IN_REVIEW cards into active_sessions so
+            # they appear on the dashboard and the daemon can poll their PRs
+            # per-session.  These sessions sit in the passive `monitoring_pr`
+            # phase and don't consume a concurrency slot, so we fall through
+            # to the TODO pickup branch below to fill open slots.
+            active_sessions: dict = state.get("active_sessions") or {}
+            already_active_ids = set(active_sessions.keys())
+            titles_m = board.get("titles", {})
+            descriptions_m = board.get("descriptions", {})
+            issue_numbers_m = board.get("issue_numbers", {})
+            issue_urls_m = board.get("issue_urls", {})
+            content_node_ids_m = board.get("content_node_ids", {})
+            readopted_any = False
+            for item in in_review:
+                if item in already_active_ids:
+                    continue
+                description = str(descriptions_m.get(item, ""))
+                card_dict = {
+                    "id": item,
+                    "issue_id": str(content_node_ids_m.get(item, "")),
+                    "issue_number": int(issue_numbers_m.get(item, 0)),
+                    "issue_url": str(issue_urls_m.get(item, "")),
+                    "title": str(titles_m.get(item, "")),
+                    "description": description,
+                    "acceptance_criteria": parse_acceptance_criteria(description),
+                    "status": "IN_REVIEW",
+                    "previous_status": "IN_REVIEW",
+                }
+                sess = create_session_from_card(card_dict)
+                sess["phase"] = "monitoring_pr"
+                active_sessions[item] = sess
+                already_active_ids.add(item)
+                readopted_any = True
+                logger.info(
+                    "check_board.readopted_in_review_card",
+                    card_id=item,
+                    title=str(titles_m.get(item, "")),
+                )
+            if readopted_any:
+                state["active_sessions"] = active_sessions
+            # Bug 16.1: if THIS per-session invocation is for an IN_REVIEW
+            # card, preserve monitoring_pr and return.  Without this,
+            # falling through skips every column branch (card isn't
+            # IN_PROGRESS / BLOCKED / TODO) and the function reaches the
+            # bottom where ``state["phase"]`` is overwritten to "idle",
+            # causing routing to re-dispatch a performer before the human
+            # has reviewed.  TODO-pickup invocations carry a current_card
+            # that is NOT in IN_REVIEW (or no current_card at all), so
+            # they still fall through correctly to fill open slots.
+            current = state.get("current_card")
+            current_id = (
+                str(current.get("id", "")) if isinstance(current, dict) else ""
+            )
+            if current_id and current_id in in_review:
+                state["phase"] = "monitoring_pr"
+                return state
+            # Fall through to TODO pickup; passive sessions don't block new work.
+        else:
+            state["phase"] = "monitoring_pr"
+            return state
     if in_progress:
         # Fresh-start recovery (no current_card) should re-adopt the active
         # board card even if stale system_error_count residue exists.
