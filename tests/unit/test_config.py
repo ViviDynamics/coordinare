@@ -38,6 +38,27 @@ def test_loads_yaml_config(tmp_path) -> None:
     assert config.poll_interval_seconds == 30
 
 
+def test_legacy_assessment_backend_key_raises(tmp_path) -> None:
+    """Spec 062 renamed assessment_backend -> conducting:. The old flat key
+    must fail loudly so existing deployments don't silently lose routing."""
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "\n".join(
+            [
+                'project_name: "Demo"',
+                'github_org: "acme"',
+                "github_project_number: 12",
+                'github_token: "tok"',
+                'agent_executable: "/usr/local/bin/agent"',
+                'human_reviewers: ["alice"]',
+                'assessment_backend: "claude_cli"',
+            ]
+        )
+    )
+    with pytest.raises(ValueError, match="legacy 'assessment_backend'"):
+        ProjectConfiguration.from_yaml(path)
+
+
 def test_dashboard_port_default(tmp_path) -> None:
     config = ProjectConfiguration.from_yaml(_write_config(tmp_path))
     assert config.dashboard_port == 8090

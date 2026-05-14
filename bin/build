@@ -119,6 +119,55 @@ EOF
     echo -e "$FAIL Docker: image size gap (SC-007)"
     FAILED+=("Docker: image size gap (SC-007)")
   fi
+
+  step "Docker: verify rtk binary in base image (062 Fix 2)"
+  if docker run --rm --entrypoint rtk coordinare-performer:base --version >/dev/null 2>&1; then
+    ok "Docker: rtk binary present"
+  else
+    echo -e "$FAIL Docker: rtk binary missing or non-functional in base image"
+    FAILED+=("Docker: rtk binary")
+  fi
+
+  step "Docker: rtk compression wrapper actually compresses (062 Fix 2)"
+  # Compare byte counts: rtk's compressed output for `ls -la /` must be
+  # strictly smaller than plain `ls -la /`. If rtk silently passes through
+  # (or no-ops because the proxy regressed), this fails and we know the
+  # measurement run would be contaminated.
+  if docker run --rm --entrypoint sh coordinare-performer:base -c '
+    set -e
+    rtk ls -la / >/tmp/rtk.out 2>/dev/null
+    ls -la / >/tmp/plain.out 2>/dev/null
+    rtk_bytes=$(wc -c </tmp/rtk.out)
+    plain_bytes=$(wc -c </tmp/plain.out)
+    test "$rtk_bytes" -gt 0
+    test "$rtk_bytes" -lt "$plain_bytes"
+    echo "rtk=${rtk_bytes}B plain=${plain_bytes}B"
+  '; then
+    ok "Docker: rtk wrapper produces smaller output than plain command"
+  else
+    echo -e "$FAIL Docker: rtk wrapper did not compress (output >= plain)"
+    FAILED+=("Docker: rtk compression")
+  fi
+
+  step "Docker: rtk init -g writes hook files (062 Fix 2)"
+  # Drive `rtk init -g` inside the container against a stub HOME with a
+  # pre-created .claude dir (rtk init requires it). Assert the three
+  # artefacts it advertises actually land on disk: RTK.md, CLAUDE.md
+  # @reference, and the filters.toml template.
+  if docker run --rm --entrypoint sh coordinare-performer:base -c '
+    set -e
+    mkdir -p /tmp/h/.claude
+    HOME=/tmp/h rtk init -g >/dev/null 2>&1
+    test -f /tmp/h/.claude/RTK.md
+    test -f /tmp/h/.claude/CLAUDE.md
+    grep -q "@RTK.md" /tmp/h/.claude/CLAUDE.md
+    test -f /tmp/h/.config/rtk/filters.toml
+  '; then
+    ok "Docker: rtk init -g writes expected hook files"
+  else
+    echo -e "$FAIL Docker: rtk init -g did not write expected hook files"
+    FAILED+=("Docker: rtk init -g hook files")
+  fi
 else
   skip "Docker image builds (pass --docker to enable)"
 fi

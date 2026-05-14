@@ -124,15 +124,32 @@ class SlotManager:
             if role_name is not None:
                 performers_cfg = getattr(config, "performers", None)
                 if performers_cfg is not None:
-                    role_cfg = getattr(performers_cfg, role_name, None)
+                    # Prefer resolved_role() so ``performers.default`` propagates;
+                    # fall back to raw attribute access for ducktyped test configs.
+                    if hasattr(performers_cfg, "resolved_role"):
+                        role_cfg = performers_cfg.resolved_role(role_name)
+                    else:
+                        role_cfg = getattr(performers_cfg, role_name, None)
                     if role_cfg is not None:
                         new_max = getattr(role_cfg, "max_concurrency", 1)
                         if stage in SINGLETON_STAGES:
                             new_max = min(new_max, 1)
                         # Clamp to len(services) — can't use more slots than
                         # we have transport instances (created at startup).
-                        if pool.services:
-                            new_max = min(new_max, len(pool.services))
+                        # If the operator bumped max_concurrency in config but
+                        # we can't honor it without rebuilding transports, log
+                        # once so it's obvious a restart is required.
+                        if pool.services and new_max > len(pool.services):
+                            if not getattr(pool, "_capped_warned", False):
+                                logger.warning(
+                                    "slot_manager.hot_reload.capped_by_services",
+                                    stage=stage,
+                                    requested=new_max,
+                                    available=len(pool.services),
+                                    hint="restart coordinare to grow the transport pool",
+                                )
+                                pool._capped_warned = True  # type: ignore[attr-defined]
+                            new_max = len(pool.services)
                         pool.max_concurrency = new_max
 
         if pool.max_concurrency <= 0:

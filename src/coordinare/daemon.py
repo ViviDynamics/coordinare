@@ -12,7 +12,7 @@ from uuid import uuid4
 
 import structlog
 
-from coordinare.graph.nodes.check_board import PASSIVE_PHASES
+from coordinare.graph.nodes.check_board import NON_SLOT_PHASES, PASSIVE_PHASES
 from coordinare.graph.nodes.github_retry import (
     clear_deferred_github_operation,
     defer_github_operation,
@@ -307,6 +307,23 @@ class CoordinareDaemon:
         if snapshot.agent_session_id:
             self._state["agent_dispatch"] = {"session_id": snapshot.agent_session_id}
 
+        # Also seed the owning SymphonyRuntimeState. In multi-symphony mode the
+        # per-symphony swap in _conduct_single_symphony reads sym_state.active_card
+        # and sym_state.previous_phase as the source of truth — if those are not
+        # primed from the snapshot, cycle 1 clobbers the just-restored top-level
+        # state with None / default and the card is never re-adopted. The
+        # snapshot has no project-number field, so we can only safely map when
+        # there is exactly one symphony; otherwise leave it to the in-graph
+        # re-adopt path (check_board) to pick the card off the live board.
+        sym_states = self._state.get("symphony_states") or {}
+        if len(sym_states) == 1:
+            (sym_state,) = sym_states.values()
+            current_card = self._state.get("current_card")
+            if current_card is not None and sym_state.active_card is None:
+                sym_state.active_card = current_card
+            if sym_state.previous_phase is None:
+                sym_state.previous_phase = snapshot.phase
+
     @staticmethod
     def _infer_phase_from_board_column(column: str) -> WorkflowPhase:
         normalized = column.strip().lower()
@@ -485,6 +502,19 @@ class CoordinareDaemon:
                     snapshot = board.get("snapshot")
                     if isinstance(snapshot, dict):
                         self._state["board_snapshot"] = snapshot
+                    # 062 Fix 4: propagate per-card metadata so dashboard swimlane
+                    # can render titles + GitHub links in multi-session mode.
+                    # check_board sets these too, but they're not in _GLOBAL_STATE_KEYS
+                    # so per-session mutations are dropped after the fanout merge.
+                    for _meta_src, _meta_dst in (
+                        ("titles", "_board_titles"),
+                        ("issue_numbers", "_board_issue_numbers"),
+                        ("issue_urls", "_board_issue_urls"),
+                        ("pr_urls", "_board_pr_urls"),
+                    ):
+                        _meta_val = board.get(_meta_src)
+                        if isinstance(_meta_val, dict):
+                            self._state[_meta_dst] = _meta_val  # type: ignore[literal-required]
                     # Pre-seed _main_sha_cache so concurrent sessions share one
                     # ls-remote result instead of each making an independent call.
                     # suppress is scoped only to _current_token() — fetch_main_sha
@@ -868,7 +898,7 @@ class CoordinareDaemon:
             _sym_sessions = (getattr(sym_state, "active_sessions", None) or {}) if sym_state is not None else {}
             _active_sym_count = sum(
                 1 for sess in _sym_sessions.values()
-                if sess.get("phase") not in PASSIVE_PHASES
+                if sess.get("phase") not in NON_SLOT_PHASES
             )
             if (
                 sym_state is not None
@@ -942,6 +972,11 @@ class CoordinareDaemon:
                 sym_state.active_card = self._state.get("current_card")
                 skip_reasons = self._state.get("session_skip_reasons")
                 sym_state.session_skip_reasons = dict(skip_reasons) if skip_reasons else None
+                # 062: Per-card metadata for the dashboard swimlane.
+                sym_state.board_titles = dict(self._state.get("_board_titles") or {})  # type: ignore[arg-type]
+                sym_state.board_issue_numbers = dict(self._state.get("_board_issue_numbers") or {})  # type: ignore[arg-type]
+                sym_state.board_issue_urls = dict(self._state.get("_board_issue_urls") or {})  # type: ignore[arg-type]
+                sym_state.board_pr_urls = dict(self._state.get("_board_pr_urls") or {})  # type: ignore[arg-type]
                 # Per-symphony phase transition metric (labels each transition with the actual symphony)
                 _prev_sym_phase = sym_state.previous_phase
                 _cur_sym_phase = self._state.get("phase")
@@ -1540,10 +1575,18 @@ class CoordinareDaemon:
                                 container_devenv_root=_bootstrap_devenv_root,
                             )
 
+                    logger.info(
+                        "symphony.loop_entry",
+                        symphony_count=len(symphony_configs),
+                        symphony_names=list(symphony_configs.keys()),
+                        sym_gh_keys=list((self._state.get("symphony_github_services") or {}).keys()),
+                        global_gh_present=self._state.get("github_service") is not None,
+                    )
                     for sym_name, sym_cfg in symphony_configs.items():
                         if not self._running or self._stop_event.is_set():
                             break
                         if not getattr(sym_cfg, "enabled", True):
+                            logger.warning("symphony.disabled_skip", symphony=sym_name)
                             continue
                         await self._conduct_single_symphony(sym_name, sym_cfg)
                     # Rebuild aggregate active_sessions from all symphony states so

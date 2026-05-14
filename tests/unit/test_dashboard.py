@@ -14,6 +14,7 @@ from coordinare.dashboard import (
     _DASHBOARD_HTML,
     DashboardStore,
     SSEBroadcaster,
+    _json_default,
     check_port_available,
     compute_overall_health,
     create_dashboard_app,
@@ -21,6 +22,28 @@ from coordinare.dashboard import (
     is_session_stale,
     render_performer_pool_widget,
 )
+
+
+def test_json_default_handles_set_path_and_datetime() -> None:
+    """Regression: SSE snapshots carry PosixPath (workspace_path), sets
+    (processed_issue_comment_ids), and datetimes — _json_default must encode
+    all three without raising, otherwise the SSE stream dies mid-flight and
+    the dashboard sticks on "Disconnected — reconnecting…"."""
+    import json
+    from pathlib import Path
+
+    payload = {
+        "workspace_path": Path("/tmp/coordinare/wp"),
+        "processed_ids": {1, 3, 2},
+        "ts": datetime(2026, 5, 12, 19, 51, tzinfo=UTC),
+    }
+    out = json.loads(json.dumps(payload, default=_json_default))
+    assert out["workspace_path"] == "/tmp/coordinare/wp"
+    assert out["processed_ids"] == [1, 2, 3]
+    assert out["ts"].startswith("2026-05-12T19:51")
+
+    with pytest.raises(TypeError):
+        _json_default(object())
 
 # ---------------------------------------------------------------------------
 # Helpers / fixtures
@@ -1681,6 +1704,7 @@ def _attach_env_cache(daemon, symphony: str, *, in_flight: bool = False) -> None
     cfg = daemon.state["symphony_configs"][symphony]
     cfg.env_bootstrap_performer_id = "codex-ephemeral"
     daemon.state["env_cache_service"] = MagicMock()
+    daemon.state["performer_services_by_id"] = {"codex-ephemeral": MagicMock()}
     daemon.state["env_cache"] = {
         symphony: EnvCacheState(
             symphony_name=symphony,
@@ -1734,9 +1758,26 @@ def test_force_env_bootstrap_no_cache_state_returns_503(tmp_path) -> None:
     cfg = daemon.state["symphony_configs"]["alpha"]
     cfg.env_bootstrap_performer_id = "codex-ephemeral"
     daemon.state["env_cache_service"] = MagicMock()
+    daemon.state["performer_services_by_id"] = {"codex-ephemeral": MagicMock()}
     daemon.state["env_cache"] = {}
     res = client.post("/api/symphonies/alpha/env-bootstrap")
     assert res.status_code == 503
+
+
+def test_force_env_bootstrap_missing_performer_service_returns_503(tmp_path) -> None:
+    """If the configured bootstrap performer is not registered with the daemon
+    (e.g. typo in config.yaml, half-initialised startup), surface that directly
+    instead of accepting the 202 and silently failing on the next cycle."""
+    client, daemon = _make_symphony_app(tmp_path)
+    cfg = daemon.state["symphony_configs"]["alpha"]
+    cfg.env_bootstrap_performer_id = "codex-ephemeral"
+    daemon.state["env_cache_service"] = MagicMock()
+    daemon.state["performer_services_by_id"] = {}
+    res = client.post("/api/symphonies/alpha/env-bootstrap")
+    assert res.status_code == 503
+    body = res.json()
+    assert "codex-ephemeral" in body["error"]
+    assert body["performer_id"] == "codex-ephemeral"
 
 
 def test_get_symphony_includes_env_cache_state(tmp_path) -> None:
@@ -1803,7 +1844,7 @@ def test_get_global_config_returns_editable_fields() -> None:
     cfg.log_level = "INFO"
     for attr in ("heartbeat_interval_seconds", "max_feedback_cycles",
                  "max_closed_pr_attempts_per_issue", "output_mode",
-                 "assessment_backend", "assignee_filter",
+                 "conducting_backend", "assignee_filter",
                  "human_reviewers", "trusted_bot_reviewers",
                  "env_cache_root"):
         setattr(cfg, attr, None)

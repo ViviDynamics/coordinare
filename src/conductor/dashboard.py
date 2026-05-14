@@ -35,6 +35,26 @@ _log = structlog.get_logger(__name__)
 # ---------------------------------------------------------------------------
 
 
+def _json_default(o: Any) -> Any:
+    """JSON encoder fallback for non-serializable types appearing in snapshots.
+
+    Session dicts carry ``set``-typed fields (processed_issue_comment_ids,
+    processed_review_ids, advocate_history); coerce to a sorted list when
+    elements are orderable, otherwise plain list.
+    """
+    if isinstance(o, set):
+        try:
+            return sorted(o)
+        except TypeError:
+            return list(o)
+    if isinstance(o, datetime):
+        return o.isoformat()
+    from pathlib import PurePath
+    if isinstance(o, PurePath):
+        return str(o)
+    raise TypeError(f"Object of type {type(o).__name__} is not JSON serializable")
+
+
 def format_phase_label(phase: str) -> str:
     """Convert a raw phase string to a human-readable label.
 
@@ -255,14 +275,14 @@ class DashboardStore:
         try:
             # Send current state immediately on connect (FR-011)
             snapshot = self.build_snapshot(daemon, metrics, health)
-            yield f"event: state_update\ndata: {json.dumps(snapshot)}\n\n"
+            yield f"event: state_update\ndata: {json.dumps(snapshot, default=_json_default)}\n\n"
             while True:
                 try:
                     payload = await asyncio.wait_for(q.get(), timeout=15.0)
                     if payload is None:
                         # Shutdown sentinel — exit the generator cleanly
                         break
-                    yield f"event: state_update\ndata: {json.dumps(payload)}\n\n"
+                    yield f"event: state_update\ndata: {json.dumps(payload, default=_json_default)}\n\n"
                 except TimeoutError:
                     # Keepalive comment — prevents proxy/browser timeout
                     yield ": keepalive\n\n"
@@ -561,6 +581,11 @@ class DashboardStore:
                     "last_error": getattr(sym_state, "last_error", None) if sym_state else None,
                     "active_card": getattr(sym_state, "active_card", None) if sym_state else None,
                     "board_snapshot": getattr(sym_state, "board_snapshot", None) if sym_state else None,
+                    "board_titles": getattr(sym_state, "board_titles", None) or {},
+                    "board_issue_numbers": getattr(sym_state, "board_issue_numbers", None) or {},
+                    "board_issue_urls": getattr(sym_state, "board_issue_urls", None) or {},
+                    "board_pr_urls": getattr(sym_state, "board_pr_urls", None) or {},
+                    "active_sessions": getattr(sym_state, "active_sessions", None) or {},
                 } if sym_state is not None else None,
             }
             symphonies_data.append(sym_entry)
@@ -650,6 +675,19 @@ td { padding: 4px 8px; border-bottom: 1px solid var(--color-bg-elevated); }
 .empty-state { color: var(--color-text-muted); font-style: italic; padding: 8px 0; }
 .card-warning { border-color: var(--color-accent-yellow) !important; }
 .empty-state-warning { color: var(--color-accent-yellow); font-weight: bold; padding: 8px 0; }
+.swimlane-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.swimlane-col { background: var(--color-bg-base); border: 1px solid var(--color-border); border-radius: 4px; min-height: 60px; display: flex; flex-direction: column; }
+.swimlane-col-header { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-text-muted); padding: 6px 10px; border-bottom: 1px solid var(--color-border); display: flex; justify-content: space-between; align-items: center; }
+.swimlane-col-count { background: var(--color-bg-pill); border: 1px solid var(--color-border); border-radius: 10px; padding: 0 6px; font-size: 10px; color: var(--color-text-primary); }
+.swimlane-col-body { padding: 6px; display: flex; flex-direction: column; gap: 6px; }
+.swimlane-card { background: var(--color-bg-elevated); border: 1px solid var(--color-border); border-radius: 4px; padding: 8px 10px; }
+.swimlane-card[tabindex]:hover { background: var(--color-bg-row-hover); border-color: var(--color-accent-blue); }
+.swimlane-empty { color: var(--color-text-muted); font-style: italic; font-size: 12px; padding: 4px 6px; }
+.swimlane-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--color-border); margin-bottom: 10px; }
+.swimlane-tab { background: transparent; border: none; border-bottom: 2px solid transparent; color: var(--color-text-muted); padding: 6px 12px; font-size: 12px; cursor: pointer; font-family: inherit; }
+.swimlane-tab:hover { color: var(--color-text-primary); }
+.swimlane-tab.active { color: var(--color-accent-blue); border-bottom-color: var(--color-accent-blue); }
+.swimlane-tab-count { background: var(--color-bg-pill); border: 1px solid var(--color-border); border-radius: 10px; padding: 0 6px; font-size: 10px; margin-left: 4px; color: var(--color-text-primary); }
 .metric-row { display: flex; gap: 24px; flex-wrap: wrap; }
 .metric { display: flex; flex-direction: column; }
 .metric-value { font-size: 20px; font-weight: bold; color: var(--color-text-primary); }
@@ -798,19 +836,15 @@ td { padding: 4px 8px; border-bottom: 1px solid var(--color-bg-elevated); }
 </div>
 
 <div class="card" id="active-work-card">
-  <h2>Active Work</h2>
-  <div id="active-work-section">
-    <span class="empty-state">No performers running</span>
+  <h2>Board</h2>
+  <div id="swimlane-tabs" class="swimlane-tabs" style="display:none"></div>
+  <div id="swimlane-section">
+    <span class="empty-state">Waiting for board snapshot&hellip;</span>
   </div>
   <div id="card-detail-view" style="display:none">
-    <button class="perf-back-btn" onclick="closeCardDetail()">&#8592; Active Work</button>
+    <button class="perf-back-btn" onclick="closeCardDetail()">&#8592; Board</button>
     <div id="card-detail-content"></div>
   </div>
-</div>
-
-<div class="card" id="awaiting-review-card" style="display:none;border-left:3px solid var(--color-accent-yellow)">
-  <h2 style="color:var(--color-accent-yellow)">&#9888; Awaiting Your Review</h2>
-  <div id="awaiting-review-section"></div>
 </div>
 
 <div id="idle-panel" class="card" style="display:none">
@@ -892,7 +926,7 @@ td { padding: 4px 8px; border-bottom: 1px solid var(--color-bg-elevated); }
     <h2 style="margin-bottom:12px">Performers</h2>
     <div id="performers-page-list-view">
       <table>
-        <thead><tr><th>Role</th><th>Status</th><th>Card</th><th>Active/Max</th></tr></thead>
+        <thead><tr><th>Role</th><th>Status</th><th>Card</th><th>Active / Idle / Max</th></tr></thead>
         <tbody id="performers-page-tbody"><tr><td colspan="4" class="empty-state">Loading...</td></tr></tbody>
       </table>
     </div>
@@ -1163,7 +1197,7 @@ function renderState(s) {
   if (idlePanel) {
     if (isIdle(s)) {
       idlePanel.style.display = '';
-      if (workCard) workCard.style.display = 'none';
+      if (workCard) workCard.style.display = '';
       var idleSummary = (s.board_summary && typeof s.board_summary === 'object') ? s.board_summary : {};
       var bCount = function(k) { var v = idleSummary[k]; return Number.isFinite(v) ? v : 0; };
       var idleTotal = bCount('TODO') + bCount('IN_PROGRESS') + bCount('IN_REVIEW') + bCount('DONE');
@@ -1237,7 +1271,7 @@ function renderState(s) {
     utilCard.id = 'role-utilization-card';
     utilCard.className = 'card';
     utilCard.style.display = 'none';
-    utilCard.innerHTML = '<h3>Performer Utilization</h3><table id="role-utilization-table" style="width:100%;border-collapse:collapse"><thead><tr><th style="text-align:left">Role</th><th>Active / Max</th><th>Queued</th></tr></thead><tbody></tbody></table>';
+    utilCard.innerHTML = '<h3>Performer Utilization</h3><table id="role-utilization-table" style="width:100%;border-collapse:collapse"><thead><tr><th style="text-align:left">Role</th><th>Active / Idle / Max</th></tr></thead><tbody></tbody></table>';
     var qCardRef = document.getElementById('questions-card');
     if (qCardRef && qCardRef.parentNode) { qCardRef.parentNode.insertBefore(utilCard, qCardRef); }
   }
@@ -1247,7 +1281,8 @@ function renderState(s) {
     utilTbody.innerHTML = s.role_utilization.map(function(r) {
       var pct = r.max > 0 ? Math.min(100, Math.round(r.active / r.max * 100)) : 0;
       var bar = '<div style="background:var(--color-bar-track);border-radius:3px;height:8px;width:60px;display:inline-block;vertical-align:middle"><div style="background:' + (pct >= 100 ? 'var(--color-bar-full)' : 'var(--color-bar-fill)') + ';height:100%;width:' + pct + '%;border-radius:3px"></div></div>';
-      return '<tr><td>' + esc(r.role) + '</td><td>' + bar + ' ' + r.active + ' / ' + r.max + '</td><td>' + (r.queued || 0) + '</td></tr>';
+      var idle = Math.max(0, r.max - r.active);
+      return '<tr><td>' + esc(r.role) + '</td><td>' + bar + ' ' + r.active + ' / ' + idle + ' / ' + r.max + '</td></tr>';
     }).join('');
   } else {
     utilCard.style.display = 'none';
@@ -1418,6 +1453,11 @@ function fmtBytes(b) {
 var STALE_THRESHOLD_MS = 30 * 60 * 1000;  // 30 minutes
 
 var _selectedCardId = null;   // card_id shown in card-detail-view
+var _swimlaneTab = null;      // currently selected symphony tab (null = no symphonies)
+function selectSwimlaneTab(name) {
+  _swimlaneTab = name;
+  if (_lastState) renderActiveWorkPanels(_lastState);
+}
 
 function parseTokenCount(text) {
   var msg = String(text || '');
@@ -1592,7 +1632,6 @@ async function loadSymphonyDetail(name, el) {
     {key:'max_feedback_cycles', label:'Max feedback cycles', type:'number', placeholder:'5'},
     {key:'max_closed_pr_attempts_per_issue', label:'Max closed PR attempts', type:'number', placeholder:'3'},
     {key:'assignee_filter', label:'Assignee filter (GitHub login)', type:'text', placeholder:'(no filter)'},
-    {key:'assessment_backend', label:'Assessment backend', type:'text', placeholder:'anthropic_api'},
   ];
   var personaRoles = ['assessor','architect','implementer','reviewer','security','qa','tech_writer','closer'];
   var statusRows = [
@@ -1832,7 +1871,6 @@ async function loadGlobalConfigPage() {
   var selectFields = [
     {key:'log_level', label:'Log level', options:['debug','info','warning','error']},
     {key:'output_mode', label:'Output mode', options:['human','structured']},
-    {key:'assessment_backend', label:'Assessment backend', options:['anthropic_api','claude_cli','opencode','none']},
   ];
   var textFields = [
     {key:'assignee_filter', label:'Assignee filter (GitHub login)', placeholder:'(no filter)'},
@@ -1960,126 +1998,177 @@ function toggleNavMenu() {
 
 window.addEventListener('popstate', function() { router(); });
 
-// 049: Active-performer tiles
+// 062: Swimlane view across symphonies — TODO / BLOCKED / IN_PROGRESS / IN_REVIEW.
+// BACKLOG and DONE are intentionally hidden; the swimlane is meant to show only
+// in-flight work the coordinare is reasoning about.
 function renderActiveWorkPanels(s) {
+  var workEl = document.getElementById('swimlane-section');
+  var workCard = document.getElementById('active-work-card');
+  var tabsEl = document.getElementById('swimlane-tabs');
+  if (!workEl) return;
+
+  var COLUMNS = ['TODO', 'BLOCKED', 'IN_PROGRESS', 'IN_REVIEW'];
+  var COLUMN_LABELS = {TODO: 'To Do', BLOCKED: 'Blocked', IN_PROGRESS: 'In Progress', IN_REVIEW: 'In Review'};
+
+  // Index live sessions by card_id so swimlane cards can show phase/elapsed.
   var sessions = Array.isArray(s.active_sessions) ? s.active_sessions : [];
-  var ACTIVE_PHASES = {'monitoring_performer': true, 'monitoring_agent': true, 'relay_feedback': true};
-  var REVIEW_PHASES = {'monitoring_pr': true};
+  var sessionsByCard = {};
+  sessions.forEach(function(sess) { if (sess && sess.card_id) sessionsByCard[sess.card_id] = sess; });
 
-  var activeSessions = sessions.filter(function(sess) { return ACTIVE_PHASES[sess.phase]; });
-  var reviewSessions = sessions.filter(function(sess) { return REVIEW_PHASES[sess.phase]; });
-
-  // In symphony mode, active_sessions is empty between cycles but each symphony
-  // keeps its current card in state.active_card. Pull those in so the panels
-  // stay populated while coordinare is idle-polling between dispatch cycles.
-  var seenCardIds = {};
-  sessions.forEach(function(sess) { seenCardIds[sess.card_id] = true; });
+  // Aggregate per-card data across all symphonies (item_id is globally unique).
+  // Track which symphony each card belongs to for tab filtering.
+  var titles = {}, issueNums = {}, issueUrls = {}, prUrls = {};
   var symphonies = Array.isArray(s.symphonies) ? s.symphonies : [];
+  var perSymCounts = {};  // symphony name → total card count
+  var allEntries = {TODO: [], BLOCKED: [], IN_PROGRESS: [], IN_REVIEW: []};
   symphonies.forEach(function(sym) {
-    var card = sym.state && sym.state.active_card;
-    if (!card || seenCardIds[card.id]) return;
-    seenCardIds[card.id] = true;
-    var synth = {
-      card_id: card.id,
-      card_title: card.title || '',
-      issue_number: card.issue_number,
-      issue_url: card.issue_url || null,
-      pr_url: card.pr_url || null,
-      performer_stage: '',
-      agent_dispatch_at: null,
-      card_cost_estimate: 0,
-    };
-    if (card.status === 'IN_PROGRESS') {
-      synth.phase = 'monitoring_performer';
-      activeSessions.push(synth);
-    }
+    var st = sym && sym.state ? sym.state : {};
+    Object.assign(titles, st.board_titles || {});
+    Object.assign(issueNums, st.board_issue_numbers || {});
+    Object.assign(issueUrls, st.board_issue_urls || {});
+    Object.assign(prUrls, st.board_pr_urls || {});
+    var snap = st.board_snapshot || {};
+    var symName = sym.name || '';
+    perSymCounts[symName] = 0;
+    COLUMNS.forEach(function(col) {
+      var items = Array.isArray(snap[col]) ? snap[col] : [];
+      items.forEach(function(iid) {
+        allEntries[col].push({iid: iid, symphony: symName});
+        perSymCounts[symName] += 1;
+      });
+    });
   });
 
-  // --- Active Work panel ---
-  var workEl = document.getElementById('active-work-section');
-  var workCard = document.getElementById('active-work-card');
-  if (workEl) {
-    if (activeSessions.length === 0) {
-      // Only show the "No TODO cards" warning when there is genuinely nothing
-      // happening — not when cards are just waiting in review.
-      var totalCards = activeSessions.length + reviewSessions.length;
-      var showTodoWarning = s.phase === 'idle' && totalCards === 0;
-      var hint = showTodoWarning
-        ? '<span class="empty-state-warning">&#9888; No cards in the TODO column &mdash; add a card to your GitHub Project board with status <code>TODO</code> to start work.</span>'
-        : '<span class="empty-state">No performers running</span>';
-      workEl.innerHTML = hint;
-      if (workCard) workCard.classList.toggle('card-warning', showTodoWarning);
-    } else {
-      if (workCard) workCard.classList.remove('card-warning');
-      var rows = activeSessions.map(function(sess) {
-        var issueLink = sess.issue_url && /^https?:\\/\\//i.test(sess.issue_url)
-          ? '<a href="' + esc(sess.issue_url) + '" target="_blank" rel="noopener">#' + esc(String(sess.issue_number || '')) + ' ' + esc(sess.card_title || '—') + ' &#8599;</a>'
-          : esc(sess.card_title || sess.card_id || '—');
-        var stage = sess.performer_stage ? formatPhaseLabel(sess.performer_stage) : '—';
-        var phaseLabel = formatPhaseLabel(sess.phase || '');
-        var rawElapsed = sess.agent_dispatch_at ? (fmtAge(sess.agent_dispatch_at) || '—') : '—';
-        var stale = sess.agent_dispatch_at && (Date.now() - new Date(sess.agent_dispatch_at).getTime()) > STALE_THRESHOLD_MS;
-        var elapsedHtml = stale
-          ? '<span style="color:var(--color-degraded)">⚠ ' + esc(rawElapsed) + '</span>'
-          : esc(rawElapsed);
-        var cost = sess.agent_dispatch_at
-          ? '$' + (sess.card_cost_estimate || 0).toFixed(4)
-          : '—';
-        return '<tr style="cursor:pointer" tabindex="0" data-card-id="' + esc(sess.card_id || '') + '" aria-label="' + esc(sess.card_title || sess.card_id || '') + '" onclick="showPerformerDetail(this.getAttribute(&quot;data-card-id&quot;))" onkeydown="if(event.key===&quot;Enter&quot;||event.key===&quot; &quot;){showPerformerDetail(this.getAttribute(&quot;data-card-id&quot;))}">' +
-          '<td style="padding:6px 10px">' + issueLink + '</td>' +
-          '<td style="padding:6px 10px;white-space:nowrap">' + phaseLabel + '</td>' +
-          '<td style="padding:6px 10px;white-space:nowrap"><code>' + stage + '</code></td>' +
-          '<td style="padding:6px 10px;white-space:nowrap">' + elapsedHtml + '</td>' +
-          '<td style="padding:6px 10px;white-space:nowrap;color:var(--color-text-muted)">' + esc(cost) + '</td>' +
-          '</tr>';
+  // Determine which symphony tab is active (default: first symphony).
+  var symphonyNames = symphonies.map(function(sym) { return sym.name || ''; }).filter(Boolean);
+  if (symphonyNames.length > 0) {
+    if (!_swimlaneTab || symphonyNames.indexOf(_swimlaneTab) === -1) {
+      _swimlaneTab = symphonyNames[0];
+    }
+  } else {
+    _swimlaneTab = null;
+  }
+
+  // Filter to the active tab (only one symphony's cards visible at a time).
+  var columnItems = {TODO: [], BLOCKED: [], IN_PROGRESS: [], IN_REVIEW: []};
+  COLUMNS.forEach(function(col) {
+    columnItems[col] = _swimlaneTab
+      ? allEntries[col].filter(function(e) { return e.symphony === _swimlaneTab; })
+      : allEntries[col].slice();
+  });
+
+  // Render tab bar when there are 2+ symphonies; hide otherwise.
+  if (tabsEl) {
+    if (symphonyNames.length > 1) {
+      tabsEl.style.display = '';
+      tabsEl.innerHTML = symphonyNames.map(function(name) {
+        var cls = 'swimlane-tab' + (name === _swimlaneTab ? ' active' : '');
+        var count = perSymCounts[name] || 0;
+        return '<button type="button" class="' + cls + '" data-symphony="' + esc(name) + '" onclick="selectSwimlaneTab(this.getAttribute(&quot;data-symphony&quot;))">' +
+          esc(name) + '<span class="swimlane-tab-count">' + count + '</span></button>';
       }).join('');
-      workEl.innerHTML =
-        '<table style="width:100%;border-collapse:collapse;font-size:13px">' +
-          '<thead><tr style="color:var(--color-text-muted);font-size:11px;text-transform:uppercase;letter-spacing:0.05em">' +
-            '<th style="padding:4px 10px;text-align:left;font-weight:normal">Card</th>' +
-            '<th style="padding:4px 10px;text-align:left;font-weight:normal">Phase</th>' +
-            '<th style="padding:4px 10px;text-align:left;font-weight:normal">Stage</th>' +
-            '<th style="padding:4px 10px;text-align:left;font-weight:normal">Elapsed</th>' +
-            '<th style="padding:4px 10px;text-align:left;font-weight:normal">Cost</th>' +
-          '</tr></thead>' +
-          '<tbody>' + rows + '</tbody>' +
-        '</table>';
+    } else {
+      tabsEl.style.display = 'none';
+      tabsEl.innerHTML = '';
     }
   }
 
-  // --- Awaiting Human Review panel ---
-  var reviewEl = document.getElementById('awaiting-review-section');
-  var reviewCard = document.getElementById('awaiting-review-card');
-  if (reviewCard) {
-    if (reviewSessions.length === 0) {
-      reviewCard.style.display = 'none';
-    } else {
-      reviewCard.style.display = '';
-      var reviewRows = reviewSessions.map(function(sess) {
-        var issueLink = sess.issue_url && /^https?:\\/\\//i.test(sess.issue_url)
-          ? '<a href="' + esc(sess.issue_url) + '" target="_blank" rel="noopener">#' + esc(String(sess.issue_number || '')) + ' ' + esc(sess.card_title || '—') + ' &#8599;</a>'
-          : esc(sess.card_title || sess.card_id || '—');
-        var prLink = sess.pr_url && /^https?:\\/\\//i.test(sess.pr_url)
-          ? '<a href="' + esc(sess.pr_url) + '" target="_blank" rel="noopener">Open PR &#8599;</a>'
-          : '<span style="color:var(--color-text-muted)">No PR</span>';
-        var waiting = sess.agent_dispatch_at ? (fmtAge(sess.agent_dispatch_at) || '—') : '—';
-        return '<tr>' +
-          '<td style="padding:6px 10px">' + issueLink + '</td>' +
-          '<td style="padding:6px 10px">' + prLink + '</td>' +
-          '<td style="padding:6px 10px;white-space:nowrap;color:var(--color-text-muted)">' + esc(waiting) + '</td>' +
-          '</tr>';
-      }).join('');
-      if (reviewEl) reviewEl.innerHTML =
-        '<table style="width:100%;border-collapse:collapse;font-size:13px">' +
-          '<thead><tr style="color:var(--color-text-muted);font-size:11px;text-transform:uppercase;letter-spacing:0.05em">' +
-            '<th style="padding:4px 10px;text-align:left;font-weight:normal">Card</th>' +
-            '<th style="padding:4px 10px;text-align:left;font-weight:normal">PR</th>' +
-            '<th style="padding:4px 10px;text-align:left;font-weight:normal">Waiting</th>' +
-          '</tr></thead>' +
-          '<tbody>' + reviewRows + '</tbody>' +
-        '</table>';
+  var totalCards = 0;
+  COLUMNS.forEach(function(c) { totalCards += columnItems[c].length; });
+
+  // Fallback when no symphony board data is available: synthesize column entries
+  // from active_sessions. Each in-flight session contributes one card placed by
+  // phase (blocked → BLOCKED, monitoring_pr / merging / relay_feedback → IN_REVIEW,
+  // everything else → IN_PROGRESS). This keeps the swimlane usable in legacy /
+  // single-symphony deployments where board_titles/board_snapshot aren't populated.
+  if (totalCards === 0 && sessions.length > 0) {
+    function colForPhase(ph) {
+      if (ph === 'blocked') return 'BLOCKED';
+      if (ph === 'monitoring_pr' || ph === 'merging' || ph === 'relay_feedback') return 'IN_REVIEW';
+      return 'IN_PROGRESS';
     }
+    sessions.forEach(function(sess) {
+      var iid = sess && sess.card_id;
+      if (!iid) return;
+      titles[iid] = sess.card_title || '';
+      if (sess.issue_url) issueUrls[iid] = sess.issue_url;
+      if (sess.issue_number) issueNums[iid] = sess.issue_number;
+      columnItems[colForPhase(sess.phase)].push({iid: iid, symphony: ''});
+      totalCards++;
+    });
   }
+
+  if (totalCards === 0) {
+    var idleAndEmpty = s.phase === 'idle';
+    workEl.innerHTML = idleAndEmpty
+      ? '<span class="empty-state-warning">&#9888; No cards in the TODO column &mdash; add a card to your GitHub Project board with status <code>TODO</code> to start work.</span>'
+      : '<span class="empty-state">Waiting for board snapshot&hellip;</span>';
+    if (workCard) workCard.classList.toggle('card-warning', idleAndEmpty);
+    return;
+  }
+  if (workCard) workCard.classList.remove('card-warning');
+
+  function renderCard(entry) {
+    var iid = entry.iid;
+    var title = titles[iid] || '';
+    var num = issueNums[iid] || 0;
+    var issueUrl = issueUrls[iid] || '';
+    var prUrl = prUrls[iid] || '';
+    var sess = sessionsByCard[iid];
+
+    var label = num ? ('#' + num + ' ' + title) : (title || iid);
+    var titleHtml = issueUrl && /^https?:\\/\\//i.test(issueUrl)
+      ? '<a href="' + esc(issueUrl) + '" target="_blank" rel="noopener" style="color:var(--color-accent-blue);text-decoration:none">' + esc(label) + ' &#8599;</a>'
+      : esc(label);
+
+    var prBadge = '';
+    if (prUrl && /^https?:\\/\\//i.test(prUrl)) {
+      prBadge = ' <a href="' + esc(prUrl) + '" target="_blank" rel="noopener" style="display:inline-block;font-size:10px;padding:1px 6px;margin-left:4px;background:var(--color-bg-pill);border:1px solid var(--color-border);border-radius:10px;color:var(--color-accent-blue);text-decoration:none">PR &#8599;</a>';
+    }
+
+    var liveLine = '';
+    if (sess) {
+      var phaseLabel = formatPhaseLabel(sess.phase || '');
+      var stage = sess.performer_stage ? formatPhaseLabel(sess.performer_stage) : '';
+      var elapsed = sess.agent_dispatch_at ? (fmtAge(sess.agent_dispatch_at) || '') : '';
+      var stale = sess.agent_dispatch_at && (Date.now() - new Date(sess.agent_dispatch_at).getTime()) > STALE_THRESHOLD_MS;
+      var elapsedHtml = elapsed
+        ? (stale ? '<span style="color:var(--color-degraded)">⚠ ' + esc(elapsed) + '</span>' : esc(elapsed))
+        : '';
+      var costStr = sess.agent_dispatch_at
+        ? '$' + (Number(sess.card_cost_estimate) || 0).toFixed(4)
+        : '—';
+      var parts = [phaseLabel];
+      if (stage) parts.push('<code>' + stage + '</code>');
+      if (elapsedHtml) parts.push(elapsedHtml);
+      parts.push(esc(costStr));
+      liveLine = '<div style="font-size:11px;color:var(--color-text-muted);margin-top:4px">' + parts.join(' · ') + '</div>';
+    }
+
+    var clickable = !!sess;
+    var clickAttrs = clickable
+      ? ' style="cursor:pointer" tabindex="0" data-card-id="' + esc(iid) + '" onclick="showPerformerDetail(this.getAttribute(&quot;data-card-id&quot;))" onkeydown="if(event.key===&quot;Enter&quot;||event.key===&quot; &quot;){showPerformerDetail(this.getAttribute(&quot;data-card-id&quot;))}"'
+      : '';
+
+    return '<div class="swimlane-card"' + clickAttrs + '>' +
+      '<div style="font-size:13px;line-height:1.35">' + titleHtml + prBadge + '</div>' +
+      liveLine +
+      '</div>';
+  }
+
+  var html = '<div class="swimlane-grid">';
+  COLUMNS.forEach(function(col) {
+    var entries = columnItems[col];
+    var body = entries.length === 0
+      ? '<div class="swimlane-empty">&mdash;</div>'
+      : entries.map(renderCard).join('');
+    html += '<div class="swimlane-col">' +
+      '<div class="swimlane-col-header">' + esc(COLUMN_LABELS[col]) + ' <span class="swimlane-col-count">' + entries.length + '</span></div>' +
+      '<div class="swimlane-col-body">' + body + '</div>' +
+      '</div>';
+  });
+  html += '</div>';
+  workEl.innerHTML = html;
 }
 
 function renderCardDetailContent(sess, s) {
@@ -2112,7 +2201,7 @@ function renderCardDetailContent(sess, s) {
 
 function showPerformerDetail(cardId) {
   _selectedCardId = cardId;
-  var workSection = document.getElementById('active-work-section');
+  var workSection = document.getElementById('swimlane-section');
   var detailView = document.getElementById('card-detail-view');
   if (workSection) workSection.style.display = 'none';
   if (detailView) {
@@ -2132,7 +2221,7 @@ function showPerformerDetail(cardId) {
 
 function closeCardDetail() {
   _selectedCardId = null;
-  var workSection = document.getElementById('active-work-section');
+  var workSection = document.getElementById('swimlane-section');
   var detailView = document.getElementById('card-detail-view');
   if (workSection) workSection.style.display = '';
   if (detailView) detailView.style.display = 'none';
@@ -2259,7 +2348,10 @@ function renderPerformersPage(s) {
     var cards = (activeByStage[r.role] || []).map(function(sess) {
       return esc((sess.card_title || sess.card_id || '').substring(0, 40));
     }).join('<br>') || '<span class="empty-state">—</span>';
-    var utilStr = r.max > 1 ? r.active + ' / ' + r.max : (isActive ? '1 / 1' : '0 / 1');
+    var maxVal = r.max > 0 ? r.max : 1;
+    var activeVal = isActive ? (r.active || 1) : 0;
+    var idleVal = Math.max(0, maxVal - activeVal);
+    var utilStr = activeVal + ' / ' + idleVal + ' / ' + maxVal;
     var queued = r.queued > 0 ? ' <span style="color:var(--color-accent-yellow)">(+' + r.queued + ' queued)</span>' : '';
     return '<tr class="performers-row' + (isSelected ? ' row-selected' : '') + '" data-role="' + esc(r.role) + '" tabindex="0" role="button" aria-label="Open details for ' + esc(r.role) + '">' +
       '<td style="font-weight:bold">' + esc(r.role) + '</td><td>' + badge + '</td><td style="font-size:12px">' + cards + '</td><td>' + utilStr + queued + '</td></tr>';
@@ -2353,7 +2445,7 @@ function renderPerformersPage(s) {
 
   detailEl.innerHTML =
     '<div><strong>' + humanPhase(selectedRole) + '</strong>' + statusBadge + '</div>' +
-    '<div class="muted" style="margin-top:4px">Active/Max: ' + String(row.active != null ? row.active : 0) + ' / ' + String(row.max != null ? row.max : 0) + ' &middot; Queued: ' + String(row.queued != null ? row.queued : 0) + '</div>' +
+    '<div class="muted" style="margin-top:4px">Active / Idle / Max: ' + String(row.active != null ? row.active : 0) + ' / ' + String(Math.max(0, (row.max != null ? row.max : 0) - (row.active != null ? row.active : 0))) + ' / ' + String(row.max != null ? row.max : 0) + '</div>' +
     '<div class="detail-block"><strong>Card Context</strong>' + roleCardsHtml + (skipHtml ? '<div style="margin-top:8px"><span style="color:var(--color-accent-yellow);font-size:12px">Skipped this cycle:</span>' + skipHtml + '</div>' : '') + '</div>' +
     '<div class="detail-block"><strong>Session</strong><div class="muted" style="margin-top:4px">Session: ' + esc(s.agent_session_id || '—') + ' &middot; Uptime: ' + esc(fmtAge(s.agent_dispatch_at) || '—') + '</div><div class="muted" style="margin-top:4px">' + backendLine + '</div><div class="muted" style="margin-top:4px">' + statsLine + '</div></div>' +
     '<div class="detail-block"><strong>Metrics</strong><div class="muted" style="margin-top:4px">' + metricsLine + '</div></div>' +
@@ -3254,6 +3346,22 @@ def create_dashboard_app(
                 {"error": "Env cache service not available"}, status_code=503
             )
 
+        performer_id = sym_cfg.env_bootstrap_performer_id
+        performer_svcs = daemon.state.get("performer_services_by_id") or {}
+        if performer_id not in performer_svcs:
+            return JSONResponse(
+                {
+                    "error": (
+                        f"Bootstrap performer {performer_id!r} is not "
+                        "registered with the daemon — check that it is "
+                        "defined in config.yaml and that coordinare loaded "
+                        "it at startup."
+                    ),
+                    "performer_id": performer_id,
+                },
+                status_code=503,
+            )
+
         env_cache = daemon.state.get("env_cache") or {}
         cache_state = env_cache.get(name)
         if cache_state is None:
@@ -3285,7 +3393,7 @@ def create_dashboard_app(
             {
                 "status": "accepted",
                 "symphony": name,
-                "performer_id": sym_cfg.env_bootstrap_performer_id,
+                "performer_id": performer_id,
             },
             status_code=202,
         )
@@ -3360,7 +3468,6 @@ def create_dashboard_app(
         "max_closed_pr_attempts_per_issue",
         "log_level",
         "output_mode",
-        "assessment_backend",
         "assignee_filter",
         "human_reviewers",
         "trusted_bot_reviewers",

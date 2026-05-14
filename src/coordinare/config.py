@@ -196,6 +196,45 @@ class CostTrackingConfig(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# 062 — Coordinare's internal "brain" — what the coordinare uses on the podium
+# to interpret cards and make routing decisions (separate from the assessor performer).
+# ---------------------------------------------------------------------------
+
+ConductingBackendName = Literal[
+    "anthropic_api", "openai_api", "claude_cli", "codex_cli", "opencode", "none"
+]
+
+
+class ConductingConfig(BaseModel):
+    """Configuration for the coordinare's internal "brain" (card assessor + ad-hoc prompts).
+
+    Mirrors the performer config surface: pick a backend, optionally pin a model,
+    and tune max_tokens / temperature.  Unset fields fall back to backend defaults.
+    """
+
+    backend: ConductingBackendName = "anthropic_api"
+    model: str | None = None
+    max_tokens: int = Field(default=4096, ge=1, le=200_000)
+    temperature: float | None = None
+    # Reasoning effort — applied to opencode (--effort), codex (model_reasoning_effort),
+    # and openai (reasoning_effort).  No-op for anthropic_api / claude_cli where
+    # extended thinking isn't enabled.  Default low because the conducting brain
+    # runs short one-shot prompts where extra reasoning budget is mostly waste.
+    effort: Literal["low", "medium", "high"] | None = "low"
+    # CLI overrides for subprocess backends (claude_cli / codex_cli / opencode).
+    executable: str | None = None
+    # OpenAI-compatible base URL override (lets you point openai_api at proxies / Azure).
+    base_url: str | None = None
+
+    @field_validator("temperature")
+    @classmethod
+    def _validate_temperature(cls, v: float | None) -> float | None:
+        if v is not None and not (0.0 <= v <= 2.0):
+            raise ValueError(f"temperature must be between 0.0 and 2.0, got {v}")
+        return v
+
+
+# ---------------------------------------------------------------------------
 # 033 — Smart Health-Check Retry config
 # ---------------------------------------------------------------------------
 
@@ -550,11 +589,10 @@ class ProjectConfiguration(BaseSettings):
     # exhausted).
     max_feedback_cycles: int = Field(default=5, ge=0, le=50)
 
-    # Card assessment backend — determines how assess_card evaluates card sufficiency.
-    # "anthropic_api": direct Anthropic SDK call (requires ANTHROPIC_API_KEY)
-    # "claude_cli":    subprocess `claude --print "..."` (uses local CLI auth)
-    # "none":          skip assessment, assume all cards are sufficient
-    assessment_backend: Literal["anthropic_api", "claude_cli", "opencode", "none"] = "anthropic_api"
+    # 062 — Coordinare's internal-brain config (backend / model / max_tokens / temperature).
+    # Drives the card-assessor node and any ad-hoc reasoning calls.  Distinct from the
+    # ``assessor`` performer (which executes a separate, heavier code-review role).
+    conducting: ConductingConfig = Field(default_factory=ConductingConfig)
 
     # 011 — Agent Workspace Management
     # COORDINARE_WORKSPACE_ROOT: optional path to a persistent directory (e.g. a PVC
@@ -633,6 +671,25 @@ class ProjectConfiguration(BaseSettings):
             loaded = yaml.safe_load(expanded)
             if isinstance(loaded, dict):
                 raw = loaded
+        # 062 — assessment_backend was replaced by the structured ``conducting`` block.
+        # pydantic's extra="ignore" would silently drop the old flat key, leaving the
+        # deployment on defaults; fail loudly with a migration hint instead.  Check
+        # both YAML and the env-var leg (COORDINARE_ASSESSMENT_BACKEND) since either
+        # path silently no-ops without this guard.
+        legacy_env = os.environ.get("COORDINARE_ASSESSMENT_BACKEND")
+        if "assessment_backend" in raw or legacy_env:
+            old = raw.get("assessment_backend", legacy_env)
+            source = "config.yaml" if "assessment_backend" in raw else "COORDINARE_ASSESSMENT_BACKEND env var"
+            raise ValueError(
+                f"{source} uses the legacy 'assessment_backend' key, which was replaced "
+                "in spec 062 by the structured 'conducting:' block. Migrate to:\n"
+                "  conducting:\n"
+                f"    backend: {old!r}\n"
+                "    model: <model-id>\n"
+                "    max_tokens: 4096\n"
+                "    temperature: 0.0\n"
+                "See config.example.yaml for the full schema."
+            )
         return cls(**raw)
 
     @model_validator(mode="after")

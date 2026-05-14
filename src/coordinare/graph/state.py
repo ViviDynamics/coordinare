@@ -45,7 +45,7 @@ class ClaudeServiceProtocol(Protocol):
     async def assess_card_sufficiency(self, card: dict[str, Any]) -> dict[str, Any]: ...
 
 
-class AssessmentBackendProtocol(Protocol):
+class ConductingBackendProtocol(Protocol):
     async def assess(self, card: dict[str, Any]) -> dict[str, Any]: ...
     async def prompt(self, text: str, response_format: str | None = None) -> dict[str, Any]: ...
 
@@ -79,6 +79,11 @@ class SymphonyRuntimeState:
     board_snapshot: dict[str, list[str]] | None = None
     session_skip_reasons: dict[str, Any] | None = None
     previous_phase: str | None = None
+    # 062: Per-card metadata for dashboard swimlane rendering (keyed by item_id).
+    board_titles: dict[str, str] = dc_field(default_factory=dict)
+    board_issue_numbers: dict[str, int] = dc_field(default_factory=dict)
+    board_issue_urls: dict[str, str] = dc_field(default_factory=dict)
+    board_pr_urls: dict[str, str] = dc_field(default_factory=dict)
 
 
 class CoordinareState(TypedDict, total=False):
@@ -93,7 +98,7 @@ class CoordinareState(TypedDict, total=False):
     github_service: GitHubServiceProtocol
     agent_service: AgentServiceProtocol
     claude_service: ClaudeServiceProtocol
-    assessment_backend: AssessmentBackendProtocol
+    conducting_backend: ConductingBackendProtocol
     notification_service: NotificationServiceProtocol
     advocate_service: AdvocateServiceProtocol | None
     advocate_history: set[str]
@@ -194,6 +199,16 @@ class CoordinareState(TypedDict, total=False):
 
     # 060: Per-symphony env-cache state (name → EnvCacheState)
     env_cache: dict[str, Any]
+
+    # 062: Per-card metadata from the latest poll_board.  Stashed on top-level
+    # state so the daemon's post-cycle sync can copy them onto SymphonyRuntimeState
+    # for the dashboard swimlane (titles + GitHub links).  Declared here so
+    # LangGraph propagates them out of graph.ainvoke() — without these fields
+    # in the TypedDict the keys are dropped during state merge.
+    _board_titles: dict[str, str]
+    _board_issue_numbers: dict[str, int]
+    _board_issue_urls: dict[str, str]
+    _board_pr_urls: dict[str, str]
 
 
 def initial_state() -> CoordinareState:

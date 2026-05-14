@@ -34,4 +34,37 @@ case "${BACKEND:-}" in
     ;;
 esac
 
+# Optional: register rtk's auto-rewrite hook so the backend CLI sees
+# compressed output for common shell commands (git/pytest/cargo/ls).
+# Opt-in via RTK_ENABLED=1 so we can A/B against an unmodified peer.
+#
+# rtk init -g currently only ships an agent target for Claude. Codex has
+# no auto-rewrite hook surface upstream — the only win there is from manual
+# `rtk <cmd>` wrappers in agent commands, which work without init. We log
+# that distinction explicitly so an A/B with no savings is attributed
+# correctly.
+#
+# rtk init -g writes into ${HOME}/.claude — create it first so a fresh
+# container does not silently fall into the warn branch.
+if [ "${RTK_ENABLED:-0}" = "1" ]; then
+  case "${BACKEND:-}" in
+    claude)
+      mkdir -p "${HOME:-/root}/.claude"
+      # Fatal when RTK_ENABLED=1 is explicit: silently falling back to no
+      # compression defeats the opt-in and makes A/B results meaningless.
+      rtk init -g 2>&1 \
+        || { echo "ERROR: rtk init failed with RTK_ENABLED=1; refusing to start performer" >&2; exit 1; }
+      ;;
+    codex)
+      echo "INFO: RTK_ENABLED=1 with BACKEND=codex — rtk has no codex auto-hook; only manual rtk <cmd> wrappers apply" >&2
+      ;;
+    "")
+      echo "INFO: RTK_ENABLED=1 but BACKEND unset — skipping rtk init" >&2
+      ;;
+    *)
+      echo "WARNING: RTK_ENABLED=1 but backend '${BACKEND}' has no supported rtk hook — skipping" >&2
+      ;;
+  esac
+fi
+
 exec python -m performer --serve --port 8088

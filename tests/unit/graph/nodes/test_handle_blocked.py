@@ -122,7 +122,7 @@ async def test_handle_blocked_assessment_failure_requeues() -> None:
     state["github_service"] = github
     state["current_card"] = {"id": "ITEM_1", "issue_id": "ISSUE_1", "title": "My Feature"}
     state["open_questions"] = []
-    state["assessment_backend"] = _FailingBackend()
+    state["conducting_backend"] = _FailingBackend()
 
     result = await handle_blocked(state)
 
@@ -162,7 +162,7 @@ async def test_handle_blocked_skips_comment_when_no_issue_id() -> None:
 @pytest.mark.asyncio
 async def test_handle_blocked_uses_assessment_questions_when_provided() -> None:
     """Assessment backend returns questions → uses them directly (skips fallback)."""
-    class _AssessmentBackend:
+    class _ConductingBackend:
         async def assess(self, card):
             return {"sufficient": False, "questions": ["Which routes?", "What data model?"], "rationale": "missing info"}
 
@@ -171,7 +171,7 @@ async def test_handle_blocked_uses_assessment_questions_when_provided() -> None:
     state["github_service"] = github
     state["current_card"] = {"id": "ITEM_1", "issue_id": "ISSUE_1", "title": "My Feature"}
     state["open_questions"] = []
-    state["assessment_backend"] = _AssessmentBackend()
+    state["conducting_backend"] = _ConductingBackend()
 
     result = await handle_blocked(state)
 

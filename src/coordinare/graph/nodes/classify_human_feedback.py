@@ -154,11 +154,11 @@ Respond with ONLY a JSON array. No explanation."""
 
 async def _classify_with_ai(
     reviews: list[dict[str, Any]],
-    assessment_backend: Any,
+    conducting_backend: Any,
 ) -> list[str] | None:
     """Classify PR comments using the AI assessment backend.
 
-    Uses ``assessment_backend.prompt()`` to send a classification prompt
+    Uses ``conducting_backend.prompt()`` to send a classification prompt
     and receive a structured JSON response (039).
 
     Returns a sorted list of concern names above the confidence threshold,
@@ -183,7 +183,7 @@ async def _classify_with_ai(
     prompt_text = CLASSIFICATION_PROMPT.format(comment_text=comment_text, threshold=CONFIDENCE_THRESHOLD)
 
     try:
-        result = await assessment_backend.prompt(prompt_text, response_format="json")
+        result = await conducting_backend.prompt(prompt_text, response_format="json")
     except Exception as exc:
         logger.warning("classify_human_feedback.ai_backend_error", error=str(exc))
         return None
@@ -293,11 +293,11 @@ async def classify_human_feedback(state: CoordinareState) -> CoordinareState:
 
     # 029: Try AI classification first, fall back to keywords
     classification_method = "keyword"
-    assessment_backend = state.get("assessment_backend")
+    conducting_backend = state.get("conducting_backend")
     concern_names: list[str] | None = None
 
-    if assessment_backend is not None:
-        concern_names = await _classify_with_ai(pending_reviews, assessment_backend)
+    if conducting_backend is not None:
+        concern_names = await _classify_with_ai(pending_reviews, conducting_backend)
         if concern_names is not None:
             classification_method = "ai"
 

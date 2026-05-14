@@ -410,3 +410,80 @@ async def test_poll_board_item_assignees_empty_for_draft_issue() -> None:
     board = await service.poll_board()
 
     assert board["item_assignees"].get("DRAFT_1", []) == []
+
+
+def _poll_board_response_with_timeline(timeline_events: list[dict]) -> list[dict]:
+    return [
+        {"organization": {"projectV2": {"id": "P1", "title": "Board"}}},
+        {"node": {"fields": {"nodes": [{"id": "sf", "name": "Status", "options": [{"id": "t", "name": "ToDo"}]}]}}},
+        {
+            "node": {
+                "items": {
+                    "nodes": [
+                        {
+                            "id": "ITEM_1",
+                            "fieldValues": {"nodes": [{"name": "ToDo"}]},
+                            "content": {
+                                "id": "ISSUE_1",
+                                "number": 5,
+                                "title": "Linked",
+                                "body": "",
+                                "url": "https://github.com/acme/repo/issues/5",
+                                "labels": {"nodes": []},
+                                "assignees": {"nodes": []},
+                                "timelineItems": {"nodes": timeline_events},
+                            },
+                        }
+                    ]
+                }
+            }
+        },
+    ]
+
+
+def _pr_event(url: str, state: str, merged: bool = False) -> dict:
+    return {"source": {"url": url, "state": state, "merged": merged}}
+
+
+@pytest.mark.asyncio
+async def test_poll_board_pr_urls_prefers_open_over_merged_and_closed() -> None:
+    """When an issue references multiple PRs, OPEN beats MERGED beats CLOSED."""
+    service = _TestGitHubService(
+        _poll_board_response_with_timeline([
+            _pr_event("https://github.com/acme/repo/pull/10", "CLOSED"),
+            _pr_event("https://github.com/acme/repo/pull/11", "MERGED", merged=True),
+            _pr_event("https://github.com/acme/repo/pull/12", "OPEN"),
+        ])
+    )
+    await service.initialize()
+
+    board = await service.poll_board()
+
+    assert board["pr_urls"]["ITEM_1"] == "https://github.com/acme/repo/pull/12"
+
+
+@pytest.mark.asyncio
+async def test_poll_board_pr_urls_falls_back_to_merged() -> None:
+    """No OPEN PR — pick the merged one over the closed one."""
+    service = _TestGitHubService(
+        _poll_board_response_with_timeline([
+            _pr_event("https://github.com/acme/repo/pull/10", "CLOSED"),
+            _pr_event("https://github.com/acme/repo/pull/11", "MERGED", merged=True),
+        ])
+    )
+    await service.initialize()
+
+    board = await service.poll_board()
+
+    assert board["pr_urls"]["ITEM_1"] == "https://github.com/acme/repo/pull/11"
+
+
+@pytest.mark.asyncio
+async def test_poll_board_pr_urls_empty_when_no_cross_references() -> None:
+    """No timeline events — pr_urls has no entry for the item."""
+    service = _TestGitHubService(_poll_board_response_with_timeline([]))
+    await service.initialize()
+
+    board = await service.poll_board()
+
+    assert "ITEM_1" not in board["pr_urls"]

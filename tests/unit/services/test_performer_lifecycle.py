@@ -128,6 +128,30 @@ async def test_start_ephemeral_with_auth_token_env(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_start_ephemeral_propagates_config_env(monkeypatch) -> None:
+    """env entries (e.g. RTK_ENABLED) flow through to ``docker run -e KEY=VAL``."""
+    args_seen: list[tuple[str, ...]] = []
+
+    async def fake_run_docker(*args: str, timeout: float = 30.0) -> tuple[int, str, str]:
+        args_seen.append(args)
+        if args[0] == "run":
+            return 0, "ctr-env\n", ""
+        if args[0] == "port":
+            return 0, "0.0.0.0:8080\n", ""
+        raise AssertionError(f"unexpected: {args}")
+
+    monkeypatch.setattr(lifecycle, "_run_docker", fake_run_docker)
+
+    await start_ephemeral(
+        _ephemeral_config(env={"BACKEND": "codex", "RTK_ENABLED": "1"})
+    )
+
+    run_args = list(args_seen[0])
+    assert "BACKEND=codex" in run_args
+    assert "RTK_ENABLED=1" in run_args
+
+
+@pytest.mark.asyncio
 async def test_start_ephemeral_with_volumes(monkeypatch) -> None:
     args_seen: list[tuple[str, ...]] = []
 

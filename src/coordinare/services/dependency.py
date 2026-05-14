@@ -153,6 +153,14 @@ def detect_cycles(
 
     Returns a list of cycles.  Each cycle is a list of item_ids that
     form a dependency loop.  Empty list if no cycles exist.
+
+    The decomposition step at the end walks connected components within
+    ``cycle_members`` (nodes with both in- and out-edges inside the stuck
+    set) — disjoint cycles like ``A↔B`` and ``C↔D`` are reported as
+    SEPARATE components, not merged.  The earlier PR description warned
+    of a BFS-merge hazard; the implementation here does not have that
+    bug because ``cycle_members`` already excludes one-way chains
+    between the disjoint cycles.
     """
     # Build adjacency list: item_id → set of item_ids it depends on
     # (only for PENDING dependencies — SATISFIED ones don't form active edges)
@@ -259,6 +267,12 @@ async def resolve_off_board_dependencies(
 
     Requires an async ``github.check_issue_state(repo, issue_number)`` method.
     Skips resolution if ``github`` is None or ``repo`` is empty.
+
+    Transient errors (``auth_error`` / ``api_error``) demote the dep from
+    UNRESOLVABLE to PENDING so the caller does NOT move the card to BLOCKED
+    on a flaky API minute — the card stays filtered for this cycle and gets
+    re-checked next cycle.  Permanent unknowns (``open``, ``not_found``)
+    keep UNRESOLVABLE.
     """
     if github is None or not repo:
         return
@@ -273,18 +287,31 @@ async def resolve_off_board_dependencies(
     if not off_board:
         return
     # Check each off-board issue (one REST call per unique issue number).
+    transient = {"auth_error", "api_error", "transient"}
     resolved: dict[int, DependencyStatus] = {}
     for num in off_board:
         state = await check(repo, num)
         if state == "closed":
             resolved[num] = DependencyStatus.SATISFIED
             logger.info("dependency.off_board_check", issue=num, state="closed", satisfied=True)
+        elif state in transient:
+            # Demote to PENDING so the card is filtered (still blocked) but
+            # NOT marked permanently unresolvable on a transient failure.
+            resolved[num] = DependencyStatus.PENDING
+            logger.info(
+                "dependency.off_board_check",
+                issue=num,
+                state=state,
+                satisfied=False,
+                transient=True,
+            )
         else:
             logger.info("dependency.off_board_check", issue=num, state=state, satisfied=False)
     if not resolved:
         return
-    # Mutate: replace UNRESOLVABLE deps with SATISFIED where applicable.
-    # CardDependency is frozen, so rebuild the list.
+    # Mutate: replace UNRESOLVABLE deps with the resolved status (SATISFIED
+    # for closed, PENDING for transient errors).  CardDependency is frozen,
+    # so rebuild the list.
     new_deps: list[CardDependency] = []
     for dep in graph.dependencies:
         if dep.status == DependencyStatus.UNRESOLVABLE and dep.blocker_issue_number in resolved:

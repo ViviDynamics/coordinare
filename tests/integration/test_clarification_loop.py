@@ -172,7 +172,7 @@ async def test_insufficient_card_posts_questions() -> None:
 
     state = _base_state(
         github_service=github,
-        assessment_backend=assessment,
+        conducting_backend=assessment,
         agent_service=agent,
         workspace_manager=_WorkspaceManager(),
     )
@@ -205,7 +205,7 @@ async def test_user_answer_triggers_dispatch() -> None:
     notified_at = datetime.now(UTC) - timedelta(minutes=5)
     state = _base_state(
         github_service=github,
-        assessment_backend=assessment,
+        conducting_backend=assessment,
         agent_service=agent,
         workspace_manager=_WorkspaceManager(),
         current_card={
@@ -269,7 +269,7 @@ async def test_multi_round_qa_accumulates() -> None:
     notified_at = datetime.now(UTC) - timedelta(minutes=5)
     state = _base_state(
         github_service=github,
-        assessment_backend=assessment,
+        conducting_backend=assessment,
         agent_service=agent,
         workspace_manager=_WorkspaceManager(),
         current_card={"id": card_id, "issue_id": issue_id, "title": "Card", "description": "", "status": "BLOCKED"},
@@ -326,7 +326,7 @@ async def test_handle_blocked_requeues_when_sufficient() -> None:
 
     state = _base_state(
         github_service=github,
-        assessment_backend=assessment,
+        conducting_backend=assessment,
         current_card={"id": "ITEM_1", "issue_id": "ISSUE_1", "title": "Card", "description": "desc", "status": "BLOCKED"},
         open_questions=[],
         card_clarifications=[
@@ -427,7 +427,7 @@ async def test_dispatch_payload_includes_github_token() -> None:
 
     state = _base_state(
         github_service=github,
-        assessment_backend=assessment,
+        conducting_backend=assessment,
         agent_service=_CapturingAgent(),
         workspace_manager=_WorkspaceManager(token="ghp_secret_token"),
     )
@@ -456,7 +456,7 @@ async def test_dispatch_error_enters_retry_cycle() -> None:
 
     state = _base_state(
         github_service=github,
-        assessment_backend=assessment,
+        conducting_backend=assessment,
         agent_service=agent,
         workspace_manager=_WorkspaceManager(),
     )
@@ -492,7 +492,7 @@ async def test_session_expired_auto_requeues_silently() -> None:
 
     state = _base_state(
         github_service=github,
-        assessment_backend=assessment,
+        conducting_backend=assessment,
         agent_service=agent,
         current_card={"id": "ITEM_1", "issue_id": "ISSUE_1", "title": "Card", "description": "desc", "status": "IN_PROGRESS"},
         agent_dispatch={"session_id": "sess_old"},
@@ -564,7 +564,7 @@ async def test_assess_card_dispatches_after_answered_rounds() -> None:
 
     state = _base_state(
         github_service=github,
-        assessment_backend=assessment,
+        conducting_backend=assessment,
         agent_service=agent,
         workspace_manager=_WorkspaceManager(),
         # Pre-set current_card so check_board recognises this is the same card

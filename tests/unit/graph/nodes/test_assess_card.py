@@ -29,7 +29,7 @@ async def test_assess_card_blocks_on_service_failure() -> None:
     state = initial_state()
     state["current_card"] = {"id": "CARD_1", "issue_id": "ISSUE_1"}
     state["github_service"] = _GitHub()
-    state["assessment_backend"] = _FailingBackend()
+    state["conducting_backend"] = _FailingBackend()
 
     result = await assess_card(state)
 
@@ -42,7 +42,7 @@ async def test_assess_card_sets_blocked_when_insufficient() -> None:
     state = initial_state()
     state["current_card"] = {"issue_id": "ISSUE_1"}
     state["github_service"] = _GitHub()
-    state["assessment_backend"] = _Backend()
+    state["conducting_backend"] = _Backend()
 
     result = await assess_card(state)
 
@@ -66,7 +66,7 @@ async def test_assess_card_dispatches_with_no_clarifications() -> None:
     state = initial_state()
     state["current_card"] = {"id": "CARD_1", "issue_id": "ISSUE_1"}
     state["github_service"] = _GitHub()
-    state["assessment_backend"] = _SufficientBackend()
+    state["conducting_backend"] = _SufficientBackend()
     # No card_clarifications set
 
     result = await assess_card(state)
@@ -81,7 +81,7 @@ async def test_assess_card_merges_clarifications_into_details() -> None:
     state = initial_state()
     state["current_card"] = {"id": "CARD_1", "issue_id": "ISSUE_1"}
     state["github_service"] = _GitHub()
-    state["assessment_backend"] = _SufficientBackend()
+    state["conducting_backend"] = _SufficientBackend()
     state["card_clarifications"] = [{"question": "Q?", "answer": "A"}]
 
     result = await assess_card(state)
@@ -107,7 +107,7 @@ async def test_assess_card_treats_no_new_questions_after_answers_as_sufficient()
     state = initial_state()
     state["current_card"] = {"id": "CARD_1", "issue_id": "ISSUE_1"}
     state["github_service"] = _GitHub()
-    state["assessment_backend"] = _InsufficientNoQuestionsBackend()
+    state["conducting_backend"] = _InsufficientNoQuestionsBackend()
     # Provide answered clarifications (at least one round answered)
     state["card_clarifications"] = [{"question": "Q?", "answer": "Yes"}]
 
@@ -128,7 +128,7 @@ async def test_assess_card_embeds_clarifications_into_card_when_sufficient() -> 
     state = initial_state()
     state["current_card"] = {"id": "CARD_1", "issue_id": "ISSUE_1", "title": "Fix bug"}
     state["github_service"] = _GitHub()
-    state["assessment_backend"] = _SufficientBackend()
+    state["conducting_backend"] = _SufficientBackend()
     state["card_clarifications"] = [{"question": "Q?", "answer": "A"}]
 
     result = await assess_card(state)
@@ -171,7 +171,7 @@ async def test_assessor_persona_instructions_present_in_details_when_configured(
     state = initial_state()
     state["current_card"] = {"id": "CARD_1", "issue_id": "ISSUE_1"}
     state["github_service"] = _GitHub()
-    state["assessment_backend"] = backend
+    state["conducting_backend"] = backend
     state["config"] = _make_config_with_persona("Focus on business value.")
 
     await assess_card(state)
@@ -188,7 +188,7 @@ async def test_assessor_default_instructions_used_when_no_custom_persona() -> No
     state = initial_state()
     state["current_card"] = {"id": "CARD_1", "issue_id": "ISSUE_1"}
     state["github_service"] = _GitHub()
-    state["assessment_backend"] = backend
+    state["conducting_backend"] = backend
     state["config"] = _make_config_with_persona("")
 
     await assess_card(state)
@@ -201,7 +201,7 @@ async def test_assessor_default_instructions_used_when_no_custom_persona() -> No
 
 def test_assess_prompt_starts_with_assessor_instructions_when_set() -> None:
     """T010: persona_instructions are prepended to the assessment prompt."""
-    from coordinare.services.assessment import _build_assess_prompt
+    from coordinare.services.conducting import _build_assess_prompt
     card = {
         "title": "My card",
         "body": "Some description",
@@ -213,7 +213,7 @@ def test_assess_prompt_starts_with_assessor_instructions_when_set() -> None:
 
 def test_assess_prompt_unchanged_when_persona_instructions_absent() -> None:
     """T010: prompt is unmodified when persona_instructions key is absent."""
-    from coordinare.services.assessment import _build_assess_prompt
+    from coordinare.services.conducting import _build_assess_prompt
     card = {"title": "My card", "body": "Some description"}
     prompt = _build_assess_prompt(card)
     assert not prompt.startswith("## Assessor Instructions")
@@ -246,7 +246,7 @@ async def test_assessor_receives_active_card_titles() -> None:
     state = initial_state()
     state["current_card"] = {"id": "CARD_B", "issue_id": "ISSUE_B"}
     state["github_service"] = _GitHub()
-    state["assessment_backend"] = _CapturingBackend()
+    state["conducting_backend"] = _CapturingBackend()
     state["board_snapshot"] = {"TODO": [], "IN_PROGRESS": ["CARD_A"], "IN_REVIEW": []}
     state["_board_titles"] = {"CARD_A": "Implement theming"}
     state["_board_issue_numbers"] = {"CARD_A": 42}
@@ -265,7 +265,7 @@ async def test_assessor_dependency_blocks_card() -> None:
     state = initial_state()
     state["current_card"] = {"id": "CARD_B", "issue_id": "ISSUE_B"}
     state["github_service"] = _GitHub()
-    state["assessment_backend"] = _DepBackend([42])
+    state["conducting_backend"] = _DepBackend([42])
     state["board_snapshot"] = {}
 
     result = await assess_card(state)
@@ -285,7 +285,7 @@ async def test_assessor_no_dependency_proceeds() -> None:
     state = initial_state()
     state["current_card"] = {"id": "CARD_B", "issue_id": "ISSUE_B"}
     state["github_service"] = _GitHub()
-    state["assessment_backend"] = _NoDepsBackend()
+    state["conducting_backend"] = _NoDepsBackend()
     state["board_snapshot"] = {}
 
     result = await assess_card(state)

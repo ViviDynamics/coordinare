@@ -15,7 +15,7 @@ logger = structlog.get_logger(__name__)
 async def assess_card(state: CoordinareState) -> CoordinareState:
     card = state.get("current_card")
     github = state.get("github_service")
-    backend = state.get("assessment_backend")
+    backend = state.get("conducting_backend")
     if not isinstance(card, dict) or github is None or backend is None:
         state["phase"] = "idle"
         return state
@@ -91,6 +91,11 @@ async def assess_card(state: CoordinareState) -> CoordinareState:
     seen_deps: set[int] = set()
     deps: list[int] = []
     for n in raw_deps:
+        # Only accept ints (excluding bools, which are int subclasses) or
+        # numeric strings.  Anything else from the LLM is silently dropped
+        # rather than coerced — avoids surprising int(True) → 1 behaviour.
+        if isinstance(n, bool) or not isinstance(n, (int, str)):
+            continue
         try:
             val = int(n)
         except (ValueError, TypeError):

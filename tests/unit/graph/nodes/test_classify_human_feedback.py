@@ -307,7 +307,7 @@ class TestAIClassification:
         state["lifecycle_sequence"] = ["implementing", "security"]
         state["performer_stage"] = "implementing"
         state["pending_reviews"] = [{"body": "I think there might be a vulnerability"}]
-        state["assessment_backend"] = backend
+        state["conducting_backend"] = backend
         state["github_service"] = AsyncMock(move_card=AsyncMock())
         state["current_card"] = {"id": "ITEM_1", "status": "IN_REVIEW"}
 
@@ -328,7 +328,7 @@ class TestAIClassification:
         state["lifecycle_sequence"] = ["implementing", "reviewing"]
         state["performer_stage"] = "reviewing"
         state["pending_reviews"] = [{"body": "The code has a bug in the error handling logic."}]
-        state["assessment_backend"] = backend
+        state["conducting_backend"] = backend
         state["github_service"] = AsyncMock(move_card=AsyncMock())
         state["current_card"] = {"id": "ITEM_1", "status": "IN_REVIEW"}
 

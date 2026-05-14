@@ -27,6 +27,66 @@ logger = structlog.get_logger(__name__)
 # CI system) and the session is not consuming any active worker capacity.
 PASSIVE_PHASES: frozenset[str] = frozenset({"monitoring_pr"})
 
+# Phases that do not occupy a concurrency slot.  Blocked cards are waiting on a
+# human answer and have no live performer running, so they shouldn't prevent
+# the coordinare from picking up additional TODO work up to ``max_concurrent_cards``.
+# Kept separate from PASSIVE_PHASES because the daemon clears ``current_card``
+# whenever the fallback cycle settles into PASSIVE_PHASES — that's correct for
+# ``monitoring_pr`` but would disrupt blocked-card answer detection.
+NON_SLOT_PHASES: frozenset[str] = PASSIVE_PHASES | frozenset({"blocked"})
+
+
+def _allowed_github_host(config: object) -> str | None:
+    """Return the configured GitHub hostname for issue_url allowlisting.
+
+    Reads ``config.github_endpoint`` if present (e.g. GHE), otherwise falls
+    back to ``github.com``.  Returns lowercased hostname or None on parse
+    failure (caller should reject the URL).
+    """
+    from urllib.parse import urlparse
+
+    raw = getattr(config, "github_endpoint", None) if config is not None else None
+    if not raw:
+        return "github.com"
+    try:
+        parsed = urlparse(str(raw))
+        host = (parsed.hostname or "").lower()
+        # api.github.com → github.com for HTML issue URLs
+        if host == "api.github.com":
+            return "github.com"
+        return host or "github.com"
+    except Exception:
+        return "github.com"
+
+
+def _safe_issue_url(raw_url: str, allowed_host: str | None) -> str | None:
+    """Return ``raw_url`` only if its hostname matches the allowlist.
+
+    Defense-in-depth: ``issue_url`` flows from GitHub API responses (trusted)
+    into the dashboard's JS innerHTML path.  Reject anything that doesn't
+    parse as http(s) to the configured GitHub host so a corrupted snapshot
+    can't smuggle ``javascript:`` or arbitrary domains into the UI.
+    """
+    if not raw_url or not allowed_host:
+        return None
+    from urllib.parse import urlparse
+
+    try:
+        parsed = urlparse(raw_url)
+    except Exception:
+        return None
+    if parsed.scheme not in ("http", "https"):
+        return None
+    host = (parsed.hostname or "").lower()
+    if host != allowed_host:
+        return None
+    return raw_url
+
+
+def _dep_announcement_signature(item_id: str, reason: str, blockers: list[int]) -> str:
+    """Canonical signature so we re-announce only when the blocker set changes."""
+    return f"{item_id}|{reason}|" + ",".join(str(n) for n in sorted(blockers))
+
 
 def _sort_by_priority(
     item_ids: list[str],
@@ -60,7 +120,16 @@ def _sort_by_priority(
 
 async def check_board(state: CoordinareState) -> CoordinareState:
     github = state.get("github_service")
+    logger.info(
+        "check_board.entered",
+        github_present=github is not None,
+        github_type=type(github).__name__ if github is not None else None,
+        project_id=getattr(github, "project_id", None) if github is not None else None,
+        active_sessions=len(state.get("active_sessions") or {}),
+        current_symphony=state.get("current_symphony"),
+    )
     if github is None:
+        logger.warning("check_board.no_github_service")
         state["phase"] = "idle"
         return state
 
@@ -114,9 +183,10 @@ async def check_board(state: CoordinareState) -> CoordinareState:
     state["board_snapshot"] = snapshot if isinstance(snapshot, dict) else {}
     # 046: Stash titles and issue_numbers so assess_card can inject active-card
     # context into the assessor's prompt for implicit dependency detection.
-    state["_board_titles"] = board.get("titles", {})  # type: ignore[typeddict-unknown-key]
-    state["_board_issue_numbers"] = board.get("issue_numbers", {})  # type: ignore[typeddict-unknown-key]
-    state["_board_issue_urls"] = board.get("issue_urls", {})  # type: ignore[typeddict-unknown-key]
+    state["_board_titles"] = board.get("titles", {})
+    state["_board_issue_numbers"] = board.get("issue_numbers", {})
+    state["_board_issue_urls"] = board.get("issue_urls", {})
+    state["_board_pr_urls"] = board.get("pr_urls", {})
 
     # 047: Detect external merges (non-coordinare PRs merged by humans) by
     # comparing last_known_main_sha against the current main HEAD.  If
@@ -316,9 +386,13 @@ async def check_board(state: CoordinareState) -> CoordinareState:
             return state
         # Preserve dispatching, monitoring_performer, and blocked phases so
         # the lifecycle re-entry, performer monitoring, and veto overrides
-        # aren't overwritten by check_board.
+        # aren't overwritten by check_board.  But only when there is an
+        # active card to protect — without a current_card these phases are
+        # stale residue (e.g. snapshot restored phase but per-symphony swap
+        # cleared the card), and we must fall through to re-adopt instead
+        # of looping with no work.
         current_phase = state.get("phase")
-        if current_phase in ("dispatching", "monitoring_performer", "blocked"):
+        if current_phase in ("dispatching", "monitoring_performer", "blocked") and state.get("current_card") is not None:
             return state
 
         # Re-adopt orphaned IN_PROGRESS card after restart with no state.
@@ -374,7 +448,20 @@ async def check_board(state: CoordinareState) -> CoordinareState:
         state["phase"] = "monitoring_agent"
         return state
     if blocked:
-        if state.get("system_error_notified"):
+        # Multi-card mode: per-session graph invocations re-enter check_board
+        # with state["current_card"] already populated by session_to_state.
+        # If the current session is processing a non-blocked card (e.g. a TODO
+        # card just dispatching), the blocked branch must NOT clobber its
+        # current_card — the BLOCKED card will be handled by its own session's
+        # invocation (or by the bootstrap call when current_card is unset).
+        _cur = state.get("current_card") or {}
+        _cur_id = str(_cur.get("id", "")) if isinstance(_cur, dict) else ""
+        if max_cards > 1 and _cur_id and _cur_id not in set(blocked):
+            # This session belongs to a different card — skip blocked handling
+            # and fall through to TODO pickup (which is also guarded against
+            # overwriting current_card when a session is loaded).
+            pass
+        elif state.get("system_error_notified"):
             state["phase"] = "idle"
             state["current_card"] = None
             # Multi-card: don't return yet when there are TODO cards we could pick up.
@@ -475,10 +562,19 @@ async def check_board(state: CoordinareState) -> CoordinareState:
                 and now - last_notified >= timedelta(hours=hours)
             ):
                 state["phase"] = "blocked"
-                return state
+            else:
+                state["phase"] = "idle"
 
-            state["phase"] = "idle"
-            return state
+            # Multi-card mode: a blocked card is waiting on a human and does
+            # not occupy a worker slot, so fall through to fill remaining slots
+            # from TODO instead of returning.  TODO pickup below preserves
+            # current_card (already set to the blocked card), so router still
+            # sends this cycle to handle_blocked for the reminder; newly added
+            # active_sessions entries get dispatched on the next cycle.
+            if max_cards > 1 and todo:
+                pass  # fall through
+            else:
+                return state
     if todo:
         # Filter out items carrying advocate labels (FR-001a)
         advocate_labels = set()
@@ -574,6 +670,7 @@ async def check_board(state: CoordinareState) -> CoordinareState:
                 titles_map = board.get("titles", {})
                 issue_urls_map = board.get("issue_urls", {})
                 content_node_ids = board.get("content_node_ids", {})
+                allowed_host = _allowed_github_host(config)
                 blocked_deps_for_state: list[dict] = []
                 for item_id in filtered_ids:
                     deps = dep_graph.by_dependent.get(item_id, [])
@@ -585,7 +682,7 @@ async def check_board(state: CoordinareState) -> CoordinareState:
                                 "issue_number": d.blocker_issue_number,
                                 "title": titles_map.get(blocker_item, "") if blocker_item else None,
                                 "column": dep_graph.issue_to_column.get(d.blocker_issue_number),
-                                "issue_url": raw_url if raw_url else None,
+                                "issue_url": _safe_issue_url(raw_url, allowed_host),
                                 "source": d.source.value,
                             })
                     if blocked_deps_for_state:
@@ -594,30 +691,43 @@ async def check_board(state: CoordinareState) -> CoordinareState:
 
                 # FR-010: Cards with UNRESOLVABLE deps (off-board issue not
                 # closed) must be blocked with a comment, not silently left
-                # in TODO.  Move them to BLOCKED and post a diagnostic.
+                # in TODO.  Move them to BLOCKED and post a diagnostic — but
+                # only ONCE per (item_id, blocker-set) so a card stuck for
+                # many cycles doesn't accumulate duplicate comments.
                 github_svc = state.get("github_service")
+                announced: dict[str, str] = state.get("_dep_announcements") or {}  # type: ignore[typeddict-unknown-key]
                 if github_svc is not None:
                     for item_id in filtered_ids:
                         unresolvable = [
                             d for d in dep_graph.by_dependent.get(item_id, [])
                             if d.status == DependencyStatus.UNRESOLVABLE
                         ]
-                        if unresolvable:
-                            import contextlib
-                            dep_labels = ", ".join(f"#{d.blocker_issue_number}" for d in unresolvable)
+                        if not unresolvable:
+                            continue
+                        signature = _dep_announcement_signature(
+                            item_id,
+                            "unresolvable",
+                            [d.blocker_issue_number for d in unresolvable],
+                        )
+                        if announced.get(item_id) == signature:
+                            continue  # already announced this exact blocker set
+                        import contextlib
+                        dep_labels = ", ".join(f"#{d.blocker_issue_number}" for d in unresolvable)
+                        with contextlib.suppress(Exception):
+                            await github_svc.move_card(item_id, "BLOCKED")
+                        issue_node = content_node_ids.get(item_id)
+                        if issue_node:
                             with contextlib.suppress(Exception):
-                                await github_svc.move_card(item_id, "BLOCKED")
-                            issue_node = content_node_ids.get(item_id)
-                            if issue_node:
-                                with contextlib.suppress(Exception):
-                                    await github_svc.add_comment(
-                                        issue_node,
-                                        f"🔗 **Unresolvable dependency**: {dep_labels}\n\n"
-                                        "The referenced issue(s) are not on the project board "
-                                        "and could not be verified as closed (the issue may be "
-                                        "open, missing, or the API check failed).  Add them to "
-                                        "the board or close them to unblock this card.",
-                                    )
+                                await github_svc.add_comment(
+                                    issue_node,
+                                    f"🔗 **Unresolvable dependency**: {dep_labels}\n\n"
+                                    "The referenced issue(s) are not on the project board "
+                                    "and could not be verified as closed (the issue may be "
+                                    "open, missing, or the API check failed).  Add them to "
+                                    "the board or close them to unblock this card.",
+                                )
+                        announced[item_id] = signature
+                    state["_dep_announcements"] = announced  # type: ignore[typeddict-unknown-key]
             # (No else needed — blocked_by_dependencies is reset at the top
             # of every poll cycle; it's only populated when cards are filtered.)
 
@@ -654,9 +764,18 @@ async def check_board(state: CoordinareState) -> CoordinareState:
                 # destructive.
                 todo_set = set(todo)
                 if github is not None:
+                    cycle_announced: dict[str, str] = state.get("_dep_announcements") or {}  # type: ignore[typeddict-unknown-key]
+                    cycle_blockers = [
+                        issue_numbers_map.get(iid, 0) for iid in sorted(cycle_item_ids)
+                    ]
                     for iid in cycle_item_ids:
                         if iid not in todo_set:
                             continue
+                        signature = _dep_announcement_signature(
+                            iid, "cycle", cycle_blockers,
+                        )
+                        if cycle_announced.get(iid) == signature:
+                            continue  # already announced this exact cycle
                         with contextlib.suppress(Exception):
                             await github.move_card(iid, "BLOCKED")
                         issue_node_id = content_node_ids.get(iid)
@@ -669,6 +788,8 @@ async def check_board(state: CoordinareState) -> CoordinareState:
                                     "proceed.  Resolve by removing or reordering the "
                                     "dependency declarations in one of the issue bodies.",
                                 )
+                        cycle_announced[iid] = signature
+                    state["_dep_announcements"] = cycle_announced  # type: ignore[typeddict-unknown-key]
 
         if eligible_todo:
             titles = board.get("titles", {})
@@ -691,7 +812,7 @@ async def check_board(state: CoordinareState) -> CoordinareState:
                 # Passive-phase sessions (monitoring_pr) do not consume a concurrency slot.
                 active_count = sum(
                     1 for sess in active_sessions.values()
-                    if sess.get("phase") not in PASSIVE_PHASES
+                    if sess.get("phase") not in NON_SLOT_PHASES
                 )
                 slots_available = max(0, max_cards - active_count)
                 picked = 0

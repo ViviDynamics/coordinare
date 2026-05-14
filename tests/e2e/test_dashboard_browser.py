@@ -170,7 +170,7 @@ def test_idle_shows_no_active_card(page: Page, live_server_url: str) -> None:
     """Empty-state message must appear in the card section when no card is active."""
     page.goto(live_server_url)
     expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
-    expect(page.locator("#active-work-section")).to_contain_text("No cards in the TODO column")
+    expect(page.locator("#swimlane-section")).to_contain_text("No cards in the TODO column")
 
 
 @pytest.mark.e2e
@@ -232,8 +232,8 @@ def test_active_card_details_render(
         )
     )
 
-    expect(page.locator("#active-work-section")).to_contain_text("Fix timeout bug", timeout=_WAIT_LIVE)
-    expect(page.locator("#active-work-section a")).to_have_attribute(
+    expect(page.locator("#swimlane-section")).to_contain_text("Fix timeout bug", timeout=_WAIT_LIVE)
+    expect(page.locator("#swimlane-section a")).to_have_attribute(
         "href", "https://github.com/org/repo/issues/42", timeout=_WAIT_LIVE
     )
 
@@ -642,16 +642,16 @@ def test_active_work_row_click_opens_detail_and_back_returns_list(
         )
     )
 
-    row = page.locator("#active-work-section tr[data-card-id='PVTI_1']")
+    row = page.locator("#swimlane-section .swimlane-card[data-card-id='PVTI_1']")
     expect(row).to_be_visible(timeout=_WAIT_LIVE)
     row.click()
 
     expect(page.locator("#card-detail-view")).to_be_visible(timeout=_WAIT_LIVE)
-    expect(page.locator("#active-work-section")).to_be_hidden(timeout=_WAIT_LIVE)
+    expect(page.locator("#swimlane-section")).to_be_hidden(timeout=_WAIT_LIVE)
     expect(page.locator("#card-detail-content")).to_contain_text("Fix the auth bug", timeout=_WAIT_LIVE)
 
     page.locator("#card-detail-view .perf-back-btn").click()
-    expect(page.locator("#active-work-section")).to_be_visible(timeout=_WAIT_LIVE)
+    expect(page.locator("#swimlane-section")).to_be_visible(timeout=_WAIT_LIVE)
     expect(page.locator("#card-detail-view")).to_be_hidden(timeout=_WAIT_LIVE)
 
 
@@ -672,7 +672,7 @@ def test_active_work_row_keyboard_opens_detail(
         )
     )
 
-    row = page.locator("#active-work-section tr[data-card-id='PVTI_2']")
+    row = page.locator("#swimlane-section .swimlane-card[data-card-id='PVTI_2']")
     expect(row).to_be_visible(timeout=_WAIT_LIVE)
     row.focus()
     page.keyboard.press("Enter")
@@ -1021,6 +1021,49 @@ def test_symphonies_page_shows_env_bootstrap_button(
     expect(page.locator("#symphonies-page-section")).to_contain_text("with-bootstrap", timeout=_WAIT_LIVE)
     expect(page.locator('button.sym-row-bootstrap[data-sym="with-bootstrap"]')).to_be_visible()
     expect(page.locator('button.sym-row-bootstrap[data-sym="no-bootstrap"]')).to_have_count(0)
+
+
+@pytest.mark.e2e
+def test_symphonies_page_bootstrap_503_shows_performer_id_error(
+    page: Page, live_server_url: str, store: DashboardStore
+) -> None:
+    """062 Fix 1: when the bootstrap performer isn't registered, the dashboard
+    must surface the daemon's 503 error string (which names the missing
+    performer id) in #sym-list-msg rather than swallowing it."""
+    page.route(
+        "**/api/symphonies/with-bootstrap/env-bootstrap",
+        lambda route: route.fulfill(
+            status=503,
+            content_type="application/json",
+            body=(
+                '{"error":"Bootstrap performer \'codex-ephemeral\' is not '
+                'registered with the daemon — check that it is defined in '
+                'config.yaml and that coordinare loaded it at startup.",'
+                '"performer_id":"codex-ephemeral"}'
+            ),
+        ),
+    )
+    page.goto(f"{live_server_url}/symphonies")
+    expect(page.locator("#symphonies-page")).to_be_visible(timeout=_WAIT_NAV)
+    store.broadcaster.broadcast(
+        _full_snapshot(
+            symphonies=[
+                {
+                    "name": "with-bootstrap",
+                    "source_project": 42,
+                    "enabled": True,
+                    "env_bootstrap_performer_id": "codex-ephemeral",
+                },
+            ]
+        )
+    )
+    expect(page.locator("#symphonies-page-section")).to_contain_text(
+        "with-bootstrap", timeout=_WAIT_LIVE
+    )
+    page.locator('button.sym-row-bootstrap[data-sym="with-bootstrap"]').click()
+    msg = page.locator("#sym-list-msg")
+    expect(msg).to_contain_text("codex-ephemeral", timeout=2000)
+    expect(msg).to_contain_text("not registered", timeout=2000)
 
 
 # ---------------------------------------------------------------------------
@@ -1611,7 +1654,7 @@ def test_active_work_row_shows_cost(
         )
     )
 
-    row = page.locator("#active-work-section tr[data-card-id='PVTI_cost']")
+    row = page.locator("#swimlane-section .swimlane-card[data-card-id='PVTI_cost']")
     expect(row).to_be_visible(timeout=_WAIT_LIVE)
     expect(row).to_contain_text("0.0123", timeout=_WAIT_LIVE)
 
@@ -1624,7 +1667,7 @@ def test_active_work_row_shows_cost(
             active_sessions=[session_no_dispatch],
         )
     )
-    row2 = page.locator("#active-work-section tr[data-card-id='PVTI_nodispatch']")
+    row2 = page.locator("#swimlane-section .swimlane-card[data-card-id='PVTI_nodispatch']")
     expect(row2).to_be_visible(timeout=_WAIT_LIVE)
     expect(row2).to_contain_text("—", timeout=_WAIT_LIVE)
 
@@ -1653,7 +1696,7 @@ def test_active_work_row_stale_session_shows_warning(
         )
     )
 
-    row = page.locator("#active-work-section tr[data-card-id='PVTI_stale']")
+    row = page.locator("#swimlane-section .swimlane-card[data-card-id='PVTI_stale']")
     expect(row).to_be_visible(timeout=_WAIT_LIVE)
     # Stale sessions prepend a ⚠ warning glyph
     expect(row).to_contain_text("⚠", timeout=_WAIT_LIVE)
@@ -1682,7 +1725,7 @@ def test_card_detail_auto_closes_when_session_ends(
         )
     )
 
-    row = page.locator("#active-work-section tr[data-card-id='PVTI_ending']")
+    row = page.locator("#swimlane-section .swimlane-card[data-card-id='PVTI_ending']")
     expect(row).to_be_visible(timeout=_WAIT_LIVE)
     row.click()
     expect(page.locator("#card-detail-view")).to_be_visible(timeout=_WAIT_LIVE)

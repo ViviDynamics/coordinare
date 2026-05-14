@@ -1,12 +1,94 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 
-from coordinare.graph.nodes.check_board import _sort_by_priority, check_board
+from coordinare.graph.nodes.check_board import (
+    _allowed_github_host,
+    _dep_announcement_signature,
+    _safe_issue_url,
+    _sort_by_priority,
+    check_board,
+)
 from coordinare.graph.state import initial_state
 from coordinare.services.github import TransientGitHubError
+
+
+class TestAllowedGithubHost:
+    def test_none_config_defaults_to_github_com(self) -> None:
+        assert _allowed_github_host(None) == "github.com"
+
+    def test_missing_attribute_defaults_to_github_com(self) -> None:
+        assert _allowed_github_host(SimpleNamespace()) == "github.com"
+
+    def test_empty_endpoint_defaults_to_github_com(self) -> None:
+        assert _allowed_github_host(SimpleNamespace(github_endpoint="")) == "github.com"
+
+    def test_ghe_endpoint(self) -> None:
+        cfg = SimpleNamespace(github_endpoint="https://ghe.corp.example/api/v3")
+        assert _allowed_github_host(cfg) == "ghe.corp.example"
+
+    def test_api_github_maps_to_github_com(self) -> None:
+        cfg = SimpleNamespace(github_endpoint="https://api.github.com")
+        assert _allowed_github_host(cfg) == "github.com"
+
+    def test_uppercase_host_normalized(self) -> None:
+        cfg = SimpleNamespace(github_endpoint="https://GHE.CORP.EXAMPLE/api/v3")
+        assert _allowed_github_host(cfg) == "ghe.corp.example"
+
+
+class TestSafeIssueUrl:
+    def test_matching_host_returned(self) -> None:
+        url = "https://github.com/owner/repo/issues/42"
+        assert _safe_issue_url(url, "github.com") == url
+
+    def test_host_mismatch_rejected(self) -> None:
+        assert _safe_issue_url("https://evil.com/x", "github.com") is None
+
+    def test_javascript_scheme_rejected(self) -> None:
+        assert _safe_issue_url("javascript:alert(1)", "github.com") is None
+
+    def test_data_scheme_rejected(self) -> None:
+        assert _safe_issue_url("data:text/html,<script>", "github.com") is None
+
+    def test_empty_url_returns_none(self) -> None:
+        assert _safe_issue_url("", "github.com") is None
+
+    def test_empty_allowed_host_returns_none(self) -> None:
+        assert _safe_issue_url("https://github.com/x", "") is None
+        assert _safe_issue_url("https://github.com/x", None) is None
+
+    def test_http_allowed(self) -> None:
+        url = "http://github.com/x"
+        assert _safe_issue_url(url, "github.com") == url
+
+
+class TestDepAnnouncementSignature:
+    def test_blocker_order_independent(self) -> None:
+        a = _dep_announcement_signature("ITEM_1", "blocked", [3, 1, 2])
+        b = _dep_announcement_signature("ITEM_1", "blocked", [2, 3, 1])
+        assert a == b
+
+    def test_reason_changes_signature(self) -> None:
+        a = _dep_announcement_signature("ITEM_1", "blocked", [1])
+        b = _dep_announcement_signature("ITEM_1", "unblocked", [1])
+        assert a != b
+
+    def test_item_id_changes_signature(self) -> None:
+        a = _dep_announcement_signature("ITEM_1", "blocked", [1])
+        b = _dep_announcement_signature("ITEM_2", "blocked", [1])
+        assert a != b
+
+    def test_blocker_set_changes_signature(self) -> None:
+        a = _dep_announcement_signature("ITEM_1", "blocked", [1, 2])
+        b = _dep_announcement_signature("ITEM_1", "blocked", [1, 2, 3])
+        assert a != b
+
+    def test_empty_blockers(self) -> None:
+        sig = _dep_announcement_signature("ITEM_1", "reason", [])
+        assert sig == "ITEM_1|reason|"
 
 
 class _GitHub:
@@ -743,6 +825,98 @@ async def test_check_board_fresh_start_prioritizes_blocked_over_todo() -> None:
     assert result["phase"] == "blocked"
     assert result["current_card"]["id"] == "ITEM_B"
     assert result["current_card"]["status"] == "BLOCKED"
+
+
+@pytest.mark.asyncio
+async def test_check_board_multicard_blocked_does_not_starve_todo_pickup() -> None:
+    """Regression: in multi-card mode, a single BLOCKED card on the board
+    must not block TODO pickup.  A blocked card is waiting on a human and
+    holds no live performer, so the remaining concurrency slots should be
+    filled from TODO.  Phase stays "blocked" so the router still sends the
+    cycle to handle_blocked for the reminder; newly added active_sessions
+    entries get dispatched on the next cycle.
+    """
+    from types import SimpleNamespace
+
+    state = initial_state()
+    state["github_service"] = _GitHubBlockedAndTodo()
+    state["config"] = SimpleNamespace(
+        github_org="acme",
+        project_name="repo",
+        max_concurrent_cards=2,
+        priority=SimpleNamespace(field_name="", priority_order=[]),
+        github_api_url="",
+        assignee_filter=None,
+    )
+    state["active_sessions"] = {}
+
+    result = await check_board(state)
+
+    sessions = result.get("active_sessions") or {}
+    assert "ITEM_T" in sessions, (
+        "TODO card must be picked up even when a BLOCKED card is present "
+        "in multi-card mode"
+    )
+    assert sessions["ITEM_T"]["current_card"]["id"] == "ITEM_T"
+    # Blocked card remains the cycle's current_card so handle_blocked can
+    # post the reminder; phase stays "blocked".
+    assert result["phase"] == "blocked"
+    assert result["current_card"]["id"] == "ITEM_B"
+
+
+@pytest.mark.asyncio
+async def test_check_board_multicard_per_session_invocation_preserves_todo_current_card() -> None:
+    """Regression: in multi-card mode, per-session graph invocations re-enter
+    check_board with state["current_card"] already populated by
+    session_to_state.  When the current session is processing a TODO card
+    and a different card is BLOCKED on the board, the BLOCKED branch must
+    NOT overwrite state["current_card"] — otherwise state_to_session writes
+    the BLOCKED card's data back into the TODO session, and the dashboard
+    swimlane shows every TODO session as the BLOCKED card.
+    """
+    from types import SimpleNamespace
+
+    state = initial_state()
+    state["github_service"] = _GitHubBlockedAndTodo()
+    state["config"] = SimpleNamespace(
+        github_org="acme",
+        project_name="repo",
+        max_concurrent_cards=2,
+        priority=SimpleNamespace(field_name="", priority_order=[]),
+        github_api_url="",
+        assignee_filter=None,
+    )
+    # Simulate a per-session invocation: a TODO session is already loaded
+    # (session_to_state set current_card to the TODO card before invoking
+    # the graph).  active_sessions also already contains this session.
+    todo_card = {
+        "id": "ITEM_T",
+        "issue_id": "",
+        "issue_number": 3,
+        "issue_url": "",
+        "title": "New TODO",
+        "description": "",
+        "acceptance_criteria": [],
+        "status": "TODO",
+        "previous_status": "TODO",
+    }
+    state["current_card"] = todo_card
+    state["phase"] = "dispatching"
+    state["active_sessions"] = {
+        "ITEM_T": {"current_card": todo_card, "phase": "dispatching"},
+    }
+
+    result = await check_board(state)
+
+    # The TODO session's current_card must be preserved — NOT replaced with
+    # the BLOCKED card's data.
+    assert result["current_card"]["id"] == "ITEM_T", (
+        f"BLOCKED branch clobbered TODO session's current_card: "
+        f"{result['current_card']}"
+    )
+    assert result["current_card"]["status"] == "TODO"
+    # Phase must not be flipped to "blocked" for this TODO session.
+    assert result["phase"] != "blocked"
 
 
 @pytest.mark.asyncio

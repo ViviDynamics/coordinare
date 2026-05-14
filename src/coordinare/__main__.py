@@ -449,7 +449,10 @@ def _build_performer_services(
     service_lists: dict[str, list[Any]] = {}
 
     for role in _CANONICAL_ORDER:
-        role_config = getattr(config.performers, role, None)
+        # resolved_role() merges ``performers.default`` into the per-role
+        # config so baseline fields (backend, max_concurrency, effort, etc.)
+        # propagate without having to be repeated on every role.
+        role_config = config.performers.resolved_role(role)
         if role_config is None:
             continue
 
@@ -540,7 +543,14 @@ def _build_http_performer_services(
     registered under every stage corresponding to a role in ``cfg.roles``.
     Subprocess-mode endpoints are skipped here — they go through the legacy
     ``config.performers.<role>`` pipeline.
+
+    For ephemeral endpoints, the same service handle is replicated
+    ``performers.<role>.max_concurrency`` times so the SlotManager has that
+    many free slots — each ephemeral invocation spawns its own container, so
+    sharing the service reference is safe.  Persistent endpoints are added
+    once (one running container = one slot).
     """
+    from coordinare.lifecycle import SINGLETON_STAGES
     from coordinare.services.http_performer_service import HTTPPerformerService
 
     _stage_names = set(_ROLE_TO_STAGE.values())
@@ -561,7 +571,14 @@ def _build_http_performer_services(
                         role=role,
                     )
                     continue
-            services_by_stage.setdefault(stage, []).append(service)
+            copies = 1
+            if cfg.mode == "ephemeral":
+                rc = config.performers.resolved_role(role) if config.performers else None
+                copies = getattr(rc, "max_concurrency", 1) if rc is not None else 1
+                if stage in SINGLETON_STAGES:
+                    copies = min(copies, 1)
+                copies = max(copies, 1)
+            services_by_stage.setdefault(stage, []).extend([service] * copies)
     return services_by_stage
 
 
@@ -634,8 +651,8 @@ async def _bootstrap_services(
         retry_kwargs=_retry_config_from(r.anthropic_retry).to_stamina_kwargs(),
     )
 
-    from coordinare.services.assessment import build_assessment_backend
-    assessment_backend = build_assessment_backend(
+    from coordinare.services.conducting import build_conducting_backend
+    conducting_backend = build_conducting_backend(
         config,
         circuit_breaker=circuit_breakers["anthropic"],
         retry_kwargs=_retry_config_from(r.anthropic_retry).to_stamina_kwargs(),
@@ -660,7 +677,7 @@ async def _bootstrap_services(
                 break
         max_c = 1
         if role_name is not None:
-            rc = getattr(config.performers, role_name, None)
+            rc = config.performers.resolved_role(role_name)
             if rc is not None:
                 max_c = getattr(rc, "max_concurrency", 1)
         stage_max_c[stage] = max_c
@@ -739,7 +756,7 @@ async def _bootstrap_services(
         "github_service": github,
         "agent_service": resilient_agent,
         "claude_service": claude_service,
-        "assessment_backend": assessment_backend,
+        "conducting_backend": conducting_backend,
         "notification_service": notification_service,
         "human_reviewers": config.human_reviewers,
         "trusted_bot_reviewers": config.trusted_bot_reviewers,
@@ -972,6 +989,32 @@ async def _run(
     for _sig in (signal.SIGINT, signal.SIGTERM):
         with contextlib.suppress(NotImplementedError):
             loop.add_signal_handler(_sig, _on_signal)
+
+    def _dump_tasks() -> None:
+        import io
+        out = io.StringIO()
+        out.write(f"=== asyncio.all_tasks() dump @ {datetime.now(UTC).isoformat()} ===\n")
+        tasks = list(asyncio.all_tasks(loop))
+        out.write(f"task_count={len(tasks)}\n\n")
+        for t in tasks:
+            out.write(f"--- Task name={t.get_name()!r} done={t.done()} cancelled={t.cancelled()} ---\n")
+            out.write(f"  coro={t.get_coro()!r}\n")
+            stack = t.get_stack()
+            if not stack:
+                out.write("  (no stack — task may be done or not yet started)\n")
+            else:
+                for f in stack:
+                    out.write(f"  File \"{f.f_code.co_filename}\", line {f.f_lineno}, in {f.f_code.co_name}\n")
+            out.write("\n")
+        # Truncate per dump so a long-lived daemon receiving repeated SIGUSR1
+        # doesn't grow the file unbounded; each dump stands alone anyway.
+        path = Path("/tmp/coordinare-tasks.log")
+        with path.open("w") as fh:
+            fh.write(out.getvalue())
+        logger.info("sigusr1_task_dump_written", path=str(path), task_count=len(tasks))
+
+    with contextlib.suppress(NotImplementedError, AttributeError):
+        loop.add_signal_handler(signal.SIGUSR1, _dump_tasks)
 
     try:
         METRICS.daemon_up.set(1)

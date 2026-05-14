@@ -25,6 +25,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     shellcheck \
     && rm -rf /var/lib/apt/lists/*
 
+# Auto-source mounted env-cache activate.sh in every shell spawned by agent
+# CLI tool calls. Different backends spawn shells differently:
+#   - codex uses `bash -lc` (login)        → sources /etc/profile → /etc/profile.d/*
+#   - claude/opencode/cursor/junie may use `bash -c` or `sh -c` (non-login,
+#     non-interactive) → neither /etc/profile nor /etc/bash.bashrc is read.
+# Bash/dash honor BASH_ENV/ENV for non-interactive shells, so we set both to
+# our activation script. The /etc/profile.d/ install also covers login shells
+# (where BASH_ENV is ignored).
+COPY devenv-profile.sh /etc/profile.d/zz-devenv.sh
+RUN chmod 0644 /etc/profile.d/zz-devenv.sh && \
+    ln -sf /etc/profile.d/zz-devenv.sh /etc/devenv-activate.sh
+ENV BASH_ENV=/etc/devenv-activate.sh \
+    ENV=/etc/devenv-activate.sh
+
 # Backend CLI is installed at container start by entrypoint.sh based on $BACKEND.
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

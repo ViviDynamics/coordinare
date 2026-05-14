@@ -192,7 +192,7 @@ def _parse_prompt_response(text: str, response_format: str | None) -> dict[str, 
 
 
 @runtime_checkable
-class AssessmentBackend(Protocol):
+class ConductingBackend(Protocol):
     async def assess(self, card: dict[str, Any]) -> dict[str, Any]: ...
     async def prompt(self, text: str, response_format: str | None = None) -> dict[str, Any]: ...
 
@@ -214,6 +214,96 @@ class AnthropicApiBackend:
         return _parse_prompt_response(raw, response_format)
 
 
+class OpenAiApiBackend:
+    """Direct OpenAI Chat Completions call via httpx — no SDK dep required.
+
+    Supports any OpenAI-compatible endpoint (Azure, OpenRouter, local proxies)
+    by setting ``base_url``.  Auth comes from OPENAI_API_KEY.
+    """
+
+    _TIMEOUT: float = 60.0
+
+    def __init__(
+        self,
+        api_key: str | None,
+        model: str = "gpt-4o-mini",
+        max_tokens: int = 4096,
+        temperature: float | None = None,
+        base_url: str | None = None,
+        effort: str | None = None,
+    ) -> None:
+        self._api_key = api_key or ""
+        self._model = model
+        self._max_tokens = max_tokens
+        self._temperature = temperature
+        self._effort = effort
+        self._base_url = (base_url or "https://api.openai.com/v1").rstrip("/")
+
+    async def _chat(self, messages: list[dict[str, str]], json_mode: bool) -> str:
+        import httpx
+        if not self._api_key:
+            log.error("openai_api_missing_key")
+            return ""
+        payload: dict[str, Any] = {
+            "model": self._model,
+            "messages": messages,
+        }
+        # Reasoning models (o-series / gpt-5) reject `max_tokens` and `temperature`
+        # and require `max_completion_tokens`. Use the presence of `effort` as the
+        # signal — the config layer ties `effort` to reasoning-capable models.
+        if self._effort is not None:
+            payload["max_completion_tokens"] = self._max_tokens
+            payload["reasoning_effort"] = self._effort
+        else:
+            payload["max_tokens"] = self._max_tokens
+            if self._temperature is not None:
+                payload["temperature"] = self._temperature
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+        try:
+            async with httpx.AsyncClient(timeout=self._TIMEOUT) as client:
+                resp = await client.post(
+                    f"{self._base_url}/chat/completions", json=payload, headers=headers
+                )
+                resp.raise_for_status()
+                data = resp.json()
+        except httpx.HTTPError as exc:
+            log.error("openai_api_http_error", error=str(exc))
+            return ""
+        try:
+            return str(data["choices"][0]["message"]["content"] or "")
+        except (KeyError, IndexError, TypeError):
+            log.warning("openai_api_unexpected_response", keys=list(data.keys()) if isinstance(data, dict) else None)
+            return ""
+
+    async def assess(self, card: dict[str, Any]) -> dict[str, Any]:
+        prompt = _build_assess_prompt(card)
+        text = await self._chat(
+            [
+                {"role": "system", "content": "Respond ONLY with valid JSON. No prose, markdown, or code fences."},
+                {"role": "user", "content": prompt},
+            ],
+            json_mode=True,
+        )
+        if not text:
+            return {"sufficient": False, "questions": [], "rationale": "empty openai response"}
+        return _parse_assessment_response(text)
+
+    async def prompt(self, text: str, response_format: str | None = None) -> dict[str, Any]:
+        if not text.strip():
+            return {"text": "", "data": None}
+        messages: list[dict[str, str]] = []
+        if response_format == "json":
+            messages.append({"role": "system", "content": "Respond with valid JSON only."})
+        messages.append({"role": "user", "content": text})
+        raw = await self._chat(messages, json_mode=(response_format == "json"))
+        return _parse_prompt_response(raw, response_format)
+
+
 class ClaudeCliBackend:
     """Runs `claude --print <prompt>` as a subprocess using local CLI auth."""
 
@@ -223,17 +313,29 @@ class ClaudeCliBackend:
         self._executable = executable
 
     async def assess(self, card: dict[str, Any]) -> dict[str, Any]:
+        # Prompt is piped via stdin (not argv) so card text — which may include
+        # user-authored issue bodies and comments — stays out of process
+        # listings and avoids argv length limits on long clarification chains.
         prompt = _build_assess_prompt(card)
+        proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 self._executable,
                 "--print",
-                prompt,
+                "-",
+                stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=self._TIMEOUT)
+            stdout, _ = await asyncio.wait_for(
+                proc.communicate(input=prompt.encode()), timeout=self._TIMEOUT
+            )
         except TimeoutError:
+            if proc is not None:
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(proc.wait(), timeout=2)
             log.warning("assessment_cli_timeout", timeout=self._TIMEOUT)
             return {"sufficient": False, "questions": [], "rationale": "cli timeout"}
         except OSError as exc:
@@ -246,12 +348,7 @@ class ClaudeCliBackend:
         return _parse_assessment_response(text)
 
     async def prompt(self, text: str, response_format: str | None = None) -> dict[str, Any]:
-        """Send an arbitrary text prompt via the Claude CLI.
-
-        Uses stdin (not argv) to avoid exposing potentially sensitive prompt
-        content in process listings.  This differs from ``assess()`` which
-        uses argv because its prompts are built internally from card data.
-        """
+        """Send an arbitrary text prompt via the Claude CLI via stdin."""
         if not text.strip():
             return {"text": "", "data": None}
         proc = None
@@ -259,7 +356,7 @@ class ClaudeCliBackend:
             proc = await asyncio.create_subprocess_exec(
                 self._executable,
                 "--print",
-                "-p", "-",  # read prompt from stdin
+                "-",
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -295,21 +392,36 @@ class OpenCodeBackend:
 
     _TIMEOUT: int = 60
 
-    def __init__(self, executable: str = "opencode") -> None:
+    def __init__(self, executable: str = "opencode", effort: str | None = None) -> None:
         self._executable = executable
+        self._effort = effort
+
+    def _effort_args(self) -> list[str]:
+        return ["--effort", self._effort] if self._effort else []
 
     async def assess(self, card: dict[str, Any]) -> dict[str, Any]:
+        # Prompt is piped via stdin (not argv); see ClaudeCliBackend.assess.
         prompt = _build_assess_prompt(card)
+        proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 self._executable,
                 "run",
-                prompt,
+                *self._effort_args(),
+                "-",
+                stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=self._TIMEOUT)
+            stdout, _ = await asyncio.wait_for(
+                proc.communicate(input=prompt.encode()), timeout=self._TIMEOUT
+            )
         except TimeoutError:
+            if proc is not None:
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(proc.wait(), timeout=2)
             log.warning("assessment_opencode_timeout", timeout=self._TIMEOUT)
             return {"sufficient": False, "questions": [], "rationale": "opencode timeout"}
         except OSError as exc:
@@ -322,12 +434,7 @@ class OpenCodeBackend:
         return _parse_assessment_response(text)
 
     async def prompt(self, text: str, response_format: str | None = None) -> dict[str, Any]:
-        """Send an arbitrary text prompt via the opencode CLI.
-
-        Uses stdin (not argv) to avoid exposing potentially sensitive prompt
-        content in process listings.  This differs from ``assess()`` which
-        uses argv because its prompts are built internally from card data.
-        """
+        """Send an arbitrary text prompt via the opencode CLI via stdin."""
         if not text.strip():
             return {"text": "", "data": None}
         proc = None
@@ -335,6 +442,7 @@ class OpenCodeBackend:
             proc = await asyncio.create_subprocess_exec(
                 self._executable,
                 "run",
+                *self._effort_args(),
                 "-",  # read from stdin
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
@@ -363,6 +471,80 @@ class OpenCodeBackend:
         return _parse_prompt_response(raw, response_format)
 
 
+class CodexCliBackend:
+    """Runs `codex exec` as a subprocess — pairs with the codex-backed performers.
+
+    Uses the same codex CLI (and OPENAI_API_KEY) the performer fleet already
+    relies on, so no new auth is required.
+    """
+
+    _TIMEOUT: int = 60
+
+    def __init__(
+        self,
+        executable: str = "codex",
+        model: str | None = None,
+        effort: str | None = None,
+    ) -> None:
+        self._executable = executable
+        self._model = model
+        self._effort = effort
+
+    def _build_args(self) -> list[str]:
+        # Order: subcommand → options → positional stdin sentinel.
+        # `codex exec` parses `[PROMPT]` positionally; `-` means "read from
+        # stdin." Flags must precede the positional so clap doesn't bind them
+        # past the sentinel. The -c value is passed unquoted — codex parses it
+        # as TOML and falls back to a literal string when TOML parse fails.
+        args = [self._executable, "exec"]
+        if self._model:
+            args.extend(["--model", self._model])
+        if self._effort:
+            args.extend(["-c", f"model_reasoning_effort={self._effort}"])
+        args.append("-")
+        return args
+
+    async def _run(self, prompt: str) -> str:
+        proc = None
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *self._build_args(),
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(input=prompt.encode()), timeout=self._TIMEOUT
+            )
+        except TimeoutError:
+            if proc is not None:
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(proc.wait(), timeout=2)
+            log.warning("codex_cli_timeout", timeout=self._TIMEOUT)
+            return ""
+        except OSError as exc:
+            log.error("codex_cli_launch_failed", error=str(exc))
+            return ""
+        if proc.returncode and proc.returncode != 0:
+            err = stderr.decode(errors="replace").strip() if stderr else ""
+            log.warning("codex_cli_nonzero_exit", returncode=proc.returncode, stderr_length=len(err))
+        return stdout.decode(errors="replace").strip() if stdout else ""
+
+    async def assess(self, card: dict[str, Any]) -> dict[str, Any]:
+        text = await self._run(_build_assess_prompt(card))
+        if not text:
+            return {"sufficient": False, "questions": [], "rationale": "empty codex response"}
+        return _parse_assessment_response(text)
+
+    async def prompt(self, text: str, response_format: str | None = None) -> dict[str, Any]:
+        if not text.strip():
+            return {"text": "", "data": None}
+        raw = await self._run(text)
+        return _parse_prompt_response(raw, response_format)
+
+
 class NullBackend:
     """Skips assessment — assumes all cards are sufficient."""
 
@@ -374,29 +556,56 @@ class NullBackend:
         return {"text": "", "data": None}
 
 
-def build_assessment_backend(
+def build_conducting_backend(
     config: ProjectConfiguration,
     circuit_breaker: Any = None,
     retry_kwargs: dict[str, Any] | None = None,
-) -> AssessmentBackend:
-    """Factory: construct the configured assessment backend."""
+) -> ConductingBackend:
+    """Factory: construct the configured conducting backend.
+
+    Reads ``config.conducting``.  Model / max_tokens / temperature are threaded
+    into each backend where the underlying API supports them; subprocess
+    backends use ``executable`` overrides when provided.
+    """
     import os
 
-    match config.assessment_backend:
+    a = config.conducting
+    match a.backend:
         case "anthropic_api":
             from coordinare.services.claude import ClaudeService
             claude = ClaudeService(
                 api_key=os.getenv("ANTHROPIC_API_KEY"),
+                model=a.model or "claude-sonnet-4-20250514",
+                max_tokens=a.max_tokens,
+                temperature=a.temperature,
                 circuit_breaker=circuit_breaker,
                 retry_kwargs=retry_kwargs,
             )
             return AnthropicApiBackend(claude)
+        case "openai_api":
+            return OpenAiApiBackend(
+                api_key=os.getenv("OPENAI_API_KEY"),
+                model=a.model or "gpt-4o-mini",
+                max_tokens=a.max_tokens,
+                temperature=a.temperature,
+                base_url=a.base_url,
+                effort=a.effort,
+            )
         case "claude_cli":
-            return ClaudeCliBackend()
+            return ClaudeCliBackend(executable=a.executable or "claude")
+        case "codex_cli":
+            return CodexCliBackend(
+                executable=a.executable or "codex",
+                model=a.model,
+                effort=a.effort,
+            )
         case "opencode":
-            return OpenCodeBackend()
+            return OpenCodeBackend(
+                executable=a.executable or "opencode",
+                effort=a.effort,
+            )
         case "none":
             return NullBackend()
         case _:
-            msg = f"Unknown assessment_backend: {config.assessment_backend!r}"
+            msg = f"Unknown conducting backend: {a.backend!r}"
             raise ValueError(msg)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, ClassVar
 
 import stamina
@@ -18,6 +19,107 @@ from coordinare.observability import get_current_symphony
 # ---------------------------------------------------------------------------
 # Exception taxonomy (T023)
 # ---------------------------------------------------------------------------
+
+
+def _repair_truncated_json(text: str) -> str | None:
+    """Best-effort repair of a JSON object truncated mid-stream.
+
+    Walks the text tracking string state and bracket depth so we can:
+      * Distinguish escaped quotes from real string delimiters.
+      * Close the open string (if any) before closing brackets.
+      * Strip a trailing comma that would otherwise leave invalid JSON.
+      * Close arrays and objects in the correct order.
+
+    Returns the repaired string, or ``None`` if the text cannot plausibly be
+    coerced into a JSON object (does not start with ``{``, or repair would
+    require fabricating values).
+    """
+    stripped = text.strip()
+    if not stripped.startswith("{"):
+        return None
+    in_string = False
+    escape = False
+    # Stack of open container chars: '{' or '['.
+    stack: list[str] = []
+    last_non_ws: str = ""
+    for ch in stripped:
+        if escape:
+            escape = False
+            continue
+        if ch == "\\" and in_string:
+            escape = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+        elif not in_string:
+            if ch in "{[":
+                stack.append(ch)
+            elif ch in "}]":
+                if stack and ((ch == "}" and stack[-1] == "{") or (ch == "]" and stack[-1] == "[")):
+                    stack.pop()
+                else:
+                    # Mismatched closer — not safely repairable.
+                    return None
+        if not ch.isspace():
+            last_non_ws = ch
+    repair = stripped
+    if in_string:
+        # If the truncation landed right after a backslash, drop it so the
+        # closing quote is not interpreted as an escape sequence.
+        if repair.endswith("\\"):
+            repair = repair[:-1]
+        repair += '"'
+    # Trim a dangling comma or colon that would otherwise leave the object
+    # expecting another value (e.g. `{"a": 1,` or `{"a":`).
+    trimmed = repair.rstrip()
+    while trimmed and trimmed[-1] in ",:":
+        trimmed = trimmed[:-1].rstrip()
+    if trimmed != repair:
+        # If we trimmed a `:`, we'd need to invent a value; bail out.
+        if last_non_ws == ":":
+            return None
+        repair = trimmed
+    # Close any open containers in reverse order.
+    closers = {"{": "}", "[": "]"}
+    repair += "".join(closers[c] for c in reversed(stack))
+    return repair
+
+
+def _try_parse_json_object(text: str) -> dict[str, Any] | None:
+    """Lenient JSON-object extractor for model responses.
+
+    Handles four failure modes we see in production:
+      1. Exact JSON — happy path.
+      2. JSON wrapped in ```json ... ``` code fences.
+      3. JSON embedded in a brief prose preamble (greedy brace extraction).
+      4. JSON truncated mid-string by max_tokens — see :func:`_repair_truncated_json`.
+    Returns the parsed dict or None if nothing salvageable.
+    """
+    if not text:
+        return None
+    candidates: list[str] = [text.strip()]
+    fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+    if fence:
+        candidates.append(fence.group(1))
+    brace = re.search(r"\{.*\}", text, re.DOTALL)
+    if brace:
+        candidates.append(brace.group(0))
+    for cand in candidates:
+        try:
+            parsed = json.loads(cand)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            continue
+    repair = _repair_truncated_json(text)
+    if repair is not None:
+        try:
+            parsed = json.loads(repair)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            return None
+    return None
 
 
 class AnthropicCallError(RuntimeError): ...
@@ -44,9 +146,13 @@ class ClaudeService:
         model: str = "claude-sonnet-4-20250514",
         circuit_breaker: Any = None,
         retry_kwargs: dict[str, Any] | None = None,
+        max_tokens: int = 4096,
+        temperature: float | None = None,
     ) -> None:
         self._client = AsyncAnthropic(api_key=api_key, max_retries=0)
         self._model = model
+        self._max_tokens = max_tokens
+        self._temperature = temperature
         self._circuit_breaker = circuit_breaker
         self._retry_kwargs = retry_kwargs if retry_kwargs is not None else dict(self._DEFAULT_RETRY_KWARGS)
 
@@ -65,11 +171,13 @@ class ClaudeService:
             try:
                 kwargs: dict[str, Any] = {
                     "model": self._model,
-                    "max_tokens": 1024,
+                    "max_tokens": self._max_tokens,
                     "messages": [{"role": "user", "content": text}],
                 }
                 if system_msg:
                     kwargs["system"] = system_msg
+                if self._temperature is not None:
+                    kwargs["temperature"] = self._temperature
                 return await self._client.messages.create(**kwargs)
             except (APIConnectionError, APITimeoutError) as exc:
                 raise TransientAnthropicError(str(exc)) from exc
@@ -144,17 +252,15 @@ class ClaudeService:
         @stamina.retry(on=TransientAnthropicError, **self._retry_kwargs)
         async def _retried_create() -> Any:
             try:
-                return await self._client.messages.create(
-                    model=self._model,
-                    max_tokens=500,
-                    system="Respond ONLY with valid JSON. Do not include any prose, markdown, or code fences.",
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": prompt,
-                        }
-                    ],
-                )
+                kwargs: dict[str, Any] = {
+                    "model": self._model,
+                    "max_tokens": self._max_tokens,
+                    "system": "Respond ONLY with valid JSON. Do not include any prose, markdown, or code fences.",
+                    "messages": [{"role": "user", "content": prompt}],
+                }
+                if self._temperature is not None:
+                    kwargs["temperature"] = self._temperature
+                return await self._client.messages.create(**kwargs)
             except (APIConnectionError, APITimeoutError) as exc:
                 raise TransientAnthropicError(str(exc)) from exc
             except AuthenticationError as exc:
@@ -192,21 +298,20 @@ class ClaudeService:
                 text = blocks[0].text
         if not text:
             return {"sufficient": True, "questions": [], "rationale": "empty model response"}
-        try:
-            parsed = json.loads(text)
+        parsed = _try_parse_json_object(text)
+        if parsed is not None:
             return {
                 "sufficient": bool(parsed.get("sufficient", False)),
                 "questions": list(parsed.get("questions", [])),
                 "rationale": str(parsed.get("rationale", text)),
             }
-        except (json.JSONDecodeError, AttributeError):
-            # Model returned non-JSON (e.g. safety refusal or formatting error).
-            # Block the card so the operator can inspect rather than silently
-            # dispatching an unassessed card to implementation.
-            # Non-empty questions prevents assess_card's auto-promotion logic
-            # (not sufficient + no questions → treated as sufficient).
-            return {
-                "sufficient": False,
-                "questions": ["assessment parse error — model returned non-JSON"],
-                "rationale": f"assessment parse error: {text}",
-            }
+        # Model returned non-JSON (e.g. safety refusal or formatting error).
+        # Block the card so the operator can inspect rather than silently
+        # dispatching an unassessed card to implementation.
+        # Non-empty questions prevents assess_card's auto-promotion logic
+        # (not sufficient + no questions → treated as sufficient).
+        return {
+            "sufficient": False,
+            "questions": ["assessment parse error — model returned non-JSON"],
+            "rationale": f"assessment parse error: {text}",
+        }

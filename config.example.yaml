@@ -138,6 +138,11 @@ agent_executable: "/usr/local/bin/performer"  # path to the performer binary
 #     readiness_timeout_s: 120         # seconds to wait for container /health; default 120
 #     failure_threshold: 5             # consecutive health failures before circuit-break; default 5
 #     # auth_token: "${PERFORMER_TOKEN}"  # Bearer token for HTTP API; optional
+#     # env:                             # forwarded into the container as -e KEY=VAL
+#     #   RTK_ENABLED: "1"               # opt-in token-compression hook (default off);
+#     #                                  # codex and claude backends only. Run one
+#     #                                  # endpoint with this on and an otherwise-identical
+#     #                                  # peer with it off to A/B token savings.
 
 #   # -------------------------------------------------------------------------
 #   # Claude Code — uses ANTHROPIC_API_KEY forwarded from coordinare environment.
@@ -384,13 +389,57 @@ stale_branch_cleanup: true
 #   re-dispatch — abort current lifecycle and re-dispatch with updated requirements (default: warn)
 requirement_change_policy: "warn"   # "ignore" | "warn" | "re-dispatch"
 
-# --- Assessment Backend ---
-# How coordinare evaluates whether a card spec is clear enough to implement.
-#   anthropic_api — direct Anthropic SDK call (requires ANTHROPIC_API_KEY env var)
+# --- Conducting Backend (spec 062) ---
+# Coordinare's "internal brain" — what the coordinare uses on the podium to
+# interpret cards and make routing decisions.  Runs one-shot prompts only:
+# card sufficiency assessment (assess_card) and ad-hoc reasoning calls.
+# Distinct from the ``assessor`` performer (which executes a separate,
+# heavier code-review role).
+#
+# Mirrors the performer config surface — pick a backend, optionally pin a
+# model, and tune max_tokens / temperature.
+#
+# Backends:
+#   anthropic_api — direct Anthropic SDK call (requires ANTHROPIC_API_KEY)
+#   openai_api    — OpenAI-compatible Chat Completions (requires OPENAI_API_KEY)
 #   claude_cli    — subprocess `claude --print "..."` using local CLI auth
+#   codex_cli     — subprocess `codex exec -` (shares the codex performer's auth)
 #   opencode      — opencode CLI
 #   none          — skip assessment; all cards assumed sufficient
-assessment_backend: "anthropic_api"   # "anthropic_api" | "claude_cli" | "opencode" | "none"
+#
+# Examples:
+#   # Use codex (shares the codex performer's auth / model)
+#   conducting:
+#     backend: "codex_cli"
+#     model: "gpt-5.5"
+#     max_tokens: 4096
+#     temperature: 0.0
+#     effort: "low"   # low | medium | high
+#
+#   # Use OpenAI API directly
+#   conducting:
+#     backend: "openai_api"
+#     model: "gpt-4o-mini"
+#     max_tokens: 4096
+#     temperature: 0.0
+#     effort: "low"   # low | medium | high
+#     # base_url: "https://api.openai.com/v1"   # override for Azure / proxies
+#
+# CLI backends (claude_cli / codex_cli / opencode) accept an optional
+# ``executable:`` to point at a non-default binary path.
+#
+# ``effort:`` (low / medium / high) controls reasoning budget for backends
+# that expose it: openai_api (reasoning_effort), codex_cli
+# (model_reasoning_effort), and opencode (--effort).  No-op for
+# anthropic_api / claude_cli (extended thinking is not enabled here).
+# Defaults to "low" — the conducting brain runs short one-shot prompts where
+# extra reasoning budget is mostly waste.
+conducting:
+  backend: "anthropic_api"
+  model: "claude-sonnet-4-20250514"
+  max_tokens: 4096
+  temperature: 0.0
+  effort: "low"
 
 # --- Workspace ---
 # Root directory for performer workspaces (cloned repos). Defaults to system temp dir.

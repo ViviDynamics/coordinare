@@ -97,6 +97,22 @@ query PollBoard($projectId: ID!) {
                   login
                 }
               }
+              # TODO: paginate if a card accumulates >20 cross-references —
+              # ``last: 20`` will drop the oldest links, which may include the
+              # canonical merged PR.  Acceptable today; revisit when first hit.
+              timelineItems(last: 20, itemTypes: [CROSS_REFERENCED_EVENT]) {
+                nodes {
+                  ... on CrossReferencedEvent {
+                    source {
+                      ... on PullRequest {
+                        url
+                        state
+                        merged
+                      }
+                    }
+                  }
+                }
+              }
             }
             ... on PullRequest {
               id
@@ -625,6 +641,10 @@ class GitHubService:
         # Maps project item ID (PVTI_…) → underlying issue/PR node ID (I_… / PR_…)
         # Required for API calls that target issues/PRs (addComment, addLabels, etc.)
         content_node_ids: dict[str, str] = {}
+        # Item ID → linked PR URL.  Picked from issue timeline cross-references
+        # with priority OPEN → MERGED → CLOSED so a card with an in-flight PR
+        # surfaces the live PR rather than a stale closed one.
+        pr_urls: dict[str, str] = {}
 
         for item in items:
             if not isinstance(item, dict):
@@ -679,6 +699,31 @@ class GitHubService:
                     for n in (assignee_nodes.get("nodes", []) if isinstance(assignee_nodes, dict) else [])
                     if isinstance(n, dict) and n.get("login")
                 ]
+                timeline = content.get("timelineItems", {})
+                if isinstance(timeline, dict):
+                    nodes = timeline.get("nodes", [])
+                    open_url = ""
+                    merged_url = ""
+                    closed_url = ""
+                    for ev in nodes if isinstance(nodes, list) else []:
+                        if not isinstance(ev, dict):
+                            continue
+                        src = ev.get("source")
+                        if not isinstance(src, dict):
+                            continue
+                        url_val = str(src.get("url", "")).strip()
+                        if not url_val:
+                            continue
+                        state_val = str(src.get("state", "")).upper()
+                        if state_val == "OPEN":
+                            open_url = url_val
+                        elif src.get("merged"):
+                            merged_url = url_val
+                        elif state_val == "CLOSED":
+                            closed_url = url_val
+                    chosen = open_url or merged_url or closed_url
+                    if chosen:
+                        pr_urls[item_id] = chosen
 
             if status_name:  # skip items with unknown/unmapped status
                 snapshot.setdefault(status_name, []).append(item_id)
@@ -692,6 +737,7 @@ class GitHubService:
             "item_labels": item_labels,
             "item_assignees": item_assignees,
             "content_node_ids": content_node_ids,
+            "pr_urls": pr_urls,
         }
 
     async def get_issue_details(self, issue_id: str) -> dict[str, Any]:
@@ -705,10 +751,16 @@ class GitHubService:
         """Return the state of a GitHub issue by number.
 
         ``repo`` is the ``owner/name`` slug (e.g. ``"ViviDynamics/website"``).
-        Returns one of: ``"open"``, ``"closed"``, ``"not_found"``,
-        ``"auth_error"``, or ``"api_error"``.  Uses a lightweight REST call
-        (not GraphQL) so we don't need the node ID.  Used by the dependency
-        service (046) to resolve off-board blockers.
+        Returns one of:
+          - ``"open"`` / ``"closed"`` — definitive (issue exists)
+          - ``"not_found"`` — definitive (404)
+          - ``"auth_error"`` / ``"api_error"`` — transient; the caller MUST
+            treat these as "unknown, try again next cycle", not as a permanent
+            failure (see resolve_off_board_dependencies).
+
+        Uses a lightweight REST call (not GraphQL) so we don't need the node
+        ID.  Used by the dependency service (046) to resolve off-board
+        blockers.
         """
         url = f"{self._rest_api_base()}/repos/{repo}/issues/{issue_number}"
         try:
@@ -820,10 +872,14 @@ class GitHubService:
         """
         from urllib.parse import urlparse
 
-        raw = str(self._endpoint).rstrip("/").removesuffix("/graphql")
+        # Case-insensitive suffix strip — GraphQL endpoints are conventionally
+        # lowercase, but defend against ``/GraphQL`` / mixed-case configs.
+        raw = str(self._endpoint).rstrip("/")
+        if raw.lower().endswith("/graphql"):
+            raw = raw[: -len("/graphql")]
         parsed = urlparse(raw)
         path = parsed.path.rstrip("/")
-        if path.endswith("/api"):
+        if path.lower().endswith("/api"):
             return f"{parsed.scheme}://{parsed.netloc}{path}/v3"
         if path:
             return f"{parsed.scheme}://{parsed.netloc}{path}"

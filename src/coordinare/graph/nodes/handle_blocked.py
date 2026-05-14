@@ -55,7 +55,7 @@ async def handle_blocked(state: CoordinareState) -> CoordinareState:
         logger.info("handle_blocked_no_open_questions", card_id=card_id,
                     msg="No questions from performer/assessor — generating from card content")
 
-        backend = state.get("assessment_backend")
+        backend = state.get("conducting_backend")
         if backend is not None:
             try:
                 from coordinare.services.persona_service import (

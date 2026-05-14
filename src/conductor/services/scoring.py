@@ -78,9 +78,12 @@ class ClaudeScorer:
                 f"Issue title: {issue_title}\n\n"
                 f"Issue body:\n{issue_body}"
             )
+            # max_tokens=4096: scoring prompts return a JSON object with reasoning
+            # text alongside the score; 512 truncated long reasoning mid-stream and
+            # surfaced as api_error via JSON parse failure downstream.
             response = await self._claude._client.messages.create(
                 model=self._claude._model,
-                max_tokens=512,
+                max_tokens=4096,
                 system=_SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": user_message}],
             )

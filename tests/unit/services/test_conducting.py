@@ -6,15 +6,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from coordinare.services.assessment import (
+from coordinare.services.conducting import (
     AnthropicApiBackend,
     ClaudeCliBackend,
+    CodexCliBackend,
     NullBackend,
+    OpenAiApiBackend,
     OpenCodeBackend,
     _build_assess_prompt,
     _parse_assessment_response,
     _parse_prompt_response,
-    build_assessment_backend,
+    build_conducting_backend,
 )
 
 # ---------------------------------------------------------------------------
@@ -171,12 +173,25 @@ class TestOpenCodeBackend:
 
 
 # ---------------------------------------------------------------------------
-# build_assessment_backend factory
+# build_conducting_backend factory
 # ---------------------------------------------------------------------------
 
 def _cfg(backend: str) -> MagicMock:
+    from coordinare.config import ConductingConfig
     cfg = MagicMock()
-    cfg.assessment_backend = backend
+    # ConductingConfig validates backend against a Literal; for the "unknown"
+    # test case we synthesize a duck-typed stand-in instead.
+    try:
+        cfg.conducting = ConductingConfig(backend=backend)  # type: ignore[arg-type]
+    except Exception:
+        fake = MagicMock()
+        fake.backend = backend
+        fake.model = None
+        fake.max_tokens = 4096
+        fake.temperature = None
+        fake.executable = None
+        fake.base_url = None
+        cfg.conducting = fake
     return cfg
 
 
@@ -324,23 +339,435 @@ class TestOpenCodeBackendEdgeCases:
         assert "empty" in result["rationale"]
 
 
-class TestBuildAssessmentBackend:
+class TestBuildConductingBackend:
     def test_none_returns_null_backend(self) -> None:
-        assert isinstance(build_assessment_backend(_cfg("none")), NullBackend)
+        assert isinstance(build_conducting_backend(_cfg("none")), NullBackend)
 
     def test_claude_cli_returns_claude_cli_backend(self) -> None:
-        assert isinstance(build_assessment_backend(_cfg("claude_cli")), ClaudeCliBackend)
+        assert isinstance(build_conducting_backend(_cfg("claude_cli")), ClaudeCliBackend)
 
     def test_opencode_returns_opencode_backend(self) -> None:
-        assert isinstance(build_assessment_backend(_cfg("opencode")), OpenCodeBackend)
+        assert isinstance(build_conducting_backend(_cfg("opencode")), OpenCodeBackend)
 
     def test_anthropic_api_returns_anthropic_api_backend(self) -> None:
-        result = build_assessment_backend(_cfg("anthropic_api"))
+        result = build_conducting_backend(_cfg("anthropic_api"))
         assert isinstance(result, AnthropicApiBackend)
 
     def test_unknown_raises_value_error(self) -> None:
-        with pytest.raises(ValueError, match="Unknown assessment_backend"):
-            build_assessment_backend(_cfg("foobar"))
+        with pytest.raises(ValueError, match="Unknown conducting backend"):
+            build_conducting_backend(_cfg("foobar"))
+
+    def test_openai_api_returns_openai_backend(self) -> None:
+        result = build_conducting_backend(_cfg("openai_api"))
+        assert isinstance(result, OpenAiApiBackend)
+
+    def test_codex_cli_returns_codex_cli_backend(self) -> None:
+        result = build_conducting_backend(_cfg("codex_cli"))
+        assert isinstance(result, CodexCliBackend)
+
+    def test_anthropic_threads_conducting_config(self) -> None:
+        from coordinare.config import ConductingConfig
+        cfg = MagicMock()
+        cfg.conducting = ConductingConfig(
+            backend="anthropic_api", model="claude-test", max_tokens=2048, temperature=0.3
+        )
+        backend = build_conducting_backend(cfg)
+        assert isinstance(backend, AnthropicApiBackend)
+        assert backend._svc._model == "claude-test"
+        assert backend._svc._max_tokens == 2048
+        assert backend._svc._temperature == 0.3
+
+    def test_factory_threads_effort_to_openai(self) -> None:
+        from coordinare.config import ConductingConfig
+        cfg = MagicMock()
+        cfg.conducting = ConductingConfig(backend="openai_api", effort="high")
+        backend = build_conducting_backend(cfg)
+        assert isinstance(backend, OpenAiApiBackend)
+        assert backend._effort == "high"
+
+    def test_factory_threads_effort_to_codex_cli(self) -> None:
+        from coordinare.config import ConductingConfig
+        cfg = MagicMock()
+        cfg.conducting = ConductingConfig(backend="codex_cli", effort="medium")
+        backend = build_conducting_backend(cfg)
+        assert isinstance(backend, CodexCliBackend)
+        assert backend._effort == "medium"
+
+    def test_factory_threads_effort_to_opencode(self) -> None:
+        from coordinare.config import ConductingConfig
+        cfg = MagicMock()
+        cfg.conducting = ConductingConfig(backend="opencode", effort="low")
+        backend = build_conducting_backend(cfg)
+        assert isinstance(backend, OpenCodeBackend)
+        assert backend._effort == "low"
+
+
+def _fake_httpx_client(
+    *,
+    response_json: dict | None = None,
+    raise_on_status: Exception | None = None,
+    raise_on_post: Exception | None = None,
+) -> MagicMock:
+    """Build a MagicMock that quacks like ``httpx.AsyncClient`` for the post path."""
+    fake_response = MagicMock()
+    if raise_on_status is not None:
+        fake_response.raise_for_status = MagicMock(side_effect=raise_on_status)
+    else:
+        fake_response.raise_for_status = MagicMock()
+    fake_response.json = MagicMock(return_value=response_json or {})
+    fake_client = MagicMock()
+    fake_client.__aenter__ = AsyncMock(return_value=fake_client)
+    fake_client.__aexit__ = AsyncMock(return_value=None)
+    if raise_on_post is not None:
+        fake_client.post = AsyncMock(side_effect=raise_on_post)
+    else:
+        fake_client.post = AsyncMock(return_value=fake_response)
+    return fake_client
+
+
+class TestOpenAiApiBackend:
+    @pytest.mark.asyncio
+    async def test_missing_key_returns_empty(self) -> None:
+        backend = OpenAiApiBackend(api_key=None, model="gpt-test")
+        result = await backend.assess({"title": "X"})
+        assert result["sufficient"] is False
+        assert result["rationale"] == "empty openai response"
+
+    @pytest.mark.asyncio
+    async def test_parses_chat_completion(self) -> None:
+        backend = OpenAiApiBackend(api_key="k", model="gpt-test")
+        client = _fake_httpx_client(
+            response_json={
+                "choices": [
+                    {"message": {"content": '{"sufficient": true, "questions": [], "rationale": "ok"}'}}
+                ]
+            }
+        )
+        with patch("httpx.AsyncClient", return_value=client):
+            result = await backend.assess({"title": "X", "body": "Y"})
+        assert result["sufficient"] is True
+
+    @pytest.mark.asyncio
+    async def test_http_4xx_returns_empty_response(self) -> None:
+        import httpx
+        backend = OpenAiApiBackend(api_key="k", model="gpt-test")
+        # raise_for_status raises HTTPStatusError, which is an httpx.HTTPError.
+        request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+        response = httpx.Response(401, request=request)
+        err = httpx.HTTPStatusError("unauthorized", request=request, response=response)
+        client = _fake_httpx_client(raise_on_status=err)
+        with patch("httpx.AsyncClient", return_value=client):
+            result = await backend.assess({"title": "X"})
+        assert result["sufficient"] is False
+        assert result["rationale"] == "empty openai response"
+
+    @pytest.mark.asyncio
+    async def test_http_5xx_returns_empty_response(self) -> None:
+        import httpx
+        backend = OpenAiApiBackend(api_key="k", model="gpt-test")
+        request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+        response = httpx.Response(503, request=request)
+        err = httpx.HTTPStatusError("unavailable", request=request, response=response)
+        client = _fake_httpx_client(raise_on_status=err)
+        with patch("httpx.AsyncClient", return_value=client):
+            result = await backend.assess({"title": "X"})
+        assert result["sufficient"] is False
+
+    @pytest.mark.asyncio
+    async def test_connection_error_returns_empty_response(self) -> None:
+        import httpx
+        backend = OpenAiApiBackend(api_key="k", model="gpt-test")
+        client = _fake_httpx_client(raise_on_post=httpx.ConnectError("dns"))
+        with patch("httpx.AsyncClient", return_value=client):
+            result = await backend.assess({"title": "X"})
+        assert result["sufficient"] is False
+
+    @pytest.mark.asyncio
+    async def test_malformed_response_empty_choices(self) -> None:
+        backend = OpenAiApiBackend(api_key="k", model="gpt-test")
+        client = _fake_httpx_client(response_json={"choices": []})
+        with patch("httpx.AsyncClient", return_value=client):
+            result = await backend.assess({"title": "X"})
+        assert result["sufficient"] is False
+
+    @pytest.mark.asyncio
+    async def test_malformed_response_missing_message_content(self) -> None:
+        backend = OpenAiApiBackend(api_key="k", model="gpt-test")
+        client = _fake_httpx_client(response_json={"choices": [{"message": {}}]})
+        with patch("httpx.AsyncClient", return_value=client):
+            result = await backend.assess({"title": "X"})
+        assert result["sufficient"] is False
+
+    @pytest.mark.asyncio
+    async def test_malformed_response_non_dict_body(self) -> None:
+        backend = OpenAiApiBackend(api_key="k", model="gpt-test")
+        client = _fake_httpx_client(response_json=["not a dict"])  # type: ignore[arg-type]
+        with patch("httpx.AsyncClient", return_value=client):
+            result = await backend.assess({"title": "X"})
+        assert result["sufficient"] is False
+
+    @pytest.mark.asyncio
+    async def test_payload_shape_chat_model(self) -> None:
+        """Non-reasoning model: max_tokens + temperature, no reasoning_effort."""
+        backend = OpenAiApiBackend(
+            api_key="k", model="gpt-4o-mini", max_tokens=1234, temperature=0.7
+        )
+        client = _fake_httpx_client(
+            response_json={"choices": [{"message": {"content": '{"sufficient": true}'}}]}
+        )
+        with patch("httpx.AsyncClient", return_value=client):
+            await backend.assess({"title": "X"})
+        payload = client.post.call_args.kwargs["json"]
+        assert payload["model"] == "gpt-4o-mini"
+        assert payload["max_tokens"] == 1234
+        assert payload["temperature"] == 0.7
+        assert "max_completion_tokens" not in payload
+        assert "reasoning_effort" not in payload
+        assert payload["response_format"] == {"type": "json_object"}
+
+    @pytest.mark.asyncio
+    async def test_payload_shape_reasoning_model(self) -> None:
+        """Reasoning model (effort set): max_completion_tokens + reasoning_effort,
+        and temperature/max_tokens are omitted because the API rejects them."""
+        backend = OpenAiApiBackend(
+            api_key="k", model="o3-mini", max_tokens=2048, temperature=0.5, effort="high"
+        )
+        client = _fake_httpx_client(
+            response_json={"choices": [{"message": {"content": '{"sufficient": true}'}}]}
+        )
+        with patch("httpx.AsyncClient", return_value=client):
+            await backend.assess({"title": "X"})
+        payload = client.post.call_args.kwargs["json"]
+        assert payload["max_completion_tokens"] == 2048
+        assert payload["reasoning_effort"] == "high"
+        assert "max_tokens" not in payload
+        assert "temperature" not in payload
+
+    @pytest.mark.asyncio
+    async def test_base_url_override_strips_trailing_slash(self) -> None:
+        backend = OpenAiApiBackend(
+            api_key="k", model="gpt-test", base_url="https://proxy.example.com/v1/"
+        )
+        client = _fake_httpx_client(
+            response_json={"choices": [{"message": {"content": '{"sufficient": true}'}}]}
+        )
+        with patch("httpx.AsyncClient", return_value=client):
+            await backend.assess({"title": "X"})
+        url = client.post.call_args.args[0]
+        assert url == "https://proxy.example.com/v1/chat/completions"
+
+    @pytest.mark.asyncio
+    async def test_auth_header_present(self) -> None:
+        backend = OpenAiApiBackend(api_key="sk-abc", model="gpt-test")
+        client = _fake_httpx_client(
+            response_json={"choices": [{"message": {"content": '{"sufficient": true}'}}]}
+        )
+        with patch("httpx.AsyncClient", return_value=client):
+            await backend.assess({"title": "X"})
+        headers = client.post.call_args.kwargs["headers"]
+        assert headers["Authorization"] == "Bearer sk-abc"
+        assert headers["Content-Type"] == "application/json"
+
+    @pytest.mark.asyncio
+    async def test_prompt_method_success(self) -> None:
+        backend = OpenAiApiBackend(api_key="k", model="gpt-test")
+        client = _fake_httpx_client(
+            response_json={"choices": [{"message": {"content": "hello there"}}]}
+        )
+        with patch("httpx.AsyncClient", return_value=client):
+            result = await backend.prompt("say hi")
+        assert result == {"text": "hello there", "data": None}
+
+    @pytest.mark.asyncio
+    async def test_prompt_method_json_response_format(self) -> None:
+        backend = OpenAiApiBackend(api_key="k", model="gpt-test")
+        client = _fake_httpx_client(
+            response_json={"choices": [{"message": {"content": '{"answer": 42}'}}]}
+        )
+        with patch("httpx.AsyncClient", return_value=client):
+            result = await backend.prompt("Q?", response_format="json")
+        assert result["data"] == {"answer": 42}
+        payload = client.post.call_args.kwargs["json"]
+        assert payload["response_format"] == {"type": "json_object"}
+        assert payload["messages"][0]["role"] == "system"
+
+    @pytest.mark.asyncio
+    async def test_prompt_empty_short_circuits(self) -> None:
+        backend = OpenAiApiBackend(api_key="k", model="gpt-test")
+        client = _fake_httpx_client(response_json={})
+        with patch("httpx.AsyncClient", return_value=client):
+            result = await backend.prompt("   ")
+        assert result == {"text": "", "data": None}
+        client.post.assert_not_called()
+
+
+class TestCodexCliBackend:
+    @pytest.mark.asyncio
+    async def test_empty_stdout_returns_insufficient(self) -> None:
+        with patch("asyncio.create_subprocess_exec", return_value=_make_proc(b"")):
+            result = await CodexCliBackend().assess({})
+        assert result["sufficient"] is False
+
+    @pytest.mark.asyncio
+    async def test_parses_stdout_json(self) -> None:
+        out = b'{"sufficient": true, "questions": [], "rationale": "ok"}'
+        with patch("asyncio.create_subprocess_exec", return_value=_make_proc(out)):
+            result = await CodexCliBackend().assess({"title": "X"})
+        assert result["sufficient"] is True
+
+    def test_build_args_no_options(self) -> None:
+        backend = CodexCliBackend(executable="codex")
+        assert backend._build_args() == ["codex", "exec", "-"]
+
+    def test_build_args_orders_options_before_stdin_sentinel(self) -> None:
+        """Regression: `-` is the positional PROMPT for `codex exec` (read from
+        stdin). Flags must precede it; the trailing `-` is the last argv element."""
+        backend = CodexCliBackend(executable="codex", model="o3", effort="high")
+        args = backend._build_args()
+        assert args[-1] == "-"
+        assert "--model" in args
+        model_idx = args.index("--model")
+        assert args[model_idx + 1] == "o3"
+        assert model_idx < args.index("-")
+        assert "-c" in args
+        c_idx = args.index("-c")
+        # No embedded quotes around the value — codex parses as TOML with
+        # literal-string fallback.
+        assert args[c_idx + 1] == "model_reasoning_effort=high"
+        assert c_idx < args.index("-")
+
+    @pytest.mark.asyncio
+    async def test_assess_pipes_prompt_via_stdin(self) -> None:
+        captured = {}
+
+        async def fake_communicate(*, input: bytes) -> tuple[bytes, bytes]:
+            captured["stdin"] = input
+            return (b'{"sufficient": true, "questions": [], "rationale": "ok"}', b"")
+
+        proc = MagicMock()
+        proc.communicate = fake_communicate
+        proc.returncode = 0
+        with patch("asyncio.create_subprocess_exec", return_value=proc) as mock_exec:
+            await CodexCliBackend(executable="codex").assess({"title": "Card-X"})
+        # argv should be [codex, exec, -] (no flags configured)
+        assert mock_exec.call_args.args == ("codex", "exec", "-")
+        assert b"Card-X" in captured["stdin"]
+        # stdin must be wired up
+        assert mock_exec.call_args.kwargs["stdin"] == asyncio.subprocess.PIPE
+
+    @pytest.mark.asyncio
+    async def test_timeout_kills_process_and_returns_insufficient(self) -> None:
+        proc = MagicMock()
+        proc.communicate = AsyncMock(side_effect=TimeoutError())
+        proc.kill = MagicMock()
+        proc.wait = AsyncMock(return_value=0)
+        proc.returncode = -9
+        with patch("asyncio.create_subprocess_exec", return_value=proc):
+            result = await CodexCliBackend().assess({"title": "X"})
+        assert result["sufficient"] is False
+        assert result["rationale"] == "empty codex response"
+        proc.kill.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_oserror_returns_insufficient(self) -> None:
+        with patch("asyncio.create_subprocess_exec", side_effect=OSError("not found")):
+            result = await CodexCliBackend().assess({"title": "X"})
+        assert result["sufficient"] is False
+
+    @pytest.mark.asyncio
+    async def test_nonzero_exit_still_parses_stdout(self) -> None:
+        """codex exec may exit non-zero (e.g. warning) but still produce a
+        usable response on stdout; we should parse what we have and log."""
+        proc = _make_proc(
+            b'{"sufficient": true, "questions": [], "rationale": "ok"}', returncode=1
+        )
+        with patch("asyncio.create_subprocess_exec", return_value=proc):
+            result = await CodexCliBackend().assess({"title": "X"})
+        assert result["sufficient"] is True
+
+    @pytest.mark.asyncio
+    async def test_prompt_pipes_text_via_stdin(self) -> None:
+        captured = {}
+
+        async def fake_communicate(*, input: bytes) -> tuple[bytes, bytes]:
+            captured["stdin"] = input
+            return (b'{"answer": 42}', b"")
+
+        proc = MagicMock()
+        proc.communicate = fake_communicate
+        proc.returncode = 0
+        with patch("asyncio.create_subprocess_exec", return_value=proc):
+            result = await CodexCliBackend().prompt("what?", response_format="json")
+        assert captured["stdin"] == b"what?"
+        assert result["data"] == {"answer": 42}
+
+    @pytest.mark.asyncio
+    async def test_prompt_empty_short_circuits(self) -> None:
+        with patch("asyncio.create_subprocess_exec") as mock_exec:
+            result = await CodexCliBackend().prompt("   ")
+        assert result == {"text": "", "data": None}
+        mock_exec.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_prompt_timeout_returns_empty(self) -> None:
+        proc = MagicMock()
+        proc.communicate = AsyncMock(side_effect=TimeoutError())
+        proc.kill = MagicMock()
+        proc.wait = AsyncMock(return_value=0)
+        proc.returncode = -9
+        with patch("asyncio.create_subprocess_exec", return_value=proc):
+            result = await CodexCliBackend().prompt("hello")
+        assert result == {"text": "", "data": None}
+        proc.kill.assert_called_once()
+
+
+class TestClaudeCliBackendStdinAssess:
+    """Regression: assess() must pipe prompts via stdin (not argv) so user
+    content stays out of process listings and avoids argv length limits."""
+
+    @pytest.mark.asyncio
+    async def test_assess_uses_stdin_not_argv(self) -> None:
+        captured = {}
+
+        async def fake_communicate(*, input: bytes) -> tuple[bytes, bytes]:
+            captured["stdin"] = input
+            return (b'{"sufficient": true, "questions": [], "rationale": "ok"}', b"")
+
+        proc = MagicMock()
+        proc.communicate = fake_communicate
+        proc.returncode = 0
+        with patch("asyncio.create_subprocess_exec", return_value=proc) as mock_exec:
+            await ClaudeCliBackend().assess({"title": "Secret-Card"})
+        args = mock_exec.call_args.args
+        # Prompt must NOT be a positional argv element
+        assert not any("Secret-Card" in (a if isinstance(a, str) else "") for a in args)
+        assert args[-1] == "-"
+        assert b"Secret-Card" in captured["stdin"]
+
+
+class TestOpenCodeBackendStdinAssess:
+    @pytest.mark.asyncio
+    async def test_assess_uses_stdin_not_argv(self) -> None:
+        captured = {}
+
+        async def fake_communicate(*, input: bytes) -> tuple[bytes, bytes]:
+            captured["stdin"] = input
+            return (b'{"sufficient": true, "questions": [], "rationale": "ok"}', b"")
+
+        proc = MagicMock()
+        proc.communicate = fake_communicate
+        proc.returncode = 0
+        with patch("asyncio.create_subprocess_exec", return_value=proc) as mock_exec:
+            await OpenCodeBackend(executable="opencode", effort="medium").assess(
+                {"title": "Secret-Card"}
+            )
+        args = mock_exec.call_args.args
+        assert not any("Secret-Card" in (a if isinstance(a, str) else "") for a in args)
+        assert args[-1] == "-"
+        # effort args flow through
+        assert "--effort" in args
+        assert args[args.index("--effort") + 1] == "medium"
+        assert b"Secret-Card" in captured["stdin"]
 
 
 # ---------------------------------------------------------------------------

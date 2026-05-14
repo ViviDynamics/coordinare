@@ -247,6 +247,48 @@ class TestHotReloadAndEdgeCases:
         assert svc_b is not None
         assert sm.active_count("implementing") == 2
 
+    def test_hot_reload_honors_performers_default(self) -> None:
+        """performers.default.max_concurrency propagates when role override unset."""
+        from types import SimpleNamespace
+
+        from coordinare.config import PerformerRoleConfig, PerformersConfig
+
+        sm = SlotManager()
+        sm.register_pool("implementing", _mock_services(3), max_concurrency=1)
+
+        # Only ``default`` sets max_concurrency=3; implementer has no override.
+        performers = PerformersConfig(
+            default=PerformerRoleConfig(max_concurrency=3),
+            implementer=PerformerRoleConfig(),
+        )
+        config = SimpleNamespace(performers=performers)
+
+        sm.acquire("implementing", "CARD_A", config=config)
+        svc_b = sm.acquire("implementing", "CARD_B", config=config)
+
+        assert svc_b is not None
+        assert sm.active_count("implementing") == 2
+
+    def test_hot_reload_warns_when_capped_by_services(self) -> None:
+        """Bumping max_concurrency above len(services) flags the pool once."""
+        from types import SimpleNamespace
+
+        sm = SlotManager()
+        sm.register_pool("implementing", _mock_services(1), max_concurrency=1)
+
+        config = SimpleNamespace(
+            performers=SimpleNamespace(
+                implementer=SimpleNamespace(max_concurrency=5),
+            ),
+        )
+        sm.acquire("implementing", "CARD_A", config=config)
+
+        # Effective max stays at len(services)=1; pool is marked so we don't
+        # spam the same warning on every subsequent acquire().
+        pool = sm.pools["implementing"]
+        assert pool.max_concurrency == 1
+        assert getattr(pool, "_capped_warned", False) is True
+
     def test_singleton_clamped_even_with_config_override(self) -> None:
         from types import SimpleNamespace
 

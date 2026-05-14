@@ -13,6 +13,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
+# Install rtk (token-compression CLI proxy). Pinned to v0.39.0; bump
+# deliberately, not floated to latest. Build fails loudly if the binary
+# can't be installed — we do not want a silently-missing rtk on images
+# that downstream operators have flagged RTK_ENABLED=1 for.
+ARG RTK_VERSION=0.39.0
+RUN set -eu \
+    && arch="$(uname -m)" \
+    && case "$arch" in \
+         x86_64)  asset="rtk-x86_64-unknown-linux-musl.tar.gz"; sha="06e582ba1996ef03e76a441b9896aba79dd1b746ce539d228296c681b1c5401c" ;; \
+         aarch64) asset="rtk-aarch64-unknown-linux-gnu.tar.gz";  sha="68fd34cbff46856826a092c261d67b1b80b579ef6c8a0400c0089e14325e709d" ;; \
+         *) echo "Unsupported arch for rtk: $arch" >&2; exit 1 ;; \
+       esac \
+    && curl -fsSL -o /tmp/rtk.tar.gz "https://github.com/rtk-ai/rtk/releases/download/v${RTK_VERSION}/${asset}" \
+    && echo "${sha}  /tmp/rtk.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/rtk.tar.gz -C /tmp \
+    && install -m 0755 /tmp/rtk /usr/local/bin/rtk \
+    && rm -rf /tmp/rtk /tmp/rtk.tar.gz \
+    && rtk --version
+
 # Install performer package from current repo
 WORKDIR /app
 COPY pyproject.toml README.md ./

@@ -294,6 +294,7 @@ def test_build_performer_services_creates_multiple_transports() -> None:
     # All other roles return None
     for role in ["advocate", "assessor", "architect", "reviewer", "security", "qa", "tech_writer", "closer"]:
         setattr(config.performers, role, None)
+    config.performers.resolved_role.side_effect = lambda r: getattr(config.performers, r, None)
 
     cbs = _build_circuit_breakers(config)
 
@@ -339,6 +340,7 @@ def test_build_performer_services_singleton_clamped() -> None:
     config.performers.assessor = assessor_config
     for role in ["advocate", "architect", "implementer", "reviewer", "security", "qa", "tech_writer", "closer"]:
         setattr(config.performers, role, None)
+    config.performers.resolved_role.side_effect = lambda r: getattr(config.performers, r, None)
 
     cbs = _build_circuit_breakers(config)
 
@@ -374,6 +376,7 @@ def test_build_performer_services_max_concurrency_zero_skips() -> None:
     config.performers.implementer = impl_config
     for role in ["advocate", "assessor", "architect", "reviewer", "security", "qa", "tech_writer", "closer"]:
         setattr(config.performers, role, None)
+    config.performers.resolved_role.side_effect = lambda r: getattr(config.performers, r, None)
 
     cbs = _build_circuit_breakers(config)
 
@@ -407,3 +410,144 @@ def test_slot_manager_construction_from_service_lists() -> None:
     svc = sm.acquire("implementing", "CARD_A")
     assert svc is not None
     assert sm.active_count("implementing") == 1
+
+
+# ---------------------------------------------------------------------------
+# _build_http_performer_services — ephemeral replication (062)
+# ---------------------------------------------------------------------------
+
+
+def _http_config(
+    endpoints: list[object],
+    performers_by_role: dict[str, int] | None,
+) -> SimpleNamespace:
+    """Minimal stand-in for ProjectConfiguration accepted by
+    _build_http_performer_services. Avoids pydantic validation."""
+    if performers_by_role is None:
+        performers = None
+    else:
+        def _resolved_role(role: str, _map=performers_by_role) -> object | None:
+            mc = _map.get(role)
+            if mc is None:
+                return None
+            return SimpleNamespace(max_concurrency=mc)
+
+        performers = SimpleNamespace(resolved_role=_resolved_role)
+    return SimpleNamespace(performer_endpoints=endpoints, performers=performers)
+
+
+def test_build_http_services_ephemeral_replicates_by_max_concurrency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ephemeral endpoints get N copies of the service handle, where
+    N = performers.<role>.max_concurrency. Same handle is replicated
+    because each invocation spawns its own container."""
+    monkeypatch.setattr(
+        app_main, "_build_http_performer_services",
+        app_main._build_http_performer_services,
+    )
+    # Patch HTTPPerformerService to a no-op factory so we don't validate cfg.
+    import coordinare.services.http_performer_service as hps_mod
+    monkeypatch.setattr(
+        hps_mod, "HTTPPerformerService", lambda cfg: SimpleNamespace(_cfg=cfg)
+    )
+
+    ep = SimpleNamespace(id="impl-pool", mode="ephemeral", roles=["implementer"])
+    cfg = _http_config([ep], performers_by_role={"implementer": 3})
+
+    result = app_main._build_http_performer_services(cfg)
+
+    assert "implementing" in result
+    assert len(result["implementing"]) == 3
+    # Same handle replicated, not three distinct services
+    assert result["implementing"][0] is result["implementing"][1]
+    assert result["implementing"][0] is result["implementing"][2]
+
+
+def test_build_http_services_persistent_does_not_replicate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Persistent endpoints map to a single slot regardless of max_concurrency."""
+    import coordinare.services.http_performer_service as hps_mod
+    monkeypatch.setattr(
+        hps_mod, "HTTPPerformerService", lambda cfg: SimpleNamespace(_cfg=cfg)
+    )
+
+    ep = SimpleNamespace(id="impl", mode="persistent", roles=["implementer"])
+    cfg = _http_config([ep], performers_by_role={"implementer": 5})
+
+    result = app_main._build_http_performer_services(cfg)
+
+    assert len(result["implementing"]) == 1
+
+
+def test_build_http_services_ephemeral_singleton_stage_clamps_to_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SINGLETON_STAGES (assessing, closing_review) clamp copies to 1 even
+    when max_concurrency is higher."""
+    import coordinare.services.http_performer_service as hps_mod
+    monkeypatch.setattr(
+        hps_mod, "HTTPPerformerService", lambda cfg: SimpleNamespace(_cfg=cfg)
+    )
+
+    ep = SimpleNamespace(id="assessor", mode="ephemeral", roles=["assessor"])
+    cfg = _http_config([ep], performers_by_role={"assessor": 4})
+
+    result = app_main._build_http_performer_services(cfg)
+
+    assert len(result["assessing"]) == 1
+
+
+def test_build_http_services_skips_subprocess(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Subprocess endpoints are handled by the legacy pipeline and skipped here."""
+    import coordinare.services.http_performer_service as hps_mod
+    monkeypatch.setattr(
+        hps_mod, "HTTPPerformerService", lambda cfg: SimpleNamespace(_cfg=cfg)
+    )
+
+    ep = SimpleNamespace(id="legacy", mode="subprocess", roles=["implementer"])
+    cfg = _http_config([ep], performers_by_role={"implementer": 2})
+
+    result = app_main._build_http_performer_services(cfg)
+
+    assert result == {}
+
+
+def test_build_http_services_ephemeral_no_performers_config_defaults_to_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When config.performers is None, ephemeral endpoints default to 1 copy."""
+    import coordinare.services.http_performer_service as hps_mod
+    monkeypatch.setattr(
+        hps_mod, "HTTPPerformerService", lambda cfg: SimpleNamespace(_cfg=cfg)
+    )
+
+    ep = SimpleNamespace(id="impl", mode="ephemeral", roles=["implementer"])
+    cfg = _http_config([ep], performers_by_role=None)
+
+    result = app_main._build_http_performer_services(cfg)
+
+    assert len(result["implementing"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# SIGUSR1 task dump must truncate, not append, so repeated dumps over a
+# long-lived daemon don't grow /tmp/coordinare-tasks.log unbounded.
+# ---------------------------------------------------------------------------
+
+def test_sigusr1_dump_uses_truncate_mode() -> None:
+    """Source-level guard: _dump_tasks opens the log in mode='w', not 'a'.
+
+    The handler is defined inside an async coroutine and isn't directly
+    importable; assert the contract by inspecting the module source.
+    """
+    src = Path(app_main.__file__).read_text()
+    # Find the _dump_tasks function body.
+    start = src.index("def _dump_tasks(")
+    end = src.index("\n    with contextlib.suppress(NotImplementedError, AttributeError):", start)
+    body = src[start:end]
+    assert 'path.open("w")' in body, "SIGUSR1 dump must truncate (mode='w') to avoid unbounded growth"
+    assert 'path.open("a")' not in body, "SIGUSR1 dump must not append"
