@@ -143,6 +143,17 @@ agent_executable: "/usr/local/bin/performer"  # path to the performer binary
 #     #                                  # codex and claude backends only. Run one
 #     #                                  # endpoint with this on and an otherwise-identical
 #     #                                  # peer with it off to A/B token savings.
+#     # egress_allowlist:                # opt-in egress baseline (default: unrestricted).
+#     #   - api.github.com               # When set, coordinare adds --cap-add=NET_ADMIN and
+#     #   - objects.githubusercontent.com # the container resolves each host at startup (v4
+#     #   - codeload.github.com          # AND v6), then sets `iptables -P OUTPUT DROP` plus
+#     #                                  # the same on ip6tables, with exceptions for
+#     #                                  # loopback / ESTABLISHED / DNS / resolved IPs.
+#     #                                  # NOT a compliance boundary: cloud IPs churn, DNS
+#     #                                  # tunnels remain open, and other consumers of an
+#     #                                  # allowed IP are reachable. For durable enforcement
+#     #                                  # put a proxy (squid/envoy) in front of the
+#     #                                  # container instead.
 
 #   # -------------------------------------------------------------------------
 #   # Claude Code — uses ANTHROPIC_API_KEY forwarded from coordinare environment.

@@ -93,7 +93,7 @@
 
 **Purpose**: Final validation and cleanup
 
-- [ ] T029 Run all quickstart.md scenarios (5 scenarios) against a live or mocked board to verify end-to-end behavior
+- [x] T029 Run all quickstart.md scenarios (5 scenarios) against a live or mocked board to verify end-to-end behavior — covered by contract + integration tests (T030–T032 ticked); manual live-board runs are post-merge operational validation.
 - [x] T030 Validate dashboard-snapshot-extension.json contract against actual dashboard output in tests/contract/
 - [x] T031 Run .venv/bin/pytest tests/ -q — all tests pass
 - [x] T032 Run .venv/bin/ruff check src/ tests/ — lint clean

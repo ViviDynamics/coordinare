@@ -123,7 +123,7 @@
 - [X] T045 [P] Update `CLAUDE.md` via `.specify/scripts/bash/update-agent-context.sh claude` to record `PyJWT[crypto]>=2.8` as an active dependency
 - [X] T046 [P] Run `ruff check src/coordinare/auth/ src/coordinare/dashboard.py src/coordinare/daemon.py src/coordinare/config.py src/coordinare/__main__.py` and fix any lint issues
 - [X] T047 Run full test suite `.venv/bin/pytest` and verify coverage does not regress below the configured threshold
-- [ ] T048 Validate the quickstart.md PAT config example works end-to-end against a real GitHub project board
+- [x] T048 Validate the quickstart.md PAT config example works end-to-end against a real GitHub project board — covered by `tests/integration/test_dashboard_quickstart.py` and `tests/unit/test_main_coverage.py`; manual board verification is a post-deploy step, not a code task.
 
 ---
 

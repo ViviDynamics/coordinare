@@ -96,6 +96,18 @@ async def start_ephemeral(config: PerformerEndpointConfig) -> StartedContainer:
 
     args: list[str] = ["run", "-d", "--rm", "--label", f"coordinare.performer.id={config.id}"]
 
+    if config.egress_allowlist:
+        args += ["--cap-add", "NET_ADMIN"]
+        args += [
+            "-e",
+            f"PERFORMER_EGRESS_ALLOWLIST={','.join(config.egress_allowlist)}",
+        ]
+        logger.info(
+            "performer_lifecycle.start_ephemeral_egress",
+            performer_id=config.id,
+            hosts=list(config.egress_allowlist),
+        )
+
     if config.port is not None:
         args += ["-p", f"{config.port}:8088"]
     else:

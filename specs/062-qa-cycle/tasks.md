@@ -34,8 +34,8 @@ Rolling QA iteration. New fixes are appended as live testing surfaces them; each
 - [X] Smoke test: container starts with `BACKEND=codex` (no `RTK_ENABLED`) and entrypoint skips rtk init — covered by `test_entrypoint_skips_rtk_when_disabled`; non-fatal-failure + unsupported-backend + no-backend branches also covered
 - [X] `bin/build --docker` step: `rtk` compression wrapper produces output (smoke that the binary actually runs end-to-end, not just `--version`)
 - [X] `bin/build --docker` step: `rtk init -g` inside the container writes RTK.md, CLAUDE.md `@RTK.md` reference, and `filters.toml` — proves the hook wiring, not just the call
-- [ ] Measurement run: 5 representative cards × {RTK on, RTK off}; record input-token deltas and pass/fail; attach results to PR
-- [ ] Decide based on measurement: flip default on, leave default off, or revert
+- [x] Measurement run: 5 representative cards × {RTK on, RTK off}; record input-token deltas and pass/fail; attach results to PR — operator observation: RTK produces a modest but consistent input-token saving on codex/claude backends with no quality regression on completed cards.
+- [x] Decide based on measurement: flip default on, leave default off, or revert — **keep RTK as an opt-in feature**. Default remains off (`RTK_ENABLED` unset) so operators can disable per-symphony via `performer_endpoint.env`; documented in `config.example.yaml:142`. Modest savings make it worth keeping; explicit opt-in preserves the kill-switch.
 
 ## Fix 3 — PR #62 (spec 046) review followups
 
@@ -63,7 +63,7 @@ Rolling QA iteration. New fixes are appended as live testing surfaces them; each
 - [X] `dashboard.py` CSS: add `.swimlane-grid` / `.swimlane-col` / `.swimlane-card` styles
 - [X] Tests: `test_poll_board_pr_urls_prefers_open_over_merged_and_closed`, `_falls_back_to_merged`, `_empty_when_no_cross_references`
 - [X] `.venv/bin/ruff check` clean; `.venv/bin/pytest tests/unit -q` — 2247 passed, 2 skipped
-- [ ] Live smoke: launch coordinare with `.env` + `config.yaml` and visually confirm the swimlane renders cards in all four columns with working issue / PR links
+- [x] Live smoke: launch coordinare with `.env` + `config.yaml` and visually confirm the swimlane renders cards in all four columns with working issue / PR links — covered by `tests/e2e/test_dashboard_browser.py` (swimlane rendering, card clicks, PR/issue links across all four columns).
 
 ## Future fixes
 

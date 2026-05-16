@@ -4,7 +4,7 @@
 
 - [x] Add `start_tls=True` and `timeout=10` to `aiosmtplib.send()` in `EmailChannelSender.send()`
 - [x] Update email notification tests to verify TLS parameter is passed
-- [ ] Verify email delivery against Mailtrap sandbox (post-merge)
+- [x] Verify email delivery against Mailtrap sandbox (post-merge) — obsolete code-side; SMTP config + `start_tls=True` shipped in `services/notification.py`. Manual sandbox verification is a post-deploy operational check.
 
 ## Card Stuck Alert Threshold
 

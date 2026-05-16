@@ -155,6 +155,18 @@ class TestFieldValidators:
         with pytest.raises(ValidationError, match="subprocess performers must not"):
             PerformerEndpointConfig(**_base(secret_sources={"init_payload": False}))
 
+    def test_subprocess_rejects_egress_allowlist(self) -> None:
+        with pytest.raises(ValidationError, match="subprocess performers must not"):
+            PerformerEndpointConfig(**_base(egress_allowlist=["api.github.com"]))
+
+    def test_ephemeral_accepts_egress_allowlist(self) -> None:
+        cfg = PerformerEndpointConfig(**_base(
+            mode="ephemeral",
+            image="img",
+            egress_allowlist=["api.github.com", "objects.githubusercontent.com"],
+        ))
+        assert cfg.egress_allowlist == ["api.github.com", "objects.githubusercontent.com"]
+
 
 class TestJobStatusProgressValidator:
     def test_progress_pct_out_of_range_rejected(self) -> None:

@@ -1,4 +1,82 @@
 #!/bin/sh
+# Optional egress baseline: when PERFORMER_EGRESS_ALLOWLIST is set
+# (comma-separated hostnames), resolve each host at startup and lock OUTPUT
+# to (loopback | ESTABLISHED/RELATED | DNS | allowed IPv4+IPv6). Requires
+# --cap-add=NET_ADMIN on the container; coordinare adds it automatically when
+# the field is configured.
+#
+# This is a defense-in-depth baseline, NOT a compliance boundary:
+#   - Hosts are resolved once at startup. Cloud endpoints (S3, GHCR,
+#     githubusercontent) rotate IPs frequently; a long-running container may
+#     drift to a denied IP.
+#   - DNS (port 53) stays open so dynamic resolution keeps working; that
+#     leaves a DNS-tunnel exfiltration channel.
+#   - Any other consumer of an allowed IP (e.g., a different S3 bucket on
+#     the same address) is also reachable.
+# For durable enforcement, front the container with a proxy (squid/envoy)
+# rather than relying on this in-container firewall.
+if [ -n "${PERFORMER_EGRESS_ALLOWLIST:-}" ]; then
+  if ! command -v iptables >/dev/null 2>&1; then
+    echo "ERROR: PERFORMER_EGRESS_ALLOWLIST set but iptables missing; refusing to start" >&2
+    exit 1
+  fi
+  if ! iptables -L OUTPUT -n >/dev/null 2>&1; then
+    echo "ERROR: iptables unusable (missing NET_ADMIN?); refusing to start" >&2
+    exit 1
+  fi
+  # ip6tables is optional on the host but required if IPv6 is reachable.
+  # If it is unavailable we still proceed with v4 (and warn) because some
+  # production hosts disable IPv6 entirely; the v4 DROP is still meaningful.
+  have_ip6=0
+  if command -v ip6tables >/dev/null 2>&1 && ip6tables -L OUTPUT -n >/dev/null 2>&1; then
+    have_ip6=1
+  else
+    echo "WARNING: ip6tables unavailable; IPv6 egress will NOT be restricted" >&2
+  fi
+  echo "INFO: applying egress allowlist: ${PERFORMER_EGRESS_ALLOWLIST}" >&2
+  # We only constrain OUTPUT — egress is the threat model here. INPUT/FORWARD
+  # are left untouched so the container still accepts the coordinare's calls.
+  iptables -F OUTPUT
+  iptables -A OUTPUT -o lo -j ACCEPT
+  iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+  iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
+  iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT
+  if [ "${have_ip6}" = "1" ]; then
+    ip6tables -F OUTPUT
+    ip6tables -A OUTPUT -o lo -j ACCEPT
+    ip6tables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+    ip6tables -A OUTPUT -p udp --dport 53 -j ACCEPT
+    ip6tables -A OUTPUT -p tcp --dport 53 -j ACCEPT
+  fi
+  IFS=','
+  for host in ${PERFORMER_EGRESS_ALLOWLIST}; do
+    host=$(echo "${host}" | tr -d '[:space:]')
+    [ -z "${host}" ] && continue
+    ips4=$(getent ahostsv4 "${host}" | awk '{print $1}' | sort -u)
+    ips6=""
+    if [ "${have_ip6}" = "1" ]; then
+      ips6=$(getent ahostsv6 "${host}" | awk '{print $1}' | sort -u)
+    fi
+    if [ -z "${ips4}" ] && [ -z "${ips6}" ]; then
+      echo "WARNING: no usable IPs for egress-allowlist host '${host}' (v6_enabled=${have_ip6}); skipping" >&2
+      continue
+    fi
+    for ip in ${ips4}; do
+      iptables -A OUTPUT -d "${ip}" -j ACCEPT
+      echo "INFO: egress allowed (v4): ${host} -> ${ip}" >&2
+    done
+    for ip in ${ips6}; do
+      ip6tables -A OUTPUT -d "${ip}" -j ACCEPT
+      echo "INFO: egress allowed (v6): ${host} -> ${ip}" >&2
+    done
+  done
+  unset IFS
+  iptables -P OUTPUT DROP
+  if [ "${have_ip6}" = "1" ]; then
+    ip6tables -P OUTPUT DROP
+  fi
+fi
+
 # Install (or upgrade) the backend CLI specified by $BACKEND, then exec the
 # performer server.  Upgrade failure is non-fatal: we log a warning and
 # continue so a transient network error does not knock a container out of

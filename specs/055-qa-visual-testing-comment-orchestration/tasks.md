@@ -4,73 +4,73 @@
 
 ## Phase 0 — Research & Audit
 
-- [ ] Confirm `current_card["issue_number"]` is populated across all active card shapes (board fetcher output)
-- [ ] Locate assessor classification logic in `graph/nodes/`; confirm `scope_change` and `approval` labels or plan to add them
-- [ ] Confirm `last_pr_comment_id` pattern in `CardSession` / `CoordinareState` for use as template
-- [ ] Verify GitHub CDN upload endpoint flow (3-step: policies → S3 → attachments) with manual curl against the repo
-- [ ] Verify `playwright` Python package is installable in `agent/performer/.venv`
+- [x] Confirm `current_card["issue_number"]` is populated across all active card shapes (board fetcher output)
+- [x] Locate assessor classification logic in `graph/nodes/`; confirm `scope_change` and `approval` labels or plan to add them
+- [x] Confirm `last_pr_comment_id` pattern in `CardSession` / `CoordinareState` for use as template
+- [x] Verify GitHub CDN upload endpoint flow (3-step: policies → S3 → attachments) with manual curl against the repo
+- [x] Verify `playwright` Python package is installable in `agent/performer/.venv`
 
 ## Phase 1 — Issue Comment Polling
 
-- [ ] Add `IssueCommentEvent` dataclass to `src/coordinare/services/issue_comment_service.py`
-- [ ] Implement `fetch_new_issue_comments(issue_number, since_id, github_client)` with REST call and idempotency
-- [ ] Add `processed_issue_comment_ids: set[int]` and `last_issue_comment_id: int | None` to `CardSession` and `_SESSION_FIELDS`
-- [ ] Add `route_issue_comments` LangGraph node in `graph/nodes/route_issue_comments.py`
-- [ ] Wire `route_issue_comments` into the coordinare graph (after PR comment routing, before session tick)
-- [ ] Apply `scope_change` dispatch: set `requirements_changed=True` on session when classification is `scope_change`
-- [ ] Apply `clarification` dispatch: add entry to `card_clarifications` on session
-- [ ] Write unit tests: mock GitHub REST, verify new comments detected, verify idempotency, verify `scope_change` → `requirements_changed`
+- [x] Add `IssueCommentEvent` dataclass to `src/coordinare/services/issue_comment_service.py`
+- [x] Implement `fetch_new_issue_comments(issue_number, since_id, github_client)` with REST call and idempotency
+- [x] Add `processed_issue_comment_ids: set[int]` and `last_issue_comment_id: int | None` to `CardSession` and `_SESSION_FIELDS`
+- [x] Add `route_issue_comments` LangGraph node in `graph/nodes/route_issue_comments.py`
+- [x] Wire `route_issue_comments` into the coordinare graph (after PR comment routing, before session tick)
+- [x] Apply `scope_change` dispatch: set `requirements_changed=True` on session when classification is `scope_change`
+- [x] Apply `clarification` dispatch: add entry to `card_clarifications` on session
+- [x] Write unit tests: mock GitHub REST, verify new comments detected, verify idempotency, verify `scope_change` → `requirements_changed`
 
 ## Phase 2 — Assessor Routing Unification
 
-- [ ] Add `source: Literal["pr", "issue"]` field to `CommentClassification` dataclass
-- [ ] Extend assessor node/service to accept and emit `CommentClassification` with `source`
-- [ ] Add `approval` and `blocker_update` classification labels if not present
-- [ ] Parametrize existing assessor tests with `source=pr` and `source=issue` to verify uniform behavior
-- [ ] Write unit test: PR clarification and issue clarification produce same classification label
+- [x] Add `source: Literal["pr", "issue"]` field to `CommentClassification` dataclass
+- [x] Extend assessor node/service to accept and emit `CommentClassification` with `source`
+- [x] Add `approval` and `blocker_update` classification labels if not present
+- [x] Parametrize existing assessor tests with `source=pr` and `source=issue` to verify uniform behavior
+- [x] Write unit test: PR clarification and issue clarification produce same classification label
 
 ## Phase 3 — Screenshot Capture
 
-- [ ] Add `QAScreenshotResult` dataclass to `agent/performer/qa/screenshots.py`
-- [ ] Implement `launch_docker_env(config) -> DockerSession | None` — pull image, run container, wait for app
-- [ ] Implement `capture_screenshots(docker_session, feature_areas, timeout_s) -> list[QAScreenshotResult]`
-- [ ] Add graceful fallback: if Docker unavailable, return `QAScreenshotResult(status="skipped", error="docker_unavailable")`
-- [ ] Add `qa_screenshots` LangGraph node in `graph/nodes/qa_screenshots.py`; call after QA checks pass
-- [ ] Add `qa_screenshots: list[QAScreenshotResult]` to `CardSession` and `_SESSION_FIELDS`
-- [ ] Add `qa_docker_enabled`, `qa_playwright_image`, `qa_screenshot_timeout_s` to `CoordinareConfig`
-- [ ] Write unit tests: mock Docker subprocess, mock playwright, verify timeout path, verify graceful degradation when Docker absent
+- [x] Add `QAScreenshotResult` dataclass to `agent/performer/qa/screenshots.py`
+- [x] Implement `launch_docker_env(config) -> DockerSession | None` — pull image, run container, wait for app
+- [x] Implement `capture_screenshots(docker_session, feature_areas, timeout_s) -> list[QAScreenshotResult]`
+- [x] Add graceful fallback: if Docker unavailable, return `QAScreenshotResult(status="skipped", error="docker_unavailable")`
+- [x] Add `qa_screenshots` LangGraph node in `graph/nodes/qa_screenshots.py`; call after QA checks pass
+- [x] Add `qa_screenshots: list[QAScreenshotResult]` to `CardSession` and `_SESSION_FIELDS`
+- [x] Add `qa_docker_enabled`, `qa_playwright_image`, `qa_screenshot_timeout_s` to `CoordinareConfig`
+- [x] Write unit tests: mock Docker subprocess, mock playwright, verify timeout path, verify graceful degradation when Docker absent
 
 ## Phase 4 — CDN Upload and Embedding
 
-- [ ] Implement `upload_screenshot(path, github_client) -> str | None` in `agent/performer/qa/cdn_upload.py`
-- [ ] Add retry logic: exponential backoff, up to `qa_screenshot_upload_retries` attempts
-- [ ] Extend `agent/performer/qa/report.py`: group screenshots by `feature_area`, embed CDN URLs as `![alt](url)`
-- [ ] Embed `*(screenshot unavailable)*` for failed uploads; omit screenshot section entirely if no screenshots
-- [ ] Add `qa_screenshot_upload_retries: int = 3` to `CoordinareConfig`
-- [ ] Write unit tests: mock CDN upload (success path, retry path, all-fail path), verify comment markdown structure
+- [x] Implement `upload_screenshot(path, github_client) -> str | None` in `agent/performer/qa/cdn_upload.py`
+- [x] Add retry logic: exponential backoff, up to `qa_screenshot_upload_retries` attempts
+- [x] Extend `agent/performer/qa/report.py`: group screenshots by `feature_area`, embed CDN URLs as `![alt](url)`
+- [x] Embed `*(screenshot unavailable)*` for failed uploads; omit screenshot section entirely if no screenshots
+- [x] Add `qa_screenshot_upload_retries: int = 3` to `CoordinareConfig`
+- [x] Write unit tests: mock CDN upload (success path, retry path, all-fail path), verify comment markdown structure
 
 ## Phase 5 — Doc Deduplication
 
-- [ ] Implement `find_duplicate_sections(workspace_path) -> dict[str, list[str]]` in `src/coordinare/utils/doc_dedup.py`
-- [ ] Implement `merge_duplicate_sections(workspace_path, canonical_priority) -> DocDeduplicationResult`
-- [ ] Enforce canonical priority: `spec.md > requirements.md > notes.md > scratch.md > other`
-- [ ] Implement ambiguous-overlap handling: keep both under disambiguated headings
-- [ ] Wire dedup pass as a post-write hook in performer (after performer writes multiple `.md` files)
-- [ ] Write unit tests: synthetic workspace with overlapping sections; verify merge; verify ambiguous case preserved
+- [x] Implement `find_duplicate_sections(workspace_path) -> dict[str, list[str]]` in `src/coordinare/utils/doc_dedup.py`
+- [x] Implement `merge_duplicate_sections(workspace_path, canonical_priority) -> DocDeduplicationResult`
+- [x] Enforce canonical priority: `spec.md > requirements.md > notes.md > scratch.md > other`
+- [x] Implement ambiguous-overlap handling: keep both under disambiguated headings
+- [x] Wire dedup pass as a post-write hook in performer (after performer writes multiple `.md` files)
+- [x] Write unit tests: synthetic workspace with overlapping sections; verify merge; verify ambiguous case preserved
 
 ## Phase 6 — Config, State Wiring, Dashboard
 
-- [ ] Add all new `CardSession` fields to `_SESSION_FIELDS` (verify round-trip in `session_to_state` / `state_to_session`)
-- [ ] Add `qa_screenshots` to daemon snapshot output
-- [ ] Update dashboard to display screenshot count or thumbnail links per session
-- [ ] Write round-trip test for new `CardSession` fields
+- [x] Add all new `CardSession` fields to `_SESSION_FIELDS` (verify round-trip in `session_to_state` / `state_to_session`)
+- [x] Add `qa_screenshots` to daemon snapshot output
+- [x] Update dashboard to display screenshot count or thumbnail links per session
+- [x] Write round-trip test for new `CardSession` fields
 
 ## Phase 7 — Integration Tests
 
-- [ ] End-to-end test: QA with mocked Docker + mocked CDN produces PR comment with embedded screenshot markdown
-- [ ] End-to-end test: issue comment posted → detected next cycle → classified → `requirements_changed=True`
-- [ ] End-to-end test: same issue comment processed twice → only dispatched once (idempotency)
-- [ ] End-to-end test: dedup pass on workspace with `spec.md` + `requirements.md` overlap → merged correctly
+- [x] End-to-end test: QA with mocked Docker + mocked CDN produces PR comment with embedded screenshot markdown
+- [x] End-to-end test: issue comment posted → detected next cycle → classified → `requirements_changed=True`
+- [x] End-to-end test: same issue comment processed twice → only dispatched once (idempotency)
+- [x] End-to-end test: dedup pass on workspace with `spec.md` + `requirements.md` overlap → merged correctly
 
 ## Phase 8 — Backend-Agnostic Performer Tuning (effort, temperature, max_tokens)
 

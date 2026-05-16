@@ -152,6 +152,37 @@ async def test_start_ephemeral_propagates_config_env(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_start_ephemeral_applies_egress_allowlist(monkeypatch) -> None:
+    """egress_allowlist adds --cap-add NET_ADMIN and the PERFORMER_EGRESS_ALLOWLIST env var."""
+    args_seen: list[tuple[str, ...]] = []
+
+    async def fake_run_docker(*args: str, timeout: float = 30.0) -> tuple[int, str, str]:
+        args_seen.append(args)
+        if args[0] == "run":
+            return 0, "ctr-egress\n", ""
+        if args[0] == "port":
+            return 0, "0.0.0.0:8080\n", ""
+        raise AssertionError(f"unexpected: {args}")
+
+    monkeypatch.setattr(lifecycle, "_run_docker", fake_run_docker)
+
+    await start_ephemeral(
+        _ephemeral_config(
+            egress_allowlist=["api.github.com", "objects.githubusercontent.com"]
+        )
+    )
+
+    run_args = list(args_seen[0])
+    assert "--cap-add" in run_args
+    cap_idx = run_args.index("--cap-add")
+    assert run_args[cap_idx + 1] == "NET_ADMIN"
+    assert (
+        "PERFORMER_EGRESS_ALLOWLIST=api.github.com,objects.githubusercontent.com"
+        in run_args
+    )
+
+
+@pytest.mark.asyncio
 async def test_start_ephemeral_with_volumes(monkeypatch) -> None:
     args_seen: list[tuple[str, ...]] = []
 

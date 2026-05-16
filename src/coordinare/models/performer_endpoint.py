@@ -89,6 +89,7 @@ class PerformerEndpointConfig(BaseModel):
     secret_sources: SecretSourceConfig = Field(default_factory=SecretSourceConfig)
     volumes: list[VolumeMount] = Field(default_factory=list)
     env: dict[str, str] = Field(default_factory=dict)
+    egress_allowlist: list[str] | None = None
     capability_overrides: CapabilityOverride | None = None
     container_devenv_root: str = "/devenv"
 
@@ -122,6 +123,8 @@ class PerformerEndpointConfig(BaseModel):
                 set_fields.append("volumes")
             if self.env:
                 set_fields.append("env")
+            if self.egress_allowlist is not None:
+                set_fields.append("egress_allowlist")
             if self.secret_sources != SecretSourceConfig():
                 set_fields.append("secret_sources")
             if self.container_devenv_root != "/devenv":
