@@ -9,6 +9,7 @@ import re
 import shlex
 import shutil
 import tempfile
+import threading
 import time as _time
 from dataclasses import dataclass
 from pathlib import Path
@@ -227,6 +228,7 @@ async def clone_repository(score: Score) -> Stand:
     stand = Stand(path=stand_path, branch=score.branch)
     stand.git_env = _git_credential_vars(score.effective_github_token)
     stand.cache_env = await _activate_env_cache(score.env_cache_path)
+    await _start_env_cache_services(score.env_cache_path, stand.cache_env)
     return stand
 
 
@@ -318,6 +320,193 @@ async def _activate_env_cache(env_cache_path: str) -> dict[str, str]:
         keys=sorted(delta.keys()),
     )
     return delta
+
+
+# Spec 063 T007 — set of env-cache paths whose services-start.sh ran successfully
+# during this performer process. Walked by `stop_all_env_cache_services` on
+# shutdown so background daemons (redis, postgres, …) do not leak past the
+# container's lifetime.
+_ACTIVE_SERVICE_CACHES: dict[str, dict[str, str]] = {}
+
+# Spec 063 Phase 4 (T023) — set True when services-health.sh exits non-zero
+# after services-start.sh succeeds. The outbound PerformerResponse packaging
+# reads this via `consume_env_cache_health_failure()` (which clears the flag)
+# so the coordinare's monitor_performer can route it into
+# EnvCacheService.mark_runtime_health_failed.
+#
+# Guarded by a lock so concurrent _run_env_cache_health_check coroutines (one
+# per cache mounted in a single performer process) cannot race each other or
+# the consumer in main.py packaging the outbound response.
+_ENV_CACHE_HEALTH_FAILED: bool = False
+_ENV_CACHE_HEALTH_LOCK = threading.Lock()
+
+
+def consume_env_cache_health_failure() -> bool:
+    """Return True (and clear) if a health-check failure occurred since last call."""
+    global _ENV_CACHE_HEALTH_FAILED
+    with _ENV_CACHE_HEALTH_LOCK:
+        failed = _ENV_CACHE_HEALTH_FAILED
+        _ENV_CACHE_HEALTH_FAILED = False
+    return failed
+
+
+def _mark_env_cache_health_failed() -> None:
+    """Thread-safe setter used by the health-check coroutine."""
+    global _ENV_CACHE_HEALTH_FAILED
+    with _ENV_CACHE_HEALTH_LOCK:
+        _ENV_CACHE_HEALTH_FAILED = True
+
+
+async def _start_env_cache_services(
+    env_cache_path: str, cache_env: dict[str, str]
+) -> None:
+    """Invoke ``<env_cache_path>/services/services-start.sh`` when present.
+
+    Spec 063 Phase 1: the bootstrap drops service start/stop/health scripts into
+    ``<env_cache_path>/services/``. If the start script exists and is executable,
+    we run it once per performer setup with the activated env-cache vars on PATH.
+    A failure is logged but does not abort workspace setup — the agent will
+    surface a degraded run rather than crash the cache mount.
+    """
+    if not env_cache_path:
+        return
+    start = Path(env_cache_path) / "services" / "services-start.sh"
+    if not start.is_file() or not os.access(start, os.X_OK):
+        return
+    env = {**os.environ, **cache_env}
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "bash", str(start),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120.0)
+    except (OSError, asyncio.TimeoutError) as exc:
+        log.warning(
+            "env_cache.services_start_failed",
+            env_cache_path=env_cache_path,
+            error=str(exc),
+        )
+        return
+    if proc.returncode != 0:
+        log.warning(
+            "env_cache.services_start_nonzero",
+            env_cache_path=env_cache_path,
+            returncode=proc.returncode,
+            stderr=stderr.decode(errors="replace")[:500],
+        )
+        return
+    log.info(
+        "env_cache.services_started",
+        env_cache_path=env_cache_path,
+        stdout_tail=stdout.decode(errors="replace")[-200:],
+    )
+    # Register for shutdown cleanup. We re-record cache_env each time so a
+    # rotated token (e.g. refreshed GITHUB_TOKEN) is what `services-stop.sh`
+    # sees on the way out.
+    _ACTIVE_SERVICE_CACHES[env_cache_path] = dict(cache_env)
+
+    # Spec 063 Phase 4 (T023): run services-health.sh once after start. A
+    # non-zero exit flips the module-level flag so the next outbound
+    # PerformerResponse signals the coordinare to force env-cache regen.
+    await _run_env_cache_health_check(env_cache_path, env)
+
+
+async def _run_env_cache_health_check(
+    env_cache_path: str, env: dict[str, str]
+) -> None:
+    """Run ``services-health.sh`` post-start; flag failures for the coordinare."""
+    health = Path(env_cache_path) / "services" / "services-health.sh"
+    if not health.is_file() or not os.access(health, os.X_OK):
+        return
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "bash", str(health),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60.0)
+    except (OSError, asyncio.TimeoutError) as exc:
+        log.warning(
+            "env_cache.services_health_failed",
+            env_cache_path=env_cache_path,
+            error=str(exc),
+        )
+        _mark_env_cache_health_failed()
+        return
+    if proc.returncode != 0:
+        log.warning(
+            "env_cache.services_health_nonzero",
+            env_cache_path=env_cache_path,
+            returncode=proc.returncode,
+            stderr=stderr.decode(errors="replace")[:500],
+        )
+        _mark_env_cache_health_failed()
+        return
+    log.info(
+        "env_cache.services_healthy",
+        env_cache_path=env_cache_path,
+        stdout_tail=stdout.decode(errors="replace")[-200:],
+    )
+
+
+def stop_env_cache_services(
+    env_cache_path: str, cache_env: dict[str, str] | None = None
+) -> None:
+    """Synchronously run ``<env_cache_path>/services/services-stop.sh`` if present.
+
+    Synchronous on purpose: this is invoked from `atexit` and signal handlers
+    where the asyncio loop is no longer running. Failures are logged and
+    swallowed — shutdown must never raise.
+    """
+    if not env_cache_path:
+        return
+    stop = Path(env_cache_path) / "services" / "services-stop.sh"
+    if not stop.is_file() or not os.access(stop, os.X_OK):
+        return
+    env = {**os.environ, **(cache_env or {})}
+    try:
+        proc = __import__("subprocess").run(
+            ["bash", str(stop)],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60.0,
+            check=False,
+        )
+    except Exception as exc:  # noqa: BLE001 — shutdown path swallows everything
+        log.warning(
+            "env_cache.services_stop_failed",
+            env_cache_path=env_cache_path,
+            error=str(exc),
+        )
+        return
+    if proc.returncode != 0:
+        log.warning(
+            "env_cache.services_stop_nonzero",
+            env_cache_path=env_cache_path,
+            returncode=proc.returncode,
+            stderr=proc.stderr[:500],
+        )
+        return
+    log.info("env_cache.services_stopped", env_cache_path=env_cache_path)
+
+
+def stop_all_env_cache_services() -> None:
+    """Run services-stop.sh for every env-cache started in this process.
+
+    Idempotent: clears the active-cache registry as it goes, so re-invocation
+    from both atexit and a signal handler does not double-stop.
+    """
+    if not _ACTIVE_SERVICE_CACHES:
+        return
+    # Snapshot keys first; the loop mutates the dict.
+    paths = list(_ACTIVE_SERVICE_CACHES.items())
+    _ACTIVE_SERVICE_CACHES.clear()
+    for path, env in paths:
+        stop_env_cache_services(path, env)
 
 
 async def push_branch(stand: Stand, score: Score) -> None:

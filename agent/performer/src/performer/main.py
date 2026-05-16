@@ -7,6 +7,7 @@ from pathlib import Path
 import os
 import re
 import sys
+import traceback
 import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -130,6 +131,143 @@ async def _run_ci_check(stand_path: Path, label: str = "performer") -> tuple[boo
         output_preview=error_output[:200],
     )
     return False, error_output
+
+
+# ---------------------------------------------------------------------------
+# 063 Cross-cutting (T026c) — Service inference for env_bootstrap
+# ---------------------------------------------------------------------------
+
+
+DEFAULT_INFERENCE_AGENT_VERSION = "claude-services-v1"
+DEFAULT_INFERENCE_MODEL = "claude-sonnet-4-5-20250929"
+DEFAULT_INFERENCE_MAX_TOKENS = 100_000
+
+
+async def _run_service_inference(
+    stand_path: Path,
+    env_cache_path: str,
+) -> dict[str, object]:
+    """Drop ``services.json`` + start/stop/health scripts into the env-cache.
+
+    Tries the deterministic manual-override path first; if no ``.coordinare/score.json``
+    is present, falls back to the LLM agent when ``ANTHROPIC_API_KEY`` is set.
+
+    Returns a dict suitable for splatting onto :class:`PerformerResponse`:
+    ``inference_skipped_reason`` / ``inference_agent_version`` /
+    ``inference_attempts`` / ``inference_succeeded`` / ``inference_services``.
+    """
+    if not env_cache_path:
+        return {"inference_skipped_reason": "no_env_cache_path"}
+
+    try:
+        from coordinare.services.service_inference import (
+            InferenceFailed,
+            infer_services,
+        )
+        from coordinare.services.service_inference.claude_llm_client import (
+            ClaudeServiceLLMClient,
+        )
+        from coordinare.services.service_inference.manual_override import (
+            apply_manual_override,
+        )
+        from coordinare.services.service_inference.prompt import render_system_prompt
+    except ImportError:
+        # Standalone performer deployment — coordinare package isn't installed.
+        log.info("service_inference.coordinare_not_available")
+        return {"inference_skipped_reason": "coordinare_not_available"}
+
+    output_root = Path(env_cache_path)
+
+    # 1) Manual override path: deterministic, no creds needed.
+    try:
+        override = apply_manual_override(stand_path, output_root, run_validation=False)
+    except Exception as exc:  # pragma: no cover — defensive
+        log.warning("service_inference.manual_override_error", error=str(exc))
+        override = None
+
+    if override is not None and override.applied:
+        services = (
+            [s.name for s in override.manifest.services]
+            if override.manifest is not None
+            else []
+        )
+        log.info(
+            "service_inference.manual_override_applied",
+            services=services,
+        )
+        return {
+            "inference_skipped_reason": "manual_override",
+            "inference_agent_version": "manual-override",
+            "inference_attempts": 1,
+            "inference_succeeded": True,
+            "inference_services": services,
+        }
+
+    # 2) LLM path: requires ANTHROPIC_API_KEY in the performer env.
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        log.info("service_inference.no_api_key")
+        return {"inference_skipped_reason": "no_api_key"}
+
+    agent_version = os.environ.get(
+        "COORDINARE_INFERENCE_AGENT_VERSION", DEFAULT_INFERENCE_AGENT_VERSION
+    )
+    model = os.environ.get("COORDINARE_INFERENCE_MODEL", DEFAULT_INFERENCE_MODEL)
+    system_prompt = render_system_prompt(agent_version)
+
+    client = ClaudeServiceLLMClient.from_api_key(
+        api_key=api_key,
+        model=model,
+        max_tokens=DEFAULT_INFERENCE_MAX_TOKENS,
+        system_prompt=system_prompt,
+    )
+
+    try:
+        result = await infer_services(
+            project_root=stand_path,
+            output_root=output_root,
+            agent_version=agent_version,
+            llm_client=client,
+        )
+    except InferenceFailed as exc:
+        log.warning(
+            "service_inference.failed",
+            rejected_path=str(exc.rejected_path),
+            attempts=len(exc.attempts),
+        )
+        return {
+            "inference_skipped_reason": None,
+            "inference_agent_version": agent_version,
+            "inference_attempts": len(exc.attempts),
+            "inference_succeeded": False,
+            "inference_services": [],
+        }
+    except Exception as exc:  # noqa: BLE001 — failsafe, don't crash bootstrap
+        log.warning(
+            "service_inference.unexpected_error",
+            error_type=type(exc).__name__,
+            error=str(exc),
+            traceback=traceback.format_exc(),
+        )
+        return {
+            "inference_skipped_reason": f"unexpected_error: {type(exc).__name__}",
+            "inference_agent_version": agent_version,
+        }
+
+    services = [s.name for s in result.manifest.services]
+    log.info(
+        "service_inference.succeeded",
+        attempts=result.attempts,
+        services=services,
+        agent_version=agent_version,
+    )
+    return {
+        "inference_skipped_reason": None,
+        "inference_agent_version": agent_version,
+        "inference_attempts": result.attempts,
+        "inference_succeeded": True,
+        "inference_services": services,
+    }
 
 
 def _extract_json(text: str) -> dict | list | None:
@@ -877,6 +1015,7 @@ async def handle_status(
         return PerformerResponse(
             status="env_bootstrap_complete",
             session_id=perf.session_id,
+            **perf.inference_state,
         )
     if perf.state == "blocked":
         return PerformerResponse(
@@ -1592,10 +1731,14 @@ async def handle_status(
         # surface as backend_status.state == "error" and route through the
         # generic error path elsewhere in this function.
         if perf.role == "env_bootstrap":
+            perf.inference_state = await _run_service_inference(
+                perf.stand.path, perf.score.env_cache_path
+            )
             perf.state = "env_bootstrap_complete"
             return PerformerResponse(
                 status="env_bootstrap_complete",
                 session_id=perf.session_id,
+                **perf.inference_state,
             )
 
         # 043: Run lint before pushing — catch CI violations at the source
@@ -1910,6 +2053,12 @@ async def run_loop() -> None:
 
 
 def _write_response(resp: PerformerResponse) -> None:  # pragma: no cover
+    # Spec 063 Phase 4 (T023): drain the env-cache health-failure flag set by
+    # workspace._run_env_cache_health_check, so the very next outbound response
+    # carries the signal even when callers built the response without it.
+    from performer.workspace import consume_env_cache_health_failure
+    if consume_env_cache_health_failure():
+        resp = resp.model_copy(update={"env_cache_health_failed": True})
     sys.stdout.write(resp.model_dump_json(exclude_none=True) + "\n")
     sys.stdout.flush()
 
@@ -1991,6 +2140,12 @@ async def _perform_job(payload: "JobInitPayload") -> "JobResult":  # pragma: no 
         if resp is None:
             return JobResult(success=False, summary="no status response", error_code="internal_error")
 
+        # Spec 063 Phase 4 (T023): drain env-cache health-failure flag into
+        # the final HTTP-job summary so coordinare's check_status can route it.
+        from performer.workspace import consume_env_cache_health_failure
+        if consume_env_cache_health_failure():
+            resp = resp.model_copy(update={"env_cache_health_failed": True})
+
         success = resp.status not in FAILURE_STATUSES
         summary = resp.model_dump_json(exclude_none=True)
         return JobResult(success=success, summary=summary, error_code=None if success else resp.status)
@@ -2012,9 +2167,30 @@ def _run_server(port: int) -> None:  # pragma: no cover
     Runs as PID 1 inside the performer container. Auth token is read from
     ``PERFORMER_AUTH_TOKEN`` (absent → auth disabled).
     """
+    import atexit
+    import signal
+
     import uvicorn
 
     from performer.server import create_app_from_env
+    from performer.workspace import stop_all_env_cache_services
+
+    # Spec 063 T007: stop any services started in env-caches during this
+    # process so daemons (redis/postgres/…) do not leak past container exit.
+    atexit.register(stop_all_env_cache_services)
+    _prev_term = signal.getsignal(signal.SIGTERM)
+    _prev_int = signal.getsignal(signal.SIGINT)
+
+    def _shutdown_handler(signum, frame):  # type: ignore[no-untyped-def]
+        stop_all_env_cache_services()
+        # Re-raise the default behavior so uvicorn still exits cleanly.
+        if signum == signal.SIGTERM and callable(_prev_term):
+            _prev_term(signum, frame)
+        elif signum == signal.SIGINT and callable(_prev_int):
+            _prev_int(signum, frame)
+
+    signal.signal(signal.SIGTERM, _shutdown_handler)
+    signal.signal(signal.SIGINT, _shutdown_handler)
 
     app = create_app_from_env(executor=_perform_job)
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")

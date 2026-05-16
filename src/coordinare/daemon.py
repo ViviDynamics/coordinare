@@ -1283,6 +1283,26 @@ class CoordinareDaemon:
                         logs_tail=logs_tail[-10:],
                         logs_tail_truncated=len(logs_tail) > 10,
                     )
+                # 063 T026d: stamp the performer-reported service-inference
+                # summary onto the env-cache state before marking the
+                # bootstrap complete, so the dashboard surfaces what the
+                # agent produced (or why it didn't run).
+                try:
+                    env_cache_svc.record_inference_outcome(
+                        symphony_name,
+                        self._state,
+                        skipped_reason=status_result.get("inference_skipped_reason"),
+                        agent_version=status_result.get("inference_agent_version"),
+                        attempts=status_result.get("inference_attempts"),
+                        succeeded=status_result.get("inference_succeeded"),
+                        services=list(status_result.get("inference_services") or []),
+                    )
+                except Exception as _exc:
+                    logger.warning(
+                        "env_cache.record_inference_outcome_error",
+                        symphony=symphony_name,
+                        error=str(_exc),
+                    )
                 env_cache_svc.on_bootstrap_complete(symphony_name, ok, self._state)
                 if ok:
                     from coordinare.services.http_performer_service import HTTPPerformerService

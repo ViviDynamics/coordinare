@@ -952,3 +952,58 @@ class TestStaleBranchCleanupConfig:
         }))
         cfg = ProjectConfiguration.from_yaml(path)
         assert cfg.stale_branch_cleanup is False
+
+
+# ---------------------------------------------------------------------------
+# 063 — Service inference config
+# ---------------------------------------------------------------------------
+
+
+class TestServiceInferenceConfig:
+    """Spec 063 T009: performers.env_cache.inference budgets and gates."""
+
+    def _base_cfg(self, **inference: object) -> ProjectConfiguration:
+        from coordinare.config import EnvCacheConfig, ServiceInferenceConfig
+        return ProjectConfiguration(
+            project_name="demo",
+            github_org="acme",
+            github_project_number=1,
+            github_token="tok",
+            human_reviewers=["alice"],
+            env_cache=EnvCacheConfig(inference=ServiceInferenceConfig(**inference)),
+        )
+
+    def test_defaults_match_plan(self) -> None:
+        cfg = self._base_cfg()
+        inf = cfg.env_cache.inference
+        assert inf.enabled is False
+        assert inf.retry_budget == 3
+        assert inf.max_tool_calls == 50
+        assert inf.max_tokens == 100_000
+        assert inf.web_search_enabled is False
+
+    def test_yaml_overrides(self, tmp_path) -> None:
+        path = tmp_path / "config.yaml"
+        path.write_text(yaml.dump({
+            "project_name": "Demo",
+            "github_org": "acme",
+            "github_project_number": 1,
+            "github_token": "tok",
+            "human_reviewers": ["alice"],
+            "env_cache": {"inference": {"enabled": True, "retry_budget": 5}},
+        }))
+        cfg = ProjectConfiguration.from_yaml(path)
+        assert cfg.env_cache.inference.enabled is True
+        assert cfg.env_cache.inference.retry_budget == 5
+
+    def test_retry_budget_rejects_negative(self) -> None:
+        with pytest.raises(ValidationError):
+            self._base_cfg(retry_budget=-1)
+
+    def test_max_tool_calls_must_be_positive(self) -> None:
+        with pytest.raises(ValidationError):
+            self._base_cfg(max_tool_calls=0)
+
+    def test_max_tokens_must_be_positive(self) -> None:
+        with pytest.raises(ValidationError):
+            self._base_cfg(max_tokens=0)

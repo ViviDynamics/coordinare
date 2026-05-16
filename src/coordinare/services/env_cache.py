@@ -12,6 +12,11 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from coordinare.models.env_cache import BootstrapJobPayload, EnvCacheState
+from coordinare.services.service_inference.cache_key import (
+    compute_inference_cache_key,
+    forced_regen_cache_key,
+    load_prior_manifest,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
@@ -200,6 +205,47 @@ class EnvCacheService:
         serialised = json.dumps(dict(sorted(per_file.items())), separators=(",", ":"))
         return hashlib.sha256(serialised.encode()).hexdigest()[:12]
 
+    async def _inference_cache_suffix(
+        self,
+        *,
+        symphony_name: str,
+        cache_dir: Path,
+        github_service: _GitHubService,
+        github_org: str,
+        github_repo: str,
+    ) -> str:
+        """Spec 063 Phase 3: suffix derived from the prior services.json cache_inputs.
+
+        Returns an empty string when no prior manifest is sealed — this keeps
+        the first-run readme_sha identical to pre-063 behaviour. Once a manifest
+        exists, returns a 12-char hash that changes whenever any tracked
+        cache_input file's content changes (or the agent_version changes).
+        """
+        prior = load_prior_manifest(cache_dir)
+        if prior is None:
+            return ""
+
+        async def _fetch(path: str) -> str | None:
+            try:
+                return await github_service.get_file_content(
+                    github_org, github_repo, path
+                )
+            except Exception as exc:
+                logger.warning(
+                    "env_cache.inference_cache_input_fetch_failed",
+                    symphony=symphony_name,
+                    file=path,
+                    error=str(exc),
+                )
+                return None
+
+        key = await compute_inference_cache_key(
+            agent_version=prior.agent_version,
+            prior_manifest=prior,
+            content_fetcher=_fetch,
+        )
+        return key[:12]
+
     async def check_and_trigger(
         self,
         symphony_name: str,
@@ -227,6 +273,31 @@ class EnvCacheService:
             logger.warning("env_cache.eff_config_none", symphony=symphony_name)
             return
 
+        # 063 Phase 4 (T024): runtime health failure flag → forced regen.
+        # Bypass the cache_inputs key entirely so the next bootstrap rebuilds
+        # the cache and re-runs inference against a fresh agent pass.
+        if cache_state.runtime_health_failed and not cache_state.bootstrap_in_flight:
+            prior = load_prior_manifest(cache_state.cache_dir)
+            agent_version = prior.agent_version if prior is not None else "no-prior-manifest"
+            forced_sha = forced_regen_cache_key(agent_version)
+            logger.info(
+                "env_cache.forced_regen_triggered",
+                symphony=symphony_name,
+                agent_version=agent_version,
+            )
+            cache_state.runtime_health_failed = False
+            await self._do_dispatch(
+                symphony_name=symphony_name,
+                symphony_config=symphony_config,
+                github_service=github_service,
+                eff_config=eff_config,
+                current_sha=forced_sha,
+                cache_state=cache_state,
+                dispatch_fn=dispatch_fn,
+                container_devenv_root=container_devenv_root,
+            )
+            return
+
         # Fetch combined blob SHA for all watched files (metadata-only, cheap).
         current_sha = await self._fetch_combined_sha(
             symphony_name,
@@ -235,6 +306,18 @@ class EnvCacheService:
             eff_config.github_org,
             eff_config.project_name or symphony_name,
         )
+        # 063 Phase 3: layer in inference cache_inputs once a manifest is sealed.
+        # Empty on first run, so existing readme_sha behaviour is unchanged.
+        if current_sha is not None:
+            suffix = await self._inference_cache_suffix(
+                symphony_name=symphony_name,
+                cache_dir=cache_state.cache_dir,
+                github_service=github_service,
+                github_org=eff_config.github_org,
+                github_repo=eff_config.project_name or symphony_name,
+            )
+            if suffix:
+                current_sha = f"{current_sha}:{suffix}"
         if current_sha is None:
             logger.warning(
                 "env_cache.sha_fetch_skipped",
@@ -327,6 +410,71 @@ class EnvCacheService:
             symphony=symphony_name,
             performer_id=symphony_config.env_bootstrap_performer_id,
             new_sha=current_sha,
+        )
+
+    def mark_runtime_health_failed(
+        self,
+        symphony_name: str,
+        state: dict[str, Any],
+    ) -> None:
+        """063 Phase 4 (T024): flag this symphony's env-cache for forced regen.
+
+        Called by the coordinare daemon when a performer reports a non-zero
+        services-health.sh exit. The next check_and_trigger cycle observes
+        ``runtime_health_failed`` and dispatches a bootstrap whose cache key
+        is generated via ``forced_regen_cache_key`` (time-nonce mixed), so the
+        cache rebuilds even if no spec-file or cache_input has changed.
+        """
+        env_cache: dict[str, Any] = state.get("env_cache") or {}
+        cache_state: EnvCacheState | None = env_cache.get(symphony_name)
+        if cache_state is None:
+            logger.warning(
+                "env_cache.runtime_health_failed_no_state",
+                symphony=symphony_name,
+            )
+            return
+        cache_state.runtime_health_failed = True
+        logger.warning(
+            "env_cache.runtime_health_failed",
+            symphony=symphony_name,
+        )
+
+    def record_inference_outcome(
+        self,
+        symphony_name: str,
+        state: dict[str, Any],
+        *,
+        skipped_reason: str | None,
+        agent_version: str | None,
+        attempts: int | None,
+        succeeded: bool | None,
+        services: list[str],
+    ) -> None:
+        """063 T026d: stamp the latest service-inference summary onto state.
+
+        Called by the coordinare daemon when a bootstrap job reports terminal
+        status, before ``on_bootstrap_complete``. The dashboard reads these
+        fields to show operators what the agent produced (or why it didn't
+        run) without having to inspect the env-cache directory.
+        """
+        env_cache: dict[str, Any] = state.get("env_cache") or {}
+        cache_state: EnvCacheState | None = env_cache.get(symphony_name)
+        if cache_state is None:
+            return
+        cache_state.last_inference_at = datetime.now(UTC)
+        cache_state.last_inference_skipped_reason = skipped_reason
+        cache_state.last_inference_agent_version = agent_version
+        cache_state.last_inference_attempts = attempts
+        cache_state.last_inference_succeeded = succeeded
+        cache_state.last_inference_services = list(services or [])
+        logger.info(
+            "env_cache.inference_recorded",
+            symphony=symphony_name,
+            skipped_reason=skipped_reason,
+            agent_version=agent_version,
+            attempts=attempts,
+            succeeded=succeeded,
+            services=services,
         )
 
     def on_bootstrap_complete(

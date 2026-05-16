@@ -63,6 +63,18 @@ class ProtocolResponse(BaseModel):
     files_modified: list[str] = Field(default_factory=list)  # 024: doc files committed
     events: list[dict] = Field(default_factory=list)  # serialised BackendEvent list
     metrics: dict | None = None  # PerformerMetrics (pid, memory_bytes, cpu_percent, …)
+    # 063 Phase 4 (T023): performer sets True when services-health.sh exited
+    # non-zero during workspace setup. Coordinare's daemon glue routes this
+    # into EnvCacheService.mark_runtime_health_failed for forced regen.
+    env_cache_health_failed: bool = False
+    # 063 Cross-cutting (T026c/T026d): performer-reported service-inference
+    # outcome for env_bootstrap jobs. EnvCacheService stamps these onto
+    # EnvCacheState so the dashboard can surface what the agent produced.
+    inference_skipped_reason: str | None = None
+    inference_agent_version: str | None = None
+    inference_attempts: int | None = None
+    inference_succeeded: bool | None = None
+    inference_services: list[str] = Field(default_factory=list)
 
 
 def generate_contracts(output_dir: Path) -> None:

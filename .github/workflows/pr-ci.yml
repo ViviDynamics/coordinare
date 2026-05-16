@@ -106,8 +106,14 @@ jobs:
       - name: Setup uv
         uses: astral-sh/setup-uv@v4
 
+      - name: Install coordinare and performer packages
+        run: |
+          uv venv
+          uv pip install -e ".[dev]"
+          uv pip install -e "agent/performer[dev]"
+
       - name: Run pytest
-        run: uv run --extra dev pytest
+        run: uv run pytest
 
   coverage:
     name: Coverage
@@ -127,8 +133,14 @@ jobs:
       - name: Setup uv
         uses: astral-sh/setup-uv@v4
 
+      - name: Install coordinare and performer packages
+        run: |
+          uv venv
+          uv pip install -e ".[dev]"
+          uv pip install -e "agent/performer[dev]"
+
       - name: Run coverage
-        run: uv run --extra dev pytest --cov=coordinare --cov-report=term-missing --cov-fail-under=90
+        run: uv run pytest --cov=coordinare --cov-report=term-missing --cov-fail-under=90
 
   e2e:
     name: E2E Browser Tests

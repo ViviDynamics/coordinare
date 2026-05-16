@@ -99,3 +99,16 @@ class PerformerResponse(BaseModel):
     files_modified: list[str] = Field(default_factory=list)  # 024: doc files committed by tech writer
     metrics: PerformerMetrics | None = None
     events: list[dict] = Field(default_factory=list)  # serialised BackendEvent list
+    # 063 Phase 4 (T023): True when services-health.sh exited non-zero during
+    # workspace setup. Coordinare uses this to force env-cache regeneration.
+    env_cache_health_failed: bool = False
+    # 063 Cross-cutting (T026c/T026d): service-inference outcome from the
+    # env_bootstrap performer. ``inference_skipped_reason`` is set when the
+    # agent did not run (no env_cache_path, coordinare package missing,
+    # manual-override applied, no API key, etc.); fields are otherwise the
+    # summary of the most recent infer_services call.
+    inference_skipped_reason: str | None = None
+    inference_agent_version: str | None = None
+    inference_attempts: int | None = None
+    inference_succeeded: bool | None = None
+    inference_services: list[str] = Field(default_factory=list)

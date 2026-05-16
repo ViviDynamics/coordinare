@@ -235,6 +235,9 @@ class Performance:
     qa_report: dict | None = None  # 023: pass report {criteria_checked, criteria_passed, new_tests_added}
     qa_cycle: int = 0  # 023: number of QA fix cycles
     docs_files_modified: list[str] = field(default_factory=list)  # 024: doc files committed
+    # 063 T026c: cached service-inference outcome from env_bootstrap so resume
+    # paths replay it without re-running the (expensive) LLM agent.
+    inference_state: dict[str, object] = field(default_factory=dict)
     assessment_questions: list[str] = field(default_factory=list)  # assessor: questions when insufficient
     open_questions: list[str] = field(default_factory=list)
     # 045: Count of backend-output parse retries used in this session (across

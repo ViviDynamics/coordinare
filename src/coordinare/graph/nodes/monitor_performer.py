@@ -773,6 +773,23 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
         if isinstance(new_metrics, dict):
             state["performer_metrics"] = new_metrics
 
+        # Spec 063 Phase 4 (T024): performer signalled non-zero services-health.sh
+        # → flag the symphony's env-cache for forced regeneration on the next
+        # check_and_trigger cycle.
+        if status.get("env_cache_health_failed"):
+            _env_cache_svc = state.get("env_cache_service")
+            _sym_name = state.get("current_symphony")
+            if _env_cache_svc is not None and _sym_name:
+                try:
+                    _env_cache_svc.mark_runtime_health_failed(_sym_name, state)
+                except Exception as _exc:
+                    logger.warning(
+                        "monitor_performer.mark_runtime_health_failed_error",
+                        card_id=card_id,
+                        symphony=_sym_name,
+                        error=str(_exc),
+                    )
+
         # 034: Accumulate token usage and estimate cost.
         # Spec: only accept real integers; treat floats/bools/other types as invalid.
         raw_tokens = (new_metrics or {}).get("tokens_processed", 0) if isinstance(new_metrics, dict) else 0

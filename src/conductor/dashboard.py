@@ -1681,6 +1681,26 @@ async function loadSymphonyDetail(name, el) {
       else if (lastOk === true && ready) { statusColor = 'var(--color-accent-green)'; statusText = 'ready'; }
       else if (lastOk === false) { statusColor = 'var(--color-accent-red)'; statusText = 'last bootstrap failed'; }
       else { statusColor = 'var(--color-text-muted)'; statusText = 'not yet bootstrapped'; }
+      var infRow;
+      if (ec.last_inference_skipped_reason) {
+        infRow = '<span style="color:var(--color-text-muted)">skipped: '
+          + esc(ec.last_inference_skipped_reason) + '</span>';
+      } else if (ec.last_inference_succeeded === true) {
+        var svcs = (ec.last_inference_services || []).join(', ') || '(none)';
+        infRow = '<span style="color:var(--color-accent-green)">ok</span> '
+          + esc(svcs)
+          + ' <span style="color:var(--color-text-muted)">('
+          + esc(String(ec.last_inference_attempts || '?')) + ' attempt'
+          + ((ec.last_inference_attempts || 0) === 1 ? '' : 's') + ', '
+          + esc(ec.last_inference_agent_version || '?') + ')</span>';
+      } else if (ec.last_inference_succeeded === false) {
+        infRow = '<span style="color:var(--color-accent-red)">failed</span> '
+          + '<span style="color:var(--color-text-muted)">('
+          + esc(String(ec.last_inference_attempts || '?')) + ' attempts, '
+          + esc(ec.last_inference_agent_version || '?') + ')</span>';
+      } else {
+        infRow = '—';
+      }
       ecRows = [
         ['Status', '<span style="color:' + statusColor + '">' + statusText + '</span>'],
         ['Performer', esc(ecBootstrapId)],
@@ -1689,6 +1709,8 @@ async function loadSymphonyDetail(name, el) {
         ['Bootstrap in flight', inFlight ? 'yes' : 'no'],
         ['Last bootstrap', ec.last_bootstrap_at ? esc(fmtTime(ec.last_bootstrap_at)) : '—'],
         ['Recorded SHA', ec.readme_sha ? esc(ec.readme_sha) : '—'],
+        ['Service inference', infRow],
+        ['Inference at', ec.last_inference_at ? esc(fmtTime(ec.last_inference_at)) : '—'],
       ].map(function(r) {
         return '<tr><th style="text-align:left;padding:3px 10px 3px 0;color:var(--color-text-muted);font-weight:normal;white-space:nowrap">' + r[0] + '</th><td style="font-size:12px">' + r[1] + '</td></tr>';
       }).join('');
@@ -2970,6 +2992,17 @@ def create_dashboard_app(
                     else None
                 ),
                 "last_bootstrap_succeeded": getattr(ec, "last_bootstrap_succeeded", None),
+                # 063 T026d: service-inference summary
+                "last_inference_at": (
+                    ec.last_inference_at.isoformat()
+                    if isinstance(getattr(ec, "last_inference_at", None), datetime)
+                    else None
+                ),
+                "last_inference_skipped_reason": getattr(ec, "last_inference_skipped_reason", None),
+                "last_inference_agent_version": getattr(ec, "last_inference_agent_version", None),
+                "last_inference_attempts": getattr(ec, "last_inference_attempts", None),
+                "last_inference_succeeded": getattr(ec, "last_inference_succeeded", None),
+                "last_inference_services": list(getattr(ec, "last_inference_services", []) or []),
             }
 
         return JSONResponse({

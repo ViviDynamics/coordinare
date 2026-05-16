@@ -510,6 +510,54 @@ class BotIdentityConfig(BaseModel):
     email: str = "coordinare@localhost"
 
 
+# ---------------------------------------------------------------------------
+# 063 — LLM-driven service inference
+# ---------------------------------------------------------------------------
+
+
+class ServiceInferenceConfig(BaseModel):
+    """Budgets and gates for the LLM service-inference pass.
+
+    Phase 2 (LLM agent) ships with ``enabled=False`` by default. Operators
+    flip the gate once the deterministic manual-override path (Phase 1) has
+    been exercised on real symphonies and the inference cost envelope is
+    understood.
+
+    Field-to-phase mapping:
+
+    * ``enabled`` — Phase 2: master switch. When False, only the Phase 1
+      manual-override path runs and an absent override yields an empty manifest.
+    * ``retry_budget`` — Phase 2: how many agent → validate loops the
+      orchestrator runs before writing ``services.json.rejected``.
+    * ``max_tool_calls`` — Phase 2: hard cap on the agent's sandbox tool
+      invocations per attempt (cost & loop-prevention guard).
+    * ``max_tokens`` — Phase 2: per-LLM-call token budget, surfaced in
+      structured logs for cost telemetry.
+    * ``web_search_enabled`` — Phase 2 gate, Phase 4 backend: when False the
+      ``web_search`` tool returns a deterministic empty result. The real
+      backend lands in Phase 4 alongside broader web-search integration.
+    """
+
+    enabled: bool = False
+    retry_budget: int = Field(default=3, ge=0, le=10)
+    max_tool_calls: int = Field(default=50, ge=1, le=500)
+    max_tokens: int = Field(default=100_000, ge=1)
+    web_search_enabled: bool = False
+
+
+class EnvCacheConfig(BaseModel):
+    """Env-cache bootstrap configuration (spec 063+).
+
+    Phases:
+      * Phase 1 — Deterministic manual-override (``.coordinare/score.json``).
+      * Phase 2 — LLM-driven inference (this file's ``inference`` block).
+      * Phase 3 — Cache invalidation via SHA of manifest ``cache_inputs``.
+      * Phase 4 — Runtime-health self-healing & web-search backend.
+    """
+
+    inference: ServiceInferenceConfig = Field(default_factory=ServiceInferenceConfig)
+
+
 class ProjectConfiguration(BaseSettings):
     """Application configuration loaded from YAML and COORDINARE_* env vars."""
 
@@ -628,6 +676,9 @@ class ProjectConfiguration(BaseSettings):
     # separate GlobalConfig model because per-symphony configs already overlay this via
     # effective_config() — there is no architectural need for another indirection.
     env_cache_root: Path = Path("~/.coordinare/env-caches/")
+
+    # 063 — LLM-driven service inference for env-cache bootstrap.
+    env_cache: EnvCacheConfig = Field(default_factory=lambda: EnvCacheConfig())
 
     @field_validator("env_cache_root", mode="after")
     @classmethod

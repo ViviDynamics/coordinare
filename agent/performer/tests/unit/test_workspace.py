@@ -721,3 +721,244 @@ class TestActivateEnvCache:
         result = await _activate_env_cache(str(tmp_path))
         # Empty script → empty delta (PWD/SHLVL match the reference shell)
         assert result == {}
+
+
+class TestStartEnvCacheServices:
+    """Tests for _start_env_cache_services (spec 063 Phase 1)."""
+
+    @pytest.mark.asyncio
+    async def test_empty_path_is_noop(self) -> None:
+        from performer.workspace import _start_env_cache_services
+        # Must not raise even with no env cache configured.
+        await _start_env_cache_services("", {})
+
+    @pytest.mark.asyncio
+    async def test_missing_script_is_noop(self, tmp_path: Path) -> None:
+        from performer.workspace import _start_env_cache_services
+        # services/ dir absent — must silently skip.
+        await _start_env_cache_services(str(tmp_path), {})
+
+    @pytest.mark.asyncio
+    async def test_non_executable_script_is_noop(self, tmp_path: Path) -> None:
+        from performer.workspace import _start_env_cache_services
+        services = tmp_path / "services"
+        services.mkdir()
+        start = services / "services-start.sh"
+        start.write_text("#!/usr/bin/env bash\nexit 0\n")
+        # No exec bit set → must not invoke.
+        await _start_env_cache_services(str(tmp_path), {})
+
+    @pytest.mark.asyncio
+    async def test_executable_script_is_invoked(self, tmp_path: Path) -> None:
+        from performer.workspace import _start_env_cache_services
+        services = tmp_path / "services"
+        services.mkdir()
+        flag = tmp_path / "started"
+        start = services / "services-start.sh"
+        start.write_text(f"#!/usr/bin/env bash\ntouch {flag}\n")
+        start.chmod(0o755)
+        await _start_env_cache_services(str(tmp_path), {})
+        assert flag.exists(), "services-start.sh must run when present and executable"
+
+    @pytest.mark.asyncio
+    async def test_nonzero_exit_logs_but_does_not_raise(
+        self, tmp_path: Path
+    ) -> None:
+        from performer.workspace import _start_env_cache_services
+        services = tmp_path / "services"
+        services.mkdir()
+        start = services / "services-start.sh"
+        start.write_text("#!/usr/bin/env bash\necho boom >&2\nexit 17\n")
+        start.chmod(0o755)
+        # Must not raise; failure logged and swallowed so workspace setup proceeds.
+        await _start_env_cache_services(str(tmp_path), {})
+
+    @pytest.mark.asyncio
+    async def test_cache_env_is_propagated(self, tmp_path: Path) -> None:
+        from performer.workspace import _start_env_cache_services
+        services = tmp_path / "services"
+        services.mkdir()
+        start = services / "services-start.sh"
+        marker = tmp_path / "saw-token"
+        start.write_text(
+            f'#!/usr/bin/env bash\n[ "$CACHE_TOKEN" = "xyz" ] && touch {marker}\n'
+        )
+        start.chmod(0o755)
+        await _start_env_cache_services(str(tmp_path), {"CACHE_TOKEN": "xyz"})
+        assert marker.exists(), "cache_env vars must be exported to services-start.sh"
+
+
+class TestStopEnvCacheServices:
+    """Tests for stop_env_cache_services and stop_all_env_cache_services (spec 063 T007)."""
+
+    def _clear_registry(self) -> None:
+        from performer.workspace import _ACTIVE_SERVICE_CACHES
+        _ACTIVE_SERVICE_CACHES.clear()
+
+    def test_empty_path_is_noop(self) -> None:
+        from performer.workspace import stop_env_cache_services
+        stop_env_cache_services("")
+
+    def test_missing_script_is_noop(self, tmp_path: Path) -> None:
+        from performer.workspace import stop_env_cache_services
+        stop_env_cache_services(str(tmp_path))
+
+    def test_non_executable_script_is_noop(self, tmp_path: Path) -> None:
+        from performer.workspace import stop_env_cache_services
+        services = tmp_path / "services"
+        services.mkdir()
+        stop = services / "services-stop.sh"
+        stop.write_text("#!/usr/bin/env bash\nexit 0\n")
+        # No exec bit; helper must not invoke.
+        stop_env_cache_services(str(tmp_path))
+
+    def test_executable_script_is_invoked(self, tmp_path: Path) -> None:
+        from performer.workspace import stop_env_cache_services
+        services = tmp_path / "services"
+        services.mkdir()
+        flag = tmp_path / "stopped"
+        stop = services / "services-stop.sh"
+        stop.write_text(f"#!/usr/bin/env bash\ntouch {flag}\n")
+        stop.chmod(0o755)
+        stop_env_cache_services(str(tmp_path))
+        assert flag.exists(), "services-stop.sh must run when present and executable"
+
+    def test_nonzero_exit_does_not_raise(self, tmp_path: Path) -> None:
+        from performer.workspace import stop_env_cache_services
+        services = tmp_path / "services"
+        services.mkdir()
+        stop = services / "services-stop.sh"
+        stop.write_text("#!/usr/bin/env bash\nexit 5\n")
+        stop.chmod(0o755)
+        # Must not raise on nonzero exit — shutdown path is best-effort.
+        stop_env_cache_services(str(tmp_path))
+
+    def test_cache_env_is_propagated(self, tmp_path: Path) -> None:
+        from performer.workspace import stop_env_cache_services
+        services = tmp_path / "services"
+        services.mkdir()
+        marker = tmp_path / "saw-stop-token"
+        stop = services / "services-stop.sh"
+        stop.write_text(
+            f'#!/usr/bin/env bash\n[ "$CACHE_TOKEN" = "stop-xyz" ] && touch {marker}\n'
+        )
+        stop.chmod(0o755)
+        stop_env_cache_services(str(tmp_path), {"CACHE_TOKEN": "stop-xyz"})
+        assert marker.exists()
+
+    @pytest.mark.asyncio
+    async def test_successful_start_registers_for_shutdown_stop(
+        self, tmp_path: Path
+    ) -> None:
+        from performer.workspace import (
+            _ACTIVE_SERVICE_CACHES,
+            _start_env_cache_services,
+            stop_all_env_cache_services,
+        )
+        self._clear_registry()
+        services = tmp_path / "services"
+        services.mkdir()
+        started = tmp_path / "started"
+        stopped = tmp_path / "stopped"
+        (services / "services-start.sh").write_text(
+            f"#!/usr/bin/env bash\ntouch {started}\n"
+        )
+        (services / "services-stop.sh").write_text(
+            f"#!/usr/bin/env bash\ntouch {stopped}\n"
+        )
+        (services / "services-start.sh").chmod(0o755)
+        (services / "services-stop.sh").chmod(0o755)
+
+        await _start_env_cache_services(str(tmp_path), {})
+        assert started.exists()
+        assert str(tmp_path) in _ACTIVE_SERVICE_CACHES
+
+        stop_all_env_cache_services()
+        assert stopped.exists(), "stop_all must invoke services-stop.sh for registered caches"
+        # Registry must be cleared so a second call is a no-op.
+        assert _ACTIVE_SERVICE_CACHES == {}
+
+    def test_stop_all_empty_registry_is_noop(self) -> None:
+        from performer.workspace import stop_all_env_cache_services
+        self._clear_registry()
+        stop_all_env_cache_services()  # must not raise
+
+    def test_stop_all_swallows_per_cache_errors(self, tmp_path: Path) -> None:
+        from performer.workspace import (
+            _ACTIVE_SERVICE_CACHES,
+            stop_all_env_cache_services,
+        )
+        self._clear_registry()
+
+        good = tmp_path / "good"
+        bad = tmp_path / "bad"
+        for root in (good, bad):
+            (root / "services").mkdir(parents=True)
+        good_flag = tmp_path / "good-stopped"
+        (good / "services" / "services-stop.sh").write_text(
+            f"#!/usr/bin/env bash\ntouch {good_flag}\n"
+        )
+        (good / "services" / "services-stop.sh").chmod(0o755)
+        (bad / "services" / "services-stop.sh").write_text(
+            "#!/usr/bin/env bash\nexit 9\n"
+        )
+        (bad / "services" / "services-stop.sh").chmod(0o755)
+
+        _ACTIVE_SERVICE_CACHES[str(bad)] = {}
+        _ACTIVE_SERVICE_CACHES[str(good)] = {}
+
+        # A failing stop in one cache must not prevent the other from stopping.
+        stop_all_env_cache_services()
+        assert good_flag.exists()
+        assert _ACTIVE_SERVICE_CACHES == {}
+
+
+class TestEnvCacheHealthCheck:
+    """Spec 063 Phase 4 (T023): services-health.sh post-start invocation."""
+
+    def _clear_flag(self) -> None:
+        import performer.workspace as ws
+        ws._ENV_CACHE_HEALTH_FAILED = False
+        ws._ACTIVE_SERVICE_CACHES.clear()
+
+    @pytest.mark.asyncio
+    async def test_passing_health_check_does_not_flag(self, tmp_path: Path) -> None:
+        self._clear_flag()
+        from performer.workspace import _start_env_cache_services, consume_env_cache_health_failure
+        services = tmp_path / "services"
+        services.mkdir()
+        (services / "services-start.sh").write_text("#!/usr/bin/env bash\nexit 0\n")
+        (services / "services-start.sh").chmod(0o755)
+        (services / "services-health.sh").write_text("#!/usr/bin/env bash\nexit 0\n")
+        (services / "services-health.sh").chmod(0o755)
+        await _start_env_cache_services(str(tmp_path), {})
+        assert consume_env_cache_health_failure() is False
+
+    @pytest.mark.asyncio
+    async def test_failing_health_check_flags(self, tmp_path: Path) -> None:
+        self._clear_flag()
+        from performer.workspace import _start_env_cache_services, consume_env_cache_health_failure
+        services = tmp_path / "services"
+        services.mkdir()
+        (services / "services-start.sh").write_text("#!/usr/bin/env bash\nexit 0\n")
+        (services / "services-start.sh").chmod(0o755)
+        (services / "services-health.sh").write_text(
+            "#!/usr/bin/env bash\necho dead >&2\nexit 1\n"
+        )
+        (services / "services-health.sh").chmod(0o755)
+        await _start_env_cache_services(str(tmp_path), {})
+        assert consume_env_cache_health_failure() is True
+        # Flag is single-shot.
+        assert consume_env_cache_health_failure() is False
+
+    @pytest.mark.asyncio
+    async def test_missing_health_script_is_noop(self, tmp_path: Path) -> None:
+        self._clear_flag()
+        from performer.workspace import _start_env_cache_services, consume_env_cache_health_failure
+        services = tmp_path / "services"
+        services.mkdir()
+        (services / "services-start.sh").write_text("#!/usr/bin/env bash\nexit 0\n")
+        (services / "services-start.sh").chmod(0o755)
+        # No services-health.sh present.
+        await _start_env_cache_services(str(tmp_path), {})
+        assert consume_env_cache_health_failure() is False
