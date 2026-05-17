@@ -200,6 +200,10 @@ class CoordinareState(TypedDict, total=False):
     # 060: Per-symphony env-cache state (name → EnvCacheState)
     env_cache: dict[str, Any]
 
+    # 064: Closer PR-checks gate — per-card cache of last poll for tick fast-path.
+    # Keyed by card_id; resets when PR HEAD SHA changes.
+    card_checks_state: dict[str, dict[str, Any]]
+
     # 062: Per-card metadata from the latest poll_board.  Stashed on top-level
     # state so the daemon's post-cycle sync can copy them onto SymphonyRuntimeState
     # for the dashboard swimlane (titles + GitHub links).  Declared here so
@@ -265,4 +269,5 @@ def initial_state() -> CoordinareState:
         "symphony_github_services": {},
         "symphony_workspace_managers": {},
         "env_cache": {},
+        "card_checks_state": {},
     }

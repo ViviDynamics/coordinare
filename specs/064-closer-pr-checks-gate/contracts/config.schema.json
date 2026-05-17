@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "closer_pr_checks config block",
+  "description": "Per-symphony configuration. Lives under symphonies.<name>.closer_pr_checks in config.yaml.",
+  "type": "object",
+  "properties": {
+    "enabled": {
+      "type": "boolean",
+      "default": true,
+      "description": "Master switch. When false, the gate is skipped entirely and closer behaviour reverts to pre-064."
+    },
+    "pending_timeout_seconds": {
+      "type": "integer",
+      "minimum": 60,
+      "default": 900,
+      "description": "Max seconds to HOLD waiting for required checks to complete, anchored to PR HEAD's push timestamp (FR-009). On expiry, BOUNCE with reason='pending_timeout'."
+    },
+    "poll_interval_seconds": {
+      "type": "integer",
+      "minimum": 5,
+      "default": 30,
+      "description": "Minimum spacing between re-polls during HOLD. Monitor ticks faster than this reuse the last decision."
+    },
+    "fail_open_on_error": {
+      "type": "boolean",
+      "default": true,
+      "description": "If the GraphQL call errors (rate limit, transient network), log and treat as FORWARD. Mirrors 043 lint gate precedent."
+    },
+    "treat_unknown_required_as": {
+      "type": "string",
+      "enum": ["pass", "block"],
+      "default": "pass",
+      "description": "When branch_protection_readable=False, choose whether the absence of a known required-set should pass or block. Default 'pass' keeps the gate non-punitive on auth degradation."
+    }
+  },
+  "additionalProperties": false
+}

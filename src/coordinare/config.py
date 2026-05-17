@@ -839,6 +839,23 @@ class ProjectConfiguration(BaseSettings):
 
 
 # ---------------------------------------------------------------------------
+# 064 — Closer PR-Checks Gate
+# ---------------------------------------------------------------------------
+
+
+class CloserPrChecksConfig(BaseModel):
+    """Per-symphony config for the closer PR-checks gate (spec 064)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    pending_timeout_seconds: int = Field(default=900, ge=60)
+    poll_interval_seconds: int = Field(default=30, ge=5)
+    fail_open_on_error: bool = True
+    treat_unknown_required_as: Literal["pass", "block"] = "pass"
+
+
+# ---------------------------------------------------------------------------
 # 057 — Symphony Management & Multi-Project Orchestration
 # ---------------------------------------------------------------------------
 
@@ -857,6 +874,9 @@ class SymphonyConfig(BaseModel):
     # 060 — Performer environment caching per symphony.
     env_bootstrap_performer_id: str | None = None
     env_spec_files: list[str] = Field(default_factory=lambda: ["README.md"])
+
+    # 064 — Closer PR-checks gate per symphony.
+    closer_pr_checks: CloserPrChecksConfig = Field(default_factory=lambda: CloserPrChecksConfig())
 
     @field_validator("env_spec_files")
     @classmethod

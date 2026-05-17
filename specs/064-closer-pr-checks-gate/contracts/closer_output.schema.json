@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CloserOutput (064 extension)",
+  "description": "Augments the existing closer JSON contract with PR-checks gate signaling. Only the new/changed fields are shown here; existing fields (commit_sha, summary, etc.) remain as-is.",
+  "type": "object",
+  "required": ["approved"],
+  "properties": {
+    "approved": {
+      "type": "boolean",
+      "description": "True only when all required PR checks pass. False during pending or failure."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["approved", "pending_checks", "checks_failed"],
+      "description": "Disambiguates why approved=false. 'pending_checks' tells coordinare to HOLD (FR-005). 'checks_failed' bounces to implementer with failed_jobs."
+    },
+    "failed_jobs": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Names of refusing required checks. Required when status='checks_failed'. Surfaced verbatim to the implementer on bounce.",
+      "default": []
+    },
+    "pending_jobs": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Names of required checks still running. Informational when status='pending_checks'.",
+      "default": []
+    },
+    "head_sha": {
+      "type": "string",
+      "description": "PR HEAD SHA the closer evaluated. Coordinare compares against live HEAD to detect drift before honoring the decision."
+    },
+    "checks_url": {
+      "type": "string",
+      "format": "uri",
+      "description": "Convenience link to GitHub's checks tab for this PR."
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "const": "checks_failed" } }, "required": ["status"] },
+      "then": { "required": ["failed_jobs", "head_sha"] }
+    },
+    {
+      "if": { "properties": { "status": { "const": "pending_checks" } }, "required": ["status"] },
+      "then": { "required": ["head_sha"] }
+    }
+  ]
+}

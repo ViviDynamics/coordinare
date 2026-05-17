@@ -495,6 +495,200 @@ def _advance_stage(state: CoordinareState, status: dict[str, Any] | None = None)
 _STATS_POLL_INTERVAL_SECONDS = 30
 
 
+def _pr_url_parts(pr_url: str | None) -> tuple[str, str, int] | None:
+    """Parse a PR URL into (owner, repo, pr_number). Returns None on failure."""
+    if not pr_url:
+        return None
+    try:
+        cleaned = pr_url.rstrip("/")
+        parts = cleaned.split("/")
+        if parts[-2] != "pull":
+            return None
+        pr_num = int(parts[-1])
+        owner = parts[-4]
+        repo = parts[-3]
+    except (ValueError, IndexError):
+        return None
+    return owner, repo, pr_num
+
+
+def _get_closer_pr_checks_config(state: CoordinareState) -> Any:
+    """Resolve the active symphony's closer_pr_checks config (064).
+
+    Returns the symphony's CloserPrChecksConfig if available, else None.
+
+    Legacy single-symphony mode (no symphony_configs entry) intentionally
+    returns None so the gate stays *off* until an operator opts in by
+    configuring a symphony — gating remote checks is a behavior change that
+    must not silently activate on upgrade.
+    """
+    sym_name = state.get("current_symphony")
+    sym_configs = state.get("symphony_configs") or {}
+    sym_cfg = sym_configs.get(sym_name) if sym_name else None
+    if sym_cfg is None:
+        return None
+    return getattr(sym_cfg, "closer_pr_checks", None)
+
+
+async def _evaluate_pr_checks_gate(
+    state: CoordinareState,
+    card_id: str,
+    pr_url: str,
+) -> tuple[dict[str, Any], bool]:
+    """Run the closer PR-checks gate (spec 064).
+
+    Returns a (state_updates, stop) tuple. `stop=True` means HOLD/BOUNCE — caller
+    should apply updates and return without running handoff side-effects.
+    `stop=False` means FORWARD (or gate disabled) — caller should apply updates
+    then continue with the normal monitoring_pr transition.
+    """
+    cfg = _get_closer_pr_checks_config(state)
+    if cfg is None or not getattr(cfg, "enabled", False):
+        return {}, False
+
+    parts = _pr_url_parts(pr_url)
+    if parts is None:
+        logger.warning("pr_checks_gate.unparseable_pr_url", pr_url=pr_url)
+        return {}, False
+    owner, repo, pr_num = parts
+
+    github = state.get("github_service")
+    if github is None:
+        return {}, False
+
+    # T029: Tick fast-path — if last poll is within poll_interval_seconds and the
+    # prior decision was HOLD, skip the GraphQL query and re-HOLD.
+    prior = (state.get("card_checks_state") or {}).get(card_id)
+    # getattr fallback guards against legacy/duck-typed configs in tests.
+    poll_interval = getattr(cfg, "poll_interval_seconds", 30)
+    if prior and prior.get("last_decision") == "HOLD":
+        try:
+            last_polled = datetime.fromisoformat(prior["last_polled_at"])
+            age = (datetime.now(UTC) - last_polled).total_seconds()
+            if age < poll_interval:
+                logger.debug(
+                    "pr_checks_gate.fast_path_reuse", pr=pr_num, age=round(age, 1)
+                )
+                return {"phase": "monitoring_performer"}, True
+        except (KeyError, ValueError, TypeError):
+            pass  # fall through and re-query
+
+    from coordinare.services.pr_checks_policy import decide
+    from coordinare.services.pr_checks_service import PrChecksService
+
+    svc = PrChecksService(github, owner, repo)
+    try:
+        rollup = await svc.get_pr_check_rollup(pr_num)
+    except Exception as exc:
+        if getattr(cfg, "fail_open_on_error", True):
+            logger.warning(
+                "pr_checks_gate.fail_open_on_error", pr=pr_num, error=str(exc)
+            )
+            return {}, False
+        logger.warning("pr_checks_gate.error_blocking", pr=pr_num, error=str(exc))
+        return (
+            {
+                "performer_stage": "implementing",
+                "phase": "dispatching",
+                "agent_dispatch": {},
+                "agent_dispatch_at": None,
+                "relay_feedback": [
+                    {
+                        "body": f"PR checks gate failed to query GitHub: {exc}",
+                        "author_login": "coordinare",
+                    }
+                ],
+            },
+            True,
+        )
+
+    decision = decide(
+        rollup,
+        pending_timeout_seconds=getattr(cfg, "pending_timeout_seconds", 900),
+        treat_unknown_required_as=getattr(cfg, "treat_unknown_required_as", "pass"),
+    )
+
+    # GraphQL `first: 100` cap: log once per HEAD so a long-context PR doesn't
+    # spam the warning on every poll.
+    if rollup.at_context_cap and (prior or {}).get("cap_hit_sha") != rollup.head_sha:
+        logger.warning(
+            "pr_checks.context_cap_hit",
+            pr=pr_num,
+            head=rollup.head_sha[:7],
+        )
+
+    # Cache for tick fast-path (US3).
+    checks_state = dict(state.get("card_checks_state") or {})
+    checks_state[card_id] = {
+        "head_sha": rollup.head_sha,
+        "last_polled_at": datetime.now(UTC).isoformat(),
+        "last_decision": decision.action,
+        "cap_hit_sha": rollup.head_sha if rollup.at_context_cap else (prior or {}).get("cap_hit_sha"),
+    }
+
+    if decision.action == "FORWARD":
+        logger.info(
+            "closer.pr_checks.decision",
+            action="FORWARD",
+            pr=pr_num,
+            head=rollup.head_sha[:7],
+            elapsed=round(decision.elapsed_seconds, 1),
+        )
+        return {"card_checks_state": checks_state}, False
+
+    if decision.action == "HOLD":
+        logger.info(
+            "closer.pr_checks.decision",
+            action="HOLD",
+            pr=pr_num,
+            head=rollup.head_sha[:7],
+            pending=decision.pending,
+            elapsed=round(decision.elapsed_seconds, 1),
+        )
+        # Stay in monitoring_performer; do not advance to monitoring_pr.
+        return (
+            {
+                "phase": "monitoring_performer",
+                "card_checks_state": checks_state,
+            },
+            True,
+        )
+
+    # BOUNCE
+    if decision.reason == "pending_timeout":
+        body = (
+            f"PR checks gate: required checks still pending after "
+            f"{int(decision.elapsed_seconds)}s. Pending: "
+            f"{', '.join(decision.pending) or '(none)'}."
+        )
+    else:
+        body = (
+            "PR checks gate: required check(s) failed: "
+            f"{', '.join(decision.failed) or '(none)'}. "
+            "Investigate the failing job(s) and push a fix."
+        )
+    logger.warning(
+        "closer.pr_checks.decision",
+        action="BOUNCE",
+        pr=pr_num,
+        head=rollup.head_sha[:7],
+        reason=decision.reason,
+        failed=decision.failed,
+        pending=decision.pending,
+    )
+    return (
+        {
+            "performer_stage": "implementing",
+            "phase": "dispatching",
+            "agent_dispatch": {},
+            "agent_dispatch_at": None,
+            "card_checks_state": checks_state,
+            "relay_feedback": [{"body": body, "author_login": "coordinare"}],
+        },
+        True,
+    )
+
+
 async def _refresh_backend_ui(
     state: dict[str, Any],
     service: Any,
@@ -964,6 +1158,18 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
                     state["phase"] = "system_error"
                     return state
 
+                # 064: Closer PR-checks gate — block handoff until required
+                # GitHub checks pass on the PR's HEAD commit.
+                gate_updates, gate_stop = await _evaluate_pr_checks_gate(
+                    state, card_id, pr_url
+                )
+                for key, value in gate_updates.items():
+                    state[key] = value  # type: ignore[literal-required]
+                if gate_stop:
+                    # HOLD or BOUNCE — skip the move_card / reviewer / notification
+                    # side-effects.
+                    return state
+
                 if github is not None:
                     try:
                         await github.move_card(card_id, "IN_REVIEW")
@@ -972,14 +1178,15 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
                     # Request human reviewers configured on the project
                     human_reviewers = state.get("human_reviewers")
                     if pr_url and isinstance(human_reviewers, list) and human_reviewers:
-                        try:
-                            pr_num = int(pr_url.rstrip("/").rsplit("/", 1)[-1])
-                            parts = pr_url.rstrip("/").split("/")
-                            owner = parts[-4]
-                            repo = parts[-3]
-                            await github.request_reviewers(owner, repo, pr_num, human_reviewers)
-                        except Exception as exc:
-                            logger.warning("request_human_reviewers_failed", error=str(exc))
+                        parsed = _pr_url_parts(pr_url)
+                        if parsed is None:
+                            logger.warning("request_human_reviewers_unparseable_pr_url", pr_url=pr_url)
+                        else:
+                            owner, repo, pr_num = parsed
+                            try:
+                                await github.request_reviewers(owner, repo, pr_num, human_reviewers)
+                            except Exception as exc:
+                                logger.warning("request_human_reviewers_failed", error=str(exc))
 
                 # Notify that the card is ready for human review
                 notification_service = state.get("notification_service")
@@ -1014,6 +1221,15 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
                         )
                     except Exception as exc:
                         logger.warning("ready_for_review_notification_failed", error=str(exc))
+
+            # GC any per-card checks-gate cache now that the card is handing off
+            # to monitoring_pr (gate already FORWARDed above).
+            if updates.get("phase") == "monitoring_pr":
+                ccs = state.get("card_checks_state") or {}
+                if card_id in ccs:
+                    ccs = dict(ccs)
+                    ccs.pop(card_id, None)
+                    state["card_checks_state"] = ccs
 
             # Apply the computed state updates.
             for key, value in updates.items():

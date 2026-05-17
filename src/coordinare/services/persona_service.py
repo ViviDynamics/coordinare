@@ -38,6 +38,15 @@ _CI_REVIEWER_DIRECTIVE = (
     "`ruff`, etc.) against the PR's changed files as part of your review. "
     "Include any offenses in your comments. Do not approve if lint fails.\n\n"
 )
+_CLOSER_PR_CHECKS_DIRECTIVE = (
+    # Advisory: the coordinare's GraphQL statusCheckRollup gate (spec 064) is the
+    # authoritative decision point and runs independently. This directive just
+    # nudges the closer not to approve on top of red checks.
+    "**PR check status (064)**: Do not approve while required GitHub Actions / "
+    "status checks are failing or still pending. The coordinare re-verifies via "
+    "GraphQL before handing off to human review and will re-dispatch you if "
+    "you approve on top of red or pending required checks.\n\n"
+)
 
 DEFAULT_INSTRUCTIONS: dict[str, str] = {
     "advocate": (
@@ -236,7 +245,8 @@ DEFAULT_INSTRUCTIONS: dict[str, str] = {
         "preceding lifecycle stage — implementer, reviewer, security, qa, "
         "and tech_writer have already run. Your job is the final sweep "
         "before the PR goes to a human reviewer.\n\n"
-        + _CI_REVIEWER_DIRECTIVE +
+        + _CI_REVIEWER_DIRECTIVE
+        + _CLOSER_PR_CHECKS_DIRECTIVE +
         "## What to do\n"
         "1. Read the PR's open review threads (from any author — humans, the "
         "coordinare bot, Copilot, other bots).\n"
@@ -260,9 +270,18 @@ DEFAULT_INSTRUCTIONS: dict[str, str] = {
         "- Do NOT request changes for things that weren't already raised by "
         "a previous reviewer.\n\n"
         "When done, output your verdict as a JSON object:\n"
-        '{"approved": true/false, "body": "summary referencing each prior '
-        'open thread and whether it was addressed", '
+        '{"approved": true/false, '
+        '"status": "approved|pending_checks|checks_failed", '
+        '"head_sha": "abc1234...", '
+        '"checks_url": "https://github.com/.../pull/N/checks", '
+        '"failed_jobs": ["ci/test", ...], '
+        '"pending_jobs": ["build", ...], '
+        '"body": "summary referencing each prior open thread and whether it '
+        'was addressed", '
         '"comments": ["path/to/file:42 — what still needs to change", ...]}\n'
+        "`status` must be 'approved' only when `approved=true` AND all required "
+        "checks have passing conclusions. Use 'pending_checks' if any required "
+        "check is still running, 'checks_failed' if any required check failed. "
         "Your FINAL output MUST be valid JSON."
     ),
     "tech_writer": (

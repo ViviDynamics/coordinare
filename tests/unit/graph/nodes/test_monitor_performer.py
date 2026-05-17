@@ -2001,3 +2001,379 @@ async def test_qa_freshness_up_to_date_does_not_route_to_implementer() -> None:
 
     # qa_passed must NOT route back to implementing
     assert not (result.get("phase") == "dispatching" and result.get("performer_stage") == "implementing")
+
+
+# ---------------------------------------------------------------------------
+# Spec 064: Closer PR-checks gate (T024-T028)
+# ---------------------------------------------------------------------------
+
+
+def _rollup_payload(
+    *,
+    pushed_date: str | None = None,
+    contexts: list[dict] | None = None,
+    bpr_nodes: list[dict] | None = None,
+) -> dict:
+    if pushed_date is None:
+        from datetime import UTC, datetime
+        pushed_date = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    return {
+        "repository": {
+            "pullRequest": {
+                "number": 42,
+                "baseRefName": "main",
+                "headRefOid": "deadbeef",
+                "commits": {
+                    "nodes": [
+                        {
+                            "commit": {
+                                "oid": "deadbeef",
+                                "pushedDate": pushed_date,
+                                "statusCheckRollup": {
+                                    "state": "PENDING",
+                                    "contexts": {"nodes": contexts or []},
+                                },
+                            }
+                        }
+                    ]
+                },
+            },
+            "branchProtectionRules": {"nodes": bpr_nodes or []},
+        }
+    }
+
+
+class _GitHubWithRollup:
+    """Mock github service exposing both move_card and _execute."""
+
+    def __init__(self, rollup_payload: dict | None = None, raise_on_execute: bool = False) -> None:
+        self.move_calls: list[tuple[str, str]] = []
+        self.request_reviewer_calls: list[tuple] = []
+        self._payload = rollup_payload
+        self._raise = raise_on_execute
+
+    async def move_card(self, item_id: str, status: str) -> None:
+        self.move_calls.append((item_id, status))
+
+    async def request_reviewers(self, owner: str, repo: str, pr_num: int, reviewers: list) -> None:
+        self.request_reviewer_calls.append((owner, repo, pr_num, reviewers))
+
+    async def _execute(self, query: str, variables: dict) -> dict:
+        if self._raise:
+            raise RuntimeError("graphql blew up")
+        return self._payload or {}
+
+
+def _gate_state(github: object, symphony_cfg: object | None = None) -> dict:
+    """Build a state that will hit the gate when monitor_performer advances.
+
+    Always wires a symphony_configs entry so the gate is active: legacy
+    single-symphony mode (no symphony_configs) deliberately disables the
+    gate per `_get_closer_pr_checks_config`.
+    """
+    state = initial_state()
+    service = _Performer({
+        "status": "pr_opened",
+        "pr_url": "https://github.com/org/repo/pull/42",
+        "pr_node_id": "PR_NODE_42",
+    })
+    state["performer_services"] = {"implementing": service}
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing"]
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["github_service"] = github
+    if symphony_cfg is None:
+        from coordinare.config import CloserPrChecksConfig
+
+        class _DefaultSym:
+            closer_pr_checks = CloserPrChecksConfig()
+
+        symphony_cfg = _DefaultSym()
+    state["current_symphony"] = "default"
+    state["symphony_configs"] = {"default": symphony_cfg}
+    return state
+
+
+@pytest.mark.asyncio
+async def test_064_gate_forwards_when_required_checks_pass() -> None:
+    payload = _rollup_payload(
+        contexts=[
+            {"__typename": "CheckRun", "name": "ci/test", "status": "COMPLETED", "conclusion": "SUCCESS"},
+        ],
+        bpr_nodes=[{"pattern": "main", "requiredStatusChecks": [{"context": "ci/test"}]}],
+    )
+    gh = _GitHubWithRollup(payload)
+    state = _gate_state(gh)
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "monitoring_pr"
+    assert ("ITEM_1", "IN_REVIEW") in gh.move_calls
+    # On FORWARD, the per-card cache is GC'd as the card hands off to monitoring_pr.
+    assert "ITEM_1" not in (result.get("card_checks_state") or {})
+
+
+@pytest.mark.asyncio
+async def test_064_gate_holds_when_required_check_pending() -> None:
+    payload = _rollup_payload(
+        contexts=[
+            {"__typename": "CheckRun", "name": "ci/test", "status": "IN_PROGRESS", "conclusion": None},
+        ],
+        bpr_nodes=[{"pattern": "main", "requiredStatusChecks": [{"context": "ci/test"}]}],
+    )
+    gh = _GitHubWithRollup(payload)
+    state = _gate_state(gh)
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "monitoring_performer"
+    assert gh.move_calls == []
+    assert result["card_checks_state"]["ITEM_1"]["last_decision"] == "HOLD"
+
+
+@pytest.mark.asyncio
+async def test_064_gate_bounces_to_implementer_on_failure() -> None:
+    payload = _rollup_payload(
+        contexts=[
+            {"__typename": "CheckRun", "name": "ci/test", "status": "COMPLETED", "conclusion": "FAILURE"},
+        ],
+        bpr_nodes=[{"pattern": "main", "requiredStatusChecks": [{"context": "ci/test"}]}],
+    )
+    gh = _GitHubWithRollup(payload)
+    state = _gate_state(gh)
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "dispatching"
+    assert result["performer_stage"] == "implementing"
+    assert gh.move_calls == []
+    relay = result.get("relay_feedback") or []
+    assert relay and "ci/test" in relay[0]["body"]
+
+
+@pytest.mark.asyncio
+async def test_064_gate_disabled_in_legacy_mode_no_symphony() -> None:
+    """Legacy single-symphony mode (no symphony_configs) leaves the gate off
+    so upgrades don't silently start blocking handoff on red checks.
+    """
+    state = _gate_state(_GitHubWithRollup(raise_on_execute=True))
+    # Tear down the default symphony cfg that `_gate_state` injects.
+    state["current_symphony"] = None
+    state["symphony_configs"] = {}
+    gh = state["github_service"]
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "monitoring_pr"
+    assert ("ITEM_1", "IN_REVIEW") in gh.move_calls
+
+
+@pytest.mark.asyncio
+async def test_064_gate_disabled_in_config_bypasses() -> None:
+    from coordinare.config import CloserPrChecksConfig
+
+    class _Sym:
+        closer_pr_checks = CloserPrChecksConfig(enabled=False)
+
+    gh = _GitHubWithRollup(raise_on_execute=True)
+    state = _gate_state(gh, symphony_cfg=_Sym())
+
+    result = await monitor_performer(state)
+
+    # Disabled → no rollup query, normal handoff path runs.
+    assert result["phase"] == "monitoring_pr"
+    assert ("ITEM_1", "IN_REVIEW") in gh.move_calls
+
+
+class _CountingGitHub(_GitHubWithRollup):
+    def __init__(self, rollup_payload: dict) -> None:
+        super().__init__(rollup_payload)
+        self.execute_calls = 0
+
+    async def _execute(self, query: str, variables: dict) -> dict:
+        self.execute_calls += 1
+        return await super()._execute(query, variables)
+
+
+@pytest.mark.asyncio
+async def test_064_tick_fast_path_skips_graphql_within_poll_interval() -> None:
+    """T034: a second tick within poll_interval_seconds reuses prior HOLD without re-querying."""
+    payload = _rollup_payload(
+        contexts=[
+            {"__typename": "CheckRun", "name": "ci/test", "status": "IN_PROGRESS", "conclusion": None},
+        ],
+        bpr_nodes=[{"pattern": "main", "requiredStatusChecks": [{"context": "ci/test"}]}],
+    )
+    gh = _CountingGitHub(payload)
+    state = _gate_state(gh)
+
+    # First tick: HOLD, one query.
+    state1 = await monitor_performer(state)
+    assert state1["phase"] == "monitoring_performer"
+    assert gh.execute_calls == 1
+
+    # Reset performer dispatch so monitor_performer runs again on next tick.
+    state1["performer_services"] = {"implementing": _Performer({
+        "status": "pr_opened",
+        "pr_url": "https://github.com/org/repo/pull/42",
+        "pr_node_id": "PR_NODE_42",
+    })}
+    state1["agent_dispatch"] = {"session_id": "s2"}
+
+    # Second tick (immediately): fast-path reuse, no new query.
+    state2 = await monitor_performer(state1)
+    assert state2["phase"] == "monitoring_performer"
+    assert gh.execute_calls == 1  # unchanged
+
+
+@pytest.mark.asyncio
+async def test_064_new_head_resets_timeout_clock() -> None:
+    """T035: pushing a new HEAD (different headRefOid + pushedDate) restarts the timeout clock."""
+    from datetime import UTC, datetime, timedelta
+
+    old_pushed = (datetime.now(UTC) - timedelta(seconds=2000)).isoformat().replace("+00:00", "Z")
+    old_payload = _rollup_payload(
+        pushed_date=old_pushed,
+        contexts=[
+            {"__typename": "CheckRun", "name": "ci/test", "status": "IN_PROGRESS", "conclusion": None},
+        ],
+        bpr_nodes=[{"pattern": "main", "requiredStatusChecks": [{"context": "ci/test"}]}],
+    )
+    # Old head, elapsed > 900s → pending_timeout BOUNCE
+    gh = _GitHubWithRollup(old_payload)
+    state = _gate_state(gh)
+    result1 = await monitor_performer(state)
+    assert result1["phase"] == "dispatching"  # BOUNCE on pending_timeout
+
+    # Now simulate new HEAD with fresh pushedDate → HOLD, not BOUNCE
+    fresh_pushed = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    new_payload = _rollup_payload(
+        pushed_date=fresh_pushed,
+        contexts=[
+            {"__typename": "CheckRun", "name": "ci/test", "status": "IN_PROGRESS", "conclusion": None},
+        ],
+        bpr_nodes=[{"pattern": "main", "requiredStatusChecks": [{"context": "ci/test"}]}],
+    )
+    new_payload["repository"]["pullRequest"]["headRefOid"] = "newhead1"
+    new_payload["repository"]["pullRequest"]["commits"]["nodes"][0]["commit"]["oid"] = "newhead1"
+    gh2 = _GitHubWithRollup(new_payload)
+    state2 = _gate_state(gh2)
+    result2 = await monitor_performer(state2)
+    assert result2["phase"] == "monitoring_performer"  # HOLD, not BOUNCE
+
+
+@pytest.mark.asyncio
+async def test_064_hold_does_not_redispatch_closer() -> None:
+    """T036: HOLD keeps phase=monitoring_performer; closer is NOT re-dispatched."""
+    payload = _rollup_payload(
+        contexts=[
+            {"__typename": "CheckRun", "name": "ci/test", "status": "IN_PROGRESS", "conclusion": None},
+        ],
+        bpr_nodes=[{"pattern": "main", "requiredStatusChecks": [{"context": "ci/test"}]}],
+    )
+    gh = _GitHubWithRollup(payload)
+    state = _gate_state(gh)
+    result = await monitor_performer(state)
+    # HOLD = stay in monitoring_performer, not "dispatching" (which would re-dispatch closer)
+    assert result["phase"] == "monitoring_performer"
+    assert result.get("performer_stage") != "closer"
+
+
+@pytest.mark.asyncio
+async def test_064_gate_fail_open_on_infra_error() -> None:
+    gh = _GitHubWithRollup(raise_on_execute=True)
+    state = _gate_state(gh)
+
+    result = await monitor_performer(state)
+
+    # Default config has fail_open_on_error=True → FORWARD despite error.
+    assert result["phase"] == "monitoring_pr"
+    assert ("ITEM_1", "IN_REVIEW") in gh.move_calls
+
+
+@pytest.mark.asyncio
+async def test_064_gate_fail_closed_on_infra_error_bounces() -> None:
+    """fail_open_on_error=False: GraphQL failure routes back to implementing."""
+    from coordinare.config import CloserPrChecksConfig
+
+    class _Sym:
+        closer_pr_checks = CloserPrChecksConfig(fail_open_on_error=False)
+
+    gh = _GitHubWithRollup(raise_on_execute=True)
+    state = _gate_state(gh, symphony_cfg=_Sym())
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "dispatching"
+    assert result["performer_stage"] == "implementing"
+    assert gh.move_calls == []
+    relay = result.get("relay_feedback") or []
+    assert relay and "failed to query GitHub" in relay[0]["body"]
+
+
+@pytest.mark.asyncio
+async def test_064_gate_block_mode_bounces_when_bp_unreadable() -> None:
+    """treat_unknown_required_as='block': missing BP block bounces to implementer."""
+    from coordinare.config import CloserPrChecksConfig
+
+    class _Sym:
+        closer_pr_checks = CloserPrChecksConfig(treat_unknown_required_as="block")
+
+    payload = _rollup_payload(
+        contexts=[
+            {"__typename": "CheckRun", "name": "ci/test", "status": "COMPLETED", "conclusion": "SUCCESS"},
+        ],
+    )
+    # Signal unreadable BP by setting branchProtectionRules to None.
+    payload["repository"]["branchProtectionRules"] = None
+    gh = _GitHubWithRollup(payload)
+    state = _gate_state(gh, symphony_cfg=_Sym())
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "dispatching"
+    assert result["performer_stage"] == "implementing"
+    assert gh.move_calls == []
+
+
+@pytest.mark.asyncio
+async def test_064_fast_path_expires_after_poll_interval() -> None:
+    """After poll_interval_seconds elapses, the next tick must re-query GraphQL."""
+    from datetime import UTC, datetime, timedelta
+
+    from coordinare.config import CloserPrChecksConfig
+
+    class _Sym:
+        closer_pr_checks = CloserPrChecksConfig(poll_interval_seconds=5)
+
+    payload = _rollup_payload(
+        contexts=[
+            {"__typename": "CheckRun", "name": "ci/test", "status": "IN_PROGRESS", "conclusion": None},
+        ],
+        bpr_nodes=[{"pattern": "main", "requiredStatusChecks": [{"context": "ci/test"}]}],
+    )
+    gh = _CountingGitHub(payload)
+    state = _gate_state(gh, symphony_cfg=_Sym())
+
+    state1 = await monitor_performer(state)
+    assert state1["phase"] == "monitoring_performer"
+    assert gh.execute_calls == 1
+
+    # Backdate the cache entry so it falls outside poll_interval_seconds=5.
+    ccs = dict(state1["card_checks_state"])
+    entry = dict(ccs["ITEM_1"])
+    entry["last_polled_at"] = (datetime.now(UTC) - timedelta(seconds=30)).isoformat()
+    ccs["ITEM_1"] = entry
+    state1["card_checks_state"] = ccs
+
+    state1["performer_services"] = {"implementing": _Performer({
+        "status": "pr_opened",
+        "pr_url": "https://github.com/org/repo/pull/42",
+        "pr_node_id": "PR_NODE_42",
+    })}
+    state1["agent_dispatch"] = {"session_id": "s3"}
+
+    state2 = await monitor_performer(state1)
+    assert state2["phase"] == "monitoring_performer"
+    assert gh.execute_calls == 2  # re-queried

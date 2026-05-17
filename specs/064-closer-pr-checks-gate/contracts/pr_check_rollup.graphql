@@ -1,0 +1,54 @@
+# GitHub GraphQL query bundling statusCheckRollup + branch protection in
+# one network round-trip. Used by PrChecksService.get_pr_check_rollup().
+#
+# Variables:
+#   $owner: String!  e.g. "ViviDynamics"
+#   $repo:  String!  e.g. "coordinare"
+#   $pr:    Int!     PR number
+
+query PrCheckRollup($owner: String!, $repo: String!, $pr: Int!) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $pr) {
+      number
+      baseRefName
+      headRefOid
+      commits(last: 1) {
+        nodes {
+          commit {
+            oid
+            pushedDate
+            statusCheckRollup {
+              state
+              contexts(first: 100) {
+                nodes {
+                  __typename
+                  ... on CheckRun {
+                    name
+                    status
+                    conclusion
+                    detailsUrl
+                  }
+                  ... on StatusContext {
+                    context
+                    state
+                    targetUrl
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    # Branch protection is optional; if the token lacks admin:read, the
+    # service catches the error and sets branch_protection_readable=False.
+    branchProtectionRules(first: 50) {
+      nodes {
+        pattern
+        requiredStatusChecks {
+          context
+        }
+      }
+    }
+  }
+}
