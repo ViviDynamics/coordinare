@@ -717,8 +717,23 @@ async def dispatch_performer(state: CoordinareState) -> CoordinareState:
     card["status"] = "IN_PROGRESS"
     state["current_card"] = card
     state["phase"] = "monitoring_performer"
-    state["system_error_count"] = 0
-    state["system_error_last_at"] = None
-    state["system_error_notified"] = False
-    state["system_error_reason"] = None
+    # 065 Fix 18: preserve the retry counter across a handle_system_error
+    # re-dispatch on the same card+stage. The dispatch itself succeeding
+    # doesn't mean the card made progress — if the model keeps returning
+    # empty / unparseable output on the same stage, monitor_performer will
+    # re-flip phase to `system_error` and handle_system_error needs the
+    # count to accumulate so it can eventually escalate to BLOCKED.
+    # Mid-retry signal: system_error_last_at is set (handle_system_error
+    # keeps it; fresh check_board pickup has it None) AND notified is False
+    # (notified=True means the prior card already exhausted its budget — that
+    # is the genuine "stale from previous card" case, handled here as before).
+    mid_retry = (
+        state.get("system_error_last_at") is not None
+        and not state.get("system_error_notified")
+    )
+    if not mid_retry:
+        state["system_error_count"] = 0
+        state["system_error_last_at"] = None
+        state["system_error_notified"] = False
+        state["system_error_reason"] = None
     return state

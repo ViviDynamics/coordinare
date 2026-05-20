@@ -169,6 +169,56 @@ async def test_max_retries_no_github_service() -> None:
 
 
 @pytest.mark.asyncio
+async def test_retry_tears_down_orphan_container() -> None:
+    """On retry, the previous ephemeral container is cleaned up before re-dispatch."""
+    state = _state_with_error(count=1, seconds_ago=100.0)
+    state["agent_dispatch"] = {"session_id": "sess-abc"}
+    state["performer_stage"] = "developer"
+    cleanup = AsyncMock()
+    service = MagicMock()
+    service._cleanup_ephemeral_job_by_id = cleanup
+    state["performer_services"] = {"developer": service}
+
+    result = await handle_system_error(state)
+
+    assert result["phase"] == "dispatching"
+    assert result["agent_dispatch"] == {}
+    cleanup.assert_awaited_once_with("sess-abc")
+
+
+@pytest.mark.asyncio
+async def test_retry_cleanup_failure_is_swallowed() -> None:
+    """Cleanup errors during retry don't propagate or block re-dispatch."""
+    state = _state_with_error(count=1, seconds_ago=100.0)
+    state["agent_dispatch"] = {"session_id": "sess-xyz"}
+    state["performer_stage"] = "developer"
+    service = MagicMock()
+    service._cleanup_ephemeral_job_by_id = AsyncMock(side_effect=RuntimeError("docker gone"))
+    state["performer_services"] = {"developer": service}
+
+    result = await handle_system_error(state)
+
+    assert result["phase"] == "dispatching"
+    assert result["agent_dispatch"] == {}
+
+
+@pytest.mark.asyncio
+async def test_retry_without_session_id_skips_cleanup() -> None:
+    """No session_id means nothing to clean up — retry still proceeds."""
+    state = _state_with_error(count=1, seconds_ago=100.0)
+    state["agent_dispatch"] = {}
+    service = MagicMock()
+    service._cleanup_ephemeral_job_by_id = AsyncMock()
+    state["performer_services"] = {"developer": service}
+    state["performer_stage"] = "developer"
+
+    result = await handle_system_error(state)
+
+    assert result["phase"] == "dispatching"
+    service._cleanup_ephemeral_job_by_id.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_max_retries_no_card_id() -> None:
     """No card_id means move_card is skipped."""
     state = initial_state()

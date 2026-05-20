@@ -148,8 +148,12 @@ class ClaudeService:
         retry_kwargs: dict[str, Any] | None = None,
         max_tokens: int = 4096,
         temperature: float | None = None,
+        base_url: str | None = None,
     ) -> None:
-        self._client = AsyncAnthropic(api_key=api_key, max_retries=0)
+        client_kwargs: dict[str, Any] = {"api_key": api_key, "max_retries": 0}
+        if base_url:
+            client_kwargs["base_url"] = base_url
+        self._client = AsyncAnthropic(**client_kwargs)
         self._model = model
         self._max_tokens = max_tokens
         self._temperature = temperature

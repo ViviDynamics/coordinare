@@ -1330,3 +1330,44 @@ def test_build_env_bootstrap_payload_missing_org_raises() -> None:
         svc._build_job_payload(
             {"job_type": "env_bootstrap", "symphony_repo": "x"}, None
         )
+
+
+# ---------------------------- has_live_session (065 Fix 22) ------------------
+
+
+def test_has_live_session_ephemeral_predispatch_returns_false() -> None:
+    svc = HTTPPerformerService(_ephemeral_config())
+    assert svc.has_live_session("sess-unknown") is False
+
+
+def test_has_live_session_ephemeral_active_job_returns_true() -> None:
+    from coordinare.services.http_performer_service import _EphemeralJob
+
+    svc = HTTPPerformerService(_ephemeral_config())
+    svc._active_jobs["sess-live"] = _EphemeralJob(
+        container_id="ctr-1",
+        endpoint="http://127.0.0.1:9000",
+        client=AsyncMock(),  # type: ignore[arg-type]
+    )
+    assert svc.has_live_session("sess-live") is True
+    assert svc.has_live_session("sess-other") is False
+
+
+def test_has_live_session_persistent_with_endpoint_returns_true() -> None:
+    svc = HTTPPerformerService(_persistent_config())
+    assert svc.has_live_session("any-session") is True
+
+
+def test_has_live_session_persistent_without_endpoint_returns_false() -> None:
+    """Persistent config that somehow has no resolved endpoint reports no live session."""
+    svc = HTTPPerformerService(_persistent_config())
+    svc._persistent_endpoint = None
+    assert svc.has_live_session("any-session") is False
+
+
+def test_has_live_session_injected_client_returns_true() -> None:
+    """When tests inject a client, treat it as always-live regardless of mode."""
+    svc = HTTPPerformerService(
+        _ephemeral_config(), client=_client(lambda r: httpx.Response(204))
+    )
+    assert svc.has_live_session("anything") is True

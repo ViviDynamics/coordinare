@@ -7,6 +7,7 @@ in `pr_checks_policy` and is pure so it can be unit-tested without mocks.
 from __future__ import annotations
 
 import fnmatch
+import time
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -57,10 +58,7 @@ class CheckRollup(BaseModel):
 
 # --- GraphQL query (kept in-module so tests don't need to read the contracts file) ---
 
-_ROLLUP_QUERY = """
-query PrCheckRollup($owner: String!, $repo: String!, $pr: Int!) {
-  repository(owner: $owner, name: $repo) {
-    pullRequest(number: $pr) {
+_ROLLUP_CORE = """
       number
       baseRefName
       headRefOid
@@ -69,6 +67,7 @@ query PrCheckRollup($owner: String!, $repo: String!, $pr: Int!) {
           commit {
             oid
             pushedDate
+            committedDate
             statusCheckRollup {
               state
               # NOTE: GitHub caps `first` at 100. PRs with >100 contexts will be
@@ -94,18 +93,38 @@ query PrCheckRollup($owner: String!, $repo: String!, $pr: Int!) {
           }
         }
       }
-    }
-    branchProtectionRules(first: 50) {
-      nodes {
-        pattern
-        requiredStatusChecks {
-          context
-        }
-      }
-    }
-  }
-}
 """
+
+_ROLLUP_QUERY = (
+    "query PrCheckRollup($owner: String!, $repo: String!, $pr: Int!) {\n"
+    "  repository(owner: $owner, name: $repo) {\n"
+    "    pullRequest(number: $pr) {\n"
+    + _ROLLUP_CORE +
+    "    }\n"
+    "    branchProtectionRules(first: 50) {\n"
+    "      nodes {\n"
+    "        pattern\n"
+    "        requiredStatusChecks {\n"
+    "          context\n"
+    "        }\n"
+    "      }\n"
+    "    }\n"
+    "  }\n"
+    "}\n"
+)
+
+# Fallback query for tokens that lack admin:read (cannot see branchProtectionRules).
+# We still get the rollup; parse_rollup will set branch_protection_readable=False
+# and the policy will fall back to `treat_unknown_required_as`.
+_ROLLUP_QUERY_NO_BPR = (
+    "query PrCheckRollupNoBpr($owner: String!, $repo: String!, $pr: Int!) {\n"
+    "  repository(owner: $owner, name: $repo) {\n"
+    "    pullRequest(number: $pr) {\n"
+    + _ROLLUP_CORE +
+    "    }\n"
+    "  }\n"
+    "}\n"
+)
 
 
 # GitHub StatusContext state → CheckRun-style mapping so downstream policy can
@@ -175,9 +194,14 @@ def parse_rollup(data: dict[str, Any], pr_number: int) -> CheckRollup:
         raise ValueError(msg)
     commit = (commits[0] or {}).get("commit") or {}
     head_sha = commit.get("oid") or pr.get("headRefOid") or ""
-    pushed_raw = commit.get("pushedDate")
+    # GitHub returns pushedDate: null for commits created via API/web edits
+    # (e.g. app-authored commits, squash-merges-as-amends, signed commits via
+    # GitHub UI). committedDate is always present and is an acceptable proxy
+    # for "when this HEAD entered the PR" — strictly older than pushedDate,
+    # so it only widens the gate's timeout window (fail-safe direction).
+    pushed_raw = commit.get("pushedDate") or commit.get("committedDate")
     if not pushed_raw:
-        msg = f"PR #{pr_number}: HEAD commit missing pushedDate"
+        msg = f"PR #{pr_number}: HEAD commit missing pushedDate and committedDate"
         raise ValueError(msg)
     head_pushed_at = datetime.fromisoformat(pushed_raw)
     # GitHub always returns a UTC offset (`Z`/`+00:00`), but defensively
@@ -254,18 +278,54 @@ def parse_rollup(data: dict[str, Any], pr_number: int) -> CheckRollup:
 class PrChecksService:
     """Thin wrapper around `GitHubService._execute` for the rollup query."""
 
+    # Re-probe the full query (with branchProtectionRules) periodically so a
+    # token rotated to include admin:read is picked up without a restart.
+    _BPR_REPROBE_AFTER_SECONDS: float = 3600.0
+
     def __init__(self, github_service: Any, owner: str, repo: str) -> None:
         self._gh = github_service
         self._owner = owner
         self._repo = repo
+        # Once we see a FORBIDDEN on branchProtectionRules for this repo, stop
+        # asking for it — every subsequent poll would log the same traceback.
+        self._bpr_forbidden: bool = False
+        self._bpr_forbidden_at: float = 0.0
 
     async def get_pr_check_rollup(self, pr_number: int) -> CheckRollup:
         variables = {"owner": self._owner, "repo": self._repo, "pr": pr_number}
+        if self._bpr_forbidden and (
+            time.monotonic() - self._bpr_forbidden_at
+            >= self._BPR_REPROBE_AFTER_SECONDS
+        ):
+            self._bpr_forbidden = False
+        query = _ROLLUP_QUERY_NO_BPR if self._bpr_forbidden else _ROLLUP_QUERY
         try:
-            data = await self._gh._execute(_ROLLUP_QUERY, variables)
-        except Exception:
-            logger.exception("pr_checks.rollup_query_failed", pr=pr_number)
-            raise
+            data = await self._gh._execute(query, variables)
+        except Exception as exc:
+            # Token lacks admin:read for branch protection. Retry once without
+            # the branchProtectionRules block; future polls skip it entirely.
+            msg = str(exc)
+            if (
+                not self._bpr_forbidden
+                and "FORBIDDEN" in msg
+                and "branchProtectionRules" in msg
+            ):
+                self._bpr_forbidden = True
+                self._bpr_forbidden_at = time.monotonic()
+                logger.warning(
+                    "pr_checks.branch_protection_forbidden",
+                    pr=pr_number,
+                    owner=self._owner,
+                    repo=self._repo,
+                )
+                try:
+                    data = await self._gh._execute(_ROLLUP_QUERY_NO_BPR, variables)
+                except Exception:
+                    logger.exception("pr_checks.rollup_query_failed", pr=pr_number)
+                    raise
+            else:
+                logger.exception("pr_checks.rollup_query_failed", pr=pr_number)
+                raise
         try:
             return parse_rollup(data, pr_number)
         except ValueError:

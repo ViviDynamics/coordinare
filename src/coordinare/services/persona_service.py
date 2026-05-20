@@ -39,13 +39,21 @@ _CI_REVIEWER_DIRECTIVE = (
     "Include any offenses in your comments. Do not approve if lint fails.\n\n"
 )
 _CLOSER_PR_CHECKS_DIRECTIVE = (
-    # Advisory: the coordinare's GraphQL statusCheckRollup gate (spec 064) is the
-    # authoritative decision point and runs independently. This directive just
-    # nudges the closer not to approve on top of red checks.
-    "**PR check status (064)**: Do not approve while required GitHub Actions / "
-    "status checks are failing or still pending. The coordinare re-verifies via "
-    "GraphQL before handing off to human review and will re-dispatch you if "
-    "you approve on top of red or pending required checks.\n\n"
+    # The coordinare's GraphQL statusCheckRollup gate (spec 064) is the
+    # authoritative decision point for remote CI / required status checks and
+    # runs independently AFTER your approval. Closers must NOT gate on remote
+    # CI here — that produces a rejection loop (closer rejects on pending
+    # checks → coordinare relays to implementer → checks still pending → loop).
+    "**PR check status (064 — IMPORTANT)**: Do NOT withhold approval because "
+    "required GitHub Actions / status checks are pending, in progress, or "
+    "even failing. Remote CI status is the coordinare's responsibility: after "
+    "you approve, coordinare's spec-064 PR-checks gate re-verifies the status "
+    "check rollup via GraphQL and will HOLD the handoff until checks pass "
+    "(or BOUNCE the card if they fail). Your job is to evaluate the *code* "
+    "on its own merits — code quality, unresolved review threads, PR hygiene, "
+    "scope vs. card requirements. If the code is sound, approve even when "
+    "checks are still running; coordinare will not hand off to humans until "
+    "the rollup is green.\n\n"
 )
 
 DEFAULT_INSTRUCTIONS: dict[str, str] = {

@@ -7,12 +7,12 @@ import os
 import stat
 from pathlib import Path
 
-from coordinare.services.service_inference.manual_override import (
+from coordinare_service_inference.manual_override import (
     OVERRIDE_PATH_ENV_VAR,
     OVERRIDE_RELATIVE_PATH,
     apply_manual_override,
 )
-from coordinare.services.service_inference.schema import ServicesManifest
+from coordinare_service_inference.schema import ServicesManifest
 
 
 def _write_override(project_root: Path, payload: dict | str) -> Path:
@@ -129,8 +129,8 @@ def test_validation_failure_aborts_artifact_drop(tmp_path, monkeypatch):
     _write_override(tmp_path, _valid_redis_payload())
 
     # Force validate() to return a failure result.
-    from coordinare.services.service_inference import manual_override as mod
-    from coordinare.services.service_inference.validator import ValidationResult
+    from coordinare_service_inference import manual_override as mod
+    from coordinare_service_inference.validator import ValidationResult
 
     fake_result = ValidationResult(
         phase="health", stdout="", stderr="port not bound", ok=False, returncode=1
@@ -152,8 +152,8 @@ def test_validation_failure_aborts_artifact_drop(tmp_path, monkeypatch):
 def test_validation_success_writes_artifacts(tmp_path, monkeypatch):
     _write_override(tmp_path, _valid_redis_payload())
 
-    from coordinare.services.service_inference import manual_override as mod
-    from coordinare.services.service_inference.validator import ValidationResult
+    from coordinare_service_inference import manual_override as mod
+    from coordinare_service_inference.validator import ValidationResult
 
     monkeypatch.setattr(
         mod,

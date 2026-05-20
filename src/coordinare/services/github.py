@@ -11,7 +11,7 @@ import stamina
 import structlog
 from gql import Client, gql
 from gql.transport.aiohttp import AIOHTTPTransport
-from gql.transport.exceptions import TransportQueryError
+from gql.transport.exceptions import TransportQueryError, TransportServerError
 
 logger = structlog.get_logger(__name__)
 
@@ -515,6 +515,12 @@ class GitHubService:
                 raise PermanentGitHubError(str(exc)) from exc
             # Anything else (server-side transient, rate limit) is retryable
             raise TransientGitHubError(str(exc)) from exc
+        except TransportServerError as exc:
+            # 5xx from the GraphQL transport (e.g. 502 Bad Gateway during
+            # GitHub upstream incidents).  Surface as a transient error so
+            # callers log a clean warning instead of an unhandled traceback.
+            code = getattr(exc, "code", None)
+            raise TransientGitHubError(f"GraphQL HTTP {code}: {exc}") from exc
         except (TimeoutError, aiohttp.ClientError, OSError) as exc:
             raise TransientGitHubError(str(exc)) from exc
         except ValueError as exc:

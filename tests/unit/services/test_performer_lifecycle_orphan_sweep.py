@@ -10,17 +10,72 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
+from coordinare.services import performer_lifecycle as lifecycle
 from coordinare.services.performer_lifecycle import (
     ContainerStartError,
     _run_docker,
+    cleanup_orphaned_containers,
 )
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(reason="T046a orphan sweep not yet implemented")
-async def test_docker_list_orphan_containers() -> None:
-    """Test that we can list containers with a given label."""
-    pass
+async def test_cleanup_orphaned_containers_stops_each(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When docker ps lists container IDs, each is stopped and count returned."""
+
+    async def fake_run_docker(*args: str, timeout: float = 15.0) -> tuple[int, str, str]:
+        return 0, "abc123\ndef456\n", ""
+
+    safe_stop = AsyncMock()
+    monkeypatch.setattr(lifecycle, "_run_docker", fake_run_docker)
+    monkeypatch.setattr(lifecycle, "_safe_stop", safe_stop)
+
+    count = await cleanup_orphaned_containers()
+
+    assert count == 2
+    assert safe_stop.await_count == 2
+    safe_stop.assert_any_await("abc123")
+    safe_stop.assert_any_await("def456")
+
+
+@pytest.mark.asyncio
+async def test_cleanup_orphaned_containers_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No containers → return 0 without invoking _safe_stop."""
+
+    async def fake_run_docker(*args: str, timeout: float = 15.0) -> tuple[int, str, str]:
+        return 0, "  \n  \n", ""
+
+    safe_stop = AsyncMock()
+    monkeypatch.setattr(lifecycle, "_run_docker", fake_run_docker)
+    monkeypatch.setattr(lifecycle, "_safe_stop", safe_stop)
+
+    assert await cleanup_orphaned_containers() == 0
+    safe_stop.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cleanup_orphaned_containers_docker_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Non-zero rc from docker ps → return 0 without stopping anything."""
+
+    async def fake_run_docker(*args: str, timeout: float = 15.0) -> tuple[int, str, str]:
+        return 1, "", "docker daemon unreachable"
+
+    safe_stop = AsyncMock()
+    monkeypatch.setattr(lifecycle, "_run_docker", fake_run_docker)
+    monkeypatch.setattr(lifecycle, "_safe_stop", safe_stop)
+
+    assert await cleanup_orphaned_containers() == 0
+    safe_stop.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_safe_stop_swallows_exceptions(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_safe_stop logs and returns even when stop() raises."""
+
+    async def boom(_cid: str) -> None:
+        raise RuntimeError("stop failed")
+
+    monkeypatch.setattr(lifecycle, "stop", boom)
+    await lifecycle._safe_stop("abc123")
 
 
 @pytest.mark.asyncio

@@ -591,6 +591,7 @@ notifications:
     #   card_transition     — card moved to a new phase
     #   card_dispatched     — performer started on a card
     #   card_blocked        — card is blocked (dependency or repeated failure)
+    #   card_stuck          — card has remained in the same phase too long (028)
     #   card_merged         — PR was squash-merged
     #   advocate_escalation — advocate escalated an issue to a human
     #   daemon_restart      — coordinare process restarted
@@ -602,6 +603,8 @@ notifications:
       channels: [slack-ops]
     - event_type: card_blocked
       channels: [slack-ops, email-team]
+    - event_type: card_stuck
+      channels: [slack-ops]
     - event_type: card_merged
       channels: [slack-ops]
     - event_type: advocate_escalation

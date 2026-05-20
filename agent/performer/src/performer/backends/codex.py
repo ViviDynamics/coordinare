@@ -17,6 +17,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import pathlib
+import re
 import signal
 import socket
 from collections import deque
@@ -37,6 +39,29 @@ _RPC_TIMEOUT = 30.0
 
 # Approval decision sent in response to server approval requests.
 _APPROVE = {"decision": "approved"}
+
+
+_TOML_BARE_KEY_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _toml_quote(value: str) -> str:
+    """Return ``value`` as a safe TOML basic-string literal.
+
+    Rejects characters that would break out of the double-quoted literal
+    (``"``, ``\\``, raw newline) so operator-supplied CODEX_PROVIDER_* env
+    vars cannot inject extra TOML keys or invalidate the file.
+    """
+    if any(ch in value for ch in ('"', "\\", "\n", "\r")):
+        raise ValueError(f"unsafe character in codex provider value: {value!r}")
+    return f'"{value}"'
+
+
+def _validate_toml_bare_key(value: str) -> None:
+    """Reject values that are unsafe as a TOML bare key or `-c key=val` arg."""
+    if not _TOML_BARE_KEY_RE.match(value):
+        raise ValueError(f"unsafe codex provider name (must match [A-Za-z0-9_-]+): {value!r}")
+
+
 _JSON_ONLY_ROLES = {
     "assessing",
     "assessor",
@@ -100,23 +125,79 @@ class CodexBackend:
         self._port = port
 
         env = {**os.environ, **stand.cache_env, **stand.git_env, **score.tool_env}
+
+        # Isolate codex config to the stand directory so the host's
+        # ~/.codex/{config.toml,auth.json} are never touched. Codex CLI
+        # honors CODEX_HOME natively as the config root.
+        codex_dir = pathlib.Path(stand.path) / ".codex"
+        codex_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(codex_dir, 0o700)
+        except OSError:
+            pass
+        env["CODEX_HOME"] = str(codex_dir)
+
         cmd: list[str] = ["codex", "app-server", "--listen", f"ws://127.0.0.1:{port}"]
-        # Codex stores auth state in ~/.codex/auth.json.  In a fresh container
-        # there is no auth.json, so codex defaults to ChatGPT-OAuth mode and
-        # ignores OPENAI_API_KEY.  Write auth.json to force "api_key" mode.
-        api_key = env.get("OPENAI_API_KEY", "")
-        if api_key:
-            import json as _json
-            import pathlib
-            codex_dir = pathlib.Path.home() / ".codex"
-            codex_dir.mkdir(parents=True, exist_ok=True)
-            auth = {
-                "auth_mode": "apikey",
-                "OPENAI_API_KEY": api_key,
-                "tokens": None,
-                "last_refresh": None,
-            }
-            (codex_dir / "auth.json").write_text(_json.dumps(auth))
+
+        # Generic codex model-provider override.
+        #
+        # Default: OpenAI via OPENAI_API_KEY written to ~/.codex/auth.json.
+        # Override: when CODEX_PROVIDER_BASE_URL is set, write a config.toml
+        # declaring a custom OpenAI-compatible model_provider and launch codex
+        # with `-c model_provider=<name>`. Works for any compatible endpoint
+        # (LiteLLM, OpenRouter, Azure, vLLM, etc.).
+        #
+        # Recognised env vars (all optional):
+        #   CODEX_PROVIDER_BASE_URL   — provider base URL (presence = override active)
+        #   CODEX_PROVIDER_NAME       — model_provider id (default: "custom")
+        #   CODEX_PROVIDER_ENV_KEY    — env var holding the API key (default: "OPENAI_API_KEY")
+        #   CODEX_PROVIDER_WIRE_API   — "chat" or "responses" (default: "chat")
+        provider_base_url = env.get("CODEX_PROVIDER_BASE_URL", "")
+        if provider_base_url:
+            provider_name = env.get("CODEX_PROVIDER_NAME", "custom")
+            provider_env_key = env.get("CODEX_PROVIDER_ENV_KEY", "OPENAI_API_KEY")
+            provider_wire_api = env.get("CODEX_PROVIDER_WIRE_API", "chat")
+            # provider_name is used as a TOML bare key in
+            # [model_providers.<name>] and as a `-c model_provider=<name>`
+            # CLI arg, so it needs the stricter bare-key character set.
+            # The other three values just need to survive the quoted string.
+            _validate_toml_bare_key(provider_name)
+            for _val in (provider_base_url, provider_env_key, provider_wire_api):
+                _toml_quote(_val)  # raises ValueError on unsafe chars
+            config_path = codex_dir / "config.toml"
+            config_path.write_text(
+                f"model_provider = {_toml_quote(provider_name)}\n"
+                "\n"
+                f"[model_providers.{provider_name}]\n"
+                f"name = {_toml_quote(provider_name)}\n"
+                f"base_url = {_toml_quote(provider_base_url)}\n"
+                f"env_key = {_toml_quote(provider_env_key)}\n"
+                f"wire_api = {_toml_quote(provider_wire_api)}\n"
+            )
+            try:
+                os.chmod(config_path, 0o600)
+            except OSError:
+                pass
+            cmd += ["-c", f"model_provider={provider_name}"]
+        else:
+            # Codex stores auth state in ~/.codex/auth.json.  In a fresh
+            # container there is no auth.json, so codex defaults to
+            # ChatGPT-OAuth mode and ignores OPENAI_API_KEY.  Write auth.json
+            # to force "api_key" mode.
+            api_key = env.get("OPENAI_API_KEY", "")
+            if api_key:
+                auth = {
+                    "auth_mode": "apikey",
+                    "OPENAI_API_KEY": api_key,
+                    "tokens": None,
+                    "last_refresh": None,
+                }
+                auth_path = codex_dir / "auth.json"
+                auth_path.write_text(json.dumps(auth))
+                try:
+                    os.chmod(auth_path, 0o600)
+                except OSError:
+                    pass
 
         self._proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -266,13 +347,22 @@ class CodexBackend:
             except asyncio.TimeoutError:
                 continue
             if not raw:
-                raise RuntimeError("codex app-server exited before becoming ready")
+                rc = self._proc.returncode
+                tail = " | ".join(list(self._log_buffer)[-20:])
+                log.error("codex.app_server_exited", returncode=rc, tail=tail)
+                raise RuntimeError(
+                    f"codex app-server exited before becoming ready (rc={rc}): {tail}"
+                )
             line = raw.decode(errors="replace").strip()
             self._log_buffer.append(line)
             if "listening on:" in line:
                 log.debug("codex app-server ready", port=self._port)
                 return
-        raise RuntimeError(f"codex app-server not ready within {_READY_TIMEOUT}s")
+        tail = " | ".join(list(self._log_buffer)[-20:])
+        log.error("codex.app_server_timeout", tail=tail)
+        raise RuntimeError(
+            f"codex app-server not ready within {_READY_TIMEOUT}s: {tail}"
+        )
 
     async def _drain_logs(self) -> None:
         """Drain remaining stdout lines into the log buffer."""
@@ -416,6 +506,23 @@ class CodexBackend:
                 # Fallback: turn summary
                 if not output_text:
                     output_text = turn.get("summary", "")
+                # 065 Fix 19: diagnostic — if every extraction path came up empty,
+                # dump the raw turn so we can see what the model actually returned
+                # (no assistant message? reasoning-only? empty content array?).
+                if not output_text:
+                    try:
+                        raw = json.dumps(turn, default=str)[:4000]
+                    except Exception:
+                        raw = repr(turn)[:4000]
+                    log.warning(
+                        "codex.turn_completed.empty_output",
+                        item_types=[i.get("type") for i in turn.get("items", [])],
+                        item_roles=[i.get("role") for i in turn.get("items", [])
+                                    if i.get("type") == "message"],
+                        accumulator_len=len(self._output_accumulator),
+                        usage=turn.get("usage", {}),
+                        raw_turn=raw,
+                    )
                 self._output_accumulator.clear()
                 tokens = turn.get("usage", {}).get("totalTokens", 0)
                 self._status = BackendStatus(

@@ -19,9 +19,9 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from coordinare.services.service_inference.schema import ServicesManifest
-from coordinare.services.service_inference.templater import RenderedScripts, render
-from coordinare.services.service_inference.validator import ValidationResult, validate
+from coordinare_service_inference.schema import ServicesManifest
+from coordinare_service_inference.templater import RenderedScripts, render
+from coordinare_service_inference.validator import ValidationResult, validate
 
 OVERRIDE_RELATIVE_PATH = Path(".coordinare") / "score.json"
 OVERRIDE_PATH_ENV_VAR = "COORDINARE_MANUAL_OVERRIDE_PATH"

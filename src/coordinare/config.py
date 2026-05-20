@@ -225,6 +225,10 @@ class ConductingConfig(BaseModel):
     executable: str | None = None
     # OpenAI-compatible base URL override (lets you point openai_api at proxies / Azure).
     base_url: str | None = None
+    # Name of the env var holding the bearer token for openai_api.  Defaults to
+    # OPENAI_API_KEY; set to e.g. "LITELLM_MASTER_KEY" when pointing base_url at
+    # a proxy that uses a different env var.
+    api_key_env: str | None = None
 
     @field_validator("temperature")
     @classmethod
@@ -348,6 +352,7 @@ class PerformersConfig(BaseModel):
     qa: PerformerRoleConfig | None = None
     tech_writer: PerformerRoleConfig | None = None
     closer: PerformerRoleConfig | None = None
+    env_bootstrap: PerformerRoleConfig | None = None
 
     def resolved_role(self, role_name: str) -> PerformerRoleConfig | None:
         """Return the effective config for a role, merging default + role overrides.

@@ -573,18 +573,21 @@ def build_conducting_backend(
     match a.backend:
         case "anthropic_api":
             from coordinare.services.claude import ClaudeService
+            api_key_env = a.api_key_env or "ANTHROPIC_API_KEY"
             claude = ClaudeService(
-                api_key=os.getenv("ANTHROPIC_API_KEY"),
+                api_key=os.getenv(api_key_env),
                 model=a.model or "claude-sonnet-4-20250514",
                 max_tokens=a.max_tokens,
                 temperature=a.temperature,
                 circuit_breaker=circuit_breaker,
                 retry_kwargs=retry_kwargs,
+                base_url=a.base_url,
             )
             return AnthropicApiBackend(claude)
         case "openai_api":
+            api_key_env = a.api_key_env or "OPENAI_API_KEY"
             return OpenAiApiBackend(
-                api_key=os.getenv("OPENAI_API_KEY"),
+                api_key=os.getenv(api_key_env),
                 model=a.model or "gpt-4o-mini",
                 max_tokens=a.max_tokens,
                 temperature=a.temperature,

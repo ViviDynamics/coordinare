@@ -92,6 +92,7 @@ class PerformerResponse(BaseModel):
     model: str | None = None  # model override returned on dispatch (if configured)
     plan_path: str | None = None  # 020: path to committed architecture plan
     comments: list[dict] = Field(default_factory=list)  # 021: review comments [{file, line, body}]
+    body: str | None = None  # 065 Fix 4b: reviewer/closer prose body forwarded on changes_requested
     suggestions: list[str] = Field(default_factory=list)  # 021: non-blocking suggestions
     findings: list[dict] = Field(default_factory=list)  # 022: security findings [{severity, category, ...}]
     failures: list[dict] = Field(default_factory=list)  # 023: QA failures [{criterion, expected, actual, test}]

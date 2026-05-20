@@ -72,6 +72,11 @@ def decide(
 
     required = [c for c in rollup.checks if c.is_required]
 
+    bp_unreadable_pass = (
+        not rollup.branch_protection_readable
+        and treat_unknown_required_as == "pass"
+    )
+
     if not rollup.branch_protection_readable:
         if treat_unknown_required_as == "block":
             return GateDecision(
@@ -79,10 +84,9 @@ def decide(
                 reason="branch_protection_unreadable",
                 elapsed_seconds=elapsed,
             )
-        # "pass" → treat as "no required checks known"; FORWARD unless we can
-        # see a definite failure or pending in the rollup that we'd want to wait
-        # on. Non-required checks are advisory and must NOT block the gate, so
-        # the required-set stays empty.
+        # "pass" → required-set unknown; treat visible PENDING checks as HOLD
+        # (subject to pending_timeout) so we don't FORWARD onto a still-running
+        # build. Visible advisory FAILURES remain advisory — they don't bounce.
         required = []
 
     failed = [c.name for c in required if _is_failure(c)]
@@ -95,6 +99,10 @@ def decide(
         )
 
     pending = [c.name for c in required if _is_pending(c)]
+    if not pending and bp_unreadable_pass:
+        # Required-set unknown — surface visible pending checks so we don't
+        # FORWARD onto a still-running build. Failures stay advisory above.
+        pending = [c.name for c in rollup.checks if _is_pending(c)]
     if pending:
         if elapsed > pending_timeout_seconds:
             return GateDecision(

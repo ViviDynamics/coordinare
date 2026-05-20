@@ -232,6 +232,15 @@ class DashboardStore:
         self.history: deque[dict] = deque(maxlen=20)
         # Most recent cycle duration — stored here rather than reading prometheus internals
         self.last_cycle_duration: float | None = None
+        # 065 US1: mid-cycle active_sessions watcher. The daemon only broadcasts
+        # at cycle end (daemon.py:1655), so mutations made by in-cycle code
+        # (kickbacks, stage advances, new dispatches) would otherwise be
+        # invisible to SSE subscribers for up to a full cycle. A single shared
+        # poll-and-fingerprint task started on first subscribe makes any
+        # mutation observable within ~100 ms without requiring every call site
+        # to notify explicitly.
+        self._watcher_task: asyncio.Task | None = None
+        self._watcher_fingerprint: tuple | None = None
 
     def record_cycle(
         self,
@@ -258,6 +267,67 @@ class DashboardStore:
     def shutdown(self) -> None:
         """Signal all active SSE streams to exit cleanly."""
         self.broadcaster.shutdown()
+        if self._watcher_task is not None and not self._watcher_task.done():
+            self._watcher_task.cancel()
+            self._watcher_task = None
+
+    @staticmethod
+    def _active_sessions_fingerprint(daemon: CoordinareDaemon) -> tuple:
+        """Identity-changing fields for each active session.
+
+        Compared between watcher ticks to decide whether a broadcast is needed.
+        Includes the fields the Active Performers panel renders (title, stage,
+        phase, urls) plus dispatch identity (container_id) so a re-dispatch
+        of the same card_id still trips a broadcast.
+        """
+        active = daemon.state.get("active_sessions") or {}
+        parts: list[tuple] = []
+        for sid in sorted(active.keys()):
+            sess = active[sid] or {}
+            card = sess.get("current_card") or {}
+            dispatch = sess.get("agent_dispatch") or {}
+            parts.append((
+                sid,
+                card.get("title"),
+                card.get("issue_url"),
+                card.get("pr_url"),
+                sess.get("phase"),
+                sess.get("performer_stage"),
+                dispatch.get("container_id"),
+            ))
+        return tuple(parts)
+
+    async def _watch_active_sessions(
+        self,
+        daemon: CoordinareDaemon,
+        metrics: CoordinareMetrics,
+        health: HealthRegistry,
+    ) -> None:
+        """Poll active_sessions at 100 ms; broadcast when the fingerprint changes.
+
+        ~100 ms is well under the 1 s contract in
+        ``test_065_active_performer_staleness`` and small relative to user
+        perception of a "live" panel. Snapshot building only happens on change,
+        so an idle daemon costs one dict comparison per tick.
+
+        The initial fingerprint must be captured by the caller *before*
+        scheduling this task — otherwise a mutation that lands between
+        ``create_task`` and the first event-loop turn would be silently
+        baked into the baseline and never trigger a broadcast.
+        """
+        try:
+            while True:
+                await asyncio.sleep(0.1)
+                fp = self._active_sessions_fingerprint(daemon)
+                if fp == self._watcher_fingerprint:
+                    continue
+                self._watcher_fingerprint = fp
+                with contextlib.suppress(Exception):
+                    self.broadcaster.broadcast(
+                        self.build_snapshot(daemon, metrics, health)
+                    )
+        except asyncio.CancelledError:
+            return
 
     async def sse_stream(
         self,
@@ -272,6 +342,14 @@ class DashboardStore:
         sentinel from broadcaster.shutdown() causes a clean exit.
         """
         q = self.broadcaster.subscribe()
+        # 065 US1: lazily start the active_sessions watcher on first subscribe
+        # so mid-cycle mutations are broadcast without waiting for cycle end.
+        if self._watcher_task is None or self._watcher_task.done():
+            # Capture baseline synchronously — see _watch_active_sessions docstring.
+            self._watcher_fingerprint = self._active_sessions_fingerprint(daemon)
+            self._watcher_task = asyncio.create_task(
+                self._watch_active_sessions(daemon, metrics, health)
+            )
         try:
             # Send current state immediately on connect (FR-011)
             snapshot = self.build_snapshot(daemon, metrics, health)
@@ -410,6 +488,9 @@ class DashboardStore:
                 "performer_stage": _sess_stage,
                 "card_tokens_total": sess.get("card_tokens_total", 0),
                 "card_cost_estimate": sess.get("card_cost_estimate", 0.0),
+                "feedback_cycle_count": int(sess.get("feedback_cycle_count") or 0),
+                "total_feedback_cycles": int(sess.get("total_feedback_cycles") or 0),
+                "triage_blocks": int(sess.get("triage_blocks") or 0),
                 "agent_dispatch_at": (
                     _sess_dispatch.isoformat()
                     if isinstance(_sess_dispatch, datetime)
@@ -443,6 +524,9 @@ class DashboardStore:
                 "performer_stage": _top_stage,
                 "card_tokens_total": daemon.state.get("card_tokens_total", 0),
                 "card_cost_estimate": daemon.state.get("card_cost_estimate", 0.0),
+                "feedback_cycle_count": int(daemon.state.get("feedback_cycle_count") or 0),
+                "total_feedback_cycles": int(daemon.state.get("total_feedback_cycles") or 0),
+                "triage_blocks": int(daemon.state.get("triage_blocks") or 0),
                 "agent_dispatch_at": (
                     _top_dispatch.isoformat()
                     if isinstance(_top_dispatch, datetime)

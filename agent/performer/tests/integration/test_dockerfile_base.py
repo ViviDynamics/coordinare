@@ -28,7 +28,7 @@ async def test_dockerfile_base_builds(require_docker: None) -> None:
             "agent/performer/Dockerfile.base",
             "-t",
             tag,
-            "agent/performer/",
+            ".",
         ],
         capture_output=True,
         timeout=300,
@@ -56,7 +56,7 @@ async def test_dockerfile_base_advertises_universal_capabilities(require_docker:
             "agent/performer/Dockerfile.base",
             "-t",
             tag,
-            "agent/performer/",
+            ".",
         ],
         capture_output=True,
         timeout=300,
@@ -69,7 +69,7 @@ async def test_dockerfile_base_advertises_universal_capabilities(require_docker:
 
     try:
         run_result = subprocess.run(
-            ["docker", "run", "-d", "-p", "0:8088", tag],
+            ["docker", "run", "-d", "--rm", "-p", "0:8088", tag],
             capture_output=True,
             timeout=10,
             text=True,
@@ -107,10 +107,13 @@ async def test_dockerfile_base_advertises_universal_capabilities(require_docker:
         assert "format" not in tool_flags  # Formatters only in full
 
     finally:
-        # Clean up
+        # Clean up — `--rm` on `docker run` removes the container when it stops,
+        # but call `docker rm -f` defensively in case the container failed to
+        # start or `--rm` did not fire. Without this, stopped containers
+        # accumulated as "Exited" stale entries.
         if container_id:
             subprocess.run(
-                ["docker", "stop", "-t", "2", container_id],
+                ["docker", "rm", "-f", container_id],
                 capture_output=True,
                 timeout=10,
             )

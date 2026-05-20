@@ -225,6 +225,10 @@ class Performance:
     pr_head_sha: str | None = None
     plan_path: str | None = None  # 020: path to committed architecture plan
     check_attempt: int = 0
+    # 065 Fix 14: track last failure signature so we can bail when the same
+    # checks fail in the same way two attempts in a row (model not making progress).
+    last_check_failure_signature: str | None = None
+    check_no_progress_streak: int = 0
     review_comments: list[dict] = field(default_factory=list)  # 021: [{file, line, body}]
     review_suggestions: list[str] = field(default_factory=list)  # 021: non-blocking suggestions
     review_cycle: int = 0  # 021: number of review cycles exhausted

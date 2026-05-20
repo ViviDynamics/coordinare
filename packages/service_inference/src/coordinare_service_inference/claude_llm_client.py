@@ -30,8 +30,8 @@ from anthropic import (
     AuthenticationError,
 )
 
-from coordinare.services.service_inference.agent import LLMStep, ToolCall
-from coordinare.services.service_inference.schema import manifest_json_schema
+from coordinare_service_inference.agent import LLMStep, ToolCall
+from coordinare_service_inference.schema import manifest_json_schema
 
 
 class TransientLLMError(RuntimeError):

@@ -10,13 +10,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import structlog
-
-from coordinare.models.env_cache import BootstrapJobPayload, EnvCacheState
-from coordinare.services.service_inference.cache_key import (
+from coordinare_service_inference.cache_key import (
     compute_inference_cache_key,
     forced_regen_cache_key,
     load_prior_manifest,
 )
+
+from coordinare.models.env_cache import BootstrapJobPayload, EnvCacheState
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine

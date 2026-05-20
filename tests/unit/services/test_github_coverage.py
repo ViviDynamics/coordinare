@@ -940,3 +940,25 @@ async def test_permanent_error_does_not_trip_circuit_breaker() -> None:
 
     # Breaker is still CLOSED because permanent errors don't count
     assert cb.state == CircuitState.CLOSED
+
+
+@pytest.mark.asyncio
+async def test_transport_server_error_502_classified_as_transient() -> None:
+    """065 Fix 23: gql raises TransportServerError for upstream 5xx
+    (e.g. GitHub GraphQL returning 502 Bad Gateway).  These must be
+    classified as TransientGitHubError so callers log a clean warning
+    and apply backoff instead of bubbling an unhandled traceback."""
+    from gql.transport.exceptions import TransportServerError
+
+    class _ErroringClient:
+        def execute(self, _q, variable_values):
+            raise TransportServerError("502 Bad Gateway", code=502)
+
+    svc = GitHubService(token="tok", org="acme", project_number=1)
+    svc.project_id = "PVT_1"
+    svc._client = _ErroringClient()
+    svc._last_token = "tok"
+
+    with pytest.raises(TransientGitHubError) as excinfo:
+        await svc._execute("query { x }", {})
+    assert "502" in str(excinfo.value)

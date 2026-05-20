@@ -155,6 +155,14 @@ class CoordinareState(TypedDict, total=False):
     # on every dispatch (fresh Performance instance), so the bound has to
     # live on the coordinare side per-card.
     feedback_cycle_count: int
+    # 065 US4 — monotonic feedback / triage stats.  feedback_cycle_count
+    # above is the *operative* counter that resets on un-block (BLOCKED → TODO).
+    # total_feedback_cycles increments on every feedback round for the card
+    # lifetime and never resets; triage_blocks increments each time the card
+    # is moved to BLOCKED for feedback exhaustion.  Both surface on the
+    # dashboard so the operator can see cumulative churn across un-blocks.
+    total_feedback_cycles: int
+    triage_blocks: int
     # 046: Dependency state for the current card — list of unsatisfied blocker
     # dicts [{issue_number, title, column, issue_url, source}].  Populated by
     # check_board's dependency filtering and consumed by dashboard + notifications.
@@ -199,6 +207,11 @@ class CoordinareState(TypedDict, total=False):
 
     # 060: Per-symphony env-cache state (name → EnvCacheState)
     env_cache: dict[str, Any]
+    # EnvCacheService instance — declared here so LangGraph preserves it across
+    # graph.ainvoke() cycles (unknown keys are dropped during state merge).
+    env_cache_service: Any
+    # Performer service registry, keyed by performer id — same reason as above.
+    performer_services_by_id: dict[str, Any]
 
     # 064: Closer PR-checks gate — per-card cache of last poll for tick fast-path.
     # Keyed by card_id; resets when PR HEAD SHA changes.
@@ -246,6 +259,8 @@ def initial_state() -> CoordinareState:
         "card_budget_alert_sent": False,
         "active_sessions": {},
         "feedback_cycle_count": 0,
+        "total_feedback_cycles": 0,
+        "triage_blocks": 0,
         "blocked_by_dependencies": [],
         "last_known_main_sha": None,
         "last_rebase_round": None,
@@ -269,5 +284,7 @@ def initial_state() -> CoordinareState:
         "symphony_github_services": {},
         "symphony_workspace_managers": {},
         "env_cache": {},
+        "env_cache_service": None,
+        "performer_services_by_id": {},
         "card_checks_state": {},
     }

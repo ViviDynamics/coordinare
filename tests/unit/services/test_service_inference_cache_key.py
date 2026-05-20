@@ -5,14 +5,13 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
-from coordinare.services.service_inference.cache_key import (
+from coordinare_service_inference.cache_key import (
     compute_inference_cache_key,
     forced_regen_cache_key,
     load_prior_manifest,
     local_path_fetcher,
 )
-from coordinare.services.service_inference.schema import ServicesManifest
+from coordinare_service_inference.schema import ServicesManifest
 
 
 def _manifest(cache_inputs: list[str], agent_version: str = "v1") -> ServicesManifest:

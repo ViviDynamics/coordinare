@@ -32,11 +32,22 @@ RUN set -eu \
     && rm -rf /tmp/rtk /tmp/rtk.tar.gz \
     && rtk --version
 
-# Install performer package from current repo
-WORKDIR /app
-COPY pyproject.toml README.md ./
-COPY src/ ./src/
+# Install shared service_inference package first (performer depends on it).
+# Build context must be repo root so we can reach ../../packages/.
+WORKDIR /pkgs/service_inference
+COPY packages/service_inference/pyproject.toml ./
+COPY packages/service_inference/src/ ./src/
 RUN pip install --no-cache-dir .
+
+# Install performer package
+WORKDIR /app
+COPY agent/performer/pyproject.toml agent/performer/README.md ./
+COPY agent/performer/src/ ./src/
+# Strip the path-source override that points to packages/service_inference —
+# inside the image we install the wheel directly above, and the relative path
+# `../../packages/service_inference` doesn't exist here.
+RUN sed -i '/\[tool\.uv\.sources\]/,/^$/d' pyproject.toml && \
+    pip install --no-cache-dir .
 
 # Entrypoint: serve HTTP API on port 8088
 ENTRYPOINT ["python", "-m", "performer", "--serve", "--port", "8088"]

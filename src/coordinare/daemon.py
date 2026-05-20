@@ -28,7 +28,12 @@ from coordinare.resilience import CircuitOpenError
 from coordinare.services.dependency import build_graph as _build_dep_graph
 from coordinare.services.rebase import fetch_main_sha, repo_url_from_config, run_rebase_round
 from coordinare.session import _SESSION_FIELDS, session_to_state, state_to_session
-from coordinare.state_store import StateLoadError, WorkflowPhase, WorkflowSnapshot
+from coordinare.state_store import (
+    PersistedSession,
+    StateLoadError,
+    WorkflowPhase,
+    WorkflowSnapshot,
+)
 
 if TYPE_CHECKING:
     from coordinare.dashboard import DashboardStore
@@ -74,6 +79,46 @@ _PHASE_PRIORITY: dict[str, int] = {
     "monitoring_agent": 1,
     "idle": 0,
 }
+
+
+def _persist_active_sessions(active_sessions: dict[str, Any]) -> dict[str, PersistedSession]:
+    """Convert live `active_sessions` into the v2-snapshot-safe shape (065 Fix 7b)."""
+    out: dict[str, PersistedSession] = {}
+    for card_id, sess in active_sessions.items():
+        if not isinstance(sess, dict):
+            continue
+        cid = str(card_id)
+        if not cid:
+            continue
+        completed_raw = sess.get("lifecycle_completed_at")
+        completed = completed_raw if isinstance(completed_raw, datetime) else None
+        processed_ids_raw = sess.get("processed_review_ids") or ()
+        processed_ids: list[str]
+        if isinstance(processed_ids_raw, (set, list, tuple)):
+            processed_ids = sorted({str(r) for r in processed_ids_raw})
+        else:
+            processed_ids = []
+        questions_raw = sess.get("open_questions") or ()
+        clarifications_raw = sess.get("card_clarifications") or ()
+        relay_raw = sess.get("relay_feedback") or ()
+        out[cid] = PersistedSession(
+            card_id=cid,
+            performer_stage=(sess.get("performer_stage") or None),
+            phase=(sess.get("phase") or None),
+            lifecycle_completed_at=completed,
+            processed_review_ids=processed_ids,
+            open_questions=[str(q) for q in questions_raw if q is not None]
+            if isinstance(questions_raw, (list, tuple, set)) else [],
+            card_clarifications=[dict(c) for c in clarifications_raw if isinstance(c, dict)]
+            if isinstance(clarifications_raw, (list, tuple)) else [],
+            relay_feedback=[dict(r) for r in relay_raw if isinstance(r, dict)]
+            if isinstance(relay_raw, (list, tuple)) else [],
+            system_error_count=int(sess.get("system_error_count") or 0),
+            system_error_reason=(sess.get("system_error_reason") or None),
+            system_error_notified=bool(sess.get("system_error_notified")),
+            requirements_changed=bool(sess.get("requirements_changed")),
+        )
+    return out
 
 
 def _derive_global_phase(active_sessions: dict) -> str:
@@ -138,7 +183,59 @@ def _compute_eligibility(
                 blockers=[d.blocker_issue_number for d in unresolved],
             )
 
+    # 065 US3: kick-back detection. If a performer is actively running for
+    # this session (phase=monitoring_performer) but the operator has moved
+    # the card out of IN_PROGRESS on the board, the session is orphaned —
+    # the performer will keep producing results the daemon must discard.
+    # Only treat as kick-back when board_snapshot is populated AND the card
+    # is observably in some non-IN_PROGRESS column (so a missing board, or
+    # a card not yet visible to the board fetch, doesn't trip a false
+    # orphan). The skip-loop converts this into a dispatcher.performer_orphaned
+    # log so the operator can see the strand.
+    if session.get("phase") == "monitoring_performer" and board_snapshot:
+        in_progress = board_snapshot.get("IN_PROGRESS", [])
+        if card_item_id not in in_progress:
+            in_other_column = any(
+                card_item_id in cards
+                for col, cards in board_snapshot.items()
+                if col != "IN_PROGRESS" and isinstance(cards, list)
+            )
+            if in_other_column:
+                return SessionEligibility(
+                    card_id=card_id, eligible=False, reason="kicked_back"
+                )
+
     return SessionEligibility(card_id=card_id, eligible=True, reason="eligible")
+
+
+def _log_session_skip(
+    card_id: str,
+    session: dict,
+    elig: SessionEligibility,
+) -> None:
+    """Emit the per-cycle skip log for an ineligible session.
+
+    ``kicked_back`` is escalated to ``dispatcher.performer_orphaned`` to
+    satisfy 065 US3 FR-009/b — the operator must see a structured record
+    naming the stranded performer.  Other skip reasons emit the existing
+    ``session_skipped`` info log unchanged.
+    """
+    if elig.reason == "kicked_back":
+        # The session dict doesn't persist a separate performer_id; the
+        # performer_stage uniquely identifies the responsible pool slot.
+        logger.warning(
+            "dispatcher.performer_orphaned",
+            performer_id=session.get("performer_stage") or "",
+            card_id=card_id,
+            reason=elig.reason,
+        )
+        return
+    logger.info(
+        "session_skipped",
+        card_id=card_id,
+        reason=elig.reason,
+        blockers=elig.blockers,
+    )
 
 
 # Maps (previous_phase, current_phase) tuples to canonical metric transition labels.
@@ -278,6 +375,7 @@ class CoordinareDaemon:
             last_blocked_notified_at=last_notified if isinstance(last_notified, datetime) else None,
             lifecycle_completed_at=self._state.get("lifecycle_completed_at") if isinstance(self._state.get("lifecycle_completed_at"), datetime) else None,
             processed_review_ids=sorted(self._state.get("processed_review_ids") or set()),
+            active_sessions=_persist_active_sessions(self._state.get("active_sessions") or {}),
         )
 
     def _restore_from_snapshot(self, snapshot: WorkflowSnapshot) -> None:
@@ -306,6 +404,39 @@ class CoordinareDaemon:
             }
         if snapshot.agent_session_id:
             self._state["agent_dispatch"] = {"session_id": snapshot.agent_session_id}
+
+        # 065 Fix 7b: restore per-card sessions from the v2 snapshot.  The
+        # current_card payload in each session is rebuilt from the live board
+        # by check_board's re-adopt path; here we only need the durable
+        # behaviour-affecting fields (performer_stage, phase, error counters,
+        # lifecycle bookkeeping).  v1 snapshots have an empty active_sessions
+        # dict, so this loop is a no-op and the existing single-card flat
+        # restore (above) drives recovery.
+        if snapshot.active_sessions:
+            restored_sessions: dict[str, dict] = {}
+            for card_id, persisted in snapshot.active_sessions.items():
+                session_dict: dict[str, Any] = {
+                    "performer_stage": persisted.performer_stage,
+                    "phase": persisted.phase,
+                    "lifecycle_completed_at": persisted.lifecycle_completed_at,
+                    "processed_review_ids": set(persisted.processed_review_ids),
+                    "open_questions": list(persisted.open_questions),
+                    "card_clarifications": list(persisted.card_clarifications),
+                    "relay_feedback": list(persisted.relay_feedback),
+                    "system_error_count": persisted.system_error_count,
+                    "system_error_reason": persisted.system_error_reason,
+                    "system_error_notified": persisted.system_error_notified,
+                    "requirements_changed": persisted.requirements_changed,
+                }
+                # Seed current_card for the matching active_card_id from the
+                # top-level snapshot fields; other sessions get a stub that
+                # check_board will replace from the live board.
+                if card_id == snapshot.active_card_id and self._state.get("current_card"):
+                    session_dict["current_card"] = self._state["current_card"]
+                else:
+                    session_dict["current_card"] = {"id": card_id}
+                restored_sessions[card_id] = session_dict
+            self._state["active_sessions"] = restored_sessions
 
         # Also seed the owning SymphonyRuntimeState. In multi-symphony mode the
         # per-symphony swap in _conduct_single_symphony reads sym_state.active_card
@@ -579,9 +710,19 @@ class CoordinareDaemon:
                                         except Exception:
                                             logger.warning("multi_session.preflight.rebase_round_failed", exc_info=True)
                 except Exception as _poll_exc:
-                    logger.warning("multi_session.pre_poll_failed", exc_info=True)
+                    # Transient upstream GitHub failures (5xx, timeouts, DNS) are
+                    # routine — log a single-line warning without the traceback so
+                    # operators aren't alarmed by what's effectively a retry signal.
                     if is_transient_github_outage_error(_poll_exc):
+                        logger.warning(
+                            "multi_session.pre_poll_failed",
+                            error_type=type(_poll_exc).__name__,
+                            error=str(_poll_exc)[:300],
+                            transient=True,
+                        )
                         defer_github_operation(self._state, operation="poll_board", error=_poll_exc)
+                    else:
+                        logger.warning("multi_session.pre_poll_failed", exc_info=True)
 
         # Build dependency graph from the pre-fetched board if available.
         # NOTE: This uses build_graph only — it does not run resolve_off_board_dependencies,
@@ -613,12 +754,7 @@ class CoordinareDaemon:
                     "detail": None,
                     "blockers": elig.blockers,
                 }
-                logger.info(
-                    "session_skipped",
-                    card_id=card_id,
-                    reason=elig.reason,
-                    blockers=elig.blockers,
-                )
+                _log_session_skip(card_id, active_sessions[card_id], elig)
         self._state["session_skip_reasons"] = skip_reasons
 
         # Fallback: if every session is ineligible this cycle (e.g. all BLOCKED /
@@ -1384,14 +1520,33 @@ class CoordinareDaemon:
         # Default to "codex" (matches coordinare-performer:full image) when no
         # role config is available.
         bootstrap_backend = "codex"
+        bootstrap_model: str | None = None
+        bootstrap_effort: str | None = None
+        bootstrap_temperature: float | None = None
         cfg = self._state.get("config")
         if cfg is not None and hasattr(cfg, "performers"):
-            for _probe_role in ("implementer", "architect", "assessor"):
+            for _probe_role in ("env_bootstrap", "implementer", "architect", "assessor"):
                 rc = cfg.performers.resolved_role(_probe_role)
                 if rc is not None and getattr(rc, "backend", None):
                     bootstrap_backend = rc.backend
+                    bootstrap_model = getattr(rc, "model", None)
+                    bootstrap_effort = getattr(rc, "effort", None)
+                    bootstrap_temperature = getattr(rc, "temperature", None)
                     break
         dispatch_dict["backend"] = bootstrap_backend
+        if bootstrap_model:
+            dispatch_dict["model"] = bootstrap_model
+        if bootstrap_effort:
+            dispatch_dict["effort"] = bootstrap_effort
+        if bootstrap_temperature is not None:
+            dispatch_dict["temperature"] = bootstrap_temperature
+        logger.info(
+            "env_cache.bootstrap_backend_resolved",
+            symphony=symphony_name,
+            backend=bootstrap_backend,
+            model=bootstrap_model,
+            effort=bootstrap_effort,
+        )
         # 060: Bootstrap dispatches don't flow through WorkspaceManager.prepare(),
         # so fetch a fresh GitHub token here from the symphony's workspace manager
         # (App installation token or static PAT) and inject it for the performer

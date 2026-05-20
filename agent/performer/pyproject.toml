@@ -16,7 +16,11 @@ dependencies = [
     "websockets>=14.0",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
+    "coordinare-service-inference",
 ]
+
+[tool.uv.sources]
+coordinare-service-inference = { path = "../../packages/service_inference", editable = true }
 
 [project.optional-dependencies]
 dev = [
@@ -31,6 +35,7 @@ dev = [
 [project.scripts]
 performer = "performer.main:main"
 performer-upload-screenshot = "performer.cli:main"
+performer-fetch-ci-log = "performer.cli:fetch_ci_log_main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

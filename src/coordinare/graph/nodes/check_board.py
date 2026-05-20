@@ -23,6 +23,30 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
+
+def _snapshot_stage_for_card(state: dict, card_id: str) -> str | None:
+    """Return the snapshot-restored performer_stage for ``card_id`` if any.
+
+    065 Fix 7a/7b: a freshly-rehydrated active_sessions entry (v2 snapshot
+    restore in daemon._restore_from_snapshot) carries the durable stage.  For
+    v1 snapshots — single-card persistence — the only stage available is the
+    top-level ``performer_stage`` field, which we honour only when the card
+    being re-adopted matches the restored ``current_card``.
+    """
+    sessions = state.get("active_sessions") or {}
+    sess = sessions.get(card_id) if isinstance(sessions, dict) else None
+    if isinstance(sess, dict):
+        stage = sess.get("performer_stage")
+        if isinstance(stage, str) and stage:
+            return stage
+    current = state.get("current_card")
+    if isinstance(current, dict) and str(current.get("id", "")) == card_id:
+        top_stage = state.get("performer_stage")
+        if isinstance(top_stage, str) and top_stage:
+            return top_stage
+    return None
+
+
 # Phases where coordinare is passively waiting for an external actor (human reviewer,
 # CI system) and the session is not consuming any active worker capacity.
 PASSIVE_PHASES: frozenset[str] = frozenset({"monitoring_pr"})
@@ -34,6 +58,15 @@ PASSIVE_PHASES: frozenset[str] = frozenset({"monitoring_pr"})
 # whenever the fallback cycle settles into PASSIVE_PHASES — that's correct for
 # ``monitoring_pr`` but would disrupt blocked-card answer detection.
 NON_SLOT_PHASES: frozenset[str] = PASSIVE_PHASES | frozenset({"blocked"})
+
+
+def _count_slot_consuming_sessions(state: dict) -> int:
+    """Count active sessions occupying a concurrency slot."""
+    sessions: dict = state.get("active_sessions") or {}
+    return sum(
+        1 for sess in sessions.values()
+        if sess.get("phase") not in NON_SLOT_PHASES
+    )
 
 
 def _allowed_github_host(config: object) -> str | None:
@@ -281,6 +314,74 @@ async def check_board(state: CoordinareState) -> CoordinareState:
                     active_card["issue_id"] = fresh_content_id
                 state["current_card"] = active_card
 
+    # 065 Fix 22: re-dispatch stale monitor sessions after restart.  When the
+    # daemon restarts mid-flight, snapshot restore brings back the previous
+    # session_id and phase=monitoring_performer/monitoring_agent, but the
+    # ephemeral container is gone — _active_jobs is empty in the new process,
+    # so the next monitor_performer cycle raises TransportError ("no endpoint
+    # resolved yet" / "no live session") and burns retry budget for nothing.
+    # Detect that case here and route back through dispatching for a fresh
+    # container.  Do NOT touch system_error_count: this is a clean restart
+    # re-dispatch, not a retry of a real failure.
+    _stale_phases = ("monitoring_performer", "monitoring_agent")
+    _performer_services = state.get("performer_services") or {}
+    if isinstance(_performer_services, dict) and _performer_services:
+        def _is_stale(_phase: str, _stage: str, _dispatch: object) -> bool:
+            if _phase not in _stale_phases:
+                return False
+            if not isinstance(_dispatch, dict):
+                return False
+            _sid = _dispatch.get("session_id")
+            if not _sid:
+                return False
+            _svc = _performer_services.get(_stage)
+            _check = getattr(_svc, "has_live_session", None) if _svc is not None else None
+            if _check is None:
+                return False
+            try:
+                return not bool(_check(str(_sid)))
+            except Exception:
+                return False
+
+        # Rewrite the per-session-loaded state for this invocation.
+        if _is_stale(
+            str(state.get("phase") or ""),
+            str(state.get("performer_stage") or ""),
+            state.get("agent_dispatch"),
+        ):
+            _card = state.get("current_card") or {}
+            logger.warning(
+                "check_board.stale_session_redispatch",
+                card_id=str(_card.get("id", "")) if isinstance(_card, dict) else "",
+                performer_stage=str(state.get("performer_stage") or ""),
+                session_id=str((state.get("agent_dispatch") or {}).get("session_id", "")),
+            )
+            state["phase"] = "dispatching"
+            state["agent_dispatch"] = {}
+            state["agent_dispatch_at"] = None
+
+        # Also rewrite stale entries in active_sessions so other sessions
+        # don't trip the same transport error when their turn comes.
+        _sessions = state.get("active_sessions") or {}
+        if isinstance(_sessions, dict):
+            for _cid, _sess in _sessions.items():
+                if not isinstance(_sess, dict):
+                    continue
+                if _is_stale(
+                    str(_sess.get("phase") or ""),
+                    str(_sess.get("performer_stage") or ""),
+                    _sess.get("agent_dispatch"),
+                ):
+                    logger.warning(
+                        "check_board.stale_session_redispatch",
+                        card_id=_cid,
+                        performer_stage=str(_sess.get("performer_stage") or ""),
+                        session_id=str((_sess.get("agent_dispatch") or {}).get("session_id", "")),
+                    )
+                    _sess["phase"] = "dispatching"
+                    _sess["agent_dispatch"] = {}
+                    _sess["agent_dispatch_at"] = None
+
     in_progress = state["board_snapshot"].get("IN_PROGRESS", [])
     in_review = state["board_snapshot"].get("IN_REVIEW", [])
     blocked = state["board_snapshot"].get("BLOCKED", [])
@@ -347,6 +448,12 @@ async def check_board(state: CoordinareState) -> CoordinareState:
                 }
                 sess = create_session_from_card(card_dict)
                 sess["phase"] = "monitoring_pr"
+                # 065 Fix 7a: see IN_PROGRESS readopt comment below — same
+                # restart-survival logic applies to IN_REVIEW cards (a closer
+                # restart should land back in closing_review, not implementing).
+                _snapshot_stage = _snapshot_stage_for_card(state, item)
+                if _snapshot_stage:
+                    sess["performer_stage"] = _snapshot_stage
                 active_sessions[item] = sess
                 already_active_ids.add(item)
                 readopted_any = True
@@ -380,9 +487,19 @@ async def check_board(state: CoordinareState) -> CoordinareState:
     if in_progress:
         # Fresh-start recovery (no current_card) should re-adopt the active
         # board card even if stale system_error_count residue exists.
-        # Keep system_error routing for actively tracked cards.
-        if state.get("system_error_count", 0) > 0 and state.get("current_card") is not None:
-            state["phase"] = "system_error"
+        # Keep system_error routing for actively tracked cards — but ONLY when
+        # the live phase actually is system_error.  After Fix 18 preserved
+        # system_error_count across a successful retry-dispatch, a non-zero
+        # counter coexists with phase=monitoring_performer (the new container
+        # is being polled).  Without the phase check, this branch would
+        # rewrite that phase back to system_error every cycle, monitor_performer
+        # would never run, and handle_system_error would re-dispatch on every
+        # iteration — leaking a fresh container each loop.  (065 Fix 21.)
+        if (
+            state.get("system_error_count", 0) > 0
+            and state.get("current_card") is not None
+            and state.get("phase") == "system_error"
+        ):
             return state
         # Preserve dispatching, monitoring_performer, and blocked phases so
         # the lifecycle re-entry, performer monitoring, and veto overrides
@@ -391,62 +508,173 @@ async def check_board(state: CoordinareState) -> CoordinareState:
         # stale residue (e.g. snapshot restored phase but per-symphony swap
         # cleared the card), and we must fall through to re-adopt instead
         # of looping with no work.
+        #
+        # 065 Fix 5: in multi-card mode, also fall through when concurrency
+        # slots remain open so the 065 US2 IN_PROGRESS re-adopt + TODO
+        # pickup at the bottom of this function can fill those slots on the
+        # same cycle.  Without this, every per-session invocation in steady
+        # state (phase=monitoring_performer + current_card set) short-circuits
+        # here and the daemon silently serialises work to one card at a time
+        # even when ``max_concurrent_cards > 1``.
         current_phase = state.get("phase")
         if current_phase in ("dispatching", "monitoring_performer", "blocked") and state.get("current_card") is not None:
-            return state
+            if max_cards <= 1:
+                return state
+            if _count_slot_consuming_sessions(state) >= max_cards:
+                return state
+            # Open slots remain — fall through to the 065 US2 re-adopt + TODO
+            # pickup below.  The monitoring_agent override at line ~454 is
+            # gated to skip when the existing phase is a more-specific
+            # in-flight phase, so the live performer/dispatch state stays
+            # intact for the per-session invocation that owns it.
 
-        # Re-adopt orphaned IN_PROGRESS card after restart with no state.
-        # Without this, a card left in IN_PROGRESS after a state-less restart
-        # would never be picked up because current_card is None.
-        if state.get("current_card") is None:
-            item = in_progress[0]
-            titles = board.get("titles", {})
-            descriptions = board.get("descriptions", {})
-            issue_numbers = board.get("issue_numbers", {})
-            issue_urls = board.get("issue_urls", {})
-            content_node_ids = board.get("content_node_ids", {})
-            description = str(descriptions.get(item, ""))
-            state["current_card"] = {
-                "id": item,
-                "issue_id": str(content_node_ids.get(item, "")),
-                "issue_number": int(issue_numbers.get(item, 0)),
-                "issue_url": str(issue_urls.get(item, "")),
-                "title": str(titles.get(item, "")),
-                "description": description,
-                "acceptance_criteria": parse_acceptance_criteria(description),
-                "status": "IN_PROGRESS",
-                "previous_status": "IN_PROGRESS",
-            }
-            logger.info(
-                "check_board.readopted_in_progress_card",
-                card_id=item,
-                title=str(titles.get(item, "")),
+        if max_cards > 1:
+            # 065 US2: mirror the 061 IN_REVIEW fall-through pattern so the
+            # 035 multi-card TODO pickup at the bottom of this function can
+            # fill remaining concurrency slots on the same cycle.  Without
+            # this, a single IN_PROGRESS card causes the early `return` below
+            # and the daemon silently serialises work to one card at a time
+            # even when `max_concurrent_cards > 1`.
+            #
+            # Re-adopt every uncovered IN_PROGRESS card into active_sessions
+            # so the per-session graph invocations have a session to land in.
+            # IN_PROGRESS sessions consume a concurrency slot (unlike the
+            # passive monitoring_pr re-adoptions in the IN_REVIEW branch).
+            active_sessions: dict = state.get("active_sessions") or {}
+            already_active_ids = set(active_sessions.keys())
+            titles_p = board.get("titles", {})
+            descriptions_p = board.get("descriptions", {})
+            issue_numbers_p = board.get("issue_numbers", {})
+            issue_urls_p = board.get("issue_urls", {})
+            content_node_ids_p = board.get("content_node_ids", {})
+            readopted_any = False
+            for item in in_progress:
+                if item in already_active_ids:
+                    continue
+                description = str(descriptions_p.get(item, ""))
+                card_dict = {
+                    "id": item,
+                    "issue_id": str(content_node_ids_p.get(item, "")),
+                    "issue_number": int(issue_numbers_p.get(item, 0)),
+                    "issue_url": str(issue_urls_p.get(item, "")),
+                    "title": str(titles_p.get(item, "")),
+                    "description": description,
+                    "acceptance_criteria": parse_acceptance_criteria(description),
+                    "status": "IN_PROGRESS",
+                    "previous_status": "IN_PROGRESS",
+                }
+                sess = create_session_from_card(card_dict)
+                sess["phase"] = "monitoring_agent"
+                # 065 Fix 7a: if the snapshot restored a performer_stage for
+                # this card (single-card v1 snapshot via top-level field, or
+                # v2 snapshot via persisted active_sessions), preserve it so
+                # an IN_PROGRESS card mid-lifecycle (e.g. closing_review)
+                # doesn't get demoted back to "implementing" on restart.
+                _snapshot_stage = _snapshot_stage_for_card(state, item)
+                if _snapshot_stage:
+                    sess["performer_stage"] = _snapshot_stage
+                active_sessions[item] = sess
+                already_active_ids.add(item)
+                readopted_any = True
+                logger.info(
+                    "check_board.readopted_in_progress_card",
+                    card_id=item,
+                    title=str(titles_p.get(item, "")),
+                )
+            if readopted_any:
+                state["active_sessions"] = active_sessions
+            # If this per-session invocation is for an IN_PROGRESS card,
+            # preserve monitoring_agent for that session and return — the
+            # bootstrap invocation (no current_card, or current_card not in
+            # in_progress) falls through to TODO pickup below.
+            current = state.get("current_card")
+            current_id = (
+                str(current.get("id", "")) if isinstance(current, dict) else ""
             )
-            # 053: Fresh-start recovery for dirty IN_PROGRESS cards.
-            # If state snapshots are unavailable, we no longer know the exact
-            # lifecycle stage. Resume from implementer work (when present)
-            # instead of replaying assessor/architect stages on every restart.
-            # Also clear per-card retry/feedback residue before re-dispatch.
-            lifecycle_seq = [
-                str(stage) for stage in (state.get("lifecycle_sequence") or ["implementing"])
-                if isinstance(stage, str) and stage
-            ]
-            resume_stage = lifecycle_seq[0] if lifecycle_seq else "implementing"
-            if "implementing" in lifecycle_seq and resume_stage in {"assessing", "architecting"}:
-                resume_stage = "implementing"
-            state["performer_stage"] = resume_stage
-            state["system_error_count"] = 0
-            state["system_error_reason"] = None
-            state["system_error_notified"] = False
-            state["relay_feedback"] = []
-            state["open_questions"] = []
-            state["feedback_cycle_count"] = 0  # type: ignore[typeddict-unknown-key]
-            state["blocked_by_dependencies"] = []  # type: ignore[typeddict-unknown-key]
-            state["phase"] = "dispatching"
-            return state
+            if current_id and current_id in in_progress:
+                # 065 Fix 5: don't clobber a more-specific in-flight phase
+                # (monitoring_performer / dispatching / blocked) that the
+                # per-session invocation arrived with.  Downgrading to the
+                # generic monitoring_agent here would lose the live performer
+                # state the lifecycle is tracking.
+                if current_phase not in ("monitoring_performer", "dispatching", "blocked"):
+                    state["phase"] = "monitoring_agent"
+                # 065 Fix 5: in multi-card mode, exactly one per-session
+                # invocation falls through to TODO pickup so open
+                # concurrency slots are filled.  We pick the lexicographically
+                # smallest IN_PROGRESS card as the "primary" — this is
+                # deterministic across the fanout (every concurrent session
+                # sees the same pre-fanout in_progress list) so only one
+                # session traverses the GitHub-side-effect paths in TODO
+                # pickup (move_card for dep cycles, dependency-block
+                # comments, etc.) per cycle.  Without this, steady-state
+                # multi-card mode with all sessions busy never reaches TODO
+                # pickup and the daemon silently serialises to one card.
+                if _count_slot_consuming_sessions(state) >= max_cards:
+                    return state
+                if current_id != min(in_progress):
+                    return state
+                # else: this is the primary in-flight session and open slots
+                # remain — fall through to TODO pickup below.
+            # Fall through to TODO pickup so remaining concurrency slots fill.
+        else:
+            # Re-adopt orphaned IN_PROGRESS card after restart with no state.
+            # Without this, a card left in IN_PROGRESS after a state-less restart
+            # would never be picked up because current_card is None.
+            if state.get("current_card") is None:
+                item = in_progress[0]
+                titles = board.get("titles", {})
+                descriptions = board.get("descriptions", {})
+                issue_numbers = board.get("issue_numbers", {})
+                issue_urls = board.get("issue_urls", {})
+                content_node_ids = board.get("content_node_ids", {})
+                description = str(descriptions.get(item, ""))
+                state["current_card"] = {
+                    "id": item,
+                    "issue_id": str(content_node_ids.get(item, "")),
+                    "issue_number": int(issue_numbers.get(item, 0)),
+                    "issue_url": str(issue_urls.get(item, "")),
+                    "title": str(titles.get(item, "")),
+                    "description": description,
+                    "acceptance_criteria": parse_acceptance_criteria(description),
+                    "status": "IN_PROGRESS",
+                    "previous_status": "IN_PROGRESS",
+                }
+                logger.info(
+                    "check_board.readopted_in_progress_card",
+                    card_id=item,
+                    title=str(titles.get(item, "")),
+                )
+                # 053: Fresh-start recovery for dirty IN_PROGRESS cards.
+                # If state snapshots are unavailable, we no longer know the exact
+                # lifecycle stage. Resume from implementer work (when present)
+                # instead of replaying assessor/architect stages on every restart.
+                # Also clear per-card retry/feedback residue before re-dispatch.
+                lifecycle_seq = [
+                    str(stage) for stage in (state.get("lifecycle_sequence") or ["implementing"])
+                    if isinstance(stage, str) and stage
+                ]
+                resume_stage = lifecycle_seq[0] if lifecycle_seq else "implementing"
+                if "implementing" in lifecycle_seq and resume_stage in {"assessing", "architecting"}:
+                    resume_stage = "implementing"
+                state["performer_stage"] = resume_stage
+                state["system_error_count"] = 0
+                state["system_error_reason"] = None
+                state["system_error_notified"] = False
+                # 065: also clear last_at — otherwise dispatch_performer's
+                # mid_retry guard (last_at set + notified False) misreads the
+                # fresh re-adopt as "still mid-retry" and the counter can
+                # never advance past 1.
+                state["system_error_last_at"] = None
+                state["relay_feedback"] = []
+                state["open_questions"] = []
+                state["feedback_cycle_count"] = 0  # type: ignore[typeddict-unknown-key]
+                state["blocked_by_dependencies"] = []  # type: ignore[typeddict-unknown-key]
+                state["phase"] = "dispatching"
+                return state
 
-        state["phase"] = "monitoring_agent"
-        return state
+            state["phase"] = "monitoring_agent"
+            return state
     if blocked:
         # Multi-card mode: per-session graph invocations re-enter check_board
         # with state["current_card"] already populated by session_to_state.
@@ -808,6 +1036,38 @@ async def check_board(state: CoordinareState) -> CoordinareState:
             already_active_ids = set(active_sessions.keys())
 
             if max_cards > 1:
+                # 065 Fix 16 — multi-card un-block reset.  When the operator moves
+                # a card from BLOCKED back to TODO (or any non-BLOCKED column), the
+                # existing session is retained with current_card.status="BLOCKED"
+                # and phase="blocked".  Detect that the card is now eligible again
+                # and reset feedback_cycle_count to 0 so the next dispatch gets a
+                # fresh budget.  Monotonic stats (total_feedback_cycles,
+                # triage_blocks) are preserved across the reset.  Mirrors the
+                # single-card branch at lines 1037-1051.
+                _eligible_set = set(eligible_todo)
+                for _cid, _sess in active_sessions.items():
+                    if _cid not in _eligible_set:
+                        continue
+                    _sess_card = _sess.get("current_card") or {}
+                    if str(_sess_card.get("status", "")) != "BLOCKED":
+                        continue
+                    _prior_count = int(_sess.get("feedback_cycle_count") or 0)
+                    _sess["feedback_cycle_count"] = 0
+                    # Flip status so downstream pickup-phase logic treats the
+                    # card as freshly TODO; preserve previous_status=BLOCKED so
+                    # auditors can still see where it came from.
+                    _sess_card["previous_status"] = "BLOCKED"
+                    _sess_card["status"] = "TODO"
+                    _sess["current_card"] = _sess_card
+                    logger.info(
+                        "dispatcher.feedback_cycle_reset",
+                        card_id=_cid,
+                        prior_count=_prior_count,
+                        total_feedback_cycles=int(_sess.get("total_feedback_cycles") or 0),
+                        triage_blocks=int(_sess.get("triage_blocks") or 0),
+                        mode="multi",
+                    )
+
                 # Multi-card mode: pick up cards into active_sessions
                 # Passive-phase sessions (monitoring_pr) do not consume a concurrency slot.
                 active_count = sum(
@@ -884,10 +1144,28 @@ async def check_board(state: CoordinareState) -> CoordinareState:
                 state["system_error_count"] = 0
                 state["system_error_reason"] = None
                 state["system_error_notified"] = False
+                # 065: clear last_at too — see in_progress recovery comment.
+                state["system_error_last_at"] = None
                 state["relay_feedback"] = []
                 state["open_questions"] = []
                 state["feedback_cycle_count"] = 0  # type: ignore[typeddict-unknown-key]
                 state["blocked_by_dependencies"] = []  # type: ignore[typeddict-unknown-key]
+            else:
+                # 065 US4 — same-card pickup. Detect un-block (operator moved
+                # the card from BLOCKED back to TODO) and reset the operative
+                # feedback_cycle_count so the next dispatch gets a fresh
+                # budget.  Monotonic stats (total_feedback_cycles,
+                # triage_blocks) are preserved across the reset.
+                if str(prev_card.get("previous_status", "")) == "BLOCKED":
+                    prior_count = int(state.get("feedback_cycle_count") or 0)
+                    state["feedback_cycle_count"] = 0
+                    logger.info(
+                        "dispatcher.feedback_cycle_reset",
+                        card_id=item,
+                        prior_count=prior_count,
+                        total_feedback_cycles=int(state.get("total_feedback_cycles") or 0),
+                        triage_blocks=int(state.get("triage_blocks") or 0),
+                    )
             state["current_card"] = {
                 "id": item,
                 "issue_id": str(content_node_ids.get(item, "")),

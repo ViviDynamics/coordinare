@@ -7,8 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-
-from coordinare.services.service_inference.agent import (
+from coordinare_service_inference.agent import (
     AgentError,
     IterationBudgetExceeded,
     LLMStep,
@@ -18,7 +17,7 @@ from coordinare.services.service_inference.agent import (
     ToolCallBudgetExceeded,
     UnknownToolError,
 )
-from coordinare.services.service_inference.tools import ToolSandbox
+from coordinare_service_inference.tools import ToolSandbox
 
 
 @pytest.fixture()

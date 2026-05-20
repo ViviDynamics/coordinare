@@ -127,7 +127,8 @@ async def test_save_output_has_required_fields(tmp_path: Path) -> None:
     assert "schema_version" in data
     assert "snapshot_at" in data
     assert "phase" in data
-    assert data["schema_version"] == 1
+    # v2 schema (065 Fix 7b) is current; v1 is still readable.
+    assert data["schema_version"] == 2
 
 
 @pytest.mark.asyncio

@@ -119,10 +119,10 @@ def _spec_files_prefix() -> str:
 async def _compute_current_inference_suffix(
     manifest: dict, file_contents: dict[str, str]
 ) -> str:
-    from coordinare.services.service_inference.cache_key import (
+    from coordinare_service_inference.cache_key import (
         compute_inference_cache_key,
     )
-    from coordinare.services.service_inference.schema import ServicesManifest
+    from coordinare_service_inference.schema import ServicesManifest
 
     async def _fetch(p: str) -> str | None:
         return file_contents.get(p)

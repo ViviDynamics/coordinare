@@ -1,0 +1,52 @@
+# Dockerfile.daemon — containerized coordinare daemon (spec 065)
+#
+# The daemon needs the Docker CLI because it spawns sibling performer
+# containers via the host's Docker socket (DooD).  Bind-mount
+# /var/run/docker.sock from the host at runtime — see bin/start --container.
+#
+# Path translation note: the daemon writes config.yaml paths that the
+# *host* docker engine has to resolve when starting performers.  The
+# convention is to bind-mount the project at the same absolute path inside
+# this container, so anything in config.yaml referring to host paths "just
+# works" without rewriting.
+
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_LINK_MODE=copy
+
+# Docker CLI (client only — daemon socket comes from the host mount) + git
+# (used by the coordinare for log/branch inspection).  curl is needed to
+# fetch the uv installer below.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        git \
+        docker.io \
+    && rm -rf /var/lib/apt/lists/*
+
+# uv — matches bin/run-coordinare's local invocation
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
+    && mv /root/.local/bin/uv /usr/local/bin/uv \
+    && mv /root/.local/bin/uvx /usr/local/bin/uvx
+
+WORKDIR /app
+
+COPY pyproject.toml uv.lock README.md ./
+COPY src ./src
+
+# Resolve deps into a project-local .venv so runtime uses the lock.
+RUN uv sync --frozen --no-dev
+
+# Health (9090) and dashboard (9091).  bin/start --container publishes
+# these; --network host makes them reachable via the host directly.
+EXPOSE 9090 9091
+
+ENV COORDINARE_RUN_MODE=container
+
+# config.yaml + .env are mounted by bin/start --container.  --config
+# defaults to /app/config.yaml (the bind-mount target).
+ENTRYPOINT ["uv", "run", "--no-sync", "python", "-m", "coordinare"]
+CMD ["--config", "/app/config.yaml"]

@@ -9,8 +9,8 @@
   "properties": {
     "schema_version": {
       "type": "integer",
-      "const": 1,
-      "description": "Schema version. A value other than 1 indicates an incompatible prior version and must be discarded."
+      "enum": [1, 2],
+      "description": "Schema version. v1 is the original snapshot format; v2 (065 Fix 7b) adds per-card active_sessions so multi-card performer_stage survives restart. v1 snapshots are still readable and upgrade in-memory to v2."
     },
     "snapshot_at": {
       "type": "string",
@@ -146,6 +146,28 @@
       "items": { "type": "string" },
       "description": "Review node IDs recorded by classify_human_feedback after staging relay feedback. Used by monitor_pr to filter already-processed reviews and prevent re-dispatch loops.",
       "default": []
+    },
+    "active_sessions": {
+      "type": "object",
+      "description": "Per-card durable session state (065 Fix 7b, schema_version >= 2). Keys are card IDs; values mirror the subset of CardSession fields whose loss across restart would change behaviour (most importantly performer_stage). Empty object for v1 snapshots upgraded in-memory.",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "card_id": { "type": "string" },
+          "performer_stage": { "type": ["string", "null"] },
+          "phase": { "type": ["string", "null"] },
+          "lifecycle_completed_at": { "type": ["string", "null"], "format": "date-time" },
+          "processed_review_ids": { "type": "array", "items": { "type": "string" } },
+          "open_questions": { "type": "array", "items": { "type": "string" } },
+          "card_clarifications": { "type": "array", "items": { "type": "object" } },
+          "relay_feedback": { "type": "array", "items": { "type": "object" } },
+          "system_error_count": { "type": "integer" },
+          "system_error_reason": { "type": ["string", "null"] },
+          "system_error_notified": { "type": "boolean" },
+          "requirements_changed": { "type": "boolean" }
+        }
+      },
+      "default": {}
     }
   }
 }

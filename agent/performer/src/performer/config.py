@@ -17,7 +17,10 @@ class Settings(BaseSettings):
 
     # 036 — GitHub Enterprise: configurable REST API base URL
     GITHUB_API_URL: str = "https://api.github.com"
-    CHECK_MAX_ATTEMPTS: int = 25  # max CI fix cycles before blocking the card
+    CHECK_MAX_ATTEMPTS: int = 8  # max CI fix cycles before blocking the card
+    # 065 Fix 14: bail after this many consecutive identical-failure attempts;
+    # if the model can't fix it in 2 tries, more grinding won't help.
+    CHECK_NO_PROGRESS_LIMIT: int = 2
 
     # 020 — Architect performer settings
     PLAN_FILE_PATH: str = "docs/coordinare-architecture.md"

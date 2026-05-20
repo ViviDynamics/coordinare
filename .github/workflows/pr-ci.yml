@@ -221,7 +221,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build base image
-        run: docker build -t coordinare-performer:base -f agent/performer/Dockerfile.base agent/performer/
+        run: docker build -t coordinare-performer:base -f agent/performer/Dockerfile.base .
 
       - name: Build full image
         run: docker build -t coordinare-performer:full -f agent/performer/Dockerfile.full agent/performer/

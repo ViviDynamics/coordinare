@@ -1870,3 +1870,86 @@ def test_no_horizontal_scrollbar_at_768px_history(page: Page, live_server_url: s
     page.wait_for_timeout(_WAIT_SSE)
     overflow = page.evaluate("document.documentElement.scrollWidth > window.innerWidth")
     assert not overflow, "Horizontal scrollbar detected on History at 768px"
+
+
+# ---------------------------------------------------------------------------
+# 065 US1: Active Performers panel must reflect multi-card mutations
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.e2e
+def test_active_performers_updates_when_one_card_kicked_back_to_todo(
+    page: Page, live_server_url: str, store: DashboardStore
+) -> None:
+    """065 US1 repro: with two cards in flight, if one is kicked back to TODO
+    (removed from active_sessions) and the other advances stage, the panel
+    must show *only* the surviving session with its *new* stage. The bug is
+    that the panel keeps rendering the removed card and/or the prior stage."""
+    page.goto(live_server_url)
+    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+
+    # Initial: both A and B are active and being implemented.
+    store.broadcaster.broadcast(
+        _full_snapshot(
+            phase="monitoring_performer",
+            phase_label="Monitoring Performer",
+            active_session_count=2,
+            active_sessions=[
+                _active_session("PVTI_A", "Fix the auth bug", "implementing"),
+                _active_session("PVTI_B", "Add keyboard nav", "architecting"),
+            ],
+        )
+    )
+    tiles = page.locator("#active-performer-tiles")
+    expect(tiles).to_contain_text("Fix the auth bug", timeout=_WAIT_LIVE)
+    expect(tiles).to_contain_text("Add keyboard nav", timeout=_WAIT_LIVE)
+
+    # Card A is kicked back to TODO; card B advances to reviewing.
+    store.broadcaster.broadcast(
+        _full_snapshot(
+            phase="monitoring_performer",
+            phase_label="Monitoring Performer",
+            active_session_count=1,
+            active_sessions=[
+                _active_session("PVTI_B", "Add keyboard nav", "reviewing"),
+            ],
+        )
+    )
+
+    # Surviving session must render with its new stage.
+    expect(tiles).to_contain_text("Add keyboard nav", timeout=_WAIT_LIVE)
+    expect(tiles).to_contain_text("Reviewing", timeout=_WAIT_LIVE)
+    # Removed session must NOT linger.
+    expect(tiles).not_to_contain_text("Fix the auth bug", timeout=_WAIT_LIVE)
+    # Stale stage from the prior snapshot must not bleed through.
+    expect(tiles).not_to_contain_text("Architecting", timeout=_WAIT_LIVE)
+
+
+@pytest.mark.e2e
+def test_active_performers_renders_two_concurrent_sessions(
+    page: Page, live_server_url: str, store: DashboardStore
+) -> None:
+    """065 US2 surface: when the daemon reports two concurrent active sessions
+    in a single snapshot, the panel must render two distinct tiles. This test
+    pins the UI contract — the underlying dispatcher bug (only one card picked
+    per cycle) is covered by a separate unit/integration test, but if the
+    dashboard ever silently collapses N sessions into one tile, this catches
+    it."""
+    page.goto(live_server_url)
+    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+
+    store.broadcaster.broadcast(
+        _full_snapshot(
+            phase="monitoring_performer",
+            phase_label="Monitoring Performer",
+            active_session_count=2,
+            active_sessions=[
+                _active_session("PVTI_A", "Fix the auth bug", "implementing"),
+                _active_session("PVTI_B", "Add keyboard nav", "implementing"),
+            ],
+        )
+    )
+
+    tiles = page.locator("#active-performer-tiles")
+    expect(tiles).to_contain_text("Fix the auth bug", timeout=_WAIT_LIVE)
+    expect(tiles).to_contain_text("Add keyboard nav", timeout=_WAIT_LIVE)

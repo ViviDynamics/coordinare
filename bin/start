@@ -9,12 +9,110 @@
 # Ctrl+C stops coordinare and all in-flight performer subprocesses.
 #
 # Usage:
-#   bin/start
+#   bin/start                          # bare-metal (uv run python -m coordinare)
 #   bin/start --env .env.local
 #   bin/start --env .env --config config.local.yaml
+#   bin/start --container              # run the daemon inside coordinare-daemon:dev
+#   bin/start --container --rebuild    # rebuild the image first
+#
+# Container mode notes (spec 065):
+#   * The host project dir is bind-mounted at its *own* absolute path inside
+#     the container, so paths in config.yaml resolve identically.
+#   * /var/run/docker.sock is mounted so the daemon can spawn performer
+#     containers on the host's docker engine (DooD).
+#   * github_private_key_path from config.yaml is mounted read-only at the
+#     same path inside the container.
+#   * --network host is used so LAN-only DNS (e.g. litellm.vividynamics.com)
+#     resolves.  Health (9090) and dashboard (9091) become reachable on the
+#     host directly without an explicit -p.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.."; pwd)"
+
+# ---------------------------------------------------------------------------
+# Parse --container / --rebuild before anything else (don't consume --env or
+# --config; those pass through to run-coordinare or to the daemon's argv).
+# ---------------------------------------------------------------------------
+RUN_CONTAINER=0
+REBUILD=0
+PASSTHRU=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --container) RUN_CONTAINER=1; shift ;;
+    --rebuild)   REBUILD=1; shift ;;
+    *)           PASSTHRU+=("$1"); shift ;;
+  esac
+done
+
+if [[ $RUN_CONTAINER -eq 1 ]]; then
+  # -------------------------------------------------------------------------
+  # Container mode
+  # -------------------------------------------------------------------------
+  IMAGE="coordinare-daemon:dev"
+  if [[ $REBUILD -eq 1 ]] || ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+    echo "Building $IMAGE..."
+    docker build -f "${ROOT_DIR}/Dockerfile.daemon" -t "$IMAGE" "$ROOT_DIR"
+  fi
+
+  ENV_FILE="${ROOT_DIR}/.env"
+  if [[ ! -f "$ENV_FILE" ]]; then
+    echo "error: $ENV_FILE not found — daemon container needs --env-file" >&2
+    echo "       create .env (copy .env.example) and try again" >&2
+    exit 1
+  fi
+
+  CONFIG_FILE="${ROOT_DIR}/config.yaml"
+  if [[ ! -f "$CONFIG_FILE" ]]; then
+    echo "error: $CONFIG_FILE not found" >&2
+    exit 1
+  fi
+
+  # Resolve github_private_key_path from config.yaml so we can mount it.
+  # Expand ${VAR} placeholders the same way the daemon does at load time.
+  set -a
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  set +a
+  KEY_PATH=$(python3 - "$CONFIG_FILE" <<'PY'
+import os, sys, yaml
+with open(sys.argv[1]) as f:
+    data = yaml.safe_load(f)
+path = data.get("github_private_key_path", "")
+print(os.path.expandvars(os.path.expanduser(path)))
+PY
+)
+
+  MOUNTS=(
+    -v "${ROOT_DIR}:${ROOT_DIR}"
+    -v "/var/run/docker.sock:/var/run/docker.sock"
+  )
+  if [[ -n "$KEY_PATH" && -f "$KEY_PATH" ]]; then
+    MOUNTS+=( -v "${KEY_PATH}:${KEY_PATH}:ro" )
+  else
+    echo "warn: github_private_key_path not found on host: $KEY_PATH"
+    echo "      daemon will fail to authenticate to GitHub"
+  fi
+
+  # State lives under the project bind-mount, so a named volume isn't
+  # required.  If the user wants isolation later, add `-v coordinare-state:…`.
+  mkdir -p "${ROOT_DIR}/state"
+
+  echo "Starting $IMAGE (network=host, workdir=${ROOT_DIR})..."
+  exec docker run --rm -it \
+    --name coordinare-daemon \
+    --network host \
+    --env-file "$ENV_FILE" \
+    -e COORDINARE_RUN_MODE=container \
+    -w "$ROOT_DIR" \
+    "${MOUNTS[@]}" \
+    "$IMAGE" \
+    --config "${CONFIG_FILE}" ${PASSTHRU[@]+"${PASSTHRU[@]}"}
+fi
+
+# ---------------------------------------------------------------------------
+# Bare-metal mode (default) — unchanged behavior below.
+# ---------------------------------------------------------------------------
+set -- ${PASSTHRU[@]+"${PASSTHRU[@]}"}
 
 # ---------------------------------------------------------------------------
 # Pre-flight: verify the performer is reachable before starting

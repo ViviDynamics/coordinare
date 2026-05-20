@@ -24,7 +24,7 @@ from performer.backends import UnsupportedBackendError, get_backend
 from performer.backends.base import BackendAdapter, BackendStatus
 from performer.cdn_upload import resolve_visual_evidence_urls
 from performer.config import Settings, get_settings
-from performer.github import GitHubAPIError, create_pull_request, get_check_runs, post_issue_comment, post_pr_comment, post_pull_request_review, resolve_pr_review_threads, summarise_check_runs
+from performer.github import GitHubAPIError, create_pull_request, get_check_runs, list_pr_comments, post_issue_comment, post_pr_comment, post_pull_request_review, resolve_pr_review_threads, summarise_check_runs
 from performer.models import Performance, Score, Stand, _redact_secrets
 from performer.protocol import (
     FAILURE_STATUSES,
@@ -159,22 +159,17 @@ async def _run_service_inference(
     if not env_cache_path:
         return {"inference_skipped_reason": "no_env_cache_path"}
 
-    try:
-        from coordinare.services.service_inference import (
-            InferenceFailed,
-            infer_services,
-        )
-        from coordinare.services.service_inference.claude_llm_client import (
-            ClaudeServiceLLMClient,
-        )
-        from coordinare.services.service_inference.manual_override import (
-            apply_manual_override,
-        )
-        from coordinare.services.service_inference.prompt import render_system_prompt
-    except ImportError:
-        # Standalone performer deployment — coordinare package isn't installed.
-        log.info("service_inference.coordinare_not_available")
-        return {"inference_skipped_reason": "coordinare_not_available"}
+    from coordinare_service_inference import (
+        InferenceFailed,
+        infer_services,
+    )
+    from coordinare_service_inference.claude_llm_client import (
+        ClaudeServiceLLMClient,
+    )
+    from coordinare_service_inference.manual_override import (
+        apply_manual_override,
+    )
+    from coordinare_service_inference.prompt import render_system_prompt
 
     output_root = Path(env_cache_path)
 
@@ -709,6 +704,27 @@ async def _handle_backend_parse_failure(
     )
 
 
+# 065 Fix 3: advisory dedup. PR #133 oscillated because the security pass
+# re-emitted the same OWASP-class advisory every cycle with slightly
+# different wording. Fingerprint on OWASP code (or slugified category) +
+# severity so re-runs detect prior advisories regardless of phrasing drift.
+_OWASP_CODE_RE = re.compile(r"owasp\s*a\d+", re.IGNORECASE)
+_ADVISORY_HEADER_RE = re.compile(r"^\[Advisory - Security\]\s*\*\*(.+?)\*\*\s*\((.+?)\)")
+
+
+def _advisory_fingerprint(category: str, severity: str) -> str:
+    cat = (category or "").strip().lower()
+    sev = (severity or "").strip().lower()
+    m = _OWASP_CODE_RE.search(cat)
+    key = re.sub(r"\s+", "", m.group(0)) if m else re.sub(r"[^a-z0-9]", "", cat)[:40]
+    return f"{key}|{sev}"
+
+
+def _parse_advisory_header(body: str) -> tuple[str, str] | None:
+    m = _ADVISORY_HEADER_RE.match(body or "")
+    return (m.group(1), m.group(2)) if m else None
+
+
 def _doc_folder(score: Score) -> str:
     """Return the docs/cards/{issue}-{slug} path for this card."""
     title_slug = re.sub(r"[^a-z0-9]+", "-", score.title.lower()).strip("-")[:20] or "untitled"
@@ -822,14 +838,20 @@ async def handle_dispatch(
 
 
 def _format_check_failures(failed_runs: list[dict]) -> str:  # type: ignore[type-arg]
-    """Format failed check run details for relay to the backend."""
+    """Format failed check run details for relay to the backend.
+
+    Returns the Check Run's structured ``output`` (title/summary/text). The
+    actual workflow log is fetched on-demand by the model via the
+    ``performer-fetch-ci-log`` CLI shim — relay only provides the summary
+    so we don't pay log API cost on every poll.
+    """
     parts = []
     for run in failed_runs:
         name = run.get("name", "unknown")
         output = run.get("output") or {}
         title = output.get("title") or ""
         summary = output.get("summary") or ""
-        text = (output.get("text") or "")[:500]
+        text = (output.get("text") or "")[:4000]
         part = f"### {name}"
         if title:
             part += f"\n{title}"
@@ -839,6 +861,21 @@ def _format_check_failures(failed_runs: list[dict]) -> str:  # type: ignore[type
             part += f"\n{text}"
         parts.append(part)
     return "\n\n".join(parts)
+
+
+def _failure_signature(failed_runs: list[dict]) -> str:  # type: ignore[type-arg]
+    """Stable signature of a failure set: same checks failing the same way
+    across attempts produces the same string.
+    """
+    items = []
+    for run in failed_runs:
+        name = run.get("name", "")
+        conclusion = run.get("conclusion", "")
+        output = run.get("output") or {}
+        title = output.get("title", "") or ""
+        items.append(f"{name}|{conclusion}|{title}")
+    items.sort()
+    return "\n".join(items)
 
 
 async def _poll_check_runs(perf: Performance, settings: Settings | None) -> PerformerResponse:
@@ -902,8 +939,33 @@ async def _poll_check_runs(perf: Performance, settings: Settings | None) -> Perf
 
     # verdict == "fail"
     max_attempts = settings.CHECK_MAX_ATTEMPTS if settings is not None else 3
+    no_progress_limit = settings.CHECK_NO_PROGRESS_LIMIT if settings is not None else 2
+
+    # 065 Fix 14: no-progress detection — same checks failing identically
+    # means the model isn't making progress; bail before burning the full
+    # max_attempts budget.
+    signature = _failure_signature(failed)
+    if signature == perf.last_check_failure_signature:
+        perf.check_no_progress_streak += 1
+    else:
+        perf.check_no_progress_streak = 0
+        perf.last_check_failure_signature = signature
+
+    names = ", ".join(r.get("name", "unknown") for r in failed)
+
+    if perf.check_no_progress_streak >= no_progress_limit:
+        questions = [
+            f"CI checks failed with no progress across {perf.check_no_progress_streak + 1} attempts: {names}"
+        ]
+        perf.state = "blocked"
+        perf.open_questions = questions
+        return PerformerResponse(
+            status="blocked",
+            session_id=perf.session_id,
+            questions=questions,
+        )
+
     if perf.check_attempt >= max_attempts:
-        names = ", ".join(r.get("name", "unknown") for r in failed)
         questions = [f"CI checks failed after {perf.check_attempt} fix attempt(s): {names}"]
         perf.state = "blocked"
         perf.open_questions = questions
@@ -915,8 +977,16 @@ async def _poll_check_runs(perf: Performance, settings: Settings | None) -> Perf
 
     perf.check_attempt += 1
     failure_msg = _format_check_failures(failed)
+    failing_names = [r.get("name", "unknown") for r in failed]
+    tool_hint = (
+        "\n\n**To read the actual workflow logs for any failing check, run:**\n"
+        "```\nperformer-fetch-ci-log --check '<check name>'\n```\n"
+        "Examples: " + ", ".join(f"`performer-fetch-ci-log --check '{n}'`"
+                                 for n in failing_names[:3])
+        + "\nUse `performer-fetch-ci-log --list` to see all failing checks."
+    )
     await perf.backend.relay_feedback(
-        f"CI checks failed. Fix the following:\n\n{failure_msg}"
+        f"CI checks failed. Fix the following:\n\n{failure_msg}{tool_hint}"
     )
     perf.state = "working"
     return PerformerResponse(
@@ -1032,13 +1102,45 @@ async def handle_status(
 
     if backend_status.state == "done":
         # 020: Architect path — commit plan file instead of opening a PR.
-        # Note: backends must populate BackendStatus.output with the generated
-        # plan content when role=="architecting". The architect backend adapter
-        # (not yet implemented) will set this field; existing backends (opencode,
-        # claude_code, codex) do not — they will hit the empty-plan error below.
+        # Plan content can arrive two ways:
+        #   1. inline — backend sets BackendStatus.output to the plan text
+        #      (used when the model emits an assistant message containing it)
+        #   2. workspace — backend writes {folder}/plan.md (and optional
+        #      tasks.md) directly via tool calls (e.g. codex apply_patch).
+        #      Detected after the fact by reading the file back.
+        # Fix 13 (065): codex populates `output` only from assistant text; when
+        # the model writes the plan via apply_patch, output is empty. Probe
+        # the workspace before declaring the plan empty.
         if perf.role == "architecting":
-            plan_content = backend_status.output or ""
-            if not plan_content.strip():
+            folder = _doc_folder(perf.score)
+            issue_num = perf.score.issue_number
+            plan_content = (backend_status.output or "").strip()
+            tasks_content = ""
+            plan_source = "inline"
+
+            if plan_content:
+                if "---TASKS---" in plan_content:
+                    parts = plan_content.split("---TASKS---", 1)
+                    plan_content = parts[0].strip()
+                    tasks_content = parts[1].strip()
+            else:
+                ws_plan = perf.stand.path / folder / "plan.md"
+                ws_tasks = perf.stand.path / folder / "tasks.md"
+                if ws_plan.is_file():
+                    try:
+                        plan_content = ws_plan.read_text(encoding="utf-8").strip()
+                    except OSError as exc:
+                        log.warning("architect.read_workspace_plan_failed", path=str(ws_plan), error=str(exc))
+                        plan_content = ""
+                    if plan_content and ws_tasks.is_file():
+                        try:
+                            tasks_content = ws_tasks.read_text(encoding="utf-8").strip()
+                        except OSError as exc:
+                            log.warning("architect.read_workspace_tasks_failed", path=str(ws_tasks), error=str(exc))
+                    if plan_content:
+                        plan_source = "workspace"
+
+            if not plan_content:
                 perf.state = "error"
                 perf.error_reason = "Backend produced an empty architecture plan"
                 return PerformerResponse(
@@ -1046,15 +1148,8 @@ async def handle_status(
                     session_id=perf.session_id,
                     reason="Backend produced an empty architecture plan",
                 )
-            folder = _doc_folder(perf.score)
-            issue_num = perf.score.issue_number
 
-            # Split plan and tasks if the separator is present
-            tasks_content = ""
-            if "---TASKS---" in plan_content:
-                parts = plan_content.split("---TASKS---", 1)
-                plan_content = parts[0].strip()
-                tasks_content = parts[1].strip()
+            log.info("architect.plan_source", source=plan_source, session_id=perf.session_id)
 
             plan_path = f"{folder}/plan.md"
             commit_msg = f"chore: add architecture plan for #{issue_num}" if issue_num else "chore: add architecture plan"
@@ -1198,7 +1293,8 @@ async def handle_status(
 
             owner, repo = perf.score.owner_repo
             token = perf.score.effective_github_token
-            full_body = f"**Bot Review: {verdict}**\n\n{review_body}"
+            header_label = "Bot Closer Review" if perf.role == "closing_review" else "Bot Review"
+            full_body = f"**{header_label}: {verdict}**\n\n{review_body}"
             await post_pull_request_review(
                 owner, repo, pr_number, event=event,
                 body=full_body, comments=comments, token=token,
@@ -1242,6 +1338,7 @@ async def handle_status(
                 status="changes_requested",
                 session_id=perf.session_id,
                 comments=comments,
+                body=review_body or None,
             )
 
         # 022: Security performer path — analyse findings, post advisories, pass or fail.
@@ -1309,13 +1406,27 @@ async def handle_status(
             if advisory and pr_number > 0:
                 owner, repo = perf.score.owner_repo
                 token = perf.score.effective_github_token
+                seen_fingerprints: set[str] = set()
+                try:
+                    existing = await list_pr_comments(owner, repo, pr_number, token=token)
+                    for c in existing:
+                        parsed = _parse_advisory_header(c.get("body", "") if isinstance(c, dict) else "")
+                        if parsed:
+                            seen_fingerprints.add(_advisory_fingerprint(*parsed))
+                except Exception as exc:
+                    log.warning("advisory_list_failed", error=str(exc))
                 for finding in advisory:
                     cat = finding.get("category", "unknown")
                     sev = finding.get("severity", "")
                     desc = finding.get("description", "")
+                    fp = _advisory_fingerprint(cat, sev)
+                    if fp in seen_fingerprints:
+                        log.info("advisory_comment_skipped_dedup", category=cat, severity=sev, fingerprint=fp)
+                        continue
                     body = f"[Advisory - Security] **{cat}** ({sev})\n\n{desc}"
                     try:
                         await post_pr_comment(owner, repo, pr_number, body=body, token=token)
+                        seen_fingerprints.add(fp)
                     except Exception as exc:
                         log.warning("advisory_comment_failed", category=cat, error=str(exc), exc_info=True)
 
@@ -2112,7 +2223,14 @@ async def _perform_job(payload: "JobInitPayload") -> "JobResult":  # pragma: no 
         try:
             _accepted_resp, perf = await handle_dispatch(dispatch_msg, settings)
         except Exception as exc:
-            return JobResult(success=False, summary=_redact_secrets(f"dispatch failed: {type(exc).__name__}"), error_code="dispatch_error")
+            log.exception("perform_job.dispatch_failed", exc_type=type(exc).__name__)
+            return JobResult(
+                success=False,
+                summary=_redact_secrets(
+                    f"dispatch failed: {type(exc).__name__}: {exc}"
+                ),
+                error_code="dispatch_error",
+            )
 
         from performer.server.job_runner import _progress_cb_var  # local import — server subpackage
 

@@ -98,6 +98,23 @@ class HTTPPerformerService:
             return None
         return self._config.auth_token.get_secret_value()
 
+    def has_live_session(self, session_id: str) -> bool:
+        """Return True if this service can still reach the container for ``session_id``.
+
+        Ephemeral: a job is live only while the per-container client is tracked
+        in ``_active_jobs`` — after a daemon restart the dict is empty and any
+        snapshot-restored session_id refers to a container the new process
+        cannot reach.
+
+        Persistent: there is one shared endpoint; "live" simply means the
+        endpoint URL is resolved.
+        """
+        if self._injected_client is not None:
+            return True
+        if self._config.mode == "ephemeral":
+            return session_id in self._active_jobs
+        return self._persistent_endpoint is not None
+
     def _ensure_client(self, job_id: str | None = None) -> PerformerHTTPClient:
         if self._injected_client is not None:
             return self._injected_client
@@ -635,6 +652,11 @@ class HTTPPerformerService:
                 "branch": branch,
                 "secrets": secrets,
                 "metadata": metadata,
+                # The bootstrap *writes into* the cache mount, so the
+                # container-side env_cache_path is the same directory the
+                # performer will populate. Without this, service inference
+                # short-circuits with skipped_reason=no_env_cache_path.
+                "env_cache_path": cache_mount_path or None,
             }
         )
 

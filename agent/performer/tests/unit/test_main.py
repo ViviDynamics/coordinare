@@ -915,6 +915,71 @@ class TestCheckPolling:
         assert perf.open_questions == resp.questions
         assert any("test-suite" in q for q in perf.open_questions)
 
+    async def test_relay_message_includes_fetch_ci_log_hint(self) -> None:
+        """065 Fix 15: relay points the model at performer-fetch-ci-log."""
+        perf = _make_perf_waiting()
+        failed_run = {
+            "name": "Validate version",
+            "status": "completed",
+            "conclusion": "failure",
+            "output": {"title": "version.json not bumped"},
+        }
+        settings = Settings(AGENT_BACKEND="opencode", AGENT_TIMEOUT=1800, CHECK_MAX_ATTEMPTS=3)
+        with patch("performer.main.get_check_runs", new=AsyncMock(return_value=[failed_run])):
+            await handle_status(_msg("status", session_id="sid"), perf, settings)
+        relay = perf.backend.relay_feedback.call_args[0][0]
+        assert "performer-fetch-ci-log --check 'Validate version'" in relay
+        assert "performer-fetch-ci-log --list" in relay
+
+    async def test_no_progress_streak_blocks_before_max_attempts(self) -> None:
+        """065 Fix 14: same failure twice in a row blocks before CHECK_MAX_ATTEMPTS."""
+        perf = _make_perf_waiting()
+        failed_run = {
+            "name": "lint",
+            "status": "completed",
+            "conclusion": "failure",
+            "output": {"title": "1 ruff error"},
+        }
+        settings = Settings(
+            AGENT_BACKEND="opencode", AGENT_TIMEOUT=1800,
+            CHECK_MAX_ATTEMPTS=8, CHECK_NO_PROGRESS_LIMIT=2,
+        )
+        with patch("performer.main.get_check_runs", new=AsyncMock(return_value=[failed_run])):
+            # 1st identical failure — relays
+            r1 = await handle_status(_msg("status", session_id="sid"), perf, settings)
+            assert r1.status == "working"
+            # poll-check sets state="working" after relay; flip back to waiting to re-enter
+            perf.state = "waiting_for_checks"  # type: ignore[assignment]
+            # 2nd identical — streak=1, still relays
+            r2 = await handle_status(_msg("status", session_id="sid"), perf, settings)
+            assert r2.status == "working"
+            perf.state = "waiting_for_checks"  # type: ignore[assignment]
+            # 3rd identical — streak=2 reaches limit, blocks
+            r3 = await handle_status(_msg("status", session_id="sid"), perf, settings)
+        assert r3.status == "blocked"
+        assert any("no progress" in q for q in r3.questions)
+        # bailed before max_attempts (check_attempt incremented only on relay turns)
+        assert perf.check_attempt < settings.CHECK_MAX_ATTEMPTS
+
+    async def test_no_progress_streak_resets_on_different_failure(self) -> None:
+        """065 Fix 14: streak resets when the failure signature changes."""
+        perf = _make_perf_waiting()
+        settings = Settings(
+            AGENT_BACKEND="opencode", AGENT_TIMEOUT=1800,
+            CHECK_MAX_ATTEMPTS=8, CHECK_NO_PROGRESS_LIMIT=2,
+        )
+        run_a = {"name": "lint", "status": "completed", "conclusion": "failure",
+                 "output": {"title": "A"}}
+        run_b = {"name": "lint", "status": "completed", "conclusion": "failure",
+                 "output": {"title": "B"}}
+        with patch("performer.main.get_check_runs", new=AsyncMock(return_value=[run_a])):
+            await handle_status(_msg("status", session_id="sid"), perf, settings)
+        perf.state = "waiting_for_checks"  # type: ignore[assignment]
+        with patch("performer.main.get_check_runs", new=AsyncMock(return_value=[run_b])):
+            await handle_status(_msg("status", session_id="sid"), perf, settings)
+        # different signature → streak reset to 0
+        assert perf.check_no_progress_streak == 0
+
 
 # ---------------------------------------------------------------------------
 # 020 — Architect performer tests
@@ -1061,6 +1126,52 @@ class TestArchitectPerformer:
         perf = self._make_perf(role="architecting")
         perf.backend.get_status.return_value = BackendStatus(state="done", output=None)
         settings = Settings(AGENT_BACKEND="opencode", AGENT_TIMEOUT=1800)
+
+        resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
+
+        assert resp.status == "error"
+        assert "empty" in (resp.reason or "").lower()
+        assert perf.state == "error"
+
+    @pytest.mark.asyncio
+    async def test_architect_reads_workspace_plan_when_output_empty(self, tmp_path: Path) -> None:
+        """Fix 13 (065): when backend output is empty but plan.md exists in
+        the workspace (codex apply_patch path), read it back and succeed."""
+        perf = self._make_perf(role="architecting")
+        perf.stand.path = tmp_path
+        perf.score.issue_number = 101
+        # Pre-populate workspace as if the backend wrote via apply_patch
+        folder = tmp_path / "docs" / "cards" / "101-test-card"
+        folder.mkdir(parents=True)
+        (folder / "plan.md").write_text("# Plan from workspace\n## Overview\n...")
+        (folder / "tasks.md").write_text("- [ ] task one\n- [ ] task two")
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=None)
+        settings = Settings(AGENT_BACKEND="codex", AGENT_TIMEOUT=1800)
+
+        mock_commit = AsyncMock()
+        with patch("performer.main.commit_file", new=mock_commit):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
+
+        assert resp.status == "plan_committed"
+        assert resp.plan_path == "docs/cards/101-test-card/plan.md"
+        assert perf.state == "plan_committed"
+        # Both plan.md and tasks.md should be committed
+        assert mock_commit.call_count == 2
+        plan_call, tasks_call = mock_commit.call_args_list
+        assert plan_call[0][1] == "docs/cards/101-test-card/plan.md"
+        assert plan_call[0][2] == "# Plan from workspace\n## Overview\n..."
+        assert tasks_call[0][1] == "docs/cards/101-test-card/tasks.md"
+        assert tasks_call[0][2] == "- [ ] task one\n- [ ] task two"
+
+    @pytest.mark.asyncio
+    async def test_architect_empty_output_and_no_workspace_plan_still_errors(self, tmp_path: Path) -> None:
+        """Fix 13 (065) regression guard: empty output AND no workspace plan.md
+        still returns the same error — workspace fallback must not mask the
+        true-empty case."""
+        perf = self._make_perf(role="architecting")
+        perf.stand.path = tmp_path  # exists but contains no plan.md
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=None)
+        settings = Settings(AGENT_BACKEND="codex", AGENT_TIMEOUT=1800)
 
         resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
 
@@ -1363,6 +1474,60 @@ class TestReviewerPerformer:
         mock_resolve.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_reviewer_changes_requested_forwards_body(self) -> None:
+        """065 Fix 4b: review_body is populated on PerformerResponse so the
+        coordinare can relay closer/reviewer prose when there are no
+        structured comments."""
+        import json
+        perf = self._make_perf()
+        output = json.dumps({
+            "approved": False,
+            "comments": [],
+            "body": "No actionable file-level issues, but PR scope is too broad.",
+        })
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+        settings = Settings(AGENT_BACKEND="opencode", AGENT_TIMEOUT=1800, REVIEWER_MAX_CYCLES=3)
+
+        with patch("performer.main.post_pull_request_review", new=AsyncMock(return_value={})):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
+
+        assert resp.status == "changes_requested"
+        assert resp.body == "No actionable file-level issues, but PR scope is too broad."
+
+    @pytest.mark.asyncio
+    async def test_closing_review_uses_distinct_pr_review_header(self) -> None:
+        """065 Fix 4d: closer rejection comment is headed 'Bot Closer Review'
+        so PR readers can distinguish the merge-gating closer from the
+        round-trip reviewer."""
+        import json
+        perf = self._make_perf(role="closing_review")
+        output = json.dumps({
+            "approved": False,
+            "comments": [{"file": "a.py", "line": 5, "body": "still unresolved"}],
+            "body": "Prior thread unaddressed.",
+        })
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+        settings = Settings(AGENT_BACKEND="opencode", AGENT_TIMEOUT=1800, REVIEWER_MAX_CYCLES=3)
+
+        mock_post = AsyncMock(return_value={})
+        with patch("performer.main.post_pull_request_review", new=mock_post), \
+             patch("performer.main.resolve_pr_review_threads", new=AsyncMock(return_value=0)):
+            await handle_status(_msg("status", session_id="sid"), perf, settings)
+
+        mock_post.assert_called_once()
+        posted_body = mock_post.call_args.kwargs.get("body", "")
+        assert posted_body.startswith("**Bot Closer Review:"), f"got: {posted_body!r}"
+
+        # And confirm the reviewer role uses the original header
+        perf_rev = self._make_perf(role="reviewing")
+        perf_rev.backend.get_status.return_value = BackendStatus(state="done", output=output)
+        mock_post2 = AsyncMock(return_value={})
+        with patch("performer.main.post_pull_request_review", new=mock_post2):
+            await handle_status(_msg("status", session_id="sid"), perf_rev, settings)
+        posted_body2 = mock_post2.call_args.kwargs.get("body", "")
+        assert posted_body2.startswith("**Bot Review:"), f"got: {posted_body2!r}"
+
+    @pytest.mark.asyncio
     async def test_changes_requested_is_terminal(self) -> None:
         """After changes_requested, subsequent polls return cached result."""
         perf = self._make_perf()
@@ -1464,6 +1629,78 @@ class TestSecurityPerformer:
 
         assert resp.status == "security_passed"
         mock_comment.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_advisory_comments_dedup_against_existing_pr_comments(self) -> None:
+        # 065 Fix 3: when an [Advisory - Security] for the same OWASP class +
+        # severity already exists on the PR, do not repost. Reproduces the
+        # PR #133 oscillation (same A04/A01 advisory re-emitted every cycle).
+        import json
+        perf = self._make_perf()
+        findings = [{
+            "severity": "medium",
+            "category": "OWASP A04: Insecure Design",
+            "description": "lifecycle invariants slightly reworded each cycle",
+            "routing": "implementer",
+        }]
+        output = json.dumps({"findings": findings})
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+        existing = [{"body": "[Advisory - Security] **OWASP A04 Insecure Design** (medium)\n\nprior cycle body"}]
+
+        mock_post = AsyncMock(return_value={})
+        mock_list = AsyncMock(return_value=existing)
+        with patch("performer.main.post_pr_comment", new=mock_post), \
+             patch("performer.main.list_pr_comments", new=mock_list):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+
+        assert resp.status == "security_passed"
+        mock_post.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_advisory_comments_posted_when_no_matching_existing(self) -> None:
+        # Different OWASP class than any existing advisory → still posts.
+        import json
+        perf = self._make_perf()
+        findings = [{
+            "severity": "medium",
+            "category": "OWASP A07: Identification and Authentication Failures",
+            "description": "new finding",
+            "routing": "implementer",
+        }]
+        output = json.dumps({"findings": findings})
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+        existing = [{"body": "[Advisory - Security] **OWASP A04 Insecure Design** (medium)\n\nprior"}]
+
+        mock_post = AsyncMock(return_value={})
+        mock_list = AsyncMock(return_value=existing)
+        with patch("performer.main.post_pr_comment", new=mock_post), \
+             patch("performer.main.list_pr_comments", new=mock_list):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+
+        assert resp.status == "security_passed"
+        mock_post.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_advisory_comments_intra_batch_dedup(self) -> None:
+        # Two findings in the same batch with the same OWASP class + severity
+        # → only one comment posted.
+        import json
+        perf = self._make_perf()
+        findings = [
+            {"severity": "medium", "category": "OWASP A04: Insecure Design", "description": "first wording", "routing": "implementer"},
+            {"severity": "medium", "category": "OWASP A04 Insecure Design", "description": "second wording", "routing": "implementer"},
+        ]
+        output = json.dumps({"findings": findings})
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+
+        mock_post = AsyncMock(return_value={})
+        mock_list = AsyncMock(return_value=[])
+        with patch("performer.main.post_pr_comment", new=mock_post), \
+             patch("performer.main.list_pr_comments", new=mock_list):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+
+        assert resp.status == "security_passed"
+        mock_post.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_security_passed_is_terminal(self) -> None:

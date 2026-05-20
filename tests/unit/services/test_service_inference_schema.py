@@ -10,8 +10,7 @@ from __future__ import annotations
 
 import pytest
 from pydantic import ValidationError
-
-from coordinare.services.service_inference.schema import (
+from coordinare_service_inference.schema import (
     ServiceEntry,
     ServicesManifest,
 )
