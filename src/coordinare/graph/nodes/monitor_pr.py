@@ -14,6 +14,7 @@ from coordinare.graph.nodes.github_retry import (
     github_operation_ready,
     is_transient_github_outage_error,
 )
+from coordinare.graph.state import _set_current_card
 from coordinare.models.review import ReviewerType, classify_reviewer
 
 logger = structlog.get_logger(__name__)
@@ -80,7 +81,7 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
         if recovered:
             card["pr_node_id"] = recovered["pr_node_id"]
             card["pr_url"] = recovered["pr_url"]
-            state["current_card"] = card
+            _set_current_card(state, card)
             pr_node_id = recovered["pr_node_id"]
             logger.info(
                 "monitor_pr.pr_recovered",
@@ -125,7 +126,7 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
                 with contextlib.suppress(Exception):
                     await github.move_card(card_id, "IN_PROGRESS")
                 card["status"] = "IN_PROGRESS"
-                state["current_card"] = card
+                _set_current_card(state, card)
             else:
                 # HOLD — gate returned monitoring_performer; we are in the PR
                 # phase, so stay there and poll again next tick.

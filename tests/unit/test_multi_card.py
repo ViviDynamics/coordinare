@@ -163,8 +163,9 @@ async def test_check_board_single_card_mode_unchanged() -> None:
 
     assert result["current_card"]["id"] == "PVI_1"
     assert result["phase"] == "dispatching"
-    # active_sessions should still be empty in single-card mode
-    assert result.get("active_sessions", {}) == {}
+    # 066: unified path populates active_sessions even at N=1 (single entry).
+    sessions = result.get("active_sessions") or {}
+    assert set(sessions.keys()) == {"PVI_1"}
 
 
 @pytest.mark.asyncio

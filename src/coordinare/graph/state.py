@@ -87,6 +87,11 @@ class SymphonyRuntimeState:
 
 
 class CoordinareState(TypedDict, total=False):
+    # 066 (FR-010): current_card is a *derived mirror* of
+    # active_sessions[active_card_id]["current_card"].  The only sanctioned
+    # mutation site is _rederive_current_card() below; all other writers MUST
+    # mutate the session entry instead.  See
+    # specs/066-unify-card-pickup/contracts/current_card-derivation.md.
     current_card: dict[str, Any] | None
     board_snapshot: dict[str, list[str]]
     phase: Literal["idle", "dispatching", "monitoring_agent", "monitoring_performer", "monitoring_pr", "merging", "relay_feedback", "blocked", "recovery", "system_error"]
@@ -146,6 +151,12 @@ class CoordinareState(TypedDict, total=False):
     card_cost_estimate: float  # 034: estimated cost in dollars
     card_budget_alert_sent: bool  # 034: True if budget exceeded notification was sent
     active_sessions: dict[str, Any]  # 035: card-ID → CardSession for multi-card parallelism
+    # 066: Index pointer into active_sessions for the card whose per-session
+    # graph step is currently executing.  Set at the start of each
+    # _invoke_multi_session per-session step; consulted by
+    # _rederive_current_card() to refresh the top-level current_card mirror
+    # (FR-010).  None outside of per-session steps and when no card is in flight.
+    active_card_id: str | None
     # 045: Number of times reviewer/security/qa has returned a non-terminal
     # "changes_requested" / "_failed" marker for this card, routing back to
     # an earlier stage (usually implementer).  Bounded by
@@ -258,6 +269,7 @@ def initial_state() -> CoordinareState:
         "card_cost_estimate": 0.0,
         "card_budget_alert_sent": False,
         "active_sessions": {},
+        "active_card_id": None,
         "feedback_cycle_count": 0,
         "total_feedback_cycles": 0,
         "triage_blocks": 0,
@@ -288,3 +300,78 @@ def initial_state() -> CoordinareState:
         "performer_services_by_id": {},
         "card_checks_state": {},
     }
+
+
+def _set_current_card(state: CoordinareState, card: dict) -> None:
+    """066 FR-010: single write-site for current_card.
+
+    Mutates the active session entry's ``current_card`` (creating a transient
+    entry if active_card_id is unset, e.g. during cold start) and re-derives
+    the flat mirror. All node-level writes that previously did
+    ``state["current_card"] = card`` MUST go through this helper.
+
+    For retirement (clearing the card), call :func:`_retire_active_session`
+    directly — this helper is for *writing* a card, not clearing one.
+    """
+    sessions = state.get("active_sessions")
+    if sessions is None:
+        sessions = {}
+        state["active_sessions"] = sessions
+    active_id = state.get("active_card_id")
+    card_id = str(card.get("id", ""))
+    if card_id and (not active_id or active_id != card_id):
+        # Transition active slot to the card being written (also covers
+        # cold-start writes where active_card_id was never set).
+        state["active_card_id"] = card_id
+        active_id = card_id
+    if active_id:
+        if active_id not in sessions:
+            sessions[active_id] = {}
+        sessions[active_id]["current_card"] = card
+    _rederive_current_card(state)
+
+
+def _retire_active_session(state: CoordinareState) -> None:
+    """066 FR-010: retire the active session and clear the derived mirror.
+
+    Stronger than a mirror-only clear: this *removes* the active_sessions
+    entry, drops active_card_id, and re-derives current_card to None.  Use at
+    session-retirement points (card cancelled, completed, board-reconciled
+    away).  For mirror-only clears where the session must survive, mutate the
+    session entry directly and call :func:`_rederive_current_card`.
+
+    Idempotent: calling on a state without an active session is a no-op
+    (no spurious empty-dict materialisation, no mirror rewrite).
+    """
+    sessions = state.get("active_sessions")
+    active_id = state.get("active_card_id")
+    if not sessions and active_id is None and state.get("current_card") is None:
+        return
+    if sessions is None:
+        sessions = {}
+        state["active_sessions"] = sessions
+    if active_id and active_id in sessions:
+        del sessions[active_id]
+    state["active_card_id"] = None
+    _rederive_current_card(state)
+
+
+def _rederive_current_card(state: CoordinareState) -> None:
+    """Re-derive the top-level current_card mirror from active_sessions.
+
+    Single mutation site for state["current_card"] per spec 066 FR-010.
+    Idempotent: calling twice in sequence with no other mutation produces the
+    same state.  See specs/066-unify-card-pickup/contracts/current_card-derivation.md.
+
+    Post-conditions:
+      - state["current_card"] is None when active_card_id is None or absent
+        from active_sessions.
+      - When non-None, state["current_card"] shares dict identity with
+        state["active_sessions"][state["active_card_id"]]["current_card"].
+    """
+    sessions = state.get("active_sessions") or {}
+    active_id = state.get("active_card_id")
+    if active_id and active_id in sessions:
+        state["current_card"] = sessions[active_id].get("current_card")
+    else:
+        state["current_card"] = None

@@ -1254,6 +1254,89 @@ async def test_reconcile_card_not_found_in_populated_board() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 066 FR-010 — retirement semantics in reconcile paths
+# ---------------------------------------------------------------------------
+
+
+def _seed_active_session(state: dict, card_id: str) -> None:
+    """Seed a single active session so reconcile paths can be exercised."""
+    card = {"id": card_id, "status": "IN_PROGRESS"}
+    state["active_card_id"] = card_id
+    state["active_sessions"] = {
+        card_id: {
+            "current_card": card,
+            "agent_dispatch": {"session_id": "s1"},
+            "performer_stage": "implementing",
+            "phase": "monitoring_performer",
+        }
+    }
+    state["current_card"] = card
+
+
+@pytest.mark.asyncio
+async def test_reconcile_card_not_found_retires_session() -> None:
+    """066 FR-010: card-not-found path retires the active session entirely."""
+    state = initial_state()
+    svc = _Performer(response={"status": "working"})
+    state["performer_services"] = {"implementing": svc}
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing"]
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["phase"] = "monitoring_performer"
+    state["board_snapshot"] = {"IN_PROGRESS": ["OTHER"], "TODO": [], "IN_REVIEW": []}
+    _seed_active_session(state, "ITEM_GONE")
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "idle"
+    assert result["current_card"] is None
+    assert result["active_card_id"] is None
+    assert "ITEM_GONE" not in result["active_sessions"]
+
+
+@pytest.mark.asyncio
+async def test_reconcile_backward_move_retires_session() -> None:
+    """066 FR-010: backward-move path retires the active session entirely."""
+    state = initial_state()
+    svc = _Performer(response={"status": "working"})
+    state["performer_services"] = {"implementing": svc}
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing"]
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["phase"] = "monitoring_performer"
+    state["board_snapshot"] = {"IN_PROGRESS": [], "TODO": ["ITEM_1"], "IN_REVIEW": []}
+    _seed_active_session(state, "ITEM_1")
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "idle"
+    assert result["current_card"] is None
+    assert result["active_card_id"] is None
+    assert "ITEM_1" not in result["active_sessions"]
+
+
+@pytest.mark.asyncio
+async def test_reconcile_forward_to_done_retires_session() -> None:
+    """066 FR-010: forward-to-DONE path retires the active session entirely."""
+    state = initial_state()
+    svc = _Performer(response={"status": "working"})
+    state["performer_services"] = {"implementing": svc}
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing"]
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["phase"] = "monitoring_performer"
+    state["board_snapshot"] = {"IN_PROGRESS": [], "TODO": [], "DONE": ["ITEM_1"]}
+    _seed_active_session(state, "ITEM_1")
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "idle"
+    assert result["current_card"] is None
+    assert result["active_card_id"] is None
+    assert "ITEM_1" not in result["active_sessions"]
+
+
+# ---------------------------------------------------------------------------
 # 030 — Live Requirement Sync tests
 # ---------------------------------------------------------------------------
 
