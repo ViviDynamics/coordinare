@@ -657,9 +657,11 @@ async def test_check_board_multicard_per_session_in_review_preserves_monitoring_
 
 
 @pytest.mark.asyncio
-async def test_check_board_singlecard_in_review_still_short_circuits() -> None:
-    """061: Single-card mode keeps the original behavior — IN_REVIEW
-    routes to monitoring_pr without falling through to TODO pickup.
+async def test_check_board_singlecard_in_review_adopts_into_active_sessions() -> None:
+    """066 FR-009: IN_REVIEW unification.  Even in single-card mode the
+    re-adopted IN_REVIEW card lands in ``active_sessions`` so all flat-state
+    reads can be migrated to the session map without a separate code path.
+    The phase still routes to ``monitoring_pr``.
     """
     state = initial_state()
     state["github_service"] = _GitHubInReviewWithTodo()
@@ -668,8 +670,10 @@ async def test_check_board_singlecard_in_review_still_short_circuits() -> None:
     result = await check_board(state)
 
     assert result["phase"] == "monitoring_pr"
-    # No active_sessions populated in single-card mode for IN_REVIEW.
-    assert not (result.get("active_sessions") or {})
+    sessions = result.get("active_sessions") or {}
+    assert "ITEM_R" in sessions, f"IN_REVIEW card must be adopted: {sessions}"
+    assert sessions["ITEM_R"].get("phase") == "monitoring_pr"
+    assert result["current_card"]["id"] == "ITEM_R"
 
 
 class _GitHubInProgress:
@@ -684,13 +688,18 @@ class _GitHubInProgress:
 
 @pytest.mark.asyncio
 async def test_check_board_readopts_in_progress_card_after_restart() -> None:
-    """When current_card is None (fresh restart) and a card is IN_PROGRESS, re-adopt it."""
+    """066 FR-002/SC-001: IN_PROGRESS re-adopt is passive for any N — wait for
+    the existing performer rather than re-dispatching (would duplicate the
+    container). monitor_performer surfaces a missing container as a system
+    error rather than silently re-dispatching."""
     state = initial_state()
     state["github_service"] = _GitHubInProgress()
 
     result = await check_board(state)
 
-    assert result["phase"] == "dispatching"
+    sessions = result.get("active_sessions") or {}
+    assert "ITEM_P" in sessions
+    assert sessions["ITEM_P"]["phase"] == "monitoring_agent"
     assert result["current_card"] is not None
     assert result["current_card"]["id"] == "ITEM_P"
 
@@ -725,9 +734,14 @@ async def test_check_board_readopts_dirty_in_progress_card_resets_context() -> N
 
     result = await check_board(state)
 
-    assert result["phase"] == "dispatching"
+    # 066 FR-002/SC-001: IN_PROGRESS re-adopt is passive — phase=monitoring_agent
+    # for any N. The fresh CardSession from create_session_from_card zeroes
+    # stale per-card residue; the flat-state mirror reflects the re-derived
+    # session.
+    sessions = result.get("active_sessions") or {}
+    assert "ITEM_DIRTY" in sessions
+    assert sessions["ITEM_DIRTY"]["phase"] == "monitoring_agent"
     assert result["current_card"]["id"] == "ITEM_DIRTY"
-    assert result["performer_stage"] == "implementing"
     assert result["system_error_count"] == 0
     assert result["system_error_reason"] is None
     assert result["system_error_notified"] is False
@@ -906,7 +920,10 @@ async def test_check_board_singlecard_in_progress_still_short_circuits() -> None
     # Single-card: re-adopt the IN_PROGRESS card and dispatch — TODO cards
     # are NOT picked up in the same cycle.
     assert result["current_card"]["id"] == "ITEM_P1"
-    assert not (result.get("active_sessions") or {})
+    # 066: unified path populates active_sessions even at N=1 — only the
+    # re-adopted IN_PROGRESS card; TODOs are not picked up this cycle.
+    sessions = result.get("active_sessions") or {}
+    assert set(sessions.keys()) == {"ITEM_P1"}
 
 
 @pytest.mark.asyncio
@@ -2260,3 +2277,282 @@ async def test_check_board_no_stale_redispatch_without_session_id() -> None:
 
     assert result["phase"] == "monitoring_performer"
 
+
+
+# ---------------------------------------------------------------------------
+# 066 T008: I3 invariant — check_board must always exit with
+# state["current_card"] == active_sessions[active_card_id]["current_card"]
+# (or both None).  Exercises a representative spread of branches.
+# ---------------------------------------------------------------------------
+
+
+class _GitHubEmpty:
+    async def poll_board(self):
+        return {
+            "snapshot": {"IN_PROGRESS": [], "TODO": [], "IN_REVIEW": [], "BLOCKED": []},
+            "titles": {},
+            "descriptions": {},
+            "issue_numbers": {},
+        }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "github_factory",
+    [_GitHubEmpty, _GitHub, _GitHubInProgressWithTodos],
+)
+async def test_check_board_preserves_i3_invariant(
+    github_factory, assert_current_card_invariant
+) -> None:
+    """066 FR-010: after any check_board invocation, current_card MUST be
+    the derived mirror of active_sessions[active_card_id]['current_card'],
+    or both must be None.
+    """
+    state = initial_state()
+    state["github_service"] = github_factory()
+
+    result = await check_board(state)
+
+    assert_current_card_invariant(result)
+
+
+# ---------------------------------------------------------------------------
+# 066 T010 — un-block feedback reset at N=1 (single-card mode).
+# Mirrors the N=3 test above to confirm FR-003: un-block detection fires
+# regardless of max_concurrent_cards.
+# ---------------------------------------------------------------------------
+
+
+class _GitHubUnblockedNowTodoN1:
+    async def poll_board(self):
+        return {
+            "snapshot": {
+                "IN_PROGRESS": [],
+                "TODO": ["ITEM_UB1"],
+                "IN_REVIEW": [],
+                "BLOCKED": [],
+            },
+            "titles": {"ITEM_UB1": "Was blocked, now unblocked"},
+            "descriptions": {"ITEM_UB1": ""},
+            "issue_numbers": {"ITEM_UB1": 71},
+            "issue_urls": {},
+            "content_node_ids": {},
+        }
+
+
+@pytest.mark.asyncio
+async def test_check_board_singlecard_unblock_resets_feedback_cycle_count() -> None:
+    """066 FR-003 / T010: at N=1, when the same card is re-picked with
+    ``previous_status='BLOCKED'``, ``feedback_cycle_count`` resets to 0,
+    monotonic stats are preserved, and a ``dispatcher.feedback_cycle_reset``
+    log fires with the documented fields.
+    """
+    import structlog.testing
+
+    state = initial_state()
+    state["github_service"] = _GitHubUnblockedNowTodoN1()
+    state["config"] = SimpleNamespace(
+        github_org="acme",
+        project_name="repo",
+        max_concurrent_cards=1,
+        priority=SimpleNamespace(field_name="", priority_order=[]),
+        github_api_url="",
+        assignee_filter=None,
+    )
+    # Same card was previously BLOCKED; simulate the same-card re-pickup path.
+    state["current_card"] = {
+        "id": "ITEM_UB1",
+        "issue_number": 71,
+        "title": "Was blocked, now unblocked",
+        "status": "BLOCKED",
+        "previous_status": "BLOCKED",
+    }
+    state["feedback_cycle_count"] = 3  # type: ignore[typeddict-unknown-key]
+    state["total_feedback_cycles"] = 5  # type: ignore[typeddict-unknown-key]
+    state["triage_blocks"] = 1  # type: ignore[typeddict-unknown-key]
+
+    with structlog.testing.capture_logs() as cap_logs:
+        result = await check_board(state)
+
+    assert result.get("feedback_cycle_count") == 0
+    assert result.get("total_feedback_cycles") == 5
+    assert result.get("triage_blocks") == 1
+
+    reset_events = [
+        e for e in cap_logs
+        if e.get("event") == "dispatcher.feedback_cycle_reset"
+        and e.get("card_id") == "ITEM_UB1"
+    ]
+    assert len(reset_events) == 1, f"Expected one reset log, got: {reset_events}"
+    evt = reset_events[0]
+    assert evt["prior_count"] == 3
+    assert evt["total_feedback_cycles"] == 5
+    assert evt["triage_blocks"] == 1
+
+
+# 066 SC-001: centralized allow-list for legitimate `max_cards`/`max_concurrent_cards`
+# comparisons in check_board.py.  Each entry is (substring, reason); a compare
+# node is allowed iff the source of its *enclosing statement* (via ast.unparse)
+# contains the substring.  Using the enclosing statement rather than a fixed
+# line window means the check survives reformatting / long boolean expressions
+# without losing precision.  Add new entries here (with a clear reason) rather
+# than tagging individual lines with comments.
+_SC001_ALLOWED: tuple[tuple[str, str], ...] = (
+    ("_board_cache", "board-cache optimisation — read-only fast path, no pickup divergence"),
+    ("_main_sha_cache", "main-sha cache — avoids redundant ls-remote per session"),
+    # ast.unparse normalises strings to single quotes, so match that form.
+    ("mode='multi'", "structlog label — diagnostic only, not control flow"),
+)
+
+
+def test_check_board_sc001_no_pickup_time_max_cards_branches() -> None:
+    """066 SC-001: zero `max_cards > 1` pickup-time branches in check_board.py.
+
+    The permitted exceptions live in ``_SC001_ALLOWED`` above with documented
+    reasons (caches + log labels).  Any other ``max_cards`` /
+    ``max_concurrent_cards`` comparison is a pickup-time divergence and
+    violates SC-001.
+    """
+    import ast
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parents[4] / "src/coordinare/graph/nodes/check_board.py"
+    text = src.read_text()
+    tree = ast.parse(text)
+    text_lines = text.splitlines()
+
+    # Build a child→innermost-enclosing-statement map so each Compare can be
+    # scored against the full ``if … : <body>`` (or other stmt) it lives in,
+    # not just the line it happens to occupy.  Single pre-order walk tracking
+    # the innermost stmt on the stack (O(N) over the AST).
+    enclosing_stmt: dict[int, ast.stmt] = {}
+
+    def _walk(node: ast.AST, innermost: ast.stmt | None) -> None:
+        next_stmt = node if isinstance(node, ast.stmt) else innermost
+        if next_stmt is not None and not isinstance(node, ast.stmt):
+            enclosing_stmt[id(node)] = next_stmt
+        for child in ast.iter_child_nodes(node):
+            _walk(child, next_stmt)
+
+    _walk(tree, None)
+
+    violations: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Compare):
+            continue
+        left = node.left
+        if not (isinstance(left, ast.Name) and left.id in {"max_cards", "max_concurrent_cards"}):
+            continue
+        stmt = enclosing_stmt.get(id(node))
+        haystack = ast.unparse(stmt) if stmt is not None else text_lines[node.lineno - 1]
+        if any(needle in haystack for needle, _ in _SC001_ALLOWED):
+            continue
+        violations.append((node.lineno, text_lines[node.lineno - 1].strip()))
+
+    assert not violations, (
+        "066 SC-001 violated — pickup-time `max_cards` branches found in "
+        "check_board.py.  Either remove the branch or add an entry to "
+        "_SC001_ALLOWED in this test with a clear reason:\n"
+        + "\n".join(f"  L{ln}: {s}" for ln, s in violations)
+    )
+
+
+# ---------------------------------------------------------------------------
+# 066 T009 — parameterised parity: un-block reset and fresh pickup must
+# behave identically at N=1 and N=3 (FR-002, FR-008).
+# ---------------------------------------------------------------------------
+
+
+def _config_for(n: int):
+    return SimpleNamespace(
+        github_org="acme",
+        project_name="repo",
+        max_concurrent_cards=n,
+        priority=SimpleNamespace(field_name="", priority_order=[]),
+        github_api_url="",
+        assignee_filter=None,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("max_n", [1, 3])
+async def test_unblock_reset_parity_across_n(max_n: int) -> None:
+    """066 FR-002/FR-003: un-block reset behaviour is identical at any N."""
+    import structlog.testing
+
+    state = initial_state()
+    state["github_service"] = _GitHubUnblockedNowTodo()
+    state["config"] = _config_for(max_n)
+    state["active_sessions"] = {
+        "ITEM_UB": {
+            "current_card": {
+                "id": "ITEM_UB",
+                "issue_number": 70,
+                "title": "Was blocked, now unblocked",
+                "status": "BLOCKED",
+            },
+            "phase": "blocked",
+            "feedback_cycle_count": 4,
+            "total_feedback_cycles": 7,
+            "triage_blocks": 2,
+        }
+    }
+
+    with structlog.testing.capture_logs() as cap_logs:
+        result = await check_board(state)
+
+    sess = (result.get("active_sessions") or {}).get("ITEM_UB")
+    assert sess is not None
+    assert sess["feedback_cycle_count"] == 0
+    assert sess["total_feedback_cycles"] == 7
+    assert sess["triage_blocks"] == 2
+    assert sess["current_card"]["status"] == "TODO"
+    assert sess["current_card"]["previous_status"] == "BLOCKED"
+    assert sess["phase"] == "dispatching"
+
+    reset_events = [
+        e for e in cap_logs
+        if e.get("event") == "dispatcher.feedback_cycle_reset"
+        and e.get("card_id") == "ITEM_UB"
+    ]
+    assert len(reset_events) == 1
+    assert reset_events[0]["prior_count"] == 4
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("max_n", [1, 3])
+async def test_fresh_pickup_no_reset_log_across_n(max_n: int) -> None:
+    """066 FR-002: fresh TODO pickup never emits the reset log at any N."""
+    import structlog.testing
+
+    state = initial_state()
+    state["github_service"] = _GitHubInProgressWithTodos()
+    state["config"] = _config_for(max_n)
+    state["active_sessions"] = {}
+
+    with structlog.testing.capture_logs() as cap_logs:
+        await check_board(state)
+
+    reset_events = [
+        e for e in cap_logs
+        if e.get("event") == "dispatcher.feedback_cycle_reset"
+    ]
+    assert reset_events == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("max_n", [1, 3])
+async def test_unified_pickup_log_fires_across_n(max_n: int) -> None:
+    """066: `check_board.unified_pickup` fires exactly once per cycle at any N."""
+    import structlog.testing
+
+    state = initial_state()
+    state["github_service"] = _GitHubInProgressWithTodos()
+    state["config"] = _config_for(max_n)
+
+    with structlog.testing.capture_logs() as cap_logs:
+        await check_board(state)
+
+    unified = [e for e in cap_logs if e.get("event") == "check_board.unified_pickup"]
+    assert len(unified) == 1
+    assert unified[0]["max_concurrent_cards"] == max_n

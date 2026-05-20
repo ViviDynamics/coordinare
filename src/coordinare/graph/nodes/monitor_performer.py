@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from coordinare.graph.state import _retire_active_session, _set_current_card
 from coordinare.lib.acceptance_criteria import parse_acceptance_criteria
 from coordinare.services.github import PermanentGitHubError
 from coordinare.transport.base import TransportError
@@ -87,7 +88,7 @@ def _reconcile_board_mismatch(
             expected_column=expected_column,
         )
         state["phase"] = "idle"
-        state["current_card"] = None
+        _retire_active_session(state)
         state["agent_dispatch"] = {}
         state["agent_dispatch_at"] = None
         _reset_token_counters(state)
@@ -102,7 +103,7 @@ def _reconcile_board_mismatch(
             actual_column=actual_column,
         )
         state["phase"] = "idle"
-        state["current_card"] = None
+        _retire_active_session(state)
         state["agent_dispatch"] = {}
         state["agent_dispatch_at"] = None
         state["relay_feedback"] = []
@@ -121,7 +122,7 @@ def _reconcile_board_mismatch(
         )
         lifecycle_seq = state.get("lifecycle_sequence") or ["implementing"]
         state["phase"] = "idle"
-        state["current_card"] = None
+        _retire_active_session(state)
         state["agent_dispatch"] = {}
         state["agent_dispatch_at"] = None
         state["relay_feedback"] = []
@@ -1122,7 +1123,7 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
                             card["description"] = new_desc
                             with contextlib.suppress(Exception):
                                 card["acceptance_criteria"] = parse_acceptance_criteria(new_desc)
-                            state["current_card"] = card
+                            _set_current_card(state, card)
                             state["phase"] = "dispatching"
                             state["agent_dispatch"] = {}
                             state["agent_dispatch_at"] = None
@@ -1531,7 +1532,7 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
                 # drift.
                 card["previous_status"] = card.get("status", "IN_PROGRESS")
                 card["status"] = "IN_REVIEW"
-                state["current_card"] = card
+                _set_current_card(state, card)
                 if github is not None:
                     try:
                         await github.move_card(card_id, "IN_REVIEW")

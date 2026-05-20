@@ -51,13 +51,16 @@ A future contributor implementing a new pickup-side behaviour (e.g. advocate-lab
 ### Functional Requirements
 
 - **FR-001**: `check_board` MUST have exactly one pickup code path. Pickup MUST always hydrate `active_sessions`; `state["current_card"]` MUST be derived from the session set rather than set independently.
-- **FR-002**: With `max_concurrent_cards=1`, observable behaviour MUST match the pre-unification single-card behaviour for: TODO pickup ordering, IN_PROGRESS re-adoption, IN_REVIEW re-adoption, BLOCKED-comment Q&A detection (`check_board.py:692`), un-block feedback reset (US4), dependency cycle announcement, and advocate-label filtering. "Match" is defined by the existing unit tests in `tests/unit/graph/nodes/test_check_board.py` and `tests/unit/graph/nodes/test_check_board_multicard*.py` — both suites MUST pass against the unified code without conditional logic forks on `max_concurrent_cards`.
+- **FR-002**: With `max_concurrent_cards=1`, observable behaviour MUST match the pre-unification single-card behaviour for: TODO pickup ordering, IN_PROGRESS re-adoption, IN_REVIEW re-adoption, BLOCKED-comment Q&A detection (`check_board.py:775–776`), un-block feedback reset (US4), dependency cycle announcement, and advocate-label filtering. "Match" is defined by the existing unit tests in `tests/unit/graph/nodes/test_check_board.py` and `tests/unit/graph/nodes/test_check_board_multicard*.py` — both suites MUST pass against the unified code without conditional logic forks on `max_concurrent_cards`.
 - **FR-003**: The un-block reset path (originally introduced as US4 in 065) MUST fire on un-block regardless of `max_concurrent_cards`. The detection MUST work for: card previously held by an `active_sessions` entry whose card status went BLOCKED, and card whose `current_card` snapshot held `status="BLOCKED"`. The reset MUST emit `dispatcher.feedback_cycle_reset` with `{card_id, prior_count, total_feedback_cycles, triage_blocks}`.
 - **FR-004**: `_invoke_multi_session` MUST be the only invocation path. Single-session entries MUST flow through it (with a session count of 1). The legacy direct-state graph invocation path MUST be removed.
 - **FR-005**: State snapshot rehydration (`daemon._restore_from_snapshot`) MUST handle three cases: (a) snapshot has `active_sessions` populated (v2+, post-Fix 7), (b) snapshot has only `current_card` set (v1), (c) snapshot is empty (cold start). Cases (b) and (c) MUST land in the same in-memory shape as (a).
 - **FR-006**: `current_card`, `performer_stage`, `feedback_cycle_count`, `total_feedback_cycles`, `triage_blocks`, and any other field the dashboard reads MUST remain on the top-level `CoordinareState` for the single in-flight card, even when sourced from a session, to preserve API and SSE compatibility with the dashboard (no client-visible schema change).
 - **FR-007**: A migration / compatibility test MUST exist that loads a real production v1 snapshot (or synthetic equivalent: only `current_card` set, no `active_sessions`) and asserts the unified code produces the same `active_sessions` shape it would produce on a fresh start with that card.
 - **FR-008**: The full `tests/unit` suite MUST pass without regressions. Tests that currently assume "single-card mode does not touch `active_sessions`" MAY be updated to assert the new invariant (single-card mode always has exactly one entry in `active_sessions`), but MUST NOT be deleted.
+- **FR-009**: The IN_REVIEW re-adopt path MUST be unified into the same pickup logic as IN_PROGRESS re-adopt. There MUST NOT be a separate branch for "re-adopt a card in IN_REVIEW" vs "re-adopt a card in IN_PROGRESS" — both flow through the unified session-hydration path with status-aware phase derivation. (Resolves open question 3.)
+- **FR-010**: Top-level `CoordinareState.current_card` MUST be a *derived view* of `active_sessions[active_card_id]`, not an independently-mutated field. All in-tree readers (dashboard, monitor_pr, monitor_performer, notify, persona_service) MUST read from `active_sessions` directly; the top-level field MUST be re-derived in one place per cycle for SSE/API back-compat (FR-006). Direct writes to `state.current_card` outside the derivation site MUST be removed. (Resolves open question 1; explicitly widens scope beyond the original tight target.)
+- **FR-011**: The Q&A-answer-detected mutation at `check_board.py:692` (currently mutates `state["current_card"]["previous_status"]`) MUST land on the session entry; the top-level mirror is re-derived after. (Resolves open question 2.)
 
 ### Success Criteria
 
@@ -70,20 +73,28 @@ A future contributor implementing a new pickup-side behaviour (e.g. advocate-lab
 - Increasing the default `max_concurrent_cards` value.
 - Changing the persistence schema beyond the rehydration changes required by FR-005 (Fix 7's v2 schema is sufficient).
 - Modifying `_invoke_multi_session`'s graph topology — only its entry conditions.
-- Rewriting `monitor_performer` or `dispatch_performer` — these read `current_card` / `active_sessions` and remain unchanged.
+- Rewriting `dispatch_performer` — it remains unchanged; its read sites switch from `state.current_card` to `active_sessions[active_card_id]` (FR-010) but its control flow is untouched.
+- `monitor_performer` and `monitor_pr` control flow — same as above, read-site swap only.
+- Removing the SSE/API top-level `current_card` field entirely. FR-010 keeps it as a derived mirror specifically to avoid a client-visible schema change.
 - Operator-facing comment → relay_feedback threading on un-block — that is a separate, higher-priority gap surfaced during 065 testing (planned as 065 Fix 17 or its own spec).
 
 ## Files Likely to Change
 
-- `src/coordinare/graph/nodes/check_board.py` — fold single-card pickup into multi-card path; collapse early-returns; one IN_PROGRESS branch; one un-block detection.
-- `src/coordinare/daemon.py` — `_restore_from_snapshot` v1 compatibility, `_invoke_multi_session` as the sole entry point, removal of any `if config.max_concurrent_cards == 1: ...` shortcuts.
-- `src/coordinare/graph/state.py` — possibly tighten the invariant comment; no schema change required.
+- `src/coordinare/graph/nodes/check_board.py` — fold single-card pickup into multi-card path; collapse early-returns; one IN_PROGRESS branch; one IN_REVIEW branch (FR-009); one un-block detection.
+- `src/coordinare/daemon.py` — `_restore_from_snapshot` v1 compatibility (FR-005), `_invoke_multi_session` as the sole entry point, removal of any `if config.max_concurrent_cards == 1: ...` shortcuts, single re-derivation site for `state.current_card` (FR-010).
+- `src/coordinare/graph/state.py` — tighten invariants: `current_card` documented as derived-from-`active_sessions`. No schema change.
+- `src/coordinare/graph/nodes/monitor_performer.py`, `src/coordinare/graph/nodes/monitor_pr.py`, `src/coordinare/graph/nodes/dispatch_performer.py` — swap `state.current_card` reads to `active_sessions[active_card_id]` (FR-010), preserving control flow.
+- `src/coordinare/dashboard.py` — read from `active_sessions`; the top-level mirror in the SSE payload stays for API compat.
+- `src/coordinare/services/persona_service.py`, `src/coordinare/services/pr_checks_service.py` — review for direct `current_card` reads and migrate.
 - `tests/unit/graph/nodes/test_check_board.py` — update assertions where they assume `active_sessions` is empty in single-card mode.
 - `tests/unit/graph/nodes/test_check_board_multicard*.py` — parameterise the `max_concurrent_cards=1` case across existing multi-card tests.
 - `tests/unit/test_state_store.py` — extend the v1 forward-compat test to cover the unified rehydration.
+- `tests/e2e/test_dashboard_browser.py` — confirm SSE payload back-compat (top-level `current_card` still present, content identical).
 
 ## Open Questions
 
-1. Should `current_card` remain a top-level state field for dashboard/SSE compatibility (FR-006 says yes), or do we take the opportunity to deprecate it and route all reads through `active_sessions[active_card_id]`? Deprecation is a larger blast radius (dashboard, monitor_pr, monitor_performer, notify) and probably belongs in its own follow-up.
-2. The Q&A-answer-detected path (`check_board.py:692`) currently mutates `state["current_card"]["previous_status"]` directly. In the unified world, does this mutation live on the session or on the top-level mirror? Likely the session, with the top-level mirror re-derived after.
-3. Is there appetite to also unify the IN_REVIEW re-adopt path (currently lives in a separate branch from IN_PROGRESS re-adopt)? Probably yes — same divergence risk — but adds scope.
+*All three original open questions have been resolved as part of widening scope (see FR-009, FR-010, FR-011). Remaining unknowns surface during planning, not specification.*
+
+## Scope Decision Log
+
+- **2026-05-20**: Operator chose the wide scope. Open questions 1 (deprecate top-level `current_card`), 2 (Q&A mutation location), and 3 (unify IN_REVIEW re-adopt) are all in-scope for this cycle. Rationale: "Whatever makes this fully complete I will want." The cost of a second pass on this same area is higher than the cost of one wider cycle now.

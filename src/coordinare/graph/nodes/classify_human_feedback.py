@@ -18,6 +18,8 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from coordinare.graph.state import _set_current_card
+
 if TYPE_CHECKING:
     from coordinare.graph.state import CoordinareState
 
@@ -325,6 +327,14 @@ async def classify_human_feedback(state: CoordinareState) -> CoordinareState:
         classification_method=classification_method,
     )
 
+    # 066 FR-010 contract for this node: ``current_card`` writes go through
+    # ``_set_current_card`` so the session entry stays the source of truth, but
+    # the per-cycle scratch fields below (``agent_dispatch``, ``performer_stage``,
+    # ``phase``, ``relay_feedback``, ``pending_reviews``) are intentionally
+    # flat-only — they have no session-entry counterpart and are not part of
+    # the I3 invariant.  Do not "session-ify" these without first extending
+    # CardSession + the rederive contract.
+
     # Move card to IN_PROGRESS on the board so the next check_board cycle
     # routes to dispatching (not back to monitoring_pr).
     github = state.get("github_service")
@@ -337,7 +347,7 @@ async def classify_human_feedback(state: CoordinareState) -> CoordinareState:
             logger.warning("classify_human_feedback.move_card_failed", card_id=card_id)
         card["previous_status"] = card.get("status", "IN_REVIEW")
         card["status"] = "IN_PROGRESS"
-        state["current_card"] = card
+        _set_current_card(state, card)
 
     # Store feedback for the dispatch node to relay (FR-010).
     # Mark review IDs as processed NOW (after relay is committed to state),

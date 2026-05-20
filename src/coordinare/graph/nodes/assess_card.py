@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from coordinare.graph.state import _set_current_card
 from coordinare.services.persona_service import get_effective_instructions, load_personas_hot
 
 if TYPE_CHECKING:
@@ -167,7 +168,7 @@ async def assess_card(state: CoordinareState) -> CoordinareState:
         if clarifications and isinstance(card, dict):
             card = dict(card)
             card["clarifications"] = clarifications
-            state["current_card"] = card
+            _set_current_card(state, card)
         state["phase"] = "dispatching"
         state["open_questions"] = []
     else:

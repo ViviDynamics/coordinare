@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from coordinare.graph.state import _retire_active_session
+
 if TYPE_CHECKING:
     from coordinare.graph.state import CoordinareState
 
@@ -71,7 +73,7 @@ async def cancel_active_card(
     # card starts fresh without stale performer_stage or relay_feedback.
     lifecycle_seq = state.get("lifecycle_sequence") or ["implementing"]
     state["phase"] = "idle"
-    state["current_card"] = None
+    _retire_active_session(state)
     state["agent_dispatch"] = {}
     state["agent_dispatch_at"] = None
     state["workspace_path"] = None

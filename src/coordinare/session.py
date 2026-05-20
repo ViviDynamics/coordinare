@@ -63,6 +63,9 @@ class CardSession(TypedDict, total=False):
     last_issue_comment_id: int | None
     processed_issue_comment_ids: set[int]
     qa_screenshots: list[Any]
+    feedback_cycle_count: int
+    total_feedback_cycles: int
+    triage_blocks: int
 
 
 # Fields that live on both CardSession and CoordinareState (flat).
@@ -100,6 +103,9 @@ _SESSION_FIELDS: tuple[str, ...] = (
     "last_issue_comment_id",
     "processed_issue_comment_ids",
     "qa_screenshots",
+    "feedback_cycle_count",
+    "total_feedback_cycles",
+    "triage_blocks",
 )
 
 
@@ -138,6 +144,9 @@ def create_session_from_card(card: dict[str, Any]) -> CardSession:
         last_issue_comment_id=None,
         processed_issue_comment_ids=set(),
         qa_screenshots=[],
+        feedback_cycle_count=0,
+        total_feedback_cycles=0,
+        triage_blocks=0,
     )
 
 

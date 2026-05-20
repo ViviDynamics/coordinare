@@ -330,3 +330,31 @@ async def test_cancel_clears_all_system_error_fields_including_last_at() -> None
         "cancel must clear system_error_last_at so the next card's first "
         "transport bump isn't misread as mid-retry."
     )
+
+
+@pytest.mark.asyncio
+async def test_cancel_retires_active_session() -> None:
+    """066 FR-010: cancel must remove the active_sessions entry and drop
+    active_card_id, not merely clear the top-level current_card mirror."""
+    state = initial_state()
+    state["phase"] = "monitoring_performer"
+    card = {"id": "ITEM_1", "title": "Test", "status": "IN_PROGRESS"}
+    state["active_card_id"] = "ITEM_1"
+    state["active_sessions"] = {
+        "ITEM_1": {
+            "current_card": card,
+            "agent_dispatch": {"session_id": "s1"},
+            "performer_stage": "implementing",
+            "phase": "monitoring_performer",
+        }
+    }
+    state["current_card"] = card
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["agent_service"] = MagicMock(relay_feedback=AsyncMock(return_value={}))
+    state["github_service"] = MagicMock(move_card=AsyncMock())
+
+    await cancel_active_card(state)
+
+    assert state["current_card"] is None
+    assert state["active_card_id"] is None
+    assert "ITEM_1" not in state["active_sessions"]

@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from coordinare.graph.state import _set_current_card
 from coordinare.services.github import PermanentGitHubError
 from coordinare.services.rebase import repo_url_from_config
 
@@ -74,7 +75,7 @@ async def merge_pr(state: CoordinareState) -> CoordinareState:
         logger.warning("merge_pr.move_card_failed", error=str(exc))
     card["previous_status"] = card.get("status", "IN_REVIEW")
     card["status"] = "DONE"
-    state["current_card"] = card
+    _set_current_card(state, card)
 
     # 047: Trigger rebase round for all other in-flight branches after merge.
     # The new main HEAD is the merge commit OID we just received.

@@ -1979,3 +1979,81 @@ def test_render_performer_pool_widget_mixed() -> None:
     assert result["total_idle"] == 2
     assert result["total_busy"] == 1
     assert result["total_excluded"] == 1
+
+
+# ---------------------------------------------------------------------------
+# 066 T012 — SSE payload preservation across FR-010 current_card demotion.
+#
+# After FR-010, top-level ``current_card`` is a *derived* mirror of
+# ``active_sessions[active_card_id]["current_card"]``.  The dashboard SSE
+# payload is the most visible read-site, so this regression guards the fields
+# the dashboard reads from per-session state (feedback_cycle_count,
+# performer_stage on the session row, card_title) AND the top-level
+# performer_stage which build_snapshot still reads off daemon.state.
+# ---------------------------------------------------------------------------
+
+
+def test_build_snapshot_preserves_fields_under_session_mirror() -> None:
+    """066 T012 / FR-010: build_snapshot must surface per-session
+    feedback_cycle_count, performer_stage, and card title from the
+    active_sessions entry — not from a separate top-level current_card —
+    so the multi-card unified path remains the source of truth."""
+    store = DashboardStore()
+    daemon = _make_mock_daemon(phase="monitoring_performer")
+
+    card = {
+        "id": "card-066",
+        "title": "Unify pickup",
+        "issue_number": 66,
+        "issue_url": "https://github.com/x/y/issues/66",
+    }
+    daemon.state["active_card_id"] = "card-066"
+    daemon.state["active_sessions"] = {
+        "card-066": {
+            "current_card": card,
+            "phase": "monitoring_performer",
+            "performer_stage": "implementing",
+            "feedback_cycle_count": 2,
+            "total_feedback_cycles": 5,
+            "triage_blocks": 0,
+            "card_tokens_total": 1234,
+            "card_cost_estimate": 0.42,
+            "agent_dispatch": {"container_id": "abc123"},
+        }
+    }
+    # FR-010 mirror: top-level current_card matches the session.
+    daemon.state["current_card"] = card
+    # Top-level performer_stage is still read by build_snapshot directly.
+    daemon.state["performer_stage"] = "implementing"
+
+    # Stub last_snapshot so active_card_title / column come through.
+    persisted = MagicMock()
+    persisted.phase = "monitoring_performer"
+    persisted.active_card_title = "Unify pickup"
+    persisted.active_card_column = "IN_PROGRESS"
+    persisted.pr_url = None
+    persisted.agent_session_id = None
+    persisted.open_questions = []
+    persisted.card_clarifications = []
+    daemon.state_store.last_snapshot = persisted
+
+    metrics = _make_mock_metrics()
+    health = _make_mock_health()
+
+    snap = store.build_snapshot(daemon, metrics, health)
+
+    # Top-level fields survive the demotion.
+    assert snap["performer_stage"] == "implementing"
+    assert snap["active_card_title"] == "Unify pickup"
+    assert snap["active_card_column"] == "IN_PROGRESS"
+    assert snap["active_card_issue_url"] == "https://github.com/x/y/issues/66"
+
+    # Per-session row reflects the authoritative session dict.
+    assert snap["active_session_count"] == 1
+    row = snap["active_sessions"][0]
+    assert row["card_id"] == "card-066"
+    assert row["card_title"] == "Unify pickup"
+    assert row["performer_stage"] == "implementing"
+    assert row["feedback_cycle_count"] == 2
+    assert row["total_feedback_cycles"] == 5
+    assert row["container_id"] == "abc123"

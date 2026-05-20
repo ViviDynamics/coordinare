@@ -227,6 +227,36 @@ def test_restore_from_snapshot_sets_agent_dispatch_when_session_id_present() -> 
     assert daemon._state["agent_dispatch"]["session_id"] == "sess-xyz"
 
 
+def test_restore_from_snapshot_v1_synthesizes_active_sessions() -> None:
+    """066 T007 / FR-005: pre-Fix-7 (v1) snapshot — active_sessions empty,
+    active_card_id + top-level card fields present — must synthesize a
+    single-entry session keyed by active_card_id with the same shape a
+    fresh multi-card pickup would produce.  Also asserts I3 invariant.
+    """
+    daemon = _make_daemon()
+    snap = WorkflowSnapshot(
+        snapshot_at=datetime.now(UTC),
+        phase="monitoring_performer",
+        active_card_id="card-v1",
+        active_card_title="Legacy Card",
+        active_card_column="In Progress",
+        performer_stage="implementing",
+        active_sessions={},
+    )
+
+    daemon._restore_from_snapshot(snap)
+
+    sessions = daemon._state.get("active_sessions") or {}
+    assert set(sessions.keys()) == {"card-v1"}
+    session = sessions["card-v1"]
+    assert session["current_card"] is daemon._state["current_card"]
+    assert session["performer_stage"] == "implementing"
+    assert session["phase"] == "monitoring_performer"
+    # I3 invariant: top-level current_card mirrors the session entry.
+    assert daemon._state["active_card_id"] == "card-v1"
+    assert daemon._state["current_card"]["id"] == "card-v1"
+
+
 def test_restore_from_snapshot_no_card_skips_current_card() -> None:
     daemon = _make_daemon()
     snap = _make_snapshot(phase="idle", active_card_id=None)
@@ -1151,3 +1181,176 @@ async def test_single_card_cycle_no_slot_manager_does_not_raise() -> None:
     daemon = _make_daemon()
     daemon._state["slot_manager"] = None
     await daemon.start()  # should not raise
+
+
+# ---------------------------------------------------------------------------
+# 066 FR-010: _pick_stable_active_card_id — dashboard ping-pong guard
+# ---------------------------------------------------------------------------
+
+
+def test_pick_stable_active_card_id_empty_returns_none() -> None:
+    from coordinare.daemon import _pick_stable_active_card_id
+
+    assert _pick_stable_active_card_id({}) is None
+
+
+def test_pick_stable_active_card_id_picks_earliest_picked_up_at() -> None:
+    """Earliest dated session wins regardless of dict insertion order."""
+    from datetime import UTC, datetime
+
+    from coordinare.daemon import _pick_stable_active_card_id
+
+    sessions = {
+        "CARD_LATE": {"picked_up_at": datetime(2026, 5, 19, 12, 0, 0, tzinfo=UTC)},
+        "CARD_EARLY": {"picked_up_at": datetime(2026, 5, 19, 9, 0, 0, tzinfo=UTC)},
+        "CARD_MID": {"picked_up_at": datetime(2026, 5, 19, 10, 30, 0, tzinfo=UTC)},
+    }
+    assert _pick_stable_active_card_id(sessions) == "CARD_EARLY"
+
+
+def test_pick_stable_active_card_id_iso_strings_sort_with_datetimes() -> None:
+    """ISO-format strings sort lexicographically alongside datetimes."""
+    from datetime import UTC, datetime
+
+    from coordinare.daemon import _pick_stable_active_card_id
+
+    sessions = {
+        "CARD_A": {"picked_up_at": "2026-05-19T12:00:00+00:00"},
+        "CARD_B": {"picked_up_at": datetime(2026, 5, 19, 9, 0, 0, tzinfo=UTC)},
+    }
+    assert _pick_stable_active_card_id(sessions) == "CARD_B"
+
+
+def test_pick_stable_active_card_id_undated_sorts_after_dated() -> None:
+    """A session without picked_up_at loses to any dated peer."""
+    from datetime import UTC, datetime
+
+    from coordinare.daemon import _pick_stable_active_card_id
+
+    sessions = {
+        "CARD_UNDATED": {},
+        "CARD_DATED": {"picked_up_at": datetime(2030, 1, 1, tzinfo=UTC)},
+    }
+    assert _pick_stable_active_card_id(sessions) == "CARD_DATED"
+
+
+def test_pick_stable_active_card_id_all_undated_falls_back_to_lex_order() -> None:
+    """When no session has picked_up_at, lexicographically smallest card_id wins.
+
+    Stable across runs because card IDs are stable identifiers — replaces the
+    insertion-order tie-break that previously caused dashboard ping-pong.
+    """
+    from coordinare.daemon import _pick_stable_active_card_id
+
+    sessions = {
+        "CARD_ZULU": {},
+        "CARD_ALPHA": {},
+        "CARD_MIKE": {},
+    }
+    assert _pick_stable_active_card_id(sessions) == "CARD_ALPHA"
+
+
+def test_pick_stable_active_card_id_is_insertion_order_invariant() -> None:
+    """Reordering insertion does not change the winner."""
+    from datetime import UTC, datetime
+
+    from coordinare.daemon import _pick_stable_active_card_id
+
+    early = datetime(2026, 5, 19, 9, 0, 0, tzinfo=UTC)
+    late = datetime(2026, 5, 19, 12, 0, 0, tzinfo=UTC)
+    forward = {
+        "CARD_EARLY": {"picked_up_at": early},
+        "CARD_LATE": {"picked_up_at": late},
+    }
+    reverse = {
+        "CARD_LATE": {"picked_up_at": late},
+        "CARD_EARLY": {"picked_up_at": early},
+    }
+    assert _pick_stable_active_card_id(forward) == _pick_stable_active_card_id(reverse) == "CARD_EARLY"
+
+
+def test_pick_stable_active_card_id_normalises_cross_timezone_datetimes() -> None:
+    """Datetimes in different offsets must be compared as wall-time-equivalents.
+
+    Without UTC normalisation, lex-sorting raw ``isoformat()`` strings ranks
+    by offset prefix and inverts ordering across timezones.  The picker
+    should pick the earliest *instant*, not the earliest local string.
+    """
+    from datetime import UTC, datetime, timedelta, timezone
+
+    from coordinare.daemon import _pick_stable_active_card_id
+
+    # 09:00 UTC == 11:00 in +02:00 — same instant.  EARLY is one hour before.
+    early_utc = datetime(2026, 5, 19, 9, 0, 0, tzinfo=UTC)
+    late_in_offset = datetime(2026, 5, 19, 12, 0, 0, tzinfo=timezone(timedelta(hours=2)))  # 10:00 UTC
+    sessions = {
+        "CARD_LATE": {"picked_up_at": late_in_offset},
+        "CARD_EARLY": {"picked_up_at": early_utc},
+    }
+    assert _pick_stable_active_card_id(sessions) == "CARD_EARLY"
+
+
+def test_pick_stable_active_card_id_treats_naive_datetime_as_utc() -> None:
+    """Naive datetimes must not raise — assumed UTC for ordering."""
+    from datetime import UTC, datetime
+
+    from coordinare.daemon import _pick_stable_active_card_id
+
+    naive_early = datetime(2026, 5, 19, 9, 0, 0)  # no tzinfo
+    aware_late = datetime(2026, 5, 19, 12, 0, 0, tzinfo=UTC)
+    sessions = {
+        "CARD_LATE": {"picked_up_at": aware_late},
+        "CARD_NAIVE": {"picked_up_at": naive_early},
+    }
+    assert _pick_stable_active_card_id(sessions) == "CARD_NAIVE"
+
+
+def test_pick_stable_active_card_id_mixed_naive_and_aware_sort_consistently() -> None:
+    """Mixed naive + aware + ISO-string + non-UTC offset must order by instant.
+
+    All four sessions sit in the dated bucket and must compare without raising
+    (the ISO-string branch and the datetime branch both produce strings, and
+    the datetime branch normalises to UTC so the suffix is canonical).
+    """
+    from datetime import UTC, datetime, timedelta, timezone
+
+    from coordinare.daemon import _pick_stable_active_card_id
+
+    sessions = {
+        "CARD_NAIVE": {"picked_up_at": datetime(2026, 5, 19, 10, 0, 0)},  # naive → 10:00 UTC
+        "CARD_AWARE": {"picked_up_at": datetime(2026, 5, 19, 11, 0, 0, tzinfo=UTC)},
+        "CARD_OFFSET": {  # 13:00 +02:00 → 11:00 UTC, ties with CARD_AWARE
+            "picked_up_at": datetime(2026, 5, 19, 13, 0, 0, tzinfo=timezone(timedelta(hours=2))),
+        },
+        "CARD_ISO": {"picked_up_at": "2026-05-19T09:00:00+00:00"},  # earliest
+    }
+    assert _pick_stable_active_card_id(sessions) == "CARD_ISO"
+
+
+def test_pick_stable_active_card_id_normalises_iso_string_offsets() -> None:
+    """Non-UTC ISO strings must be parsed and normalised to UTC.
+
+    Without parsing, ``'2026-05-19T13:00:00+02:00'`` lex-sorts as later than
+    ``'2026-05-19T11:00:01+00:00'`` despite being one second earlier as an
+    instant.  The picker must compare instants.
+    """
+    from coordinare.daemon import _pick_stable_active_card_id
+
+    sessions = {
+        "CARD_LATE_UTC": {"picked_up_at": "2026-05-19T11:00:01+00:00"},
+        "CARD_EARLY_OFFSET": {"picked_up_at": "2026-05-19T13:00:00+02:00"},  # 11:00:00 UTC
+    }
+    assert _pick_stable_active_card_id(sessions) == "CARD_EARLY_OFFSET"
+
+
+def test_pick_stable_active_card_id_unparseable_iso_string_falls_back_to_raw() -> None:
+    """Garbage strings stay in the dated bucket and sort against each other
+    by raw value — no exception, no demotion to the undated bucket."""
+    from coordinare.daemon import _pick_stable_active_card_id
+
+    sessions = {
+        "CARD_B": {"picked_up_at": "not-a-date-b"},
+        "CARD_A": {"picked_up_at": "not-a-date-a"},
+    }
+    # Both unparseable → raw lex sort → "not-a-date-a" wins.
+    assert _pick_stable_active_card_id(sessions) == "CARD_A"

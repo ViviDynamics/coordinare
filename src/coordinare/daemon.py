@@ -19,7 +19,13 @@ from coordinare.graph.nodes.github_retry import (
     github_operation_ready,
     is_transient_github_outage_error,
 )
-from coordinare.graph.state import CoordinareState, initial_state
+from coordinare.graph.state import (
+    CoordinareState,
+    _rederive_current_card,
+    _retire_active_session,
+    _set_current_card,
+    initial_state,
+)
 from coordinare.lib.runtime_events import build_runtime_event
 from coordinare.metrics import METRICS
 from coordinare.models.dependency import DependencyStatus
@@ -152,6 +158,48 @@ _GLOBAL_STATE_KEYS: tuple[str, ...] = (
     # after the merge loop to avoid misreporting the daemon as idle when only
     # the first completed session had phase="idle" while others are still active.
 )
+
+
+def _pick_stable_active_card_id(active_sessions: dict[str, Any]) -> str | None:
+    """066 FR-010: choose an active_card_id when the previous pointer is gone.
+
+    Picks the session with the earliest ``picked_up_at`` so the dashboard
+    top-level fields don't ping-pong between siblings as sessions are picked
+    up / retired during a cycle.  Sessions without a parseable timestamp sort
+    after dated ones; among undated (or all-missing) the lexicographically
+    smallest ``card_id`` wins.  Card IDs are stable identifiers, so this gives
+    a deterministic choice across runs.
+
+    Both datetime and ISO-string ``picked_up_at`` values are normalised to UTC
+    before lex-sorting, so the ordering compares instants — not local strings.
+    Naive datetimes are assumed UTC.  Unparseable ISO strings remain in the
+    dated bucket and sort against each other by raw value.  Mixing all shapes
+    in the same session set is safe: every dated branch produces a string key,
+    so all dated sessions remain mutually comparable.
+    """
+    if not active_sessions:
+        return None
+
+    def _normalise_dt(dt: datetime) -> str:
+        aware = dt if dt.tzinfo else dt.replace(tzinfo=UTC)
+        return aware.astimezone(UTC).isoformat()
+
+    def _key(item: tuple[str, Any]) -> tuple[int, str]:
+        card_id, sess = item
+        picked = sess.get("picked_up_at") if isinstance(sess, dict) else None
+        if isinstance(picked, datetime):
+            return (0, _normalise_dt(picked))
+        if isinstance(picked, str) and picked:
+            try:
+                return (0, _normalise_dt(datetime.fromisoformat(picked)))
+            except ValueError:
+                # Unparseable string — keep it in the dated bucket but sort by
+                # raw value so two unparseable strings still compare against
+                # each other deterministically.
+                return (0, picked)
+        return (1, card_id)
+
+    return min(active_sessions.items(), key=_key)[0]
 
 
 def _compute_eligibility(
@@ -390,7 +438,7 @@ class CoordinareDaemon:
         self._state["lifecycle_completed_at"] = snapshot.lifecycle_completed_at
         self._state["processed_review_ids"] = set(snapshot.processed_review_ids)
         if snapshot.active_card_id:
-            self._state["current_card"] = {
+            _set_current_card(self._state, {
                 "id": snapshot.active_card_id,
                 "issue_id": snapshot.active_card_issue_id or "",
                 "issue_number": snapshot.active_card_issue_number or 0,
@@ -401,7 +449,7 @@ class CoordinareDaemon:
                 "status": snapshot.active_card_column or "",
                 "pr_url": snapshot.pr_url,
                 "pr_node_id": snapshot.pr_node_id,
-            }
+            })
         if snapshot.agent_session_id:
             self._state["agent_dispatch"] = {"session_id": snapshot.agent_session_id}
 
@@ -437,6 +485,41 @@ class CoordinareDaemon:
                     session_dict["current_card"] = {"id": card_id}
                 restored_sessions[card_id] = session_dict
             self._state["active_sessions"] = restored_sessions
+        elif snapshot.active_card_id and self._state.get("current_card"):
+            # 066 FR-005 / T004: v1-snapshot synthesis.  Pre-Fix-7 snapshots
+            # populated active_card_id + per-card top-level fields but had no
+            # active_sessions payload.  Synthesize a single-entry session so
+            # the unified pickup path sees a v2-shaped state.  check_board's
+            # re-adopt path will refresh the session from the live board on
+            # the first cycle.
+            self._state["active_sessions"] = {
+                snapshot.active_card_id: {
+                    "current_card": self._state["current_card"],
+                    "performer_stage": snapshot.performer_stage or "implementing",
+                    "phase": snapshot.phase,
+                    "lifecycle_completed_at": snapshot.lifecycle_completed_at,
+                    "processed_review_ids": set(snapshot.processed_review_ids),
+                    "open_questions": list(snapshot.open_questions),
+                    "card_clarifications": list(snapshot.card_clarifications),
+                    "relay_feedback": [],
+                    "system_error_count": 0,
+                    "system_error_reason": None,
+                    "system_error_notified": False,
+                    "requirements_changed": False,
+                }
+            }
+            logger.info(
+                "state_store.v1_snapshot_rehydrated",
+                active_card_id=snapshot.active_card_id,
+                phase=snapshot.phase,
+            )
+
+        # 066 FR-010 / T006: set active_card_id and re-derive the mirror so
+        # the post-restore state satisfies the I3 invariant.  Subsequent
+        # cycles maintain it via check_board and _invoke_multi_session.
+        if snapshot.active_card_id:
+            self._state["active_card_id"] = snapshot.active_card_id
+        _rederive_current_card(self._state)
 
         # Also seed the owning SymphonyRuntimeState. In multi-symphony mode the
         # per-symphony swap in _conduct_single_symphony reads sym_state.active_card
@@ -496,7 +579,7 @@ class CoordinareDaemon:
                     found_column=found_column,
                 )
                 self._state["phase"] = "idle"
-                self._state["current_card"] = None
+                _retire_active_session(self._state)
             else:
                 inferred = self._infer_phase_from_board_column(found_column)
                 if inferred != snapshot.phase:
@@ -766,11 +849,13 @@ class CoordinareDaemon:
             self._state = await self._graph.ainvoke(self._state)  # type: ignore[assignment]
             self._state.pop("_advocate_scan_done", None)  # type: ignore[misc]
             # If the graph settled into a passive phase (monitoring_pr),
-            # clear current_card so route_issue_comments doesn't poll the card's
-            # issue on every cycle.  check_board rescans the full board each cycle
-            # and re-sets current_card when it needs to handle or dispatch the card.
+            # clear active_card_id so route_issue_comments doesn't poll the
+            # card's issue on every cycle.  check_board rescans the full board
+            # each cycle and re-points active_card_id when it needs to handle
+            # or dispatch a card.  066 FR-010: current_card is derived.
             if self._state.get("phase") in PASSIVE_PHASES:
-                self._state["current_card"] = None  # type: ignore[typeddict-unknown-key]
+                self._state["active_card_id"] = None  # type: ignore[typeddict-unknown-key]
+            _rederive_current_card(self._state)
             return
 
         graph = self._graph
@@ -804,6 +889,11 @@ class CoordinareDaemon:
                         for cid, sess in active_sessions.items()
                     }
                     session_to_state(session_state["active_sessions"][card_id], session_state)
+                    # 066 FR-010 / T006: identify the active session so the
+                    # per-session graph step can re-derive current_card from
+                    # active_sessions[active_card_id].
+                    session_state["active_card_id"] = card_id
+                    _rederive_current_card(session_state)
                     # Snapshot sibling sessions before ainvoke.  Graph nodes such
                     # as prepare_conflict_resolution can mutate session dicts
                     # in-place; capturing shallow copies here lets us detect
@@ -1003,6 +1093,21 @@ class CoordinareDaemon:
         # Derive global phase from the highest-priority session phase so the
         # dashboard never shows a stale or idle value while work is ongoing.
         self._state["phase"] = _derive_global_phase(active_sessions)  # type: ignore[literal-required]
+        # 066 FR-010: end-of-cycle re-derive.  Keep the previous active_card_id
+        # pointer when its session is still present so the dashboard top-level
+        # fields don't flicker between siblings on each cycle.  When the prior
+        # pointer is gone (card completed), pick the session with the *earliest*
+        # picked_up_at — a stable key that survives dict-insertion reordering
+        # and won't ping-pong between siblings as sessions advance.  Fall back
+        # to lexicographic card_id when picked_up_at is missing (handled inside
+        # the picker).  The next per-session check_board invocation
+        # re-establishes active_card_id via the unified pickup path regardless.
+        active_id = self._state.get("active_card_id")
+        if not active_id or active_id not in active_sessions:
+            self._state["active_card_id"] = (  # type: ignore[typeddict-unknown-key]
+                _pick_stable_active_card_id(active_sessions)
+            )
+        _rederive_current_card(self._state)
 
     async def _conduct_single_symphony(
         self,
@@ -1018,6 +1123,8 @@ class CoordinareDaemon:
         # Save symphony-scoped graph keys before entering the try so the outer
         # finally can always restore them (prevents cross-symphony contamination).
         _prev_current_card = self._state.get("current_card")
+        _prev_active_card_id = self._state.get("active_card_id")
+        _prev_active_sessions = self._state.get("active_sessions")
         _prev_board_snapshot = self._state.get("board_snapshot")
         _prev_session_skip_reasons = self._state.get("session_skip_reasons")
         _prev_phase = self._state.get("phase")
@@ -1072,7 +1179,12 @@ class CoordinareDaemon:
             # the graph sees this symphony's state, not the previous symphony's.
             self._state["active_sessions"] = dict(_sym_sessions)
             if sym_state is not None:
-                self._state["current_card"] = sym_state.active_card
+                _sym_card = sym_state.active_card
+                _sym_card_id = (
+                    str(_sym_card.get("id", "")) if isinstance(_sym_card, dict) else ""
+                )
+                self._state["active_card_id"] = _sym_card_id or None
+                _rederive_current_card(self._state)
                 if sym_state.board_snapshot is not None:
                     self._state["board_snapshot"] = sym_state.board_snapshot
                 if sym_state.session_skip_reasons is not None:
@@ -1086,10 +1198,10 @@ class CoordinareDaemon:
             if _sym_workspace_manager is not None:
                 self._state["workspace_manager"] = _sym_workspace_manager
             try:
-                if _eff_max > 1:
-                    await self._invoke_multi_session()
-                else:
-                    self._state = await self._graph.ainvoke(self._state)
+                # 066 T019/FR-004: _invoke_multi_session is the sole graph entry
+                # path for both N=1 and N>1.  Empty-sessions case short-circuits
+                # to a single graph cycle inside _invoke_multi_session.
+                await self._invoke_multi_session()
             finally:
                 self._state["config"] = _prev_config
                 if _sym_github is not None:
@@ -1153,7 +1265,10 @@ class CoordinareDaemon:
             if not _propagating:
                 self._state["current_symphony"] = None
             # Restore symphony-scoped graph keys so the next symphony starts clean.
-            self._state["current_card"] = _prev_current_card
+            if _prev_active_sessions is not None:
+                self._state["active_sessions"] = _prev_active_sessions
+            self._state["active_card_id"] = _prev_active_card_id
+            _rederive_current_card(self._state)
             self._state["board_snapshot"] = _prev_board_snapshot
             self._state["session_skip_reasons"] = _prev_session_skip_reasons
             self._state["phase"] = _prev_phase
@@ -1772,11 +1887,10 @@ class CoordinareDaemon:
                     self._state["active_sessions"] = _agg_sessions
                     self._state["phase"] = _derive_global_phase(_agg_sessions)  # type: ignore[literal-required]
                 else:
-                    # Legacy single-symphony mode (backward compat)
-                    if self._max_concurrent_cards() > 1:
-                        await self._invoke_multi_session()
-                    else:
-                        self._state = await self._graph.ainvoke(self._state)
+                    # Legacy single-symphony mode (backward compat).
+                    # 066 T019/FR-004: unified entry path — empty-sessions case
+                    # short-circuits to a single graph cycle inside the method.
+                    await self._invoke_multi_session()
 
                 # US1: record cycle metrics
                 _cycle_elapsed = perf_counter() - _cycle_t0

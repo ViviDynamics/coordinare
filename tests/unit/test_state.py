@@ -90,3 +90,80 @@ def test_service_handles_survive_langgraph_invocation() -> None:
     assert result.get("performer_services_by_id") == sentinel_registry, (
         "LangGraph dropped performer_services_by_id across the graph cycle"
     )
+
+
+# ---------------------------------------------------------------------------
+# 066 FR-010: _retire_active_session contract
+# ---------------------------------------------------------------------------
+
+
+def test_retire_active_session_idempotent_on_fresh_state() -> None:
+    """No active session → true no-op (no spurious active_sessions dict)."""
+    from coordinare.graph.state import _retire_active_session
+
+    state = initial_state()
+    assert state.get("active_sessions") in (None, {})
+    assert state.get("active_card_id") is None
+    assert state.get("current_card") is None
+
+    _retire_active_session(state)
+
+    # Must not have materialised an active_sessions dict.
+    assert state.get("active_sessions") in (None, {})
+    assert state.get("active_card_id") is None
+    assert state.get("current_card") is None
+
+
+def test_retire_active_session_removes_session_and_clears_mirror() -> None:
+    from coordinare.graph.state import _retire_active_session
+
+    card = {"id": "ITEM_1", "status": "IN_PROGRESS"}
+    state = initial_state()
+    state["active_card_id"] = "ITEM_1"
+    state["active_sessions"] = {"ITEM_1": {"current_card": card}}
+    state["current_card"] = card
+
+    _retire_active_session(state)
+
+    assert state["active_card_id"] is None
+    assert "ITEM_1" not in state["active_sessions"]
+    assert state["current_card"] is None
+
+
+def test_retire_active_session_noop_when_active_sessions_is_none() -> None:
+    """Snapshot rehydration can surface ``active_sessions=None`` (vs ``{}``).
+    Retire must early-return without materialising an empty dict."""
+    from coordinare.graph.state import _retire_active_session
+
+    state = initial_state()
+    state["active_sessions"] = None  # type: ignore[typeddict-item]
+    state["active_card_id"] = None
+    state["current_card"] = None
+
+    _retire_active_session(state)
+
+    assert state["active_sessions"] is None
+    assert state["active_card_id"] is None
+    assert state["current_card"] is None
+
+
+def test_retire_active_session_preserves_sibling_sessions() -> None:
+    """Retiring one card must leave other sessions intact."""
+    from coordinare.graph.state import _retire_active_session
+
+    card_a = {"id": "CARD_A", "status": "IN_PROGRESS"}
+    card_b = {"id": "CARD_B", "status": "IN_PROGRESS"}
+    state = initial_state()
+    state["active_card_id"] = "CARD_A"
+    state["active_sessions"] = {
+        "CARD_A": {"current_card": card_a},
+        "CARD_B": {"current_card": card_b},
+    }
+    state["current_card"] = card_a
+
+    _retire_active_session(state)
+
+    assert "CARD_A" not in state["active_sessions"]
+    assert state["active_sessions"]["CARD_B"]["current_card"] == card_b
+    assert state["active_card_id"] is None
+    assert state["current_card"] is None  # rederive sees active_card_id=None

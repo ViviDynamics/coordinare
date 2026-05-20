@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from coordinare.graph.state import _set_current_card
 from coordinare.services.github import PermanentGitHubError
 from coordinare.services.persona_service import get_effective_instructions, load_personas_hot
 from coordinare.transport.base import TransportError
@@ -165,7 +166,7 @@ async def dispatch_performer(state: CoordinareState) -> CoordinareState:
             if recovered and recovered.get("pr_url") and recovered.get("pr_node_id"):
                 card["pr_url"] = recovered["pr_url"]
                 card["pr_node_id"] = recovered["pr_node_id"]
-                state["current_card"] = card
+                _set_current_card(state, card)
                 has_open_pr = True
         if not has_open_pr and hasattr(github, "count_closed_prs_for_issue"):
             closed_count = 0
@@ -233,7 +234,7 @@ async def dispatch_performer(state: CoordinareState) -> CoordinareState:
             if recovered and recovered.get("pr_url") and recovered.get("pr_node_id"):
                 card["pr_url"] = recovered["pr_url"]
                 card["pr_node_id"] = recovered["pr_node_id"]
-                state["current_card"] = card
+                _set_current_card(state, card)
             else:
                 lifecycle: list[str] = list(state.get("lifecycle_sequence") or [])
                 fallback_stage = "implementing" if "implementing" in lifecycle else ""
@@ -629,7 +630,7 @@ async def dispatch_performer(state: CoordinareState) -> CoordinareState:
         state["phase"] = "system_error"
         card["previous_status"] = card.get("status", "TODO")
         card["status"] = "IN_PROGRESS"
-        state["current_card"] = card
+        _set_current_card(state, card)
         # Tear down workspace to avoid leaking temp directories.
         if workspace_manager is not None and workspace_info is not None and workspace_info.path is not None:
             try:
@@ -715,7 +716,7 @@ async def dispatch_performer(state: CoordinareState) -> CoordinareState:
     state["performer_metrics"] = None
     card["previous_status"] = card.get("status", "TODO")
     card["status"] = "IN_PROGRESS"
-    state["current_card"] = card
+    _set_current_card(state, card)
     state["phase"] = "monitoring_performer"
     # 065 Fix 18: preserve the retry counter across a handle_system_error
     # re-dispatch on the same card+stage. The dispatch itself succeeding
