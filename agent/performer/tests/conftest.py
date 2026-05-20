@@ -59,7 +59,7 @@ def performer_base_image_built(docker_available: bool) -> str:
             str(dockerfile),
             "-t",
             BASE_IMAGE_TAG,
-            str(PERFORMER_DIR),
+            str(REPO_ROOT),
         ],
         capture_output=True,
         timeout=900,

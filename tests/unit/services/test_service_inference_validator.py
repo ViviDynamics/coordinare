@@ -7,9 +7,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-
-from coordinare.services.service_inference.templater import RenderedScripts
-from coordinare.services.service_inference.validator import validate
+from coordinare_service_inference.templater import RenderedScripts
+from coordinare_service_inference.validator import validate
 
 
 def _scripts(
@@ -95,7 +94,7 @@ def test_validate_applies_per_phase_timeout(tmp_path):
         seen_timeouts.append(kwargs.get("timeout", -1.0))
         return real_run(argv, **kwargs)
 
-    with patch("coordinare.services.service_inference.validator.subprocess.run", side_effect=_wrapper):
+    with patch("coordinare_service_inference.validator.subprocess.run", side_effect=_wrapper):
         validate(
             _scripts(),
             working_dir=tmp_path,
@@ -118,7 +117,7 @@ def test_validate_uses_subprocess_run_with_bash(tmp_path):
         seen_argv0.append(argv[0])
         return real_run(argv, **kwargs)
 
-    with patch("coordinare.services.service_inference.validator.subprocess.run", side_effect=_wrapper):
+    with patch("coordinare_service_inference.validator.subprocess.run", side_effect=_wrapper):
         validate(_scripts(), working_dir=tmp_path, health_delay_seconds=0.0)
 
     # start + health + stop = 3 invocations, all of bash.
@@ -154,7 +153,7 @@ def test_validate_cleans_up_temp_dir(tmp_path, monkeypatch):
         return path
 
     monkeypatch.setattr(
-        "coordinare.services.service_inference.validator.tempfile.mkdtemp", _wrapper
+        "coordinare_service_inference.validator.tempfile.mkdtemp", _wrapper
     )
 
     validate(_scripts(), health_delay_seconds=0.0)

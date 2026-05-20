@@ -678,3 +678,29 @@ class TestResolvePrReviewThreads:
         with pytest.raises(GitHubAPIError) as exc_info:
             await resolve_pr_review_threads("org", "repo", 88, "")
         assert exc_info.value.status_code == 401
+
+
+class TestGetPrHeadSha:
+    @respx.mock
+    async def test_returns_head_sha(self) -> None:
+        from performer.github import get_pr_head_sha
+        respx.get("https://api.github.com/repos/org/repo/pulls/42").mock(
+            return_value=httpx.Response(200, json={"head": {"sha": "abc123"}})
+        )
+        sha = await get_pr_head_sha("org", "repo", 42, "tok")
+        assert sha == "abc123"
+
+    @respx.mock
+    async def test_raises_on_missing_sha(self) -> None:
+        from performer.github import get_pr_head_sha
+        respx.get("https://api.github.com/repos/org/repo/pulls/42").mock(
+            return_value=httpx.Response(200, json={"head": {}})
+        )
+        with pytest.raises(GitHubAPIError):
+            await get_pr_head_sha("org", "repo", 42, "tok")
+
+    async def test_empty_token_raises_401(self) -> None:
+        from performer.github import get_pr_head_sha
+        with pytest.raises(GitHubAPIError) as exc:
+            await get_pr_head_sha("org", "repo", 1, "")
+        assert exc.value.status_code == 401

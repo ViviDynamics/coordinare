@@ -582,6 +582,64 @@ def _build_http_performer_services(
     return services_by_stage
 
 
+def _resolve_stage_max_concurrency(
+    config: ProjectConfiguration, stage: str,
+) -> int:
+    """Read the operator-configured ``max_concurrency`` for a stage.
+
+    Resolves ``performers.<role>.max_concurrency`` (respecting
+    ``performers.default``). Returns 1 when nothing is configured.
+    """
+    role_name = None
+    for r_name, s_name in _ROLE_TO_STAGE.items():
+        if s_name == stage:
+            role_name = r_name
+            break
+    if role_name is None:
+        return 1
+    rc = config.performers.resolved_role(role_name)
+    if rc is None:
+        return 1
+    return getattr(rc, "max_concurrency", 1)
+
+
+def _compose_performer_pools(
+    *,
+    config: ProjectConfiguration,
+    service_lists: dict[str, list],
+    http_services_by_stage: dict[str, list],
+    performer_services: dict[str, Any],
+) -> tuple[dict[str, list], dict[str, int], dict[str, Any]]:
+    """Merge subprocess + HTTP performer services and resolve per-stage caps.
+
+    Returns ``(merged_service_lists, stage_max_c, performer_services_by_id)``.
+    Mutates ``performer_services`` in place to fill in a default service for
+    any stage that gained an HTTP transport. ``stage_max_c`` is taken from
+    operator config — the SlotManager is responsible for clamping when the
+    pool is smaller than the configured cap (and logging that clamp).
+    """
+    stage_max_c: dict[str, int] = {
+        stage: _resolve_stage_max_concurrency(config, stage)
+        for stage in service_lists
+    }
+    performer_services_by_id: dict[str, Any] = {}
+
+    for stage, http_services in http_services_by_stage.items():
+        existing = service_lists.get(stage, [])
+        merged = existing + http_services
+        service_lists[stage] = merged
+        if stage not in performer_services:
+            performer_services[stage] = merged[0]
+        if stage not in stage_max_c:
+            stage_max_c[stage] = _resolve_stage_max_concurrency(config, stage)
+        for svc in http_services:
+            svc_id = getattr(getattr(svc, "_config", None), "id", None)
+            if svc_id:
+                performer_services_by_id[svc_id] = svc
+
+    return service_lists, stage_max_c, performer_services_by_id
+
+
 def _build_transport(config: ProjectConfiguration) -> AgentTransport:
     github_token = (
         config.github_token.get_secret_value() if config.github_token is not None else None
@@ -668,19 +726,6 @@ async def _bootstrap_services(
     service_lists: dict[str, list] = getattr(
         _build_performer_services, "_service_lists", {},
     )
-    stage_max_c: dict[str, int] = {}
-    for stage, _svc_list in service_lists.items():
-        role_name = None
-        for r_name, s_name in _ROLE_TO_STAGE.items():
-            if s_name == stage:
-                role_name = r_name
-                break
-        max_c = 1
-        if role_name is not None:
-            rc = config.performers.resolved_role(role_name)
-            if rc is not None:
-                max_c = getattr(rc, "max_concurrency", 1)
-        stage_max_c[stage] = max_c
 
     # 056 — Merge containerized (ephemeral / persistent) performers into the same
     # service lists before slot registration so each stage is registered once.
@@ -694,18 +739,12 @@ async def _bootstrap_services(
                 hint="containers left by a previous coordinare crash",
             )
     http_services_by_stage = _build_http_performer_services(config)
-    performer_services_by_id: dict[str, Any] = {}
-    for stage, http_services in http_services_by_stage.items():
-        existing = service_lists.get(stage, [])
-        merged = existing + http_services
-        service_lists[stage] = merged
-        if stage not in performer_services:
-            performer_services[stage] = merged[0]
-        stage_max_c[stage] = len(service_lists[stage])
-        for svc in http_services:
-            svc_id = getattr(getattr(svc, "_config", None), "id", None)
-            if svc_id:
-                performer_services_by_id[svc_id] = svc
+    service_lists, stage_max_c, performer_services_by_id = _compose_performer_pools(
+        config=config,
+        service_lists=service_lists,
+        http_services_by_stage=http_services_by_stage,
+        performer_services=performer_services,
+    )
 
     # Register all pools once after subprocess + HTTP services are merged.
     from coordinare.services.slot_manager import SlotManager

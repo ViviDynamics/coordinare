@@ -31,8 +31,8 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from coordinare.services.service_inference.manual_override import SERVICES_SUBDIR
-from coordinare.services.service_inference.schema import ServicesManifest
+from coordinare_service_inference.manual_override import SERVICES_SUBDIR
+from coordinare_service_inference.schema import ServicesManifest
 
 _log = structlog.get_logger(__name__)
 

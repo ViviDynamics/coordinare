@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import pytest
-
-from coordinare.services.service_inference.schema import (
+from coordinare_service_inference.schema import (
     ServiceEntry,
     ServicesManifest,
 )
-from coordinare.services.service_inference.templater import render
+from coordinare_service_inference.templater import render
 
 
 def _redis() -> ServiceEntry:

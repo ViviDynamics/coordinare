@@ -51,6 +51,29 @@ async def handle_system_error(state: CoordinareState) -> CoordinareState:
             attempt=count,
             max_retries=_MAX_RETRIES,
         )
+        # 065 Fix 21: tear down the previous ephemeral container before clearing
+        # agent_dispatch. dispatch_performer's success path will launch a fresh
+        # container — without this teardown the previous one is orphaned (no
+        # other code path holds a reference to its session_id) and leaks for
+        # every retry cycle.  Mirrors monitor_performer.transport_error cleanup.
+        prev_dispatch = state.get("agent_dispatch") or {}
+        prev_session_id = prev_dispatch.get("session_id") if isinstance(prev_dispatch, dict) else None
+        if prev_session_id:
+            stage = str(state.get("performer_stage") or "")
+            performer_services = state.get("performer_services") or {}
+            service = performer_services.get(stage) if isinstance(performer_services, dict) else None
+            cleanup = getattr(service, "_cleanup_ephemeral_job_by_id", None) if service is not None else None
+            if cleanup is not None:
+                try:
+                    await cleanup(str(prev_session_id))
+                except Exception as exc:
+                    logger.warning(
+                        "handle_system_error.cleanup_failed",
+                        card_id=card_id,
+                        session_id=str(prev_session_id),
+                        exc_type=type(exc).__name__,
+                        error=str(exc),
+                    )
         state["agent_dispatch"] = {}
         state["agent_dispatch_at"] = None
         state["phase"] = "dispatching"

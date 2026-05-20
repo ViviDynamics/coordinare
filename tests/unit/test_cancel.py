@@ -295,3 +295,38 @@ def test_cancel_endpoint_idle_returns_no_active_card(tmp_path) -> None:
     res = client.post("/api/cancel")
     assert res.status_code == 200
     assert res.json()["status"] == "no_active_card"
+
+
+@pytest.mark.asyncio
+async def test_cancel_clears_all_system_error_fields_including_last_at() -> None:
+    """Candidate #4 — cancel.py:82-85.
+
+    Operator-initiated cancellation must clear EVERY system_error field —
+    including ``system_error_last_at`` — so the next dispatch starts with a
+    clean slate.  This is the correct behavior; the IN_PROGRESS-recovery
+    and new-card-pickup paths in check_board.py omit ``last_at`` and leak
+    stale mid-retry signal into the next card's lifecycle.  This test
+    locks in the cancel path as the reference implementation.
+    """
+    from datetime import UTC, datetime
+
+    state = initial_state()
+    state["phase"] = "monitoring_performer"
+    state["current_card"] = {"id": "ITEM_X", "title": "Stuck", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["agent_service"] = MagicMock(relay_feedback=AsyncMock(return_value={}))
+    state["github_service"] = MagicMock(move_card=AsyncMock())
+    state["system_error_count"] = 2
+    state["system_error_reason"] = "Transport failure during status check"
+    state["system_error_notified"] = False
+    state["system_error_last_at"] = datetime(2026, 5, 19, 12, 0, 0, tzinfo=UTC)
+
+    await cancel_active_card(state)
+
+    assert state["system_error_count"] == 0
+    assert state["system_error_reason"] is None
+    assert state["system_error_notified"] is False
+    assert state["system_error_last_at"] is None, (
+        "cancel must clear system_error_last_at so the next card's first "
+        "transport bump isn't misread as mid-retry."
+    )

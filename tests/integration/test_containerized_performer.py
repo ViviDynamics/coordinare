@@ -94,7 +94,7 @@ def performer_base_image(docker_available: bool) -> str:
             str(dockerfile),
             "-t",
             IMAGE_TAG,
-            str(REPO_ROOT / "agent" / "performer"),
+            str(REPO_ROOT),
         ],
         capture_output=True,
         timeout=600,

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock
+
 import pytest
 
-from coordinare.services.pr_checks_service import parse_rollup
+from coordinare.services.pr_checks_service import PrChecksService, parse_rollup
 
 
 def _payload(
@@ -175,3 +177,41 @@ def test_naive_pushed_date_promoted_to_utc() -> None:
     payload = _payload(pushed_date="2026-05-16T11:00:00")  # no Z, no offset
     rollup = parse_rollup(payload, pr_number=1)
     assert rollup.head_pushed_at.tzinfo is UTC
+
+
+@pytest.mark.asyncio
+async def test_bpr_forbidden_resets_after_reprobe_interval(monkeypatch) -> None:
+    """After the reprobe interval elapses, the service retries the full query
+    so a token rotated to include admin:read is picked up without restart."""
+    gh = type("GH", (), {})()
+    gh._execute = AsyncMock(side_effect=Exception("FORBIDDEN: branchProtectionRules"))
+    svc = PrChecksService(gh, "o", "r")
+
+    fake_time = {"now": 1000.0}
+    monkeypatch.setattr(
+        "coordinare.services.pr_checks_service.time.monotonic",
+        lambda: fake_time["now"],
+    )
+
+    # First call: full query raises FORBIDDEN, retry on _NO_BPR also raises.
+    with pytest.raises(Exception, match="FORBIDDEN"):
+        await svc.get_pr_check_rollup(1)
+    assert svc._bpr_forbidden is True
+    forbidden_at = svc._bpr_forbidden_at
+
+    # Within the reprobe window — flag stays set.
+    fake_time["now"] = forbidden_at + 60
+    with pytest.raises(Exception, match="FORBIDDEN"):
+        await svc.get_pr_check_rollup(2)
+    assert svc._bpr_forbidden is True
+
+    # Past the reprobe window — flag is cleared so the next call retries the
+    # full query.
+    fake_time["now"] = forbidden_at + PrChecksService._BPR_REPROBE_AFTER_SECONDS + 1
+    with pytest.raises(Exception, match="FORBIDDEN"):
+        await svc.get_pr_check_rollup(3)
+    # It re-flipped back to True on this call because the underlying query
+    # still raises FORBIDDEN, but the reset path was exercised: the flag was
+    # cleared at the top of the call (driving us back to _ROLLUP_QUERY) and
+    # only re-set when the exception handler ran.
+    assert gh._execute.await_count >= 4  # at least one full-query retry post-reset

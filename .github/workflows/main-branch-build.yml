@@ -230,7 +230,7 @@ jobs:
           REGISTRY=$(cat registry)
           VERSION=${{ needs.create-tag.outputs.version }}
 
-          docker build -t "${REGISTRY}-base:${VERSION}" -f agent/performer/Dockerfile.base agent/performer/
+          docker build -t "${REGISTRY}-base:${VERSION}" -f agent/performer/Dockerfile.base .
           docker push "${REGISTRY}-base:${VERSION}"
           echo "Pushed ${REGISTRY}-base:${VERSION}"
 

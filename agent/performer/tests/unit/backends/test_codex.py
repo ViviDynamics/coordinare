@@ -9,7 +9,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import aiohttp
 import pytest
 
-from performer.backends.codex import CodexBackend, _build_task_prompt, _find_free_port
+from performer.backends.codex import (
+    CodexBackend,
+    _build_task_prompt,
+    _find_free_port,
+    _toml_quote,
+    _validate_toml_bare_key,
+)
 from performer.models import BackendEventType, Score, Stand
 
 
@@ -1009,3 +1015,21 @@ class TestBuildTaskPrompt:
         assert "demo_setup_steps" in prompt
         assert "visual_capture_commands" in prompt
         assert "visual_capture_blockers" in prompt
+
+
+class TestTomlQuote:
+    def test_quotes_safe_value(self) -> None:
+        assert _toml_quote("https://api.example/v1") == '"https://api.example/v1"'
+
+    @pytest.mark.parametrize("bad", ['has"quote', "has\\bslash", "has\nnewline", "has\rreturn"])
+    def test_rejects_injection_chars(self, bad: str) -> None:
+        with pytest.raises(ValueError, match="unsafe character"):
+            _toml_quote(bad)
+
+    def test_validate_bare_key_accepts_safe(self) -> None:
+        _validate_toml_bare_key("coordinare_litellm-1")
+
+    @pytest.mark.parametrize("bad", ["with space", "with.dot", "with=eq", "with\"quote", ""])
+    def test_validate_bare_key_rejects_unsafe(self, bad: str) -> None:
+        with pytest.raises(ValueError, match="unsafe codex provider name"):
+            _validate_toml_bare_key(bad)

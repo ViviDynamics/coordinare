@@ -434,6 +434,8 @@ async def test_transport_error_routes_to_system_error() -> None:
     assert result["system_error_count"] == 1
     assert result["system_error_reason"] is not None
     assert "TransportError" in result["system_error_reason"]
+    # 065 Fix 22: upstream exception message is preserved for operator triage.
+    assert "connection refused" in result["system_error_reason"]
     assert result["agent_dispatch"] == {}
     assert result["agent_dispatch_at"] is None
 
@@ -850,10 +852,63 @@ async def test_changes_requested_routes_to_implementer() -> None:
 
 
 @pytest.mark.asyncio
+async def test_changes_requested_with_no_actionable_feedback_blocks() -> None:
+    """065 Fix 4c: when a performer reports changes_requested with neither
+    structured comments nor a prose body, coordinare must NOT re-dispatch the
+    implementer (nothing to relay).  It blocks for operator triage."""
+    state = initial_state()
+    svc = _Performer(response={"status": "changes_requested", "comments": []})
+    state["performer_services"] = {"closing_review": svc}
+    state["performer_stage"] = "closing_review"
+    state["lifecycle_sequence"] = ["implementing", "closing_review"]
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_REVIEW"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "blocked"
+    assert result.get("performer_stage") != "implementing"
+    assert "no actionable feedback" in (result.get("system_error_reason") or "")
+    questions = result.get("open_questions") or []
+    assert any("closing_review" in q for q in questions)
+
+
+@pytest.mark.asyncio
+async def test_changes_requested_with_body_only_relays_body_as_comment() -> None:
+    """065 Fix 4b: when structured comments are empty but a prose body is
+    present, coordinare synthesises a single comment from the body and
+    relays it to the implementer so the rejection is actionable."""
+    state = initial_state()
+    svc = _Performer(response={
+        "status": "changes_requested",
+        "comments": [],
+        "body": "PR scope is too broad — split into two PRs.",
+    })
+    state["performer_services"] = {"closing_review": svc}
+    state["performer_stage"] = "closing_review"
+    state["lifecycle_sequence"] = ["implementing", "closing_review"]
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_REVIEW"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+
+    result = await monitor_performer(state)
+
+    assert result["performer_stage"] == "implementing"
+    assert result["phase"] == "dispatching"
+    relay = result.get("relay_feedback") or []
+    assert len(relay) == 1
+    assert relay[0]["body"] == "PR scope is too broad — split into two PRs."
+    assert relay[0]["author_login"] == "coordinare"
+
+
+@pytest.mark.asyncio
 async def test_changes_requested_does_not_advance_lifecycle() -> None:
     """changes_requested does NOT advance to the next role — it routes back."""
     state = initial_state()
-    svc = _Performer(response={"status": "changes_requested", "comments": []})
+    svc = _Performer(response={
+        "status": "changes_requested",
+        "comments": [],
+        "body": "Fix the thing.",
+    })
     state["performer_services"] = {"reviewing": svc}
     state["performer_stage"] = "reviewing"
     state["lifecycle_sequence"] = ["implementing", "reviewing", "security"]
@@ -929,7 +984,11 @@ async def test_feedback_cycle_zero_disables_bound() -> None:
     from types import SimpleNamespace
 
     state = initial_state()
-    svc = _Performer(response={"status": "changes_requested", "comments": []})
+    svc = _Performer(response={
+        "status": "changes_requested",
+        "comments": [],
+        "body": "Fix the thing.",
+    })
     state["performer_services"] = {"reviewing": svc}
     state["performer_stage"] = "reviewing"
     state["lifecycle_sequence"] = ["implementing", "reviewing"]

@@ -7,14 +7,13 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-
-from coordinare.services.service_inference import (
+from coordinare_service_inference import (
     REJECTED_FILENAME,
     InferenceFailed,
     infer_services,
 )
-from coordinare.services.service_inference.agent import LLMStep
-from coordinare.services.service_inference.validator import ValidationResult
+from coordinare_service_inference.agent import LLMStep
+from coordinare_service_inference.validator import ValidationResult
 
 
 @pytest.fixture()
@@ -74,7 +73,7 @@ async def test_success_on_first_attempt_writes_artifacts(
     project: Path, output_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
-        "coordinare.services.service_inference.validate",
+        "coordinare_service_inference.validate",
         lambda scripts, **_: ValidationResult(
             phase=None, stdout="ok", stderr="", ok=True, returncode=0
         ),
@@ -121,7 +120,7 @@ async def test_validation_failure_then_success_uses_hint(
         ]
     )
     monkeypatch.setattr(
-        "coordinare.services.service_inference.validate",
+        "coordinare_service_inference.validate",
         lambda scripts, **_: next(results),
     )
     client = _StubClient(
@@ -148,7 +147,7 @@ async def test_budget_exhaustion_writes_rejected_and_raises(
     project: Path, output_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
-        "coordinare.services.service_inference.validate",
+        "coordinare_service_inference.validate",
         lambda scripts, **_: ValidationResult(
             phase="start", stdout="", stderr="boom", ok=False, returncode=42
         ),
@@ -182,7 +181,7 @@ async def test_agent_error_counted_as_attempt(
 ) -> None:
     """A schema-invalid manifest from the LLM consumes one retry."""
     monkeypatch.setattr(
-        "coordinare.services.service_inference.validate",
+        "coordinare_service_inference.validate",
         lambda scripts, **_: ValidationResult(
             phase=None, stdout="ok", stderr="", ok=True, returncode=0
         ),
@@ -247,7 +246,7 @@ async def test_stale_rejected_file_removed_on_success(
     stale.write_text("{}")
 
     monkeypatch.setattr(
-        "coordinare.services.service_inference.validate",
+        "coordinare_service_inference.validate",
         lambda scripts, **_: ValidationResult(
             phase=None, stdout="ok", stderr="", ok=True, returncode=0
         ),

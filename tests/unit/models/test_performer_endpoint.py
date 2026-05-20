@@ -190,3 +190,32 @@ class TestJobStatusProgressValidator:
             progress_pct=None,
         )
         assert s.progress_pct is None
+
+    def test_progress_pct_in_range_accepted(self) -> None:
+        from coordinare.models.performer_endpoint import JobStatus
+
+        s = JobStatus(
+            job_id="j1",
+            state="running",
+            started_at="2026-01-01T00:00:00Z",
+            progress_pct=42,
+        )
+        assert s.progress_pct == 42
+
+
+class TestPositiveDefaultsAccepted:
+    def test_readiness_timeout_positive_accepted(self) -> None:
+        cfg = PerformerEndpointConfig(**_base(readiness_timeout_s=30))
+        assert cfg.readiness_timeout_s == 30
+
+    def test_failure_threshold_positive_accepted(self) -> None:
+        cfg = PerformerEndpointConfig(**_base(failure_threshold=5))
+        assert cfg.failure_threshold == 5
+
+    def test_subprocess_rejects_env(self) -> None:
+        with pytest.raises(ValidationError, match="subprocess performers must not"):
+            PerformerEndpointConfig(**_base(env={"FOO": "bar"}))
+
+    def test_subprocess_rejects_container_devenv_root(self) -> None:
+        with pytest.raises(ValidationError, match="subprocess performers must not"):
+            PerformerEndpointConfig(**_base(container_devenv_root="/other"))

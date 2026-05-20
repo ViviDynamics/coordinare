@@ -97,6 +97,44 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
             state["phase"] = "idle"
             return state
 
+    # 065 Fix 8 — Re-gate PR checks while the card sits in IN_REVIEW so a new
+    # HEAD push that turns CI red does not silently page a human reviewer.
+    # On BOUNCE we move the card back to IN_PROGRESS and the gate's update
+    # already sets phase=dispatching + performer_stage=implementing with a
+    # relay_feedback payload naming the failed check(s), which the implementer
+    # picks up on its next dispatch.  HOLD keeps us in monitoring_pr (the gate
+    # natively returns monitoring_performer; we override that here).
+    pr_url = str(card.get("pr_url") or "")
+    card_id = str(card.get("id") or "")
+    if pr_url and card_id:
+        from coordinare.graph.nodes.monitor_performer import _evaluate_pr_checks_gate
+
+        gate_updates, gate_stop = await _evaluate_pr_checks_gate(
+            state, card_id, pr_url
+        )
+        if gate_stop:
+            is_bounce = gate_updates.get("phase") == "dispatching"
+            for key, value in gate_updates.items():
+                state[key] = value  # type: ignore[literal-required]
+            if is_bounce:
+                logger.warning(
+                    "monitor_pr.checks_gate_bounce",
+                    card_id=card_id,
+                    pr_url=pr_url,
+                )
+                with contextlib.suppress(Exception):
+                    await github.move_card(card_id, "IN_PROGRESS")
+                card["status"] = "IN_PROGRESS"
+                state["current_card"] = card
+            else:
+                # HOLD — gate returned monitoring_performer; we are in the PR
+                # phase, so stay there and poll again next tick.
+                state["phase"] = "monitoring_pr"
+            return state
+        # FORWARD or gate disabled — apply any cache updates and continue.
+        for key, value in gate_updates.items():
+            state[key] = value  # type: ignore[literal-required]
+
     try:
         ready, retry_in = github_operation_ready(state, "monitor_pr")
         if not ready:

@@ -83,7 +83,7 @@ async def test_dockerfile_slim_advertises_correct_backend(
 
     try:
         run_result = subprocess.run(
-            ["docker", "run", "-d", "-p", "0:8088", tag],
+            ["docker", "run", "-d", "--rm", "-p", "0:8088", tag],
             capture_output=True,
             timeout=10,
             text=True,
@@ -122,7 +122,7 @@ async def test_dockerfile_slim_advertises_correct_backend(
     finally:
         if container_id:
             subprocess.run(
-                ["docker", "stop", "-t", "2", container_id],
+                ["docker", "rm", "-f", container_id],
                 capture_output=True,
                 timeout=10,
             )
@@ -164,7 +164,7 @@ async def test_dockerfile_slim_browser_toggle(
 
     try:
         run_result = subprocess.run(
-            ["docker", "run", "-d", "-p", "0:8088", tag],
+            ["docker", "run", "-d", "--rm", "-p", "0:8088", tag],
             capture_output=True,
             timeout=10,
             text=True,
@@ -187,7 +187,10 @@ async def test_dockerfile_slim_browser_toggle(
 
         port = port_result.stdout.strip().split("\n")[0].split(":")[-1]
 
-        status_data = await wait_for_status(port)
+        # Slim+browser is heavier than plain slim (Playwright + chromium), so
+        # first-boot can exceed the 90s default. Observed flake during the 065
+        # Fix 13 bin/build run; 180s gives margin without slowing the suite.
+        status_data = await wait_for_status(port, timeout=180.0)
         tool_flags = status_data.get("capabilities", {}).get("tool_flags", [])
 
         assert "browser" in tool_flags, f"browser flag missing in {tool_flags}"
@@ -195,7 +198,7 @@ async def test_dockerfile_slim_browser_toggle(
     finally:
         if container_id:
             subprocess.run(
-                ["docker", "stop", "-t", "2", container_id],
+                ["docker", "rm", "-f", container_id],
                 capture_output=True,
                 timeout=10,
             )

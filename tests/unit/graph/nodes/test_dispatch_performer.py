@@ -732,7 +732,8 @@ async def test_missing_performer_stage_sets_idle() -> None:
 
 @pytest.mark.asyncio
 async def test_success_resets_system_error_fields() -> None:
-    """On successful dispatch, system_error_count and related fields reset."""
+    """On successful dispatch from a fresh pickup (or after a prior card's
+    budget was already exhausted), system_error_count and related fields reset."""
     svc = _Service()
 
     state = _base_state(
@@ -751,6 +752,37 @@ async def test_success_resets_system_error_fields() -> None:
     assert result["system_error_last_at"] is None
     assert result["system_error_notified"] is False
     assert result["system_error_reason"] is None
+
+
+@pytest.mark.asyncio
+async def test_success_preserves_system_error_count_mid_retry() -> None:
+    """065 Fix 18: when handle_system_error re-dispatches the same card+stage
+    (system_error_last_at is set, notified is False), a successful dispatch must
+    NOT zero the retry counter. Otherwise repeated post-dispatch failures
+    (e.g. backend returning empty output) loop forever at attempt=1 instead of
+    escalating to BLOCKED after _MAX_RETRIES.
+    """
+    from datetime import UTC, datetime
+
+    svc = _Service()
+    prior_last_at = datetime.now(UTC)
+    state = _base_state(
+        performer_services={"reviewing": svc},
+        performer_stage="reviewing",
+        lifecycle_sequence=["implementing", "reviewing"],
+        system_error_count=2,
+        system_error_reason="BACKEND_FORMAT_ERROR: review output was empty",
+        system_error_last_at=prior_last_at,
+        system_error_notified=False,
+    )
+
+    result = await dispatch_performer(state)
+
+    assert result["phase"] == "monitoring_performer"
+    assert result["system_error_count"] == 2
+    assert result["system_error_reason"] == "BACKEND_FORMAT_ERROR: review output was empty"
+    assert result["system_error_last_at"] == prior_last_at
+    assert result["system_error_notified"] is False
 
 
 # ---------------------------------------------------------------------------

@@ -296,8 +296,12 @@ def _feedback_cycle_exhausted(
         return None  # 0 disables the bound
     current = int(state.get("feedback_cycle_count") or 0) + 1
     state["feedback_cycle_count"] = current  # type: ignore[typeddict-unknown-key]
+    # 065 US4 — monotonic lifetime counter; never resets on un-block.
+    state["total_feedback_cycles"] = int(state.get("total_feedback_cycles") or 0) + 1  # type: ignore[typeddict-unknown-key]
     if current <= max_cycles:
         return None
+    # 065 US4 — exhaustion path: bump triage_blocks (monotonic).
+    state["triage_blocks"] = int(state.get("triage_blocks") or 0) + 1  # type: ignore[typeddict-unknown-key]
     logger.warning(
         "monitor_performer.feedback_cycle_exhausted",
         card_id=card_id,
@@ -450,11 +454,16 @@ def _advance_stage(state: CoordinareState, status: dict[str, Any] | None = None)
                     )
                     if proc.returncode != 0:
                         lint_output = ((proc.stderr or b"") + (proc.stdout or b"")).decode("utf-8", errors="replace")[:2000]
+                        # 065 US5 FR-021 — structured ci-failed log with the
+                        # full {card_id, performer_stage, ci_command,
+                        # exit_code, output_excerpt} field set.
                         logger.warning(
-                            "ci_gate.lint_failed",
-                            command=ci_result.lint_command,
+                            "performer.ci_failed",
+                            card_id=str((state.get("current_card") or {}).get("id", "")),
+                            performer_stage=str(state.get("performer_stage", "")),
+                            ci_command=ci_result.lint_command,
                             exit_code=proc.returncode,
-                            output_preview=lint_output[:200],
+                            output_excerpt=lint_output[:500],
                         )
                         return {
                             "performer_stage": "implementing",
@@ -464,7 +473,7 @@ def _advance_stage(state: CoordinareState, status: dict[str, Any] | None = None)
                             "current_card": card,
                             "relay_feedback": [{"body": f"CI lint gate failed:\n```\n{lint_output}\n```", "author_login": "coordinare"}],
                         }
-                    logger.info("ci_gate.lint_passed", command=ci_result.lint_command)
+                    logger.info("performer.ci_passed", ci_command=ci_result.lint_command)
                 except (subprocess.TimeoutExpired, OSError) as exc:
                     logger.warning("ci_gate.lint_error", command=ci_result.lint_command, error=str(exc))
                     # Don't block on gate execution errors — proceed to monitoring_pr
@@ -926,7 +935,7 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
             state["system_error_count"] = state.get("system_error_count", 0) + 1
             state["system_error_last_at"] = datetime.now(UTC)
             state["system_error_reason"] = (
-                f"Transport failure during status check: {type(exc).__name__}"
+                f"Transport failure during status check: {type(exc).__name__}: {exc}"
             )
             state["agent_dispatch"] = {}
             state["agent_dispatch_at"] = None
@@ -935,6 +944,22 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
             _sm = state.get("slot_manager")
             if _sm is not None and hasattr(_sm, "release"):
                 _sm.release(stage, card_id)
+            # 065: belt-and-suspenders — if the service still tracks an ephemeral
+            # container for this session, tear it down here in case check_status
+            # raised before its own cleanup ran. Safe no-op if already cleaned.
+            _cleanup = getattr(service, "_cleanup_ephemeral_job_by_id", None)
+            if _cleanup is not None and session_id:
+                try:
+                    await _cleanup(str(session_id))
+                except Exception as cleanup_exc:
+                    logger.warning(
+                        "monitor_performer.transport_error.cleanup_failed",
+                        card_id=card_id,
+                        performer_stage=stage,
+                        session_id=str(session_id),
+                        exc_type=type(cleanup_exc).__name__,
+                        error=str(cleanup_exc),
+                    )
             return state
         except PermanentGitHubError as exc:
             logger.error(
@@ -1241,12 +1266,43 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
         if marker == "changes_requested":
             raw_comments = status.get("comments", [])
             comments = raw_comments if isinstance(raw_comments, list) else []
+            raw_body = status.get("body")
+            body = raw_body.strip() if isinstance(raw_body, str) else ""
             logger.info(
                 "monitor_performer.changes_requested",
                 performer_stage=stage,
                 card_id=card_id,
                 comment_count=len(comments),
+                has_body=bool(body),
             )
+            # 065 Fix 4c: safety net — if performer reported changes_requested
+            # but supplied neither structured comments nor a prose body, the
+            # implementer would have no information to act on. Block the card
+            # for operator triage instead of looping.
+            if not comments and not body:
+                logger.warning(
+                    "monitor_performer.changes_requested_no_actionable_feedback",
+                    performer_stage=stage,
+                    card_id=card_id,
+                )
+                state["phase"] = "blocked"
+                state["system_error_reason"] = (
+                    f"performer reported changes_requested with no actionable "
+                    f"feedback (stage={stage})"
+                )
+                state["open_questions"] = [
+                    f"The `{stage}` performer rejected this card "
+                    f"(`status=changes_requested`) but returned no structured "
+                    f"comments and no prose body. Nothing to relay to the "
+                    f"implementer. Operator triage required."
+                ]
+                state["agent_dispatch"] = {}
+                state["agent_dispatch_at"] = None
+                return state
+            # 065 Fix 4b: synthesise a comment from the prose body when the
+            # performer rejected with explanation but no structured comments.
+            if not comments and body:
+                comments = [{"body": body, "author_login": "coordinare"}]
             exhausted = _feedback_cycle_exhausted(state, card_id, stage, "changes_requested", comments)
             if exhausted is not None:
                 return exhausted

@@ -142,6 +142,52 @@ def test_branch_name_spaces_and_caps() -> None:
 
 
 @pytest.mark.asyncio
+async def test_prepare_raises_when_no_token_available(tmp_path: Path) -> None:
+    """No auth protocol and no github_token → WorkspaceSetupError before any git op."""
+    cfg = _make_config(workspace_root=tmp_path)
+    cfg.github_token = None
+    mgr = WorkspaceManager(cfg)
+    mgr._auth = None
+    mgr._github_token = None
+
+    with pytest.raises(WorkspaceSetupError, match="No GitHub token available"):
+        await mgr.prepare({"id": "CARD_X", "title": "no token"})
+
+
+@pytest.mark.asyncio
+async def test_prepare_uses_auth_protocol_when_configured(tmp_path: Path) -> None:
+    """When _auth is set, prepare() pulls the token via _auth.get_token() (line 277)."""
+
+    async def _fake_run_git(*args: str, **kwargs: object) -> None:
+        if args[0] == "clone":
+            Path(args[3]).mkdir(parents=True, exist_ok=True)
+
+    cfg = _make_config(workspace_root=tmp_path)
+    mgr = WorkspaceManager(cfg)
+    auth = MagicMock()
+    auth.get_token = AsyncMock(return_value="app-token-xyz")
+    mgr._auth = auth
+
+    with patch("coordinare.workspace._run_git", side_effect=_fake_run_git):
+        info = await mgr.prepare({"id": "CARD_Y", "title": "auth path"})
+
+    auth.get_token.assert_awaited()
+    assert "app-token-xyz" not in info.repo_url
+
+
+@pytest.mark.asyncio
+async def test_get_token_async_returns_none_when_no_source(tmp_path: Path) -> None:
+    """get_token_async() returns None when neither _auth nor _github_token is set (line 240)."""
+    cfg = _make_config(workspace_root=tmp_path)
+    cfg.github_token = None
+    mgr = WorkspaceManager(cfg)
+    mgr._auth = None
+    mgr._github_token = None
+
+    assert await mgr.get_fresh_github_token() is None
+
+
+@pytest.mark.asyncio
 async def test_prepare_calls_git_in_order(tmp_path: Path) -> None:
     """prepare() calls git ops in order: clone -> config x2 -> remote set-url -> checkout -b."""
     calls: list[tuple[str, ...]] = []

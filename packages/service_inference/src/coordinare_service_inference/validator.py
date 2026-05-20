@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
-    from coordinare.services.service_inference.templater import RenderedScripts
+    from coordinare_service_inference.templater import RenderedScripts
 
 ValidationPhase = Literal["start", "health", "stop"]
 

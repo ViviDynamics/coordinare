@@ -29,8 +29,7 @@ from pathlib import Path
 from textwrap import dedent
 
 import pytest
-
-from coordinare.services.service_inference.manual_override import apply_manual_override
+from coordinare_service_inference.manual_override import apply_manual_override
 
 _REQUIRED_BINARIES = ("postgres", "initdb", "psql")
 

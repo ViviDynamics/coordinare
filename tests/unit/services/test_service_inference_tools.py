@@ -6,8 +6,7 @@ import os
 from pathlib import Path
 
 import pytest
-
-from coordinare.services.service_inference.tools import SandboxViolation, ToolSandbox
+from coordinare_service_inference.tools import SandboxViolation, ToolSandbox
 
 
 @pytest.fixture()

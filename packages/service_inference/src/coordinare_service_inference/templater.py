@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 if TYPE_CHECKING:
-    from coordinare.services.service_inference.schema import ServicesManifest
+    from coordinare_service_inference.schema import ServicesManifest
 
 _REPO_ROOT = Path(__file__).resolve().parents[4]
 TEMPLATES_DIR = _REPO_ROOT / "agent" / "performer" / "services-templates"

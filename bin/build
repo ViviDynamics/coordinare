@@ -95,7 +95,7 @@ fi
 if [[ $RUN_DOCKER -eq 1 ]]; then
   run "Docker: build base image" \
     docker build -t coordinare-performer:base \
-      -f agent/performer/Dockerfile.base agent/performer/
+      -f agent/performer/Dockerfile.base .
 
   run "Docker: build full image" \
     docker build -t coordinare-performer:full \

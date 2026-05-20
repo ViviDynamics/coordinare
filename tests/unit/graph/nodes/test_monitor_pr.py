@@ -542,3 +542,141 @@ async def test_monitor_pr_cutoff_filters_old_reviews() -> None:
     result = await monitor_pr(state)
     # Old approval filtered out — no merge
     assert result["phase"] != "merging"
+
+
+# ---------------------------------------------------------------------------
+# 065 Fix 8 — Re-gate PR checks while in monitoring_pr.
+# ---------------------------------------------------------------------------
+
+
+def _fix8_rollup_payload(*, contexts: list[dict], bpr_nodes: list[dict]) -> dict:
+    from datetime import UTC, datetime
+
+    pushed = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    return {
+        "repository": {
+            "pullRequest": {
+                "number": 42,
+                "baseRefName": "main",
+                "headRefOid": "deadbeef",
+                "commits": {
+                    "nodes": [
+                        {
+                            "commit": {
+                                "oid": "deadbeef",
+                                "pushedDate": pushed,
+                                "statusCheckRollup": {
+                                    "state": "PENDING",
+                                    "contexts": {"nodes": contexts},
+                                },
+                            }
+                        }
+                    ]
+                },
+            },
+            "branchProtectionRules": {"nodes": bpr_nodes},
+        }
+    }
+
+
+class _FixGitHub:
+    """Mock github service for Fix 8 — supports gate query + reviews + move_card."""
+
+    def __init__(self, rollup_payload: dict, reviews: list[dict] | None = None) -> None:
+        self._payload = rollup_payload
+        self._reviews = reviews or []
+        self.move_calls: list[tuple[str, str]] = []
+
+    async def move_card(self, item_id: str, status: str) -> None:
+        self.move_calls.append((item_id, status))
+
+    async def _execute(self, query: str, variables: dict) -> dict:
+        return self._payload
+
+    async def get_pr_reviews(self, pr_id: str):
+        return self._reviews
+
+
+def _fix8_state_with_gate(github: object, *, reviews_present: bool = False) -> dict:
+    from coordinare.config import CloserPrChecksConfig
+
+    state = initial_state()
+    state["current_card"] = {
+        "id": "ITEM_42",
+        "pr_node_id": "PR_NODE_42",
+        "pr_url": "https://github.com/org/repo/pull/42",
+        "status": "IN_REVIEW",
+    }
+    state["github_service"] = github
+    state["human_reviewers"] = ["alice"]
+
+    class _Sym:
+        closer_pr_checks = CloserPrChecksConfig()
+
+    state["current_symphony"] = "default"
+    state["symphony_configs"] = {"default": _Sym()}
+    return state
+
+
+@pytest.mark.asyncio
+async def test_monitor_pr_fix8_bounces_to_implementer_on_failed_checks() -> None:
+    """A red required check during IN_REVIEW bounces back to implementer
+    instead of waiting for a human to review.
+    """
+    payload = _fix8_rollup_payload(
+        contexts=[
+            {"__typename": "CheckRun", "name": "ci/test", "status": "COMPLETED", "conclusion": "FAILURE"},
+        ],
+        bpr_nodes=[{"pattern": "main", "requiredStatusChecks": [{"context": "ci/test"}]}],
+    )
+    gh = _FixGitHub(payload, reviews=[{"author_login": "alice", "state": "APPROVED"}])
+    state = _fix8_state_with_gate(gh)
+
+    result = await monitor_pr(state)
+
+    assert result["phase"] == "dispatching"
+    assert result["performer_stage"] == "implementing"
+    relay = result.get("relay_feedback") or []
+    assert relay and "ci/test" in relay[0]["body"]
+    # Card moved back to IN_PROGRESS on the board
+    assert ("ITEM_42", "IN_PROGRESS") in gh.move_calls
+    assert result["current_card"]["status"] == "IN_PROGRESS"
+
+
+@pytest.mark.asyncio
+async def test_monitor_pr_fix8_holds_when_required_checks_pending() -> None:
+    """A pending required check during IN_REVIEW keeps the card in
+    monitoring_pr (NOT monitoring_performer, which is the gate's native HOLD).
+    """
+    payload = _fix8_rollup_payload(
+        contexts=[
+            {"__typename": "CheckRun", "name": "ci/test", "status": "IN_PROGRESS", "conclusion": None},
+        ],
+        bpr_nodes=[{"pattern": "main", "requiredStatusChecks": [{"context": "ci/test"}]}],
+    )
+    gh = _FixGitHub(payload)
+    state = _fix8_state_with_gate(gh)
+
+    result = await monitor_pr(state)
+
+    assert result["phase"] == "monitoring_pr"
+    assert gh.move_calls == []
+
+
+@pytest.mark.asyncio
+async def test_monitor_pr_fix8_forwards_to_reviews_when_checks_pass() -> None:
+    """Green required checks let the normal review-polling path run."""
+    payload = _fix8_rollup_payload(
+        contexts=[
+            {"__typename": "CheckRun", "name": "ci/test", "status": "COMPLETED", "conclusion": "SUCCESS"},
+        ],
+        bpr_nodes=[{"pattern": "main", "requiredStatusChecks": [{"context": "ci/test"}]}],
+    )
+    gh = _FixGitHub(payload, reviews=[{"author_login": "alice", "state": "APPROVED"}])
+    state = _fix8_state_with_gate(gh)
+
+    result = await monitor_pr(state)
+
+    # FORWARD → reviews evaluated → human approval routes to merging
+    assert result["phase"] == "merging"
+    assert gh.move_calls == []

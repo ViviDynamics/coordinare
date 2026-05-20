@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import pytest
-
-from coordinare.services.service_inference.prompt import (
+from coordinare_service_inference.prompt import (
     SYSTEM_PROMPT_TEMPLATE,
     render_system_prompt,
 )

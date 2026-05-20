@@ -737,6 +737,230 @@ async def test_check_board_readopts_dirty_in_progress_card_resets_context() -> N
     assert result["blocked_by_dependencies"] == []
 
 
+class _GitHubInProgressWithTodos:
+    async def poll_board(self):
+        return {
+            "snapshot": {
+                "IN_PROGRESS": ["ITEM_P1"],
+                "TODO": ["ITEM_T1", "ITEM_T2"],
+                "IN_REVIEW": [],
+                "BLOCKED": [],
+            },
+            "titles": {
+                "ITEM_P1": "Already In Progress",
+                "ITEM_T1": "Fresh TODO 1",
+                "ITEM_T2": "Fresh TODO 2",
+            },
+            "descriptions": {"ITEM_P1": "", "ITEM_T1": "", "ITEM_T2": ""},
+            "issue_numbers": {"ITEM_P1": 200, "ITEM_T1": 201, "ITEM_T2": 202},
+            "issue_urls": {},
+            "content_node_ids": {},
+        }
+
+
+@pytest.mark.asyncio
+async def test_check_board_multicard_readopts_in_progress_and_picks_up_todos() -> None:
+    """065 US2 regression: in multi-card mode, an IN_PROGRESS card must NOT
+    short-circuit the function — it should be re-adopted into
+    ``active_sessions`` (phase=monitoring_agent) AND the function must fall
+    through to TODO pickup so the remaining concurrency slots fill in the
+    same cycle.  Without the fall-through, a single IN_PROGRESS card
+    silently serialises work to one card at a time even when
+    ``max_concurrent_cards > 1``.
+    """
+    state = initial_state()
+    state["github_service"] = _GitHubInProgressWithTodos()
+    state["config"] = SimpleNamespace(
+        github_org="acme",
+        project_name="repo",
+        max_concurrent_cards=3,
+        priority=SimpleNamespace(field_name="", priority_order=[]),
+        github_api_url="",
+        assignee_filter=None,
+    )
+    state["active_sessions"] = {}
+
+    result = await check_board(state)
+
+    sessions = result.get("active_sessions") or {}
+    assert "ITEM_P1" in sessions, (
+        "IN_PROGRESS card must be re-adopted into active_sessions"
+    )
+    assert sessions["ITEM_P1"]["phase"] == "monitoring_agent"
+    assert sessions["ITEM_P1"]["current_card"]["status"] == "IN_PROGRESS"
+    assert "ITEM_T1" in sessions, "First TODO must be picked up in same cycle"
+    assert "ITEM_T2" in sessions, "Second TODO must be picked up in same cycle"
+    assert sessions["ITEM_T1"]["phase"] == "dispatching"
+    assert sessions["ITEM_T2"]["phase"] == "dispatching"
+    assert len(sessions) == 3, (
+        f"Expected 3 sessions filling cap=3, got {len(sessions)}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_check_board_multicard_per_session_in_progress_preserves_monitoring_agent() -> None:
+    """065 US2: a per-session invocation whose current_card is itself
+    IN_PROGRESS must preserve phase=monitoring_agent (not fall through to
+    TODO pickup and clobber its current_card)."""
+    state = initial_state()
+    state["github_service"] = _GitHubInProgressWithTodos()
+    state["config"] = SimpleNamespace(
+        github_org="acme",
+        project_name="repo",
+        max_concurrent_cards=3,
+        priority=SimpleNamespace(field_name="", priority_order=[]),
+        github_api_url="",
+        assignee_filter=None,
+    )
+    state["active_sessions"] = {
+        "ITEM_P1": {
+            "current_card": {
+                "id": "ITEM_P1",
+                "issue_number": 200,
+                "title": "Already In Progress",
+                "status": "IN_PROGRESS",
+            },
+            "phase": "monitoring_agent",
+        }
+    }
+    state["current_card"] = {
+        "id": "ITEM_P1",
+        "issue_number": 200,
+        "title": "Already In Progress",
+        "status": "IN_PROGRESS",
+    }
+
+    result = await check_board(state)
+
+    assert result["phase"] == "monitoring_agent"
+    assert result["current_card"]["id"] == "ITEM_P1"
+
+
+@pytest.mark.asyncio
+async def test_check_board_in_progress_readopt_preserves_snapshot_stage_v1() -> None:
+    """065 Fix 7a: when a v1 snapshot restored top-level performer_stage and
+    current_card.id matches the IN_PROGRESS card being re-adopted, the
+    re-adopt path must override the default ``implementing`` stage from
+    create_session_from_card with the snapshot stage."""
+    state = initial_state()
+    state["github_service"] = _GitHubInProgressWithTodos()
+    state["config"] = SimpleNamespace(
+        github_org="acme",
+        project_name="repo",
+        max_concurrent_cards=3,
+        priority=SimpleNamespace(field_name="", priority_order=[]),
+        github_api_url="",
+        assignee_filter=None,
+    )
+    # v1 snapshot restored: current_card + top-level performer_stage, no active_sessions
+    state["active_sessions"] = {}
+    state["current_card"] = {"id": "ITEM_P1"}
+    state["performer_stage"] = "closing_review"
+
+    result = await check_board(state)
+
+    sessions = result.get("active_sessions") or {}
+    assert "ITEM_P1" in sessions
+    assert sessions["ITEM_P1"]["performer_stage"] == "closing_review", (
+        "Snapshot-restored stage must survive re-adopt instead of being clobbered "
+        "to 'implementing' by create_session_from_card."
+    )
+
+
+@pytest.mark.asyncio
+async def test_check_board_in_progress_readopt_uses_persisted_session_stage() -> None:
+    """065 Fix 7b: when active_sessions already has the card with a
+    persisted performer_stage, prefer it (even if the card_id doesn't match
+    current_card)."""
+    state = initial_state()
+    state["github_service"] = _GitHubInProgressWithTodos()
+    state["config"] = SimpleNamespace(
+        github_org="acme",
+        project_name="repo",
+        max_concurrent_cards=3,
+        priority=SimpleNamespace(field_name="", priority_order=[]),
+        github_api_url="",
+        assignee_filter=None,
+    )
+    # v2 snapshot restored: active_sessions stubs carrying performer_stage
+    state["active_sessions"] = {
+        "ITEM_P1": {"id": "ITEM_P1", "performer_stage": "reviewing"},
+    }
+
+    result = await check_board(state)
+
+    sessions = result.get("active_sessions") or {}
+    assert sessions["ITEM_P1"]["performer_stage"] == "reviewing"
+
+
+@pytest.mark.asyncio
+async def test_check_board_singlecard_in_progress_still_short_circuits() -> None:
+    """065 US2: single-card mode must keep the original behaviour — an
+    IN_PROGRESS card does NOT fall through to TODO pickup."""
+    state = initial_state()
+    state["github_service"] = _GitHubInProgressWithTodos()
+    # No config / max_concurrent_cards defaults to 1.
+
+    result = await check_board(state)
+
+    # Single-card: re-adopt the IN_PROGRESS card and dispatch — TODO cards
+    # are NOT picked up in the same cycle.
+    assert result["current_card"]["id"] == "ITEM_P1"
+    assert not (result.get("active_sessions") or {})
+
+
+@pytest.mark.asyncio
+async def test_check_board_multicard_per_session_monitoring_performer_falls_through_to_todo_pickup() -> None:
+    """065 Fix 5 regression: in multi-card steady state, a per-session
+    invocation arrives with ``phase="monitoring_performer"`` and a
+    ``current_card`` pointing at its IN_PROGRESS card.  The phase-preservation
+    guard at the top of the in_progress branch previously short-circuited
+    here, so the 035 multi-card TODO pickup was never reached and the daemon
+    silently serialised work to one card at a time.  The primary in-flight
+    session must fall through to TODO pickup when open concurrency slots
+    remain, while preserving its own phase/current_card.
+    """
+    state = initial_state()
+    state["github_service"] = _GitHubInProgressWithTodos()
+    state["config"] = SimpleNamespace(
+        github_org="acme",
+        project_name="repo",
+        max_concurrent_cards=3,
+        priority=SimpleNamespace(field_name="", priority_order=[]),
+        github_api_url="",
+        assignee_filter=None,
+    )
+    # Steady-state per-session invocation: monitoring_performer carried in
+    # via session_to_state, current_card is the IN_PROGRESS card, the session
+    # already lives in active_sessions consuming one slot.
+    state["phase"] = "monitoring_performer"
+    state["current_card"] = {
+        "id": "ITEM_P1",
+        "issue_number": 200,
+        "title": "Already In Progress",
+        "status": "IN_PROGRESS",
+    }
+    state["active_sessions"] = {
+        "ITEM_P1": {
+            "current_card": dict(state["current_card"]),
+            "phase": "monitoring_performer",
+        }
+    }
+
+    result = await check_board(state)
+
+    # The owning session preserves its own state…
+    assert result["phase"] == "monitoring_performer", (
+        "phase must NOT be downgraded from monitoring_performer"
+    )
+    assert result["current_card"]["id"] == "ITEM_P1"
+    # …AND the per-cycle invocation must have filled the two open slots.
+    sessions = result.get("active_sessions") or {}
+    assert "ITEM_T1" in sessions, "first TODO should fill the second slot"
+    assert "ITEM_T2" in sessions, "second TODO should fill the third slot"
+    assert sessions["ITEM_P1"]["phase"] == "monitoring_performer"
+
+
 @pytest.mark.asyncio
 async def test_check_board_routes_to_monitoring_agent_for_in_progress_with_card() -> None:
     """When current_card is set and card is IN_PROGRESS, monitor it."""
@@ -1011,15 +1235,42 @@ async def test_check_board_skips_poll_until_deferred_retry_is_due() -> None:
 
 @pytest.mark.asyncio
 async def test_check_board_system_error_when_in_progress_with_error_count() -> None:
-    """Tracked in-progress card + system_error_count > 0 → phase='system_error'."""
+    """Tracked in-progress card with live phase=system_error stays in system_error."""
+    # 065 Fix 21: the check_board guard now ALSO requires phase=="system_error"
+    # so it can't hijack monitoring_performer mid-retry (when Fix 18 preserves
+    # system_error_count across a successful re-dispatch).  The realistic
+    # invariant — error setters always pair count>0 with phase=system_error —
+    # is preserved here by setting both.
     state = initial_state()
     state["github_service"] = _GitHubInProgress()
     state["current_card"] = {"id": "ITEM_P", "status": "IN_PROGRESS"}
     state["system_error_count"] = 1
+    state["phase"] = "system_error"
 
     result = await check_board(state)
 
     assert result["phase"] == "system_error"
+
+
+@pytest.mark.asyncio
+async def test_check_board_does_not_hijack_monitoring_mid_retry() -> None:
+    """065 Fix 21: count>0 + phase=monitoring_performer must NOT be coerced to system_error.
+
+    Reproduces the retry-loop / container-leak bug: after a successful retry
+    re-dispatch, Fix 18 preserves system_error_count=1 while dispatch_performer
+    sets phase=monitoring_performer.  The old guard rewrote that back to
+    system_error every cycle, so monitor_performer never ran and each retry
+    iteration leaked a fresh ephemeral container.
+    """
+    state = initial_state()
+    state["github_service"] = _GitHubInProgress()
+    state["current_card"] = {"id": "ITEM_P", "status": "IN_PROGRESS"}
+    state["system_error_count"] = 1
+    state["phase"] = "monitoring_performer"
+
+    result = await check_board(state)
+
+    assert result["phase"] == "monitoring_performer"
 
 
 @pytest.mark.asyncio
@@ -1684,3 +1935,328 @@ async def test_check_board_rebase_exception_does_not_abort_cycle() -> None:
     assert result.get("last_known_main_sha") == "new-sha-bbb"
     # run_rebase_round must have been attempted (session is now detectable as stale)
     mock_rebase.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# 065 Fix 16 — multi-card un-block feedback reset
+# ---------------------------------------------------------------------------
+
+
+class _GitHubUnblockedNowTodo:
+    """Board state: a card previously BLOCKED is now in TODO (operator moved
+    it back).  The coordinare still holds an ``active_sessions`` entry for it
+    with ``current_card.status='BLOCKED'``.
+    """
+
+    async def poll_board(self):
+        return {
+            "snapshot": {
+                "IN_PROGRESS": [],
+                "TODO": ["ITEM_UB"],
+                "IN_REVIEW": [],
+                "BLOCKED": [],
+            },
+            "titles": {"ITEM_UB": "Was blocked, now unblocked"},
+            "descriptions": {"ITEM_UB": ""},
+            "issue_numbers": {"ITEM_UB": 70},
+            "issue_urls": {},
+            "content_node_ids": {},
+        }
+
+
+@pytest.mark.asyncio
+async def test_check_board_multicard_unblock_resets_feedback_cycle_count() -> None:
+    """065 Fix 16: in multi-card mode, when an operator un-blocks a card
+    (moves it from BLOCKED to TODO), the retained session's
+    ``feedback_cycle_count`` must reset to 0, monotonic counters
+    (``total_feedback_cycles``, ``triage_blocks``) must be preserved,
+    the session's ``current_card.status`` must flip to ``TODO`` with
+    ``previous_status='BLOCKED'``, and a ``dispatcher.feedback_cycle_reset``
+    log record must fire with ``mode='multi'``.
+    """
+    import structlog.testing
+
+    state = initial_state()
+    state["github_service"] = _GitHubUnblockedNowTodo()
+    state["config"] = SimpleNamespace(
+        github_org="acme",
+        project_name="repo",
+        max_concurrent_cards=3,
+        priority=SimpleNamespace(field_name="", priority_order=[]),
+        github_api_url="",
+        assignee_filter=None,
+    )
+    state["active_sessions"] = {
+        "ITEM_UB": {
+            "current_card": {
+                "id": "ITEM_UB",
+                "issue_number": 70,
+                "title": "Was blocked, now unblocked",
+                "status": "BLOCKED",
+            },
+            "phase": "blocked",
+            "feedback_cycle_count": 4,
+            "total_feedback_cycles": 7,
+            "triage_blocks": 2,
+        }
+    }
+
+    with structlog.testing.capture_logs() as cap_logs:
+        result = await check_board(state)
+
+    sessions = result.get("active_sessions") or {}
+    assert "ITEM_UB" in sessions
+    sess = sessions["ITEM_UB"]
+    assert sess["feedback_cycle_count"] == 0
+    assert sess["total_feedback_cycles"] == 7
+    assert sess["triage_blocks"] == 2
+    assert sess["current_card"]["status"] == "TODO"
+    assert sess["current_card"]["previous_status"] == "BLOCKED"
+
+    reset_events = [
+        e for e in cap_logs
+        if e.get("event") == "dispatcher.feedback_cycle_reset"
+        and e.get("card_id") == "ITEM_UB"
+    ]
+    assert len(reset_events) == 1, f"Expected one reset log, got: {reset_events}"
+    evt = reset_events[0]
+    assert evt["prior_count"] == 4
+    assert evt["total_feedback_cycles"] == 7
+    assert evt["triage_blocks"] == 2
+    assert evt["mode"] == "multi"
+
+
+@pytest.mark.asyncio
+async def test_check_board_multicard_fresh_pickup_no_reset_log() -> None:
+    """065 Fix 16: a fresh TODO card with no prior session must NOT emit
+    the ``dispatcher.feedback_cycle_reset`` log — the reset path is
+    strictly for un-blocked retained sessions.
+    """
+    import structlog.testing
+
+    state = initial_state()
+    state["github_service"] = _GitHubInProgressWithTodos()
+    state["config"] = SimpleNamespace(
+        github_org="acme",
+        project_name="repo",
+        max_concurrent_cards=3,
+        priority=SimpleNamespace(field_name="", priority_order=[]),
+        github_api_url="",
+        assignee_filter=None,
+    )
+    state["active_sessions"] = {}
+
+    with structlog.testing.capture_logs() as cap_logs:
+        await check_board(state)
+
+    reset_events = [
+        e for e in cap_logs
+        if e.get("event") == "dispatcher.feedback_cycle_reset"
+    ]
+    assert reset_events == [], (
+        f"No reset log expected on fresh pickup, got: {reset_events}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 065 retry-counter survival probes
+# ---------------------------------------------------------------------------
+#
+# Goal: pinpoint which counter-reset site fires during the live infinite
+# retry loop observed on 2026-05-19, where
+# ``handle_system_error.retrying attempt=1`` repeated dozens of times without
+# the counter ever advancing past 1.
+#
+# Each test seeds a "mid-retry" state (count=2, last_at set, notified=False)
+# matching the bookkeeping monitor_performer.py:935 writes when it bumps the
+# counter on a transport failure. Then it exercises one suspected reset path
+# and asserts whether ``system_error_count`` survives.
+#
+# The IN_PROGRESS recovery + new-card pickup paths zero out count/reason/
+# notified but leave ``system_error_last_at`` untouched — which means the
+# mid-retry guard in dispatch_performer.py:735 (``last_at is not None AND not
+# notified``) silently stops protecting the counter on the very next
+# successful dispatch. These tests document the asymmetry.
+
+
+@pytest.mark.asyncio
+async def test_in_progress_readopt_clears_count_but_leaves_last_at_stale() -> None:
+    """Candidate #1 — check_board.py:583 (fresh-start IN_PROGRESS recovery).
+
+    When ``current_card`` is None and the board has an IN_PROGRESS card, the
+    recovery path zeroes ``system_error_count`` / ``_reason`` / ``_notified``
+    but does NOT touch ``system_error_last_at``. The mismatch is what makes
+    handle_system_error's retry budget unable to advance: every cycle's bump
+    starts from zero, but ``last_at`` keeps reading "we're mid-retry".
+    """
+    state = initial_state()
+    state["github_service"] = _GitHubInProgress()
+    state["current_card"] = None  # forces recovery path
+    state["system_error_count"] = 2
+    state["system_error_reason"] = "Transport failure during status check: TransportError"
+    state["system_error_notified"] = False
+    state["system_error_last_at"] = datetime(2026, 5, 19, 12, 0, 0, tzinfo=UTC)
+
+    result = await check_board(state)
+
+    assert result["current_card"]["id"] == "ITEM_P"
+    assert result["system_error_count"] == 0
+    assert result["system_error_reason"] is None
+    assert result["system_error_notified"] is False
+    # 065 fix: last_at must also be cleared so dispatch_performer's mid_retry
+    # guard doesn't misread the fresh re-adopt as "still mid-retry".
+    assert result["system_error_last_at"] is None
+
+
+class _GitHubFreshTodo:
+    async def poll_board(self):
+        return {
+            "snapshot": {"TODO": ["ITEM_NEW"], "IN_PROGRESS": [], "IN_REVIEW": [], "BLOCKED": []},
+            "titles": {"ITEM_NEW": "Fresh card"},
+            "descriptions": {"ITEM_NEW": ""},
+            "issue_numbers": {"ITEM_NEW": 7},
+        }
+
+
+@pytest.mark.asyncio
+async def test_new_card_pickup_clears_count_but_leaves_last_at_stale() -> None:
+    """Candidate #2 — check_board.py:1061 (single-card new-card pickup).
+
+    Same shape of bug as #1 but on the TODO transition.  When the previous
+    card's id differs from the freshly-pulled TODO card the per-card
+    counters reset — except ``system_error_last_at``.
+    """
+    state = initial_state()
+    state["github_service"] = _GitHubFreshTodo()
+    state["current_card"] = {"id": "ITEM_OLD", "status": "TODO"}
+    state["system_error_count"] = 2
+    state["system_error_reason"] = "stale"
+    state["system_error_notified"] = False
+    state["system_error_last_at"] = datetime(2026, 5, 19, 12, 0, 0, tzinfo=UTC)
+
+    result = await check_board(state)
+
+    assert result["current_card"]["id"] == "ITEM_NEW"
+    assert result["system_error_count"] == 0
+    assert result["system_error_reason"] is None
+    assert result["system_error_notified"] is False
+    assert result["system_error_last_at"] is None
+
+
+# ----------------------------------------------------------------------------
+# 065 Fix 22: stale-session re-dispatch after daemon restart
+# ----------------------------------------------------------------------------
+
+
+class _GitHubInProgress:
+    async def poll_board(self):
+        return {
+            "snapshot": {
+                "IN_PROGRESS": ["ITEM_P"],
+                "TODO": [],
+                "IN_REVIEW": [],
+                "BLOCKED": [],
+            },
+            "titles": {"ITEM_P": "In Flight"},
+            "descriptions": {"ITEM_P": ""},
+            "issue_numbers": {"ITEM_P": 42},
+            "issue_urls": {},
+            "content_node_ids": {},
+        }
+
+
+class _StalePerformerService:
+    """Performer service that reports no live session — simulates restart."""
+
+    def has_live_session(self, session_id: str) -> bool:
+        return False
+
+
+class _LivePerformerService:
+    def has_live_session(self, session_id: str) -> bool:
+        return True
+
+
+@pytest.mark.asyncio
+async def test_check_board_redispatches_stale_monitoring_session() -> None:
+    """When phase=monitoring_performer but the performer service has no live
+    session (post-restart), check_board rewrites phase to dispatching and
+    clears agent_dispatch so dispatch_performer can launch a fresh container.
+    """
+    state = initial_state()
+    state["github_service"] = _GitHubInProgress()
+    state["current_card"] = {"id": "ITEM_P", "status": "IN_PROGRESS"}
+    state["phase"] = "monitoring_performer"
+    state["performer_stage"] = "developer"
+    state["agent_dispatch"] = {"session_id": "sess-restart"}
+    state["agent_dispatch_at"] = datetime(2026, 5, 19, tzinfo=UTC)
+    state["performer_services"] = {"developer": _StalePerformerService()}
+    state["system_error_count"] = 0
+
+    result = await check_board(state)
+
+    assert result["phase"] == "dispatching"
+    assert result["agent_dispatch"] == {}
+    assert result["agent_dispatch_at"] is None
+    # retry counter must be untouched — this is a restart, not a real failure
+    assert result["system_error_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_check_board_preserves_live_monitoring_session() -> None:
+    """When the service still has a live session, phase and dispatch are kept."""
+    state = initial_state()
+    state["github_service"] = _GitHubInProgress()
+    state["current_card"] = {"id": "ITEM_P", "status": "IN_PROGRESS"}
+    state["phase"] = "monitoring_performer"
+    state["performer_stage"] = "developer"
+    state["agent_dispatch"] = {"session_id": "sess-live"}
+    state["performer_services"] = {"developer": _LivePerformerService()}
+
+    result = await check_board(state)
+
+    assert result["phase"] == "monitoring_performer"
+    assert result["agent_dispatch"] == {"session_id": "sess-live"}
+
+
+@pytest.mark.asyncio
+async def test_check_board_redispatches_stale_active_session_entry() -> None:
+    """Stale entries in active_sessions are rewritten too, so other sessions
+    don't trip the transport error when their per-session turn comes.
+    """
+    state = initial_state()
+    state["github_service"] = _GitHubInProgress()
+    state["performer_services"] = {"developer": _StalePerformerService()}
+    state["active_sessions"] = {
+        "ITEM_OTHER": {
+            "current_card": {"id": "ITEM_OTHER", "status": "IN_PROGRESS"},
+            "phase": "monitoring_performer",
+            "performer_stage": "developer",
+            "agent_dispatch": {"session_id": "sess-other"},
+            "agent_dispatch_at": datetime(2026, 5, 19, tzinfo=UTC),
+        },
+    }
+
+    await check_board(state)
+
+    sess = state["active_sessions"]["ITEM_OTHER"]
+    assert sess["phase"] == "dispatching"
+    assert sess["agent_dispatch"] == {}
+    assert sess["agent_dispatch_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_check_board_no_stale_redispatch_without_session_id() -> None:
+    """A monitoring phase with no session_id isn't considered stale."""
+    state = initial_state()
+    state["github_service"] = _GitHubInProgress()
+    state["current_card"] = {"id": "ITEM_P", "status": "IN_PROGRESS"}
+    state["phase"] = "monitoring_performer"
+    state["performer_stage"] = "developer"
+    state["agent_dispatch"] = {}
+    state["performer_services"] = {"developer": _StalePerformerService()}
+
+    result = await check_board(state)
+
+    assert result["phase"] == "monitoring_performer"
+

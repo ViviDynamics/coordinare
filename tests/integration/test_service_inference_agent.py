@@ -28,13 +28,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-
-from coordinare.services.service_inference import (
+from coordinare_service_inference import (
     REJECTED_FILENAME,
     InferenceFailed,
     infer_services,
 )
-from coordinare.services.service_inference.agent import LLMStep
+from coordinare_service_inference.agent import LLMStep
 
 
 def _free_port() -> int:

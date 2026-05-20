@@ -17,20 +17,20 @@ from typing import TYPE_CHECKING, Any
 import structlog
 from jinja2 import TemplateError, UndefinedError
 
-from coordinare.services.service_inference.agent import (
+from coordinare_service_inference.agent import (
     AgentError,
     LLMClient,
     ServiceInferenceAgent,
 )
-from coordinare.services.service_inference.manual_override import SERVICES_SUBDIR
-from coordinare.services.service_inference.prompt import render_system_prompt
-from coordinare.services.service_inference.schema import (
+from coordinare_service_inference.manual_override import SERVICES_SUBDIR
+from coordinare_service_inference.prompt import render_system_prompt
+from coordinare_service_inference.schema import (
     ServiceEntry,
     ServicesManifest,
 )
-from coordinare.services.service_inference.templater import render
-from coordinare.services.service_inference.tools import ToolSandbox
-from coordinare.services.service_inference.validator import (
+from coordinare_service_inference.templater import render
+from coordinare_service_inference.tools import ToolSandbox
+from coordinare_service_inference.validator import (
     ValidationResult,
     validate,
 )

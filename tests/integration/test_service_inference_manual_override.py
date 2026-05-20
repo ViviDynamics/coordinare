@@ -27,8 +27,7 @@ import time
 from pathlib import Path
 
 import pytest
-
-from coordinare.services.service_inference.manual_override import (
+from coordinare_service_inference.manual_override import (
     apply_manual_override,
 )
 

@@ -73,6 +73,21 @@ async def get_existing_pull_request(
     return data["html_url"], data["node_id"]
 
 
+async def get_pr_head_sha(owner: str, repo: str, pr_number: int, token: str) -> str:
+    """Return the head SHA of an open or closed PR."""
+    _require_token(token, "get_pr_head_sha")
+    url = f"{_github_api()}/repos/{owner}/{repo}/pulls/{pr_number}"
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.get(url, headers=headers)
+    if not resp.is_success:
+        raise GitHubAPIError(resp.status_code, resp.text)
+    sha = resp.json().get("head", {}).get("sha")
+    if not sha:
+        raise GitHubAPIError(500, f"PR {pr_number} has no head.sha")
+    return sha
+
+
 _FAILING_CONCLUSIONS = frozenset({"failure", "timed_out", "cancelled", "action_required"})
 _PASSING_CONCLUSIONS = frozenset({"success", "neutral", "skipped"})
 
@@ -98,6 +113,47 @@ async def get_check_runs(owner: str, repo: str, ref: str, token: str) -> list[di
     if not resp.is_success:
         raise GitHubAPIError(resp.status_code, resp.text)
     return resp.json().get("check_runs", [])
+
+
+async def get_check_run_logs(
+    owner: str,
+    repo: str,
+    job_id: int,
+    token: str,
+    *,
+    max_chars: int = 4000,
+) -> str:
+    """Return the tail of a GitHub Actions job's log, or "" if unavailable.
+
+    For a GitHub Actions check run, ``check_run.id`` is the Actions job id.
+    The logs endpoint returns a 302 redirect to a pre-signed URL — we follow
+    it without sending our Authorization header (S3 rejects it).
+
+    Returns at most *max_chars* characters from the end of the log so we
+    surface the actual failure (which is almost always near the bottom).
+    Never raises — log retrieval is best-effort context for the model.
+    """
+    if not token.strip():
+        return ""
+    url = f"{_github_api()}/repos/{owner}/{repo}/actions/jobs/{job_id}/logs"
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+    try:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=False) as client:
+            resp = await client.get(url, headers=headers)
+            if resp.status_code in (301, 302, 303, 307, 308):
+                location = resp.headers.get("location")
+                if not location:
+                    return ""
+                resp = await client.get(location)
+            if not resp.is_success:
+                return ""
+            text = resp.text
+    except Exception as exc:
+        log.warning("get_check_run_logs.failed", job_id=job_id, error=str(exc))
+        return ""
+    if len(text) > max_chars:
+        return "... (log truncated) ...\n" + text[-max_chars:]
+    return text
 
 
 def summarise_check_runs(
@@ -266,6 +322,34 @@ async def post_pr_comment(
         raise GitHubAPIError(resp.status_code, resp.text)
     log.info("pr comment posted", owner=owner, repo=repo, pr_number=pr_number)
     return resp.json()
+
+
+async def list_pr_comments(
+    owner: str,
+    repo: str,
+    pr_number: int,
+    token: str,
+) -> list[dict]:  # type: ignore[type-arg]
+    """List general (issue-style) comments on a Pull Request.
+
+    Used by the security advisory dedup path to avoid reposting findings
+    already present on the PR. Returns the first page only (100 comments),
+    which is sufficient for the dedup use case — older duplicates beyond
+    that page would have already been deduplicated against on prior cycles.
+    GET /repos/{owner}/{repo}/issues/{pr_number}/comments
+    """
+    _require_token(token, "list_pr_comments")
+    url = f"{_github_api()}/repos/{owner}/{repo}/issues/{pr_number}/comments"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+    }
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.get(url, headers=headers, params={"per_page": 100})
+    if not resp.is_success:
+        raise GitHubAPIError(resp.status_code, resp.text)
+    data = resp.json()
+    return data if isinstance(data, list) else []
 
 
 async def post_issue_comment(

@@ -107,6 +107,35 @@ def test_unreadable_bp_pass_mode_ignores_non_required_failure() -> None:
     assert d.action == "FORWARD"
 
 
+def test_unreadable_bp_pass_mode_holds_on_visible_pending() -> None:
+    # Fix 6 (065): with BP unreadable and mode='pass', a still-running visible
+    # check must HOLD rather than FORWARD — otherwise the closer hands off to
+    # humans while CI is still building.
+    entries = [
+        CheckEntry(name="ci/test", status="in_progress", conclusion=None, is_required=False),
+        CheckEntry(name="lint", status="completed", conclusion="success", is_required=False),
+    ]
+    rollup = _rollup(entries, bp_readable=False)
+    d = decide(rollup, treat_unknown_required_as="pass", now=NOW)
+    assert d.action == "HOLD"
+    assert "ci/test" in d.pending
+
+
+def test_unreadable_bp_pass_mode_pending_timeout_bounces() -> None:
+    entries = [
+        CheckEntry(name="ci/test", status="in_progress", conclusion=None, is_required=False),
+    ]
+    rollup = _rollup(entries, bp_readable=False, head_age_seconds=901)
+    d = decide(
+        rollup,
+        treat_unknown_required_as="pass",
+        pending_timeout_seconds=900,
+        now=NOW,
+    )
+    assert d.action == "BOUNCE"
+    assert d.reason == "pending_timeout"
+
+
 def test_unreadable_bp_block_mode_bounces() -> None:
     rollup = _rollup([], bp_readable=False)
     d = decide(rollup, treat_unknown_required_as="block", now=NOW)

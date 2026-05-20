@@ -8,8 +8,7 @@ from typing import Any
 import pytest
 import stamina
 from anthropic import APIStatusError, APITimeoutError, AuthenticationError
-
-from coordinare.services.service_inference.claude_llm_client import (
+from coordinare_service_inference.claude_llm_client import (
     SUBMIT_MANIFEST_TOOL,
     ClaudeServiceLLMClient,
     PermanentLLMError,

@@ -20,7 +20,7 @@ import pytest
 
 from coordinare.daemon import CoordinareDaemon
 from coordinare.metrics import CoordinareMetrics
-from coordinare.state_store import StateStore, WorkflowSnapshot
+from coordinare.state_store import CURRENT_SCHEMA_VERSION, StateStore, WorkflowSnapshot
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -82,7 +82,7 @@ async def test_scenario_normal_operation(tmp_path: Path) -> None:
     assert path.exists()
     data = json.loads(path.read_text())
     assert data["phase"] == "monitoring_agent"
-    assert data["schema_version"] == 1
+    assert data["schema_version"] == CURRENT_SCHEMA_VERSION
     assert "snapshot_at" in data
 
 

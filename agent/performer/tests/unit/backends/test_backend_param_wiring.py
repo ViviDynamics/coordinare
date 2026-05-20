@@ -134,7 +134,8 @@ class TestOpenCodeParamWiring:
 
         with (
             patch("performer.backends.opencode.asyncio.create_subprocess_exec", return_value=_fake_proc()),
-            patch("performer.backends.opencode.asyncio.create_task", return_value=MagicMock()),
+            patch.object(backend, "_drain_logs", AsyncMock()),
+            patch.object(backend, "_event_reader_loop", AsyncMock()),
             patch.object(backend, "_wait_for_ready", AsyncMock()),
             patch("performer.backends.opencode.httpx.AsyncClient", return_value=fake_client),
         ):
@@ -194,7 +195,8 @@ class TestCodexParamWiring:
 
         with (
             patch("performer.backends.codex.asyncio.create_subprocess_exec", return_value=_fake_proc()),
-            patch("performer.backends.codex.asyncio.create_task", return_value=MagicMock()),
+            patch.object(backend, "_drain_logs", AsyncMock()),
+            patch.object(backend, "_recv_loop", AsyncMock()),
             patch.object(backend, "_wait_for_ready", AsyncMock()),
             patch.object(backend, "_rpc", side_effect=fake_rpc),
             patch.object(backend, "_notify", AsyncMock()),
@@ -228,7 +230,8 @@ class TestCodexParamWiring:
 
         with (
             patch("performer.backends.codex.asyncio.create_subprocess_exec", return_value=_fake_proc()),
-            patch("performer.backends.codex.asyncio.create_task", return_value=MagicMock()),
+            patch.object(backend, "_drain_logs", AsyncMock()),
+            patch.object(backend, "_recv_loop", AsyncMock()),
             patch.object(backend, "_wait_for_ready", AsyncMock()),
             patch.object(backend, "_rpc", side_effect=fake_rpc),
             patch.object(backend, "_notify", AsyncMock()),

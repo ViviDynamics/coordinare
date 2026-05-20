@@ -14,6 +14,7 @@ import pytest
 from coordinare.metrics import CoordinareMetrics
 from coordinare.state_store import (
     CURRENT_SCHEMA_VERSION,
+    PersistedSession,
     StateLoadError,
     StateStore,
     WorkflowSnapshot,
@@ -387,3 +388,63 @@ async def test_state_store_preserves_card_clarifications_and_monitoring_pr_phase
     assert loaded is not None
     assert loaded.phase == "monitoring_pr"
     assert loaded.card_clarifications == clarifications
+
+
+# --- 065 Fix 7b: active_sessions persistence (multi-card stage survival) ---
+
+
+@pytest.mark.asyncio
+async def test_save_load_round_trip_active_sessions(tmp_path: Path) -> None:
+    """PersistedSession entries round-trip so a restart in multi-card mode does
+    not demote a closing_review card back to implementing."""
+    metrics = CoordinareMetrics()
+    store = StateStore(path=tmp_path / "state.json", metrics=metrics)
+    sessions = {
+        "PVT_A": PersistedSession(
+            card_id="PVT_A",
+            performer_stage="closing_review",
+            phase="monitoring_performer",
+            processed_review_ids=["r1", "r2"],
+        ),
+        "PVT_B": PersistedSession(
+            card_id="PVT_B",
+            performer_stage="implementing",
+            phase="monitoring_agent",
+        ),
+    }
+    snapshot = _make_snapshot(
+        phase="monitoring_performer",
+        active_card_id="PVT_A",
+        active_sessions=sessions,
+    )
+
+    await store.save(snapshot)
+    loaded = await store.load()
+
+    assert loaded is not None
+    assert set(loaded.active_sessions.keys()) == {"PVT_A", "PVT_B"}
+    assert loaded.active_sessions["PVT_A"].performer_stage == "closing_review"
+    assert loaded.active_sessions["PVT_A"].processed_review_ids == ["r1", "r2"]
+    assert loaded.active_sessions["PVT_B"].performer_stage == "implementing"
+
+
+@pytest.mark.asyncio
+async def test_load_v1_snapshot_forward_compat(tmp_path: Path) -> None:
+    """A v1 snapshot (no active_sessions field) loads cleanly under v2 with an
+    empty active_sessions dict — board re-adopt fills it back in."""
+    import json
+
+    metrics = CoordinareMetrics()
+    path = tmp_path / "state.json"
+    store = StateStore(path=path, metrics=metrics)
+    snapshot = _make_snapshot(phase="idle")
+    await store.save(snapshot)
+
+    data = json.loads(path.read_text())
+    data["schema_version"] = 1
+    data.pop("active_sessions", None)
+    path.write_text(json.dumps(data))
+
+    loaded = await store.load()
+    assert loaded is not None
+    assert loaded.active_sessions == {}

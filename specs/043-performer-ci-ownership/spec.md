@@ -1,5 +1,11 @@
 # 043 — Performer CI Ownership
 
+> **Status: SUPERSEDED by [065 US5](../065-qa-cycle/spec.md#user-story-5--performer-ci-ownership-verify-build-before-handoff-priority-p1).**
+> The mechanical scope of 043 is preserved verbatim in 065 US5 (FR-017 – FR-022).
+> All implementation tasks have shipped on the `065-qa-cycle` branch. Treat 065
+> as the authoritative reference going forward; this document is retained for
+> historical context.
+
 ## Summary
 
 Any performer role that commits and pushes code to a PR branch is

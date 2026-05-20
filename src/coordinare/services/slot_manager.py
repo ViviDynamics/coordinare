@@ -89,8 +89,17 @@ class SlotManager:
                 clamped_to=1,
             )
             max_concurrency = 1
-        # Clamp to len(services) — can't use more slots than transports
+        # Clamp to len(services) — can't use more slots than transports.
+        # Mirror the hot-reload code path: log so operators can grep for
+        # the cap when a configured max_concurrency isn't taking effect.
         if services and max_concurrency > len(services):
+            logger.warning(
+                "slot_manager.register.capped_by_services",
+                stage=stage,
+                requested=max_concurrency,
+                available=len(services),
+                hint="add more transport instances to honor the configured max_concurrency",
+            )
             max_concurrency = len(services)
         self.pools[stage] = RolePool(
             role=stage,

@@ -77,7 +77,7 @@ async def test_dockerfile_full_advertises_all_capabilities(require_docker: None,
             backend_name = "claude" if backend == "claude_code" else backend
             run_result = subprocess.run(
                 [
-                    "docker", "run", "-d", "-p", "0:8088",
+                    "docker", "run", "-d", "--rm", "-p", "0:8088",
                     "-e", f"BACKEND={backend_name}",
                     tag,
                 ],
@@ -114,7 +114,7 @@ async def test_dockerfile_full_advertises_all_capabilities(require_docker: None,
         finally:
             if container_id:
                 subprocess.run(
-                    ["docker", "stop", "-t", "2", container_id],
+                    ["docker", "rm", "-f", container_id],
                     capture_output=True,
                     timeout=10,
                 )
