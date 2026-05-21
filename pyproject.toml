@@ -128,6 +128,7 @@ markers = [
     "contract: Contract tests (validate API schemas)",
     "e2e: End-to-end browser tests (require Playwright browser binaries)",
     "benchmark: Performance benchmark tests (require Docker; emit JSON results)",
+    "lmstudio: LM Studio integration tests (gated by LMSTUDIO_AVAILABLE=1; spec 067)",
 ]
 filterwarnings = [
     "ignore::DeprecationWarning",

@@ -21,6 +21,10 @@ def get_backend(name: str) -> "BackendAdapter":
     # backend dependencies do not break unrelated configurations/tests.
     supported_backends: dict[str, tuple[str, str]] = {
         "opencode": ("performer.backends.opencode", "OpenCodeAdapter"),
+        "opencode_compat": (
+            "performer.backends.opencode_compat",
+            "OpenCodeCompatAdapter",
+        ),
         "junie": ("performer.backends.junie", "JunieBackend"),
         "cursor": ("performer.backends.cursor", "CursorBackend"),
         "claude_code": ("performer.backends.claude_code", "ClaudeCodeBackend"),

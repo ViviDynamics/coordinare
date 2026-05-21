@@ -1,0 +1,17 @@
+Codex baseline capture (spec 067 T009b) — PENDING OPERATOR RUN.
+
+This file is a placeholder. To produce the real
+``067_codex_baseline_request.json``, run on a checkout at or before commit
+e2a443a (pre-067 wire shape) with ``OPENAI_API_KEY`` set:
+
+  scripts/capture_codex_baseline.py
+
+The capture script intercepts the outbound POST body to
+``https://api.openai.com/v1/chat/completions`` and writes the JSON request
+payload here. A representative card from `quickstart.md` Step 4 should be
+used.
+
+Until this file exists, ``tests/integration/test_067_codex_unchanged.py``
+(T022) skips. The skip is acceptable for the PR; the swap test (T023) and
+the structural LCD validator (T011/T018) guarantee correctness in the
+meantime.

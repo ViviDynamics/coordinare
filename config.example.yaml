@@ -288,10 +288,12 @@ human_reviewers:                    # Required. GitHub logins who can approve PR
 #   closer      — verifies all prior feedback was addressed; resolves open review threads
 #   advocate    — answers inbound GitHub issues from external users (separate from lifecycle)
 #
-# Available backends: codex | claude_code | opencode | cursor | junie
-#   codex       — OpenAI Codex CLI; needs OPENAI_API_KEY in coordinare environment
-#   claude_code — Anthropic Claude Code CLI; needs ANTHROPIC_API_KEY in coordinare environment
-#   opencode    — OpenCode CLI; reads API keys from ~/.opencode/config.json in the container
+# Available backends: codex | claude_code | opencode | opencode_compat | cursor | junie
+#   codex            — OpenAI Codex CLI; needs OPENAI_API_KEY in coordinare environment
+#   claude_code      — Anthropic Claude Code CLI; needs ANTHROPIC_API_KEY in coordinare environment
+#   opencode         — OpenCode CLI; reads API keys from ~/.opencode/config.json in the container
+#   opencode_compat  — LCD /v1/chat/completions profile for self-hosted endpoints (LM Studio,
+#                      vLLM, Ollama, LiteLLM); see specs/067-compatibility-first-backend/quickstart.md
 #   cursor      — Cursor CLI; reads auth from ~/.cursor/ (mount via volumes, see above)
 #   junie       — JetBrains Junie CLI; reads auth from ~/.junie/ (mount via volumes, see above)
 # effort values:      low | medium | high
@@ -344,6 +346,23 @@ performers:
     effort: low
     temperature: 0.0
     max_tokens: 2048
+
+# --- Self-hosted backend example (opencode_compat) ---
+# Drop-in alternative for any role above. Points at an OpenAI-compatible
+# /v1/chat/completions endpoint (LM Studio, vLLM, Ollama, LiteLLM). See
+# specs/067-compatibility-first-backend/quickstart.md for the operator walk-through.
+#
+# performers:
+#   implementer:
+#     backend: opencode_compat
+#     base_url: http://localhost:1234/v1        # LM Studio default; OpenAI works too
+#     model: qwen3-coder-30b                    # endpoint must serve this model id
+#     temperature: 0.2
+#     max_tokens: 8192
+#     # Optional safety net for prompts that still emit `developer` role messages.
+#     # Default true; flips to false to surface a hard error instead of remapping.
+#     # See specs/067-compatibility-first-backend/research.md R4.
+#     compat_remap_developer_role: true
 
 # --- Personas ---
 # Customise per-role AI prompts. Omitted roles use built-in defaults.

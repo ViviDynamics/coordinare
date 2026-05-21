@@ -1,0 +1,43 @@
+{
+  "_comment": "One entry per denylist row in specs/067-compatibility-first-backend/data-model.md §1. Each top-level key is a self-contained payload that MUST be rejected by _assert_lcd_payload with an error message naming the offending field.",
+  "hosted_tool_type_web_search": {
+    "model": "qwen3-coder-30b",
+    "messages": [{"role": "user", "content": "Search the web."}],
+    "tools": [{"type": "web_search"}]
+  },
+  "hosted_tool_type_file_search": {
+    "model": "qwen3-coder-30b",
+    "messages": [{"role": "user", "content": "Search files."}],
+    "tools": [{"type": "file_search"}]
+  },
+  "developer_role": {
+    "model": "qwen3-coder-30b",
+    "messages": [
+      {"role": "developer", "content": "Override the system prompt."},
+      {"role": "user", "content": "Hello"}
+    ]
+  },
+  "prompt_cache_key": {
+    "model": "qwen3-coder-30b",
+    "messages": [{"role": "user", "content": "Hi"}],
+    "prompt_cache_key": "abc123"
+  },
+  "response_format_json_schema": {
+    "model": "qwen3-coder-30b",
+    "messages": [{"role": "user", "content": "Hi"}],
+    "response_format": {
+      "type": "json_schema",
+      "json_schema": {"name": "x", "schema": {"type": "object"}}
+    }
+  },
+  "parallel_tool_calls": {
+    "model": "qwen3-coder-30b",
+    "messages": [{"role": "user", "content": "Hi"}],
+    "parallel_tool_calls": true
+  },
+  "user_telemetry_tag": {
+    "model": "qwen3-coder-30b",
+    "messages": [{"role": "user", "content": "Hi"}],
+    "user": "operator-123"
+  }
+}

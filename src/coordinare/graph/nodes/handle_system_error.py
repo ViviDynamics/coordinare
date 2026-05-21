@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import structlog
 
@@ -10,11 +10,46 @@ from coordinare.models.notification import EventType, NotificationEvent, Notific
 
 if TYPE_CHECKING:
     from coordinare.graph.state import CoordinareState
+    from coordinare.upstream_errors import UpstreamHTTPError
 
 logger = structlog.get_logger(__name__)
 
 _RETRY_INTERVAL = 90.0   # seconds between retry attempts
 _MAX_RETRIES = 3          # maximum attempts before notifying operator
+
+# Single source of truth for upstream-HTTP transient/permanent classification
+# (spec 067 FR-005). No other substring-matching of upstream content is
+# permitted anywhere else in the codebase.
+TRANSIENT_STATUSES: frozenset[int] = frozenset({408, 429, 500, 502, 503, 504})
+# Body-marker fallback is only consulted on 5xx responses — a 4xx that
+# happens to mention "rate limit" as part of a policy explanation must not be
+# auto-retried. Markers are anchored tighter than bare substrings to reduce
+# false positives (e.g. a 500 whose body merely *describes* rate limiting).
+TRANSIENT_BODY_MARKERS: tuple[str, ...] = (
+    "upstream temporarily unavailable",
+    "rate limit exceeded",
+    "rate_limit_exceeded",
+)
+
+
+def classify_upstream(error: UpstreamHTTPError) -> Literal["transient", "permanent"]:
+    """Classify an UpstreamHTTPError as transient (retry) or permanent (surface).
+
+    Status takes precedence; the body-marker tuple is a documented fallback
+    consulted **only on 5xx** responses, for proxies that return a generic
+    500 wrapping a transient upstream condition (e.g. some LiteLLM proxies
+    return 500 with 'upstream temporarily unavailable'). 4xx responses are
+    always permanent — a client error mentioning rate-limit policy in prose
+    must not trigger automatic retry. 2xx responses never reach this function
+    — the envelope is only constructed on non-2xx upstream responses.
+    """
+    if error.status in TRANSIENT_STATUSES:
+        return "transient"
+    if 500 <= error.status < 600:
+        body_lower = error.body.lower()
+        if any(marker in body_lower for marker in TRANSIENT_BODY_MARKERS):
+            return "transient"
+    return "permanent"
 
 
 async def handle_system_error(state: CoordinareState) -> CoordinareState:
