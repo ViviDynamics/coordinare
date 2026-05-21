@@ -63,11 +63,18 @@ FAILURE_STATUSES: frozenset[str] = frozenset({
 class PerformerMetrics(BaseModel):
     """Best-effort runtime telemetry attached to ``working`` status responses."""
 
+    model_config = {"extra": "ignore"}
+
     pid: int | None = None
     child_pids: list[int] = Field(default_factory=list)
     memory_bytes: int | None = None
     cpu_percent: float | None = None
     tokens_processed: int | None = None
+    # 067: non-2xx upstream response envelope. Serialized as a dict on the wire
+    # so older coordinares (pydantic extra="ignore") drop it cleanly. The
+    # authoritative model lives in src/coordinare/upstream_errors.py and the
+    # contract at specs/067-compatibility-first-backend/contracts/upstream_http_error.md.
+    upstream_http_error: dict | None = None
 
 
 class PerformerMessage(BaseModel):

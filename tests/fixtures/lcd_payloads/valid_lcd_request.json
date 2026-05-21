@@ -1,0 +1,38 @@
+{
+  "model": "qwen3-coder-30b",
+  "messages": [
+    {"role": "system", "content": "You are a helpful coding assistant."},
+    {"role": "user", "content": "List files in repo root."},
+    {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+        {
+          "id": "call_1",
+          "type": "function",
+          "function": {"name": "list_dir", "arguments": "{\"path\": \".\"}"}
+        }
+      ]
+    },
+    {"role": "tool", "tool_call_id": "call_1", "content": "README.md\nsrc/"}
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "list_dir",
+        "description": "List directory entries.",
+        "parameters": {
+          "type": "object",
+          "properties": {"path": {"type": "string"}},
+          "required": ["path"]
+        }
+      }
+    }
+  ],
+  "tool_choice": "auto",
+  "temperature": 0.2,
+  "max_tokens": 4096,
+  "stream": false,
+  "response_format": {"type": "json_object"}
+}

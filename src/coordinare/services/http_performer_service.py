@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from coordinare.graph.nodes.handle_system_error import classify_upstream
 from coordinare.services import performer_lifecycle
 from coordinare.transport.base import TransportError
 from coordinare.transport.http_transport import (
@@ -34,6 +35,7 @@ from coordinare.transport.http_transport import (
     PerformerHTTPClient,
     PerformerUnreachableError,
 )
+from coordinare.upstream_errors import UpstreamHTTPError, strip_base_url_credentials
 
 if TYPE_CHECKING:
     from coordinare.models.performer_endpoint import (
@@ -343,6 +345,7 @@ class HTTPPerformerService:
                 # Ensure parsed response includes JobState for job lifecycle tracking.
                 if "state" not in parsed:
                     parsed["state"] = status.state
+                self._log_upstream_http_error(parsed)
                 return parsed
             except (json.JSONDecodeError, ValueError):
                 pass
@@ -360,6 +363,43 @@ class HTTPPerformerService:
 
         # Terminal but no result (cancelled or internal failure).
         return {"status": "error", "reason": f"job ended in state '{status.state}' with no result", "job_id": session_id, "state": status.state}
+
+    def _log_upstream_http_error(self, response: dict[str, Any]) -> None:
+        """Emit verbatim upstream-body log line when the performer reports a
+        non-2xx envelope (spec 067 FR-004). One structlog line per envelope at
+        WARN (transient) or ERROR (permanent), kv-ordered per data-model.md §2.
+        """
+        metrics = response.get("metrics")
+        envelope: dict[str, Any] | None = None
+        if isinstance(metrics, dict):
+            raw = metrics.get("upstream_http_error")
+            if isinstance(raw, dict):
+                envelope = raw
+        if envelope is None:
+            return
+        try:
+            error = UpstreamHTTPError(**envelope)
+        except Exception as exc:  # malformed envelope — log once and move on
+            logger.warning(
+                "http_performer.upstream_envelope_malformed",
+                performer_id=self._config.id,
+                error=str(exc),
+            )
+            return
+        verdict = classify_upstream(error)
+        log_fn = logger.error if verdict == "permanent" else logger.warning
+        log_fn(
+            "http_performer.upstream_http_error",
+            status=error.status,
+            route=error.route,
+            base_url=strip_base_url_credentials(error.base_url),
+            upstream_body=error.body,
+            body_truncated=error.body_truncated,
+            elapsed_ms=error.elapsed_ms,
+            upstream_request_id=error.upstream_request_id,
+            performer_id=self._config.id,
+            classification=verdict,
+        )
 
     async def call_reset(self) -> bool:
         """POST /reset to the persistent performer endpoint.
