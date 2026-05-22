@@ -34,6 +34,7 @@ from pathlib import Path
 import psutil
 import structlog
 
+from performer.backends._card_docs import card_docs_prompt_section
 from performer.backends.base import BackendStatus
 from performer.models import BackendEvent, BackendEventType, Score, Stand
 
@@ -131,7 +132,7 @@ class JunieBackend:
         self._tool_env = score.tool_env
         self._model = model
         self._max_tokens = max_tokens
-        self._original_prompt = _build_task_prompt(score)
+        self._original_prompt = _build_task_prompt(score, stand_path=Path(stand.path))
         await self._launch(self._original_prompt)
 
     def get_status(self) -> BackendStatus:
@@ -335,7 +336,9 @@ class JunieBackend:
         )
 
 
-def _build_task_prompt(score: Score) -> str:
+def _build_task_prompt(
+    score: Score, *, stand_path: Path | None = None
+) -> str:
     """Construct the task description sent to Junie as the initial prompt."""
     parts = []
 
@@ -345,6 +348,7 @@ def _build_task_prompt(score: Score) -> str:
     parts += [f"# Task: {score.title}", ""]
     if score.description:
         parts += [score.description, ""]
+    parts += card_docs_prompt_section(score, stand_path)
     if score.acceptance_criteria:
         parts += ["## Acceptance Criteria", ""]
         parts.extend(f"- {c}" for c in score.acceptance_criteria)

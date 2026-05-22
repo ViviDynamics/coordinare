@@ -22,6 +22,8 @@ from coordinare.transport.http_transport import (
 )
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from coordinare.models.performer_endpoint import (
         PerformerEndpointConfig,
         PerformerStatus,
@@ -183,8 +185,72 @@ async def start_ephemeral(config: PerformerEndpointConfig) -> StartedContainer:
     return StartedContainer(container_id=container_id, endpoint=endpoint)
 
 
-async def stop(container_id: str, *, timeout_s: int = 10) -> None:
-    """Stop a container. Best-effort — failures are logged, not raised."""
+async def _dump_container_logs(
+    container_id: str, host_log_dir: Path, *, performer_id: str | None = None,
+) -> None:
+    """Best-effort dump of ``docker logs <id>`` to *host_log_dir*.
+
+    Runs before the container is removed by ``docker stop`` so a crashed
+    job still leaves an artifact behind. Failures are logged, never raised.
+    """
+    try:
+        host_log_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        logger.warning(
+            "performer_lifecycle.log_dump_mkdir_failed",
+            container_id=container_id, error=str(exc),
+        )
+        return
+    label = performer_id or "performer"
+    out_path = host_log_dir / f"{label}.{container_id[:12]}.container.log"
+    try:
+        rc, stdout, stderr = await _run_docker("logs", container_id, timeout=15.0)
+    except ContainerStartError as exc:
+        logger.warning(
+            "performer_lifecycle.log_dump_failed",
+            container_id=container_id, error=str(exc),
+        )
+        return
+    if rc != 0:
+        logger.warning(
+            "performer_lifecycle.log_dump_failed",
+            container_id=container_id, rc=rc, stderr=stderr,
+        )
+        return
+    # Cap at the trailing 5 MB so a runaway-logger container cannot fill the
+    # host disk. The tail is what matters for post-mortems; older lines are
+    # rarely useful and ``docker logs`` already has them if needed.
+    max_bytes = 5_000_000
+    if len(stdout) > max_bytes:
+        stdout = (
+            f"[truncated: kept last {max_bytes} bytes of "
+            f"{len(stdout)} total]\n" + stdout[-max_bytes:]
+        )
+    try:
+        out_path.write_text(stdout)
+    except OSError as exc:
+        logger.warning(
+            "performer_lifecycle.log_dump_write_failed",
+            container_id=container_id, path=str(out_path), error=str(exc),
+        )
+
+
+async def stop(
+    container_id: str,
+    *,
+    timeout_s: int = 10,
+    host_log_dir: Path | None = None,
+    performer_id: str | None = None,
+) -> None:
+    """Stop a container. Best-effort — failures are logged, not raised.
+
+    When *host_log_dir* is set, ``docker logs`` is captured into that
+    directory before the container is removed.
+    """
+    if host_log_dir is not None:
+        await _dump_container_logs(
+            container_id, host_log_dir, performer_id=performer_id,
+        )
     try:
         rc, _stdout, stderr = await _run_docker("stop", "-t", str(timeout_s), container_id)
     except ContainerStartError as exc:

@@ -1,0 +1,89 @@
+# =============================================================================
+# Coordinare Configuration Example — Claude Code Backend (Anthropic)
+# =============================================================================
+#
+# Minimal config for running performers on the Anthropic Claude Code CLI. See
+# config.example.yaml for the full reference.
+#
+# How Claude Code runs under coordinare:
+#   - One-shot CLI invocation per card (no persistent session).
+#   - Authentication: ANTHROPIC_API_KEY is forwarded automatically from the
+#     coordinare host environment into each job. No volumes required.
+#   - Image: build `coordinare-performer:full` from agent/performer/Dockerfile.
+# =============================================================================
+
+
+# --- GitHub ---
+
+github_org: "your-org"
+github_token: "${COORDINARE_GITHUB_TOKEN}"
+github_auth: "pat"
+
+human_reviewers:
+  - "your-github-handle"
+
+
+# --- Symphonies ---
+
+symphonies:
+  - name: my-project
+    github_project_number: 1
+
+
+# --- Containerized Performer (Claude Code) ---
+#
+# ANTHROPIC_API_KEY must be exported in the coordinare host environment;
+# coordinare injects it into the job payload automatically.
+
+performer_endpoints:
+  - id: claude-ephemeral
+    mode: ephemeral
+    roles:
+      - assessor
+      - architect
+      - implementer
+      - reviewer
+      - security
+      - qa
+      - tech_writer
+      - closer
+    image: coordinare-performer:full
+
+
+# --- Performers ---
+
+performers:
+  default:
+    backend: claude_code
+    model: claude-sonnet-4-6
+    temperature: 0.2
+    max_tokens: 8192
+
+  assessor:
+    model: claude-haiku-4-5-20251001
+    temperature: 0.0
+    max_tokens: 2048
+
+  architect:
+    model: claude-opus-4-7
+    max_tokens: 12288
+
+  implementer:
+    model: claude-opus-4-7
+    max_tokens: 16384
+
+  reviewer:
+    temperature: 0.0
+
+  security:
+    model: claude-opus-4-7
+    temperature: 0.0
+
+  qa:
+    temperature: 0.0
+    max_tokens: 12288
+
+  closer:
+    model: claude-haiku-4-5-20251001
+    temperature: 0.0
+    max_tokens: 2048

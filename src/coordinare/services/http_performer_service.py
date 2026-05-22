@@ -489,8 +489,17 @@ class HTTPPerformerService:
     # ------------------------------------------------------------------
     async def _cleanup_ephemeral_job(self, job: _EphemeralJob) -> None:
         """Stop and release a specific ephemeral container + its client."""
+        host_log_dir = None
+        for vol in self._config.volumes:
+            if str(vol.container_path) == "/var/log/performer":
+                host_log_dir = vol.host_path
+                break
         try:
-            await performer_lifecycle.stop(job.container_id)
+            await performer_lifecycle.stop(
+                job.container_id,
+                host_log_dir=host_log_dir,
+                performer_id=self._config.id,
+            )
         except Exception as exc:  # pragma: no cover — best effort
             logger.warning(
                 "http_performer.stop_failed",

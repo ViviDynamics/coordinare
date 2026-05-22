@@ -314,6 +314,40 @@ class TestAppAuthCustomAPIURL:
         )
         assert url == "https://ghes.internal/api/v3/app/installations/42/access_tokens"
 
+    @pytest.mark.parametrize(
+        ("bad_url", "needle"),
+        [
+            ("https://github acme.corp", "whitespace"),
+            ("ftp://github.acme.corp", "valid http/https"),
+            ("https://", "valid http/https"),
+            ("https://user:pw@github.acme.corp", "embedded credentials"),
+            ("https://github.acme.corp/api?x=1", "query or fragment"),
+            ("https://github.acme.corp/api#frag", "query or fragment"),
+            ("http://github.acme.corp", "http is only allowed for localhost"),
+        ],
+    )
+    def test_api_url_validation_rejects_bad_inputs(
+        self, rsa_key_pair, bad_url: str, needle: str,
+    ) -> None:
+        key_file, _ = rsa_key_pair
+        with pytest.raises(ValueError, match=needle):
+            AppAuth(
+                app_id=1, private_key_path=key_file, installation_id=2,
+                api_url=bad_url,
+            )
+
+    @pytest.mark.parametrize(
+        "ok_url",
+        ["http://localhost:8080", "http://127.0.0.1", "http://[::1]"],
+    )
+    def test_api_url_allows_http_localhost(self, rsa_key_pair, ok_url: str) -> None:
+        key_file, _ = rsa_key_pair
+        auth = AppAuth(
+            app_id=1, private_key_path=key_file, installation_id=2,
+            api_url=ok_url,
+        )
+        assert auth._api_url == ok_url
+
 
 # ---------------------------------------------------------------------------
 # validate_auth_config tests

@@ -28,6 +28,7 @@ import aiohttp
 import psutil
 import structlog
 
+from performer.backends._card_docs import card_docs_prompt_section
 from performer.backends.base import BackendStatus
 from performer.models import BackendEvent, BackendEventType, Score, Stand
 
@@ -253,7 +254,7 @@ class CodexBackend:
         log.info("codex thread started", thread_id=self._thread_id, port=port)
 
         # Start the first turn with the task prompt
-        task_text = _build_task_prompt(score)
+        task_text = _build_task_prompt(score, stand_path=pathlib.Path(stand.path))
         turn_resp = await self._rpc("turn/start", {
             "threadId": self._thread_id,
             "input": [{"type": "text", "text": task_text, "text_elements": []}],
@@ -582,17 +583,17 @@ class CodexBackend:
         self._event_buffer.append(BackendEvent(type=type, text=text[:_MAX_TEXT], detail=detail))
 
 
-def _build_task_prompt(score: Score) -> str:
+def _build_task_prompt(
+    score: Score, *, stand_path: pathlib.Path | None = None
+) -> str:
     """Construct the task description for the initial Codex turn."""
-    parts = []
-
-    # Persona instructions (role-specific behavior)
-    if score.persona_instructions:
-        parts += ["## Role Instructions", "", score.persona_instructions, ""]
-
-    parts += [f"# Task: {score.title}", ""]
+    # FR-017: persona_instructions is delivered via `developerInstructions` on
+    # the Codex thread (see start()). Keeping it out of the prompt body avoids
+    # double-delivery.
+    parts: list[str] = [f"# Task: {score.title}", ""]
     if score.description:
         parts += [score.description, ""]
+    parts += card_docs_prompt_section(score, stand_path)
     if score.acceptance_criteria:
         parts += ["## Acceptance Criteria", ""]
         parts.extend(f"- {c}" for c in score.acceptance_criteria)

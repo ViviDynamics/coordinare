@@ -18,10 +18,12 @@ import json
 import os
 import signal
 from collections import deque
+from pathlib import Path
 
 import psutil
 import structlog
 
+from performer.backends._card_docs import card_docs_prompt_section
 from performer.backends.base import BackendStatus
 from performer.models import BackendEvent, BackendEventType, Score, Stand
 
@@ -62,6 +64,7 @@ class ClaudeCodeBackend:
         self._tool_env: dict[str, str] = {}
         self._model: str | None = None  # 037: per-role model selection
         self._max_tokens: int | None = None  # 055: output token cap
+        self._persona: str | None = None  # FR-016: routed via --append-system-prompt
 
     # ------------------------------------------------------------------
     # BackendAdapter protocol
@@ -84,7 +87,8 @@ class ClaudeCodeBackend:
         self._tool_env = score.tool_env
         self._model = model
         self._max_tokens = max_tokens
-        prompt = _build_task_prompt(score)
+        self._persona = (score.persona_instructions or "").strip() or None
+        prompt = _build_task_prompt(score, stand_path=Path(stand.path))
         await self._launch(prompt)
 
     def get_status(self) -> BackendStatus:
@@ -158,6 +162,10 @@ class ClaudeCodeBackend:
             args += ["--model", self._model]
         if self._max_tokens is not None:
             args += ["--max-tokens", str(self._max_tokens)]
+        # FR-016: route persona to Claude Code's native system-prompt slot
+        # instead of embedding it in the task prompt body.
+        if self._persona:
+            args += ["--append-system-prompt", self._persona]
         if resume_session_id:
             args += ["--resume", resume_session_id]
         args += ["-p", prompt]
@@ -293,17 +301,16 @@ class ClaudeCodeBackend:
             pass  # init handled above; other system events are no-ops
 
 
-def _build_task_prompt(score: Score) -> str:
+def _build_task_prompt(
+    score: Score, *, stand_path: Path | None = None
+) -> str:
     """Construct the task description sent to Claude Code as the initial prompt."""
-    parts = []
-
-    # Persona instructions (role-specific behavior)
-    if score.persona_instructions:
-        parts += ["## Role Instructions", "", score.persona_instructions, ""]
-
-    parts += [f"# Task: {score.title}", ""]
+    # FR-016: persona_instructions is routed via `--append-system-prompt` in
+    # _launch(), not embedded in the prompt body, to avoid double-delivery.
+    parts: list[str] = [f"# Task: {score.title}", ""]
     if score.description:
         parts += [score.description, ""]
+    parts += card_docs_prompt_section(score, stand_path)
     if score.acceptance_criteria:
         parts += ["## Acceptance Criteria", ""]
         parts.extend(f"- {c}" for c in score.acceptance_criteria)

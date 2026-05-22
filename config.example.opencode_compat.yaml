@@ -1,0 +1,94 @@
+# =============================================================================
+# Coordinare Configuration Example — opencode_compat Backend (Self-hosted)
+# =============================================================================
+#
+# Minimal config for running performers on a self-hosted OpenAI-compatible
+# /v1/chat/completions endpoint (LM Studio, vLLM, Ollama, LiteLLM, etc.).
+# See config.example.yaml for the full reference and
+# specs/067-compatibility-first-backend/quickstart.md for the operator walk-through.
+#
+# How opencode_compat runs under coordinare:
+#   - The performer posts to the configured `base_url` per card.
+#   - Authentication: typically none for local endpoints. If the endpoint
+#     requires a bearer token, expose it as OPENAI_API_KEY in the coordinare
+#     host environment (the same auto-forward path used by `codex`).
+#   - Image: build `coordinare-performer:full` from agent/performer/Dockerfile.
+# =============================================================================
+
+
+# --- GitHub ---
+
+github_org: "your-org"
+github_token: "${COORDINARE_GITHUB_TOKEN}"
+github_auth: "pat"
+
+human_reviewers:
+  - "your-github-handle"
+
+
+# --- Symphonies ---
+
+symphonies:
+  - name: my-project
+    github_project_number: 1
+
+
+# --- Containerized Performer ---
+#
+# No volumes or credentials required for an unauthenticated local endpoint.
+# The `base_url` lives in the `performers:` block below, not here.
+
+performer_endpoints:
+  - id: compat-ephemeral
+    mode: ephemeral
+    roles:
+      - assessor
+      - architect
+      - implementer
+      - reviewer
+      - security
+      - qa
+      - tech_writer
+      - closer
+    image: coordinare-performer:full
+
+
+# --- Performers ---
+#
+# `base_url` and `model` are required for opencode_compat. The endpoint must
+# already be serving the named model.
+
+performers:
+  default:
+    backend: opencode_compat
+    base_url: http://localhost:1234/v1     # LM Studio default; adjust per endpoint
+    model: qwen3-coder-30b                 # endpoint must serve this model id
+    temperature: 0.2
+    max_tokens: 8192
+    # Default true; remaps `developer` role messages to `user` for endpoints that
+    # reject the `developer` role. Set false to surface a hard error instead.
+    # See specs/067-compatibility-first-backend/research.md R4.
+    compat_remap_developer_role: true
+
+  assessor:
+    model: qwen3-coder-7b
+    temperature: 0.0
+    max_tokens: 2048
+
+  implementer:
+    max_tokens: 16384
+
+  reviewer:
+    temperature: 0.0
+
+  security:
+    temperature: 0.0
+
+  qa:
+    max_tokens: 12288
+    temperature: 0.0
+
+  closer:
+    model: qwen3-coder-7b
+    temperature: 0.0
+    max_tokens: 2048

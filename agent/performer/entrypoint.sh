@@ -104,6 +104,14 @@ case "${BACKEND:-}" in
     curl -fsSL https://cursor.com/install | sh 2>&1 \
       || echo "WARNING: cursor upgrade failed, continuing with installed version" >&2
     ;;
+  hermes)
+    # hermes-agent ships on PyPI; spec 068 assumes the package is baked into
+    # the image. This is a best-effort upgrade — matches the other backends'
+    # "warn and continue" semantics so a transient PyPI hiccup never knocks a
+    # container out of the pool. Avoid `curl|bash` from an unpinned ref.
+    pip install --upgrade --quiet hermes-agent 2>&1 \
+      || echo "WARNING: hermes upgrade failed, continuing with installed version" >&2
+    ;;
   "")
     echo "INFO: BACKEND not set — starting performer without a backend CLI" >&2
     ;;

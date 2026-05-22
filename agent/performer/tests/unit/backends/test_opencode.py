@@ -834,6 +834,44 @@ class TestBuildTaskPrompt:
         assert "visual_capture_commands" in prompt
         assert "visual_capture_blockers" in prompt
 
+    def test_persona_still_embedded_in_prompt_body(self) -> None:
+        """FR-018 regression guard: opencode has no job-isolated persona slot, so
+        persona MUST stay in the prompt body. AGENTS.md would land in commits."""
+        score = Score(
+            title="T",
+            repo_url="https://github.com/org/repo",
+            branch="main",
+            github_token="tok",
+            persona_instructions="PERSONA_MARKER_OC act carefully.",
+        )
+        prompt = _build_task_prompt(score)
+        assert "PERSONA_MARKER_OC" in prompt
+        assert "## Role Instructions" in prompt
+
+    def test_card_docs_section_emitted_when_folder_exists(self, tmp_path: Path) -> None:
+        (tmp_path / "docs" / "cards" / "70-t").mkdir(parents=True)
+        score = Score(
+            title="T",
+            issue_number=70,
+            repo_url="https://github.com/org/repo",
+            branch="main",
+            github_token="tok",
+        )
+        prompt = _build_task_prompt(score, stand_path=tmp_path)
+        assert "## Card Documentation" in prompt
+        assert "docs/cards/70-t/" in prompt
+
+    def test_card_docs_section_omitted_when_folder_missing(self, tmp_path: Path) -> None:
+        score = Score(
+            title="T",
+            issue_number=70,
+            repo_url="https://github.com/org/repo",
+            branch="main",
+            github_token="tok",
+        )
+        prompt = _build_task_prompt(score, stand_path=tmp_path)
+        assert "## Card Documentation" not in prompt
+
 
 # ---------------------------------------------------------------------------
 # stop() — psutil NoSuchProcess paths

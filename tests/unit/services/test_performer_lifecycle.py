@@ -656,3 +656,127 @@ async def test_wait_ready_creates_own_client_when_none_provided(monkeypatch) -> 
 
     status = await wait_ready("http://127.0.0.1:49160", None, timeout=2.0, poll_interval=0.01)
     assert status.availability == "idle"
+
+
+# ---------------------------------------------------------------------------
+# _dump_container_logs + stop(host_log_dir=...)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stop_dumps_container_logs_when_host_log_dir_set(
+    monkeypatch, tmp_path,
+) -> None:
+    async def fake_run_docker(*args: str, timeout: float = 30.0) -> tuple[int, str, str]:
+        if args[0] == "logs":
+            return 0, "line1\nline2\n", ""
+        if args[0] == "stop":
+            return 0, "", ""
+        raise AssertionError(f"unexpected docker invocation: {args}")
+
+    monkeypatch.setattr(lifecycle, "_run_docker", fake_run_docker)
+    await stop(
+        "abcdef1234567890",
+        host_log_dir=tmp_path / "logs",
+        performer_id="perf-x",
+    )
+    out_path = tmp_path / "logs" / "perf-x.abcdef123456.container.log"
+    assert out_path.exists()
+    assert out_path.read_text() == "line1\nline2\n"
+
+
+@pytest.mark.asyncio
+async def test_dump_container_logs_swallows_mkdir_failure(
+    monkeypatch, tmp_path,
+) -> None:
+    # Make host_log_dir a regular file so mkdir(parents=True) raises OSError.
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("file in the way")
+
+    called: list[str] = []
+
+    async def fake_run_docker(*args: str, timeout: float = 30.0) -> tuple[int, str, str]:
+        called.append(args[0])
+        return 0, "", ""
+
+    monkeypatch.setattr(lifecycle, "_run_docker", fake_run_docker)
+    # Must not raise; the dump bails early and stop() still runs.
+    await stop("ctr-1", host_log_dir=blocker)
+    assert called == ["stop"]
+
+
+@pytest.mark.asyncio
+async def test_dump_container_logs_swallows_docker_logs_error(
+    monkeypatch, tmp_path,
+) -> None:
+    async def fake_run_docker(*args: str, timeout: float = 30.0) -> tuple[int, str, str]:
+        if args[0] == "logs":
+            raise ContainerStartError("docker logs timed out")
+        return 0, "", ""
+
+    monkeypatch.setattr(lifecycle, "_run_docker", fake_run_docker)
+    await stop("ctr-2", host_log_dir=tmp_path)
+    # Nothing written but no exception bubbles out.
+    assert not any(tmp_path.iterdir()) or all(
+        not p.name.endswith(".container.log") for p in tmp_path.iterdir()
+    )
+
+
+@pytest.mark.asyncio
+async def test_dump_container_logs_swallows_non_zero_rc(
+    monkeypatch, tmp_path,
+) -> None:
+    async def fake_run_docker(*args: str, timeout: float = 30.0) -> tuple[int, str, str]:
+        if args[0] == "logs":
+            return 1, "", "no such container"
+        return 0, "", ""
+
+    monkeypatch.setattr(lifecycle, "_run_docker", fake_run_docker)
+    await stop("ctr-3", host_log_dir=tmp_path)
+    assert not any(p.name.endswith(".container.log") for p in tmp_path.iterdir())
+
+
+@pytest.mark.asyncio
+async def test_dump_container_logs_swallows_write_failure(
+    monkeypatch, tmp_path,
+) -> None:
+    async def fake_run_docker(*args: str, timeout: float = 30.0) -> tuple[int, str, str]:
+        if args[0] == "logs":
+            return 0, "ok", ""
+        return 0, "", ""
+
+    monkeypatch.setattr(lifecycle, "_run_docker", fake_run_docker)
+
+    original_write_text = type(tmp_path).write_text
+
+    def boom_write_text(self, *a, **kw):  # type: ignore[no-untyped-def]
+        if self.name.endswith(".container.log"):
+            raise OSError("disk full")
+        return original_write_text(self, *a, **kw)
+
+    monkeypatch.setattr(type(tmp_path), "write_text", boom_write_text)
+    # Must not raise.
+    await stop("ctr-4", host_log_dir=tmp_path, performer_id="perf-w")
+
+
+@pytest.mark.asyncio
+async def test_dump_container_logs_caps_oversized_stdout(
+    monkeypatch, tmp_path,
+) -> None:
+    # Build a >5 MB payload so the cap path fires. The tail must be kept
+    # verbatim and a truncation marker prepended.
+    big = ("a" * 5_000_001) + "TAIL_MARKER"
+
+    async def fake_run_docker(*args: str, timeout: float = 30.0) -> tuple[int, str, str]:
+        if args[0] == "logs":
+            return 0, big, ""
+        return 0, "", ""
+
+    monkeypatch.setattr(lifecycle, "_run_docker", fake_run_docker)
+    await stop("ctr-big", host_log_dir=tmp_path, performer_id="perf-big")
+    out = (tmp_path / "perf-big.ctr-big.container.log").read_text()
+    # Marker line up front, original tail preserved.
+    assert out.startswith("[truncated: kept last 5000000 bytes of ")
+    assert out.endswith("TAIL_MARKER")
+    # And the file is roughly cap + marker, not the whole 5 MB+ input.
+    assert len(out) <= 5_000_000 + 200

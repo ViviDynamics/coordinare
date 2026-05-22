@@ -653,6 +653,15 @@ class ProjectConfiguration(BaseSettings):
     # to the system temporary directory (tempfile.gettempdir()).
     workspace_root: Path | None = Field(default=None)
 
+    # 068 — Optional host directory for per-container + per-job logs.
+    # When set, every ephemeral performer container is started with this
+    # path bind-mounted at ``/var/log/performer`` and ``PERFORMER_LOG_DIR``
+    # exported into its env. The coordinare also dumps ``docker logs <id>``
+    # into this directory before stopping each container. Backends that
+    # honour ``PERFORMER_LOG_DIR`` (e.g. Hermes) write per-job prompt /
+    # stdout / stderr artifacts beside the container log.
+    performer_log_dir: Path | None = Field(default=None)
+
     # 052 — Stale Branch Cleanup
     stale_branch_cleanup: bool = True
     branch_collision_strategy: BranchCollisionStrategy = BranchCollisionStrategy.delete

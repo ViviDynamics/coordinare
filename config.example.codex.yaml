@@ -1,0 +1,95 @@
+# =============================================================================
+# Coordinare Configuration Example — Codex Backend (OpenAI)
+# =============================================================================
+#
+# Minimal config for running performers on the OpenAI Codex CLI. See
+# config.example.yaml for the full reference.
+#
+# How Codex runs under coordinare:
+#   - The performer invokes the `codex` CLI per card.
+#   - Authentication: OPENAI_API_KEY is forwarded automatically from the
+#     coordinare host environment into each job. No volumes required.
+#   - Image: build `coordinare-performer:full` from agent/performer/Dockerfile.
+# =============================================================================
+
+
+# --- GitHub ---
+
+github_org: "your-org"
+github_token: "${COORDINARE_GITHUB_TOKEN}"
+github_auth: "pat"
+
+human_reviewers:
+  - "your-github-handle"
+
+
+# --- Symphonies ---
+
+symphonies:
+  - name: my-project
+    github_project_number: 1
+
+
+# --- Containerized Performer (Codex) ---
+#
+# OPENAI_API_KEY must be exported in the coordinare host environment;
+# coordinare injects it into the job payload automatically.
+
+performer_endpoints:
+  - id: codex-ephemeral
+    mode: ephemeral
+    roles:
+      - assessor
+      - architect
+      - implementer
+      - reviewer
+      - security
+      - qa
+      - tech_writer
+      - closer
+    image: coordinare-performer:full
+
+
+# --- Performers ---
+
+performers:
+  default:
+    backend: codex
+    model: gpt-5.4
+    effort: medium
+    temperature: 0.2
+    max_tokens: 8192
+
+  assessor:
+    model: gpt-5.4-mini
+    effort: low
+    temperature: 0.0
+    max_tokens: 2048
+
+  architect:
+    effort: high
+    max_tokens: 12288
+
+  implementer:
+    effort: high
+    max_tokens: 16384
+
+  reviewer:
+    effort: high
+    temperature: 0.0
+
+  security:
+    model: gpt-5.5
+    effort: high
+    temperature: 0.0
+
+  qa:
+    effort: high
+    temperature: 0.0
+    max_tokens: 12288
+
+  closer:
+    model: gpt-5.4-mini
+    effort: low
+    temperature: 0.0
+    max_tokens: 2048

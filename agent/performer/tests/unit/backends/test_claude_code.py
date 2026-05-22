@@ -96,6 +96,41 @@ class TestClaudeCodeBackendStart:
         p_idx = list(args).index("-p")
         assert "Test Task" in args[p_idx + 1]
 
+    async def test_persona_passed_via_append_system_prompt_flag(
+        self, tmp_path: Path
+    ) -> None:
+        """FR-016: persona is routed through --append-system-prompt, not the prompt body."""
+        proc = _fake_proc()
+        adapter = ClaudeCodeBackend()
+        score = _score(persona_instructions="PERSONA_MARKER_CC be careful.")
+        with patch(
+            "performer.backends.claude_code.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=proc),
+        ) as mock_exec:
+            await adapter.start(_stand(tmp_path), score)
+        args = list(mock_exec.call_args[0])
+        assert "--append-system-prompt" in args
+        sp_idx = args.index("--append-system-prompt")
+        assert args[sp_idx + 1] == "PERSONA_MARKER_CC be careful."
+        # And the persona text is NOT embedded in the -p prompt.
+        p_idx = args.index("-p")
+        assert "PERSONA_MARKER_CC" not in args[p_idx + 1]
+        assert "## Role Instructions" not in args[p_idx + 1]
+
+    async def test_append_system_prompt_omitted_when_persona_empty(
+        self, tmp_path: Path
+    ) -> None:
+        """FR-016: empty persona => no --append-system-prompt flag at all."""
+        proc = _fake_proc()
+        adapter = ClaudeCodeBackend()
+        with patch(
+            "performer.backends.claude_code.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=proc),
+        ) as mock_exec:
+            await adapter.start(_stand(tmp_path), _score(persona_instructions=""))
+        args = list(mock_exec.call_args[0])
+        assert "--append-system-prompt" not in args
+
     async def test_start_merges_cache_env_into_subprocess_env(self, tmp_path: Path) -> None:
         """060: cache_env from activate.sh must be visible to the agent subprocess."""
         proc = _fake_proc()
@@ -807,3 +842,14 @@ class TestBuildTaskPrompt:
         score = _score(clarifications=[{"questions": [], "answer": "Some answer"}])
         prompt = _build_task_prompt(score)
         assert "Some answer" in prompt
+
+    def test_card_docs_section_emitted_when_folder_exists(self, tmp_path: Path) -> None:
+        (tmp_path / "docs" / "cards" / "70-test-task").mkdir(parents=True)
+        score = _score(title="Test Task", issue_number=70)
+        prompt = _build_task_prompt(score, stand_path=tmp_path)
+        assert "## Card Documentation" in prompt
+        assert "docs/cards/70-test-task/" in prompt
+
+    def test_card_docs_section_omitted_when_folder_missing(self, tmp_path: Path) -> None:
+        prompt = _build_task_prompt(_score(issue_number=70), stand_path=tmp_path)
+        assert "## Card Documentation" not in prompt
