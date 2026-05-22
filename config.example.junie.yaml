@@ -1,0 +1,70 @@
+# =============================================================================
+# Coordinare Configuration Example — Junie Backend (JetBrains)
+# =============================================================================
+#
+# Minimal config for running performers on the JetBrains Junie CLI. See
+# config.example.yaml for the full reference.
+#
+# How Junie runs under coordinare:
+#   - The performer invokes the `junie` CLI per card.
+#   - Authentication: Junie reads its session from ~/.junie inside the
+#     container. Mount the host directory read-only.
+#   - Image: build a Junie-capable image with the `junie` CLI installed.
+#
+# Caveats:
+#   - Same device-fingerprint risk as Cursor. JetBrains tokens are tied to the
+#     device that completed OAuth; validate headless auth first.
+#   - Mount read-only; expired tokens cannot be refreshed inside the container.
+#   - If your JetBrains config lives elsewhere (e.g. XDG_CONFIG_HOME), adjust
+#     host_path accordingly.
+# =============================================================================
+
+
+# --- GitHub ---
+
+github_org: "your-org"
+github_token: "${COORDINARE_GITHUB_TOKEN}"
+github_auth: "pat"
+
+human_reviewers:
+  - "your-github-handle"
+
+
+# --- Symphonies ---
+
+symphonies:
+  - name: my-project
+    github_project_number: 1
+
+
+# --- Containerized Performer (Junie) ---
+#
+# Prerequisites:
+#   1. Log in to your JetBrains account on the coordinare host: `junie login`.
+#   2. Confirm ~/.junie/ exists with valid credentials.
+#   3. Build a Junie-capable image:
+#        docker build -t coordinare-performer:junie \
+#          -f agent/performer/Dockerfile.junie .
+
+performer_endpoints:
+  - id: junie-ephemeral
+    mode: ephemeral
+    roles:
+      - implementer
+    image: coordinare-performer:junie
+    volumes:
+      - host_path: /home/youruser/.junie   # adjust to your actual home dir
+        container_path: /root/.junie
+        mode: ro
+
+
+# --- Performers ---
+
+performers:
+  default:
+    backend: junie
+    temperature: 0.2
+    max_tokens: 8192
+
+  implementer:
+    max_tokens: 16384

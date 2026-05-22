@@ -29,6 +29,7 @@ def get_backend(name: str) -> "BackendAdapter":
         "cursor": ("performer.backends.cursor", "CursorBackend"),
         "claude_code": ("performer.backends.claude_code", "ClaudeCodeBackend"),
         "codex": ("performer.backends.codex", "CodexBackend"),
+        "hermes": ("performer.backends.hermes", "HermesBackend"),
     }
 
     target = supported_backends.get(name)

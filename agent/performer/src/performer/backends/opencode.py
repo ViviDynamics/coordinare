@@ -21,7 +21,9 @@ from collections import deque
 import httpx
 import psutil
 import structlog
+from pathlib import Path
 
+from performer.backends._card_docs import card_docs_prompt_section
 from performer.backends.base import BackendStatus
 from performer.models import BackendEvent, BackendEventType, Score, Stand
 
@@ -139,7 +141,7 @@ class OpenCodeAdapter:
         )
 
         # Send initial task message (fire-and-forget — server processes asynchronously)
-        task_text = _build_task_prompt(score)
+        task_text = _build_task_prompt(score, stand_path=Path(stand.path))
         await self._client.post(
             f"/session/{self._session_id}/prompt_async",
             json={"parts": [{"type": "text", "text": task_text}]},
@@ -366,7 +368,9 @@ class OpenCodeAdapter:
         # All other event types are no-ops
 
 
-def _build_task_prompt(score: Score) -> str:
+def _build_task_prompt(
+    score: Score, *, stand_path: Path | None = None
+) -> str:
     """Construct the task description sent to opencode as the initial message."""
     parts = []
 
@@ -377,6 +381,7 @@ def _build_task_prompt(score: Score) -> str:
     parts += [f"# Task: {score.title}", ""]
     if score.description:
         parts += [score.description, ""]
+    parts += card_docs_prompt_section(score, stand_path)
     if score.acceptance_criteria:
         parts += ["## Acceptance Criteria", ""]
         parts.extend(f"- {c}" for c in score.acceptance_criteria)

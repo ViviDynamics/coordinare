@@ -982,7 +982,7 @@ async def test_dispatch_card_ephemeral_transport_error_on_post_job(monkeypatch) 
 
     stopped_containers: list[str] = []
 
-    async def fake_stop(container_id: str):
+    async def fake_stop(container_id: str, **_):
         stopped_containers.append(container_id)
 
     class ErrorClient:
@@ -1018,7 +1018,7 @@ async def test_dispatch_card_ephemeral_not_accepted_cleans_up(monkeypatch) -> No
 
     stopped_containers: list[str] = []
 
-    async def fake_stop(container_id: str):
+    async def fake_stop(container_id: str, **_):
         stopped_containers.append(container_id)
 
     class BusyClient:
@@ -1053,7 +1053,7 @@ async def test_check_status_ephemeral_unreachable_cleanup(monkeypatch) -> None:
 
     stopped_containers: list[str] = []
 
-    async def fake_stop(container_id: str):
+    async def fake_stop(container_id: str, **_):
         stopped_containers.append(container_id)
 
     class UnreachableClient:

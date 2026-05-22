@@ -1,0 +1,74 @@
+# =============================================================================
+# Coordinare Configuration Example — Cursor Backend
+# =============================================================================
+#
+# Minimal config for running performers on the Cursor CLI. See
+# config.example.yaml for the full reference.
+#
+# How Cursor runs under coordinare:
+#   - The performer invokes the `cursor` CLI per card.
+#   - Authentication: Cursor reads its session from ~/.cursor inside the
+#     container. Mount the host directory read-only so all jobs share creds.
+#   - Image: build a Cursor-capable image with the `cursor` CLI installed.
+#
+# Caveats:
+#   - Cursor encodes a device fingerprint in its auth token. If the container
+#     presents a different machine ID than the host, the session may be
+#     rejected. Validate with a one-off `docker run` before relying on it.
+#   - The session directory is mounted read-only; if the token expires mid-job
+#     the container cannot refresh it. Re-login on the host before it lapses.
+#   - Multiple concurrent Cursor containers can safely share the same ro mount.
+# =============================================================================
+
+
+# --- GitHub ---
+
+github_org: "your-org"
+github_token: "${COORDINARE_GITHUB_TOKEN}"
+github_auth: "pat"
+
+human_reviewers:
+  - "your-github-handle"
+
+
+# --- Symphonies ---
+
+symphonies:
+  - name: my-project
+    github_project_number: 1
+
+
+# --- Containerized Performer (Cursor) ---
+#
+# Prerequisites:
+#   1. Log in to Cursor on the coordinare host.
+#   2. Build a Cursor-capable image:
+#        docker build -t coordinare-performer:cursor \
+#          -f agent/performer/Dockerfile.cursor .
+
+performer_endpoints:
+  - id: cursor-ephemeral
+    mode: ephemeral
+    roles:
+      - implementer
+      - reviewer
+    image: coordinare-performer:cursor
+    volumes:
+      - host_path: /home/youruser/.cursor   # adjust to your actual home dir
+        container_path: /root/.cursor
+        mode: ro
+
+
+# --- Performers ---
+
+performers:
+  default:
+    backend: cursor
+    temperature: 0.2
+    max_tokens: 8192
+
+  implementer:
+    max_tokens: 16384
+
+  reviewer:
+    temperature: 0.0

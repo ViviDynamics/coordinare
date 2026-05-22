@@ -1,0 +1,132 @@
+# =============================================================================
+# Coordinare Configuration Example — Hermes Backend
+# =============================================================================
+#
+# Minimal, copy-pasteable config for running performers on the Hermes coding
+# agent. See config.example.yaml for the full reference (auth modes, transport
+# options, notifications, etc.). This file focuses on the Hermes-specific
+# wiring and intentionally omits sections that aren't backend-dependent.
+#
+# How Hermes runs under coordinare:
+#   - The performer invokes `hermes chat` non-interactively, once per card.
+#   - Each job gets a fresh, isolated profile directory (HERMES_HOME) that the
+#     adapter creates at start() and removes unconditionally on every terminal
+#     outcome (done / error / stop / timeout). The operator's personal
+#     ~/.hermes is never read or written.
+#   - Persona routing: each role's `persona_instructions` is written to
+#     `$HERMES_HOME/SOUL.md` at job start (NOT embedded in the task prompt),
+#     so Hermes loads it as the agent's identity. The file lives only inside
+#     the job-scoped profile dir and is torn down with the rest of HERMES_HOME
+#     on every terminal outcome.
+#   - Capability gating is enforced two ways: the adapter passes an explicit
+#     `--toolsets terminal,file,search,browser,todo` allow-list on the CLI,
+#     AND writes a `disabled_toolsets: [gateway, messaging, cron, clarify,
+#     user_memory]` deny-list into the per-job hermes.config.yaml. Hermes
+#     cannot message the operator out-of-band.
+#   - Provider resolution: HERMES_PROVIDER must be either (a) a name from
+#     hermes-agent's built-in provider catalog (e.g. `anthropic`, `openai`,
+#     `openrouter`, `alibaba`, ...) or (b) any name you choose when
+#     HERMES_BASE_URL is also set — in that case HermesBackend registers
+#     `<name>` as a user-defined OpenAI-compatible provider in the per-job
+#     hermes.config.yaml (`api_mode: chat_completions`, `key_env:
+#     HERMES_API_KEY`) and `hermes chat --provider <name>` resolves there.
+#     The secret is referenced via `key_env`, never written to disk.
+#   - Session-level AGENT_TIMEOUT is the only timeout; there is no Hermes-
+#     specific timer. Timeout forces a terminal `error` and tears the process
+#     and profile dir down.
+#
+# Spec reference: specs/068-hermes-backend/
+# =============================================================================
+
+
+# --- GitHub ---
+
+github_org: "your-org"
+github_token: "${COORDINARE_GITHUB_TOKEN}"
+github_auth: "pat"   # or "app" — see config.example.yaml for App auth fields
+
+human_reviewers:
+  - "your-github-handle"
+
+
+# --- Symphonies ---
+
+symphonies:
+  - name: my-project
+    github_project_number: 1
+
+
+# --- Containerized Performer (Hermes) ---
+#
+# Build a Hermes-capable image. The image must have the `hermes` CLI on PATH
+# (i.e., `hermes-agent` installed) — see specs/068-hermes-backend/quickstart.md
+# for image-bake notes. No volumes are required; HERMES_HOME is created
+# inside the container per job and cleaned up on exit.
+#
+# Env vars below are forwarded into every Hermes job. HERMES_API_KEY is
+# redacted from adapter logs and events.
+
+performer_endpoints:
+  - id: hermes-ephemeral
+    mode: ephemeral
+    roles:
+      - assessor
+      - architect
+      - implementer
+      - reviewer
+      - security
+      - qa
+      - tech_writer
+      - closer
+    image: coordinare-performer:hermes
+    env:
+      HERMES_PROVIDER: "${HERMES_PROVIDER}"   # built-in (e.g. "anthropic", "openai", "openrouter") OR any user-chosen name when HERMES_BASE_URL is set
+      HERMES_API_KEY:  "${HERMES_API_KEY}"    # credential for the provider
+      HERMES_MODEL:    "${HERMES_MODEL}"      # default; per-role `model:` overrides
+      # HERMES_BASE_URL is optional; uncomment for self-hosted endpoints.
+      # Leaving it set to "${HERMES_BASE_URL}" with no shell value would
+      # expand to an empty string and confuse the adapter — keep it
+      # commented unless you actually have a custom endpoint.
+      # HERMES_BASE_URL: "${HERMES_BASE_URL}"
+      # Do NOT set HERMES_HOME here — the adapter creates a job-scoped temp
+      # directory and any inherited value is intentionally stripped (FR-005).
+
+
+# --- Performers ---
+#
+# Pick `backend: hermes` once at `default:` and every role inherits it. Per-role
+# `model:` overrides forward through to HERMES_MODEL at dispatch.
+#
+# NOTE: `temperature` / `max_tokens` are accepted by the BackendAdapter
+# protocol but are NOT currently forwarded to the `hermes chat` CLI — Hermes'
+# flag surface for these is not yet pinned down in the spec contracts. Set
+# them per-role if/when wiring lands; today they have no effect.
+
+performers:
+  default:
+    backend: hermes
+    model: qwen3-coder-30b           # forwarded as HERMES_MODEL
+
+  assessor:
+    model: qwen3-coder-7b            # cheaper model for triage
+
+  closer:
+    model: qwen3-coder-7b
+
+
+# --- Card Selection (optional) ---
+# assignee_filter: "coordinare-bot"
+
+
+# --- Concurrency (optional) ---
+# max_concurrent_cards: 1            # 1–20; default 1
+
+
+# --- Diagnostic Logs (optional) ---
+# When set, every ephemeral performer container is started with this host
+# directory bind-mounted at `/var/log/performer` (PERFORMER_LOG_DIR is set
+# inside the container). The coordinare dumps `docker logs <id>` here before
+# stopping each container, and the Hermes backend writes per-job prompt,
+# stdout, stderr, and response artifacts to the same directory. Useful for
+# attribution when a job emits "needs input" or otherwise surprises you.
+# performer_log_dir: /var/log/coordinare/performer

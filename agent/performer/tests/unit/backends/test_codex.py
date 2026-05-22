@@ -1016,6 +1016,24 @@ class TestBuildTaskPrompt:
         assert "visual_capture_commands" in prompt
         assert "visual_capture_blockers" in prompt
 
+    def test_persona_not_embedded_in_prompt_body(self) -> None:
+        """FR-017: persona is delivered via developerInstructions, not prompt body."""
+        score = _score(persona_instructions="PERSONA_MARKER_CODEX be careful.")
+        prompt = _build_task_prompt(score)
+        assert "PERSONA_MARKER_CODEX" not in prompt
+        assert "## Role Instructions" not in prompt
+
+    def test_card_docs_section_emitted_when_folder_exists(self, tmp_path: Path) -> None:
+        (tmp_path / "docs" / "cards" / "70-codex-task").mkdir(parents=True)
+        score = _score(title="Codex Task", issue_number=70)
+        prompt = _build_task_prompt(score, stand_path=tmp_path)
+        assert "## Card Documentation" in prompt
+        assert "docs/cards/70-codex-task/" in prompt
+
+    def test_card_docs_section_omitted_when_folder_missing(self, tmp_path: Path) -> None:
+        prompt = _build_task_prompt(_score(issue_number=70), stand_path=tmp_path)
+        assert "## Card Documentation" not in prompt
+
 
 class TestTomlQuote:
     def test_quotes_safe_value(self) -> None:

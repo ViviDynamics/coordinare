@@ -33,12 +33,14 @@ import socket
 import time
 from collections import deque
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import httpx
 import psutil
 import structlog
 
+from performer.backends._card_docs import card_docs_prompt_section
 from performer.backends._lcd_helpers import (
     redact_request_body as _redact_request_body,
     strip_base_url_credentials as _strip_base_url_creds_local,
@@ -323,7 +325,7 @@ class OpenCodeCompatAdapter:
             port=port,
         )
 
-        task_text = _build_task_prompt(score)
+        task_text = _build_task_prompt(score, stand_path=Path(stand.path))
         await self._client.post(
             f"/session/{self._session_id}/prompt_async",
             json={"parts": [{"type": "text", "text": task_text}]},
@@ -625,7 +627,9 @@ class OpenCodeCompatAdapter:
                 self._status = BackendStatus(state="blocked", questions=questions)
 
 
-def _build_task_prompt(score: Score) -> str:
+def _build_task_prompt(
+    score: Score, *, stand_path: Path | None = None
+) -> str:
     """Build the initial task prompt — identical surface to opencode._build_task_prompt."""
     parts: list[str] = []
     if score.persona_instructions:
@@ -633,6 +637,7 @@ def _build_task_prompt(score: Score) -> str:
     parts += [f"# Task: {score.title}", ""]
     if score.description:
         parts += [score.description, ""]
+    parts += card_docs_prompt_section(score, stand_path)
     if score.acceptance_criteria:
         parts += ["## Acceptance Criteria", ""]
         parts.extend(f"- {c}" for c in score.acceptance_criteria)

@@ -555,9 +555,38 @@ def _build_http_performer_services(
 
     _stage_names = set(_ROLE_TO_STAGE.values())
     services_by_stage: dict[str, list[Any]] = {}
+    log_dir = getattr(config, "performer_log_dir", None)
+    if log_dir is not None:
+        from pathlib import PurePosixPath
+
+        from coordinare.models.performer_endpoint import VolumeMount
+        try:
+            Path(log_dir).mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            logger.warning(
+                "performer_log_dir.unwritable",
+                path=str(log_dir),
+                error=str(exc),
+            )
     for cfg in config.performer_endpoints:
         if cfg.mode == "subprocess":
             continue
+        if log_dir is not None and cfg.mode == "ephemeral":
+            mount = VolumeMount(
+                host_path=Path(log_dir),
+                container_path=PurePosixPath("/var/log/performer"),
+                mode="rw",
+            )
+            existing_volumes = list(cfg.volumes)
+            if not any(
+                str(v.container_path) == "/var/log/performer" for v in existing_volumes
+            ):
+                existing_volumes.append(mount)
+            new_env = dict(cfg.env)
+            new_env.setdefault("PERFORMER_LOG_DIR", "/var/log/performer")
+            cfg = cfg.model_copy(
+                update={"volumes": existing_volumes, "env": new_env}
+            )
         service = HTTPPerformerService(cfg)
         for role in cfg.roles:
             stage = _ROLE_TO_STAGE.get(role)

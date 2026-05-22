@@ -288,7 +288,7 @@ human_reviewers:                    # Required. GitHub logins who can approve PR
 #   closer      — verifies all prior feedback was addressed; resolves open review threads
 #   advocate    — answers inbound GitHub issues from external users (separate from lifecycle)
 #
-# Available backends: codex | claude_code | opencode | opencode_compat | cursor | junie
+# Available backends: codex | claude_code | opencode | opencode_compat | cursor | junie | hermes
 #   codex            — OpenAI Codex CLI; needs OPENAI_API_KEY in coordinare environment
 #   claude_code      — Anthropic Claude Code CLI; needs ANTHROPIC_API_KEY in coordinare environment
 #   opencode         — OpenCode CLI; reads API keys from ~/.opencode/config.json in the container
@@ -296,6 +296,9 @@ human_reviewers:                    # Required. GitHub logins who can approve PR
 #                      vLLM, Ollama, LiteLLM); see specs/067-compatibility-first-backend/quickstart.md
 #   cursor      — Cursor CLI; reads auth from ~/.cursor/ (mount via volumes, see above)
 #   junie       — JetBrains Junie CLI; reads auth from ~/.junie/ (mount via volumes, see above)
+#   hermes      — Hermes coding agent; non-interactive `hermes chat` CLI with isolated job-scoped
+#                 profile. Communication/scheduling toolsets are forbidden; only coding tools are
+#                 enabled. See specs/068-hermes-backend/quickstart.md.
 # effort values:      low | medium | high
 # temperature:        0.0 (deterministic) – 1.0 (creative); None = backend default
 # max_tokens:         cap output tokens; 0 = unlimited (overrides any inherited default)
@@ -363,6 +366,30 @@ performers:
 #     # Default true; flips to false to surface a hard error instead of remapping.
 #     # See specs/067-compatibility-first-backend/research.md R4.
 #     compat_remap_developer_role: true
+
+# --- Hermes backend example ---
+# Hermes is invoked non-interactively via the `hermes chat` CLI. Each job runs in
+# an isolated profile directory the adapter creates and removes; the operator's
+# personal ~/.hermes is never read or written. Messaging / gateway / cron /
+# clarify / shared user-memory toolsets are forbidden by construction.
+#
+# performers:
+#   implementer:
+#     backend: hermes
+#     model: qwen3-coder-30b           # forwarded to hermes via HERMES_MODEL
+#     temperature: 0.2
+#     max_tokens: 8192
+#
+# Required environment variables (forwarded into the performer job):
+#   HERMES_PROVIDER  — model provider name Hermes understands (e.g. "openai_compat")
+#   HERMES_API_KEY   — credential for the provider; redacted from adapter logs
+#   HERMES_MODEL     — default model id; per-role `model:` overrides this at dispatch
+# Optional:
+#   HERMES_BASE_URL  — endpoint for OpenAI-compatible / self-hosted providers
+# Adapter-managed (do NOT set):
+#   HERMES_HOME      — the adapter creates a job-scoped temp directory and unconditionally
+#                      removes it on every terminal outcome (done / error / stop / timeout).
+#                      Any operator-provided HERMES_HOME is intentionally ignored.
 
 # --- Personas ---
 # Customise per-role AI prompts. Omitted roles use built-in defaults.

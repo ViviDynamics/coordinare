@@ -1,0 +1,93 @@
+# =============================================================================
+# Coordinare Configuration Example — OpenCode Backend
+# =============================================================================
+#
+# Minimal config for running performers on the OpenCode CLI. See
+# config.example.yaml for the full reference.
+#
+# How OpenCode runs under coordinare:
+#   - Persistent CLI session per card (the adapter manages start/stop).
+#   - Authentication: OpenCode reads provider API keys from
+#     ~/.opencode/config.json inside the container. Mount the host directory
+#     read-only so the same credentials are available to every job.
+#   - Image: build a OpenCode-capable image with the `opencode` CLI installed.
+# =============================================================================
+
+
+# --- GitHub ---
+
+github_org: "your-org"
+github_token: "${COORDINARE_GITHUB_TOKEN}"
+github_auth: "pat"
+
+human_reviewers:
+  - "your-github-handle"
+
+
+# --- Symphonies ---
+
+symphonies:
+  - name: my-project
+    github_project_number: 1
+
+
+# --- Containerized Performer (OpenCode) ---
+#
+# Prerequisites:
+#   1. Install and configure the `opencode` CLI on the coordinare host so
+#      ~/.opencode/config.json contains the provider credentials you want.
+#   2. Build a OpenCode-capable image:
+#        docker build -t coordinare-performer:opencode \
+#          -f agent/performer/Dockerfile.opencode .
+#   3. The mount is read-only; refresh tokens on the host before they lapse.
+
+performer_endpoints:
+  - id: opencode-ephemeral
+    mode: ephemeral
+    roles:
+      - assessor
+      - architect
+      - implementer
+      - reviewer
+      - security
+      - qa
+      - tech_writer
+      - closer
+    image: coordinare-performer:opencode
+    volumes:
+      - host_path: /home/youruser/.opencode   # adjust to your actual home dir
+        container_path: /root/.opencode
+        mode: ro
+
+
+# --- Performers ---
+
+performers:
+  default:
+    backend: opencode
+    model: claude-sonnet-4-6           # any model id your ~/.opencode config serves
+    temperature: 0.2
+    max_tokens: 8192
+
+  assessor:
+    model: claude-haiku-4-5-20251001
+    temperature: 0.0
+    max_tokens: 2048
+
+  implementer:
+    max_tokens: 16384
+
+  reviewer:
+    temperature: 0.0
+
+  security:
+    temperature: 0.0
+
+  qa:
+    max_tokens: 12288
+    temperature: 0.0
+
+  closer:
+    model: claude-haiku-4-5-20251001
+    temperature: 0.0
+    max_tokens: 2048

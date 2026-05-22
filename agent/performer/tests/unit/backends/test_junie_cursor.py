@@ -8,7 +8,14 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from performer.backends.cursor import CursorBackend
-from performer.backends.junie import JunieBackend, _maybe_write_custom_profile
+from performer.backends.junie import (
+    JunieBackend,
+    _build_task_prompt as _junie_build_task_prompt,
+    _maybe_write_custom_profile,
+)
+from performer.backends.opencode_compat import (
+    _build_task_prompt as _compat_build_task_prompt,
+)
 from performer.models import Score, Stand
 
 
@@ -90,3 +97,70 @@ class TestCursorBackend:
         monkeypatch.setenv("CURSOR_EXECUTABLE", "cursor-cli")
         adapter = CursorBackend()
         assert adapter._executable == "cursor-cli"
+
+
+# ---------------------------------------------------------------------------
+# FR-018 regression guards: prompt-body persona wiring is retained for
+# backends with no job-isolated native persona slot.
+# ---------------------------------------------------------------------------
+
+
+def _persona_score(marker: str) -> Score:
+    return Score(
+        title="T",
+        repo_url="https://github.com/org/repo",
+        branch="main",
+        github_token="tok",
+        persona_instructions=marker,
+    )
+
+
+class TestProsonaPromptBodyRegression:
+    def test_junie_keeps_persona_in_prompt_body(self) -> None:
+        """Junie has no job-isolated persona slot — persona stays in the prompt."""
+        prompt = _junie_build_task_prompt(_persona_score("PERSONA_MARKER_JUNIE"))
+        assert "PERSONA_MARKER_JUNIE" in prompt
+        assert "## Role Instructions" in prompt
+
+    def test_opencode_compat_keeps_persona_in_prompt_body(self) -> None:
+        """opencode_compat has no job-isolated persona slot — persona stays in the prompt."""
+        prompt = _compat_build_task_prompt(_persona_score("PERSONA_MARKER_COMPAT"))
+        assert "PERSONA_MARKER_COMPAT" in prompt
+        assert "## Role Instructions" in prompt
+
+
+# ---------------------------------------------------------------------------
+# ## Card Documentation section threads through both backends
+# ---------------------------------------------------------------------------
+
+
+def _doc_score() -> Score:
+    return Score(
+        title="T",
+        issue_number=70,
+        repo_url="https://github.com/org/repo",
+        branch="main",
+        github_token="tok",
+    )
+
+
+class TestCardDocsSection:
+    def test_junie_emits_card_docs_section(self, tmp_path: Path) -> None:
+        (tmp_path / "docs" / "cards" / "70-t").mkdir(parents=True)
+        prompt = _junie_build_task_prompt(_doc_score(), stand_path=tmp_path)
+        assert "## Card Documentation" in prompt
+        assert "docs/cards/70-t/" in prompt
+
+    def test_junie_omits_section_when_folder_missing(self, tmp_path: Path) -> None:
+        prompt = _junie_build_task_prompt(_doc_score(), stand_path=tmp_path)
+        assert "## Card Documentation" not in prompt
+
+    def test_opencode_compat_emits_card_docs_section(self, tmp_path: Path) -> None:
+        (tmp_path / "docs" / "cards" / "70-t").mkdir(parents=True)
+        prompt = _compat_build_task_prompt(_doc_score(), stand_path=tmp_path)
+        assert "## Card Documentation" in prompt
+        assert "docs/cards/70-t/" in prompt
+
+    def test_opencode_compat_omits_section_when_folder_missing(self, tmp_path: Path) -> None:
+        prompt = _compat_build_task_prompt(_doc_score(), stand_path=tmp_path)
+        assert "## Card Documentation" not in prompt
