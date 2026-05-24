@@ -1,49 +1,25 @@
-"""Coverage tests for scoring.py — empty-results consensus and no-content ClaudeScorer path."""
+"""Coverage tests for scoring.py — empty-results consensus and parse/api error paths."""
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from coordinare.services.scoring import ClaudeScorer, ScoringResult, compute_consensus
+from coordinare.services.scoring import BackendScorer, ScoringResult, compute_consensus
 
 
-def _make_claude_service(
-    response_text: str | None = None,
+def _make_backend(
+    data: dict[str, Any] | None = None,
+    text: str = "",
     raise_exc: Exception | None = None,
-    empty_content: bool = False,
 ) -> MagicMock:
-    """Build a mock ClaudeService.
-
-    - raise_exc: messages.create raises this exception
-    - empty_content: response.content is [] (no content blocks)
-    - response_text: response has one content block with this text
-    """
-    service = MagicMock()
-    service._model = "claude-3-5-sonnet-latest"
-    messages_mock = MagicMock()
-
+    backend = MagicMock()
     if raise_exc is not None:
-        messages_mock.create = AsyncMock(side_effect=raise_exc)
-    elif empty_content:
-        response = MagicMock()
-        response.content = []
-        messages_mock.create = AsyncMock(return_value=response)
-    elif response_text is not None:
-        msg_block = MagicMock()
-        msg_block.text = response_text
-        response = MagicMock()
-        response.content = [msg_block]
-        messages_mock.create = AsyncMock(return_value=response)
+        backend.prompt = AsyncMock(side_effect=raise_exc)
     else:
-        # content attribute is None / falsy
-        response = MagicMock()
-        response.content = None
-        messages_mock.create = AsyncMock(return_value=response)
-
-    service._client = MagicMock()
-    service._client.messages = messages_mock
-    return service
+        backend.prompt = AsyncMock(return_value={"text": text, "data": data})
+    return backend
 
 
 # ---------------------------------------------------------------------------
@@ -53,7 +29,6 @@ def _make_claude_service(
 
 @pytest.mark.asyncio
 async def test_compute_consensus_empty_providers_returns_fallback() -> None:
-    """With no providers at all, consensus score is 0.0 and primary is 'none'."""
     from coordinare.models.advocate import ConsensusScore
 
     consensus, primary = await compute_consensus([], "title", "body", "docs")
@@ -67,7 +42,6 @@ async def test_compute_consensus_empty_providers_returns_fallback() -> None:
 
 @pytest.mark.asyncio
 async def test_compute_consensus_all_providers_fail_returns_fallback() -> None:
-    """When every provider raises, valid results are empty and fallback is used."""
     class FailingProvider:
         @property
         def provider_name(self) -> str:
@@ -91,66 +65,69 @@ async def test_compute_consensus_all_providers_fail_returns_fallback() -> None:
 
 @pytest.mark.asyncio
 async def test_compute_consensus_all_api_errors_returns_fallback() -> None:
-    """ClaudeScorer api_error results have classification=None → treated as failed."""
-    scorer = ClaudeScorer(_make_claude_service(raise_exc=RuntimeError("timeout")))
+    """BackendScorer api_error results have classification=None → treated as failed."""
+    scorer = BackendScorer(_make_backend(raise_exc=RuntimeError("timeout")), provider_name="test")
 
-    consensus, primary = await compute_consensus(
-        [scorer],
-        "title",
-        "body",
-        "docs",
-    )
+    consensus, primary = await compute_consensus([scorer], "title", "body", "docs")
 
     assert consensus.final_score == 0.0
     assert primary.provider.provider_name == "none"
 
 
 # ---------------------------------------------------------------------------
-# ClaudeScorer.score() — no content in response → returns _failure
+# BackendScorer.score() — parse/api error paths
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_claude_scorer_empty_content_list_returns_failure() -> None:
-    """response.content == [] → no text extracted → _failure returned."""
-    scorer = ClaudeScorer(_make_claude_service(empty_content=True))
+async def test_scorer_no_data_returns_parse_error() -> None:
+    """response['data'] is None → parse_error."""
+    scorer = BackendScorer(_make_backend(data=None), provider_name="test")
 
     result = await scorer.score("title", "body", "docs")
 
     assert result.classification is None
     assert result.response_text is None
-    assert result.provider.provider_name == "claude"
-    assert result.provider.reasoning == "api_error"
+    assert result.provider.provider_name == "test"
+    assert result.provider.reasoning == "parse_error"
 
 
 @pytest.mark.asyncio
-async def test_claude_scorer_none_content_returns_failure() -> None:
-    """response.content is None (falsy) → _failure returned."""
-    scorer = ClaudeScorer(_make_claude_service())  # empty_content=False, no text → content=None
+async def test_scorer_missing_classification_returns_parse_error() -> None:
+    """data missing required 'classification' key → parse_error."""
+    scorer = BackendScorer(
+        _make_backend(data={"confidence": 0.5}), provider_name="test"
+    )
 
     result = await scorer.score("title", "body", "docs")
 
     assert result.classification is None
-    assert result.provider.reasoning == "api_error"
-
-
-def test_claude_scorer_provider_name() -> None:
-    """ClaudeScorer.provider_name property returns 'claude'."""
-    scorer = ClaudeScorer(MagicMock())
-    assert scorer.provider_name == "claude"
+    assert result.provider.reasoning == "parse_error"
 
 
 @pytest.mark.asyncio
-async def test_claude_scorer_blocks_without_text_attr_returns_failure() -> None:
-    """response.content has blocks but blocks[0] lacks 'text' → _failure returned (line 93->95)."""
-    svc = MagicMock()
-    response = MagicMock()
-    block_no_text = MagicMock(spec=[])  # spec=[] → no attributes
-    response.content = [block_no_text]
-    svc._client.messages.create = AsyncMock(return_value=response)
-    svc._model = "claude-test"
+async def test_scorer_invalid_classification_value_returns_parse_error() -> None:
+    """Unknown classification value → parse_error."""
+    scorer = BackendScorer(
+        _make_backend(data={"classification": "not_a_real_type", "confidence": 0.5}),
+        provider_name="test",
+    )
 
-    scorer = ClaudeScorer(svc)
+    result = await scorer.score("title", "body", "docs")
+
+    assert result.classification is None
+    assert result.provider.reasoning == "parse_error"
+
+
+def test_scorer_provider_name() -> None:
+    scorer = BackendScorer(MagicMock(), provider_name="anthropic_api")
+    assert scorer.provider_name == "anthropic_api"
+
+
+@pytest.mark.asyncio
+async def test_scorer_backend_exception_returns_api_error() -> None:
+    scorer = BackendScorer(_make_backend(raise_exc=RuntimeError("boom")), provider_name="test")
+
     result = await scorer.score("title", "body", "docs")
 
     assert result.classification is None

@@ -180,10 +180,18 @@ class HermesBackend:
         # (--quiet suppresses banner / spinner / tool previews so what remains
         # is the response plus minimal session-info chrome) and route the
         # endpoint through HERMES_BASE_URL in the subprocess env.
+        # --yolo: bypass hermes-agent's dangerous-command approval gate.
+        # In a non-interactive subprocess there is no TTY to prompt on, so
+        # the default `approvals.mode: manual` fails closed with
+        # "BLOCKED: User denied" and the agent loops without ever shelling
+        # out. The container itself is the security boundary here, paired
+        # with our --toolsets allow-list. `approvals.mode: off` is also
+        # written into the per-job config below as belt-and-suspenders.
         args: list[str] = [
             self._executable, "chat",
             "-q", prompt,
             "--quiet",
+            "--yolo",
             "--toolsets", ",".join(ALLOWED_TOOLSETS),
             "--provider", provider,
             "--model", resolved_model,
@@ -333,7 +341,16 @@ class HermesBackend:
         the key via ``key_env`` rather than embedding it so the secret never
         lands on disk.
         """
-        cfg_lines: list[str] = ["disabled_toolsets:"]
+        cfg_lines: list[str] = [
+            "approvals:",
+            # Quote "off" so YAML doesn't coerce it to the boolean False.
+            # hermes-agent's config layer expects the literal string "off"
+            # (alongside "manual"/"smart") and silently falls back to manual
+            # if it sees a bool here — defeating the whole point of the gate
+            # disable.
+            '  mode: "off"',
+            "disabled_toolsets:",
+        ]
         cfg_lines += [f"  - {name}" for name in DISABLED_TOOLSETS]
         if base_url and provider:
             cfg_lines += [
@@ -453,24 +470,33 @@ class HermesBackend:
                 self._finalize()
                 return
 
+            # `output` must carry the full stdout so JSON-role consumers in
+            # main.py can re-extract their schema (their JSON rarely contains
+            # summary/result/message keys).
+            summary: str | None = None
+            tokens: int | None = None
             if isinstance(parsed, dict) and parsed:
-                summary = (
+                maybe_summary = (
                     parsed.get("summary")
                     or parsed.get("result")
                     or parsed.get("message")
                 )
-                tokens = parsed.get("tokens") or parsed.get("tokens_processed")
-            else:
-                summary = stdout_text.strip()[-_MAX_TEXT:] or None
-                tokens = None
+                if isinstance(maybe_summary, str):
+                    summary = maybe_summary
+                maybe_tokens = parsed.get("tokens") or parsed.get("tokens_processed")
+                if isinstance(maybe_tokens, int):
+                    tokens = maybe_tokens
+
+            output_text = stdout_text.strip() or None
 
             self._status = BackendStatus(
                 state="done",
-                tokens_processed=tokens if isinstance(tokens, int) else None,
-                output=summary if isinstance(summary, str) else None,
+                tokens_processed=tokens,
+                output=output_text,
             )
-            if isinstance(summary, str) and summary:
-                self._emit(BackendEventType.progress, summary[:_MAX_TEXT])
+            event_text = summary if summary else (output_text or "")
+            if event_text:
+                self._emit(BackendEventType.progress, event_text[:_MAX_TEXT])
             self._finalize()
         except asyncio.CancelledError:
             raise

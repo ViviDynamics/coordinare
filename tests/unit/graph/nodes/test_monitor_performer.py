@@ -320,6 +320,86 @@ async def test_blocked_status_without_questions() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 070: partial_progress + blocked-no-commits guardrail
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_partial_progress_routes_back_to_dispatching() -> None:
+    """partial_progress relays next_focus and re-dispatches the implementing stage."""
+    service = _Performer({
+        "status": "partial_progress",
+        "next_focus": "Finish wiring up the slot release path",
+        "head_before": "aaa111",
+        "head_after": "bbb222",
+    })
+    state = _make_state(service=service)
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "dispatching"
+    assert result["performer_stage"] == "implementing"
+    assert result["agent_dispatch"] == {}
+    relay = result["relay_feedback"]
+    assert len(relay) == 1
+    assert "Finish wiring up the slot release path" in relay[0]["body"]
+
+
+@pytest.mark.asyncio
+async def test_blocked_implementer_no_new_commits_routes_to_retry() -> None:
+    """Implementer reporting blocked with head_before==head_after re-dispatches."""
+    service = _Performer({
+        "status": "blocked",
+        "questions": ["should I keep going?"],
+        "head_before": "aaa111",
+        "head_after": "aaa111",
+    })
+    state = _make_state(service=service)
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "dispatching"
+    assert result["performer_stage"] == "implementing"
+    relay = result["relay_feedback"]
+    assert len(relay) == 1
+    assert "without pushing any new commits" in relay[0]["body"]
+
+
+@pytest.mark.asyncio
+async def test_blocked_implementer_with_new_commits_stays_blocked() -> None:
+    """Implementer reporting blocked WITH commit delta honors the blocked verdict."""
+    service = _Performer({
+        "status": "blocked",
+        "questions": ["What credential should I use?"],
+        "head_before": "aaa111",
+        "head_after": "bbb222",
+    })
+    state = _make_state(service=service)
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "blocked"
+    assert result["open_questions"] == ["What credential should I use?"]
+
+
+@pytest.mark.asyncio
+async def test_blocked_non_implementer_stage_ignores_commit_delta_guardrail() -> None:
+    """Guardrail only fires for the implementing stage; reviewers can block freely."""
+    service = _Performer({
+        "status": "blocked",
+        "questions": ["What is the threat model?"],
+        "head_before": "aaa111",
+        "head_after": "aaa111",
+    })
+    state = _make_state(service=service, stage="reviewing", sequence=["implementing", "reviewing"])
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "blocked"
+    assert result["open_questions"] == ["What is the threat model?"]
+
+
+# ---------------------------------------------------------------------------
 # T015-8: session_expired handling
 # ---------------------------------------------------------------------------
 

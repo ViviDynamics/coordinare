@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import structlog
@@ -68,6 +68,34 @@ def _count_slot_consuming_sessions(state: dict) -> int:
         1 for sess in sessions.values()
         if sess.get("phase") not in NON_SLOT_PHASES
     )
+
+
+# 069: phases the per-session invocation must keep running on the next cycle.
+# When check_board is invoked for an existing IN_PROGRESS card whose session
+# is mid-flight, the routing layer dispatches monitor_performer / dispatcher /
+# handle_blocked based on this phase — clobbering it to "idle" terminates
+# monitoring entirely.
+_IN_FLIGHT_WORKING_PHASES: frozenset[str] = frozenset(
+    {"monitoring_performer", "dispatching", "blocked"}
+)
+
+
+def _has_in_flight_working_session(state: dict) -> bool:
+    """Whether ``active_card_id`` points at a session in an in-flight working phase.
+
+    Used by ``check_board`` to skip the end-of-cycle retire-and-go-idle path
+    when the per-session invocation that triggered this cycle is still doing
+    real work (multi-card primary IN_PROGRESS session falling through to TODO
+    pickup with an empty TODO column).
+    """
+    active_id = state.get("active_card_id")
+    sessions = state.get("active_sessions") or {}
+    if not active_id or not isinstance(sessions, dict):
+        return False
+    sess = sessions.get(active_id)
+    if not isinstance(sess, dict):
+        return False
+    return sess.get("phase") in _IN_FLIGHT_WORKING_PHASES
 
 
 def _allowed_github_host(config: object) -> str | None:
@@ -650,13 +678,11 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
             _snapshot_stage = _snapshot_stage_for_card(state, item)
             if _snapshot_stage:
                 sess["performer_stage"] = _snapshot_stage
-            # 066 FR-002/SC-001: unified passive re-adopt regardless of N.
-            # If a container is already running for this IN_PROGRESS card we
-            # must not re-dispatch (duplicates the performer). Without a
-            # snapshot we treat the card as still in-flight and wait for the
-            # performer to report; monitor_performer will surface a missing
-            # container as a system error rather than silently re-dispatching.
-            sess["phase"] = "monitoring_agent"
+            # 069: a freshly-readopted session has no agent_dispatch.session_id,
+            # so monitor_performer cannot poll status — leave the default
+            # phase="dispatching" from create_session_from_card so a fresh
+            # container spins up. (Snapshot-restored sessions that carry a real
+            # session_id are handled by Fix 22 above and never reach this loop.)
             active_sessions[item] = sess
             already_active_ids.add(item)
             readopted_any = True
@@ -742,7 +768,20 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
                 state["active_card_id"] = item
             _rederive_current_card(state)
 
-            last_notified = state.get("last_blocked_notified_at")
+            # 069 follow-up: prefer the per-card session watermark over the
+            # top-level mirror.  The top-level value is reset to None when the
+            # daemon restores from snapshot (or when handle_blocked's no-questions
+            # requeue path fires), but the session-level value survives via
+            # PersistedSession.last_blocked_notified_at.  Without this fallback,
+            # check_board can never detect new user comments after a restart and
+            # the card stays blocked indefinitely.  Mirrors handle_blocked.py:152.
+            sess_for_watermark = (state.get("active_sessions") or {}).get(item)
+            sess_last = (
+                sess_for_watermark.get("last_blocked_notified_at")
+                if isinstance(sess_for_watermark, dict)
+                else None
+            )
+            last_notified = sess_last if sess_last is not None else state.get("last_blocked_notified_at")
             issue_node_id = str(content_node_ids.get(item, ""))
             if last_notified is not None and isinstance(last_notified, datetime):
                 try:
@@ -817,16 +856,16 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
                     except (ValueError, TypeError):
                         continue
 
-            raw_hours = state.get("blocked_reminder_hours", 24)
-            hours = raw_hours if isinstance(raw_hours, int) else 24
-            now = datetime.now(UTC)
-            if last_notified is None or (
-                isinstance(last_notified, datetime)
-                and now - last_notified >= timedelta(hours=hours)
-            ):
-                state["phase"] = "blocked"
-            else:
-                state["phase"] = "idle"
+            # 069 follow-up: always route a still-blocked card to
+            # handle_blocked. The previous "phase=idle when reminder not due"
+            # branch wedged the session — state_to_session mirrored that "idle"
+            # back onto session.phase, which _count_slot_consuming_sessions
+            # treats as slot-consuming. Result: blocked card occupied a slot
+            # indefinitely with no work and TODO pickup never fired.
+            # handle_blocked has its own reminder-window dedup, so routing
+            # there unconditionally is safe and keeps session.phase="blocked"
+            # (in NON_SLOT_PHASES) so the slot is correctly released.
+            state["phase"] = "blocked"
 
             # A blocked card is waiting on a human and does not occupy a
             # worker slot, so fall through to fill remaining slots from TODO
@@ -1155,9 +1194,20 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
                 blocked_dep_count=len(state["blocked_by_dependencies"]),
                 todo_count=len(todo),
             )
+        # 069: A multi-card primary IN_PROGRESS session falls through here
+        # when its session is mid-flight and TODO becomes empty after
+        # filtering.  Preserve the working phase so monitor_performer keeps
+        # running on the next cycle instead of being terminated.
+        if _has_in_flight_working_session(state):
+            return state
         # Clear stale current_card so persisted snapshots don't carry
         # forward a card that's no longer eligible.
         _retire_active_session(state)
 
+    # 069: same guard for the no-TODO path — an IN_PROGRESS session with an
+    # empty TODO column would otherwise be clobbered to phase="idle" and
+    # never re-enter monitor_performer.
+    if _has_in_flight_working_session(state):
+        return state
     state["phase"] = "idle"
     return state

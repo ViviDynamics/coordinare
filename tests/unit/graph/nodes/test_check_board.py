@@ -311,6 +311,36 @@ async def test_check_board_resumes_blocked_card_on_new_comment() -> None:
 
 
 @pytest.mark.asyncio
+async def test_check_board_blocked_card_uses_session_watermark_when_top_level_is_none() -> None:
+    """069 follow-up: after a daemon restart, the top-level
+    ``last_blocked_notified_at`` mirror is None but the per-session watermark
+    survives via PersistedSession. check_board must fall back to the session
+    value when detecting new user comments — otherwise the card stays blocked
+    forever and never picks up the user's reply.
+    """
+    state = initial_state()
+    github = _GitHubBlockedWithNewComment()
+    state["github_service"] = github
+    state["last_blocked_notified_at"] = None
+    state["active_sessions"] = {
+        "ITEM_B": {
+            "current_card": {"id": "ITEM_B"},
+            "phase": "blocked",
+            "performer_stage": "implementing",
+            "last_blocked_notified_at": datetime(2026, 2, 25, 10, 0, tzinfo=UTC),
+        }
+    }
+    state["open_questions"] = ["What routes need breadcrumbs?"]
+
+    result = await check_board(state)
+
+    assert result["phase"] == "dispatching"
+    assert github.moved_to == "IN_PROGRESS"
+    assert len(result["card_clarifications"]) == 1
+    assert result["card_clarifications"][0]["answer"] == "Here is the answer"
+
+
+@pytest.mark.asyncio
 async def test_check_board_blocked_card_reminder_due() -> None:
     state = initial_state()
     state["github_service"] = _GitHubBlockedNoNewComment()
@@ -332,7 +362,10 @@ async def test_check_board_blocked_card_no_reminder_yet() -> None:
 
     result = await check_board(state)
 
-    assert result["phase"] == "idle"
+    # 069 follow-up: a still-blocked card must stay phase="blocked" so the
+    # session sits in NON_SLOT_PHASES and frees the concurrency slot.
+    # handle_blocked's own dedup gates the reminder re-post.
+    assert result["phase"] == "blocked"
 
 
 @pytest.mark.asyncio
@@ -688,10 +721,13 @@ class _GitHubInProgress:
 
 @pytest.mark.asyncio
 async def test_check_board_readopts_in_progress_card_after_restart() -> None:
-    """066 FR-002/SC-001: IN_PROGRESS re-adopt is passive for any N — wait for
-    the existing performer rather than re-dispatching (would duplicate the
-    container). monitor_performer surfaces a missing container as a system
-    error rather than silently re-dispatching."""
+    """069: a freshly-readopted IN_PROGRESS card has no agent_dispatch.session_id,
+    so monitor_performer cannot poll status — readopt must leave the session at
+    phase="dispatching" so a fresh container spins up rather than burning the
+    system_error retry budget on transport errors against a non-existent job.
+    Snapshot-restored sessions that carry a real session_id are handled by Fix
+    22 earlier in check_board and never reach the readopt loop.
+    """
     state = initial_state()
     state["github_service"] = _GitHubInProgress()
 
@@ -699,7 +735,7 @@ async def test_check_board_readopts_in_progress_card_after_restart() -> None:
 
     sessions = result.get("active_sessions") or {}
     assert "ITEM_P" in sessions
-    assert sessions["ITEM_P"]["phase"] == "monitoring_agent"
+    assert sessions["ITEM_P"]["phase"] == "dispatching"
     assert result["current_card"] is not None
     assert result["current_card"]["id"] == "ITEM_P"
 
@@ -734,13 +770,13 @@ async def test_check_board_readopts_dirty_in_progress_card_resets_context() -> N
 
     result = await check_board(state)
 
-    # 066 FR-002/SC-001: IN_PROGRESS re-adopt is passive — phase=monitoring_agent
-    # for any N. The fresh CardSession from create_session_from_card zeroes
-    # stale per-card residue; the flat-state mirror reflects the re-derived
-    # session.
+    # 069: fresh-readopt has no session_id → phase=dispatching so a new
+    # container spins up. The fresh CardSession from create_session_from_card
+    # zeroes stale per-card residue; the flat-state mirror reflects the
+    # re-derived session.
     sessions = result.get("active_sessions") or {}
     assert "ITEM_DIRTY" in sessions
-    assert sessions["ITEM_DIRTY"]["phase"] == "monitoring_agent"
+    assert sessions["ITEM_DIRTY"]["phase"] == "dispatching"
     assert result["current_card"]["id"] == "ITEM_DIRTY"
     assert result["system_error_count"] == 0
     assert result["system_error_reason"] is None
@@ -776,11 +812,10 @@ class _GitHubInProgressWithTodos:
 async def test_check_board_multicard_readopts_in_progress_and_picks_up_todos() -> None:
     """065 US2 regression: in multi-card mode, an IN_PROGRESS card must NOT
     short-circuit the function — it should be re-adopted into
-    ``active_sessions`` (phase=monitoring_agent) AND the function must fall
-    through to TODO pickup so the remaining concurrency slots fill in the
-    same cycle.  Without the fall-through, a single IN_PROGRESS card
-    silently serialises work to one card at a time even when
-    ``max_concurrent_cards > 1``.
+    ``active_sessions`` AND the function must fall through to TODO pickup so
+    the remaining concurrency slots fill in the same cycle.  Without the
+    fall-through, a single IN_PROGRESS card silently serialises work to one
+    card at a time even when ``max_concurrent_cards > 1``.
     """
     state = initial_state()
     state["github_service"] = _GitHubInProgressWithTodos()
@@ -800,7 +835,7 @@ async def test_check_board_multicard_readopts_in_progress_and_picks_up_todos() -
     assert "ITEM_P1" in sessions, (
         "IN_PROGRESS card must be re-adopted into active_sessions"
     )
-    assert sessions["ITEM_P1"]["phase"] == "monitoring_agent"
+    assert sessions["ITEM_P1"]["phase"] == "dispatching"
     assert sessions["ITEM_P1"]["current_card"]["status"] == "IN_PROGRESS"
     assert "ITEM_T1" in sessions, "First TODO must be picked up in same cycle"
     assert "ITEM_T2" in sessions, "Second TODO must be picked up in same cycle"
@@ -1291,6 +1326,48 @@ async def test_check_board_does_not_hijack_monitoring_mid_retry() -> None:
 
 
 @pytest.mark.asyncio
+async def test_check_board_preserves_parked_system_error_session() -> None:
+    """069 follow-up: a parked system_error session (waiting on retry interval)
+    must be preserved verbatim by check_board so handle_system_error can re-fire
+    on the next cycle.  The wedge: handle_system_error's wait branch used to set
+    phase=idle, which exited the graph; nothing else routed back to
+    handle_system_error, so the 90s retry timer never elapsed against a fresh
+    invocation.  Fix is two-sided — handle_system_error keeps phase=system_error
+    during wait, and this early-return relays that back through next cycle
+    without clobbering current_card or agent_dispatch.
+    """
+    state = initial_state()
+    state["github_service"] = _GitHubInProgress()
+    card = {"id": "ITEM_P", "status": "IN_PROGRESS"}
+    state["current_card"] = card
+    state["system_error_count"] = 1
+    state["system_error_reason"] = "transient failure"
+    state["phase"] = "system_error"
+    state["agent_dispatch"] = {"session_id": "sess-parked"}
+    state["agent_dispatch_at"] = datetime(2026, 5, 23, 12, 0, 0, tzinfo=UTC)
+    # 066 FR-010: active_sessions is the source of truth; current_card is a
+    # mirror.  Populate the session so _finalize_active_card's rederive doesn't
+    # null out the mirror at the end of check_board.
+    state["active_sessions"] = {
+        "ITEM_P": {
+            "current_card": card,
+            "phase": "system_error",
+            "system_error_count": 1,
+            "agent_dispatch": {"session_id": "sess-parked"},
+        }
+    }
+    state["active_card_id"] = "ITEM_P"
+
+    result = await check_board(state)
+
+    assert result["phase"] == "system_error"
+    assert result["current_card"] is not None
+    assert result["current_card"]["id"] == "ITEM_P"
+    assert result["agent_dispatch"] == {"session_id": "sess-parked"}
+    assert result["system_error_count"] == 1
+
+
+@pytest.mark.asyncio
 async def test_check_board_idle_when_blocked_and_system_error_notified() -> None:
     """Blocked card where operator has already been notified → phase='idle' (no re-notify)."""
     state = initial_state()
@@ -1338,8 +1415,11 @@ async def test_check_board_blocked_old_comment_does_not_requeue() -> None:
 
     result = await check_board(state)
 
-    # Comment was old → no requeue; reminder not due → idle
-    assert result["phase"] == "idle"
+    # Comment was old → no requeue. Reminder not due, but the session still
+    # needs to remain at phase="blocked" so it stays in NON_SLOT_PHASES and
+    # the concurrency slot is released. handle_blocked's own dedup gates the
+    # comment re-post. (069 follow-up: phase="idle" used to wedge the slot.)
+    assert result["phase"] == "blocked"
 
 
 # ---------------------------------------------------------------------------

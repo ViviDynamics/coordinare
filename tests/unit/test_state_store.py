@@ -448,3 +448,95 @@ async def test_load_v1_snapshot_forward_compat(tmp_path: Path) -> None:
     loaded = await store.load()
     assert loaded is not None
     assert loaded.active_sessions == {}
+
+
+# --- 069 T005/T006: last_blocked_notified_at on PersistedSession ---
+
+
+@pytest.mark.asyncio
+async def test_persisted_session_roundtrips_last_blocked_notified_at(tmp_path: Path) -> None:
+    """069 T005 / FR-001: a snapshot's per-card ``last_blocked_notified_at``
+    survives a save → load round-trip so the dedup gate holds across restart.
+    """
+    metrics = CoordinareMetrics()
+    store = StateStore(path=tmp_path / "state.json", metrics=metrics)
+    t_blocked = datetime(2026, 5, 21, 21, 32, 4, tzinfo=UTC)
+    snapshot = _make_snapshot(
+        phase="blocked",
+        active_card_id="PVT_70",
+        active_sessions={
+            "PVT_70": PersistedSession(
+                card_id="PVT_70",
+                performer_stage="implementing",
+                phase="blocked",
+                last_blocked_notified_at=t_blocked,
+            ),
+        },
+    )
+
+    await store.save(snapshot)
+    loaded = await store.load()
+
+    assert loaded is not None
+    assert loaded.active_sessions["PVT_70"].last_blocked_notified_at == t_blocked
+
+
+@pytest.mark.asyncio
+async def test_v1_snapshot_defaults_last_blocked_notified_at_to_none(tmp_path: Path) -> None:
+    """069 T006: a v1 snapshot whose ``PersistedSession`` entries lack the new
+    field deserializes cleanly with ``last_blocked_notified_at == None``.
+    """
+    import json
+
+    metrics = CoordinareMetrics()
+    path = tmp_path / "state.json"
+    store = StateStore(path=path, metrics=metrics)
+    snapshot = _make_snapshot(
+        phase="blocked",
+        active_card_id="PVT_70",
+        active_sessions={
+            "PVT_70": PersistedSession(card_id="PVT_70", performer_stage="implementing"),
+        },
+    )
+    await store.save(snapshot)
+
+    data = json.loads(path.read_text())
+    data["schema_version"] = 1
+    data["active_sessions"]["PVT_70"].pop("last_blocked_notified_at", None)
+    data["active_sessions"]["PVT_70"].pop("last_blocked_slack_delivered_at", None)
+    path.write_text(json.dumps(data))
+
+    loaded = await store.load()
+    assert loaded is not None
+    assert loaded.active_sessions["PVT_70"].last_blocked_notified_at is None
+    assert loaded.active_sessions["PVT_70"].last_blocked_slack_delivered_at is None
+
+
+@pytest.mark.asyncio
+async def test_persisted_session_roundtrips_last_blocked_slack_delivered_at(tmp_path: Path) -> None:
+    """069 FR-004: ``last_blocked_slack_delivered_at`` survives a save → load
+    round-trip so the post-restart Slack-dedup gate holds.  This is a
+    separate field from ``last_blocked_notified_at`` because the latter is
+    rewritten on every handle_blocked pass and cannot prove Slack fired.
+    """
+    metrics = CoordinareMetrics()
+    store = StateStore(path=tmp_path / "state.json", metrics=metrics)
+    t_slack = datetime(2026, 5, 23, 16, 30, 0, tzinfo=UTC)
+    snapshot = _make_snapshot(
+        phase="blocked",
+        active_card_id="PVT_70",
+        active_sessions={
+            "PVT_70": PersistedSession(
+                card_id="PVT_70",
+                performer_stage="implementing",
+                phase="blocked",
+                last_blocked_slack_delivered_at=t_slack,
+            ),
+        },
+    )
+
+    await store.save(snapshot)
+    loaded = await store.load()
+
+    assert loaded is not None
+    assert loaded.active_sessions["PVT_70"].last_blocked_slack_delivered_at == t_slack

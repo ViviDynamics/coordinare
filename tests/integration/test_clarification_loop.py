@@ -464,8 +464,10 @@ async def test_dispatch_error_enters_retry_cycle() -> None:
     graph = CoordinareGraphBuilder().build()
     result = await graph.ainvoke(state)
 
-    # First error: enters retry wait (0s elapsed < 90s threshold) → goes idle
-    assert result["phase"] == "idle"
+    # First error: enters retry wait (0s elapsed < 90s threshold). Phase stays
+    # system_error so check_board's early-return routes the parked session back
+    # through handle_system_error every cycle until the timer elapses.
+    assert result["phase"] == "system_error"
     assert result["system_error_count"] == 1
     assert result.get("system_error_reason") is not None
     # No GitHub comment — system errors do not pollute the issue thread

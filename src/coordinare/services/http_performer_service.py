@@ -125,6 +125,18 @@ class HTTPPerformerService:
             job = self._active_jobs.get(job_id)
             if job is not None:
                 return job.client
+            # 069 diagnostic: ephemeral lookup miss — about to fall through to
+            # the persistent branch, which has no endpoint for ephemeral configs
+            # and will raise TransportError. Log instance identity + known job_ids
+            # so we can tell whether the polling caller resolved to a different
+            # service instance than the one that ran dispatch_card.
+            logger.warning(
+                "http_performer.ephemeral_job_lookup_miss",
+                performer_id=self._config.id,
+                requested_job_id=job_id,
+                known_job_ids=list(self._active_jobs.keys()),
+                service_instance_id=id(self),
+            )
         # Persistent: use shared client.
         if self._persistent_client is None:
             if self._persistent_endpoint is None:
@@ -560,14 +572,25 @@ class HTTPPerformerService:
         # the subprocess when operators use the HTTP-payload secret path instead
         # of Docker env vars.
         backend = str(card_context.get("backend", "")).replace("-", "_")
+        # Per-role overrides plumbed from PerformerRoleConfig via dispatch_performer.
+        # base_url + api_key_env let an operator point a backend at a proxy
+        # (e.g. LiteLLM) instead of the vendor's native endpoint.
+        role_base_url = card_context.get("base_url")
+        role_api_key_env = card_context.get("api_key_env")
         if backend == "codex":
-            openai_key = os.environ.get("OPENAI_API_KEY", "")
+            key_env_name = str(role_api_key_env) if role_api_key_env else "OPENAI_API_KEY"
+            openai_key = os.environ.get(key_env_name, "")
             if openai_key:
                 secrets["OPENAI_API_KEY"] = openai_key
+            if role_base_url:
+                secrets["OPENAI_BASE_URL"] = str(role_base_url)
         elif backend == "claude_code":
-            anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
+            key_env_name = str(role_api_key_env) if role_api_key_env else "ANTHROPIC_API_KEY"
+            anthropic_key = os.environ.get(key_env_name, "")
             if anthropic_key:
                 secrets["ANTHROPIC_API_KEY"] = anthropic_key
+            if role_base_url:
+                secrets["ANTHROPIC_BASE_URL"] = str(role_base_url)
         elif backend in {"opencode", "junie", "cursor"}:
             # These backends can use either Anthropic or OpenAI providers;
             # inject whichever keys are available so the subprocess can choose.

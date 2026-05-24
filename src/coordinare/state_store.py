@@ -61,6 +61,20 @@ class PersistedSession(BaseModel):
     system_error_reason: str | None = None
     system_error_notified: bool = False
     requirements_changed: bool = False
+    # 069: per-card blocked-notification watermark.  Mirrors
+    # ``CardSession.last_blocked_notified_at`` so a restart does not lose the
+    # dedup gate that prevents re-spamming Slack and re-posting the GitHub
+    # reminder comment for a card that was already announced as blocked.
+    # Optional / default ``None`` keeps v1 snapshots loading unchanged.
+    last_blocked_notified_at: datetime | None = None
+    # 069 FR-004: per-card watermark for Slack ``card_blocked`` delivery.
+    # ``last_blocked_notified_at`` is written on every pass through
+    # handle_blocked (it doubles as the check_board cutoff + GitHub 24h dedup
+    # gate) and therefore cannot prove Slack actually went out.  This field is
+    # written ONLY when notify.dispatch() succeeds for ``card_blocked``, so
+    # FR-004's post-restart suppression has a truthful signal that survives
+    # the in-memory NotificationHistory loss across restarts.
+    last_blocked_slack_delivered_at: datetime | None = None
 
 
 class WorkflowSnapshot(BaseModel):

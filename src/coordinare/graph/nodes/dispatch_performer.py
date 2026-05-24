@@ -533,6 +533,10 @@ async def dispatch_performer(state: CoordinareState) -> CoordinareState:
             card_context["backend"] = role_config.backend
             if role_config.model is not None:
                 card_context["model"] = role_config.model
+            if role_config.base_url is not None:
+                card_context["base_url"] = role_config.base_url
+            if role_config.api_key_env is not None:
+                card_context["api_key_env"] = role_config.api_key_env
             card_context.update(translate_tuning(role_config))
 
     # --- Dispatch ---
@@ -543,14 +547,45 @@ async def dispatch_performer(state: CoordinareState) -> CoordinareState:
     _env_cache_for_ec = state.get("env_cache")
     if _symphony_name_for_ec is not None and _env_cache_for_ec:
         from coordinare.models.env_cache import EnvCacheState
-        from coordinare.services.env_cache import DEFAULT_DEVENV_ROOT, get_env_volume_for_symphony
+        from coordinare.services.env_cache import (
+            DEFAULT_DEVENV_ROOT,
+            _cache_dir_has_activate,
+            get_env_volume_for_symphony,
+        )
         from coordinare.services.http_performer_service import HTTPPerformerService
+
+        # Gate consumer dispatches when no usable env cache exists on disk yet.
+        # The env_bootstrap role is exempt — it's the run that populates the
+        # cache, so it must proceed even with an empty cache_dir. Without this
+        # gate, consumer performers fan out before any toolchain is installed
+        # and burn tokens failing on missing `ruby`/`bundle`/`node`/etc.
+        _ec_state_for_sym = _env_cache_for_ec.get(_symphony_name_for_ec)
+        _is_bootstrap_dispatch = performer_stage == "env_bootstrap"
+        if (
+            not _is_bootstrap_dispatch
+            and isinstance(_ec_state_for_sym, EnvCacheState)
+            and not _cache_dir_has_activate(_ec_state_for_sym.cache_dir)
+        ):
+            logger.info(
+                "dispatch_performer.env_cache_not_ready",
+                card_id=card_id,
+                performer_stage=performer_stage,
+                symphony=_symphony_name_for_ec,
+                cache_dir=str(_ec_state_for_sym.cache_dir),
+                detail=(
+                    "Holding dispatch until env_bootstrap populates activate.sh. "
+                    "Card retries on the next pickup cycle."
+                ),
+            )
+            _release_slot_on_error()
+            return state
+
         _devenv_root = DEFAULT_DEVENV_ROOT
         if isinstance(service, HTTPPerformerService):
             _devenv_root = service.devenv_root
         if isinstance(service, HTTPPerformerService) and service.mode == "persistent":
             _has_ready_caches = any(
-                isinstance(s, EnvCacheState) and s.cache_dir_ready
+                isinstance(s, EnvCacheState) and _cache_dir_has_activate(s.cache_dir)
                 for s in _env_cache_for_ec.values()
             )
             if _has_ready_caches:
@@ -568,7 +603,7 @@ async def dispatch_performer(state: CoordinareState) -> CoordinareState:
             _ec_result = get_env_volume_for_symphony(
                 _symphony_name_for_ec,
                 _env_cache_for_ec,
-                is_bootstrap=False,
+                is_bootstrap=_is_bootstrap_dispatch,
                 container_devenv_root=_devenv_root,
             )
             if _ec_result is not None:

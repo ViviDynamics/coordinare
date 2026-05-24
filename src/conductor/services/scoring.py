@@ -1,15 +1,20 @@
-"""ScoringProvider protocol and ClaudeScorer implementation (007)."""
+"""ScoringProvider protocol and BackendScorer implementation (007).
+
+The scorer delegates to the configured ConductingBackend so the choice of LLM
+provider follows the coordinare's backend config (anthropic_api, openai_api,
+claude_cli, codex_cli, opencode, none) rather than being hardcoded to the
+Anthropic SDK.
+"""
 from __future__ import annotations
 
 import asyncio
-import json
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from coordinare.models.advocate import ConsensusScore, IssueType, ScoringProvider
 
 if TYPE_CHECKING:
-    from coordinare.services.claude import ClaudeService
+    from coordinare.services.conducting import ConductingBackend
 
 
 @dataclass
@@ -53,13 +58,26 @@ _SYSTEM_PROMPT = (
 )
 
 
-class ClaudeScorer:
-    def __init__(self, claude_service: ClaudeService) -> None:
-        self._claude = claude_service
+class BackendScorer:
+    """Backend-agnostic scorer driven by a ConductingBackend.
+
+    The previous ClaudeScorer reached into the Anthropic SDK directly. This
+    version routes through ``backend.prompt(text, response_format="json")``,
+    which already handles JSON parsing and works with any configured backend
+    (Anthropic, OpenAI-compatible, claude CLI, codex CLI, opencode, hermes).
+    """
+
+    def __init__(
+        self,
+        backend: ConductingBackend,
+        provider_name: str = "backend",
+    ) -> None:
+        self._backend = backend
+        self._provider_name = provider_name
 
     @property
     def provider_name(self) -> str:
-        return "claude"
+        return self._provider_name
 
     async def score(
         self,
@@ -68,47 +86,51 @@ class ClaudeScorer:
         doc_content: str,
     ) -> ScoringResult:
         _failure = ScoringResult(
-            provider=ScoringProvider(provider_name="claude", score=0.0, reasoning="api_error"),
+            provider=ScoringProvider(
+                provider_name=self._provider_name, score=0.0, reasoning="api_error",
+            ),
             classification=None,
             response_text=None,
         )
-        try:
-            user_message = (
-                f"Documentation:\n{doc_content}\n\n"
-                f"Issue title: {issue_title}\n\n"
-                f"Issue body:\n{issue_body}"
-            )
-            # max_tokens=4096: scoring prompts return a JSON object with reasoning
-            # text alongside the score; 512 truncated long reasoning mid-stream and
-            # surfaced as api_error via JSON parse failure downstream.
-            response = await self._claude._client.messages.create(
-                model=self._claude._model,
-                max_tokens=4096,
-                system=_SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": user_message}],
-            )
-        except Exception:
-            return _failure
+        prompt = (
+            f"{_SYSTEM_PROMPT}\n\n"
+            f"Documentation:\n{doc_content}\n\n"
+            f"Issue title: {issue_title}\n\n"
+            f"Issue body:\n{issue_body}"
+        )
 
-        text = ""
-        if getattr(response, "content", None):
-            blocks = response.content
-            if blocks and hasattr(blocks[0], "text"):
-                text = blocks[0].text
-        if not text:
-            return _failure
+        # One retry on parse_error: small open-source models occasionally drop
+        # the JSON envelope on a first attempt but produce valid JSON on the
+        # second. Backend-level (http) errors still propagate as api_error.
+        data: Any = None
+        for _attempt in range(2):
+            try:
+                response = await self._backend.prompt(prompt, response_format="json")
+            except Exception:
+                return _failure
+            data = response.get("data") if isinstance(response, dict) else None
+            if isinstance(data, dict):
+                break
+
+        if not isinstance(data, dict):
+            return ScoringResult(
+                provider=ScoringProvider(
+                    provider_name=self._provider_name, score=0.0, reasoning="parse_error",
+                ),
+                classification=None,
+                response_text=None,
+            )
 
         try:
-            data = json.loads(text)
             classification = IssueType(data["classification"])
             confidence = float(data["confidence"])
             confidence = max(0.0, min(1.0, confidence))
             response_text = data.get("response_text")
             source_documents = list(data.get("source_documents", []))
-        except (json.JSONDecodeError, KeyError, ValueError, TypeError):
+        except (KeyError, ValueError, TypeError):
             return ScoringResult(
                 provider=ScoringProvider(
-                    provider_name="claude", score=0.0, reasoning="parse_error"
+                    provider_name=self._provider_name, score=0.0, reasoning="parse_error",
                 ),
                 classification=None,
                 response_text=None,
@@ -116,7 +138,7 @@ class ClaudeScorer:
 
         return ScoringResult(
             provider=ScoringProvider(
-                provider_name="claude",
+                provider_name=self._provider_name,
                 score=confidence,
                 reasoning=str(data.get("reasoning", "")),
             ),
@@ -124,6 +146,10 @@ class ClaudeScorer:
             response_text=response_text,
             source_documents=source_documents,
         )
+
+
+# Backwards-compatible alias: existing call sites and tests reference ClaudeScorer.
+ClaudeScorer = BackendScorer
 
 
 async def compute_consensus(

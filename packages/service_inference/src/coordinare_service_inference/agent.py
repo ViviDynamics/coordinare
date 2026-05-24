@@ -19,6 +19,7 @@ Per plan.md the agent must enforce three budgets:
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -115,6 +116,10 @@ class ServiceInferenceAgent:
     max_tool_calls: int = 50
     max_iterations: int = 100
     system_prompt: str = ""
+    # When set, the agent stamps this value onto the manifest before validation
+    # so the LLM cannot fail the run by omitting the required `agent_version`
+    # field. Mirrors the prompt instruction "copy it verbatim".
+    agent_version: str | None = None
     # Cumulative usage across all steps in the most recent ``run()``. Populated
     # as the loop progresses so the orchestrator can read these after a
     # successful (or failed) run for telemetry.
@@ -136,6 +141,8 @@ class ServiceInferenceAgent:
             self.output_tokens += step.output_tokens
 
             if step.manifest is not None:
+                if self.agent_version is not None and isinstance(step.manifest, dict):
+                    step.manifest["agent_version"] = self.agent_version
                 try:
                     manifest = ServicesManifest.model_validate(step.manifest)
                 except ValidationError as exc:
@@ -168,11 +175,16 @@ class ServiceInferenceAgent:
                     }
                 )
                 result = self._dispatch(call)
+                # Anthropic's tool_result.content rejects raw dicts — it
+                # requires a string or a list of content blocks. JSON-encode
+                # the structured payload to a plain string; this is the
+                # lowest-common-denominator shape that both Anthropic and the
+                # OpenAI-compat strategy accept without per-provider branching.
                 tool_results.append(
                     {
                         "type": "tool_result",
                         "tool_use_id": result.id,
-                        "content": result.content,
+                        "content": json.dumps(result.content),
                         "is_error": result.is_error,
                     }
                 )

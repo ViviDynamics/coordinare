@@ -148,6 +148,11 @@ async def test_full_lifecycle(tmp_path: Path) -> None:
     assert state.last_bootstrap_at is not None
     assert state.readme_sha == _combined_sha({"README.md": new_sha})  # preserved
 
+    # Simulate the bootstrap performer writing activate.sh — its on-disk
+    # presence is the authoritative readiness gate for consumer mounts
+    # (cache_dir_ready alone is not enough since it resets on restart).
+    (state.cache_dir / "activate.sh").touch()
+
     # ---- 5. get_env_volume_for_symphony() — regular performer gets ro mount ----
     result = get_env_volume_for_symphony(sym_name, env_cache, is_bootstrap=False)
     assert result is not None

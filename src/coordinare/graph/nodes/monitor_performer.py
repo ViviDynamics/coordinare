@@ -672,11 +672,25 @@ async def _evaluate_pr_checks_gate(
             f"{', '.join(decision.pending) or '(none)'}."
         )
     else:
-        body = (
-            "PR checks gate: required check(s) failed: "
-            f"{', '.join(decision.failed) or '(none)'}. "
-            "Investigate the failing job(s) and push a fix."
-        )
+        # Build a name → details_url map so the implementer can jump straight
+        # to the failing job log without re-querying GitHub.
+        url_by_name = {c.name: (c.details_url or "") for c in rollup.checks}
+        lines = [
+            "PR checks gate: required check(s) failed.",
+            "",
+            "Failing job(s):",
+        ]
+        for name in decision.failed:
+            url = url_by_name.get(name, "")
+            lines.append(f"- {name}: {url}" if url else f"- {name}")
+        lines.extend([
+            "",
+            f"Fetch the failing log via `gh pr checks {pr_num}` to list the runs, "
+            f"then `gh run view --log-failed <run-id>` for each failure. Read the "
+            f"actual error, push a fix, and verify `gh pr checks {pr_num}` is green "
+            f"before returning.",
+        ])
+        body = "\n".join(lines)
     logger.warning(
         "closer.pr_checks.decision",
         action="BOUNCE",
@@ -913,6 +927,24 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
                     performer_stage=stage,
                 )
 
+        # 069 diagnostic: confirm the polling caller resolved to the same
+        # HttpPerformerService instance that dispatched the job (i.e. that
+        # session_id is still tracked in _active_jobs for ephemeral performers).
+        _has_live = None
+        if hasattr(service, "has_live_session") and session_id:
+            try:
+                _has_live = service.has_live_session(str(session_id))
+            except Exception:
+                _has_live = "error"
+        logger.info(
+            "monitor_performer.pre_check_status",
+            card_id=card_id,
+            performer_stage=stage,
+            session_id=str(session_id),
+            service_class=type(service).__name__,
+            service_instance_id=id(service),
+            has_live_session=_has_live,
+        )
         try:
             status = await service.check_status(str(session_id), payload=status_payload)
         except (TransportError, ConnectionError, TimeoutError) as exc:
@@ -1146,6 +1178,7 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
         _terminal_markers = TERMINAL_SUCCESS_STATES | {
             "changes_requested", "security_failed", "qa_failed",
             "error", "blocked", "session_expired", "token_limit",
+            "partial_progress",
         }
         if marker in _terminal_markers:
             _slot_mgr = state.get("slot_manager")
@@ -1571,8 +1604,73 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
                 state["phase"] = "idle"
             return state
 
+        # --- Partial progress (070) ---
+        # Non-terminal escape hatch for implementer turns that committed/pushed
+        # work but did not finish. Relay the next_focus hint and re-dispatch
+        # the implementing stage for another turn.
+        if marker == "partial_progress":
+            next_focus = status.get("next_focus")
+            focus_text = next_focus.strip() if isinstance(next_focus, str) else ""
+            relay_body = (
+                f"Continue from your previous partial_progress checkpoint. "
+                f"Next focus: {focus_text}"
+                if focus_text
+                else "Continue from your previous partial_progress checkpoint."
+            )
+            logger.info(
+                "monitor_performer.partial_progress",
+                performer_stage=stage,
+                card_id=card_id,
+                has_next_focus=bool(focus_text),
+            )
+            state["relay_feedback"] = [  # type: ignore[typeddict-unknown-key]
+                {"body": relay_body, "author_login": "coordinare"}
+            ]
+            state["performer_stage"] = "implementing"
+            state["phase"] = "dispatching"
+            state["agent_dispatch"] = {}
+            state["agent_dispatch_at"] = None
+            return state
+
         # --- Blocked ---
         if marker == "blocked":
+            # 070: guardrail. If an implementing-stage turn reports blocked
+            # but produced zero new commits, the model punted with a status
+            # report instead of doing the work. Route back to dispatching
+            # with a stronger directive instead of honoring the verdict.
+            head_before = status.get("head_before")
+            head_after = status.get("head_after")
+            if (
+                stage == "implementing"
+                and isinstance(head_before, str)
+                and isinstance(head_after, str)
+                and head_before
+                and head_before == head_after
+            ):
+                logger.warning(
+                    "monitor_performer.blocked_no_commits_retry",
+                    performer_stage=stage,
+                    card_id=card_id,
+                    head=head_before,
+                )
+                state["relay_feedback"] = [  # type: ignore[typeddict-unknown-key]
+                    {
+                        "body": (
+                            "Your previous turn ended without pushing any new "
+                            "commits. Resume the work; do not stop until your "
+                            "changes are committed and pushed, or emit the "
+                            "`partial_progress` JSON sentinel if you need to "
+                            "checkpoint mid-task."
+                        ),
+                        "author_login": "coordinare",
+                    }
+                ]
+                state["performer_stage"] = "implementing"
+                state["phase"] = "dispatching"
+                state["agent_dispatch"] = {}
+                state["agent_dispatch_at"] = None
+                return state
+
             state["phase"] = "blocked"
             questions = status.get("questions")
             if isinstance(questions, list) and questions:

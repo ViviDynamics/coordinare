@@ -148,6 +148,7 @@ async def infer_services(
             client=llm_client,
             max_tool_calls=max_tool_calls,
             system_prompt=system_prompt,
+            agent_version=agent_version,
         )
 
         attempt_log: dict[str, Any] = {"attempt": attempt_idx}

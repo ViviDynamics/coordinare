@@ -140,7 +140,16 @@ async def _run_ci_check(stand_path: Path, label: str = "performer") -> tuple[boo
 
 DEFAULT_INFERENCE_AGENT_VERSION = "claude-services-v1"
 DEFAULT_INFERENCE_MODEL = "claude-sonnet-4-5-20250929"
-DEFAULT_INFERENCE_MAX_TOKENS = 100_000
+# Sonnet 4.5 caps output at 64k. The Anthropic API rejects requests where
+# max_tokens exceeds the model cap, so the default has to fit the default
+# model. Operators can override via COORDINARE_INFERENCE_MAX_TOKENS when they
+# point COORDINARE_INFERENCE_MODEL at something with a different cap.
+DEFAULT_INFERENCE_MAX_TOKENS = 64_000
+# Tool-call ceiling per agent attempt. Wandering models (e.g. Qwen on a large
+# Rails repo) can burn the default of 50 without ever emitting submit_manifest.
+# Operators can raise this via COORDINARE_INFERENCE_MAX_TOOL_CALLS when the
+# repo + model combination needs more headroom.
+DEFAULT_INFERENCE_MAX_TOOL_CALLS = 50
 
 
 async def _run_service_inference(
@@ -198,24 +207,85 @@ async def _run_service_inference(
             "inference_services": services,
         }
 
-    # 2) LLM path: requires ANTHROPIC_API_KEY in the performer env.
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        log.info("service_inference.no_api_key")
-        return {"inference_skipped_reason": "no_api_key"}
+    # 2) LLM path: provider-selected via COORDINARE_INFERENCE_PROVIDER
+    #    (`anthropic` default, or `openai_compat` for LiteLLM/vLLM/Ollama/etc).
+    # Empty values are treated as unset. Coordinare forwards these vars via
+    # config.yaml ${VAR} placeholders; if a var is unset on the host,
+    # os.path.expandvars leaves the literal `${...}` string. The coordinare's
+    # performer_lifecycle drops those before docker -e, but treat them as unset
+    # here too in case an older coordinare or alternate launch path lets one through.
+    def _env(key: str) -> str:
+        val = os.environ.get(key, "")
+        if val.startswith("${") and val.endswith("}"):
+            return ""
+        return val
 
-    agent_version = os.environ.get(
-        "COORDINARE_INFERENCE_AGENT_VERSION", DEFAULT_INFERENCE_AGENT_VERSION
-    )
-    model = os.environ.get("COORDINARE_INFERENCE_MODEL", DEFAULT_INFERENCE_MODEL)
+    provider = (_env("COORDINARE_INFERENCE_PROVIDER") or "anthropic").strip().lower()
+
+    agent_version = _env("COORDINARE_INFERENCE_AGENT_VERSION") or DEFAULT_INFERENCE_AGENT_VERSION
+    model = _env("COORDINARE_INFERENCE_MODEL") or DEFAULT_INFERENCE_MODEL
+    max_tokens_raw = _env("COORDINARE_INFERENCE_MAX_TOKENS")
+    try:
+        max_tokens = int(max_tokens_raw) if max_tokens_raw else DEFAULT_INFERENCE_MAX_TOKENS
+    except ValueError:
+        log.warning(
+            "service_inference.invalid_max_tokens_override",
+            value=max_tokens_raw,
+            fallback=DEFAULT_INFERENCE_MAX_TOKENS,
+        )
+        max_tokens = DEFAULT_INFERENCE_MAX_TOKENS
+    max_tool_calls_raw = _env("COORDINARE_INFERENCE_MAX_TOOL_CALLS")
+    try:
+        max_tool_calls = (
+            int(max_tool_calls_raw) if max_tool_calls_raw else DEFAULT_INFERENCE_MAX_TOOL_CALLS
+        )
+    except ValueError:
+        log.warning(
+            "service_inference.invalid_max_tool_calls_override",
+            value=max_tool_calls_raw,
+            fallback=DEFAULT_INFERENCE_MAX_TOOL_CALLS,
+        )
+        max_tool_calls = DEFAULT_INFERENCE_MAX_TOOL_CALLS
     system_prompt = render_system_prompt(agent_version)
 
-    client = ClaudeServiceLLMClient.from_api_key(
-        api_key=api_key,
-        model=model,
-        max_tokens=DEFAULT_INFERENCE_MAX_TOKENS,
-        system_prompt=system_prompt,
-    )
+    if provider == "openai_compat":
+        base_url = _env("COORDINARE_INFERENCE_BASE_URL").strip()
+        if not base_url:
+            # Fail fast — silently falling back to Anthropic would leak traffic
+            # to a provider the operator explicitly opted out of.
+            log.warning("service_inference.openai_compat_missing_base_url")
+            return {
+                "inference_skipped_reason": "openai_compat_missing_base_url",
+                "inference_agent_version": agent_version,
+            }
+        compat_api_key = _env("COORDINARE_INFERENCE_API_KEY") or None
+        from coordinare_service_inference.openai_compat_llm_client import (
+            OpenAICompatServiceLLMClient,
+        )
+        client = OpenAICompatServiceLLMClient.from_config(
+            base_url=base_url,
+            api_key=compat_api_key,
+            model=model,
+            max_tokens=max_tokens,
+            system_prompt=system_prompt,
+        )
+    elif provider == "anthropic":
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            log.info("service_inference.no_api_key")
+            return {"inference_skipped_reason": "no_api_key"}
+        client = ClaudeServiceLLMClient.from_api_key(
+            api_key=api_key,
+            model=model,
+            max_tokens=max_tokens,
+            system_prompt=system_prompt,
+        )
+    else:
+        log.warning("service_inference.unknown_provider", provider=provider)
+        return {
+            "inference_skipped_reason": f"unknown_provider:{provider}",
+            "inference_agent_version": agent_version,
+        }
 
     try:
         result = await infer_services(
@@ -223,6 +293,7 @@ async def _run_service_inference(
             output_root=output_root,
             agent_version=agent_version,
             llm_client=client,
+            max_tool_calls=max_tool_calls,
         )
     except InferenceFailed as exc:
         log.warning(
@@ -290,6 +361,41 @@ def _extract_json(text: str) -> dict | list | None:
                     return _json_module.loads(text[start:end + 1])
                 except (ValueError, TypeError):
                     pass
+    return None
+
+
+def _extract_trailing_partial_progress(text: str) -> dict | None:
+    """Detect a trailing partial_progress JSON sentinel in implementer output.
+
+    Looks for the last ``{...}`` block in ``text`` and returns it only when it
+    parses as a JSON object with ``status == "partial_progress"``. Returns None
+    in all other cases so prose with stray braces never triggers the escape
+    hatch.
+    """
+    if not text:
+        return None
+    end = text.rfind("}")
+    if end < 0:
+        return None
+    depth = 0
+    start = -1
+    for i in range(end, -1, -1):
+        ch = text[i]
+        if ch == "}":
+            depth += 1
+        elif ch == "{":
+            depth -= 1
+            if depth == 0:
+                start = i
+                break
+    if start < 0:
+        return None
+    try:
+        obj = _json_module.loads(text[start:end + 1])
+    except (ValueError, TypeError):
+        return None
+    if isinstance(obj, dict) and obj.get("status") == "partial_progress":
+        return obj
     return None
 
 
@@ -828,6 +934,10 @@ async def handle_dispatch(
         pr_url=pr_url,
         pr_node_id=pr_node_id,
     )
+    try:
+        perf.head_at_start = await get_head_sha(stand)
+    except Exception as exc:
+        log.warning("dispatch.head_at_start_capture_failed", error=str(exc))
     log.info("dispatch accepted", session_id=session_id)
     return PerformerResponse(
         status="accepted",
@@ -923,11 +1033,18 @@ async def _poll_check_runs(perf: Performance, settings: Settings | None) -> Perf
 
     if verdict == "pass":
         perf.state = "pr_opened"
+        head_after: str | None = None
+        try:
+            head_after = await get_head_sha(perf.stand)
+        except Exception as exc:
+            log.warning("pr_opened.head_after_failed", error=str(exc))
         return PerformerResponse(
             status="pr_opened",
             session_id=perf.session_id,
             pr_url=perf.pr_url,
             pr_node_id=perf.pr_node_id,
+            head_before=perf.head_at_start,
+            head_after=head_after,
         )
 
     if verdict == "pending":
@@ -1852,6 +1969,47 @@ async def handle_status(
                 **perf.inference_state,
             )
 
+        # 070: implementer partial_progress escape hatch. If the backend
+        # emitted a trailing ``{"status": "partial_progress", ...}`` sentinel,
+        # push whatever was committed, post a status comment on the PR (when
+        # one exists), and hand control back to the coordinare with
+        # status="partial_progress" so the next turn resumes from next_focus.
+        if perf.role == "implementing":
+            sentinel = _extract_trailing_partial_progress(backend_status.output or "")
+            if sentinel is not None:
+                comment_body = str(sentinel.get("comment") or "").strip()
+                next_focus = str(sentinel.get("next_focus") or "").strip() or None
+                head_after: str | None = None
+                try:
+                    await push_branch(perf.stand, perf.score)
+                except Exception as exc:
+                    log.warning("partial_progress.push_failed", error=str(exc))
+                try:
+                    head_after = await get_head_sha(perf.stand)
+                except Exception as exc:
+                    log.warning("partial_progress.head_after_failed", error=str(exc))
+                if comment_body and perf.score.pr_url:
+                    owner, repo = perf.score.owner_repo
+                    pr_number = _extract_pr_number(perf.score.pr_url)
+                    if pr_number:
+                        try:
+                            await post_pr_comment(
+                                owner, repo, pr_number,
+                                body=f"[partial_progress] {comment_body}",
+                                token=perf.score.effective_github_token,
+                            )
+                        except Exception as exc:
+                            log.warning("partial_progress.comment_failed", error=str(exc))
+                perf.state = "waiting_for_checks"
+                return PerformerResponse(
+                    status="partial_progress",
+                    session_id=perf.session_id,
+                    progress=comment_body or "partial progress checkpoint",
+                    next_focus=next_focus,
+                    head_before=perf.head_at_start,
+                    head_after=head_after,
+                )
+
         # 043: Run lint before pushing — catch CI violations at the source
         # rather than discovering them post-push when the PR is already in review.
         ci_ok, ci_error = await _run_ci_check(perf.stand.path, label=perf.role)
@@ -1891,10 +2049,17 @@ async def handle_status(
     if backend_status.state == "blocked":
         perf.state = "blocked"
         perf.open_questions = backend_status.questions
+        head_after_blocked: str | None = None
+        try:
+            head_after_blocked = await get_head_sha(perf.stand)
+        except Exception as exc:
+            log.warning("blocked.head_after_failed", error=str(exc))
         return PerformerResponse(
             status="blocked",
             session_id=perf.session_id,
             questions=backend_status.questions,
+            head_before=perf.head_at_start,
+            head_after=head_after_blocked,
         )
 
     if backend_status.state == "error":

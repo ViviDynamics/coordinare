@@ -223,6 +223,10 @@ class Performance:
     pr_url: str | None = None
     pr_node_id: str | None = None
     pr_head_sha: str | None = None
+    # 070: branch HEAD captured at session start so the coordinare can detect
+    # implementer turns that produced zero commits and route them to retry
+    # instead of accepting a no-progress "blocked" verdict at face value.
+    head_at_start: str | None = None
     plan_path: str | None = None  # 020: path to committed architecture plan
     check_attempt: int = 0
     # 065 Fix 14: track last failure signature so we can bail when the same

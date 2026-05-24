@@ -1,8 +1,9 @@
 """Pure-function template renderer: ServicesManifest → (start, stop, health) shell scripts.
 
-The templates live at `agent/performer/services-templates/*.j2`. They are loaded once,
-rendered with Jinja2's StrictUndefined, and returned as plain strings. No subprocess,
-no I/O beyond the initial template read.
+The templates ship with this package at ``coordinare_service_inference/templates/*.j2``
+so they are available whether the code runs from a dev checkout or an installed
+wheel (the performer container installs the package and would not have access to
+the source-tree-relative ``agent/performer/services-templates`` directory).
 """
 
 from __future__ import annotations
@@ -17,8 +18,7 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 if TYPE_CHECKING:
     from coordinare_service_inference.schema import ServicesManifest
 
-_REPO_ROOT = Path(__file__).resolve().parents[4]
-TEMPLATES_DIR = _REPO_ROOT / "agent" / "performer" / "services-templates"
+TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 
 
 @dataclass(frozen=True)

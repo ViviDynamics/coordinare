@@ -49,6 +49,21 @@ def sanitise_symphony_name(name: str) -> str:
     return f"{slug}-{suffix}"
 
 
+def _cache_dir_has_activate(cache_dir: Path) -> bool:
+    """Return True iff the host cache_dir has a populated activate.sh.
+
+    The on-disk presence of activate.sh is the authoritative signal that a
+    prior bootstrap left a usable toolchain — independent of the in-process
+    ``cache_dir_ready`` flag, which resets on every coordinare restart.
+    Letting consumer performers mount a stale-but-real cache is strictly
+    better than dispatching them with no toolchain at all.
+    """
+    try:
+        return (cache_dir / "activate.sh").is_file()
+    except OSError:
+        return False
+
+
 def get_env_volume_for_symphony(
     symphony_name: str,
     env_cache_states: dict[str, Any],
@@ -59,23 +74,28 @@ def get_env_volume_for_symphony(
     """Return (VolumeMount, container_path) for the symphony's env cache, or None.
 
     Returns rw for bootstrap performers, ro for all others.
-    Returns None if the symphony has no env cache state or the cache dir
-    does not yet exist on disk. The container_path is
+    Returns None if the symphony has no env cache state, or — for consumers —
+    no activate.sh exists on disk. The container_path is
     ``{container_devenv_root}/{sanitised_name}``.
 
-    The ``cache_dir_ready`` gate only applies to consumer (ro) mounts. Bootstrap
-    dispatches must mount the host cache dir rw even when it has not yet been
-    populated — that is precisely the run that populates it. Without this
-    carve-out the bootstrap container has no host volume backing
-    ``cache_mount_path``, so installs land in the ephemeral container fs and
-    the host cache stays empty forever (chicken-and-egg).
+    Bootstrap dispatches always get the rw mount even when activate.sh is
+    missing — that's the run that creates it. Without this carve-out the
+    bootstrap container has no host volume backing ``cache_mount_path``, so
+    installs land in the ephemeral container fs and the host cache stays
+    empty forever (chicken-and-egg).
+
+    Consumers gate on activate.sh existence (not the runtime ``cache_dir_ready``
+    flag) so a populated cache from a prior coordinare run is reused across
+    restarts. While a fresh bootstrap is in flight, consumers race it on the
+    same directory — stale-but-real beats no toolchain, and the next bootstrap
+    supersedes whatever they used.
     """
     from coordinare.models.performer_endpoint import VolumeMount
 
     state = env_cache_states.get(symphony_name)
     if state is None or not isinstance(state, EnvCacheState):
         return None
-    if not is_bootstrap and not state.cache_dir_ready:
+    if not is_bootstrap and not _cache_dir_has_activate(state.cache_dir):
         return None
     container_path = f"{container_devenv_root}/{state.sanitised_name}"
     return VolumeMount(
@@ -89,19 +109,23 @@ def _collect_env_volumes_for_persistent_performer(
     env_cache_states: dict[str, Any],
     container_devenv_root: str = DEFAULT_DEVENV_ROOT,
 ) -> list[VolumeMount]:
-    """Return ro VolumeMounts for all ready symphony env caches.
+    """Return ro VolumeMounts for every symphony env cache that has an
+    activate.sh on disk.
 
     Used when dispatching to persistent performers. The returned mounts are
     passed as ``extra_volumes`` to ``dispatch_card``. Note: if the persistent
-    container was started before the env cache became ready, Docker cannot add
-    the volume to the running container — coordinare logs a warning in that case
-    and the operator must restart the performer container to pick up the mount.
+    container was started before the env cache became populated, Docker cannot
+    add the volume to the running container — coordinare logs a warning in that
+    case and the operator must restart the performer container to pick up the
+    mount.
     """
     from coordinare.models.performer_endpoint import VolumeMount
 
     mounts: list[VolumeMount] = []
     for state in env_cache_states.values():
-        if not isinstance(state, EnvCacheState) or not state.cache_dir_ready:
+        if not isinstance(state, EnvCacheState):
+            continue
+        if not _cache_dir_has_activate(state.cache_dir):
             continue
         container_path = f"{container_devenv_root}/{state.sanitised_name}"
         mounts.append(

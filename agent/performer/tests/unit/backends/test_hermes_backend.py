@@ -325,6 +325,51 @@ class TestUS2CapabilityGating:
         finally:
             await adapter.stop()
 
+    async def test_yolo_flag_passed_on_cli(
+        self, tmp_path: Path, hermes_env
+    ) -> None:
+        """`--yolo` must be on the argv: without it, hermes-agent's
+        dangerous-command approval gate fails closed in a non-interactive
+        subprocess (no TTY → "BLOCKED: User denied")."""
+        proc = _fake_proc(returncode=None)
+        adapter = HermesBackend()
+        with patch(
+            "performer.backends.hermes.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=proc),
+        ) as mock_exec:
+            await adapter.start(_stand(tmp_path), _score())
+        try:
+            args = list(mock_exec.call_args[0])
+            assert "--yolo" in args
+        finally:
+            await adapter.stop()
+
+    async def test_approvals_mode_off_written_into_profile_config(
+        self, tmp_path: Path, hermes_env
+    ) -> None:
+        """Belt-and-suspenders for `--yolo`: per-job config.yaml must also
+        set `approvals.mode: off` so a future CLI change that drops the
+        flag still leaves the gate disabled."""
+        proc = _fake_proc(returncode=None)
+        adapter = HermesBackend()
+        with patch(
+            "performer.backends.hermes.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=proc),
+        ):
+            await adapter.start(_stand(tmp_path), _score())
+        try:
+            cfg = (adapter._profile_dir / "config.yaml").read_text()
+            assert "approvals:" in cfg
+            # Must be the YAML string "off", not the bare token (which
+            # YAML 1.1 coerces to boolean False — hermes-agent would then
+            # silently fall back to the manual gate).
+            assert 'mode: "off"' in cfg
+            import yaml
+            parsed = yaml.safe_load(cfg)
+            assert parsed["approvals"]["mode"] == "off"
+        finally:
+            await adapter.stop()
+
     async def test_operator_hermes_home_is_ignored(
         self, tmp_path: Path, hermes_env, monkeypatch
     ) -> None:
@@ -584,6 +629,34 @@ class TestUS3Lifecycle:
                 f"({status.error_reason!r})"
             )
             assert status.output and "installed python" in status.output
+
+    async def test_json_role_output_carries_full_stdout(
+        self, tmp_path: Path, hermes_env
+    ) -> None:
+        # Regression: JSON-role replies (e.g. assessor) rarely carry summary/
+        # result/message keys, so `output` must surface the full stdout for
+        # main.py's _extract_json to re-parse.
+        assess_json = (
+            'Here is my assessment:\n'
+            '{"sufficient": true, "questions": [], "dependencies": []}\n'
+        )
+        proc = _fake_proc(returncode=0, stdout_b=assess_json.encode())
+        adapter = HermesBackend()
+        with patch(
+            "performer.backends.hermes.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=proc),
+        ):
+            await adapter.start(_stand(tmp_path), _score(role="assessor"))
+        if adapter._reader_task is not None:
+            await adapter._reader_task
+
+        status = adapter.get_status()
+        assert status.state == "done", (
+            f"expected done, got {status.state} ({status.error_reason!r})"
+        )
+        assert status.output is not None
+        assert '"sufficient": true' in status.output
+        assert '"questions"' in status.output
 
     async def test_env_bootstrap_prompt_has_dedicated_output_block(self) -> None:
         prompt = _build_task_prompt(_score(role="env_bootstrap"), [])

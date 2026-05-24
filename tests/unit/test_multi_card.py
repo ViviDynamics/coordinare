@@ -315,6 +315,87 @@ async def test_check_board_multi_card_empty_todo() -> None:
     assert result["phase"] == "idle"
 
 
+@pytest.mark.asyncio
+async def test_check_board_multi_card_preserves_in_flight_monitoring() -> None:
+    """069: an IN_PROGRESS session mid-monitoring is not clobbered to idle.
+
+    Regression: in multi-card mode the primary IN_PROGRESS session falls
+    through the early-return so remaining slots can fill from TODO.  When
+    TODO is empty the trailing ``state["phase"] = "idle"`` used to overwrite
+    the preserved ``monitoring_performer`` phase, terminating monitoring
+    entirely.  The guard must keep the session and its working phase intact.
+    """
+    from coordinare.graph.nodes.check_board import check_board
+
+    github = AsyncMock()
+    # No TODO; one card already IN_PROGRESS on the board.
+    github.poll_board.return_value = _make_board([], IN_PROGRESS=["PVI_1"])
+
+    state = _state_with_config(max_concurrent_cards=3)
+    state["github_service"] = github
+
+    in_progress_card = {
+        "id": "PVI_1",
+        "title": "Existing",
+        "status": "IN_PROGRESS",
+    }
+    sess = create_session_from_card(in_progress_card)
+    sess["phase"] = "monitoring_performer"
+    state["active_sessions"] = {"PVI_1": sess}
+    state["active_card_id"] = "PVI_1"
+    state["current_card"] = dict(in_progress_card)
+    state["phase"] = "monitoring_performer"
+
+    result = await check_board(state)
+
+    # The working phase must survive so the next route lands in monitor_performer.
+    assert result["phase"] == "monitoring_performer"
+    # The session must not be retired.
+    assert "PVI_1" in result.get("active_sessions", {})
+    assert result["active_sessions"]["PVI_1"]["phase"] == "monitoring_performer"
+    assert result.get("active_card_id") == "PVI_1"
+
+
+@pytest.mark.asyncio
+async def test_check_board_multi_card_in_flight_session_with_filtered_todo() -> None:
+    """069: same guard fires when TODO is non-empty but all items are filtered.
+
+    The advocate-label filter empties ``eligible_todo`` while ``todo`` is
+    non-empty, which routes through the inner ``_retire_active_session``
+    path.  The in-flight working session must still be preserved.
+    """
+    from coordinare.graph.nodes.check_board import check_board
+
+    github = AsyncMock()
+    board = _make_board(["PVI_X"], IN_PROGRESS=["PVI_1"])
+    # Tag the TODO card with the advocate-handled label so it is filtered out
+    # of eligible_todo (FR-001a) — leaving eligible_todo empty.
+    board["item_labels"] = {"PVI_X": ["needs-clarification"]}
+    github.poll_board.return_value = board
+
+    state = _state_with_config(max_concurrent_cards=3)
+    state["github_service"] = github
+    state["advocate_handled_label"] = "needs-clarification"
+
+    in_progress_card = {
+        "id": "PVI_1",
+        "title": "Existing",
+        "status": "IN_PROGRESS",
+    }
+    sess = create_session_from_card(in_progress_card)
+    sess["phase"] = "monitoring_performer"
+    state["active_sessions"] = {"PVI_1": sess}
+    state["active_card_id"] = "PVI_1"
+    state["current_card"] = dict(in_progress_card)
+    state["phase"] = "monitoring_performer"
+
+    result = await check_board(state)
+
+    assert result["phase"] == "monitoring_performer"
+    assert "PVI_1" in result.get("active_sessions", {})
+    assert result.get("active_card_id") == "PVI_1"
+
+
 # ---------------------------------------------------------------------------
 # check_board — session creation fields
 # ---------------------------------------------------------------------------
@@ -493,6 +574,52 @@ async def test_daemon_multi_session_no_sessions_runs_graph_once() -> None:
     await daemon.start()
 
     graph.ainvoke.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_daemon_fallback_mirrors_flat_phase_to_active_session() -> None:
+    """069: fallback ainvoke must mirror flat state back onto active_sessions[active_card_id].
+
+    Reproduces the orphaned-implementer bug: when check_board readopts an IN_PROGRESS
+    card and dispatch_performer runs in the same graph cycle (the fallback path),
+    dispatch_performer mutates flat state["phase"] = "monitoring_performer" but never
+    writes into state["active_sessions"][card_id]. Without the writeback in the
+    fallback path, the session retains its initial phase="dispatching" from
+    create_session_from_card. The next cycle's _derive_global_phase reads the stale
+    session phase and clobbers the flat phase, then slot_manager.sync_from_sessions
+    releases the slot — orphaning the implementer container.
+    """
+    from coordinare.daemon import CoordinareDaemon
+
+    async def fake_invoke(state: dict) -> dict:
+        # Simulate check_board.readopted_in_progress_card adding a session with
+        # the default phase from create_session_from_card.
+        new_session = create_session_from_card({"id": "PVI_X", "title": "Readopted"})
+        state["active_sessions"] = {"PVI_X": new_session}
+        state["active_card_id"] = "PVI_X"
+        # Simulate dispatch_performer's success path: mutates ONLY flat state.
+        state["phase"] = "monitoring_performer"
+        return state
+
+    graph = AsyncMock()
+    graph.ainvoke.side_effect = fake_invoke
+
+    daemon = CoordinareDaemon(
+        graph,
+        max_cycles=1,
+        sleep_func=AsyncMock(),
+    )
+    config = _make_config(max_concurrent_cards=2)
+    daemon._state["config"] = config
+    daemon._state["active_sessions"] = {}
+
+    await daemon.start()
+
+    sessions = daemon._state["active_sessions"]
+    assert "PVI_X" in sessions
+    # The fix: state_to_session writeback in the fallback path propagates the flat
+    # mutation onto the session dict so the next cycle sees a consistent view.
+    assert sessions["PVI_X"]["phase"] == "monitoring_performer"
 
 
 # ---------------------------------------------------------------------------

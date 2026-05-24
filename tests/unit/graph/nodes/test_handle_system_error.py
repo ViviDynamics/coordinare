@@ -30,7 +30,10 @@ def _state_with_error(count: int = 1, seconds_ago: float = _RETRY_INTERVAL + 1) 
 async def test_waiting_when_interval_not_elapsed() -> None:
     state = _state_with_error(count=1, seconds_ago=10.0)
     result = await handle_system_error(state)
-    assert result["phase"] == "idle"
+    # Keep phase="system_error" during wait so check_board's session-error
+    # early-return re-routes back to handle_system_error on the next cycle —
+    # phase="idle" used to wedge the card permanently (069 follow-up).
+    assert result["phase"] == "system_error"
     assert result.get("agent_dispatch") != {}  # dispatch not cleared yet
 
 
@@ -38,7 +41,7 @@ async def test_waiting_when_interval_not_elapsed() -> None:
 async def test_waiting_preserves_error_count() -> None:
     state = _state_with_error(count=2, seconds_ago=30.0)
     result = await handle_system_error(state)
-    assert result["phase"] == "idle"
+    assert result["phase"] == "system_error"
     assert result["system_error_count"] == 2
 
 

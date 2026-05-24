@@ -121,6 +121,11 @@ class NotificationsConfig(BaseModel):
     routing: list[RoutingEntry] = Field(default_factory=list)
     history_max_age_hours: int = Field(default=24, ge=1)
     prolonged_idle_threshold_seconds: int = Field(default=1800, ge=60)
+    # 069 FR-004: minimum wall-clock interval between `card_blocked`
+    # re-emissions for the same card.  Gates `notify()` against the per-session
+    # `last_blocked_slack_delivered_at` watermark so cycle-rate dispatch loops
+    # can't bypass dedup once the per-channel window expires.
+    card_blocked_reminder_cooldown_seconds: int = Field(default=3600, ge=0)
 
     @model_validator(mode="after")
     def _validate_unique_channel_names(self) -> NotificationsConfig:
@@ -313,6 +318,14 @@ class PerformerRoleConfig(BaseModel):
     effort: Literal["low", "medium", "high"] | None = None
     temperature: float | None = None
     max_tokens: int | None = None
+    # API endpoint overrides for backends that hit a Claude-compatible HTTP API
+    # (currently: claude_code). When set, the coordinare forwards them to the
+    # performer's job-init payload as ANTHROPIC_BASE_URL / ANTHROPIC_API_KEY so
+    # the per-role subprocess hits a proxy (e.g. LiteLLM) instead of api.anthropic.com.
+    # Other backends (opencode, codex, junie, cursor) read their provider keys from
+    # the container env directly and ignore these fields.
+    base_url: str | None = None
+    api_key_env: str | None = None
 
     @field_validator("temperature")
     @classmethod

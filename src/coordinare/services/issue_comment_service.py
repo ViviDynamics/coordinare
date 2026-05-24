@@ -33,9 +33,10 @@ class CommentClassification:
 # ---------------------------------------------------------------------------
 
 _SCOPE_CHANGE_KEYWORDS = [
-    "add", "also add", "also need", "also want", "should also", "please add",
-    "include", "extend", "new feature", "scope", "requirement",
-    "in addition", "additionally", "expand",
+    "also add", "also need", "also want", "should also", "please add",
+    "please include", "please extend", "new feature",
+    "in addition", "additionally", "new requirement", "additional requirement",
+    "out of scope", "scope creep",
 ]
 
 _BLOCKER_KEYWORDS = [
@@ -84,6 +85,96 @@ def classify_issue_comment(body: str) -> str:
         return "approval"
     # Default: treat as clarification (question, feedback, context)
     return "clarification"
+
+
+_VALID_LABELS = frozenset({
+    "scope_change", "clarification", "blocker_update", "approval", "noise",
+})
+
+
+_AI_CLASSIFY_PROMPT = """You classify a single comment posted on a GitHub issue \
+that an AI coding agent is working on. Choose exactly one label from:
+
+- scope_change: the commenter is asking to add, remove, or change \
+requirements. They want the deliverable to do something different than \
+originally described.
+- clarification: the commenter is asking a question, answering a question, \
+giving context, or otherwise discussing the work without changing scope.
+- blocker_update: the commenter is reporting that work is blocked, waiting \
+on something, or that a previously reported blocker is resolved.
+- approval: the commenter is signing off, approving, or expressing \
+satisfaction with completed work.
+- noise: the comment is empty, an automated status post (CI results, bot \
+evidence dumps, deployment notifications), or otherwise carries no \
+actionable signal for the agent.
+
+Important:
+- Automated QA evidence posts, CI summaries, and tool-generated reports are \
+noise even if their body mentions words like "add" or "include" in setup \
+commands or UI labels.
+- A human pasting bash commands while debugging is clarification, not scope_change.
+- Only label scope_change when the commenter explicitly requests a change to \
+what the work should produce.
+
+Comment author: {author}
+Comment body:
+---
+{body}
+---
+
+Respond with ONLY a JSON object: {{"label": "<one of the five labels>", \
+"rationale": "<one short sentence>"}}"""
+
+
+async def classify_issue_comment_ai(
+    body: str,
+    author: str,
+    conducting_backend: Any,
+) -> str | None:
+    """Classify a comment using the conducting LLM.
+
+    Returns one of the five labels on success, or None when the backend is
+    unavailable, errors out, or returns an unparseable / unknown label. The
+    caller falls back to :func:`classify_issue_comment` (keyword) on None.
+    """
+    if conducting_backend is None:
+        return None
+    if not body.strip():
+        return "noise"
+
+    prompt_text = _AI_CLASSIFY_PROMPT.format(author=author or "unknown", body=body)
+    try:
+        result = await conducting_backend.prompt(prompt_text, response_format="json")
+    except Exception as exc:
+        logger.warning("classify_issue_comment_ai.backend_error", error=str(exc))
+        return None
+
+    if not isinstance(result, dict):
+        return None
+
+    parsed = result.get("data")
+    if parsed is None:
+        import json as _json
+
+        raw = result.get("text", "")
+        if isinstance(raw, str) and raw.strip():
+            try:
+                parsed = _json.loads(raw)
+            except (ValueError, TypeError):
+                logger.warning("classify_issue_comment_ai.parse_failed", raw_preview=raw[:200])
+                return None
+        else:
+            return None
+
+    if not isinstance(parsed, dict):
+        return None
+
+    label = parsed.get("label")
+    if not isinstance(label, str) or label not in _VALID_LABELS:
+        logger.warning("classify_issue_comment_ai.invalid_label", label=label)
+        return None
+
+    return label
 
 
 async def fetch_new_issue_comments(

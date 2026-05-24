@@ -41,10 +41,6 @@ class AgentServiceProtocol(Protocol):
     async def check_status(self, session_id: str, *, payload: dict[str, Any] | None = None) -> dict[str, Any]: ...
 
 
-class ClaudeServiceProtocol(Protocol):
-    async def assess_card_sufficiency(self, card: dict[str, Any]) -> dict[str, Any]: ...
-
-
 class ConductingBackendProtocol(Protocol):
     async def assess(self, card: dict[str, Any]) -> dict[str, Any]: ...
     async def prompt(self, text: str, response_format: str | None = None) -> dict[str, Any]: ...
@@ -102,7 +98,6 @@ class CoordinareState(TypedDict, total=False):
 
     github_service: GitHubServiceProtocol
     agent_service: AgentServiceProtocol
-    claude_service: ClaudeServiceProtocol
     conducting_backend: ConductingBackendProtocol
     notification_service: NotificationServiceProtocol
     advocate_service: AdvocateServiceProtocol | None

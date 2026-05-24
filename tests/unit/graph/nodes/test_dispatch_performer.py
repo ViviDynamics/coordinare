@@ -1219,6 +1219,78 @@ async def test_dispatch_includes_model_when_set() -> None:
 
 
 @pytest.mark.asyncio
+async def test_dispatch_includes_base_url_and_api_key_env_when_set() -> None:
+    """dispatch_performer plumbs role_config.base_url + api_key_env into card_context."""
+    from coordinare.config import PerformerRoleConfig, PerformersConfig, ProjectConfiguration
+
+    config = ProjectConfiguration(**{
+        "project_name": "test",
+        "github_org": "org",
+        "github_project_number": 1,
+        "github_token": "tok",
+        "human_reviewers": ["alice"],
+        "performers": PerformersConfig(
+            implementer=PerformerRoleConfig(
+                backend="claude_code",
+                base_url="https://proxy.internal/v1",
+                api_key_env="LITELLM_PROXY_KEY",
+            ),
+        ),
+    })
+
+    svc = _Service()
+    github = _GitHub()
+
+    state = initial_state()
+    state["performer_services"] = {"implementing": svc}
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing"]
+    state["current_card"] = {"id": "ITEM_1", "title": "Test", "status": "TODO"}
+    state["github_service"] = github
+    state["config"] = config
+
+    await dispatch_performer(state)
+
+    card_context = svc.dispatched[0]
+    assert card_context.get("base_url") == "https://proxy.internal/v1"
+    assert card_context.get("api_key_env") == "LITELLM_PROXY_KEY"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_omits_base_url_and_api_key_env_when_unset() -> None:
+    """dispatch_performer omits base_url/api_key_env when not configured."""
+    from coordinare.config import PerformerRoleConfig, PerformersConfig, ProjectConfiguration
+
+    config = ProjectConfiguration(**{
+        "project_name": "test",
+        "github_org": "org",
+        "github_project_number": 1,
+        "github_token": "tok",
+        "human_reviewers": ["alice"],
+        "performers": PerformersConfig(
+            implementer=PerformerRoleConfig(backend="claude_code"),
+        ),
+    })
+
+    svc = _Service()
+    github = _GitHub()
+
+    state = initial_state()
+    state["performer_services"] = {"implementing": svc}
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing"]
+    state["current_card"] = {"id": "ITEM_1", "title": "Test", "status": "TODO"}
+    state["github_service"] = github
+    state["config"] = config
+
+    await dispatch_performer(state)
+
+    card_context = svc.dispatched[0]
+    assert "base_url" not in card_context
+    assert "api_key_env" not in card_context
+
+
+@pytest.mark.asyncio
 async def test_dispatch_omits_model_when_not_set() -> None:
     """dispatch_performer omits model from payload when not configured."""
     from coordinare.config import PerformerRoleConfig, PerformersConfig, ProjectConfiguration
@@ -1279,6 +1351,7 @@ def _ready_env_cache(tmp_path: Path, symphony_name: str = "my-project") -> dict:
     sanitised = sanitise_symphony_name(symphony_name)
     cache_dir = tmp_path / sanitised
     cache_dir.mkdir(parents=True, exist_ok=True)
+    (cache_dir / "activate.sh").touch()
     state = EnvCacheState(
         symphony_name=symphony_name,
         sanitised_name=sanitised,
@@ -1318,14 +1391,19 @@ async def test_env_cache_volume_injected_for_ephemeral_http_service(tmp_path: Pa
 
 
 @pytest.mark.asyncio
-async def test_env_cache_no_volume_when_cache_not_ready(tmp_path: Path) -> None:
-    """When cache_dir_ready=False the env cache is not injected."""
+async def test_env_cache_consumer_dispatch_held_when_activate_missing(
+    tmp_path: Path,
+) -> None:
+    """Consumer dispatch is held entirely when activate.sh hasn't been written.
+    The card retries on the next pickup cycle once env_bootstrap completes.
+    """
     from coordinare.models.env_cache import EnvCacheState
     from coordinare.services.env_cache import sanitise_symphony_name
 
     symphony_name = "my-project"
     sanitised = sanitise_symphony_name(symphony_name)
     cache_dir = tmp_path / sanitised
+    cache_dir.mkdir(parents=True, exist_ok=True)
     not_ready_state = EnvCacheState(
         symphony_name=symphony_name,
         sanitised_name=sanitised,
@@ -1345,11 +1423,48 @@ async def test_env_cache_no_volume_when_cache_not_ready(tmp_path: Path) -> None:
 
     await dispatch_performer(state)
 
+    # Dispatch was held — performer was never invoked.
+    assert not svc.dispatch_card.called
+
+
+@pytest.mark.asyncio
+async def test_env_cache_bootstrap_dispatch_proceeds_without_activate(
+    tmp_path: Path,
+) -> None:
+    """The env_bootstrap stage itself is exempt from the activate.sh gate —
+    that's the run that creates activate.sh in the first place.
+    """
+    from coordinare.models.env_cache import EnvCacheState
+    from coordinare.services.env_cache import sanitise_symphony_name
+
+    symphony_name = "my-project"
+    sanitised = sanitise_symphony_name(symphony_name)
+    cache_dir = tmp_path / sanitised
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    not_ready_state = EnvCacheState(
+        symphony_name=symphony_name,
+        sanitised_name=sanitised,
+        cache_dir=cache_dir,
+        cache_dir_ready=False,
+    )
+    env_cache = {symphony_name: not_ready_state}
+
+    svc = _make_http_service(mode="ephemeral")
+    state = _base_state(
+        performer_services={"env_bootstrap": svc},
+        performer_stage="env_bootstrap",
+        lifecycle_sequence=["env_bootstrap"],
+        current_symphony=symphony_name,
+        env_cache=env_cache,
+    )
+
+    await dispatch_performer(state)
+
     assert svc.dispatch_card.called
     call_kwargs = svc.dispatch_card.call_args.kwargs
-    assert call_kwargs.get("extra_volumes") is None
-    card_context = svc.dispatch_card.call_args.args[0]
-    assert "env_cache_path" not in card_context
+    extra_vols = call_kwargs.get("extra_volumes")
+    assert extra_vols is not None and len(extra_vols) == 1
+    assert extra_vols[0].mode == "rw"
 
 
 @pytest.mark.asyncio
@@ -1380,16 +1495,19 @@ async def test_env_cache_persistent_http_service_warns_and_skips_volumes(
 
 
 @pytest.mark.asyncio
-async def test_env_cache_persistent_http_service_no_volumes_when_no_ready_cache(
+async def test_env_cache_persistent_http_service_held_when_activate_missing(
     tmp_path: Path,
 ) -> None:
-    """Persistent HTTP service with no ready cache passes no extra_volumes."""
+    """Persistent HTTP service consumer dispatch is also held when activate.sh
+    is missing — the dispatch gate runs before the persistent/ephemeral split.
+    """
     from coordinare.models.env_cache import EnvCacheState
     from coordinare.services.env_cache import sanitise_symphony_name
 
     symphony_name = "my-project"
     sanitised = sanitise_symphony_name(symphony_name)
     cache_dir = tmp_path / sanitised
+    cache_dir.mkdir(parents=True, exist_ok=True)
     not_ready = EnvCacheState(
         symphony_name=symphony_name,
         sanitised_name=sanitised,
@@ -1409,9 +1527,7 @@ async def test_env_cache_persistent_http_service_no_volumes_when_no_ready_cache(
 
     await dispatch_performer(state)
 
-    assert svc.dispatch_card.called
-    call_kwargs = svc.dispatch_card.call_args.kwargs
-    assert call_kwargs.get("extra_volumes") is None
+    assert not svc.dispatch_card.called
 
 
 @pytest.mark.asyncio

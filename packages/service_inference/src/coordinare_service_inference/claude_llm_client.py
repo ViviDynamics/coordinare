@@ -234,8 +234,15 @@ class ClaudeServiceLLMClient:
 
         @stamina.retry(on=TransientLLMError, **self._retry_kwargs)
         async def _call() -> Any:
+            # Streaming is mandatory: the Anthropic SDK refuses non-streaming
+            # ``messages.create`` whose calculated timeout exceeds 10 minutes,
+            # which fires for the larger ``max_tokens`` settings the service-
+            # inference agent uses.  ``get_final_message`` returns a Message
+            # with the same ``.content`` / ``.usage`` shape ``_parse_response``
+            # already consumes, so the rest of the strategy is unchanged.
             try:
-                return await self._client.messages.create(**kwargs)
+                async with self._client.messages.stream(**kwargs) as stream:
+                    return await stream.get_final_message()
             except (APIConnectionError, APITimeoutError) as exc:
                 raise TransientLLMError(str(exc)) from exc
             except AuthenticationError as exc:
