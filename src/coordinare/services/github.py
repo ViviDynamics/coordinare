@@ -891,6 +891,50 @@ class GitHubService:
             return f"{parsed.scheme}://{parsed.netloc}{path}"
         return f"{parsed.scheme}://{parsed.netloc}"
 
+    async def fetch_failed_job_log(
+        self,
+        owner: str,
+        repo: str,
+        job_id: int,
+        max_chars: int = 6000,
+    ) -> str:
+        """Return the tail of a GitHub Actions job log, or "" if unavailable.
+
+        Hits ``/repos/{owner}/{repo}/actions/jobs/{job_id}/logs`` which
+        responds with a 302 to a pre-signed S3 URL. The redirect is
+        followed without re-sending the Authorization header (S3 rejects
+        it). Returns at most ``max_chars`` characters from the tail. Never
+        raises — log retrieval is best-effort context for the implementer.
+        """
+        if max_chars <= 0 or job_id <= 0:
+            return ""
+        try:
+            token = await self._current_token()
+        except Exception as exc:
+            logger.warning("fetch_failed_job_log.token_failed", job_id=job_id, error=str(exc))
+            return ""
+        if not token.strip():
+            return ""
+        url = f"{self._rest_api_base()}/repos/{owner}/{repo}/actions/jobs/{job_id}/logs"
+        headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+        try:
+            async with httpx.AsyncClient(timeout=30, follow_redirects=False) as client:
+                resp = await client.get(url, headers=headers)
+                if resp.status_code in (301, 302, 303, 307, 308):
+                    location = resp.headers.get("location")
+                    if not location:
+                        return ""
+                    resp = await client.get(location)
+                if not resp.is_success:
+                    return ""
+                text = resp.text
+        except Exception as exc:
+            logger.warning("fetch_failed_job_log.request_failed", job_id=job_id, error=str(exc))
+            return ""
+        if len(text) > max_chars:
+            return "... (log truncated) ...\n" + text[-max_chars:]
+        return text
+
     async def branch_exists(self, branch_name: str) -> bool:
         """Return True if a remote branch exists, False if 404.
 

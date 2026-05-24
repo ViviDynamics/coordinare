@@ -13,6 +13,7 @@ import asyncio
 import contextlib
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 
 import structlog
 
@@ -557,6 +558,27 @@ def _advance_stage(state: CoordinareState, status: dict[str, Any] | None = None)
 _STATS_POLL_INTERVAL_SECONDS = 30
 
 
+def _parse_job_id_from_details_url(url: str) -> int | None:
+    """Extract the Actions job_id from a check ``details_url``.
+
+    GitHub Actions check details URLs look like
+    ``https://github.com/{owner}/{repo}/actions/runs/{run_id}/job/{job_id}``.
+    The logs endpoint is per-job, so we need ``job_id``. Returns ``None`` for
+    non-Actions URLs (third-party CI), empty input, or malformed paths.
+    """
+    if not url:
+        return None
+    try:
+        parts = urlparse(url).path.strip("/").split("/")
+        if "actions" in parts and "job" in parts:
+            idx = parts.index("job")
+            if idx + 1 < len(parts):
+                return int(parts[idx + 1])
+    except ValueError:
+        return None
+    return None
+
+
 def _pr_url_parts(pr_url: str | None) -> tuple[str, str, int] | None:
     """Parse a PR URL into (owner, repo, pr_number). Returns None on failure."""
     if not pr_url:
@@ -742,6 +764,48 @@ async def _evaluate_pr_checks_gate(
             f"actual error, push a fix, and verify `gh pr checks {pr_num}` is green "
             f"before returning.",
         ])
+        # 071 FR-004: inline log tails for each failing check so the implementer
+        # gets the actual error in the first relay. Fair-share per-check budget
+        # with an 800-char floor; fetch failures degrade silently to name-only.
+        notification_service = state.get("notification_service")
+        max_total_chars = (
+            getattr(notification_service, "pr_checks_bounce_log_max_chars", 6000)
+            if notification_service is not None
+            else 6000
+        )
+        if max_total_chars > 0 and decision.failed:
+            log_blocks: list[str] = []
+            remaining = max_total_chars
+            failed_names = list(decision.failed)
+            for i, name in enumerate(failed_names):
+                job_id = _parse_job_id_from_details_url(url_by_name.get(name, ""))
+                if job_id is None:
+                    continue
+                slots_left = len(failed_names) - i
+                slice_size = max(800, remaining // slots_left)
+                try:
+                    tail = await github.fetch_failed_job_log(
+                        owner, repo, job_id, max_chars=slice_size
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "pr_checks.bounce_log_fetch_failed",
+                        pr=pr_num,
+                        job_id=job_id,
+                        error=str(exc),
+                    )
+                    tail = ""
+                if not tail:
+                    continue
+                log_blocks.append(
+                    f"**Log tail (job {job_id}, check {name})**:\n```\n{tail}\n```"
+                )
+                remaining = max(0, remaining - len(tail))
+                if remaining <= 0:
+                    break
+            if log_blocks:
+                lines.append("")
+                lines.extend(log_blocks)
         body = "\n".join(lines)
     logger.warning(
         "closer.pr_checks.decision",
