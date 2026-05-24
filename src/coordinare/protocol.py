@@ -24,6 +24,7 @@ StatusType = Literal[
     "docs_committed",
     "env_bootstrap_complete",
     "assessment_complete",
+    "partial_progress",
     "blocked",
     "error",
     "unknown",
@@ -75,6 +76,13 @@ class ProtocolResponse(BaseModel):
     inference_attempts: int | None = None
     inference_succeeded: bool | None = None
     inference_services: list[str] = Field(default_factory=list)
+    # 070: branch HEAD before/after a performer turn; used by the coordinare
+    # router to detect implementer turns that produced zero new commits and
+    # route them back to dispatching rather than honoring a "blocked" verdict.
+    head_before: str | None = None
+    head_after: str | None = None
+    # 070: continuation hint emitted with status="partial_progress".
+    next_focus: str | None = None
 
 
 def generate_contracts(output_dir: Path) -> None:

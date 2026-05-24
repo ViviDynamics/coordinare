@@ -589,6 +589,21 @@ class TestPerformerRoleConfig:
         assert cfg.image == "coordinare-performer:latest"
         assert cfg.timeout_seconds == 3600
 
+    def test_base_url_and_api_key_env(self) -> None:
+        """base_url + api_key_env let an operator route a role through a proxy."""
+        cfg = PerformerRoleConfig(
+            backend="claude-code",
+            base_url="https://proxy.internal/v1",
+            api_key_env="LITELLM_PROXY_KEY",
+        )
+        assert cfg.base_url == "https://proxy.internal/v1"
+        assert cfg.api_key_env == "LITELLM_PROXY_KEY"
+
+    def test_base_url_and_api_key_env_default_none(self) -> None:
+        cfg = PerformerRoleConfig()
+        assert cfg.base_url is None
+        assert cfg.api_key_env is None
+
 
 class TestPerformersConfig:
     """Tests for PerformersConfig model."""

@@ -51,7 +51,6 @@ from coordinare.observability import HEALTH, bind_symphony, clear_symphony
 from coordinare.resilience import CircuitBreaker, ResilientAgentService, RetryConfig
 from coordinare.services.advocate import AdvocateService
 from coordinare.services.agent_service import AgentService
-from coordinare.services.claude import ClaudeService
 from coordinare.services.github import GitHubService
 from coordinare.services.notification import NotificationService, build_notification_service
 from coordinare.state_store import StateStore
@@ -732,12 +731,6 @@ async def _bootstrap_services(
     for cb in circuit_breakers.values():
         cb.on_open_callback = trip_callback
 
-    claude_service = ClaudeService(
-        api_key=os.getenv("ANTHROPIC_API_KEY"),
-        circuit_breaker=circuit_breakers["anthropic"],
-        retry_kwargs=_retry_config_from(r.anthropic_retry).to_stamina_kwargs(),
-    )
-
     from coordinare.services.conducting import build_conducting_backend
     conducting_backend = build_conducting_backend(
         config,
@@ -823,7 +816,6 @@ async def _bootstrap_services(
         "config_path": config_path,
         "github_service": github,
         "agent_service": resilient_agent,
-        "claude_service": claude_service,
         "conducting_backend": conducting_backend,
         "notification_service": notification_service,
         "human_reviewers": config.human_reviewers,
@@ -850,20 +842,20 @@ async def _bootstrap_services(
             logger.warning("advocate_label_setup_failed", error=str(exc))
             label_ids = {}
 
-        from coordinare.services.scoring import ClaudeScorer
+        from coordinare.services.scoring import BackendScorer
 
-        # V1: scoring_models config is reserved for future multi-provider support
-        # (OpenAI, GitHub Copilot). Until additional ScoringProviderProtocol
-        # implementations exist, ClaudeScorer is always the sole provider.
-        # Adding a new provider in V2 requires registering it here; the
-        # advocate_scan node itself requires no changes (FR-005).
+        # Scoring uses the configured ConductingBackend so the LLM choice
+        # follows config.conducting.backend rather than being hardcoded.
+        # Adding additional ScoringProviderProtocol implementations (e.g. a
+        # second provider for cross-checking) only requires registering them
+        # here; the advocate_scan node itself requires no changes (FR-005).
         advocate_service = AdvocateService(
             github=github,
             notification_service=notification_service,
             config=config.advocate,
             github_org=config.github_org,
             label_ids=label_ids,
-            scorers=[ClaudeScorer(claude_service)],
+            scorers=[BackendScorer(conducting_backend, provider_name=config.conducting.backend)],
         )
         service_state["advocate_service"] = advocate_service
         service_state["advocate_handled_label"] = config.advocate.handled_label

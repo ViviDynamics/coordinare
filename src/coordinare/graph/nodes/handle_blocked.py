@@ -72,6 +72,7 @@ async def handle_blocked(state: CoordinareState) -> CoordinareState:
                 assessment = await backend.assess(card_data)
                 generated = assessment.get("questions") or []
                 questions = [str(q) for q in generated if str(q).strip()]
+                state["open_questions"] = questions
             except Exception as exc:
                 logger.warning("handle_blocked_assessment_failed", card_id=card_id, error=str(exc))
         if not questions:
@@ -139,7 +140,17 @@ async def handle_blocked(state: CoordinareState) -> CoordinareState:
     raw_hours = state.get("blocked_reminder_hours", 24)
     hours = raw_hours if isinstance(raw_hours, int) else 24
     now = datetime.now(UTC)
-    last = state.get("last_blocked_notified_at")
+    # 069: prefer the per-card session watermark over the top-level mirror.
+    # The session dict survives rehydration via PersistedSession, so a restart
+    # within the reminder window won't lose the dedup gate and re-post.
+    active_sessions = state.setdefault("active_sessions", {}) if card_id else {}
+    sess = active_sessions.get(card_id) if card_id else None
+    if not isinstance(sess, dict):
+        sess = {}
+        if card_id:
+            active_sessions[card_id] = sess
+    sess_last = sess.get("last_blocked_notified_at")
+    last = sess_last if sess_last is not None else state.get("last_blocked_notified_at")
 
     # 042: ``last_blocked_notified_at`` does double duty as (1) the cutoff
     # check_board uses to detect new user answers ("any comment newer than
@@ -205,6 +216,16 @@ async def handle_blocked(state: CoordinareState) -> CoordinareState:
     # on the bot's own comments, producing an infinite blocked → dispatch
     # → blocked loop.
     state["last_blocked_notified_at"] = now
+    # 069: dual-write to session dict so the watermark survives rehydration
+    # via PersistedSession.last_blocked_notified_at.
+    if card_id:
+        sess["last_blocked_notified_at"] = now
+        # 069 FR-005: keep the per-card session-phase mirror aligned with the
+        # top-level phase.  monitor_performer flips state["phase"]="blocked"
+        # without touching active_sessions[card_id]["phase"], so notify's
+        # FR-005 guard saw a stale "monitoring_performer" on the session and
+        # suppressed legitimate card_blocked posts (2026-05-23 incident).
+        sess["phase"] = "blocked"
 
     state["phase"] = "blocked"
     return state

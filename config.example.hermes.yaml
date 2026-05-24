@@ -90,6 +90,20 @@ performer_endpoints:
       # HERMES_BASE_URL: "${HERMES_BASE_URL}"
       # Do NOT set HERMES_HOME here — the adapter creates a job-scoped temp
       # directory and any inherited value is intentionally stripped (FR-005).
+      #
+      # service_inference (env_bootstrap role only) — provider seam for the
+      # bootstrap agent's LLM-driven service discovery (commit 8eefef3).
+      # Default provider is `anthropic`; on self-hosted setups set
+      # PROVIDER=openai_compat with BASE_URL / API_KEY / MODEL to route
+      # through the same LiteLLM/vLLM/Ollama endpoint Hermes itself uses.
+      # Omit if you don't use env_bootstrap.
+      COORDINARE_INFERENCE_PROVIDER:       "${COORDINARE_INFERENCE_PROVIDER}"
+      COORDINARE_INFERENCE_MODEL:          "${COORDINARE_INFERENCE_MODEL}"
+      COORDINARE_INFERENCE_BASE_URL:       "${COORDINARE_INFERENCE_BASE_URL}"
+      COORDINARE_INFERENCE_API_KEY:        "${COORDINARE_INFERENCE_API_KEY}"
+      COORDINARE_INFERENCE_MAX_TOKENS:     "${COORDINARE_INFERENCE_MAX_TOKENS}"
+      COORDINARE_INFERENCE_MAX_TOOL_CALLS: "${COORDINARE_INFERENCE_MAX_TOOL_CALLS}"
+      COORDINARE_INFERENCE_AGENT_VERSION:  "${COORDINARE_INFERENCE_AGENT_VERSION}"
 
 
 # --- Performers ---

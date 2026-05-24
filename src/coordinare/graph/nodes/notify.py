@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import structlog
@@ -65,6 +67,66 @@ async def notify(state: CoordinareState) -> CoordinareState:
     if phase == "merging" and not commit_summary and str(card.get("status", "")) != "DONE":
         return state
 
+    card_id_for_guard = str(card.get("id") or card.get("title", "unknown"))
+
+    # 069 FR-003: empty open_questions means there's nothing actionable for
+    # operators — never emit a content-free card_blocked Slack post.
+    if event_type == EventType.card_blocked and not open_questions:
+        logger.info(
+            "notify.card_blocked_skipped_empty_questions",
+            card_id=card_id_for_guard,
+        )
+        return state
+
+    # 069 FR-005: when a fresh performer is already running for this card
+    # (active session in dispatching / monitoring_*), suppress a stale
+    # card_blocked emitted from a rehydrated top-level phase.  Reproduces
+    # 2026-05-22 incident where restart-with-fresh-dispatch double-spammed.
+    active_sessions = state.get("active_sessions") or {}
+    sess = active_sessions.get(card_id_for_guard, {}) if isinstance(active_sessions, dict) else {}
+    sess_phase = sess.get("phase") if isinstance(sess, dict) else None
+    if event_type == EventType.card_blocked and sess_phase in {
+        "dispatching",
+        "monitoring_performer",
+        "monitoring_agent",
+    }:
+        logger.info(
+            "notify.card_blocked_suppressed_active_session",
+            card_id=card_id_for_guard,
+            session_phase=sess_phase,
+        )
+        return state
+
+    # 069 FR-004: reminder-cooldown gate.  Compare wall-clock now against
+    # the per-session ``last_blocked_slack_delivered_at`` watermark and
+    # suppress if the cooldown has not elapsed.  This is the primary gate
+    # for card_blocked re-emission: it survives restarts (the watermark is
+    # persisted) AND prevents per-cycle dispatch loops from leaking through
+    # once the per-channel DeduplicationWindow expires.
+    #
+    # We read ``last_blocked_slack_delivered_at`` and NOT
+    # ``last_blocked_notified_at``.  The latter is rewritten by
+    # handle_blocked on every pass (it triples as check_board cutoff +
+    # GitHub 24h dedup) so it does not prove Slack actually went out.
+    if event_type == EventType.card_blocked:
+        cooldown_seconds = getattr(
+            notification_service, "card_blocked_reminder_cooldown_seconds", 3600
+        )
+        sess_watermark = sess.get("last_blocked_slack_delivered_at") if isinstance(sess, dict) else None
+        if cooldown_seconds > 0 and sess_watermark is not None:
+            try:
+                elapsed = (datetime.now(UTC) - sess_watermark).total_seconds()
+            except TypeError:
+                elapsed = None
+            if elapsed is not None and elapsed < cooldown_seconds:
+                logger.info(
+                    "notify.card_blocked_suppressed_reminder_cooldown",
+                    card_id=card_id_for_guard,
+                    elapsed_seconds=elapsed,
+                    cooldown_seconds=cooldown_seconds,
+                )
+                return state
+
     # Build human-readable summary
     card_title = str(card.get("title", ""))
     card_number = card.get("issue_number", "")
@@ -88,7 +150,9 @@ async def notify(state: CoordinareState) -> CoordinareState:
         role = performer_stage or "implementer"
         summary = f"🚀 {display_title} — dispatched to {role}"
     elif event_type == EventType.card_blocked:
-        questions_preview = open_questions[0][:80] if open_questions else "needs input"
+        # 069 FR-003: empty-questions case is suppressed earlier; we can
+        # safely index here without the "needs input" fallback.
+        questions_preview = open_questions[0][:80]
         # 046: If the card is blocked due to dependencies, include blocker
         # issue numbers and columns in the summary so the Slack message
         # is actionable without cross-referencing the board.
@@ -128,9 +192,18 @@ async def notify(state: CoordinareState) -> CoordinareState:
     if pr_url:
         payload["pr_url"] = pr_url
 
-    card_id = card.get("id") or card.get("title", "unknown")
+    # Use the same stringified id as the FR-004 prefix scan so dedup_key
+    # and prefix match across types (e.g., int issue numbers in tests).
+    card_id = card_id_for_guard
     # Include performer_stage in dedup key so each lifecycle stage gets its own notification
     dedup_key = f"{event_type.value}:{card_id}:{card.get('status', '')}:{performer_stage}"
+    # 069 FR-006: incorporate a content hash of open_questions into the
+    # card_blocked dedup key so different question sets produce distinct
+    # notifications (previously, status+stage alone collapsed unrelated
+    # blocked rounds into one dedup bucket).
+    if event_type == EventType.card_blocked and open_questions:
+        digest = hashlib.sha256("\n".join(open_questions).encode("utf-8")).hexdigest()[:12]
+        dedup_key = f"{dedup_key}:{digest}"
 
     event = NotificationEvent(
         event_type=event_type,
@@ -142,6 +215,13 @@ async def notify(state: CoordinareState) -> CoordinareState:
 
     try:
         await notification_service.dispatch(event)
+        # 069 FR-004: stamp the per-session Slack-delivery watermark on
+        # successful card_blocked dispatch so post-restart suppression has a
+        # truthful gate that survives NotificationHistory loss.  We update
+        # the live active_sessions entry in place; daemon._persist_active_sessions
+        # snapshots it on the next save cycle.
+        if event_type == EventType.card_blocked and isinstance(sess, dict):
+            sess["last_blocked_slack_delivered_at"] = datetime.now(UTC)
     except Exception as exc:
         logger.warning("notification.dispatch_failed", error=str(exc))
 

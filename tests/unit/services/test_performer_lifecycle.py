@@ -152,6 +152,39 @@ async def test_start_ephemeral_propagates_config_env(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_start_ephemeral_drops_unresolved_placeholders(monkeypatch) -> None:
+    """config.yaml ${VAR} expanded by os.path.expandvars leaves the literal
+    `${VAR}` when the host env var is unset. Forwarding that into the container
+    looks "set" to os.environ.get and bypasses fallback-on-empty defaults
+    (e.g. COORDINARE_INFERENCE_AGENT_VERSION trips a regex guard and crashes
+    env_bootstrap). Drop those entries before docker -e."""
+    args_seen: list[tuple[str, ...]] = []
+
+    async def fake_run_docker(*args: str, timeout: float = 30.0) -> tuple[int, str, str]:
+        args_seen.append(args)
+        if args[0] == "run":
+            return 0, "ctr-ph\n", ""
+        if args[0] == "port":
+            return 0, "0.0.0.0:8080\n", ""
+        raise AssertionError(f"unexpected: {args}")
+
+    monkeypatch.setattr(lifecycle, "_run_docker", fake_run_docker)
+
+    await start_ephemeral(
+        _ephemeral_config(
+            env={
+                "REAL": "value",
+                "UNRESOLVED": "${COORDINARE_INFERENCE_AGENT_VERSION}",
+            }
+        )
+    )
+
+    run_args = list(args_seen[0])
+    assert "REAL=value" in run_args
+    assert not any("UNRESOLVED" in a for a in run_args)
+
+
+@pytest.mark.asyncio
 async def test_start_ephemeral_applies_egress_allowlist(monkeypatch) -> None:
     """egress_allowlist adds --cap-add NET_ADMIN and the PERFORMER_EGRESS_ALLOWLIST env var."""
     args_seen: list[tuple[str, ...]] = []

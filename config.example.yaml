@@ -254,6 +254,20 @@ agent_executable: "/usr/local/bin/performer"  # path to the performer binary
 #     roles: []                          # env_bootstrap jobs are not tied to a lifecycle role
 #     image: coordinare-performer:full    # swap for a custom image if extra tools are needed
 #     readiness_timeout_s: 300           # bootstrap jobs can be slow; give the container time
+#     # env_bootstrap runs an LLM-driven service-discovery step (coordinare_service_inference).
+#     # Provider seam (commit 8eefef3): default `anthropic` uses ANTHROPIC_API_KEY; set
+#     # COORDINARE_INFERENCE_PROVIDER=openai_compat with BASE_URL / API_KEY / MODEL to
+#     # route through any self-hosted OpenAI-compatible endpoint (LiteLLM, vLLM, Ollama).
+#     # These vars MUST be listed here for ${VAR} expansion to forward them into the
+#     # container — they are not inherited from the coordinare environment automatically.
+#     # env:
+#     #   COORDINARE_INFERENCE_PROVIDER:       "${COORDINARE_INFERENCE_PROVIDER}"
+#     #   COORDINARE_INFERENCE_MODEL:          "${COORDINARE_INFERENCE_MODEL}"
+#     #   COORDINARE_INFERENCE_BASE_URL:       "${COORDINARE_INFERENCE_BASE_URL}"
+#     #   COORDINARE_INFERENCE_API_KEY:        "${COORDINARE_INFERENCE_API_KEY}"
+#     #   COORDINARE_INFERENCE_MAX_TOKENS:     "${COORDINARE_INFERENCE_MAX_TOKENS}"
+#     #   COORDINARE_INFERENCE_MAX_TOOL_CALLS: "${COORDINARE_INFERENCE_MAX_TOOL_CALLS}"
+#     #   COORDINARE_INFERENCE_AGENT_VERSION:  "${COORDINARE_INFERENCE_AGENT_VERSION}"
 
 # --- Reviewers ---
 

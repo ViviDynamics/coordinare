@@ -265,6 +265,111 @@ def test_restore_from_snapshot_no_card_skips_current_card() -> None:
     assert daemon._state.get("current_card") is None
 
 
+def test_rehydrate_copies_session_last_blocked_notified_at() -> None:
+    """069 T007 / FR-001: per-card ``last_blocked_notified_at`` on the
+    persisted session is restored into the live ``active_sessions`` dict so
+    the dedup gate survives a restart.
+    """
+    from coordinare.state_store import PersistedSession
+
+    daemon = _make_daemon()
+    t_blocked = datetime(2026, 5, 21, 21, 32, 4, tzinfo=UTC)
+    snap = WorkflowSnapshot(
+        snapshot_at=datetime.now(UTC),
+        phase="blocked",
+        active_card_id="card-70",
+        active_card_column="In Progress",
+        performer_stage="implementing",
+        active_sessions={
+            "card-70": PersistedSession(
+                card_id="card-70",
+                performer_stage="implementing",
+                phase="blocked",
+                last_blocked_notified_at=t_blocked,
+            ),
+        },
+    )
+
+    daemon._restore_from_snapshot(snap)
+
+    sess = daemon._state["active_sessions"]["card-70"]
+    assert sess["last_blocked_notified_at"] == t_blocked
+
+
+def test_rehydrate_v1_session_last_blocked_notified_at_from_top_level() -> None:
+    """069 T007 / v1-compat: when active_sessions is empty (v1 snapshot), the
+    synthesized session inherits the top-level ``last_blocked_notified_at``
+    so legacy snapshots also benefit from the dedup gate.
+    """
+    daemon = _make_daemon()
+    t_blocked = datetime(2026, 5, 21, 21, 32, 4, tzinfo=UTC)
+    snap = WorkflowSnapshot(
+        snapshot_at=datetime.now(UTC),
+        phase="blocked",
+        active_card_id="card-v1",
+        active_card_column="In Progress",
+        performer_stage="implementing",
+        last_blocked_notified_at=t_blocked,
+        active_sessions={},
+    )
+
+    daemon._restore_from_snapshot(snap)
+
+    sess = daemon._state["active_sessions"]["card-v1"]
+    assert sess["last_blocked_notified_at"] == t_blocked
+
+
+def test_rehydrate_copies_session_last_blocked_slack_delivered_at() -> None:
+    """069 FR-004: ``last_blocked_slack_delivered_at`` on the persisted
+    session round-trips through rehydration so the post-restart Slack-dedup
+    guard in notify can see it.
+    """
+    from coordinare.state_store import PersistedSession
+
+    daemon = _make_daemon()
+    t_slack = datetime(2026, 5, 23, 16, 30, 0, tzinfo=UTC)
+    snap = WorkflowSnapshot(
+        snapshot_at=datetime.now(UTC),
+        phase="blocked",
+        active_card_id="card-70",
+        active_card_column="In Progress",
+        performer_stage="implementing",
+        active_sessions={
+            "card-70": PersistedSession(
+                card_id="card-70",
+                performer_stage="implementing",
+                phase="blocked",
+                last_blocked_slack_delivered_at=t_slack,
+            ),
+        },
+    )
+
+    daemon._restore_from_snapshot(snap)
+
+    sess = daemon._state["active_sessions"]["card-70"]
+    assert sess["last_blocked_slack_delivered_at"] == t_slack
+
+
+def test_persist_active_sessions_carries_last_blocked_slack_delivered_at() -> None:
+    """069 FR-004: live ``last_blocked_slack_delivered_at`` written by notify
+    must be persisted into PersistedSession on snapshot.
+    """
+    from coordinare.daemon import _persist_active_sessions
+
+    t_slack = datetime(2026, 5, 23, 16, 30, 0, tzinfo=UTC)
+    live = {
+        "card-70": {
+            "performer_stage": "implementing",
+            "phase": "blocked",
+            "last_blocked_slack_delivered_at": t_slack,
+        },
+    }
+
+    out = _persist_active_sessions(live)
+
+    assert out["card-70"].last_blocked_slack_delivered_at == t_slack
+
+
 def test_restore_from_snapshot_restores_lifecycle_position() -> None:
     """053 regression: restart restore must preserve in-flight performer stage."""
     daemon = _make_daemon()

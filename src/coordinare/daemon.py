@@ -107,6 +107,10 @@ def _persist_active_sessions(active_sessions: dict[str, Any]) -> dict[str, Persi
         questions_raw = sess.get("open_questions") or ()
         clarifications_raw = sess.get("card_clarifications") or ()
         relay_raw = sess.get("relay_feedback") or ()
+        last_notified_raw = sess.get("last_blocked_notified_at")
+        last_notified = last_notified_raw if isinstance(last_notified_raw, datetime) else None
+        last_slack_raw = sess.get("last_blocked_slack_delivered_at")
+        last_slack = last_slack_raw if isinstance(last_slack_raw, datetime) else None
         out[cid] = PersistedSession(
             card_id=cid,
             performer_stage=(sess.get("performer_stage") or None),
@@ -123,6 +127,8 @@ def _persist_active_sessions(active_sessions: dict[str, Any]) -> dict[str, Persi
             system_error_reason=(sess.get("system_error_reason") or None),
             system_error_notified=bool(sess.get("system_error_notified")),
             requirements_changed=bool(sess.get("requirements_changed")),
+            last_blocked_notified_at=last_notified,
+            last_blocked_slack_delivered_at=last_slack,
         )
     return out
 
@@ -475,6 +481,8 @@ class CoordinareDaemon:
                     "system_error_reason": persisted.system_error_reason,
                     "system_error_notified": persisted.system_error_notified,
                     "requirements_changed": persisted.requirements_changed,
+                    "last_blocked_notified_at": persisted.last_blocked_notified_at,
+                    "last_blocked_slack_delivered_at": persisted.last_blocked_slack_delivered_at,
                 }
                 # Seed current_card for the matching active_card_id from the
                 # top-level snapshot fields; other sessions get a stub that
@@ -506,6 +514,8 @@ class CoordinareDaemon:
                     "system_error_reason": None,
                     "system_error_notified": False,
                     "requirements_changed": False,
+                    "last_blocked_notified_at": snapshot.last_blocked_notified_at,
+                    "last_blocked_slack_delivered_at": None,
                 }
             }
             logger.info(
@@ -685,6 +695,17 @@ class CoordinareDaemon:
         if not active_sessions:
             # No sessions yet — run one graph cycle to let check_board populate them
             self._state = await self._graph.ainvoke(self._state)
+            # 069: mirror flat-state mutations onto active_sessions[active_card_id]
+            # so the next cycle's _derive_global_phase / slot_manager.sync_from_sessions
+            # see the same view as the per-session fanout writeback (line 911).
+            # Without this, a same-cycle readopt+dispatch leaves the new session at
+            # phase="dispatching" while flat state["phase"]="monitoring_performer"
+            # — and slot_manager then releases the slot, orphaning the implementer.
+            _active_card_id = self._state.get("active_card_id")
+            if _active_card_id:
+                _sessions_after = self._state.get("active_sessions") or {}
+                if _active_card_id in _sessions_after:
+                    _sessions_after[_active_card_id] = state_to_session(self._state)
             return
 
         # Pre-fanout: run advocate_scan exactly once so N concurrent sessions don't
@@ -848,6 +869,18 @@ class CoordinareDaemon:
         if not any(e.eligible for e in eligibilities.values()):
             self._state = await self._graph.ainvoke(self._state)  # type: ignore[assignment]
             self._state.pop("_advocate_scan_done", None)  # type: ignore[misc]
+            # 069: mirror flat-state mutations back onto active_sessions[active_card_id]
+            # so the next cycle's _derive_global_phase / slot_manager.sync_from_sessions
+            # see the same view as the per-session fanout writeback at line 911.  Without
+            # this, a same-cycle readopt+dispatch leaves session.phase="dispatching"
+            # while flat state["phase"]="monitoring_performer"; _derive_global_phase
+            # then clobbers the flat phase back to "dispatching" and slot_manager
+            # releases the slot, orphaning the implementer container.
+            active_card_id = self._state.get("active_card_id")
+            if active_card_id:
+                active_sessions_after = self._state.get("active_sessions") or {}
+                if active_card_id in active_sessions_after:
+                    active_sessions_after[active_card_id] = state_to_session(self._state)
             # If the graph settled into a passive phase (monitoring_pr),
             # clear active_card_id so route_issue_comments doesn't poll the
             # card's issue on every cycle.  check_board rescans the full board

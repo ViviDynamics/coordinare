@@ -17,6 +17,7 @@ import structlog
 from coordinare.services.issue_comment_service import (
     CommentClassification,
     classify_issue_comment,
+    classify_issue_comment_ai,
     fetch_new_issue_comments,
 )
 
@@ -44,6 +45,7 @@ async def route_issue_comments(state: CoordinareState) -> CoordinareState:
     if not events:
         return state
 
+    conducting_backend = state.get("conducting_backend")
     clarifications: list[dict] = list(state.get("card_clarifications") or [])
     requirements_changed: bool = bool(state.get("requirements_changed"))
     new_max_id = since_id or 0
@@ -60,7 +62,13 @@ async def route_issue_comments(state: CoordinareState) -> CoordinareState:
             )
             continue
 
-        label = classify_issue_comment(event.body)
+        label = await classify_issue_comment_ai(
+            event.body, event.author, conducting_backend
+        )
+        classifier = "ai"
+        if label is None:
+            label = classify_issue_comment(event.body)
+            classifier = "keyword"
         classification = CommentClassification(
             source="issue",
             comment_id=event.comment_id,
@@ -76,6 +84,7 @@ async def route_issue_comments(state: CoordinareState) -> CoordinareState:
             author=classification.author,
             classification=classification.classification,
             source=classification.source,
+            classifier=classifier,
             card_id=card_id,
             issue_number=issue_number,
         )

@@ -51,6 +51,20 @@ performer_endpoints:
       - tech_writer
       - closer
     image: coordinare-performer:full
+    # service_inference (env_bootstrap role only) — provider seam for the
+    # bootstrap agent's LLM-driven service discovery (commit 8eefef3).
+    # opencode_compat already targets a self-hosted OpenAI-compatible
+    # endpoint; point service_inference at the same one by setting
+    # PROVIDER=openai_compat with BASE_URL / API_KEY / MODEL. Otherwise
+    # the default `anthropic` provider needs ANTHROPIC_API_KEY.
+    # env:
+    #   COORDINARE_INFERENCE_PROVIDER:       "${COORDINARE_INFERENCE_PROVIDER}"
+    #   COORDINARE_INFERENCE_MODEL:          "${COORDINARE_INFERENCE_MODEL}"
+    #   COORDINARE_INFERENCE_BASE_URL:       "${COORDINARE_INFERENCE_BASE_URL}"
+    #   COORDINARE_INFERENCE_API_KEY:        "${COORDINARE_INFERENCE_API_KEY}"
+    #   COORDINARE_INFERENCE_MAX_TOKENS:     "${COORDINARE_INFERENCE_MAX_TOKENS}"
+    #   COORDINARE_INFERENCE_MAX_TOOL_CALLS: "${COORDINARE_INFERENCE_MAX_TOOL_CALLS}"
+    #   COORDINARE_INFERENCE_AGENT_VERSION:  "${COORDINARE_INFERENCE_AGENT_VERSION}"
 
 
 # --- Performers ---

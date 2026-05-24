@@ -36,6 +36,7 @@ PerformerStatusType = Literal[
     "docs_committed",
     "env_bootstrap_complete",
     "assessment_complete",
+    "partial_progress",
     "healthy",
     "unhealthy",
 ]
@@ -120,3 +121,12 @@ class PerformerResponse(BaseModel):
     inference_attempts: int | None = None
     inference_succeeded: bool | None = None
     inference_services: list[str] = Field(default_factory=list)
+    # 070: branch HEAD before/after the performer session. Set on terminal
+    # statuses for implementer-style stages so the coordinare can detect
+    # zero-commit turns (head_before == head_after) and route them to retry
+    # rather than honoring a no-progress "blocked" verdict.
+    head_before: str | None = None
+    head_after: str | None = None
+    # 070: continuation hint emitted alongside status="partial_progress" so
+    # the coordinare relays a focused next-chunk prompt to the next turn.
+    next_focus: str | None = None

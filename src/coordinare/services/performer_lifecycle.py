@@ -140,6 +140,16 @@ async def start_ephemeral(config: PerformerEndpointConfig) -> StartedContainer:
         args += ["-v", f"{vol.host_path}:{vol.container_path}:{vol.mode}"]
 
     for key, val in config.env.items():
+        # config.yaml uses os.path.expandvars, which leaves unset ${VAR} as the
+        # literal string. Forwarding that literal into the container looks "set"
+        # to os.environ.get() and bypasses fallback-on-empty defaults — drop it.
+        if isinstance(val, str) and val.startswith("${") and val.endswith("}"):
+            logger.info(
+                "performer_lifecycle.env_skipped_unresolved_placeholder",
+                performer_id=config.id,
+                env_key=key,
+            )
+            continue
         args += ["-e", f"{key}={val}"]
 
     args += [config.image]

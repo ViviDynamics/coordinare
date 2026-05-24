@@ -171,11 +171,18 @@ class NotificationService:
             for c in config.channels
         }
         self._history = NotificationHistory(config.history_max_age_hours)
+        self._card_blocked_reminder_cooldown_seconds = (
+            config.card_blocked_reminder_cooldown_seconds
+        )
         self._metrics = metrics
 
     @property
     def history(self) -> NotificationHistory:
         return self._history
+
+    @property
+    def card_blocked_reminder_cooldown_seconds(self) -> int:
+        return self._card_blocked_reminder_cooldown_seconds
 
     async def dispatch(self, event: NotificationEvent) -> None:
         channel_names = self._routing.get(event.event_type, [])

@@ -935,6 +935,71 @@ async def test_dispatch_injects_both_api_keys_for_opencode_backends(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_dispatch_claude_code_honors_role_api_key_env_and_base_url(monkeypatch) -> None:
+    """claude_code reads api key from custom env var and forwards base_url as ANTHROPIC_BASE_URL."""
+    payloads: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json as _json
+        payloads.append(_json.loads(request.content))
+        return httpx.Response(
+            202,
+            json={"accepted": True, "job_id": "job-cc", "started_at": "2026-04-28T00:00:00Z"},
+        )
+
+    # api_key_env points at a non-default env var
+    monkeypatch.setenv("LITELLM_PROXY_KEY", "sk-proxy-test")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    card = {
+        **_card(),
+        "backend": "claude_code",
+        "api_key_env": "LITELLM_PROXY_KEY",
+        "base_url": "https://proxy.internal/v1",
+    }
+    svc = HTTPPerformerService(_persistent_config(), client=_client(handler))
+    await svc.dispatch_card(card, _workspace())
+
+    assert payloads, "no POST /jobs payload captured"
+    secrets = payloads[0].get("secrets", {})
+    assert secrets.get("ANTHROPIC_API_KEY") == "sk-proxy-test"
+    assert secrets.get("ANTHROPIC_BASE_URL") == "https://proxy.internal/v1"
+    await svc.aclose()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_codex_honors_role_api_key_env_and_base_url(monkeypatch) -> None:
+    """codex reads api key from custom env var and forwards base_url as OPENAI_BASE_URL."""
+    payloads: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json as _json
+        payloads.append(_json.loads(request.content))
+        return httpx.Response(
+            202,
+            json={"accepted": True, "job_id": "job-cx", "started_at": "2026-04-28T00:00:00Z"},
+        )
+
+    monkeypatch.setenv("LITELLM_PROXY_KEY", "sk-proxy-cx")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    card = {
+        **_card(),
+        "backend": "codex",
+        "api_key_env": "LITELLM_PROXY_KEY",
+        "base_url": "https://proxy.internal/v1",
+    }
+    svc = HTTPPerformerService(_persistent_config(), client=_client(handler))
+    await svc.dispatch_card(card, _workspace())
+
+    assert payloads, "no POST /jobs payload captured"
+    secrets = payloads[0].get("secrets", {})
+    assert secrets.get("OPENAI_API_KEY") == "sk-proxy-cx"
+    assert secrets.get("OPENAI_BASE_URL") == "https://proxy.internal/v1"
+    await svc.aclose()
+
+
+@pytest.mark.asyncio
 async def test_dispatch_does_not_inject_api_keys_for_unknown_backends(monkeypatch) -> None:
     """Unknown backends receive no provider API keys."""
     payloads: list[dict] = []

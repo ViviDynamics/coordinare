@@ -138,6 +138,7 @@ class TestGetEnvVolumeForSymphony:
 
         cache_dir = tmp_path / "env"
         cache_dir.mkdir()
+        (cache_dir / "activate.sh").touch()
         state = EnvCacheState(
             symphony_name="s",
             sanitised_name="s-abc",
@@ -189,9 +190,13 @@ class TestGetEnvVolumeForSymphony:
         assert vol.mode == "rw"
         assert vol.host_path == cache_dir
 
-    def test_returns_none_for_consumer_when_cache_not_ready(
+    def test_returns_none_for_consumer_when_activate_missing(
         self, tmp_path: Path
     ) -> None:
+        """Consumer dispatch is held when activate.sh hasn't been written yet —
+        the on-disk presence of activate.sh is the authoritative readiness gate,
+        independent of the in-process cache_dir_ready flag.
+        """
         cache_dir = tmp_path / "env"
         cache_dir.mkdir()
         state = EnvCacheState(
@@ -203,9 +208,31 @@ class TestGetEnvVolumeForSymphony:
         result = get_env_volume_for_symphony("s", {"s": state}, is_bootstrap=False)
         assert result is None
 
+    def test_returns_ro_volume_when_activate_present_but_flag_false(
+        self, tmp_path: Path
+    ) -> None:
+        """Post-restart cache survival: activate.sh on disk from a prior boot
+        is enough to dispatch consumers, even though cache_dir_ready resets to
+        False every coordinare restart.
+        """
+        cache_dir = tmp_path / "env"
+        cache_dir.mkdir()
+        (cache_dir / "activate.sh").touch()
+        state = EnvCacheState(
+            symphony_name="s",
+            sanitised_name="s-abc",
+            cache_dir=cache_dir,
+            cache_dir_ready=False,
+        )
+        result = get_env_volume_for_symphony("s", {"s": state}, is_bootstrap=False)
+        assert result is not None
+        vol, _ = result
+        assert vol.mode == "ro"
+
     def test_uses_custom_container_devenv_root(self, tmp_path: Path) -> None:
         cache_dir = tmp_path / "env"
         cache_dir.mkdir()
+        (cache_dir / "activate.sh").touch()
         state = EnvCacheState(
             symphony_name="s",
             sanitised_name="s-abc",
@@ -665,11 +692,16 @@ class TestCollectEnvVolumesForPersistentPerformer:
         result = _collect_env_volumes_for_persistent_performer({})
         assert result == []
 
-    def test_skips_non_ready_caches(self, tmp_path: Path) -> None:
+    def test_skips_caches_without_activate(self, tmp_path: Path) -> None:
+        """Caches without an on-disk activate.sh are skipped — no toolchain
+        means no usable mount.
+        """
+        cache_dir = tmp_path / "env"
+        cache_dir.mkdir()
         state = EnvCacheState(
             symphony_name="s",
             sanitised_name="s-abc",
-            cache_dir=tmp_path / "env",
+            cache_dir=cache_dir,
             cache_dir_ready=False,
         )
         result = _collect_env_volumes_for_persistent_performer({"s": state})
@@ -678,8 +710,10 @@ class TestCollectEnvVolumesForPersistentPerformer:
     def test_returns_ro_mounts_for_all_ready_caches(self, tmp_path: Path) -> None:
         dir_a = tmp_path / "a"
         dir_a.mkdir()
+        (dir_a / "activate.sh").touch()
         dir_b = tmp_path / "b"
         dir_b.mkdir()
+        (dir_b / "activate.sh").touch()
         states = {
             "sym-a": EnvCacheState(
                 symphony_name="sym-a",
@@ -705,6 +739,7 @@ class TestCollectEnvVolumesForPersistentPerformer:
     def test_uses_custom_container_devenv_root(self, tmp_path: Path) -> None:
         cache_dir = tmp_path / "env"
         cache_dir.mkdir()
+        (cache_dir / "activate.sh").touch()
         state = EnvCacheState(
             symphony_name="s",
             sanitised_name="s-abc",

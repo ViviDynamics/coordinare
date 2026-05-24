@@ -501,3 +501,58 @@ async def test_handle_blocked_deferred_move_waits() -> None:
 
     result = await handle_blocked(state)
     assert result["phase"] == "blocked"
+
+
+# ---------------------------------------------------------------------------
+# 069 — Session-level watermark used for dedup gate
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_does_not_repost_when_session_watermark_within_window() -> None:
+    """069 US1: session-level last_blocked_notified_at within reminder window
+    suppresses the GitHub-comment repost even when top-level is None.
+    Simulates a rehydrated daemon where the top-level mirror was lost but
+    PersistedSession carried the watermark across restart."""
+    recent = datetime.now(UTC) - timedelta(hours=1)
+    github = _GitHubFallback()
+    state = initial_state()
+    state["github_service"] = github
+    state["current_card"] = {"id": "ITEM_1", "issue_id": "ISSUE_1"}
+    state["open_questions"] = ["Clarify scope"]
+    state["active_sessions"] = {"ITEM_1": {"last_blocked_notified_at": recent}}
+    state["last_blocked_notified_at"] = None
+    state["blocked_reminder_hours"] = 24
+
+    result = await handle_blocked(state)
+
+    assert result["phase"] == "blocked"
+    assert github.comment_body is None
+
+
+@pytest.mark.asyncio
+async def test_reposts_when_session_watermark_older_than_window() -> None:
+    """069 US1: when the session-level watermark is older than the reminder
+    window, the comment IS re-posted (preserving the legitimate 24h cadence)."""
+    very_old = datetime.now(UTC) - timedelta(hours=25)
+    github = _GitHubFallback()
+    state = initial_state()
+    state["github_service"] = github
+    state["current_card"] = {"id": "ITEM_1", "issue_id": "ISSUE_1"}
+    state["open_questions"] = ["Clarify scope"]
+    state["active_sessions"] = {"ITEM_1": {"last_blocked_notified_at": very_old}}
+    state["last_blocked_notified_at"] = None
+    state["blocked_reminder_hours"] = 24
+
+    result = await handle_blocked(state)
+
+    assert github.comment_body is not None
+    assert "Needs input" in github.comment_body
+    # Dual-write: both session-level and top-level advanced
+    assert result["active_sessions"]["ITEM_1"]["last_blocked_notified_at"] > very_old
+    assert result["last_blocked_notified_at"] > very_old
+    # 069 FR-005: per-card session-phase mirror must also be set to "blocked"
+    # alongside the top-level phase, so notify's FR-005 guard does not see a
+    # stale "monitoring_performer" left over from the dispatching path.
+    assert result["active_sessions"]["ITEM_1"]["phase"] == "blocked"
+    assert result["phase"] == "blocked"

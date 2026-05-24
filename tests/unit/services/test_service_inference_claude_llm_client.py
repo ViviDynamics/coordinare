@@ -28,6 +28,30 @@ def _response(content: list[Any], *, input_tokens: int = 0, output_tokens: int =
     )
 
 
+class _FakeStream:
+    """Async context manager mimicking ``messages.stream(...)``.
+
+    The production code calls ``async with client.messages.stream(**kwargs)``
+    then awaits ``stream.get_final_message()``.  Exceptions queued by tests
+    are raised from ``__aenter__`` so retry/permanent-error behavior matches
+    what the SDK would do when the HTTP call itself fails.
+    """
+
+    def __init__(self, item: Any) -> None:
+        self._item = item
+
+    async def __aenter__(self) -> _FakeStream:
+        if isinstance(self._item, Exception):
+            raise self._item
+        return self
+
+    async def __aexit__(self, *exc: Any) -> bool:
+        return False
+
+    async def get_final_message(self) -> Any:
+        return self._item
+
+
 class _FakeMessages:
     """Stand-in for ``AsyncAnthropic().messages``."""
 
@@ -38,12 +62,9 @@ class _FakeMessages:
     def queue(self, response: Any) -> None:
         self._queue.append(response)
 
-    async def create(self, **kwargs: Any) -> Any:
+    def stream(self, **kwargs: Any) -> _FakeStream:
         self.calls.append(kwargs)
-        item = self._queue.pop(0)
-        if isinstance(item, Exception):
-            raise item
-        return item
+        return _FakeStream(self._queue.pop(0))
 
 
 class _FakeClient:

@@ -7,11 +7,35 @@ plus the full tool flag set including browser.
 from __future__ import annotations
 
 import subprocess
+import time
 import uuid
 
 import pytest
 
 from tests.conftest import wait_for_status
+
+
+def _resolve_published_port(container_id: str, internal_port: int, timeout: float = 10.0) -> str:
+    """Poll ``docker port`` until the ephemeral mapping is published.
+
+    ``docker run -d -p 0:<port>`` returns the container ID before the port
+    binding is actually wired through, so a naive ``docker port`` call races
+    and returns empty.  Poll briefly until docker reports the mapping.
+    """
+    deadline = time.monotonic() + timeout
+    last_stderr = ""
+    while time.monotonic() < deadline:
+        port_result = subprocess.run(
+            ["docker", "port", container_id, f"{internal_port}/tcp"],
+            capture_output=True,
+            timeout=10,
+            text=True,
+        )
+        if port_result.returncode == 0 and port_result.stdout.strip():
+            return port_result.stdout.strip().split("\n")[0].split(":")[-1]
+        last_stderr = port_result.stderr
+        time.sleep(0.2)
+    pytest.fail(f"docker port never reported a mapping for {internal_port}/tcp: {last_stderr}")
 
 
 @pytest.mark.asyncio
@@ -91,17 +115,7 @@ async def test_dockerfile_full_advertises_all_capabilities(require_docker: None,
 
             container_id = run_result.stdout.strip()
 
-            port_result = subprocess.run(
-                ["docker", "port", container_id, "8088/tcp"],
-                capture_output=True,
-                timeout=10,
-                text=True,
-            )
-
-            if port_result.returncode != 0:
-                pytest.fail(f"docker port failed: {port_result.stderr}")
-
-            port = port_result.stdout.strip().split("\n")[0].split(":")[-1]
+            port = _resolve_published_port(container_id, 8088)
 
             # Poll until ready — npm/curl installs can take >10s
             status_data = await wait_for_status(port, timeout=120.0)

@@ -407,9 +407,11 @@ def _fake_httpx_client(
     response_json: dict | None = None,
     raise_on_status: Exception | None = None,
     raise_on_post: Exception | None = None,
+    status_code: int = 200,
 ) -> MagicMock:
     """Build a MagicMock that quacks like ``httpx.AsyncClient`` for the post path."""
     fake_response = MagicMock()
+    fake_response.status_code = status_code
     if raise_on_status is not None:
         fake_response.raise_for_status = MagicMock(side_effect=raise_on_status)
     else:
@@ -455,32 +457,114 @@ class TestOpenAiApiBackend:
         request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
         response = httpx.Response(401, request=request)
         err = httpx.HTTPStatusError("unauthorized", request=request, response=response)
-        client = _fake_httpx_client(raise_on_status=err)
+        client = _fake_httpx_client(raise_on_status=err, status_code=401)
         with patch("httpx.AsyncClient", return_value=client):
             result = await backend.assess({"title": "X"})
         assert result["sufficient"] is False
         assert result["rationale"] == "empty openai response"
+        # 4xx is non-retryable.
+        assert client.post.call_count == 1
 
     @pytest.mark.asyncio
     async def test_http_5xx_returns_empty_response(self) -> None:
-        import httpx
         backend = OpenAiApiBackend(api_key="k", model="gpt-test")
-        request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
-        response = httpx.Response(503, request=request)
-        err = httpx.HTTPStatusError("unavailable", request=request, response=response)
-        client = _fake_httpx_client(raise_on_status=err)
-        with patch("httpx.AsyncClient", return_value=client):
+        # 5xx triggers the retry loop; helper returns 503 on every attempt so
+        # the budget is exhausted. raise_for_status is never called because
+        # _chat short-circuits on status_code before reaching it.
+        client = _fake_httpx_client(status_code=503)
+        with patch("httpx.AsyncClient", return_value=client), patch(
+            "asyncio.sleep", new=AsyncMock(),
+        ):
             result = await backend.assess({"title": "X"})
         assert result["sufficient"] is False
+        # 3 attempts (1 initial + 2 retries).
+        assert client.post.call_count == 3
 
     @pytest.mark.asyncio
     async def test_connection_error_returns_empty_response(self) -> None:
         import httpx
         backend = OpenAiApiBackend(api_key="k", model="gpt-test")
         client = _fake_httpx_client(raise_on_post=httpx.ConnectError("dns"))
-        with patch("httpx.AsyncClient", return_value=client):
+        with patch("httpx.AsyncClient", return_value=client), patch(
+            "asyncio.sleep", new=AsyncMock(),
+        ):
             result = await backend.assess({"title": "X"})
         assert result["sufficient"] is False
+        # TransportError is retried.
+        assert client.post.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_retry_5xx_then_success(self) -> None:
+        """Transient 5xx clears on retry → returned content is from the 2nd call."""
+        backend = OpenAiApiBackend(api_key="k", model="gpt-test")
+
+        # Two responses: first 503, second 200 with a real chat completion.
+        fail_resp = MagicMock()
+        fail_resp.status_code = 503
+        fail_resp.raise_for_status = MagicMock()
+        fail_resp.json = MagicMock(return_value={})
+
+        ok_resp = MagicMock()
+        ok_resp.status_code = 200
+        ok_resp.raise_for_status = MagicMock()
+        ok_resp.json = MagicMock(return_value={
+            "choices": [{"message": {"content": '{"sufficient": true, "questions": [], "rationale": "ok"}'}}]
+        })
+
+        fake_client = MagicMock()
+        fake_client.__aenter__ = AsyncMock(return_value=fake_client)
+        fake_client.__aexit__ = AsyncMock(return_value=None)
+        fake_client.post = AsyncMock(side_effect=[fail_resp, ok_resp])
+
+        with patch("httpx.AsyncClient", return_value=fake_client), patch(
+            "asyncio.sleep", new=AsyncMock(),
+        ):
+            result = await backend.assess({"title": "X"})
+        assert result["sufficient"] is True
+        assert fake_client.post.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_retry_429_then_success(self) -> None:
+        """429 (rate-limit) is retried like 5xx."""
+        backend = OpenAiApiBackend(api_key="k", model="gpt-test")
+
+        fail_resp = MagicMock()
+        fail_resp.status_code = 429
+        fail_resp.raise_for_status = MagicMock()
+        fail_resp.json = MagicMock(return_value={})
+
+        ok_resp = MagicMock()
+        ok_resp.status_code = 200
+        ok_resp.raise_for_status = MagicMock()
+        ok_resp.json = MagicMock(return_value={
+            "choices": [{"message": {"content": '{"sufficient": false}'}}]
+        })
+
+        fake_client = MagicMock()
+        fake_client.__aenter__ = AsyncMock(return_value=fake_client)
+        fake_client.__aexit__ = AsyncMock(return_value=None)
+        fake_client.post = AsyncMock(side_effect=[fail_resp, ok_resp])
+
+        with patch("httpx.AsyncClient", return_value=fake_client), patch(
+            "asyncio.sleep", new=AsyncMock(),
+        ):
+            await backend.assess({"title": "X"})
+        assert fake_client.post.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_no_retry_on_4xx(self) -> None:
+        """4xx (other than 429) is not retried — authoritative client error."""
+        import httpx
+        backend = OpenAiApiBackend(api_key="k", model="gpt-test")
+        request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+        response = httpx.Response(400, request=request)
+        err = httpx.HTTPStatusError("bad request", request=request, response=response)
+        client = _fake_httpx_client(raise_on_status=err, status_code=400)
+        with patch("httpx.AsyncClient", return_value=client), patch(
+            "asyncio.sleep", new=AsyncMock(),
+        ):
+            await backend.assess({"title": "X"})
+        assert client.post.call_count == 1
 
     @pytest.mark.asyncio
     async def test_malformed_response_empty_choices(self) -> None:

@@ -57,7 +57,10 @@ async def handle_system_error(state: CoordinareState) -> CoordinareState:
 
     On each invocation:
     - If attempts < _MAX_RETRIES and 90s have elapsed: clear dispatch, re-queue for dispatch.
-    - If attempts < _MAX_RETRIES but 90s have not elapsed: set idle (wait for next cycle).
+    - If attempts < _MAX_RETRIES but 90s have not elapsed: keep phase="system_error" so
+      check_board's session-error early-return re-routes back here on the next cycle.
+      (Setting phase="idle" here used to wedge the card permanently — nothing else routes
+      back to handle_system_error, so the retry timer never re-fired. 069 follow-up.)
     - If attempts >= _MAX_RETRIES: notify operator via notification service, move card to
       BLOCKED on GitHub (without commenting), set system_error_notified=True, go idle.
     """
@@ -77,7 +80,7 @@ async def handle_system_error(state: CoordinareState) -> CoordinareState:
                 elapsed=f"{elapsed:.0f}s",
                 retry_in=f"{_RETRY_INTERVAL - elapsed:.0f}s",
             )
-            state["phase"] = "idle"
+            state["phase"] = "system_error"
             return state
 
         logger.info(

@@ -6,6 +6,7 @@ import pytest
 from coordinare.services.issue_comment_service import (
     IssueCommentEvent,
     classify_issue_comment,
+    classify_issue_comment_ai,
     fetch_new_issue_comments,
 )
 
@@ -19,8 +20,9 @@ class TestClassifyIssueComment:
 
     def test_scope_change_keywords(self) -> None:
         assert classify_issue_comment("Can we also add a search feature?") == "scope_change"
-        assert classify_issue_comment("Please include logging") == "scope_change"
-        assert classify_issue_comment("We should also need authentication") == "scope_change"
+        assert classify_issue_comment("Please include logging too") == "scope_change"
+        assert classify_issue_comment("We also need authentication") == "scope_change"
+        assert classify_issue_comment("Additionally, please log every login attempt") == "scope_change"
 
     def test_blocker_keywords(self) -> None:
         assert classify_issue_comment("This is blocked by the auth system") == "blocker_update"
@@ -38,9 +40,84 @@ class TestClassifyIssueComment:
         assert classify_issue_comment("This is just a comment") == "clarification"
 
     def test_keyword_not_substring_match(self) -> None:
-        # "add" should match but "ladder" shouldn't
-        assert classify_issue_comment("We should add a feature") == "scope_change"
+        # "please add" should match but bare "add" no longer matches; ensure
+        # innocuous prose containing "add"/"include" inside other words
+        # doesn't trip a scope_change.
+        assert classify_issue_comment("Please add a logout button") == "scope_change"
         assert classify_issue_comment("I climbed a ladder") == "clarification"
+        assert classify_issue_comment("Run useradd to create the pg user") == "clarification"
+
+    def test_polluted_qa_evidence_post_is_not_scope_change(self) -> None:
+        # Regression: the bare-verb "add"/"include"/"extend" keywords used to
+        # match QA-bot evidence dumps that pasted bash commands and UI labels
+        # like "+ Add Time Entry", causing spurious requirements_changed=True.
+        body = (
+            "## QA Evidence\n\n**Result:** PASSED\n"
+            "1. Click + Add Time Entry and confirm the form only offers the\n"
+            "   employee's assigned projects.\n"
+            "2. Include the entry in the JSON output for downstream tools.\n"
+            "3. Run `useradd -m pguser` to provision the temp account.\n"
+        )
+        assert classify_issue_comment(body) == "clarification"
+
+
+class _StubBackend:
+    def __init__(self, response):
+        self.response = response
+        self.calls: list[str] = []
+
+    async def prompt(self, text, response_format=None):
+        self.calls.append(text)
+        if isinstance(self.response, Exception):
+            raise self.response
+        return self.response
+
+
+class TestClassifyIssueCommentAI:
+    @pytest.mark.asyncio
+    async def test_none_backend_returns_none(self) -> None:
+        assert await classify_issue_comment_ai("anything", "alice", None) is None
+
+    @pytest.mark.asyncio
+    async def test_empty_body_short_circuits_to_noise(self) -> None:
+        backend = _StubBackend({"data": {"label": "scope_change"}})
+        assert await classify_issue_comment_ai("   ", "alice", backend) == "noise"
+        assert backend.calls == []  # never invoked
+
+    @pytest.mark.asyncio
+    async def test_valid_label_in_data_field(self) -> None:
+        backend = _StubBackend({
+            "data": {"label": "scope_change", "rationale": "user requested new feature"}
+        })
+        assert await classify_issue_comment_ai("body", "alice", backend) == "scope_change"
+
+    @pytest.mark.asyncio
+    async def test_valid_label_parsed_from_text(self) -> None:
+        backend = _StubBackend({
+            "data": None,
+            "text": '{"label": "clarification", "rationale": "user asked a question"}',
+        })
+        assert await classify_issue_comment_ai("body", "alice", backend) == "clarification"
+
+    @pytest.mark.asyncio
+    async def test_unknown_label_returns_none(self) -> None:
+        backend = _StubBackend({"data": {"label": "feature_request"}})
+        assert await classify_issue_comment_ai("body", "alice", backend) is None
+
+    @pytest.mark.asyncio
+    async def test_backend_exception_returns_none(self) -> None:
+        backend = _StubBackend(RuntimeError("boom"))
+        assert await classify_issue_comment_ai("body", "alice", backend) is None
+
+    @pytest.mark.asyncio
+    async def test_unparseable_text_returns_none(self) -> None:
+        backend = _StubBackend({"data": None, "text": "not json at all"})
+        assert await classify_issue_comment_ai("body", "alice", backend) is None
+
+    @pytest.mark.asyncio
+    async def test_non_dict_result_returns_none(self) -> None:
+        backend = _StubBackend("just a string")
+        assert await classify_issue_comment_ai("body", "alice", backend) is None
 
 
 class TestFetchNewIssueComments:

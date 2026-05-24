@@ -234,6 +234,68 @@ async def test_scope_change_entry_has_issue_source():
     assert entry["classification"] == "scope_change"
 
 
+class _Backend:
+    """Stub conducting backend returning a pre-baked classifier response."""
+
+    def __init__(self, label: str = "clarification", fail: bool = False):
+        self.label = label
+        self.fail = fail
+        self.call_count = 0
+
+    async def prompt(self, text, response_format=None):
+        self.call_count += 1
+        if self.fail:
+            raise RuntimeError("backend down")
+        return {"data": {"label": self.label, "rationale": "stub"}}
+
+
+@pytest.mark.asyncio
+async def test_ai_classifier_used_when_backend_present():
+    state = initial_state()
+    state["github_service"] = _GitHub(comments=[
+        {"id": 8001, "author": "alice", "body": "Click + Add Time Entry to log hours", "created_at": "2026-04-27T10:00:00Z"},
+    ])
+    state["current_card"] = {"id": "ITEM_1", "issue_number": 42}
+    # AI says noise; keyword would say "clarification" (trimmed) — verify AI wins.
+    state["conducting_backend"] = _Backend(label="noise")
+
+    result = await route_issue_comments(state)
+
+    # noise → not appended to clarifications
+    assert (result.get("card_clarifications") or []) == []
+    assert 8001 in result["processed_issue_comment_ids"]
+    assert result["requirements_changed"] is False
+
+
+@pytest.mark.asyncio
+async def test_keyword_fallback_when_ai_unavailable():
+    state = initial_state()
+    state["github_service"] = _GitHub(comments=[
+        {"id": 8100, "author": "bob", "body": "please also add CSV export", "created_at": "2026-04-27T10:00:00Z"},
+    ])
+    state["current_card"] = {"id": "ITEM_1", "issue_number": 42}
+    state["conducting_backend"] = _Backend(fail=True)
+
+    result = await route_issue_comments(state)
+
+    assert result["requirements_changed"] is True
+    assert result["card_clarifications"][0]["classification"] == "scope_change"
+
+
+@pytest.mark.asyncio
+async def test_keyword_fallback_when_no_backend_in_state():
+    state = initial_state()
+    state["github_service"] = _GitHub(comments=[
+        {"id": 8200, "author": "carol", "body": "please also add dark mode", "created_at": "2026-04-27T10:00:00Z"},
+    ])
+    state["current_card"] = {"id": "ITEM_1", "issue_number": 42}
+    # No conducting_backend key — keyword path.
+
+    result = await route_issue_comments(state)
+
+    assert result["requirements_changed"] is True
+
+
 @pytest.mark.asyncio
 async def test_blocker_update_not_appended_to_clarifications():
     """blocker_update comments are logged but not added to clarifications."""

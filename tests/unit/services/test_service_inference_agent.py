@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -90,7 +91,14 @@ async def test_dispatches_tool_calls_then_terminates(sandbox: ToolSandbox) -> No
     last = second_turn_messages[-1]
     assert last["role"] == "user"
     assert last["content"][0]["type"] == "tool_result"
-    assert "rails" in last["content"][0]["content"]["content"]
+    # Content is JSON-encoded to a string so Anthropic's schema accepts it
+    # unchanged; the OpenAI-compat strategy also accepts string payloads.
+    # Regression: a raw dict here triggers Anthropic 400
+    # "tool_result.content: Found an object, but ... must either be a string
+    # or a list of content blocks."
+    assert isinstance(last["content"][0]["content"], str)
+    payload = json.loads(last["content"][0]["content"])
+    assert "rails" in payload["content"]
 
 
 @pytest.mark.asyncio
@@ -159,7 +167,7 @@ async def test_sandbox_traversal_is_surfaced_not_crashed(
     second_turn = client.calls[1][-1]
     result_block = second_turn["content"][0]
     assert result_block["is_error"] is True
-    assert result_block["content"]["error"] == "sandbox_violation"
+    assert json.loads(result_block["content"])["error"] == "sandbox_violation"
 
 
 @pytest.mark.asyncio
@@ -183,7 +191,10 @@ async def test_symlink_escape_surfaced(tmp_path: Path) -> None:
     )
     agent = ServiceInferenceAgent(sandbox=sb, client=client)
     await agent.run("infer")
-    assert client.calls[1][-1]["content"][0]["content"]["error"] == "sandbox_violation"
+    assert (
+        json.loads(client.calls[1][-1]["content"][0]["content"])["error"]
+        == "sandbox_violation"
+    )
 
 
 @pytest.mark.asyncio

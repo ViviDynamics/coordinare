@@ -219,3 +219,36 @@ class TestPositiveDefaultsAccepted:
     def test_subprocess_rejects_container_devenv_root(self) -> None:
         with pytest.raises(ValidationError, match="subprocess performers must not"):
             PerformerEndpointConfig(**_base(container_devenv_root="/other"))
+
+
+class TestEnvCoercion:
+    """YAML ${VAR} expansion can yield bare ints/bools/None; coerce to str."""
+
+    def _ephemeral(self, env: object) -> PerformerEndpointConfig:
+        return PerformerEndpointConfig(
+            id="p1",
+            mode="ephemeral",
+            roles=["performer"],
+            image="performer:full",
+            env=env,  # type: ignore[arg-type]
+        )
+
+    def test_int_value_coerced(self) -> None:
+        cfg = self._ephemeral({"MAX_TOOL_CALLS": 200})
+        assert cfg.env == {"MAX_TOOL_CALLS": "200"}
+
+    def test_bool_value_coerced_lowercase(self) -> None:
+        cfg = self._ephemeral({"DEBUG": True, "QUIET": False})
+        assert cfg.env == {"DEBUG": "true", "QUIET": "false"}
+
+    def test_none_value_becomes_empty_string(self) -> None:
+        cfg = self._ephemeral({"UNSET": None})
+        assert cfg.env == {"UNSET": ""}
+
+    def test_float_value_coerced(self) -> None:
+        cfg = self._ephemeral({"TEMP": 0.5})
+        assert cfg.env == {"TEMP": "0.5"}
+
+    def test_string_value_unchanged(self) -> None:
+        cfg = self._ephemeral({"NAME": "alice"})
+        assert cfg.env == {"NAME": "alice"}

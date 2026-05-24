@@ -40,12 +40,6 @@ class _GitHub:
         return {"id": "C1"}
 
 
-class _Claude:
-    async def assess_card_sufficiency(self, card):
-        _ = card
-        return {"sufficient": True, "questions": []}
-
-
 class _Agent:
     async def dispatch_card(self, card_context, workspace_info=None):
         _ = (card_context, workspace_info)
@@ -69,7 +63,6 @@ async def test_dispatch_loop_integration() -> None:
     state.update(
         {
             "github_service": _GitHub(),
-            "claude_service": _Claude(),
             "agent_service": _Agent(),
             "notification_service": FakeNotificationService(),
             "human_reviewers": ["alice"],

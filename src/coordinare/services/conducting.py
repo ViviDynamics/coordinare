@@ -239,6 +239,12 @@ class OpenAiApiBackend:
         self._effort = effort
         self._base_url = (base_url or "https://api.openai.com/v1").rstrip("/")
 
+    # Transient-error retry budget. Three attempts total at 0.5s / 1.5s
+    # backoff — enough to ride out a LiteLLM/proxy hiccup or a brief 429
+    # without compounding latency on a hard outage.
+    _MAX_ATTEMPTS: int = 3
+    _RETRY_DELAYS_S: tuple[float, ...] = (0.5, 1.5)
+
     async def _chat(self, messages: list[dict[str, str]], json_mode: bool) -> str:
         import httpx
         if not self._api_key:
@@ -264,15 +270,48 @@ class OpenAiApiBackend:
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
         }
-        try:
-            async with httpx.AsyncClient(timeout=self._TIMEOUT) as client:
-                resp = await client.post(
-                    f"{self._base_url}/chat/completions", json=payload, headers=headers
-                )
+
+        data: Any = None
+        last_error: str | None = None
+        for attempt in range(self._MAX_ATTEMPTS):
+            try:
+                async with httpx.AsyncClient(timeout=self._TIMEOUT) as client:
+                    resp = await client.post(
+                        f"{self._base_url}/chat/completions", json=payload, headers=headers
+                    )
+                # Retry only transient server-side conditions; 4xx auth/bad-
+                # request errors won't recover and burning the budget on them
+                # just delays the eventual empty-string return.
+                if resp.status_code >= 500 or resp.status_code == 429:
+                    last_error = f"http_{resp.status_code}"
+                    if attempt < len(self._RETRY_DELAYS_S):
+                        log.warning(
+                            "openai_api_retry",
+                            attempt=attempt + 1,
+                            status=resp.status_code,
+                        )
+                        await asyncio.sleep(self._RETRY_DELAYS_S[attempt])
+                        continue
                 resp.raise_for_status()
                 data = resp.json()
-        except httpx.HTTPError as exc:
-            log.error("openai_api_http_error", error=str(exc))
+                break
+            except (httpx.TimeoutException, httpx.TransportError) as exc:
+                last_error = type(exc).__name__
+                if attempt < len(self._RETRY_DELAYS_S):
+                    log.warning(
+                        "openai_api_retry", attempt=attempt + 1, error=last_error,
+                    )
+                    await asyncio.sleep(self._RETRY_DELAYS_S[attempt])
+                    continue
+                log.error("openai_api_http_error", error=str(exc))
+                return ""
+            except httpx.HTTPError as exc:
+                # Non-retryable (e.g. 4xx after raise_for_status).
+                log.error("openai_api_http_error", error=str(exc))
+                return ""
+
+        if data is None:
+            log.error("openai_api_http_error", error=last_error or "retries_exhausted")
             return ""
         try:
             return str(data["choices"][0]["message"]["content"] or "")

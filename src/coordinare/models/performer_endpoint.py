@@ -93,6 +93,26 @@ class PerformerEndpointConfig(BaseModel):
     capability_overrides: CapabilityOverride | None = None
     container_devenv_root: str = "/devenv"
 
+    @field_validator("env", mode="before")
+    @classmethod
+    def _coerce_env_values_to_str(cls, v: Any) -> Any:
+        # YAML scalar substitution from .env (e.g. `KEY: ${VAR}` where VAR=200)
+        # can yield bare ints/bools/floats. Container env vars are strings on
+        # the wire, so coerce here rather than forcing operators to quote every
+        # placeholder. None becomes the empty string to mirror the unset-var
+        # convention used by the rest of the env-passthrough plumbing.
+        if not isinstance(v, dict):
+            return v
+        coerced: dict[str, str] = {}
+        for key, val in v.items():
+            if val is None:
+                coerced[str(key)] = ""
+            elif isinstance(val, bool):
+                coerced[str(key)] = "true" if val else "false"
+            else:
+                coerced[str(key)] = str(val)
+        return coerced
+
     @field_validator("readiness_timeout_s")
     @classmethod
     def _readiness_positive(cls, v: int) -> int:
