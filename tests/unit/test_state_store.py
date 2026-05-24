@@ -540,3 +540,66 @@ async def test_persisted_session_roundtrips_last_blocked_slack_delivered_at(tmp_
 
     assert loaded is not None
     assert loaded.active_sessions["PVT_70"].last_blocked_slack_delivered_at == t_slack
+
+
+# --- 072 T013: head_at_dispatch / head_at_last_turn on PersistedSession ---
+
+
+@pytest.mark.asyncio
+async def test_persisted_session_roundtrips_head_delta_fields(tmp_path: Path) -> None:
+    """072 FR-072-8..10: ``head_at_dispatch`` and ``head_at_last_turn`` survive
+    a save → load round-trip so the audit trail holds across restart.
+    """
+    metrics = CoordinareMetrics()
+    store = StateStore(path=tmp_path / "state.json", metrics=metrics)
+    snapshot = _make_snapshot(
+        phase="dispatching",
+        active_card_id="PVT_70",
+        active_sessions={
+            "PVT_70": PersistedSession(
+                card_id="PVT_70",
+                performer_stage="implementing",
+                phase="dispatching",
+                head_at_dispatch="abc1234",
+                head_at_last_turn="def5678",
+            ),
+        },
+    )
+
+    await store.save(snapshot)
+    loaded = await store.load()
+
+    assert loaded is not None
+    assert loaded.active_sessions["PVT_70"].head_at_dispatch == "abc1234"
+    assert loaded.active_sessions["PVT_70"].head_at_last_turn == "def5678"
+
+
+@pytest.mark.asyncio
+async def test_v1_snapshot_defaults_head_delta_fields_to_none(tmp_path: Path) -> None:
+    """072 FR-072-8: a pre-072 snapshot whose ``PersistedSession`` entries lack
+    the new head fields deserializes cleanly with both defaulting to ``None``.
+    """
+    import json
+
+    metrics = CoordinareMetrics()
+    path = tmp_path / "state.json"
+    store = StateStore(path=path, metrics=metrics)
+    snapshot = _make_snapshot(
+        phase="dispatching",
+        active_card_id="PVT_70",
+        active_sessions={
+            "PVT_70": PersistedSession(card_id="PVT_70", performer_stage="implementing"),
+        },
+    )
+    await store.save(snapshot)
+
+    data = json.loads(path.read_text())
+    data["schema_version"] = 1
+    data["active_sessions"]["PVT_70"].pop("head_at_dispatch", None)
+    data["active_sessions"]["PVT_70"].pop("head_at_last_turn", None)
+    path.write_text(json.dumps(data))
+
+    loaded = await store.load()
+    assert loaded is not None
+    assert loaded.active_sessions["PVT_70"].head_at_dispatch is None
+    assert loaded.active_sessions["PVT_70"].head_at_last_turn is None

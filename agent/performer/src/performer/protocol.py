@@ -130,3 +130,8 @@ class PerformerResponse(BaseModel):
     # 070: continuation hint emitted alongside status="partial_progress" so
     # the coordinare relays a focused next-chunk prompt to the next turn.
     next_focus: str | None = None
+    # 072: count of new PR comments authored by the bot user during this
+    # turn. Used by the coordinare per-role zero-progress guardrail to
+    # distinguish reviewer/qa turns that surfaced something real from
+    # silent no-op turns.
+    bot_pr_comment_delta: int = 0

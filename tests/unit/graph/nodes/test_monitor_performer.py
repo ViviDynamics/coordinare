@@ -383,13 +383,14 @@ async def test_blocked_implementer_with_new_commits_stays_blocked() -> None:
 
 
 @pytest.mark.asyncio
-async def test_blocked_non_implementer_stage_ignores_commit_delta_guardrail() -> None:
-    """Guardrail only fires for the implementing stage; reviewers can block freely."""
+async def test_blocked_non_implementer_with_bot_comment_delta_stays_blocked() -> None:
+    """072: reviewer-style stage with bot_pr_comment_delta>0 honors blocked verdict."""
     service = _Performer({
         "status": "blocked",
         "questions": ["What is the threat model?"],
         "head_before": "aaa111",
         "head_after": "aaa111",
+        "bot_pr_comment_delta": 2,
     })
     state = _make_state(service=service, stage="reviewing", sequence=["implementing", "reviewing"])
 
@@ -397,6 +398,61 @@ async def test_blocked_non_implementer_stage_ignores_commit_delta_guardrail() ->
 
     assert result["phase"] == "blocked"
     assert result["open_questions"] == ["What is the threat model?"]
+
+
+@pytest.mark.asyncio
+async def test_blocked_reviewer_zero_progress_re_dispatches() -> None:
+    """072 FR-072-5: reviewer blocked with zero head + zero bot comments retries."""
+    service = _Performer({
+        "status": "blocked",
+        "questions": ["Should I keep going?"],
+        "head_before": "aaa111",
+        "head_after": "aaa111",
+        "bot_pr_comment_delta": 0,
+    })
+    state = _make_state(service=service, stage="reviewing", sequence=["implementing", "reviewing"])
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "dispatching"
+    assert result["performer_stage"] == "reviewing"
+    relay = result["relay_feedback"]
+    assert len(relay) == 1
+    assert "review" in relay[0]["body"].lower()
+
+
+@pytest.mark.asyncio
+async def test_partial_progress_preserves_reviewer_stage() -> None:
+    """072 FR-072-2: partial_progress from reviewer keeps performer_stage=reviewing."""
+    service = _Performer({
+        "status": "partial_progress",
+        "next_focus": "Continue auditing util module",
+        "head_before": "aaa111",
+        "head_after": "aaa111",
+    })
+    state = _make_state(service=service, stage="reviewing", sequence=["implementing", "reviewing"])
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "dispatching"
+    assert result["performer_stage"] == "reviewing"
+
+
+@pytest.mark.asyncio
+async def test_head_audit_trail_captured_on_terminal_response() -> None:
+    """072 FR-072-8..11: head_at_dispatch and head_at_last_turn written on terminal."""
+    service = _Performer({
+        "status": "blocked",
+        "questions": ["q?"],
+        "head_before": "aaa111",
+        "head_after": "bbb222",
+    })
+    state = _make_state(service=service)
+
+    result = await monitor_performer(state)
+
+    assert result["head_at_dispatch"] == "aaa111"
+    assert result["head_at_last_turn"] == "bbb222"
 
 
 # ---------------------------------------------------------------------------

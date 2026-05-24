@@ -75,6 +75,13 @@ class PersistedSession(BaseModel):
     # FR-004's post-restart suppression has a truthful signal that survives
     # the in-memory NotificationHistory loss across restarts.
     last_blocked_slack_delivered_at: datetime | None = None
+    # 072 FR-072-8..11: head-delta audit trail. ``head_at_dispatch`` is the
+    # branch HEAD captured the first time this card was dispatched to a
+    # performer in its current lifecycle pass; ``head_at_last_turn`` is the
+    # most recent ``head_after`` reported by a terminal performer response.
+    # Optional / default ``None`` keeps v1/v2 snapshots loading unchanged.
+    head_at_dispatch: str | None = None
+    head_at_last_turn: str | None = None
 
 
 class WorkflowSnapshot(BaseModel):

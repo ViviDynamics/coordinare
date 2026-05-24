@@ -66,6 +66,15 @@ class CardSession(TypedDict, total=False):
     feedback_cycle_count: int
     total_feedback_cycles: int
     triage_blocks: int
+    # 072 FR-072-8..11: head-delta audit trail. ``head_at_dispatch`` is the
+    # branch HEAD captured the first time this card was dispatched in its
+    # current lifecycle pass; ``head_at_last_turn`` is the most recent
+    # ``head_after`` from a terminal performer response.
+    head_at_dispatch: str | None
+    head_at_last_turn: str | None
+    # 072 FR-072-5(c): clarifications-count snapshot at dispatch — see
+    # CoordinareState for semantics.
+    clarifications_count_at_dispatch: int
 
 
 # Fields that live on both CardSession and CoordinareState (flat).
@@ -106,6 +115,9 @@ _SESSION_FIELDS: tuple[str, ...] = (
     "feedback_cycle_count",
     "total_feedback_cycles",
     "triage_blocks",
+    "head_at_dispatch",
+    "head_at_last_turn",
+    "clarifications_count_at_dispatch",
 )
 
 
@@ -147,6 +159,9 @@ def create_session_from_card(card: dict[str, Any]) -> CardSession:
         feedback_cycle_count=0,
         total_feedback_cycles=0,
         triage_blocks=0,
+        head_at_dispatch=None,
+        head_at_last_turn=None,
+        clarifications_count_at_dispatch=0,
     )
 
 

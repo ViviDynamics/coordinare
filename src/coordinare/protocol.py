@@ -83,6 +83,11 @@ class ProtocolResponse(BaseModel):
     head_after: str | None = None
     # 070: continuation hint emitted with status="partial_progress".
     next_focus: str | None = None
+    # 072: number of new PR comments authored by the bot user during this
+    # turn. Used by the per-role zero-progress guardrail to distinguish a
+    # reviewer that surfaced something real (delta > 0) from one that
+    # silently churned (delta == 0).
+    bot_pr_comment_delta: int = 0
 
 
 def generate_contracts(output_dir: Path) -> None:

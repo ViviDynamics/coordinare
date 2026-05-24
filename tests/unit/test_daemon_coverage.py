@@ -1459,3 +1459,42 @@ def test_pick_stable_active_card_id_unparseable_iso_string_falls_back_to_raw() -
     }
     # Both unparseable → raw lex sort → "not-a-date-a" wins.
     assert _pick_stable_active_card_id(sessions) == "CARD_A"
+
+
+def test_persist_active_sessions_round_trips_head_audit_fields() -> None:
+    """072 FR-072-8..11: ``head_at_dispatch`` and ``head_at_last_turn`` flow
+    through the daemon's persist → snapshot → restore loop so the audit
+    trail survives a process restart, not just a state_store save/load.
+    """
+    from coordinare.daemon import _persist_active_sessions
+
+    daemon = _make_daemon()
+    daemon._state["active_sessions"] = {
+        "card-72": {
+            "current_card": {"id": "card-72"},
+            "performer_stage": "implementing",
+            "phase": "monitoring_performer",
+            "head_at_dispatch": "aaa111",
+            "head_at_last_turn": "bbb222",
+        }
+    }
+    persisted = _persist_active_sessions(daemon._state["active_sessions"])
+
+    assert persisted["card-72"].head_at_dispatch == "aaa111"
+    assert persisted["card-72"].head_at_last_turn == "bbb222"
+
+    # Now restore through the daemon's rehydrate path and confirm the
+    # values land back on the live session dict.
+    snap = WorkflowSnapshot(
+        snapshot_at=datetime.now(UTC),
+        phase="monitoring_performer",
+        active_card_id="card-72",
+        active_card_column="In Progress",
+        performer_stage="implementing",
+        active_sessions=persisted,
+    )
+    fresh = _make_daemon()
+    fresh._restore_from_snapshot(snap)
+    sess = fresh._state["active_sessions"]["card-72"]
+    assert sess["head_at_dispatch"] == "aaa111"
+    assert sess["head_at_last_turn"] == "bbb222"

@@ -227,6 +227,10 @@ class Performance:
     # implementer turns that produced zero commits and route them to retry
     # instead of accepting a no-progress "blocked" verdict at face value.
     head_at_start: str | None = None
+    # 072: pre-turn count of PR comments (any author) captured at dispatch.
+    # Used to compute ``bot_pr_comment_delta`` on terminal responses for the
+    # coordinare per-role zero-progress guardrail.
+    pr_comments_at_start: int | None = None
     plan_path: str | None = None  # 020: path to committed architecture plan
     check_attempt: int = 0
     # 065 Fix 14: track last failure signature so we can bail when the same

@@ -10,7 +10,7 @@ import sys
 import traceback
 import uuid
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 if TYPE_CHECKING:
@@ -364,6 +364,20 @@ def _extract_json(text: str) -> dict | list | None:
     return None
 
 
+# 072: roles for which the trailing ``{"status": "partial_progress"}`` JSON
+# sentinel is honored. Architect/assessing/closing/env_bootstrap are short
+# single-turn roles where checkpointing does not apply — emitting a
+# sentinel from those roles is treated as prose and ignored.
+#
+# IMPORTANT: must stay in sync with ``SENTINEL_STAGES`` in
+# ``src/coordinare/graph/nodes/monitor_performer.py``. The set is duplicated
+# across processes because there is no shared library between coordinare
+# and the performer container; add roles to both sides together.
+SENTINEL_ROLES: frozenset[str] = frozenset(
+    {"implementing", "reviewing", "security", "qa", "documenting"}
+)
+
+
 def _extract_trailing_partial_progress(text: str) -> dict | None:
     """Detect a trailing partial_progress JSON sentinel in implementer output.
 
@@ -397,6 +411,56 @@ def _extract_trailing_partial_progress(text: str) -> dict | None:
     if isinstance(obj, dict) and obj.get("status") == "partial_progress":
         return obj
     return None
+
+
+def _count_bot_comments(comments: list[dict[str, Any]]) -> int:
+    """Count comments authored by a bot account (``user.type == "Bot"``).
+
+    072 FR-072-6: the per-role zero-progress guardrail wants to know whether
+    the *agent* (or any bot) surfaced something this turn. Human comments
+    posted by operators between dispatch and turn-end must not inflate the
+    delta, or the guardrail will incorrectly treat a silent reviewer turn
+    as having "real signal" and skip re-dispatch.
+
+    Bot detection relies on GitHub returning ``user.type == "Bot"`` for the
+    authoring account. This is true for GitHub Apps (the standard performer
+    deployment) and the ``github-actions[bot]`` workflow identity. PAT-based
+    deployments — where the performer authenticates as a regular user
+    account — will NOT match here; in that case all comments look "human"
+    and the delta stays 0, so the guardrail trips on a silent turn rather
+    than getting confused by the agent's own comments. That is the
+    conservative default and matches the production deployment we ship.
+    """
+    n = 0
+    for c in comments:
+        user = c.get("user") if isinstance(c, dict) else None
+        if isinstance(user, dict) and user.get("type") == "Bot":
+            n += 1
+    return n
+
+
+async def _compute_pr_comment_delta(perf: Performance) -> int:
+    """Return new bot-authored PR comments since dispatch, or 0 if delta cannot be computed.
+
+    072: surfaces a "did this turn produce any visible bot PR activity"
+    signal so the coordinare per-role guardrail can distinguish a silent
+    reviewer/qa turn (delta == 0, route back to dispatching) from a turn
+    that surfaced something real (delta > 0, honor the blocked verdict).
+    """
+    if perf.pr_comments_at_start is None or not perf.pr_url:
+        return 0
+    pr_number = _extract_pr_number(perf.pr_url)
+    if not pr_number:
+        return 0
+    try:
+        owner, repo = perf.score.owner_repo
+        current = await list_pr_comments(
+            owner, repo, pr_number, token=perf.score.effective_github_token,
+        )
+    except Exception as exc:
+        log.warning("pr_comment_delta.list_failed", error=str(exc))
+        return 0
+    return max(0, _count_bot_comments(current) - perf.pr_comments_at_start)
 
 
 def _extract_pr_number(pr_url: str) -> int:
@@ -938,6 +1002,19 @@ async def handle_dispatch(
         perf.head_at_start = await get_head_sha(stand)
     except Exception as exc:
         log.warning("dispatch.head_at_start_capture_failed", error=str(exc))
+    # 072: snapshot pre-turn PR comment count for bot_pr_comment_delta.
+    if pr_url:
+        try:
+            owner_repo = score.owner_repo
+            pr_number = _extract_pr_number(pr_url)
+            if pr_number:
+                pre_comments = await list_pr_comments(
+                    owner_repo[0], owner_repo[1], pr_number,
+                    token=score.effective_github_token,
+                )
+                perf.pr_comments_at_start = _count_bot_comments(pre_comments)
+        except Exception as exc:
+            log.warning("dispatch.pr_comments_at_start_failed", error=str(exc))
     log.info("dispatch accepted", session_id=session_id)
     return PerformerResponse(
         status="accepted",
@@ -947,7 +1024,7 @@ async def handle_dispatch(
     ), perf
 
 
-def _format_check_failures(failed_runs: list[dict]) -> str:  # type: ignore[type-arg]
+def _format_check_failures(failed_runs: list[dict[str, Any]]) -> str:
     """Format failed check run details for relay to the backend.
 
     Returns the Check Run's structured ``output`` (title/summary/text). The
@@ -973,7 +1050,7 @@ def _format_check_failures(failed_runs: list[dict]) -> str:  # type: ignore[type
     return "\n\n".join(parts)
 
 
-def _failure_signature(failed_runs: list[dict]) -> str:  # type: ignore[type-arg]
+def _failure_signature(failed_runs: list[dict[str, Any]]) -> str:
     """Stable signature of a failure set: same checks failing the same way
     across attempts produces the same string.
     """
@@ -1974,7 +2051,7 @@ async def handle_status(
         # push whatever was committed, post a status comment on the PR (when
         # one exists), and hand control back to the coordinare with
         # status="partial_progress" so the next turn resumes from next_focus.
-        if perf.role == "implementing":
+        if perf.role in SENTINEL_ROLES:
             sentinel = _extract_trailing_partial_progress(backend_status.output or "")
             if sentinel is not None:
                 comment_body = str(sentinel.get("comment") or "").strip()
@@ -2001,6 +2078,10 @@ async def handle_status(
                         except Exception as exc:
                             log.warning("partial_progress.comment_failed", error=str(exc))
                 perf.state = "waiting_for_checks"
+                # 072 FR-072-6: emit bot_pr_comment_delta on all terminal
+                # ProtocolResponses so the coordinare's per-role guardrail sees
+                # signals from partial_progress turns too, not just blocked.
+                partial_bot_delta = await _compute_pr_comment_delta(perf)
                 return PerformerResponse(
                     status="partial_progress",
                     session_id=perf.session_id,
@@ -2008,6 +2089,7 @@ async def handle_status(
                     next_focus=next_focus,
                     head_before=perf.head_at_start,
                     head_after=head_after,
+                    bot_pr_comment_delta=partial_bot_delta,
                 )
 
         # 043: Run lint before pushing — catch CI violations at the source
@@ -2054,12 +2136,14 @@ async def handle_status(
             head_after_blocked = await get_head_sha(perf.stand)
         except Exception as exc:
             log.warning("blocked.head_after_failed", error=str(exc))
+        bot_comment_delta = await _compute_pr_comment_delta(perf)
         return PerformerResponse(
             status="blocked",
             session_id=perf.session_id,
             questions=backend_status.questions,
             head_before=perf.head_at_start,
             head_after=head_after_blocked,
+            bot_pr_comment_delta=bot_comment_delta,
         )
 
     if backend_status.state == "error":

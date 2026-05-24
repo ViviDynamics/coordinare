@@ -749,6 +749,12 @@ async def dispatch_performer(state: CoordinareState) -> CoordinareState:
     state["agent_dispatch_at"] = datetime.now(UTC)
     state["performer_events"] = []
     state["performer_metrics"] = None
+    # 072 FR-072-5(c): snapshot the pre-turn clarifications count so the
+    # per-role zero-progress guardrail can tell whether new clarifications
+    # arrived during this performer turn (via route_issue_comments or
+    # check_board).  A growth in this count is a "progress" signal.
+    _clarifications = state.get("card_clarifications") or []
+    state["clarifications_count_at_dispatch"] = len(_clarifications) if isinstance(_clarifications, list) else 0
     card["previous_status"] = card.get("status", "TODO")
     card["status"] = "IN_PROGRESS"
     _set_current_card(state, card)

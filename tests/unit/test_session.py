@@ -187,6 +187,8 @@ def test_session_fields_all_present_in_initial_state_or_coordinare_state() -> No
         "pending_override", "requirements_changed",
         "requirements_changed_details", "system_error_notified",
         "phase_entered_at", "last_blocked_notified_at",
+        "head_at_dispatch", "head_at_last_turn",
+        "clarifications_count_at_dispatch",
     }
     for field in _SESSION_FIELDS:
         if field not in optional_in_initial:
