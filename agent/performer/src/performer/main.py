@@ -24,7 +24,7 @@ from performer.backends import UnsupportedBackendError, get_backend
 from performer.backends.base import BackendAdapter, BackendStatus
 from performer.cdn_upload import resolve_visual_evidence_urls
 from performer.config import Settings, get_settings
-from performer.github import GitHubAPIError, create_pull_request, get_check_runs, list_pr_comments, post_issue_comment, post_pr_comment, post_pull_request_review, resolve_pr_review_threads, summarise_check_runs
+from performer.github import GitHubAPIError, create_pull_request, get_check_run_logs, get_check_runs, list_pr_comments, post_issue_comment, post_pr_comment, post_pull_request_review, resolve_pr_review_threads, summarise_check_runs
 from performer.models import Performance, Score, Stand, _redact_secrets
 from performer.protocol import (
     FAILURE_STATUSES,
@@ -1050,6 +1050,64 @@ def _format_check_failures(failed_runs: list[dict[str, Any]]) -> str:
     return "\n\n".join(parts)
 
 
+async def _format_check_failures_with_logs(
+    failed_runs: list[dict[str, Any]],
+    *,
+    owner: str,
+    repo: str,
+    token: str,
+    min_output_chars: int,
+    max_total_chars: int,
+) -> str:
+    """Like ``_format_check_failures`` but auto-inlines workflow log tails.
+
+    For each failed run whose ``output.text`` is shorter than
+    ``min_output_chars``, fetch the GitHub Actions job log and append a
+    ``**Log tail (job <id>)**`` block. Total inlined log content across all
+    runs is capped at ``max_total_chars`` via equal fair-share slicing with
+    an 800-char floor so the first failure doesn't consume the whole budget.
+    Fetch errors degrade silently to the no-log body — never raises.
+    """
+    base = _format_check_failures(failed_runs)
+    if max_total_chars <= 0 or not failed_runs:
+        return base
+
+    candidates: list[tuple[int, dict[str, Any]]] = []
+    for run in failed_runs:
+        output = run.get("output") or {}
+        text = output.get("text") or ""
+        if len(text) < min_output_chars:
+            candidates.append((run.get("id"), run))  # type: ignore[arg-type]
+    if not candidates:
+        return base
+
+    remaining = max_total_chars
+    blocks: list[str] = []
+    for i, (job_id, run) in enumerate(candidates):
+        if not job_id:
+            continue
+        slots_left = len(candidates) - i
+        slice_size = max(800, remaining // slots_left)
+        try:
+            tail = await get_check_run_logs(
+                owner, repo, int(job_id), token, max_chars=slice_size
+            )
+        except Exception as exc:
+            log.warning("ci_log_inline.fetch_failed", job_id=job_id, error=str(exc))
+            tail = ""
+        if not tail:
+            continue
+        name = run.get("name", "unknown")
+        blocks.append(f"**Log tail (job {job_id}, check {name})**:\n```\n{tail}\n```")
+        remaining = max(0, remaining - len(tail))
+        if remaining <= 0:
+            break
+
+    if not blocks:
+        return base
+    return base + "\n\n" + "\n\n".join(blocks)
+
+
 def _failure_signature(failed_runs: list[dict[str, Any]]) -> str:
     """Stable signature of a failure set: same checks failing the same way
     across attempts produces the same string.
@@ -1170,7 +1228,19 @@ async def _poll_check_runs(perf: Performance, settings: Settings | None) -> Perf
         )
 
     perf.check_attempt += 1
-    failure_msg = _format_check_failures(failed)
+    min_output_chars = settings.CI_LOG_INLINE_MIN_OUTPUT_CHARS if settings is not None else 200
+    max_total_chars = settings.CI_LOG_INLINE_MAX_CHARS if settings is not None else 6000
+    if max_total_chars > 0:
+        failure_msg = await _format_check_failures_with_logs(
+            failed,
+            owner=owner,
+            repo=repo,
+            token=perf.score.effective_github_token,
+            min_output_chars=min_output_chars,
+            max_total_chars=max_total_chars,
+        )
+    else:
+        failure_msg = _format_check_failures(failed)
     failing_names = [r.get("name", "unknown") for r in failed]
     tool_hint = (
         "\n\n**To read the actual workflow logs for any failing check, run:**\n"

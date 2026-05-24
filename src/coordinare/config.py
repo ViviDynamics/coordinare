@@ -126,6 +126,9 @@ class NotificationsConfig(BaseModel):
     # `last_blocked_slack_delivered_at` watermark so cycle-rate dispatch loops
     # can't bypass dedup once the per-channel window expires.
     card_blocked_reminder_cooldown_seconds: int = Field(default=3600, ge=0)
+    # 071 FR-005: cap on total inlined CI log content per PR-checks BOUNCE body.
+    # `0` disables log inlining and falls back to the name-only bounce body.
+    pr_checks_bounce_log_max_chars: int = Field(default=6000, ge=0)
 
     @model_validator(mode="after")
     def _validate_unique_channel_names(self) -> NotificationsConfig:

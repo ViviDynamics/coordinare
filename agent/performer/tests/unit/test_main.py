@@ -931,6 +931,66 @@ class TestCheckPolling:
         assert "performer-fetch-ci-log --check 'Validate version'" in relay
         assert "performer-fetch-ci-log --list" in relay
 
+    async def test_relay_inlines_workflow_log_tail_when_output_text_empty(self) -> None:
+        """071 T003: when output.text is empty, relay body includes fetched log tail."""
+        perf = _make_perf_waiting()
+        failed_run = {
+            "id": 999111,
+            "name": "lint",
+            "status": "completed",
+            "conclusion": "failure",
+            "output": {"title": "ruff failed", "summary": "1 error", "text": ""},
+        }
+        settings = Settings(
+            AGENT_BACKEND="opencode",
+            AGENT_TIMEOUT=1800,
+            CHECK_MAX_ATTEMPTS=3,
+            CI_LOG_INLINE_MIN_OUTPUT_CHARS=200,
+            CI_LOG_INLINE_MAX_CHARS=6000,
+        )
+        with (
+            patch("performer.main.get_check_runs", new=AsyncMock(return_value=[failed_run])),
+            patch(
+                "performer.main.get_check_run_logs",
+                new=AsyncMock(return_value="ERROR: src/x.py:1:1 E501 line too long"),
+            ),
+        ):
+            await handle_status(_msg("status", session_id="sid"), perf, settings)
+        relay = perf.backend.relay_feedback.call_args[0][0]
+        assert "Log tail (job 999111" in relay
+        assert "E501 line too long" in relay
+
+    async def test_relay_falls_back_when_log_fetch_raises(self) -> None:
+        """071 T004: get_check_run_logs raising → relay body falls back to base format."""
+        perf = _make_perf_waiting()
+        failed_run = {
+            "id": 999222,
+            "name": "tests",
+            "status": "completed",
+            "conclusion": "failure",
+            "output": {"title": "3 failures", "summary": "Tests failed", "text": ""},
+        }
+        settings = Settings(
+            AGENT_BACKEND="opencode",
+            AGENT_TIMEOUT=1800,
+            CHECK_MAX_ATTEMPTS=3,
+            CI_LOG_INLINE_MIN_OUTPUT_CHARS=200,
+            CI_LOG_INLINE_MAX_CHARS=6000,
+        )
+        with (
+            patch("performer.main.get_check_runs", new=AsyncMock(return_value=[failed_run])),
+            patch(
+                "performer.main.get_check_run_logs",
+                new=AsyncMock(side_effect=RuntimeError("boom")),
+            ),
+        ):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
+        assert resp.status == "working"
+        relay = perf.backend.relay_feedback.call_args[0][0]
+        assert "Log tail" not in relay
+        assert "tests" in relay
+        assert "3 failures" in relay
+
     async def test_no_progress_streak_blocks_before_max_attempts(self) -> None:
         """065 Fix 14: same failure twice in a row blocks before CHECK_MAX_ATTEMPTS."""
         perf = _make_perf_waiting()

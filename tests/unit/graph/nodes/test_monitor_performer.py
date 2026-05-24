@@ -2655,3 +2655,107 @@ async def test_064_fast_path_expires_after_poll_interval() -> None:
     state2 = await monitor_performer(state1)
     assert state2["phase"] == "monitoring_performer"
     assert gh.execute_calls == 2  # re-queried
+
+
+# ---------------------------------------------------------------------------
+# 071 — CI log inlining on BOUNCE
+# ---------------------------------------------------------------------------
+
+
+class _GitHubWithRollupAndLogs(_GitHubWithRollup):
+    """Mock github that also serves fetch_failed_job_log."""
+
+    def __init__(
+        self,
+        rollup_payload: dict | None = None,
+        log_text: str = "",
+        raise_on_log: bool = False,
+    ) -> None:
+        super().__init__(rollup_payload)
+        self._log_text = log_text
+        self._raise_on_log = raise_on_log
+        self.log_calls: list[tuple[str, str, int, int]] = []
+
+    async def fetch_failed_job_log(
+        self, owner: str, repo: str, job_id: int, max_chars: int = 6000
+    ) -> str:
+        self.log_calls.append((owner, repo, job_id, max_chars))
+        if self._raise_on_log:
+            raise RuntimeError("fetch boom")
+        return self._log_text
+
+
+@pytest.mark.asyncio
+async def test_071_bounce_inlines_log_tail_when_fetch_returns_content() -> None:
+    """T009: BOUNCE body inlines log tails using parsed job_id from details_url."""
+    from tests.utils.fake_notification import FakeNotificationService
+
+    payload = _rollup_payload(
+        contexts=[
+            {
+                "__typename": "CheckRun",
+                "name": "ci/test",
+                "status": "COMPLETED",
+                "conclusion": "FAILURE",
+                "detailsUrl": "https://github.com/org/repo/actions/runs/555/job/777888",
+            },
+        ],
+        bpr_nodes=[{"pattern": "main", "requiredStatusChecks": [{"context": "ci/test"}]}],
+    )
+    gh = _GitHubWithRollupAndLogs(
+        payload, log_text="FAIL: assert x == y\nE   AssertionError"
+    )
+    state = _gate_state(gh)
+    state["notification_service"] = FakeNotificationService()
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "dispatching"
+    relay = result.get("relay_feedback") or []
+    body = relay[0]["body"]
+    assert "Log tail (job 777888" in body
+    assert "AssertionError" in body
+    assert gh.log_calls and gh.log_calls[0][2] == 777888
+
+
+@pytest.mark.asyncio
+async def test_071_bounce_falls_back_when_log_fetch_returns_empty() -> None:
+    """T010: empty log body → falls back to name-only bounce (no Log tail block)."""
+    from tests.utils.fake_notification import FakeNotificationService
+
+    payload = _rollup_payload(
+        contexts=[
+            {
+                "__typename": "CheckRun",
+                "name": "ci/test",
+                "status": "COMPLETED",
+                "conclusion": "FAILURE",
+                "detailsUrl": "https://github.com/org/repo/actions/runs/555/job/777888",
+            },
+        ],
+        bpr_nodes=[{"pattern": "main", "requiredStatusChecks": [{"context": "ci/test"}]}],
+    )
+    gh = _GitHubWithRollupAndLogs(payload, log_text="")  # fetch returns nothing
+    state = _gate_state(gh)
+    state["notification_service"] = FakeNotificationService()
+
+    result = await monitor_performer(state)
+
+    body = (result.get("relay_feedback") or [{}])[0].get("body", "")
+    assert "ci/test" in body
+    assert "Log tail" not in body
+
+
+@pytest.mark.asyncio
+async def test_071_no_ci_repo_makes_zero_log_fetch_calls() -> None:
+    """T011: empty rollup (no checks) short-circuits → zero fetch_failed_job_log calls."""
+    from tests.utils.fake_notification import FakeNotificationService
+
+    payload = _rollup_payload(contexts=[], bpr_nodes=[])
+    gh = _GitHubWithRollupAndLogs(payload, log_text="should not be fetched")
+    state = _gate_state(gh)
+    state["notification_service"] = FakeNotificationService()
+
+    await monitor_performer(state)
+
+    assert gh.log_calls == []

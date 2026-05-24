@@ -174,6 +174,7 @@ class NotificationService:
         self._card_blocked_reminder_cooldown_seconds = (
             config.card_blocked_reminder_cooldown_seconds
         )
+        self._pr_checks_bounce_log_max_chars = config.pr_checks_bounce_log_max_chars
         self._metrics = metrics
 
     @property
@@ -183,6 +184,10 @@ class NotificationService:
     @property
     def card_blocked_reminder_cooldown_seconds(self) -> int:
         return self._card_blocked_reminder_cooldown_seconds
+
+    @property
+    def pr_checks_bounce_log_max_chars(self) -> int:
+        return self._pr_checks_bounce_log_max_chars
 
     async def dispatch(self, event: NotificationEvent) -> None:
         channel_names = self._routing.get(event.event_type, [])

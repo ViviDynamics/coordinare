@@ -21,6 +21,12 @@ class Settings(BaseSettings):
     # 065 Fix 14: bail after this many consecutive identical-failure attempts;
     # if the model can't fix it in 2 tries, more grinding won't help.
     CHECK_NO_PROGRESS_LIMIT: int = 2
+    # 071 — CI log inlining.  Below this many chars of `output.text`, the
+    # performer auto-fetches the workflow log and appends the tail to the
+    # backend relay so the model never relies on a separate tool call to see
+    # the failure.  Set MAX to 0 to disable inlining entirely.
+    CI_LOG_INLINE_MIN_OUTPUT_CHARS: int = 200
+    CI_LOG_INLINE_MAX_CHARS: int = 6000
 
     # 020 — Architect performer settings
     PLAN_FILE_PATH: str = "docs/coordinare-architecture.md"

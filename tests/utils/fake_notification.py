@@ -13,10 +13,15 @@ class FakeNotificationService:
     Implements NotificationServiceProtocol.
     """
 
-    def __init__(self, card_blocked_reminder_cooldown_seconds: int = 3600) -> None:
+    def __init__(
+        self,
+        card_blocked_reminder_cooldown_seconds: int = 3600,
+        pr_checks_bounce_log_max_chars: int = 6000,
+    ) -> None:
         self.dispatched: list[NotificationEvent] = []
         self._history = NotificationHistory(max_age_hours=24)
         self._card_blocked_reminder_cooldown_seconds = card_blocked_reminder_cooldown_seconds
+        self._pr_checks_bounce_log_max_chars = pr_checks_bounce_log_max_chars
 
     async def dispatch(self, event: NotificationEvent) -> None:
         self.dispatched.append(event)
@@ -28,3 +33,7 @@ class FakeNotificationService:
     @property
     def card_blocked_reminder_cooldown_seconds(self) -> int:
         return self._card_blocked_reminder_cooldown_seconds
+
+    @property
+    def pr_checks_bounce_log_max_chars(self) -> int:
+        return self._pr_checks_bounce_log_max_chars
