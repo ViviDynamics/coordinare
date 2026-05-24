@@ -35,6 +35,58 @@ TERMINAL_SUCCESS_STATES: frozenset[str] = frozenset({
     "docs_committed",
     "assessment_complete",
 })
+# 072: performer stages for which a trailing partial_progress sentinel is
+# honored. Architecting / assessing / closing-review / env_bootstrap are
+# short single-turn roles where checkpointing does not apply.
+#
+# IMPORTANT: must stay in sync with ``SENTINEL_ROLES`` in
+# ``agent/performer/src/performer/main.py``. The set is duplicated across
+# the two processes (coordinare + performer container) because there is no
+# shared library between them; if you add a role here, add it there too.
+SENTINEL_STAGES: frozenset[str] = frozenset(
+    {"implementing", "reviewing", "security", "qa", "documenting"}
+)
+
+# 072: per-role zero-progress guardrail applies to non-implementer
+# review-style stages. The implementing stage uses the simpler
+# single-signal (head-delta only) guardrail from 070 — commits ARE the
+# progress signal there.
+ZERO_PROGRESS_REVIEW_STAGES: frozenset[str] = frozenset(
+    {"reviewing", "security", "qa", "documenting"}
+)
+
+# 072 FR-072-10: terminal markers that may carry a settled head_after worth
+# recording on ``head_at_last_turn``. Mirrors the slot-release allowlist so
+# new non-terminal markers cannot accidentally trip the audit-trail write.
+_TERMINAL_MARKERS_FOR_HEAD: frozenset[str] = TERMINAL_SUCCESS_STATES | frozenset({
+    "changes_requested", "security_failed", "qa_failed",
+    "error", "blocked", "session_expired", "token_limit",
+    "partial_progress",
+})
+
+# 072 FR-072-5: per-role "resume" relay-feedback text used when the
+# zero-progress guardrail trips. Lifted to module scope so we don't rebuild
+# the dict on every monitor pass.
+_ROLE_RESUME_DIRECTIVES: dict[str, str] = {
+    "reviewing": (
+        "Resume your review of the PR diff; post comments on specific "
+        "changes or emit `partial_progress` if you need to checkpoint."
+    ),
+    "security": (
+        "Resume your security audit; surface findings as PR comments or "
+        "emit `partial_progress` if you need to checkpoint."
+    ),
+    "qa": (
+        "Resume your QA pass; post test results as PR comments or emit "
+        "`partial_progress` if you need to checkpoint."
+    ),
+    "documenting": (
+        "Resume your documentation pass; commit doc changes or emit "
+        "`partial_progress` if you need to checkpoint."
+    ),
+}
+_DEFAULT_RESUME_DIRECTIVE = "Resume your work on this card."
+
 _FORMAT_ERROR_PREFIX = "BACKEND_FORMAT_ERROR:"
 _WORKFLOW_PUSH_REJECTION_MARKERS: tuple[str, ...] = (
     "refusing to allow a github app to create or update workflow",
@@ -1110,6 +1162,19 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
 
         marker = status.get("status", "working")
 
+        # 072 FR-072-8..11: head-delta audit trail. Capture head_at_dispatch
+        # the first time we see a non-empty head_before for this card's
+        # current pass, and overwrite head_at_last_turn on every terminal
+        # response that carries a non-null head_after. Allowlist the
+        # terminal markers (matching the slot-release set just below) so
+        # new non-terminal markers cannot accidentally trip this write.
+        _hb = status.get("head_before")
+        _ha = status.get("head_after")
+        if isinstance(_hb, str) and _hb and not state.get("head_at_dispatch"):
+            state["head_at_dispatch"] = _hb
+        if marker in _TERMINAL_MARKERS_FOR_HEAD and isinstance(_ha, str) and _ha:
+            state["head_at_last_turn"] = _ha
+
         # 030: Live requirement sync — detect card changes mid-cycle.
         # Only check when the performer is still working; terminal statuses
         # (success, error, etc.) take priority and must not be preempted.
@@ -1608,7 +1673,7 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
         # Non-terminal escape hatch for implementer turns that committed/pushed
         # work but did not finish. Relay the next_focus hint and re-dispatch
         # the implementing stage for another turn.
-        if marker == "partial_progress":
+        if marker == "partial_progress" and stage in SENTINEL_STAGES:
             next_focus = status.get("next_focus")
             focus_text = next_focus.strip() if isinstance(next_focus, str) else ""
             relay_body = (
@@ -1626,7 +1691,10 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
             state["relay_feedback"] = [  # type: ignore[typeddict-unknown-key]
                 {"body": relay_body, "author_login": "coordinare"}
             ]
-            state["performer_stage"] = "implementing"
+            # 072: preserve the originating stage rather than coercing to
+            # "implementing" — a reviewer that checkpointed should resume
+            # as a reviewer, not be demoted into the implementer role.
+            state["performer_stage"] = stage
             state["phase"] = "dispatching"
             state["agent_dispatch"] = {}
             state["agent_dispatch_at"] = None
@@ -1666,6 +1734,50 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
                     }
                 ]
                 state["performer_stage"] = "implementing"
+                state["phase"] = "dispatching"
+                state["agent_dispatch"] = {}
+                state["agent_dispatch_at"] = None
+                return state
+
+            # 072 FR-072-5: per-role zero-progress guardrail for review-style
+            # stages. Trip when ALL of: (a) head did not move,
+            # (b) bot posted no new PR comments this turn, (c) no new
+            # clarifications were appended (route_issue_comments and
+            # check_board can mutate clarifications mid-turn, so we compare
+            # the current length against the snapshot taken at dispatch).
+            bot_comment_delta = status.get("bot_pr_comment_delta")
+            if not isinstance(bot_comment_delta, int):
+                bot_comment_delta = 0
+            _current_clarifications = state.get("card_clarifications") or []
+            _clar_now = (
+                len(_current_clarifications)
+                if isinstance(_current_clarifications, list) else 0
+            )
+            _clar_at_dispatch = int(state.get("clarifications_count_at_dispatch") or 0)
+            if (
+                stage in ZERO_PROGRESS_REVIEW_STAGES
+                and isinstance(head_before, str)
+                and isinstance(head_after, str)
+                and head_before
+                and head_before == head_after
+                and bot_comment_delta == 0
+                and _clar_now == _clar_at_dispatch
+            ):
+                resume_directive = _ROLE_RESUME_DIRECTIVES.get(
+                    stage, _DEFAULT_RESUME_DIRECTIVE,
+                )
+                logger.warning(
+                    "monitor_performer.blocked_zero_progress_retry",
+                    performer_stage=stage,
+                    card_id=card_id,
+                    head=head_before,
+                    bot_comment_delta=bot_comment_delta,
+                    clarifications_delta=_clar_now - _clar_at_dispatch,
+                )
+                state["relay_feedback"] = [  # type: ignore[typeddict-unknown-key]
+                    {"body": resume_directive, "author_login": "coordinare"}
+                ]
+                state["performer_stage"] = stage
                 state["phase"] = "dispatching"
                 state["agent_dispatch"] = {}
                 state["agent_dispatch_at"] = None

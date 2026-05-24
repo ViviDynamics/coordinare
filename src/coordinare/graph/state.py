@@ -129,6 +129,16 @@ class CoordinareState(TypedDict, total=False):
     commit_summary: str | None
     agent_health_status: str | None
     last_blocked_notified_at: datetime | None
+    # 072 FR-072-8..11: head-delta audit trail (see PersistedSession).
+    head_at_dispatch: str | None
+    head_at_last_turn: str | None
+    # 072 FR-072-5(c): count of clarifications appended *before* the
+    # current performer turn started.  Snapshotted by dispatch_performer
+    # so the per-role zero-progress guardrail can detect whether new
+    # clarifications were appended (e.g. by route_issue_comments or
+    # check_board) while the performer was running.  Treated as a
+    # progress signal — if the count grew, the guardrail does not trip.
+    clarifications_count_at_dispatch: int
 
     # 019 — Performer Lifecycle
     performer_stage: str  # Active role in the lifecycle (e.g. "implementing", "reviewing")
