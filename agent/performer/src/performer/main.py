@@ -25,6 +25,7 @@ from performer.backends.base import BackendAdapter, BackendStatus
 from performer.cdn_upload import resolve_visual_evidence_urls
 from performer.config import Settings, get_settings
 from performer.github import GitHubAPIError, create_pull_request, get_check_run_logs, get_check_runs, list_pr_comments, post_issue_comment, post_pr_comment, post_pull_request_review, resolve_pr_review_threads, summarise_check_runs
+from performer.io_utils import iter_lines_chunked
 from performer.models import Performance, Score, Stand, _redact_secrets
 from performer.protocol import (
     FAILURE_STATUSES,
@@ -287,6 +288,16 @@ async def _run_service_inference(
             "inference_agent_version": agent_version,
         }
 
+    step_timeout_raw = _env("COORDINARE_INFERENCE_STEP_TIMEOUT")
+    try:
+        step_timeout = (
+            float(step_timeout_raw)
+            if step_timeout_raw
+            else float(get_settings().SERVICE_INFERENCE_STEP_TIMEOUT)
+        )
+    except ValueError:
+        step_timeout = float(get_settings().SERVICE_INFERENCE_STEP_TIMEOUT)
+
     try:
         result = await infer_services(
             project_root=stand_path,
@@ -294,6 +305,7 @@ async def _run_service_inference(
             agent_version=agent_version,
             llm_client=client,
             max_tool_calls=max_tool_calls,
+            step_timeout_seconds=step_timeout,
         )
     except InferenceFailed as exc:
         log.warning(
@@ -2106,9 +2118,30 @@ async def handle_status(
         # surface as backend_status.state == "error" and route through the
         # generic error path elsewhere in this function.
         if perf.role == "env_bootstrap":
-            perf.inference_state = await _run_service_inference(
-                perf.stand.path, perf.score.env_cache_path
-            )
+            inference_timeout = get_settings().SERVICE_INFERENCE_TIMEOUT
+            try:
+                perf.inference_state = await asyncio.wait_for(
+                    _run_service_inference(
+                        perf.stand.path, perf.score.env_cache_path
+                    ),
+                    timeout=inference_timeout,
+                )
+            except asyncio.TimeoutError:
+                log.error(
+                    "service_inference.timeout",
+                    job_id=perf.session_id,
+                    timeout_seconds=inference_timeout,
+                )
+                perf.error_reason = (
+                    f"service_inference_timeout after {inference_timeout}s"
+                )
+                return PerformerResponse(
+                    status="error",
+                    session_id=perf.session_id,
+                    reason=perf.error_reason,
+                    inference_succeeded=False,
+                    inference_skipped_reason="timeout",
+                )
             perf.state = "env_bootstrap_complete"
             return PerformerResponse(
                 status="env_bootstrap_complete",
@@ -2345,19 +2378,23 @@ async def run_loop() -> None:
     loop = asyncio.get_running_loop()
     await loop.connect_read_pipe(lambda: protocol, sys.stdin)
 
+    def _watchdog_remaining() -> float | None:
+        """Per-chunk timeout: AGENT_TIMEOUT minus elapsed session time."""
+        if perf is None:
+            return None
+        elapsed = (datetime.now(UTC) - perf.started_at).total_seconds()
+        remaining = settings.AGENT_TIMEOUT - elapsed
+        # Clamp positive so wait_for actually raises on the read() call rather
+        # than rejecting the timeout value itself.
+        return max(remaining, 0.001)
+
+    line_iter = iter_lines_chunked(reader, timeout=_watchdog_remaining)
+
     while True:
-        # Watchdog: once a session is active, cap how long we wait for the next
-        # message to the remaining AGENT_TIMEOUT budget.  If the coordinare stops
-        # polling the performer self-terminates rather than leaking the backend.
         try:
-            if perf is not None:
-                elapsed = (datetime.now(UTC) - perf.started_at).total_seconds()
-                remaining = settings.AGENT_TIMEOUT - elapsed
-                if remaining <= 0:
-                    raise asyncio.TimeoutError
-                raw = await asyncio.wait_for(reader.readline(), timeout=remaining)
-            else:
-                raw = await reader.readline()
+            raw = await line_iter.__anext__()
+        except StopAsyncIteration:
+            break
         except asyncio.TimeoutError:
             log.warning("session watchdog fired — stopping backend",
                         session_id=perf.session_id if perf else "")
@@ -2372,8 +2409,6 @@ async def run_loop() -> None:
                     pass
             break
         except Exception:  # pragma: no cover
-            break
-        if not raw:
             break
 
         line = raw.decode(errors="replace").strip()
@@ -2551,13 +2586,39 @@ async def _perform_job(payload: "JobInitPayload") -> "JobResult":  # pragma: no 
                 error_code="dispatch_error",
             )
 
-        from performer.server.job_runner import _progress_cb_var  # local import — server subpackage
+        from performer.server.job_runner import (  # local import — server subpackage
+            _progress_cb_var,
+            _refreshed_secrets_var,
+        )
 
         status_msg = PerformerMessage(action="status", session_id=perf.session_id)
         resp = None
+        # Track the last applied github_token so we only re-inject when it
+        # actually changed — avoids spamming git_env rebuilds every 2s tick.
+        _last_applied_token: str | None = None
         try:
             while True:
                 await asyncio.sleep(2.0)
+                # US5 / Spec 073 Phase 9: pick up any secrets PATCHed mid-job
+                # by the coordinare (refreshed GitHub App token before the
+                # 1h expiry boundary). Mirror the stdio refresh at the
+                # `action == "status"` branch above.
+                _refreshed = _refreshed_secrets_var.get()
+                if _refreshed:
+                    _new_token = _refreshed.get("github_token")
+                    if (
+                        _new_token
+                        and _new_token != _last_applied_token
+                        and perf is not None
+                        and perf.score is not None
+                    ):
+                        perf.score.github_token = _new_token
+                        perf.stand.git_env = _git_credential_vars(_new_token)
+                        _last_applied_token = _new_token
+                        log.debug(
+                            "token_refreshed_http",
+                            session_id=perf.session_id,
+                        )
                 resp = await handle_status(status_msg, perf, settings)
                 _progress_cb = _progress_cb_var.get()
                 if _progress_cb is not None and resp.events:

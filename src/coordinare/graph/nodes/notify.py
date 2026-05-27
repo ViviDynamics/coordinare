@@ -145,6 +145,26 @@ async def notify(state: CoordinareState) -> CoordinareState:
     _raw_stage = state.get("performer_stage")
     performer_stage = _raw_stage if isinstance(_raw_stage, str) else ""
 
+    # Dispatched-once gate: NotificationService's per-channel
+    # DeduplicationWindow (default 600s) re-fires the same card_dispatched
+    # event after expiry. While env_bootstrap is in flight the session can
+    # sit in monitoring_performer for >10 min, producing duplicate Slack
+    # posts. Suppress re-emission for a (card, performer_stage) we already
+    # announced on this active session; a stage change (e.g. implementing
+    # → reviewing) re-emits naturally because the gate keys on stage. The
+    # stage bucket key uses ``__unknown__`` when performer_stage is blank so
+    # a misordered early emit can't permanently silence later real stages.
+    stage_bucket = performer_stage or "__unknown__"
+    if event_type == EventType.card_dispatched and isinstance(sess, dict):
+        already = sess.get("dispatched_notified_stages")
+        if isinstance(already, list) and stage_bucket in already:
+            logger.info(
+                "notify.card_dispatched_suppressed_already_announced",
+                card_id=card_id_for_guard,
+                performer_stage=performer_stage,
+            )
+            return state
+
     # Human-readable summary per event type
     if event_type == EventType.card_dispatched:
         role = performer_stage or "implementer"
@@ -222,6 +242,21 @@ async def notify(state: CoordinareState) -> CoordinareState:
         # snapshots it on the next save cycle.
         if event_type == EventType.card_blocked and isinstance(sess, dict):
             sess["last_blocked_slack_delivered_at"] = datetime.now(UTC)
+        # Stamp only when the session is registered in active_sessions —
+        # otherwise ``sess`` is the throwaway ``{}`` default from .get() and
+        # the stamp would be lost, leaving the gate open for the next pass.
+        if (
+            event_type == EventType.card_dispatched
+            and isinstance(active_sessions, dict)
+            and card_id_for_guard in active_sessions
+            and isinstance(sess, dict)
+        ):
+            stages = sess.get("dispatched_notified_stages")
+            if not isinstance(stages, list):
+                stages = []
+                sess["dispatched_notified_stages"] = stages
+            if stage_bucket not in stages:
+                stages.append(stage_bucket)
     except Exception as exc:
         logger.warning("notification.dispatch_failed", error=str(exc))
 

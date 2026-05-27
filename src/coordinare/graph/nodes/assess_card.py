@@ -21,6 +21,36 @@ async def assess_card(state: CoordinareState) -> CoordinareState:
         state["phase"] = "idle"
         return state
 
+    # 073 US6 (FR-013): if the card already has an open PR, skip assessment.
+    # Re-entering ``assess_card`` after a transient mid-flight failure (e.g.
+    # the US5 GitHub-App-token expiry) would otherwise read stale pre-PR
+    # clarification comments on the issue and re-block the card — even though
+    # the PR has already superseded those questions.  Use ``find_pr_for_issue``
+    # (returns OPEN PRs only) as the authoritative liveness check; a stale
+    # ``pr_url`` on the card alone is not sufficient because the PR may have
+    # been closed since it was recorded.
+    pr_url_on_card = str(card.get("pr_url") or "").strip()
+    if pr_url_on_card:
+        issue_node_id = str(card.get("issue_id") or "")
+        try:
+            open_pr = await github.find_pr_for_issue(issue_node_id)
+        except Exception as exc:
+            logger.warning(
+                "assess_card.find_pr_for_issue_failed",
+                card_id=str(card.get("id", "")),
+                error=str(exc),
+            )
+            open_pr = None
+        if open_pr is not None:
+            logger.info(
+                "assess_card.skipped_open_pr",
+                card_id=str(card.get("id", "")),
+                pr_url=open_pr.get("pr_url"),
+            )
+            state["phase"] = "monitoring_pr"
+            state["open_questions"] = []
+            return state
+
     try:
         details = await github.get_issue_details(str(card.get("issue_id", "")))
         # Work with a mutable copy before attaching additional metadata.

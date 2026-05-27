@@ -73,6 +73,89 @@ async def test_notify_excludes_pr_url_from_payload_when_not_set() -> None:
 
 
 @pytest.mark.asyncio
+async def test_notify_suppresses_dispatched_re_emit_for_same_stage() -> None:
+    """Once card_dispatched has fired for (card, performer_stage), a later
+    pass on the same active session must not re-emit even after the
+    NotificationService dedup window would have expired.
+
+    Reproduces 2026-05-26 incident where #138 produced a duplicate
+    'dispatched to implementing' Slack post 11 min apart while env_bootstrap
+    was still running (phase stayed in monitoring_performer; dedup TTL=600s
+    elapsed and the same dedup_key re-fired).
+    """
+    state = initial_state()
+    card = {
+        "id": "card-138",
+        "title": "Add robots.txt",
+        "status": "IN_PROGRESS",
+    }
+    state["current_card"] = card
+    state["phase"] = "monitoring_performer"
+    state["performer_stage"] = "implementing"
+    state["active_sessions"] = {"card-138": {}}
+
+    notification_service = MagicMock()
+    notification_service.dispatch = AsyncMock()
+    state["notification_service"] = notification_service
+
+    await notify(state)
+    assert notification_service.dispatch.await_count == 1
+
+    await notify(state)
+    assert notification_service.dispatch.await_count == 1
+
+    # Stage transition produces a fresh notification.
+    state["performer_stage"] = "reviewing"
+    await notify(state)
+    assert notification_service.dispatch.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_notify_dispatched_re_emits_after_simulated_restart() -> None:
+    """The dispatched-stages list is in-memory only; if a restart drops it
+    the next pass MUST re-emit so operators see which cards came back.
+    """
+    state = initial_state()
+    state["current_card"] = {"id": "card-138", "title": "Add robots.txt", "status": "IN_PROGRESS"}
+    state["phase"] = "monitoring_performer"
+    state["performer_stage"] = "implementing"
+    state["active_sessions"] = {"card-138": {}}  # session entry present, list absent
+
+    notification_service = MagicMock()
+    notification_service.dispatch = AsyncMock()
+    state["notification_service"] = notification_service
+
+    await notify(state)
+    assert notification_service.dispatch.await_count == 1
+    assert state["active_sessions"]["card-138"]["dispatched_notified_stages"] == ["implementing"]
+
+
+@pytest.mark.asyncio
+async def test_notify_dispatched_does_not_stamp_when_session_missing() -> None:
+    """When active_sessions has no entry for the card the throwaway sess
+    dict cannot retain the stamp; verify we never re-emit-suppress against
+    a discarded dict (gate is open until the session entry exists).
+    """
+    state = initial_state()
+    state["current_card"] = {"id": "card-999", "title": "Orphan", "status": "IN_PROGRESS"}
+    state["phase"] = "monitoring_performer"
+    state["performer_stage"] = "implementing"
+    state["active_sessions"] = {}  # no entry for card-999
+
+    notification_service = MagicMock()
+    notification_service.dispatch = AsyncMock()
+    state["notification_service"] = notification_service
+
+    await notify(state)
+    await notify(state)
+    # Both fire — the upstream DeduplicationWindow is what protects against
+    # within-window repeats. The dispatched-once gate only engages once the
+    # session entry is registered.
+    assert notification_service.dispatch.await_count == 2
+    assert "card-999" not in state["active_sessions"]
+
+
+@pytest.mark.asyncio
 async def test_notify_handles_dispatch_exception_gracefully() -> None:
     """If dispatch() raises, notify() must still return state without propagating."""
     state = initial_state()

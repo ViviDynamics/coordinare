@@ -129,6 +129,10 @@ class CoordinareState(TypedDict, total=False):
     commit_summary: str | None
     agent_health_status: str | None
     last_blocked_notified_at: datetime | None
+    # 069 FR-004: per-session Slack-delivery watermark for card_blocked.
+    # Lives on CardSession; mirrored here as part of the flat-state round-trip
+    # so the cooldown gate in notify survives a cycle.
+    last_blocked_slack_delivered_at: datetime | None
     # 072 FR-072-8..11: head-delta audit trail (see PersistedSession).
     head_at_dispatch: str | None
     head_at_last_turn: str | None

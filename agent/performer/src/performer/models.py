@@ -24,6 +24,7 @@ _SECRET_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"sk-ant-[A-Za-z0-9\-_]{90,}"),             # Anthropic API key
     re.compile(r"Bearer\s+[A-Za-z0-9\-._~+/]{20,}"),       # Bearer header value
     re.compile(r"AKIA[0-9A-Z]{16}"),                        # AWS access key
+    re.compile(r"sk-litellm-[A-Za-z0-9\-_]{20,}"),         # LiteLLM proxy token (073)
 ]
 
 

@@ -88,16 +88,24 @@ case "${BACKEND:-}" in
     npm install -g @openai/codex@latest --no-fund --no-audit 2>&1 \
       || echo "WARNING: codex upgrade failed, continuing with installed version" >&2
     ;;
-  claude)
-    npm install -g @anthropic-ai/claude-code@latest --no-fund --no-audit 2>&1 \
+  claude|claude_code)
+    curl -fsSL https://claude.ai/install.sh | bash 2>&1 \
       || echo "WARNING: claude-code upgrade failed, continuing with installed version" >&2
     ;;
-  opencode)
-    npm install -g opencode-ai@latest --no-fund --no-audit 2>&1 \
-      || echo "WARNING: opencode upgrade failed, continuing with installed version" >&2
+  opencode|opencode_compat)
+    # The opencode installer hardcodes INSTALL_DIR=$HOME/.opencode/bin (ignores
+    # env overrides), and that path is NOT on the Dockerfile.full PATH. Symlink
+    # the binary into /root/.local/bin (which IS on PATH) so shutil.which() in
+    # the capability probe finds it.
+    if curl -fsSL https://opencode.ai/install | bash 2>&1; then
+      mkdir -p /root/.local/bin
+      ln -sf "${HOME:-/root}/.opencode/bin/opencode" /root/.local/bin/opencode
+    else
+      echo "WARNING: opencode upgrade failed, continuing with installed version" >&2
+    fi
     ;;
   junie)
-    npm install -g @jetbrains/junie-cli@latest --no-fund --no-audit 2>&1 \
+    curl -fsSL https://junie.jetbrains.com/install.sh | bash 2>&1 \
       || echo "WARNING: junie upgrade failed, continuing with installed version" >&2
     ;;
   cursor)
@@ -134,7 +142,7 @@ esac
 # container does not silently fall into the warn branch.
 if [ "${RTK_ENABLED:-0}" = "1" ]; then
   case "${BACKEND:-}" in
-    claude)
+    claude|claude_code)
       mkdir -p "${HOME:-/root}/.claude"
       # Fatal when RTK_ENABLED=1 is explicit: silently falling back to no
       # compression defeats the opt-in and makes A/B results meaningless.

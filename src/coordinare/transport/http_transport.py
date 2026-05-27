@@ -128,6 +128,18 @@ class PerformerHTTPClient:
         r.raise_for_status()
         return JobStatus.model_validate(r.json())
 
+    async def update_job_secrets(self, job_id: str, secrets: dict[str, str]) -> None:
+        """PATCH refreshed secrets (e.g. GitHub App token) into a running job.
+
+        Used by monitor_performer to deliver a refreshed github_token before
+        the in-flight push_branch hits the 1h token-expiry boundary. The
+        request body is never logged.
+        """
+        r = await self._request(
+            "PATCH", f"/jobs/{job_id}/secrets", json={"secrets": secrets}
+        )
+        r.raise_for_status()
+
     async def cancel_job(self, job_id: str) -> CancelResponse:
         r = await self._request("POST", f"/jobs/{job_id}/cancel")
         r.raise_for_status()

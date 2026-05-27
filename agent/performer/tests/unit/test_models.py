@@ -353,6 +353,11 @@ class TestBackendEventRedaction:
         event = self._make_event(detail=key)
         assert event.detail == "[REDACTED]"
 
+    def test_litellm_token_in_detail_is_redacted(self) -> None:
+        token = "sk-litellm-" + "i" * 30
+        event = self._make_event(detail=token)
+        assert event.detail == "[REDACTED]"
+
     def test_text_field_is_not_redacted(self) -> None:
         token = "ghp_" + "H" * 36
         event = BackendEvent(

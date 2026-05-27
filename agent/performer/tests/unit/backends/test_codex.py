@@ -46,6 +46,8 @@ def _fake_proc(pid: int = 42) -> MagicMock:
     proc.stdout = MagicMock()
     proc.stdout.__aiter__ = lambda self: _empty()
     proc.stdout.readline = AsyncMock(return_value=b"")
+    # _drain_logs reads stdout.read(n); EOF (b"") exits the loop immediately.
+    proc.stdout.read = AsyncMock(return_value=b"")
     proc.wait = AsyncMock(return_value=0)
     return proc
 
@@ -504,13 +506,9 @@ class TestWaitForReady:
 
 class TestDrainLogs:
     async def test_drains_stdout_lines(self) -> None:
-        async def _gen():
-            yield b"line one\n"
-            yield b"line two\n"
-
         proc = MagicMock()
         proc.stdout = MagicMock()
-        proc.stdout.__aiter__ = lambda self: _gen()
+        proc.stdout.read = AsyncMock(side_effect=[b"line one\nline two\n", b""])
 
         adapter = CodexBackend()
         adapter._proc = proc
@@ -519,19 +517,29 @@ class TestDrainLogs:
         assert "line one" in adapter._log_buffer
         assert "line two" in adapter._log_buffer
 
+    async def test_drains_huge_line_over_64kib(self) -> None:
+        # Regression: `async for ... in stdout` used to raise LimitOverrunError
+        # on lines >64 KiB. Chunked reader should handle it transparently.
+        huge = b"x" * 200_000
+        proc = MagicMock()
+        proc.stdout = MagicMock()
+        proc.stdout.read = AsyncMock(side_effect=[huge[:65536], huge[65536:] + b"\n", b""])
+
+        adapter = CodexBackend()
+        adapter._proc = proc
+        await adapter._drain_logs()
+
+        assert "x" * 200_000 in adapter._log_buffer
+
     async def test_noop_when_no_proc(self) -> None:
         adapter = CodexBackend()
         adapter._proc = None
         await adapter._drain_logs()  # should not raise
 
     async def test_handles_cancelled_error(self) -> None:
-        async def _gen():
-            raise asyncio.CancelledError()
-            yield  # pragma: no cover
-
         proc = MagicMock()
         proc.stdout = MagicMock()
-        proc.stdout.__aiter__ = lambda self: _gen()
+        proc.stdout.read = AsyncMock(side_effect=asyncio.CancelledError())
 
         adapter = CodexBackend()
         adapter._proc = proc

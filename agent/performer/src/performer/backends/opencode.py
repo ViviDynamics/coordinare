@@ -25,6 +25,7 @@ from pathlib import Path
 
 from performer.backends._card_docs import card_docs_prompt_section
 from performer.backends.base import BackendStatus
+from performer.io_utils import iter_lines_chunked
 from performer.models import BackendEvent, BackendEventType, Score, Stand
 
 log = structlog.get_logger(__name__)
@@ -244,7 +245,7 @@ class OpenCodeAdapter:
         if self._proc is None or self._proc.stdout is None:
             return
         try:
-            async for raw in self._proc.stdout:
+            async for raw in iter_lines_chunked(self._proc.stdout):
                 line = raw.decode(errors="replace").rstrip()
                 if line:
                     self._log_buffer.append(line)

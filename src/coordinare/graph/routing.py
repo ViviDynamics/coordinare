@@ -37,6 +37,10 @@ def route_from_assess(state: dict[str, object]) -> str:
     phase = state.get("phase", "dispatching")
     if phase == "blocked":
         return "blocked"
+    if phase == "monitoring_pr":
+        # 073 US6: assess_card short-circuited because the card already has an
+        # open PR — hand off to the PR monitor instead of dispatching.
+        return "monitor_pr"
     return "dispatch"
 
 

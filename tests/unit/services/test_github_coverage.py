@@ -323,10 +323,14 @@ def _poll_response(items: list[Any]) -> dict[str, Any]:
 
 @pytest.mark.asyncio
 async def test_poll_board_malformed_items_returns_empty_snapshot() -> None:
-    """Non-list items node returns empty snapshot."""
+    """Non-list items node yields empty snapshot buckets but full result shape."""
     svc = _initialized_svc({"node": {"items": {"nodes": "bad"}}})
     result = await svc.poll_board()
-    assert result == {"snapshot": {}}
+    assert result["snapshot"] == {
+        "BACKLOG": [], "TODO": [], "BLOCKED": [], "IN_PROGRESS": [], "IN_REVIEW": [], "DONE": []
+    }
+    assert result["titles"] == {}
+    assert result["issue_numbers"] == {}
 
 
 @pytest.mark.asyncio

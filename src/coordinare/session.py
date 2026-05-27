@@ -57,6 +57,14 @@ class CardSession(TypedDict, total=False):
     requirements_changed: bool
     requirements_changed_details: dict[str, Any]
     last_blocked_notified_at: datetime | None
+    # 069 FR-004: per-session Slack-delivery watermark for card_blocked.
+    # Stamped by graph/nodes/notify.py on successful Slack dispatch; read by
+    # the same node on subsequent passes to enforce
+    # card_blocked_reminder_cooldown_seconds.  Must round-trip through the
+    # session ↔ state copy or the cooldown gate sees None every cycle and
+    # falls through to the NotificationService's per-channel dedup window
+    # (default 600s), producing repeated blocked-status Slack posts.
+    last_blocked_slack_delivered_at: datetime | None
     phase_entered_at: datetime | None
     backend_ui_url: str | None
     session_stats: SessionStats | None
@@ -75,6 +83,25 @@ class CardSession(TypedDict, total=False):
     # 072 FR-072-5(c): clarifications-count snapshot at dispatch — see
     # CoordinareState for semantics.
     clarifications_count_at_dispatch: int
+    # In-memory dedup record: performer_stage values for which a
+    # card_dispatched Slack notification has already fired on this active
+    # session. Round-trips through session ↔ state on each cycle so the
+    # suppression survives the daemon's flat-state copies, but is
+    # intentionally NOT persisted to disk — a restart re-announces active
+    # dispatches so operators see which cards came back.
+    dispatched_notified_stages: list[str]
+    # Lifecycle handoff timestamp written by monitor_performer when a card
+    # advances to monitoring_pr.  Used by monitor_pr as a cutoff to ignore
+    # automation-stage reviews (reviewer/security/qa) that landed before the
+    # human-review handoff.  MUST round-trip through session ↔ state or the
+    # next cycle sees cutoff=None, classifies pre-handoff bot reviews as
+    # actionable human feedback, and re-dispatches the card to implementing.
+    lifecycle_completed_at: datetime | None
+    # Review node IDs already dispatched to classify_human_feedback.  Lives
+    # on flat state as ``set[str]``; persisted to disk as a sorted list via
+    # ``PersistedSession``.  MUST round-trip through session ↔ state or the
+    # same review re-classifies every cycle until the snapshot is rewritten.
+    processed_review_ids: set[str]
 
 
 # Fields that live on both CardSession and CoordinareState (flat).
@@ -106,6 +133,7 @@ _SESSION_FIELDS: tuple[str, ...] = (
     "requirements_changed",
     "requirements_changed_details",
     "last_blocked_notified_at",
+    "last_blocked_slack_delivered_at",
     "phase_entered_at",
     "backend_ui_url",
     "session_stats",
@@ -118,6 +146,9 @@ _SESSION_FIELDS: tuple[str, ...] = (
     "head_at_dispatch",
     "head_at_last_turn",
     "clarifications_count_at_dispatch",
+    "dispatched_notified_stages",
+    "lifecycle_completed_at",
+    "processed_review_ids",
 )
 
 
@@ -150,6 +181,7 @@ def create_session_from_card(card: dict[str, Any]) -> CardSession:
         requirements_changed=False,
         requirements_changed_details={},
         last_blocked_notified_at=None,
+        last_blocked_slack_delivered_at=None,
         phase_entered_at=None,
         backend_ui_url=None,
         session_stats=None,
@@ -162,6 +194,9 @@ def create_session_from_card(card: dict[str, Any]) -> CardSession:
         head_at_dispatch=None,
         head_at_last_turn=None,
         clarifications_count_at_dispatch=0,
+        dispatched_notified_stages=[],
+        lifecycle_completed_at=None,
+        processed_review_ids=set(),
     )
 
 

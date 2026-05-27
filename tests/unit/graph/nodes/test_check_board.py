@@ -2636,3 +2636,54 @@ async def test_unified_pickup_log_fires_across_n(max_n: int) -> None:
     unified = [e for e in cap_logs if e.get("event") == "check_board.unified_pickup"]
     assert len(unified) == 1
     assert unified[0]["max_concurrent_cards"] == max_n
+
+
+@pytest.mark.asyncio
+async def test_check_board_per_session_in_progress_preserves_monitoring_pr() -> None:
+    """073 post-US6 regression: when ``assess_card`` short-circuits an
+    IN_PROGRESS card with an open PR to ``phase="monitoring_pr"``, the next
+    per-session ``check_board`` invocation must NOT clobber that phase to
+    ``monitoring_agent``. Doing so caused ``monitor_performer`` (with no
+    session_id on a re-adopted card) to reset ``phase="dispatching"``,
+    re-triggering ``dispatch_card → notify`` on every cycle and producing
+    duplicate "dispatched to <role>" Slack messages every 10 min (the
+    dedup window).
+    """
+    state = initial_state()
+    state["github_service"] = _GitHubInProgressWithTodos()
+    state["config"] = SimpleNamespace(
+        github_org="acme",
+        project_name="repo",
+        max_concurrent_cards=3,
+        priority=SimpleNamespace(field_name="", priority_order=[]),
+        github_api_url="",
+        assignee_filter=None,
+    )
+    state["active_sessions"] = {
+        "ITEM_P1": {
+            "current_card": {
+                "id": "ITEM_P1",
+                "issue_number": 138,
+                "title": "Card with open PR",
+                "status": "IN_PROGRESS",
+            },
+            "phase": "monitoring_pr",
+            "pr_url": "https://github.com/acme/repo/pull/139",
+        }
+    }
+    state["current_card"] = {
+        "id": "ITEM_P1",
+        "issue_number": 138,
+        "title": "Card with open PR",
+        "status": "IN_PROGRESS",
+    }
+    state["phase"] = "monitoring_pr"
+
+    result = await check_board(state)
+
+    assert result["phase"] == "monitoring_pr", (
+        "IN_PROGRESS per-session invocation with open PR must preserve "
+        "monitoring_pr so route_from_board_check goes to monitor_pr "
+        "instead of re-dispatching every cycle"
+    )
+    assert result["current_card"]["id"] == "ITEM_P1"

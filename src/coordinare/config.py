@@ -329,6 +329,11 @@ class PerformerRoleConfig(BaseModel):
     # the container env directly and ignore these fields.
     base_url: str | None = None
     api_key_env: str | None = None
+    # When set, the coordinare injects ANTHROPIC_AUTH_TOKEN (Bearer) from this env
+    # var and SKIPS ANTHROPIC_API_KEY entirely. Use this for proxy-only auth (e.g.
+    # LiteLLM master key) — without it, claude CLI's x-api-key precedence forwards
+    # the real Anthropic key upstream through the proxy.
+    auth_token_env: str | None = None
 
     @field_validator("temperature")
     @classmethod
@@ -647,6 +652,16 @@ class ProjectConfiguration(BaseSettings):
 
     # 035 — Multi-Card Parallelism
     max_concurrent_cards: int = Field(default=1, ge=1, le=20)
+
+    # 073 (drive-by) — Hold all regular card dispatch while env_bootstrap is
+    # in-flight.  When ``False`` (default), only the on-disk ``activate.sh``
+    # gate applies; consumers can dispatch as soon as bootstrap writes the
+    # file, which may overlap with bootstrap container teardown.  When
+    # ``True``, consumers hold until ``EnvCacheState.bootstrap_in_flight``
+    # clears, guaranteeing zero overlap with the bootstrap container --
+    # required when bootstrap and consumer performers share a single LLM
+    # backend (e.g. one ollama server) that can't tolerate concurrent calls.
+    serialize_env_bootstrap: bool = False
 
     # 045 — Maximum number of reviewer/security/qa → implementer feedback
     # cycles before blocking the card for human intervention.  Each

@@ -46,6 +46,17 @@ _progress_cb_var: ContextVar[Callable[[list[Any], dict[str, Any] | None], None] 
     ContextVar("_progress_cb", default=None)
 )
 
+# US5 / Spec 073 Phase 9: shared mutable holder for secrets refreshed mid-job
+# (e.g. github_token rotated to dodge the GitHub App 1h expiry boundary).
+# The PATCH /jobs/{id}/secrets endpoint mutates the dict via
+# JobRunner.refresh_secrets(); the running _perform_job loop reads it each tick
+# and re-injects into perf.score/perf.stand. The dict reference is published
+# into a ContextVar at _run() entry so the in-job loop can find it without a
+# back-reference to the runner. Contents must never be logged.
+_refreshed_secrets_var: ContextVar[dict[str, str] | None] = ContextVar(
+    "_refreshed_secrets", default=None
+)
+
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
@@ -71,6 +82,9 @@ class JobRunner:
         self._update_event = asyncio.Event()
         self._live_events: list[dict[str, Any]] = []
         self._live_metrics: dict[str, Any] | None = None
+        # Mutable, shared with the running job task via _refreshed_secrets_var.
+        # PATCH /jobs/{id}/secrets writes here; the _perform_job loop reads.
+        self._refreshed_secrets: dict[str, str] = {}
 
     @property
     def current_job_id(self) -> str | None:
@@ -110,18 +124,28 @@ class JobRunner:
                 # backend is present so the job fails fast rather than mid-run.
                 # Use resolve() so env/creds_file fallback sources are honoured.
                 _backend = payload.backend.replace("-", "_")
-                _backend_keys: dict[str, str] = {
-                    "codex": "OPENAI_API_KEY",
-                    "claude_code": "ANTHROPIC_API_KEY",
+                # claude_code accepts either ANTHROPIC_API_KEY (direct Anthropic auth,
+                # x-api-key) or ANTHROPIC_AUTH_TOKEN (Bearer, used when routed through
+                # a LiteLLM-style proxy that owns its own upstream credential). Codex
+                # still strictly requires OPENAI_API_KEY.
+                _backend_key_groups: dict[str, tuple[str, ...]] = {
+                    "codex": ("OPENAI_API_KEY",),
+                    "claude_code": ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"),
                 }
-                _required_backend_key = _backend_keys.get(_backend)
-                if _required_backend_key is not None:
-                    try:
-                        self._resolver.resolve(_required_backend_key)
-                    except SecretMissingError as exc:
+                _required_keys = _backend_key_groups.get(_backend)
+                if _required_keys:
+                    _last_missing: SecretMissingError | None = None
+                    for _candidate in _required_keys:
+                        try:
+                            self._resolver.resolve(_candidate)
+                            _last_missing = None
+                            break
+                        except SecretMissingError as exc:
+                            _last_missing = exc
+                    if _last_missing is not None:
                         return JobBusyResponse(
                             reason="secret_missing",
-                            detail=exc.name,
+                            detail=" or ".join(_required_keys),
                             retry_after_s=None,
                         )
 
@@ -136,6 +160,28 @@ class JobRunner:
             self._update_event = asyncio.Event()
             self._task = asyncio.create_task(self._run(payload))
             return JobAcceptResponse(job_id=payload.job_id, started_at=started)
+
+    async def refresh_secrets(
+        self, job_id: str, secrets: dict[str, str]
+    ) -> None:
+        """Merge PATCH-delivered secrets into the running job's holder.
+
+        Raises ``JobNotFoundError`` if ``job_id`` is not the currently active
+        job — there is no point caching secrets for a job that has already
+        finished or never existed. Secret values must not be logged here.
+        """
+        if self._status is None or self._status.job_id != job_id:
+            raise JobNotFoundError(job_id)
+        if self._status.state in {"succeeded", "failed", "cancelled"}:
+            raise JobNotFoundError(job_id)
+        # Mutate in place — the in-job loop holds the same dict reference via
+        # _refreshed_secrets_var, so an .update() is sufficient.
+        self._refreshed_secrets.update(secrets)
+        log.debug(
+            "job_runner.secrets_refreshed",
+            job_id=job_id,
+            keys=sorted(secrets.keys()),
+        )
 
     def push_progress(
         self,
@@ -156,6 +202,9 @@ class JobRunner:
         self._status = self._status.model_copy(update={"state": "running"})
         self._signal_update()
         _progress_cb_var.set(self.push_progress)
+        # Publish the runner's mutable refreshed-secrets dict so the in-job
+        # loop can read fresh values without a back-reference to the runner.
+        _refreshed_secrets_var.set(self._refreshed_secrets)
         try:
             result = await self._executor(payload)
             self._status = self._status.model_copy(
@@ -242,4 +291,10 @@ class JobRunner:
         return CancelResponse(honored=True)
 
 
-__all__ = ["JobExecutor", "JobNotFoundError", "JobRunner", "_progress_cb_var"]
+__all__ = [
+    "JobExecutor",
+    "JobNotFoundError",
+    "JobRunner",
+    "_progress_cb_var",
+    "_refreshed_secrets_var",
+]
