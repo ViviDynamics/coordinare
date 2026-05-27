@@ -704,7 +704,17 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
         if current_id and current_id in in_progress:
             # 065 Fix 5: don't clobber a more-specific in-flight phase that the
             # per-session invocation arrived with.
-            if current_phase not in ("monitoring_performer", "dispatching", "blocked"):
+            # 073 post-US6: also preserve "monitoring_pr" — assess_card sets
+            # this when the card already has an open PR, and clobbering to
+            # monitoring_agent here causes monitor_performer (with no
+            # session_id) to reset phase=dispatching, re-triggering
+            # dispatch_card → notify on every cycle.
+            if current_phase not in (
+                "monitoring_performer",
+                "monitoring_pr",
+                "dispatching",
+                "blocked",
+            ):
                 state["phase"] = "monitoring_agent"
             # Pick the lexicographically smallest IN_PROGRESS card as the
             # "primary" that falls through to TODO pickup — deterministic

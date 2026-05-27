@@ -32,11 +32,8 @@ def _fake_proc(pid: int = 999) -> MagicMock:
     proc.pid = pid
     proc.returncode = None
     proc.stdout = MagicMock()
-    # Empty async iterator for log drain
-    async def _empty():
-        return
-        yield  # pragma: no cover
-    proc.stdout.__aiter__ = lambda self: _empty()
+    # _drain_logs now calls stdout.read(); empty bytes signal EOF.
+    proc.stdout.read = AsyncMock(return_value=b"")
     proc.wait = AsyncMock(return_value=0)
     proc.kill = MagicMock()
     return proc
@@ -495,13 +492,9 @@ class TestDrainLogs:
     async def test_drain_logs_buffers_lines(self) -> None:
         proc = MagicMock()
         proc.stdout = MagicMock()
-
-        async def _gen():
-            yield b"line one\n"
-            yield b"line two\n"
-            yield b"\n"  # empty line — should be ignored
-
-        proc.stdout.__aiter__ = lambda self: _gen()
+        proc.stdout.read = AsyncMock(
+            side_effect=[b"line one\nline two\n\n", b""]
+        )
 
         adapter = OpenCodeAdapter()
         adapter._proc = proc
@@ -509,7 +502,24 @@ class TestDrainLogs:
 
         assert "line one" in adapter._log_buffer
         assert "line two" in adapter._log_buffer
+        # Empty line is yielded by helper but filtered as "if line" in drain.
         assert len(adapter._log_buffer) == 2
+
+    async def test_drain_logs_huge_line_over_64kib(self) -> None:
+        """Lines exceeding 64 KiB are emitted intact (no LimitOverrunError)."""
+        big = b"x" * 200_000
+        proc = MagicMock()
+        proc.stdout = MagicMock()
+        proc.stdout.read = AsyncMock(
+            side_effect=[big[:100_000], big[100_000:] + b"\n", b""]
+        )
+
+        adapter = OpenCodeAdapter()
+        adapter._proc = proc
+        await adapter._drain_logs()
+
+        assert len(adapter._log_buffer) == 1
+        assert len(adapter._log_buffer[0]) == 200_000
 
     async def test_drain_logs_no_proc(self) -> None:
         adapter = OpenCodeAdapter()
@@ -519,13 +529,8 @@ class TestDrainLogs:
     async def test_drain_logs_cancelled_error_is_swallowed(self) -> None:
         """CancelledError in the log drain is caught and swallowed (not re-raised)."""
         proc = MagicMock()
-
-        async def _raises_cancelled():
-            raise asyncio.CancelledError
-            yield  # pragma: no cover
-
         proc.stdout = MagicMock()
-        proc.stdout.__aiter__ = lambda self: _raises_cancelled()
+        proc.stdout.read = AsyncMock(side_effect=asyncio.CancelledError())
         adapter = OpenCodeAdapter()
         adapter._proc = proc
         await adapter._drain_logs()  # should not raise
@@ -533,13 +538,8 @@ class TestDrainLogs:
     async def test_drain_logs_exception_is_swallowed(self) -> None:
         """General exception in the log drain is caught and swallowed."""
         proc = MagicMock()
-
-        async def _raises_error():
-            raise RuntimeError("pipe broken")
-            yield  # pragma: no cover
-
         proc.stdout = MagicMock()
-        proc.stdout.__aiter__ = lambda self: _raises_error()
+        proc.stdout.read = AsyncMock(side_effect=RuntimeError("pipe broken"))
         adapter = OpenCodeAdapter()
         adapter._proc = proc
         await adapter._drain_logs()  # should not raise

@@ -1498,3 +1498,140 @@ def test_persist_active_sessions_round_trips_head_audit_fields() -> None:
     sess = fresh._state["active_sessions"]["card-72"]
     assert sess["head_at_dispatch"] == "aaa111"
     assert sess["head_at_last_turn"] == "bbb222"
+
+
+# ---------------------------------------------------------------------------
+# 073 Fix 3: env_cache persistence — _persist_env_cache + restore overlay
+# ---------------------------------------------------------------------------
+
+
+def test_persist_env_cache_converts_live_state_and_drops_transients() -> None:
+    """073 Fix 3: ``_persist_env_cache`` converts a live ``EnvCacheState`` dict
+    into the durable subset.  Transient fields (``bootstrap_in_flight``,
+    ``pending_sha``, ``runtime_health_failed``) must NOT appear in the snapshot
+    payload so a crash mid-bootstrap does not leave a stuck flag on disk.
+    """
+    from pathlib import Path
+
+    from coordinare.daemon import _persist_env_cache
+    from coordinare.models.env_cache import EnvCacheState
+
+    t_boot = datetime(2026, 5, 25, 12, 0, 0, tzinfo=UTC)
+    live = {
+        "sym-one": EnvCacheState(
+            symphony_name="sym-one",
+            sanitised_name="sym-one-a1b2c3",
+            cache_dir=Path("/devenv/sym-one"),
+            readme_sha="deadbeef",
+            bootstrap_in_flight=True,  # transient — must be dropped
+            pending_sha="cafebabe",  # transient — must be dropped
+            last_bootstrap_at=t_boot,
+            last_bootstrap_succeeded=True,
+            cache_dir_ready=True,
+            runtime_health_failed=True,  # transient — must be dropped
+        ),
+    }
+
+    persisted = _persist_env_cache(live)
+
+    assert "sym-one" in persisted
+    snap = persisted["sym-one"]
+    assert snap.readme_sha == "deadbeef"
+    assert snap.last_bootstrap_at == t_boot
+    assert snap.last_bootstrap_succeeded is True
+    assert snap.cache_dir_ready is True
+    assert snap.cache_dir == "/devenv/sym-one"
+    # Transients must not exist on the snapshot model at all.
+    dumped = snap.model_dump()
+    assert "bootstrap_in_flight" not in dumped
+    assert "pending_sha" not in dumped
+    assert "runtime_health_failed" not in dumped
+
+
+def test_persist_env_cache_skips_none_entries() -> None:
+    """``_persist_env_cache`` defensively skips ``None`` values."""
+    from coordinare.daemon import _persist_env_cache
+
+    out = _persist_env_cache({"sym-one": None, "": None})
+    assert out == {}
+
+
+def test_restore_env_cache_overlays_readme_sha_onto_live_entry() -> None:
+    """073 Fix 3: ``_restore_from_snapshot`` mutates the live
+    ``EnvCacheState`` entries that ``EnvCacheService.initialise()`` already
+    populated, overlaying the durable fields.  Transient flags stay at
+    their initialise() defaults so a crash mid-bootstrap doesn't leave a
+    stuck flag on disk.
+    """
+    from pathlib import Path
+
+    from coordinare.models.env_cache import EnvCacheState
+    from coordinare.state_store import EnvCacheStateSnapshot
+
+    daemon = _make_daemon()
+    # Simulate EnvCacheService.initialise(): live entry with readme_sha=None
+    # and bootstrap_in_flight=False.
+    live_entry = EnvCacheState(
+        symphony_name="sym-one",
+        sanitised_name="sym-one-a1b2c3",
+        cache_dir=Path("/devenv/sym-one"),
+        readme_sha=None,
+        bootstrap_in_flight=False,
+    )
+    daemon._state["env_cache"] = {"sym-one": live_entry}
+
+    t_boot = datetime(2026, 5, 25, 12, 0, 0, tzinfo=UTC)
+    snap = WorkflowSnapshot(
+        snapshot_at=datetime.now(UTC),
+        phase="idle",
+        env_cache={
+            "sym-one": EnvCacheStateSnapshot(
+                symphony_name="sym-one",
+                sanitised_name="sym-one-a1b2c3",
+                cache_dir="/devenv/sym-one",
+                readme_sha="deadbeef",
+                last_bootstrap_at=t_boot,
+                last_bootstrap_succeeded=True,
+                cache_dir_ready=True,
+            ),
+        },
+    )
+
+    daemon._restore_from_snapshot(snap)
+
+    # The same live object was mutated in place — EnvCacheService holds this
+    # reference, so mutating it (rather than replacing) is required.
+    assert daemon._state["env_cache"]["sym-one"] is live_entry
+    assert live_entry.readme_sha == "deadbeef"
+    assert live_entry.last_bootstrap_at == t_boot
+    assert live_entry.last_bootstrap_succeeded is True
+    assert live_entry.cache_dir_ready is True
+    # Transient flag untouched (initialise() default).
+    assert live_entry.bootstrap_in_flight is False
+
+
+def test_restore_env_cache_skips_symphony_not_in_live_state() -> None:
+    """If a snapshot references a symphony that is no longer configured (so
+    ``EnvCacheService.initialise()`` did not create a live entry), the restore
+    must skip it rather than crash."""
+    from coordinare.state_store import EnvCacheStateSnapshot
+
+    daemon = _make_daemon()
+    daemon._state["env_cache"] = {}  # no live entries
+
+    snap = WorkflowSnapshot(
+        snapshot_at=datetime.now(UTC),
+        phase="idle",
+        env_cache={
+            "gone-symphony": EnvCacheStateSnapshot(
+                symphony_name="gone-symphony",
+                sanitised_name="gone-symphony-zzz",
+                cache_dir="/devenv/gone-symphony",
+                readme_sha="abc123",
+            ),
+        },
+    )
+
+    # Must not raise.
+    daemon._restore_from_snapshot(snap)
+    assert daemon._state["env_cache"] == {}

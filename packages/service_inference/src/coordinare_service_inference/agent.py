@@ -19,14 +19,18 @@ Per plan.md the agent must enforce three budgets:
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+import structlog
 from pydantic import ValidationError
 
 from .schema import ServicesManifest
 from .tools import SandboxViolation, ToolSandbox
+
+_log = structlog.get_logger(__name__)
 
 
 class AgentError(RuntimeError):
@@ -39,6 +43,15 @@ class ToolCallBudgetExceeded(AgentError):  # noqa: N818
 
 class IterationBudgetExceeded(AgentError):  # noqa: N818
     """Raised when the agent loops more times than ``max_iterations`` without emitting a manifest."""
+
+
+class StepTimeoutExceeded(AgentError):  # noqa: N818
+    """Raised when a single LLM ``step()`` call exceeds ``step_timeout_seconds``.
+
+    Bounds an opaque hang inside the LLM transport (network/proxy stall, model
+    server wedge) so the outer retry loop can move on instead of waiting for
+    the orchestrator's whole-run timeout to fire.
+    """
 
 
 class ManifestValidationError(AgentError):
@@ -120,6 +133,11 @@ class ServiceInferenceAgent:
     # so the LLM cannot fail the run by omitting the required `agent_version`
     # field. Mirrors the prompt instruction "copy it verbatim".
     agent_version: str | None = None
+    # Per-step LLM-call timeout. ``None`` keeps the legacy unbounded behavior
+    # (used by tests with a stub client). Production wires this to
+    # SERVICE_INFERENCE_STEP_TIMEOUT so a wedged upstream proxy fails fast at
+    # the step boundary instead of blocking the whole-run timeout.
+    step_timeout_seconds: float | None = None
     # Cumulative usage across all steps in the most recent ``run()``. Populated
     # as the loop progresses so the orchestrator can read these after a
     # successful (or failed) run for telemetry.
@@ -135,10 +153,43 @@ class ServiceInferenceAgent:
         self.input_tokens = 0
         self.output_tokens = 0
 
-        for _ in range(self.max_iterations):
-            step = await self.client.step(messages)
+        for iteration in range(1, self.max_iterations + 1):
+            _log.info(
+                "service_inference.agent_step_start",
+                iteration=iteration,
+                tool_calls_used=self.tool_calls_used,
+                message_count=len(messages),
+                step_timeout_seconds=self.step_timeout_seconds,
+            )
+            try:
+                if self.step_timeout_seconds is not None:
+                    step = await asyncio.wait_for(
+                        self.client.step(messages),
+                        timeout=self.step_timeout_seconds,
+                    )
+                else:
+                    step = await self.client.step(messages)
+            except TimeoutError as exc:
+                _log.warning(
+                    "service_inference.agent_step_timeout",
+                    iteration=iteration,
+                    timeout_seconds=self.step_timeout_seconds,
+                    tool_calls_used=self.tool_calls_used,
+                )
+                raise StepTimeoutExceeded(
+                    f"LLM step exceeded {self.step_timeout_seconds}s at iteration {iteration}"
+                ) from exc
+
             self.input_tokens += step.input_tokens
             self.output_tokens += step.output_tokens
+            _log.info(
+                "service_inference.agent_step_complete",
+                iteration=iteration,
+                input_tokens=step.input_tokens,
+                output_tokens=step.output_tokens,
+                emitted_manifest=step.manifest is not None,
+                tool_call_names=[c.name for c in step.tool_calls],
+            )
 
             if step.manifest is not None:
                 if self.agent_version is not None and isinstance(step.manifest, dict):

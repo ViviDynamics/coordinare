@@ -1468,6 +1468,103 @@ async def test_env_cache_bootstrap_dispatch_proceeds_without_activate(
 
 
 @pytest.mark.asyncio
+async def test_serialize_env_bootstrap_holds_consumer_while_bootstrap_in_flight(
+    tmp_path: Path,
+) -> None:
+    """When serialize_env_bootstrap=True, consumer dispatch is held while
+    bootstrap_in_flight is True even if activate.sh already exists -- prevents
+    overlap on a shared single-tenant LLM backend during bootstrap teardown.
+    """
+    from coordinare.config import ProjectConfiguration
+    from coordinare.models.env_cache import EnvCacheState
+    from coordinare.services.env_cache import sanitise_symphony_name
+
+    symphony_name = "my-project"
+    sanitised = sanitise_symphony_name(symphony_name)
+    cache_dir = tmp_path / sanitised
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    (cache_dir / "activate.sh").touch()  # activate.sh exists -- only the new gate should hold
+    ec_state = EnvCacheState(
+        symphony_name=symphony_name,
+        sanitised_name=sanitised,
+        cache_dir=cache_dir,
+        cache_dir_ready=True,
+        bootstrap_in_flight=True,
+    )
+    env_cache = {symphony_name: ec_state}
+
+    config = ProjectConfiguration(
+        project_name="Test",
+        github_org="acme",
+        github_project_number=1,
+        github_token="tok",
+        human_reviewers=["alice"],
+        serialize_env_bootstrap=True,
+    )
+    svc = _make_http_service(mode="ephemeral")
+    state = _base_state(
+        performer_services={"implementing": svc},
+        performer_stage="implementing",
+        lifecycle_sequence=["implementing"],
+        current_symphony=symphony_name,
+        env_cache=env_cache,
+        config=config,
+    )
+
+    await dispatch_performer(state)
+
+    assert not svc.dispatch_card.called
+
+
+@pytest.mark.asyncio
+async def test_serialize_env_bootstrap_off_lets_consumer_dispatch_during_bootstrap(
+    tmp_path: Path,
+) -> None:
+    """Default (serialize_env_bootstrap=False): once activate.sh exists, consumer
+    dispatch proceeds even while bootstrap_in_flight is still True.
+    """
+    from coordinare.config import ProjectConfiguration
+    from coordinare.models.env_cache import EnvCacheState
+    from coordinare.services.env_cache import sanitise_symphony_name
+
+    symphony_name = "my-project"
+    sanitised = sanitise_symphony_name(symphony_name)
+    cache_dir = tmp_path / sanitised
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    (cache_dir / "activate.sh").touch()
+    ec_state = EnvCacheState(
+        symphony_name=symphony_name,
+        sanitised_name=sanitised,
+        cache_dir=cache_dir,
+        cache_dir_ready=True,
+        bootstrap_in_flight=True,
+    )
+    env_cache = {symphony_name: ec_state}
+
+    config = ProjectConfiguration(
+        project_name="Test",
+        github_org="acme",
+        github_project_number=1,
+        github_token="tok",
+        human_reviewers=["alice"],
+        serialize_env_bootstrap=False,
+    )
+    svc = _make_http_service(mode="ephemeral")
+    state = _base_state(
+        performer_services={"implementing": svc},
+        performer_stage="implementing",
+        lifecycle_sequence=["implementing"],
+        current_symphony=symphony_name,
+        env_cache=env_cache,
+        config=config,
+    )
+
+    await dispatch_performer(state)
+
+    assert svc.dispatch_card.called
+
+
+@pytest.mark.asyncio
 async def test_env_cache_persistent_http_service_warns_and_skips_volumes(
     tmp_path: Path,
 ) -> None:

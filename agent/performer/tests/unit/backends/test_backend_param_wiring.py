@@ -40,6 +40,10 @@ def _fake_proc():
     proc.pid = 12345
     proc.stdout = AsyncMock()
     proc.stdout.readline = AsyncMock(return_value=b"")
+    # Reader loops read stdout.read(n) — must return EOF (b"") immediately,
+    # otherwise the unconfigured AsyncMock returns a truthy MagicMock and the
+    # reader spins forever.
+    proc.stdout.read = AsyncMock(return_value=b"")
     return proc
 
 

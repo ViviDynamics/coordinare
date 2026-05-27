@@ -537,6 +537,8 @@ async def dispatch_performer(state: CoordinareState) -> CoordinareState:
                 card_context["base_url"] = role_config.base_url
             if role_config.api_key_env is not None:
                 card_context["api_key_env"] = role_config.api_key_env
+            if role_config.auth_token_env is not None:
+                card_context["auth_token_env"] = role_config.auth_token_env
             card_context.update(translate_tuning(role_config))
 
     # --- Dispatch ---
@@ -575,6 +577,31 @@ async def dispatch_performer(state: CoordinareState) -> CoordinareState:
                 detail=(
                     "Holding dispatch until env_bootstrap populates activate.sh. "
                     "Card retries on the next pickup cycle."
+                ),
+            )
+            _release_slot_on_error()
+            return state
+
+        # 073 (drive-by) -- when serialize_env_bootstrap is enabled, also hold
+        # consumer dispatch until bootstrap has fully torn down (not just until
+        # activate.sh exists).  Prevents bootstrap and consumer performers from
+        # overlapping on a shared single-tenant LLM backend (e.g. one ollama
+        # server) during the bootstrap container teardown window.
+        _serialize_bootstrap = bool(getattr(state.get("config"), "serialize_env_bootstrap", False))
+        if (
+            _serialize_bootstrap
+            and not _is_bootstrap_dispatch
+            and isinstance(_ec_state_for_sym, EnvCacheState)
+            and _ec_state_for_sym.bootstrap_in_flight
+        ):
+            logger.info(
+                "dispatch_performer.env_bootstrap_in_flight",
+                card_id=card_id,
+                performer_stage=performer_stage,
+                symphony=_symphony_name_for_ec,
+                detail=(
+                    "Holding dispatch until env_bootstrap container finishes "
+                    "(serialize_env_bootstrap=true). Card retries on next pickup."
                 ),
             )
             _release_slot_on_error()

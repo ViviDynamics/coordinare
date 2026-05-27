@@ -15,11 +15,13 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-CURRENT_SCHEMA_VERSION: int = 2
+CURRENT_SCHEMA_VERSION: int = 3
 
 # Lowest schema_version we still know how to read.  v1 snapshots are upgraded
 # in-memory at load time (065 Fix 7b: active_sessions added in v2; v1 snapshots
 # simply restore with an empty active_sessions dict and rely on board re-adopt).
+# v3 adds env_cache; older snapshots load with an empty env_cache dict and the
+# first poll cycle re-fetches the SHA from GitHub.
 MIN_SUPPORTED_SCHEMA_VERSION: int = 1
 
 WorkflowPhase = Literal[
@@ -84,6 +86,32 @@ class PersistedSession(BaseModel):
     head_at_last_turn: str | None = None
 
 
+class EnvCacheStateSnapshot(BaseModel):
+    """Durable subset of EnvCacheState (Fix 3 / 073).
+
+    Persists the content-hash fingerprint and last-bootstrap outcome so a
+    coordinare restart with unchanged env-spec files does not re-trigger the
+    expensive env_bootstrap performer job (which can take 10+ minutes and
+    holds the serialize_env_bootstrap gate).
+
+    Transient fields are deliberately omitted so a crash mid-bootstrap does
+    not leave a permanently-stuck flag on disk:
+      - bootstrap_in_flight: rederived (always False after restart)
+      - pending_sha: rederived from the next SHA fetch
+      - runtime_health_failed: rederived on next performer report
+    """
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    symphony_name: str
+    sanitised_name: str
+    cache_dir: str  # Path serialised as str for JSON portability
+    readme_sha: str | None = None
+    last_bootstrap_at: datetime | None = None
+    last_bootstrap_succeeded: bool | None = None
+    cache_dir_ready: bool = False
+
+
 class WorkflowSnapshot(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
@@ -125,6 +153,15 @@ class WorkflowSnapshot(BaseModel):
     # card as a fresh "implementing" session, demoting closer cards back to the
     # implementer.  v1 snapshots simply load with an empty dict.
     active_sessions: dict[str, PersistedSession] = Field(default_factory=dict)
+    # 073 Fix 3: per-symphony env-cache fingerprint persistence.  Without this,
+    # every coordinare restart re-runs env_bootstrap because EnvCacheService
+    # initialises readme_sha=None for every symphony, then check_and_trigger
+    # sees the SHA "change" and dispatches a fresh bootstrap.  Persisting the
+    # readme_sha (plus the last-success bookkeeping) lets the next cycle skip
+    # bootstrap when the env-spec files on the symphony are unchanged.  v1/v2
+    # snapshots load with an empty dict and rely on the first cycle's SHA
+    # fetch to repopulate.
+    env_cache: dict[str, EnvCacheStateSnapshot] = Field(default_factory=dict)
 
 
 class StateLoadError(ValueError):

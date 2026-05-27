@@ -104,6 +104,7 @@ class CoordinareGraphBuilder:
             {
                 "dispatch": "dispatch_card",
                 "blocked": "handle_blocked",
+                "monitor_pr": "monitor_pr",
             },
         )
         graph.add_conditional_edges(

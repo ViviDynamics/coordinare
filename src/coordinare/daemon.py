@@ -35,6 +35,7 @@ from coordinare.services.dependency import build_graph as _build_dep_graph
 from coordinare.services.rebase import fetch_main_sha, repo_url_from_config, run_rebase_round
 from coordinare.session import _SESSION_FIELDS, session_to_state, state_to_session
 from coordinare.state_store import (
+    EnvCacheStateSnapshot,
     PersistedSession,
     StateLoadError,
     WorkflowPhase,
@@ -135,6 +136,35 @@ def _persist_active_sessions(active_sessions: dict[str, Any]) -> dict[str, Persi
             last_blocked_slack_delivered_at=last_slack,
             head_at_dispatch=head_dispatch,
             head_at_last_turn=head_last,
+        )
+    return out
+
+
+def _persist_env_cache(env_cache: dict[str, Any]) -> dict[str, EnvCacheStateSnapshot]:
+    """Convert live `env_cache` into v3-snapshot-safe shape (073 Fix 3).
+
+    Transient fields (bootstrap_in_flight, pending_sha, runtime_health_failed)
+    are deliberately not serialised — they always reset on restart so a crash
+    mid-bootstrap does not leave a permanently-stuck flag on disk.
+    """
+    out: dict[str, EnvCacheStateSnapshot] = {}
+    for sym_name, ec_state in env_cache.items():
+        if ec_state is None:
+            continue
+        # Tolerate either pydantic EnvCacheState or plain dict.
+        get = (lambda k, _s=ec_state: getattr(_s, k, None)) if not isinstance(ec_state, dict) else ec_state.get
+        sym = str(sym_name)
+        if not sym:
+            continue
+        cache_dir = get("cache_dir")
+        out[sym] = EnvCacheStateSnapshot(
+            symphony_name=str(get("symphony_name") or sym),
+            sanitised_name=str(get("sanitised_name") or ""),
+            cache_dir=str(cache_dir) if cache_dir is not None else "",
+            readme_sha=get("readme_sha"),
+            last_bootstrap_at=get("last_bootstrap_at"),
+            last_bootstrap_succeeded=get("last_bootstrap_succeeded"),
+            cache_dir_ready=bool(get("cache_dir_ready") or False),
         )
     return out
 
@@ -436,6 +466,7 @@ class CoordinareDaemon:
             lifecycle_completed_at=self._state.get("lifecycle_completed_at") if isinstance(self._state.get("lifecycle_completed_at"), datetime) else None,
             processed_review_ids=sorted(self._state.get("processed_review_ids") or set()),
             active_sessions=_persist_active_sessions(self._state.get("active_sessions") or {}),
+            env_cache=_persist_env_cache(self._state.get("env_cache") or {}),
         )
 
     def _restore_from_snapshot(self, snapshot: WorkflowSnapshot) -> None:
@@ -533,6 +564,35 @@ class CoordinareDaemon:
                 active_card_id=snapshot.active_card_id,
                 phase=snapshot.phase,
             )
+
+        # 073 Fix 3: rehydrate env_cache readme_sha + bookkeeping onto the
+        # live EnvCacheState entries that EnvCacheService.initialise() already
+        # populated with readme_sha=None.  Without this, every restart re-runs
+        # env_bootstrap because check_and_trigger sees the SHA "change".
+        # Transient flags (bootstrap_in_flight, pending_sha, runtime_health_failed)
+        # are intentionally left at their initialise() defaults so a crash
+        # mid-bootstrap does not leave a stuck flag on disk.
+        if snapshot.env_cache:
+            live_env_cache = self._state.get("env_cache")
+            if isinstance(live_env_cache, dict):
+                for sym_name, persisted in snapshot.env_cache.items():
+                    live = live_env_cache.get(sym_name)
+                    if live is None:
+                        # Symphony in snapshot is no longer configured — skip.
+                        continue
+                    # Live entry is a pydantic EnvCacheState; mutate the
+                    # rehydratable fields in place.
+                    try:
+                        live.readme_sha = persisted.readme_sha
+                        live.last_bootstrap_at = persisted.last_bootstrap_at
+                        live.last_bootstrap_succeeded = persisted.last_bootstrap_succeeded
+                        live.cache_dir_ready = persisted.cache_dir_ready
+                    except Exception as exc:  # pragma: no cover — defensive
+                        logger.warning(
+                            "state_store.env_cache_rehydrate_failed",
+                            symphony=sym_name,
+                            error=str(exc),
+                        )
 
         # 066 FR-010 / T006: set active_card_id and re-derive the mirror so
         # the post-restore state satisfies the I3 invariant.  Subsequent
@@ -1681,6 +1741,9 @@ class CoordinareDaemon:
         bootstrap_model: str | None = None
         bootstrap_effort: str | None = None
         bootstrap_temperature: float | None = None
+        bootstrap_base_url: str | None = None
+        bootstrap_api_key_env: str | None = None
+        bootstrap_auth_token_env: str | None = None
         cfg = self._state.get("config")
         if cfg is not None and hasattr(cfg, "performers"):
             for _probe_role in ("env_bootstrap", "implementer", "architect", "assessor"):
@@ -1690,6 +1753,9 @@ class CoordinareDaemon:
                     bootstrap_model = getattr(rc, "model", None)
                     bootstrap_effort = getattr(rc, "effort", None)
                     bootstrap_temperature = getattr(rc, "temperature", None)
+                    bootstrap_base_url = getattr(rc, "base_url", None)
+                    bootstrap_api_key_env = getattr(rc, "api_key_env", None)
+                    bootstrap_auth_token_env = getattr(rc, "auth_token_env", None)
                     break
         dispatch_dict["backend"] = bootstrap_backend
         if bootstrap_model:
@@ -1698,6 +1764,12 @@ class CoordinareDaemon:
             dispatch_dict["effort"] = bootstrap_effort
         if bootstrap_temperature is not None:
             dispatch_dict["temperature"] = bootstrap_temperature
+        if bootstrap_base_url:
+            dispatch_dict["base_url"] = bootstrap_base_url
+        if bootstrap_api_key_env:
+            dispatch_dict["api_key_env"] = bootstrap_api_key_env
+        if bootstrap_auth_token_env:
+            dispatch_dict["auth_token_env"] = bootstrap_auth_token_env
         logger.info(
             "env_cache.bootstrap_backend_resolved",
             symphony=symphony_name,

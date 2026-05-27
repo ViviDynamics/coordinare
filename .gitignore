@@ -242,6 +242,6 @@ config.*.yaml
 .codex/rules/default.rules
 .claude/worktrees
 tmp
-coordinare.state.json
+coordinare.state.json*
 .claude/scheduled_tasks.lock
 

@@ -67,10 +67,14 @@ query GetProjectFields($projectId: ID!) {
 """
 
 POLL_BOARD_QUERY = """
-query PollBoard($projectId: ID!) {
+query PollBoard($projectId: ID!, $after: String) {
   node(id: $projectId) {
     ... on ProjectV2 {
-      items(first: 50) {
+      items(first: 100, after: $after) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
         nodes {
           id
           fieldValues(first: 8) {
@@ -625,10 +629,41 @@ class GitHubService:
 
     async def poll_board(self) -> dict[str, Any]:
         self._ensure_initialized()
-        result = await self._guarded_execute(POLL_BOARD_QUERY, {"projectId": self.project_id})
-        items = result.get("node", {}).get("items", {}).get("nodes", [])
-        if not isinstance(items, list):
-            return {"snapshot": {}}
+        items: list[dict[str, Any]] = []
+        cursor: str | None = None
+        # Cap pagination to bound a single poll's work — a runaway board (or a
+        # broken hasNextPage upstream) would otherwise loop indefinitely and
+        # block the coordinare's poll cycle.
+        max_pages = 20
+        more_pages_available = False
+        for page_index in range(max_pages):
+            result = await self._guarded_execute(
+                POLL_BOARD_QUERY,
+                {"projectId": self.project_id, "after": cursor},
+            )
+            items_node = result.get("node", {}).get("items", {})
+            page_items = items_node.get("nodes", [])
+            if isinstance(page_items, list):
+                items.extend(p for p in page_items if isinstance(p, dict))
+            page_info = items_node.get("pageInfo", {}) or {}
+            if not page_info.get("hasNextPage"):
+                break
+            cursor = page_info.get("endCursor")
+            if not cursor:
+                break
+            # If this is the last allowed iteration and the server still says
+            # hasNextPage=True, we are about to truncate the board view. Flag
+            # it so the warning below can report items the operator is not
+            # seeing rather than just "we hit the cap".
+            if page_index == max_pages - 1:
+                more_pages_available = True
+        if more_pages_available:
+            logger.warning(
+                "poll_board.pagination_cap_hit",
+                max_pages=max_pages,
+                items_collected=len(items),
+                more_pages_available=True,
+            )
 
         snapshot: dict[str, list[str]] = {
             "BACKLOG": [],

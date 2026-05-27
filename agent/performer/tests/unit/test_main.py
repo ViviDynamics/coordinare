@@ -241,6 +241,53 @@ class TestHandleStatus:
         assert "timed out" in (resp.reason or "")
 
 
+class TestEnvBootstrapInferenceTimeout:
+    """Fix 2: _run_service_inference must be wrapped in asyncio.wait_for so a
+    wedged LiteLLM proxy can't hang the env_bootstrap job indefinitely."""
+
+    async def test_inference_timeout_returns_error_response(self) -> None:
+        perf = _make_perf(session_id="sid")
+        perf.role = "env_bootstrap"
+        perf.score.env_cache_path = "/tmp/env-cache"
+        perf.backend.get_status.return_value = BackendStatus(state="done")
+
+        async def _hang(*_args: object, **_kwargs: object) -> dict:
+            await asyncio.sleep(10)
+            return {}
+
+        settings = Settings(AGENT_BACKEND="opencode", SERVICE_INFERENCE_TIMEOUT=0)
+        with (
+            patch("performer.main._run_service_inference", new=AsyncMock(side_effect=_hang)),
+            patch("performer.main.get_settings", return_value=settings),
+        ):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
+
+        assert resp.status == "error"
+        assert resp.inference_succeeded is False
+        assert resp.inference_skipped_reason == "timeout"
+        assert "service_inference_timeout" in (resp.reason or "")
+
+    async def test_inference_success_when_under_timeout(self) -> None:
+        perf = _make_perf(session_id="sid")
+        perf.role = "env_bootstrap"
+        perf.score.env_cache_path = "/tmp/env-cache"
+        perf.backend.get_status.return_value = BackendStatus(state="done")
+
+        inference_state = {"inference_succeeded": True}
+        settings = Settings(AGENT_BACKEND="opencode", SERVICE_INFERENCE_TIMEOUT=60)
+        with (
+            patch(
+                "performer.main._run_service_inference",
+                new=AsyncMock(return_value=inference_state),
+            ),
+            patch("performer.main.get_settings", return_value=settings),
+        ):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
+
+        assert resp.status == "env_bootstrap_complete"
+        assert perf.state == "env_bootstrap_complete"
+
+
 # ---------------------------------------------------------------------------
 # handle_relay_feedback
 # ---------------------------------------------------------------------------

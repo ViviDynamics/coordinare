@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -14,6 +15,7 @@ from coordinare_service_inference.agent import (
     LLMStep,
     ManifestValidationError,
     ServiceInferenceAgent,
+    StepTimeoutExceeded,
     ToolCall,
     ToolCallBudgetExceeded,
     UnknownToolError,
@@ -275,3 +277,36 @@ async def test_unresolvable_binary_allowed_for_external(sandbox: ToolSandbox) ->
     agent = ServiceInferenceAgent(sandbox=sandbox, client=client)
     manifest = await agent.run("infer")
     assert manifest.services[0].external_required is True
+
+
+class _HangingClient:
+    """Client whose ``step`` blocks forever, simulating a wedged upstream."""
+
+    async def step(self, messages: list[dict[str, Any]]) -> LLMStep:
+        await asyncio.sleep(60)
+        raise AssertionError("step should not return")  # pragma: no cover
+
+
+@pytest.mark.asyncio
+async def test_step_timeout_raises_step_timeout_exceeded(sandbox: ToolSandbox) -> None:
+    """A wedged client.step() must raise StepTimeoutExceeded once the
+    per-step timeout elapses, not block the whole-run timeout."""
+    agent = ServiceInferenceAgent(
+        sandbox=sandbox,
+        client=_HangingClient(),
+        step_timeout_seconds=0.05,
+    )
+    with pytest.raises(StepTimeoutExceeded):
+        await agent.run("infer services")
+
+
+@pytest.mark.asyncio
+async def test_step_timeout_none_preserves_legacy_behavior(sandbox: ToolSandbox) -> None:
+    """``step_timeout_seconds=None`` must not wrap the call in wait_for so
+    existing stub-client tests keep their previous semantics."""
+    client = _StubClient([LLMStep(manifest=_manifest_dict())])
+    agent = ServiceInferenceAgent(
+        sandbox=sandbox, client=client, step_timeout_seconds=None,
+    )
+    manifest = await agent.run("infer services")
+    assert manifest.services[0].name == "redis"

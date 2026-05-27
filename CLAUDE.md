@@ -11,6 +11,8 @@ See AGENTS.md for all development guidelines.
 - Job-scoped temp directory used as `HERMES_HOME` (created at `start()`, removed unconditionally on every terminal outcome per FR-011). No persistent state. (068-hermes-backend)
 - Python 3.11 (coordinare) + LangGraph (existing), pydantic v2 (existing), structlog (existing) — no new deps (069-blocked-notification-rehydration)
 - JSON snapshot via `state_store.py` (`WorkflowSnapshot` + `PersistedSession`). v1 and v2 snapshots must round-trip without loss; new `PersistedSession.last_blocked_notified_at` is optional and defaults to `None` for backward compatibility. (069-blocked-notification-rehydration)
+- Python 3.11 (performer + coordinare; matches existing codebase) + `pydantic-settings` (existing — extends `Settings` in `agent/performer/src/performer/config.py`); no new runtime dependencies (073-claude-code-litellm)
+- N/A — config is process-env only; no persistent state added (073-claude-code-litellm)
 
 ## Recent Changes
 - 066-unify-card-pickup: Single pickup path for any `max_concurrent_cards`. `active_sessions` is the source of truth; `state["current_card"]` is a derived mirror written only via `_set_current_card` / `_rederive_current_card` (FR-010). v1 snapshots rehydrate through the same unified code (FR-007).

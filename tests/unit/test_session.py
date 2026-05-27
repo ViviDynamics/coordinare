@@ -107,6 +107,60 @@ def test_round_trip_session_state_session() -> None:
             assert recovered.get(field) == original.get(field), f"Mismatch on {field}"
 
 
+def test_last_blocked_slack_delivered_at_round_trips() -> None:
+    """Regression: notify.py stamps this watermark on the session dict; if
+    it's missing from _SESSION_FIELDS the daemon's cycle merge drops it and
+    the Slack cooldown gate falls through, producing repeated blocked posts."""
+    from datetime import UTC, datetime
+
+    stamp = datetime.now(UTC)
+    session = create_session_from_card(_sample_card())
+    session["last_blocked_slack_delivered_at"] = stamp
+
+    state = initial_state()
+    session_to_state(session, state)
+    assert state["last_blocked_slack_delivered_at"] == stamp
+
+    recovered = state_to_session(state)
+    assert recovered["last_blocked_slack_delivered_at"] == stamp
+
+
+def test_lifecycle_completed_at_round_trips() -> None:
+    """Regression: monitor_performer._advance_stage stamps this cutoff when a
+    card hands off to monitoring_pr; if it's missing from _SESSION_FIELDS the
+    daemon's fanout merge drops it.  The next cycle's monitor_pr runs with
+    cutoff=None, accepts pre-handoff automation reviews as actionable human
+    feedback, and classify_human_feedback's keyword fallback re-dispatches the
+    card to implementing — kicking a cleared card back out of human review."""
+    from datetime import UTC, datetime
+
+    stamp = datetime.now(UTC)
+    session = create_session_from_card(_sample_card())
+    session["lifecycle_completed_at"] = stamp
+
+    state = initial_state()
+    session_to_state(session, state)
+    assert state["lifecycle_completed_at"] == stamp
+
+    recovered = state_to_session(state)
+    assert recovered["lifecycle_completed_at"] == stamp
+
+
+def test_processed_review_ids_round_trips() -> None:
+    """Regression: classify_human_feedback writes processed_review_ids to flat
+    state; if it's missing from _SESSION_FIELDS the same review re-classifies
+    every cycle until the next persistence snapshot."""
+    session = create_session_from_card(_sample_card())
+    session["processed_review_ids"] = {"PRR_abc", "PRR_xyz"}
+
+    state = initial_state()
+    session_to_state(session, state)
+    assert state["processed_review_ids"] == {"PRR_abc", "PRR_xyz"}
+
+    recovered = state_to_session(state)
+    assert recovered["processed_review_ids"] == {"PRR_abc", "PRR_xyz"}
+
+
 def test_round_trip_preserves_non_session_fields() -> None:
     """session_to_state must not clobber non-session fields on state."""
     state = initial_state()
@@ -187,8 +241,12 @@ def test_session_fields_all_present_in_initial_state_or_coordinare_state() -> No
         "pending_override", "requirements_changed",
         "requirements_changed_details", "system_error_notified",
         "phase_entered_at", "last_blocked_notified_at",
+        "last_blocked_slack_delivered_at",
         "head_at_dispatch", "head_at_last_turn",
         "clarifications_count_at_dispatch",
+        "dispatched_notified_stages",
+        "lifecycle_completed_at",
+        "processed_review_ids",
     }
     for field in _SESSION_FIELDS:
         if field not in optional_in_initial:

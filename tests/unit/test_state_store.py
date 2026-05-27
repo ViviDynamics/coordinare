@@ -14,6 +14,7 @@ import pytest
 from coordinare.metrics import CoordinareMetrics
 from coordinare.state_store import (
     CURRENT_SCHEMA_VERSION,
+    EnvCacheStateSnapshot,
     PersistedSession,
     StateLoadError,
     StateStore,
@@ -603,3 +604,124 @@ async def test_v1_snapshot_defaults_head_delta_fields_to_none(tmp_path: Path) ->
     assert loaded is not None
     assert loaded.active_sessions["PVT_70"].head_at_dispatch is None
     assert loaded.active_sessions["PVT_70"].head_at_last_turn is None
+
+
+# --- 073 Fix 3: env_cache persistence (avoid re-bootstrap on restart) ---
+
+
+@pytest.mark.asyncio
+async def test_env_cache_roundtrips_readme_sha(tmp_path: Path) -> None:
+    """073 Fix 3: ``env_cache`` survives save → load so a restart with unchanged
+    env-spec files skips the expensive env_bootstrap performer job."""
+    metrics = CoordinareMetrics()
+    store = StateStore(path=tmp_path / "state.json", metrics=metrics)
+    t_boot = datetime(2026, 5, 25, 12, 0, 0, tzinfo=UTC)
+    snapshot = _make_snapshot(
+        env_cache={
+            "sym-one": EnvCacheStateSnapshot(
+                symphony_name="sym-one",
+                sanitised_name="sym-one-a1b2c3",
+                cache_dir="/devenv/sym-one",
+                readme_sha="deadbeef",
+                last_bootstrap_at=t_boot,
+                last_bootstrap_succeeded=True,
+                cache_dir_ready=True,
+            ),
+        },
+    )
+
+    await store.save(snapshot)
+    loaded = await store.load()
+
+    assert loaded is not None
+    assert "sym-one" in loaded.env_cache
+    entry = loaded.env_cache["sym-one"]
+    assert entry.readme_sha == "deadbeef"
+    assert entry.last_bootstrap_at == t_boot
+    assert entry.last_bootstrap_succeeded is True
+    assert entry.cache_dir_ready is True
+    assert entry.cache_dir == "/devenv/sym-one"
+
+
+@pytest.mark.asyncio
+async def test_v2_snapshot_defaults_env_cache_to_empty(tmp_path: Path) -> None:
+    """073 Fix 3: a v2 snapshot (no ``env_cache`` field) loads cleanly under v3
+    with an empty ``env_cache`` dict — the first poll cycle re-fetches the SHA.
+    """
+    import json
+
+    metrics = CoordinareMetrics()
+    path = tmp_path / "state.json"
+    store = StateStore(path=path, metrics=metrics)
+    snapshot = _make_snapshot(phase="idle")
+    await store.save(snapshot)
+
+    data = json.loads(path.read_text())
+    data["schema_version"] = 2
+    data.pop("env_cache", None)
+    path.write_text(json.dumps(data))
+
+    loaded = await store.load()
+    assert loaded is not None
+    assert loaded.env_cache == {}
+
+
+@pytest.mark.asyncio
+async def test_v1_snapshot_defaults_env_cache_to_empty(tmp_path: Path) -> None:
+    """073 Fix 3 / review callout: a v1 snapshot (predates both
+    ``active_sessions`` and ``env_cache``) must round-trip into v3 with an
+    empty ``env_cache`` dict — MIN_SUPPORTED_SCHEMA_VERSION is 1, so v1
+    snapshots must load without raising, and the first poll cycle then
+    re-fetches the SHA. Complements the v2 case above; together they cover
+    the full graceful-upgrade matrix the PR body claims.
+    """
+    import json
+
+    metrics = CoordinareMetrics()
+    path = tmp_path / "state.json"
+    store = StateStore(path=path, metrics=metrics)
+    snapshot = _make_snapshot(phase="idle")
+    await store.save(snapshot)
+
+    data = json.loads(path.read_text())
+    data["schema_version"] = 1
+    # v1 had neither active_sessions nor env_cache.
+    data.pop("active_sessions", None)
+    data.pop("env_cache", None)
+    path.write_text(json.dumps(data))
+
+    loaded = await store.load()
+    assert loaded is not None
+    assert loaded.env_cache == {}
+    assert loaded.active_sessions == {}
+
+
+@pytest.mark.asyncio
+async def test_env_cache_snapshot_omits_transient_fields(tmp_path: Path) -> None:
+    """073 Fix 3: the persisted shape MUST NOT include transient fields
+    (``bootstrap_in_flight``, ``pending_sha``, ``runtime_health_failed``) so a
+    crash mid-bootstrap does not leave a stuck flag on disk after restart.
+    """
+    import json
+
+    metrics = CoordinareMetrics()
+    path = tmp_path / "state.json"
+    store = StateStore(path=path, metrics=metrics)
+    snapshot = _make_snapshot(
+        env_cache={
+            "sym-one": EnvCacheStateSnapshot(
+                symphony_name="sym-one",
+                sanitised_name="sym-one-a1b2c3",
+                cache_dir="/devenv/sym-one",
+                readme_sha="abc123",
+                cache_dir_ready=True,
+            ),
+        },
+    )
+    await store.save(snapshot)
+
+    data = json.loads(path.read_text())
+    persisted = data["env_cache"]["sym-one"]
+    assert "bootstrap_in_flight" not in persisted
+    assert "pending_sha" not in persisted
+    assert "runtime_health_failed" not in persisted

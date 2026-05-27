@@ -102,6 +102,7 @@ async def infer_services(
     max_tool_calls: int = 50,
     web_search_enabled: bool = False,
     run_validation: bool = True,
+    step_timeout_seconds: float | None = None,
 ) -> InferenceResult:
     """Run the agent → validate loop and drop env-cache artifacts on success.
 
@@ -149,6 +150,7 @@ async def infer_services(
             max_tool_calls=max_tool_calls,
             system_prompt=system_prompt,
             agent_version=agent_version,
+            step_timeout_seconds=step_timeout_seconds,
         )
 
         attempt_log: dict[str, Any] = {"attempt": attempt_idx}

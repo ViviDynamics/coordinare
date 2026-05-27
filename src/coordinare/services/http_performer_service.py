@@ -51,6 +51,34 @@ logger = structlog.get_logger(__name__)
 _TERMINAL_JOB_STATES = {"succeeded", "failed", "cancelled"}
 
 
+def _inject_claude_code_secrets(
+    secrets: dict[str, str],
+    role_base_url: Any,
+    role_api_key_env: Any,
+    role_auth_token_env: Any,
+) -> None:
+    """Inject Anthropic/proxy secrets for the claude_code backend.
+
+    Proxy-only auth: when auth_token_env is set, inject ANTHROPIC_AUTH_TOKEN
+    (Bearer) and SKIP ANTHROPIC_API_KEY. claude CLI prefers x-api-key over
+    Bearer, so leaking ANTHROPIC_API_KEY here causes the proxy to forward the
+    real Anthropic key upstream — defeating per-role routing entirely.
+    """
+    import os
+
+    if role_auth_token_env:
+        token_val = os.environ.get(str(role_auth_token_env), "")
+        if token_val:
+            secrets["ANTHROPIC_AUTH_TOKEN"] = token_val
+    else:
+        key_env_name = str(role_api_key_env) if role_api_key_env else "ANTHROPIC_API_KEY"
+        anthropic_key = os.environ.get(key_env_name, "")
+        if anthropic_key:
+            secrets["ANTHROPIC_API_KEY"] = anthropic_key
+    if role_base_url:
+        secrets["ANTHROPIC_BASE_URL"] = str(role_base_url)
+
+
 @dataclass
 class _EphemeralJob:
     """State for one in-flight ephemeral container job."""
@@ -324,6 +352,25 @@ class HTTPPerformerService:
             # or the session predates this coordinare instance. Re-raise so
             # monitor_performer can route through its transport-error retry path.
             raise
+        # Forward refreshed secrets (e.g. github_token from monitor_performer)
+        # to the running job before polling status. Best-effort: a PATCH
+        # failure is logged but must not block the status poll, because the
+        # running job may still succeed without the refreshed token if it
+        # completes before the next expiry boundary.
+        if payload:
+            refreshed_token = payload.get("github_token")
+            if refreshed_token:
+                try:
+                    await client.update_job_secrets(
+                        session_id, {"github_token": refreshed_token}
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "http_performer.secret_refresh_failed",
+                        performer_id=self._config.id,
+                        session_id=session_id,
+                        exc_type=type(exc).__name__,
+                    )
         try:
             status = await client.get_job(session_id)
         except (PerformerAuthError, PerformerUnreachableError, TransportError):
@@ -335,6 +382,16 @@ class HTTPPerformerService:
             raise
         is_terminal = status.state in _TERMINAL_JOB_STATES
         if is_terminal:
+            error_reason: str | None = None
+            if status.state in ("failed", "error") and status.result is not None and status.result.summary:
+                try:
+                    parsed_summary = json.loads(status.result.summary)
+                    if isinstance(parsed_summary, dict):
+                        error_reason = parsed_summary.get("reason")
+                except (json.JSONDecodeError, TypeError):
+                    error_reason = status.result.summary
+                if isinstance(error_reason, str):
+                    error_reason = error_reason[:500]
             logger.info(
                 "performer_endpoint.transition",
                 performer_id=self._config.id,
@@ -342,6 +399,7 @@ class HTTPPerformerService:
                 to_state="idle",
                 job_id=session_id,
                 terminal_state=status.state,
+                error_reason=error_reason,
             )
             if self._config.mode == "ephemeral":
                 await self._cleanup_ephemeral_job_by_id(session_id)
@@ -577,6 +635,7 @@ class HTTPPerformerService:
         # (e.g. LiteLLM) instead of the vendor's native endpoint.
         role_base_url = card_context.get("base_url")
         role_api_key_env = card_context.get("api_key_env")
+        role_auth_token_env = card_context.get("auth_token_env")
         if backend == "codex":
             key_env_name = str(role_api_key_env) if role_api_key_env else "OPENAI_API_KEY"
             openai_key = os.environ.get(key_env_name, "")
@@ -585,12 +644,9 @@ class HTTPPerformerService:
             if role_base_url:
                 secrets["OPENAI_BASE_URL"] = str(role_base_url)
         elif backend == "claude_code":
-            key_env_name = str(role_api_key_env) if role_api_key_env else "ANTHROPIC_API_KEY"
-            anthropic_key = os.environ.get(key_env_name, "")
-            if anthropic_key:
-                secrets["ANTHROPIC_API_KEY"] = anthropic_key
-            if role_base_url:
-                secrets["ANTHROPIC_BASE_URL"] = str(role_base_url)
+            _inject_claude_code_secrets(
+                secrets, role_base_url, role_api_key_env, role_auth_token_env
+            )
         elif backend in {"opencode", "junie", "cursor"}:
             # These backends can use either Anthropic or OpenAI providers;
             # inject whichever keys are available so the subprocess can choose.
@@ -664,10 +720,25 @@ class HTTPPerformerService:
         )
         if gh_token:
             secrets["GITHUB_TOKEN"] = gh_token
-        for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
-            val = os.environ.get(key, "")
-            if val:
-                secrets[key] = val
+        # Honor per-role auth_token_env (proxy-only mode) the same way the regular
+        # claude_code path does: when set, inject ANTHROPIC_AUTH_TOKEN and SKIP
+        # ANTHROPIC_API_KEY so the proxy receives only the Bearer token.
+        bootstrap_backend = str(card_context.get("backend") or "").replace("-", "_")
+        role_base_url = card_context.get("base_url")
+        role_api_key_env = card_context.get("api_key_env")
+        role_auth_token_env = card_context.get("auth_token_env")
+        if bootstrap_backend == "claude_code":
+            _inject_claude_code_secrets(
+                secrets, role_base_url, role_api_key_env, role_auth_token_env
+            )
+            openai_key = os.environ.get("OPENAI_API_KEY", "")
+            if openai_key:
+                secrets["OPENAI_API_KEY"] = openai_key
+        else:
+            for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
+                val = os.environ.get(key, "")
+                if val:
+                    secrets[key] = val
 
         spec_block = "\n\n".join(
             f"=== {path} ===\n{content}"

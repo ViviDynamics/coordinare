@@ -9,8 +9,8 @@
   "properties": {
     "schema_version": {
       "type": "integer",
-      "enum": [1, 2],
-      "description": "Schema version. v1 is the original snapshot format; v2 (065 Fix 7b) adds per-card active_sessions so multi-card performer_stage survives restart. v1 snapshots are still readable and upgrade in-memory to v2."
+      "enum": [1, 2, 3],
+      "description": "Schema version. v1 is the original snapshot format; v2 (065 Fix 7b) adds per-card active_sessions; v3 (073 Fix 3) adds env_cache so env_bootstrap doesn't re-run after restart with unchanged symphony env-spec files. Older snapshots remain readable and load with empty defaults for newer fields."
     },
     "snapshot_at": {
       "type": "string",
@@ -165,6 +165,23 @@
           "system_error_reason": { "type": ["string", "null"] },
           "system_error_notified": { "type": "boolean" },
           "requirements_changed": { "type": "boolean" }
+        }
+      },
+      "default": {}
+    },
+    "env_cache": {
+      "type": "object",
+      "description": "Per-symphony env-cache fingerprint state (073 Fix 3, schema_version >= 3). Keys are symphony names; values persist the durable subset of EnvCacheState so a coordinare restart with unchanged env-spec files does not re-trigger env_bootstrap. Transient fields (bootstrap_in_flight, pending_sha, runtime_health_failed) are intentionally omitted so a crash mid-bootstrap does not leave a stuck flag on disk. Empty object for v1/v2 snapshots.",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "symphony_name": { "type": "string" },
+          "sanitised_name": { "type": "string" },
+          "cache_dir": { "type": "string" },
+          "readme_sha": { "type": ["string", "null"] },
+          "last_bootstrap_at": { "type": ["string", "null"], "format": "date-time" },
+          "last_bootstrap_succeeded": { "type": ["boolean", "null"] },
+          "cache_dir_ready": { "type": "boolean" }
         }
       },
       "default": {}

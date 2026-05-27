@@ -19,7 +19,8 @@ import json
 from collections.abc import AsyncIterator
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
+from pydantic import BaseModel, Field
 
 from performer.server.job_runner import JobNotFoundError, JobRunner
 from performer.server.models import (
@@ -29,6 +30,12 @@ from performer.server.models import (
     PerformerCapabilities,
     PerformerStatus,
 )
+
+
+class _RefreshSecretsPayload(BaseModel):
+    """Body for PATCH /jobs/{job_id}/secrets — never logged."""
+
+    secrets: dict[str, str] = Field(default_factory=dict)
 
 
 def _runner(request: Request) -> JobRunner:
@@ -98,6 +105,18 @@ def register_routes(app: FastAPI) -> None:
                 yield f"data: {payload}\n\n".encode()
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+    @app.patch("/jobs/{job_id}/secrets", status_code=204)
+    async def refresh_job_secrets(
+        job_id: str, payload: _RefreshSecretsPayload, request: Request
+    ) -> Response:
+        runner = _runner(request)
+        try:
+            await runner.refresh_secrets(job_id, payload.secrets)
+        except JobNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="job not found") from exc
+        # 204 No Content — body intentionally empty so secrets never round-trip.
+        return Response(status_code=204)
 
     @app.post("/jobs/{job_id}/cancel")
     async def cancel_job(job_id: str, request: Request) -> JSONResponse:
