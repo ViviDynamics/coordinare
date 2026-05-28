@@ -725,3 +725,73 @@ async def test_env_cache_snapshot_omits_transient_fields(tmp_path: Path) -> None
     assert "bootstrap_in_flight" not in persisted
     assert "pending_sha" not in persisted
     assert "runtime_health_failed" not in persisted
+
+
+# --- 074 FR-011: persona_scope persistence (graceful upgrade across restart) ---
+
+
+@pytest.mark.asyncio
+async def test_v3_snapshot_loads_with_null_persona_scope(tmp_path: Path) -> None:
+    """074 FR-011: a v3 snapshot whose PersistedSession entries lack
+    ``persona_scope`` deserializes cleanly under v4 with ``persona_scope = None``;
+    the next cycle's classify_scope node recomputes from scratch.
+    """
+    import json
+
+    metrics = CoordinareMetrics()
+    path = tmp_path / "state.json"
+    store = StateStore(path=path, metrics=metrics)
+    snapshot = _make_snapshot(
+        phase="dispatching",
+        active_card_id="PVT_74",
+        active_sessions={
+            "PVT_74": PersistedSession(card_id="PVT_74", performer_stage="implementing"),
+        },
+    )
+    await store.save(snapshot)
+
+    data = json.loads(path.read_text())
+    data["schema_version"] = 3
+    data["active_sessions"]["PVT_74"].pop("persona_scope", None)
+    path.write_text(json.dumps(data))
+
+    loaded = await store.load()
+    assert loaded is not None
+    assert loaded.active_sessions["PVT_74"].persona_scope is None
+
+
+@pytest.mark.asyncio
+async def test_v4_snapshot_roundtrips_persona_scope(tmp_path: Path) -> None:
+    """074 FR-011: a populated ``PersonaScope`` survives save → load with deep
+    equality so the previous-cycle fallback chain in FR-006 holds across restart.
+    """
+    metrics = CoordinareMetrics()
+    store = StateStore(path=tmp_path / "state.json", metrics=metrics)
+    scope = {
+        "computed_at": "2026-05-27T18:30:00Z",
+        "cycle_index": 7,
+        "classifier_model": "anthropic_api:claude-haiku-4-5",
+        "head_sha": "abc123",
+        "files_summary": [{"path": "README.md", "added": 3, "removed": 1, "classes": ["docs"]}],
+        "personas": {
+            "reviewer": {"depth": "skim", "focus": "spot-check", "overrides": []},
+            "security": {"depth": "skip", "focus": "no security paths", "overrides": []},
+        },
+    }
+    snapshot = _make_snapshot(
+        phase="dispatching",
+        active_card_id="PVT_74",
+        active_sessions={
+            "PVT_74": PersistedSession(
+                card_id="PVT_74",
+                performer_stage="implementing",
+                persona_scope=scope,
+            ),
+        },
+    )
+
+    await store.save(snapshot)
+    loaded = await store.load()
+
+    assert loaded is not None
+    assert loaded.active_sessions["PVT_74"].persona_scope == scope

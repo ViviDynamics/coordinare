@@ -9,11 +9,11 @@
 
 ### User Story 1 — Docs-only PR skips irrelevant personas (Priority: P1)
 
-A card changes only `*.md` files (e.g., README update, ADR addition). Today every persona — reviewer, security, qa, documenter, closer — runs at full depth, spending 15–25 tool calls each on a change that has no runtime impact. Operators waste real wall-clock time and inference tokens watching qa explore a codebase that wasn't touched.
+A card changes only `*.md` files (e.g., README update, ADR addition). Today every persona — reviewer, security, qa, tech_writer, closer — runs at full depth, spending 15–25 tool calls each on a change that has no runtime impact. Operators waste real wall-clock time and inference tokens watching qa explore a codebase that wasn't touched.
 
 **Why this priority**: This is the highest-frequency case where current behavior wastes the most effort relative to risk. Solving it alone delivers a visible throughput improvement on the live test queue.
 
-**Independent Test**: Submit a docs-only card; verify reviewer runs in `skim` mode (≤5 tool calls), security/qa are marked `skip`, documenter runs `full`, closer runs as today. Card reaches IN_REVIEW measurably faster than the baseline.
+**Independent Test**: Submit a docs-only card; verify reviewer runs in `skim` mode (≤5 tool calls), security/qa are marked `skip`, tech_writer runs `full`, closer runs as today. Card reaches IN_REVIEW measurably faster than the baseline.
 
 **Acceptance Scenarios**:
 
@@ -34,7 +34,7 @@ A 6-line change in `src/coordinare/auth/` or a new migration file. By LOC/file-c
 **Acceptance Scenarios**:
 
 1. **Given** a card whose diff includes any file matching the `security_sensitive` path class, **When** PersonaScope is computed, **Then** the security persona's depth is `full` and the override is recorded with `reason: "forced_full_on_path_class:security_sensitive"`.
-2. **Given** the same card, **When** other personas are assessed, **Then** they are not affected by the security override (a 6-line auth-touching docs change still lets documenter run as appropriate).
+2. **Given** the same card, **When** other personas are assessed, **Then** they are not affected by the security override (a 6-line auth-touching docs change still lets tech_writer run as appropriate).
 
 ---
 
@@ -89,7 +89,7 @@ A new project (Go service, Rails app, Python CLI) adopts coordinare. The author 
 - **Empty diff or no GitHub PR yet**: A card mid-implementer with no PR open and no diff to classify. Classifier should be skipped (not failed); PersonaScope defaults to `full` everywhere. This is identical to today's behavior — no regression.
 - **Diff spans multiple path classes**: A card touches docs + config + runtime. Precedence: any security-sensitive match forces security to full; otherwise the most-restrictive (highest-depth) class wins per persona.
 - **Diff too large for the classifier's context window**: Pass only path summary + diff-stat (file list + ±LOC per file), never the full diff. The classifier never sees raw code.
-- **Persona prompt template missing a `{{ scope.focus }}` placeholder**: Persona gets the scope object but doesn't render it. Not an error — older persona templates remain valid. Operator can add the placeholder when ready.
+- **Persona without a `scope_behavior` block in project config**: Per FR-010 the persona runs as today — coordinare delivers the scope slice as a structured input alongside the dispatch payload (per FR-007, never by mutating the base prompt), and the persona simply ignores it. Not an error; this is the additive-default opt-out path.
 - **Classifier emits an unknown depth value**: Treated as a malformed output → classifier failure → fallback to `full` everywhere with a warning.
 - **Closer override**: closer always ignores `depth` and consumes only `focus` (per US1 #3). If a project config sets `respects_depth: true` for closer, it is ignored with a startup warning.
 - **PersonaScope persistence**: PersonaScope rides on `CardSession` and must round-trip through `_SESSION_FIELDS` (regression-prone — see recent 069/072 fixes). v1 snapshots without PersonaScope rehydrate as if classifier had not yet run; the next cycle recomputes.
@@ -98,7 +98,7 @@ A new project (Go service, Rails app, Python CLI) adopts coordinare. The author 
 
 ### Functional Requirements
 
-- **FR-001**: Coordinare MUST compute a `PersonaScope` object for each active card before dispatching to any persona. The object maps each persona name (reviewer, security, qa, documenter, closer) to `{ depth: skim|normal|full|skip, focus: <string> }`.
+- **FR-001**: Coordinare MUST compute a `PersonaScope` object for each active card before dispatching to any persona. The object maps each persona name (reviewer, security, qa, tech_writer, closer) to `{ depth: skim|normal|full|skip, focus: <string> }`.
 - **FR-002**: The classifier MUST consume only deterministic inputs (file paths, ±LOC per file, project's path-class config) and the project's existing CLAUDE.md/AGENTS.md context — never the raw diff body — when calling the LLM.
 - **FR-003**: Coordinare MUST recompute PersonaScope on every cycle for every active card (per design decision: every cycle, reusing the existing coordinare backend).
 - **FR-004**: Path-class matches configured under `persona_scope.path_classes.<class_name>` MUST be glob-based and project-configurable; no path patterns may be hardcoded in coordinare source.
@@ -108,7 +108,7 @@ A new project (Go service, Rails app, Python CLI) adopts coordinare. The author 
 - **FR-008**: When a persona has `depth: skip`, coordinare MUST advance the lifecycle past that persona without invoking the performer for it. Logs MUST record the skip and its rationale.
 - **FR-009**: The closer persona MUST ignore the `depth` field of its PersonaScope slice and consume only `focus` as advisory context.
 - **FR-010**: Personas without a `scope_behavior` block in project config MUST run as if PersonaScope did not exist (additive default; backward compatible).
-- **FR-011**: PersonaScope MUST be carried on `CardSession` and MUST round-trip through `_SESSION_FIELDS` / `session_to_state` / `state_to_session` without loss. v1 snapshot rehydration MUST treat a missing PersonaScope as "not yet computed."
+- **FR-011**: PersonaScope MUST be carried on `CardSession` and MUST round-trip through `_SESSION_FIELDS` / `session_to_state` / `state_to_session` without loss. v1–v3 snapshot rehydration MUST treat a missing PersonaScope as "not yet computed" and trigger recomputation on the next cycle.
 - **FR-012**: PersonaScope MUST be surfaced on the card's PR (as a comment or status-line) so reviewers can see *why* a persona ran shallow or was skipped. The exact surface (PR comment vs. dashboard) is an implementation choice but it MUST be visible to a reviewer reading the PR.
 - **FR-013**: The classifier prompt MUST emit `focus` as a free-text string per persona (one to three sentences). Structured tag vocabularies are out of scope for this feature.
 - **FR-014**: The classifier MUST run on coordinare's existing configured backend; no new `classifier_backend` config slot is introduced.
@@ -117,7 +117,7 @@ A new project (Go service, Rails app, Python CLI) adopts coordinare. The author 
 
 ### Key Entities
 
-- **PersonaScope**: Per-card classification produced by coordinare's classifier. Shape: `{ <persona_name>: { depth: skim|normal|full|skip, focus: string, overrides: [string] } }`. Lives on `CardSession`; recomputed every cycle; persists in v2 snapshots; absent in v1 (treated as "not computed").
+- **PersonaScope**: Per-card classification produced by coordinare's classifier. Shape: `{ <persona_name>: { depth: skim|normal|full|skip, focus: string, overrides: [string] } }`. Lives on `CardSession`; recomputed every cycle; persists in v4 snapshots; absent in v1–v3 (treated as "not yet computed" and recomputed on next cycle).
 - **PathClass**: Named bucket of file globs defined in project config (e.g., `docs`, `config`, `tests`, `runtime`, `security_sensitive`). Drives both deterministic forced-full overrides and the deterministic input the classifier sees alongside the diff stats.
 - **ScopeBehavior**: Per-persona, per-depth definition of how a depth tier is realized — `max_tool_calls` budget and `prompt_addon` text. Lives under `symphony.personas.<name>.scope_behavior` in coordinare config. A persona without a `scope_behavior` block opts out of the feature.
 - **ClassificationFailure**: Sentinel state when the classifier call cannot produce a valid PersonaScope. Causes the card to run with `full` depth across all personas and emits a rate-limited warning.

@@ -156,10 +156,29 @@ class NotificationsConfig(BaseModel):
 PERSONA_MAX_LENGTH = 8_000
 
 
+class ScopeTierBehavior(BaseModel):
+    """074 — Per-tier behavior for a persona at a given scope depth."""
+
+    max_tool_calls: int | None = Field(default=None, ge=1, le=500)
+    prompt_addon: str = Field(default="", max_length=4096)
+
+
+class ScopeBehavior(BaseModel):
+    """074 — Per-persona tier-specific behavior (skim/normal/full)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    skim: ScopeTierBehavior | None = None
+    normal: ScopeTierBehavior | None = None
+    full: ScopeTierBehavior | None = None
+
+
 class PersonaConfig(BaseModel):
     """Per-role behavioral instructions for the AI agent."""
 
     instructions: str = ""
+    # 074 — Persona scope tiering (opt-in per persona; FR-010 additive default).
+    scope_behavior: ScopeBehavior | None = None
 
     @field_validator("instructions", mode="before")
     @classmethod
@@ -901,6 +920,65 @@ class CloserPrChecksConfig(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# 074 — Persona Scope Tiering
+# ---------------------------------------------------------------------------
+
+
+class PersonaScopeConfig(BaseModel):
+    """Symphony-level config for persona scope tiering (spec 074).
+
+    Opt-in: feature is dormant unless `enabled=True` AND `path_classes` is non-empty.
+    Coordinare ships no path-class defaults — projects own their taxonomy (FR-004).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    path_classes: dict[str, list[str]] = Field(default_factory=dict)
+    forced_full_on_path_classes: dict[str, list[str]] = Field(default_factory=dict)
+    classifier_latency_budget_seconds: float = Field(default=30.0, ge=1.0, le=600.0)
+    classifier_failure_warning_cooldown_seconds: float = Field(default=600.0, ge=0.0)
+
+    @field_validator("path_classes")
+    @classmethod
+    def _validate_path_classes(cls, v: dict[str, list[str]]) -> dict[str, list[str]]:
+        cleaned: dict[str, list[str]] = {}
+        for name, globs in v.items():
+            stripped_name = name.strip()
+            if not stripped_name:
+                msg = "path_classes contains an empty class name"
+                raise ValueError(msg)
+            if not globs:
+                msg = f"path_classes[{stripped_name!r}] has an empty glob list"
+                raise ValueError(msg)
+            cleaned_globs: list[str] = []
+            for g in globs:
+                if not isinstance(g, str):
+                    msg = f"path_classes[{stripped_name!r}] glob must be a string, got {type(g).__name__}"
+                    raise ValueError(msg)
+                stripped_glob = g.strip()
+                if not stripped_glob:
+                    msg = f"path_classes[{stripped_name!r}] contains an empty/whitespace glob"
+                    raise ValueError(msg)
+                cleaned_globs.append(stripped_glob)
+            cleaned[stripped_name] = cleaned_globs
+        return cleaned
+
+    @model_validator(mode="after")
+    def _classes_in_forced_full_must_exist(self) -> PersonaScopeConfig:
+        defined = set(self.path_classes.keys())
+        for persona, classes in self.forced_full_on_path_classes.items():
+            unknown = set(classes) - defined
+            if unknown:
+                msg = (
+                    f"forced_full_on_path_classes[{persona!r}] references undefined "
+                    f"classes: {sorted(unknown)}"
+                )
+                raise ValueError(msg)
+        return self
+
+
+# ---------------------------------------------------------------------------
 # 057 — Symphony Management & Multi-Project Orchestration
 # ---------------------------------------------------------------------------
 
@@ -922,6 +1000,9 @@ class SymphonyConfig(BaseModel):
 
     # 064 — Closer PR-checks gate per symphony.
     closer_pr_checks: CloserPrChecksConfig = Field(default_factory=lambda: CloserPrChecksConfig())
+
+    # 074 — Persona scope tiering per symphony (opt-in; FR-010 additive default).
+    persona_scope: PersonaScopeConfig | None = None
 
     @field_validator("env_spec_files")
     @classmethod
@@ -1035,4 +1116,70 @@ class CoordinareConfiguration(BaseModel):
                 )
                 raise ValueError(msg)
         return self
+
+
+# ---------------------------------------------------------------------------
+# Persona-scope startup validation (spec 074)
+# ---------------------------------------------------------------------------
+
+_PERSONA_SCOPE_CLASSIFIER_NAMES: tuple[str, ...] = (
+    "reviewer",
+    "security",
+    "qa",
+    "tech_writer",
+    "closer",
+)
+
+
+def validate_persona_scope_config(
+    persona_scope: PersonaScopeConfig | None,
+    personas: PersonasConfig | None,
+) -> list[tuple[str, str]]:
+    """Emit startup warnings for persona-scope config edge cases (FR-009, FR-010).
+
+    Returns a list of (level, message) tuples. Caller is responsible for logging
+    via the project's logger. Three scenarios per contracts/config-schema.md:
+
+      - enabled=True with empty path_classes  → warning (classifier will run
+        but no path memberships will resolve; effectively shadow-only).
+      - any persona has scope_behavior but persona_scope is missing/disabled
+        → info ("scope_behavior configured but feature is off").
+      - closer.scope_behavior is set → warning (FR-009: closer is
+        scope-invariant; the block is ignored).
+    """
+    findings: list[tuple[str, str]] = []
+    scope_enabled = persona_scope is not None and persona_scope.enabled
+
+    if scope_enabled and persona_scope is not None and not persona_scope.path_classes:
+        findings.append((
+            "warning",
+            "persona_scope.enabled=true but path_classes is empty; classifier will "
+            "run with no path-class taxonomy (no per-persona tier overrides will "
+            "fire). Define path_classes or set enabled=false.",
+        ))
+
+    if personas is not None:
+        configured: list[str] = []
+        for name in _PERSONA_SCOPE_CLASSIFIER_NAMES:
+            pc = getattr(personas, name, None)
+            if pc is not None and getattr(pc, "scope_behavior", None) is not None:
+                configured.append(name)
+        if configured and not scope_enabled:
+            findings.append((
+                "info",
+                "scope_behavior configured for personas "
+                f"{configured} but persona_scope is disabled or missing; "
+                "these blocks have no effect until persona_scope.enabled=true.",
+            ))
+
+        closer_pc = getattr(personas, "closer", None)
+        if closer_pc is not None and getattr(closer_pc, "scope_behavior", None) is not None:
+            findings.append((
+                "warning",
+                "personas.closer.scope_behavior is set but closer is "
+                "scope-invariant (FR-009); the configured tier overrides will be "
+                "ignored. Remove the block to silence this warning.",
+            ))
+
+    return findings
 

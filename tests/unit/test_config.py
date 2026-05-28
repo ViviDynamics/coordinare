@@ -1022,3 +1022,127 @@ class TestServiceInferenceConfig:
     def test_max_tokens_must_be_positive(self) -> None:
         with pytest.raises(ValidationError):
             self._base_cfg(max_tokens=0)
+
+
+# ---------------------------------------------------------------------------
+# 074 — Persona scope tiering
+# ---------------------------------------------------------------------------
+
+
+class TestPersonaScopeConfig:
+    """074 T017/T018 — config-level invariants for persona_scope (US5)."""
+
+    def test_persona_scope_disabled_by_default(self) -> None:
+        """T017 FR-010: a SymphonyConfig with no persona_scope block keeps
+        the feature dormant (no scope persisted, no classifier dispatched).
+        """
+        from coordinare.config import SymphonyConfig
+
+        cfg = SymphonyConfig(name="demo", github_project_number=1)
+        assert cfg.persona_scope is None
+
+    def test_forced_full_unknown_class_rejected(self) -> None:
+        """T018 FR-005: forced_full_on_path_classes must reference path_classes
+        declared in the same config block — undefined class names fail validation.
+        """
+        from coordinare.config import PersonaScopeConfig
+
+        with pytest.raises(ValidationError) as exc_info:
+            PersonaScopeConfig(
+                enabled=True,
+                path_classes={"docs": ["*.md"]},
+                forced_full_on_path_classes={"security": ["does_not_exist"]},
+            )
+        assert "does_not_exist" in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------------
+# 074 T053 — closer.scope_behavior warns and is ignored at dispatch (FR-009)
+# ---------------------------------------------------------------------------
+
+
+def test_closer_scope_behavior_warns_and_is_ignored() -> None:
+    """T053 — Setting `closer.scope_behavior` MUST emit a startup warning;
+    the dispatcher MUST ignore the configured tier overrides for closer.
+    """
+    from coordinare.config import (
+        PersonaConfig,
+        PersonasConfig,
+        PersonaScopeConfig,
+        ScopeBehavior,
+        ScopeTierBehavior,
+        validate_persona_scope_config,
+    )
+
+    tier = ScopeTierBehavior(max_tool_calls=99, prompt_addon="ignored")
+    personas = PersonasConfig(
+        closer=PersonaConfig(
+            instructions="CLOSER",
+            scope_behavior=ScopeBehavior(full=tier, normal=tier, skim=tier),
+        ),
+    )
+    persona_scope = PersonaScopeConfig(enabled=True, path_classes={"docs": ["*.md"]})
+
+    findings = validate_persona_scope_config(persona_scope, personas)
+    levels = [lvl for lvl, _ in findings]
+    msgs = " ".join(msg for _, msg in findings)
+    assert "warning" in levels
+    assert "closer" in msgs
+    assert "scope-invariant" in msgs or "FR-009" in msgs
+
+
+def test_validate_persona_scope_warns_on_enabled_empty_path_classes() -> None:
+    """enabled=True with empty path_classes should emit a warning."""
+    from coordinare.config import (
+        PersonasConfig,
+        PersonaScopeConfig,
+        validate_persona_scope_config,
+    )
+
+    findings = validate_persona_scope_config(
+        PersonaScopeConfig(enabled=True, path_classes={}),
+        PersonasConfig(),
+    )
+    assert any(lvl == "warning" and "path_classes" in msg for lvl, msg in findings)
+
+
+def test_validate_persona_scope_info_when_behavior_set_but_feature_off() -> None:
+    """scope_behavior on a persona while feature disabled → info finding."""
+    from coordinare.config import (
+        PersonaConfig,
+        PersonasConfig,
+        ScopeBehavior,
+        ScopeTierBehavior,
+        validate_persona_scope_config,
+    )
+
+    tier = ScopeTierBehavior(max_tool_calls=10, prompt_addon="x")
+    personas = PersonasConfig(
+        reviewer=PersonaConfig(instructions="r", scope_behavior=ScopeBehavior(skim=tier)),
+    )
+    findings = validate_persona_scope_config(None, personas)
+    assert any(lvl == "info" and "reviewer" in msg for lvl, msg in findings)
+
+
+def test_validate_persona_scope_no_findings_for_clean_config() -> None:
+    """A clean opt-in config with non-empty path_classes and no closer block
+    must emit zero findings.
+    """
+    from coordinare.config import (
+        PersonaConfig,
+        PersonasConfig,
+        PersonaScopeConfig,
+        ScopeBehavior,
+        ScopeTierBehavior,
+        validate_persona_scope_config,
+    )
+
+    tier = ScopeTierBehavior(max_tool_calls=10, prompt_addon="x")
+    personas = PersonasConfig(
+        reviewer=PersonaConfig(instructions="r", scope_behavior=ScopeBehavior(skim=tier)),
+    )
+    findings = validate_persona_scope_config(
+        PersonaScopeConfig(enabled=True, path_classes={"docs": ["*.md"]}),
+        personas,
+    )
+    assert findings == []

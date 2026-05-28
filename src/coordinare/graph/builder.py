@@ -8,6 +8,7 @@ from coordinare.graph.nodes.advocate import advocate_scan
 from coordinare.graph.nodes.assess_card import assess_card
 from coordinare.graph.nodes.check_board import check_board
 from coordinare.graph.nodes.classify_human_feedback import classify_human_feedback
+from coordinare.graph.nodes.classify_scope import classify_scope_node
 from coordinare.graph.nodes.dispatch_performer import dispatch_performer
 from coordinare.graph.nodes.handle_blocked import handle_blocked
 from coordinare.graph.nodes.handle_system_error import handle_system_error
@@ -37,6 +38,7 @@ _DEFAULT_NODES: dict[str, Any] = {
     "route_issue_comments": route_issue_comments,
     "check_board": check_board,
     "assess_card": assess_card,
+    "classify_scope": classify_scope_node,
     "dispatch_card": dispatch_performer,
     "monitor_agent": monitor_performer,
     "monitor_pr": monitor_pr,
@@ -70,6 +72,7 @@ class CoordinareGraphBuilder:
         graph.add_node("route_issue_comments", cast("Any", self._node("route_issue_comments")))
         graph.add_node("check_board", cast("Any", self._node("check_board")))
         graph.add_node("assess_card", cast("Any", self._node("assess_card")))
+        graph.add_node("classify_scope", cast("Any", self._node("classify_scope")))
         graph.add_node("dispatch_card", cast("Any", self._node("dispatch_card")))
         graph.add_node("monitor_agent", cast("Any", self._node("monitor_agent")))
         graph.add_node("monitor_pr", cast("Any", self._node("monitor_pr")))
@@ -83,13 +86,17 @@ class CoordinareGraphBuilder:
         graph.add_edge(START, "advocate_scan")
         graph.add_edge("advocate_scan", "route_issue_comments")
         graph.add_edge("route_issue_comments", "check_board")
+        # 074: classify_scope is a no-op when persona_scope.enabled is False
+        # (default) — it sits between board pickup and the dispatcher so the
+        # per-card PersonaScope is computed (eventually) before performers run.
+        graph.add_edge("classify_scope", "dispatch_card")
 
         graph.add_conditional_edges(
             "check_board",
             route_from_board_check,
             {
                 "assess": "assess_card",       # legacy: no assessor performer configured
-                "dispatch": "dispatch_card",   # assessor in lifecycle → skip assess_card
+                "dispatch": "classify_scope",  # classify per-persona scope, then dispatch
                 "monitor_pr": "monitor_pr",
                 "monitor_agent": "monitor_agent",
                 "blocked": "handle_blocked",
@@ -102,7 +109,7 @@ class CoordinareGraphBuilder:
             "assess_card",
             route_from_assess,
             {
-                "dispatch": "dispatch_card",
+                "dispatch": "classify_scope",
                 "blocked": "handle_blocked",
                 "monitor_pr": "monitor_pr",
             },
@@ -125,7 +132,7 @@ class CoordinareGraphBuilder:
                 "review": "monitor_pr",
                 "blocked": "handle_blocked",
                 "handle_system_error": "handle_system_error",
-                "dispatch": "dispatch_card",
+                "dispatch": "classify_scope",
                 "monitor": END,
             },
         )
@@ -133,7 +140,7 @@ class CoordinareGraphBuilder:
         graph.add_conditional_edges(
             "handle_system_error",
             route_from_system_error,
-            {"dispatch": "dispatch_card", "idle": END},
+            {"dispatch": "classify_scope", "idle": END},
         )
 
         graph.add_conditional_edges(

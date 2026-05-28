@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
@@ -11,6 +12,109 @@ if TYPE_CHECKING:
 from coordinare.models.notification import EventType, NotificationEvent, NotificationSeverity
 
 logger = structlog.get_logger(__name__)
+
+PERSONA_SCOPE_ROLLUP_MARKER = "<!-- coordinare:persona-scope-rollup -->"
+
+
+def _persona_scope_signature(scope: dict[str, Any]) -> str:
+    """Deterministic signature of (persona, depth, overrides) tuples.
+
+    Focus prose is excluded because LLM-generated text varies slightly across
+    cycles for identical classifications; including it would defeat dedup.
+    Used to skip re-posting an identical PR rollup comment when the structural
+    scope has not changed between cycles (FR-001 dedup).
+    """
+    personas = scope.get("personas") or {}
+    items: list[tuple[str, str, tuple[str, ...]]] = []
+    for name in sorted(personas.keys()):
+        slice_ = personas[name] or {}
+        depth = str(slice_.get("depth", ""))
+        overrides_raw = slice_.get("overrides") or []
+        overrides = (
+            tuple(sorted(str(o) for o in overrides_raw))
+            if isinstance(overrides_raw, list)
+            else ()
+        )
+        items.append((name, depth, overrides))
+    payload = json.dumps(items, sort_keys=True, default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _format_persona_scope_rollup(scope: dict[str, Any]) -> str:
+    """Render PersonaScope as a markdown table for PR comments."""
+    personas = scope.get("personas") or {}
+    lines = [
+        PERSONA_SCOPE_ROLLUP_MARKER,
+        "**Coordinare — persona scope plan for this cycle**",
+        "",
+        "| Persona | Depth | Focus | Overrides |",
+        "| --- | --- | --- | --- |",
+    ]
+    for name in sorted(personas.keys()):
+        slice_ = personas[name] or {}
+        depth = str(slice_.get("depth", ""))
+        focus = str(slice_.get("focus", "") or "—").replace("|", "\\|")
+        overrides_raw = slice_.get("overrides") or []
+        overrides = ", ".join(str(o) for o in overrides_raw) if overrides_raw else "—"
+        overrides = overrides.replace("|", "\\|")
+        lines.append(f"| `{name}` | `{depth}` | {focus} | {overrides} |")
+    cycle = scope.get("cycle_index")
+    model = scope.get("classifier_model") or ""
+    head = scope.get("head_sha") or ""
+    meta_bits = []
+    if cycle is not None:
+        meta_bits.append(f"cycle `{cycle}`")
+    if model:
+        meta_bits.append(f"classifier `{model}`")
+    if head:
+        meta_bits.append(f"head `{head[:7]}`")
+    if meta_bits:
+        lines.append("")
+        lines.append("<sub>" + " · ".join(meta_bits) + "</sub>")
+    return "\n".join(lines)
+
+
+async def _emit_persona_scope_rollup(
+    state: CoordinareState,
+    session: dict[str, Any],
+    card: dict[str, Any],
+) -> None:
+    """Post a deduplicated PR comment summarizing PersonaScope (spec 074).
+
+    Fires only when ``session.persona_scope`` is set and its signature
+    differs from the last-emitted signature on the session.  No-op when
+    the PR has no node id or the github service is unavailable.
+    """
+    scope = session.get("persona_scope")
+    if not isinstance(scope, dict) or not scope.get("personas"):
+        return
+    github_service = state.get("github_service")
+    if github_service is None:
+        return
+    pr_node_id = card.get("pr_node_id")
+    if not pr_node_id:
+        return
+    signature = _persona_scope_signature(scope)
+    last_signature = session.get("persona_scope_rollup_signature")
+    if signature == last_signature:
+        return
+    body = _format_persona_scope_rollup(scope)
+    try:
+        await github_service.add_comment(str(pr_node_id), body)
+    except Exception as exc:
+        logger.warning(
+            "persona_scope.rollup_post_failed",
+            card_id=card.get("id"),
+            error=str(exc),
+        )
+        return
+    session["persona_scope_rollup_signature"] = signature
+    logger.info(
+        "persona_scope.rollup_posted",
+        card_id=card.get("id"),
+        signature=signature,
+        persona_count=len(scope.get("personas") or {}),
+    )
 
 
 def _event_type_for_phase(
@@ -259,5 +363,11 @@ async def notify(state: CoordinareState) -> CoordinareState:
                 stages.append(stage_bucket)
     except Exception as exc:
         logger.warning("notification.dispatch_failed", error=str(exc))
+
+    # Emit per-cycle persona-scope rollup as a deduplicated PR comment.
+    # Independent of Slack dispatch above — runs whenever a session has a
+    # fresh PersonaScope that hasn't been posted yet.
+    if isinstance(sess, dict):
+        await _emit_persona_scope_rollup(state, sess, card)
 
     return state

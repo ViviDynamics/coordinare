@@ -32,6 +32,7 @@ from coordinare.config import (
     ProjectConfiguration,
     ServiceCircuitConfig,
     ServiceRetryConfig,
+    validate_persona_scope_config,
 )
 from coordinare.config_validation import (
     _load_raw_yaml,
@@ -1182,6 +1183,16 @@ def main() -> None:
     # Step 4c: Warn when polling is disabled but no webhook trigger is configured
     if config.poll_interval_seconds == 0 and not config.webhooks.enabled:
         logger.warning("no_trigger_source_configured")
+
+    # Step 4d: Surface persona-scope config edge cases (074 FR-009/FR-010).
+    for _level, _msg in validate_persona_scope_config(
+        getattr(config, "persona_scope", None),
+        getattr(config, "personas", None),
+    ):
+        if _level == "warning":
+            logger.warning("persona_scope_config_warning", message=_msg)
+        else:
+            logger.info("persona_scope_config_info", message=_msg)
 
     # Step 5: Record build info (static metadata; set once at startup)
     _started_at = datetime.now(UTC).isoformat()

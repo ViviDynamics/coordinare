@@ -8,11 +8,38 @@ CoordinareState -- work identically regardless of concurrency mode.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, TypedDict
+from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
 if TYPE_CHECKING:
     from datetime import datetime
     from pathlib import Path
+
+
+# 074 — Persona scope tiering (per-card classifier output).
+Depth = Literal["skim", "normal", "full", "skip"]
+
+
+class PersonaScopeSlice(TypedDict):
+    """Per-persona slice of the PersonaScope (depth + focus + structured overrides)."""
+
+    depth: Depth
+    focus: str
+    overrides: list[str]
+
+
+class PersonaScope(TypedDict):
+    """Per-card classifier output — maps each persona to its scope slice.
+
+    Lives on CardSession; round-trips through _SESSION_FIELDS; persisted as
+    optional `persona_scope` on PersistedSession (schema v4+).
+    """
+
+    computed_at: str
+    cycle_index: int
+    classifier_model: str
+    head_sha: str
+    files_summary: list[dict[str, Any]]
+    personas: dict[str, PersonaScopeSlice]
 
 
 @dataclass
@@ -102,6 +129,10 @@ class CardSession(TypedDict, total=False):
     # ``PersistedSession``.  MUST round-trip through session ↔ state or the
     # same review re-classifies every cycle until the snapshot is rewritten.
     processed_review_ids: set[str]
+    # 074 FR-011: per-card persona-scope classification.  MUST round-trip
+    # through session ↔ state or the next cycle re-classifies from scratch
+    # (acceptable, but loses the previous-cycle fallback chain in FR-006).
+    persona_scope: PersonaScope | None
 
 
 # Fields that live on both CardSession and CoordinareState (flat).
@@ -149,6 +180,7 @@ _SESSION_FIELDS: tuple[str, ...] = (
     "dispatched_notified_stages",
     "lifecycle_completed_at",
     "processed_review_ids",
+    "persona_scope",
 )
 
 
@@ -197,6 +229,7 @@ def create_session_from_card(card: dict[str, Any]) -> CardSession:
         dispatched_notified_stages=[],
         lifecycle_completed_at=None,
         processed_review_ids=set(),
+        persona_scope=None,
     )
 
 
