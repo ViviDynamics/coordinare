@@ -161,6 +161,34 @@ def test_processed_review_ids_round_trips() -> None:
     assert recovered["processed_review_ids"] == {"PRR_abc", "PRR_xyz"}
 
 
+def test_persona_scope_round_trips() -> None:
+    """074 FR-011 regression: classify_scope writes persona_scope to flat state;
+    if it's missing from _SESSION_FIELDS the daemon's fanout merge drops it and
+    the next cycle re-classifies from scratch, losing the previous-cycle
+    fallback chain in FR-006.  Mirrors the four existing round-trip regression
+    tests fixed on 069/072/073."""
+    scope = {
+        "computed_at": "2026-05-27T18:30:00Z",
+        "cycle_index": 7,
+        "classifier_model": "anthropic_api:claude-haiku-4-5",
+        "head_sha": "abc123",
+        "files_summary": [{"path": "README.md", "added": 3, "removed": 1, "classes": ["docs"]}],
+        "personas": {
+            "reviewer": {"depth": "skim", "focus": "spot-check", "overrides": []},
+            "security": {"depth": "skip", "focus": "no security paths", "overrides": []},
+        },
+    }
+    session = create_session_from_card(_sample_card())
+    session["persona_scope"] = scope
+
+    state = initial_state()
+    session_to_state(session, state)
+    assert state["persona_scope"] == scope
+
+    recovered = state_to_session(state)
+    assert recovered["persona_scope"] == scope
+
+
 def test_round_trip_preserves_non_session_fields() -> None:
     """session_to_state must not clobber non-session fields on state."""
     state = initial_state()
@@ -247,6 +275,7 @@ def test_session_fields_all_present_in_initial_state_or_coordinare_state() -> No
         "dispatched_notified_stages",
         "lifecycle_completed_at",
         "processed_review_ids",
+        "persona_scope",
     }
     for field in _SESSION_FIELDS:
         if field not in optional_in_initial:

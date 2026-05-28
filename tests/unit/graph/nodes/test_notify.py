@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from coordinare.graph.nodes.notify import notify
+from coordinare.graph.nodes.notify import _persona_scope_signature, notify
 from coordinare.graph.state import initial_state
 from coordinare.models.notification import EventType, NotificationEvent
 from tests.utils.fake_notification import FakeNotificationService
@@ -684,3 +684,52 @@ async def test_no_path_emits_card_blocked_with_needs_input_summary() -> None:
     assert blocked  # sanity: we did emit some
     for e in blocked:
         assert "needs input" not in e.payload["summary"].lower()
+
+
+def _scope(personas: dict[str, dict]) -> dict:
+    return {
+        "computed_at": "2026-05-27T00:00:00Z",
+        "cycle_index": 1,
+        "classifier_model": "test",
+        "head_sha": "abc",
+        "files_summary": [],
+        "personas": personas,
+    }
+
+
+def test_persona_scope_signature_invariant_to_focus() -> None:
+    # FR-001: focus prose varies across cycles for identical structural
+    # classifications; signature must dedup them so we don't re-post the
+    # rollup comment on every poll.
+    a = _scope(
+        {
+            "implementer": {"depth": "normal", "focus": "look at auth", "overrides": []},
+            "reviewer": {"depth": "skim", "focus": "skim tests", "overrides": ["api"]},
+        }
+    )
+    b = _scope(
+        {
+            "implementer": {"depth": "normal", "focus": "TOTALLY different prose", "overrides": []},
+            "reviewer": {"depth": "skim", "focus": "and here too", "overrides": ["api"]},
+        }
+    )
+    assert _persona_scope_signature(a) == _persona_scope_signature(b)
+
+
+def test_persona_scope_signature_changes_on_structural_change() -> None:
+    base = _scope({"implementer": {"depth": "normal", "focus": "x", "overrides": []}})
+    diff_depth = _scope({"implementer": {"depth": "full", "focus": "x", "overrides": []}})
+    diff_name = _scope({"reviewer": {"depth": "normal", "focus": "x", "overrides": []}})
+    diff_overrides = _scope(
+        {"implementer": {"depth": "normal", "focus": "x", "overrides": ["api"]}}
+    )
+    sig = _persona_scope_signature(base)
+    assert sig != _persona_scope_signature(diff_depth)
+    assert sig != _persona_scope_signature(diff_name)
+    assert sig != _persona_scope_signature(diff_overrides)
+
+
+def test_persona_scope_signature_overrides_order_invariant() -> None:
+    a = _scope({"impl": {"depth": "normal", "focus": "x", "overrides": ["a", "b"]}})
+    b = _scope({"impl": {"depth": "normal", "focus": "x", "overrides": ["b", "a"]}})
+    assert _persona_scope_signature(a) == _persona_scope_signature(b)

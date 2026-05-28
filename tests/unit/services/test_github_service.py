@@ -371,3 +371,103 @@ class TestBranchHasOpenPr:
         with patch("httpx.AsyncClient", return_value=mock_client):
             result = await svc.branch_has_open_pr("coordinare/CARD-89/add-auth")
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# 074 — get_pr_files outage/truncation contract
+# ---------------------------------------------------------------------------
+
+
+def _mock_resp(status: int, body: Any) -> MagicMock:
+    r = MagicMock()
+    r.status_code = status
+    r.is_success = 200 <= status < 300
+    r.json = MagicMock(return_value=body)
+    return r
+
+
+class TestGetPrFiles:
+    @pytest.mark.asyncio
+    async def test_invalid_pr_number_sets_error(self) -> None:
+        svc = _make_branch_service()
+        result = await svc.get_pr_files("acme", "repo", 0)
+        assert result["error"] == "invalid_pr_number"
+        assert result["files"] == []
+        assert result["truncated"] is False
+
+    @pytest.mark.asyncio
+    async def test_pr_fetch_failure_sets_error(self) -> None:
+        svc = _make_branch_service()
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client.get = AsyncMock(return_value=_mock_resp(503, {}))
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            result = await svc.get_pr_files("acme", "repo", 42)
+        assert result["error"] == "pr_fetch_status:503"
+        assert result["files"] == []
+
+    @pytest.mark.asyncio
+    async def test_request_exception_sets_error(self) -> None:
+        svc = _make_branch_service()
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client.get = AsyncMock(side_effect=RuntimeError("boom"))
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            result = await svc.get_pr_files("acme", "repo", 42)
+        assert result["error"].startswith("request_failed:RuntimeError")
+
+    @pytest.mark.asyncio
+    async def test_empty_pr_is_not_an_error(self) -> None:
+        svc = _make_branch_service()
+        pr_resp = _mock_resp(200, {"head": {"sha": "deadbeef"}})
+        files_resp = _mock_resp(200, [])
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client.get = AsyncMock(side_effect=[pr_resp, files_resp])
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            result = await svc.get_pr_files("acme", "repo", 42)
+        assert result["error"] is None
+        assert result["files"] == []
+        assert result["head_sha"] == "deadbeef"
+        assert result["truncated"] is False
+
+    @pytest.mark.asyncio
+    async def test_truncated_when_three_full_pages(self) -> None:
+        svc = _make_branch_service()
+        pr_resp = _mock_resp(200, {"head": {"sha": "abc"}})
+        full_page = [
+            {"filename": f"f{i}.py", "additions": 1, "deletions": 0, "status": "modified"}
+            for i in range(100)
+        ]
+        files_p1 = _mock_resp(200, full_page)
+        files_p2 = _mock_resp(200, full_page)
+        files_p3 = _mock_resp(200, full_page)
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client.get = AsyncMock(side_effect=[pr_resp, files_p1, files_p2, files_p3])
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            result = await svc.get_pr_files("acme", "repo", 42)
+        assert result["error"] is None
+        assert result["truncated"] is True
+        assert len(result["files"]) == 300
+
+    @pytest.mark.asyncio
+    async def test_not_truncated_when_last_page_partial(self) -> None:
+        svc = _make_branch_service()
+        pr_resp = _mock_resp(200, {"head": {"sha": "abc"}})
+        partial = [
+            {"filename": "a.py", "additions": 1, "deletions": 0, "status": "modified"},
+        ]
+        files_p1 = _mock_resp(200, partial)
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client.get = AsyncMock(side_effect=[pr_resp, files_p1])
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            result = await svc.get_pr_files("acme", "repo", 42)
+        assert result["truncated"] is False
+        assert len(result["files"]) == 1

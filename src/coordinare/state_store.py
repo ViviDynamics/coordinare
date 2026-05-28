@@ -5,7 +5,7 @@ import tempfile
 import time
 from datetime import datetime  # noqa: TC003 — Pydantic needs this at runtime
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import structlog
 from pydantic import BaseModel, ConfigDict, Field
@@ -15,13 +15,15 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-CURRENT_SCHEMA_VERSION: int = 3
+CURRENT_SCHEMA_VERSION: int = 4
 
 # Lowest schema_version we still know how to read.  v1 snapshots are upgraded
 # in-memory at load time (065 Fix 7b: active_sessions added in v2; v1 snapshots
 # simply restore with an empty active_sessions dict and rely on board re-adopt).
 # v3 adds env_cache; older snapshots load with an empty env_cache dict and the
 # first poll cycle re-fetches the SHA from GitHub.
+# v4 (074) adds optional persona_scope on PersistedSession; v1-v3 snapshots load
+# with persona_scope = None and the next cycle recomputes (FR-011).
 MIN_SUPPORTED_SCHEMA_VERSION: int = 1
 
 WorkflowPhase = Literal[
@@ -84,6 +86,11 @@ class PersistedSession(BaseModel):
     # Optional / default ``None`` keeps v1/v2 snapshots loading unchanged.
     head_at_dispatch: str | None = None
     head_at_last_turn: str | None = None
+    # 074 FR-011: per-card persona-scope classification (schema v4+).  Optional /
+    # default ``None`` keeps v1-v3 snapshots loading unchanged; the next cycle's
+    # classify_scope node recomputes from scratch.  Stored as a plain dict for
+    # JSON portability — the TypedDict shape lives in ``coordinare.session``.
+    persona_scope: dict[str, Any] | None = None
 
 
 class EnvCacheStateSnapshot(BaseModel):

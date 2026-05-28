@@ -970,6 +970,117 @@ class GitHubService:
             return "... (log truncated) ...\n" + text[-max_chars:]
         return text
 
+    async def get_pr_files(
+        self,
+        owner: str,
+        repo: str,
+        pr_number: int,
+    ) -> dict[str, Any]:
+        """074 — Fetch the file list + head SHA for a PR.
+
+        Returns ``{"files": [{"path","added","removed","status"}, ...],
+        "head_sha": "...", "truncated": bool, "error": str | None}``.
+
+        ``error`` is non-None on real outages (token unavailable, PR fetch
+        failed, request raised) so callers can distinguish "PR genuinely has
+        zero files" from "we couldn't reach GitHub" — the classifier maps
+        ``error`` to its ``gh_outage`` fallback path.
+
+        ``truncated`` is True when pagination hit the 300-file cap (3 pages of
+        100); the classifier treats truncation as a full-depth signal so a
+        massive PR can't slip through with skim depth.
+
+        Two REST calls: ``GET /pulls/{n}`` for head.sha + ``GET /pulls/{n}/files``
+        for the per-file diff stats.
+        """
+        result: dict[str, Any] = {
+            "files": [],
+            "head_sha": "",
+            "truncated": False,
+            "error": None,
+        }
+        if pr_number <= 0:
+            result["error"] = "invalid_pr_number"
+            return result
+        try:
+            token = await self._current_token()
+        except Exception as exc:
+            logger.warning("get_pr_files.token_failed", pr=pr_number, error=str(exc))
+            result["error"] = f"token_failed:{type(exc).__name__}"
+            return result
+        if not token.strip():
+            result["error"] = "no_token"
+            return result
+        base = self._rest_api_base()
+        headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+        files: list[dict[str, Any]] = []
+        truncated = False
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                pr_resp = await client.get(
+                    f"{base}/repos/{owner}/{repo}/pulls/{pr_number}",
+                    headers=headers,
+                )
+                if not pr_resp.is_success:
+                    logger.warning(
+                        "get_pr_files.pr_fetch_failed",
+                        pr=pr_number,
+                        status=pr_resp.status_code,
+                    )
+                    result["error"] = f"pr_fetch_status:{pr_resp.status_code}"
+                    return result
+                pr_data = pr_resp.json()
+                head_sha = ""
+                if isinstance(pr_data, dict):
+                    head = pr_data.get("head") or {}
+                    if isinstance(head, dict):
+                        head_sha = str(head.get("sha") or "")
+                result["head_sha"] = head_sha
+
+                for page in range(1, 4):
+                    files_resp = await client.get(
+                        f"{base}/repos/{owner}/{repo}/pulls/{pr_number}/files",
+                        headers=headers,
+                        params={"per_page": "100", "page": str(page)},
+                    )
+                    if not files_resp.is_success:
+                        logger.warning(
+                            "get_pr_files.files_fetch_failed",
+                            pr=pr_number,
+                            page=page,
+                            status=files_resp.status_code,
+                        )
+                        result["error"] = f"files_fetch_status:{files_resp.status_code}"
+                        result["files"] = files
+                        return result
+                    batch = files_resp.json()
+                    if not isinstance(batch, list) or not batch:
+                        break
+                    for entry in batch:
+                        if not isinstance(entry, dict):
+                            continue
+                        files.append(
+                            {
+                                "path": str(entry.get("filename") or ""),
+                                "added": int(entry.get("additions") or 0),
+                                "removed": int(entry.get("deletions") or 0),
+                                "status": str(entry.get("status") or "modified"),
+                            }
+                        )
+                    if len(batch) < 100:
+                        break
+                    if page == 3:
+                        # We hit the page cap with a full last batch — more files exist upstream.
+                        truncated = True
+        except Exception as exc:
+            logger.warning("get_pr_files.request_failed", pr=pr_number, error=str(exc))
+            result["error"] = f"request_failed:{type(exc).__name__}"
+            result["files"] = files
+            return result
+        result["files"] = files
+        result["truncated"] = truncated
+        return result
+
     async def branch_exists(self, branch_name: str) -> bool:
         """Return True if a remote branch exists, False if 404.
 

@@ -116,6 +116,8 @@ def _persist_active_sessions(active_sessions: dict[str, Any]) -> dict[str, Persi
         head_dispatch = head_dispatch_raw if isinstance(head_dispatch_raw, str) and head_dispatch_raw else None
         head_last_raw = sess.get("head_at_last_turn")
         head_last = head_last_raw if isinstance(head_last_raw, str) and head_last_raw else None
+        persona_scope_raw = sess.get("persona_scope")
+        persona_scope = persona_scope_raw if isinstance(persona_scope_raw, dict) else None
         out[cid] = PersistedSession(
             card_id=cid,
             performer_stage=(sess.get("performer_stage") or None),
@@ -136,6 +138,7 @@ def _persist_active_sessions(active_sessions: dict[str, Any]) -> dict[str, Persi
             last_blocked_slack_delivered_at=last_slack,
             head_at_dispatch=head_dispatch,
             head_at_last_turn=head_last,
+            persona_scope=persona_scope,
         )
     return out
 
@@ -522,6 +525,7 @@ class CoordinareDaemon:
                     "last_blocked_slack_delivered_at": persisted.last_blocked_slack_delivered_at,
                     "head_at_dispatch": persisted.head_at_dispatch,
                     "head_at_last_turn": persisted.head_at_last_turn,
+                    "persona_scope": persisted.persona_scope,
                 }
                 # Seed current_card for the matching active_card_id from the
                 # top-level snapshot fields; other sessions get a stub that
@@ -557,6 +561,7 @@ class CoordinareDaemon:
                     "last_blocked_slack_delivered_at": None,
                     "head_at_dispatch": None,
                     "head_at_last_turn": None,
+                    "persona_scope": None,
                 }
             }
             logger.info(

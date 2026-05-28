@@ -9,8 +9,8 @@
   "properties": {
     "schema_version": {
       "type": "integer",
-      "enum": [1, 2, 3],
-      "description": "Schema version. v1 is the original snapshot format; v2 (065 Fix 7b) adds per-card active_sessions; v3 (073 Fix 3) adds env_cache so env_bootstrap doesn't re-run after restart with unchanged symphony env-spec files. Older snapshots remain readable and load with empty defaults for newer fields."
+      "enum": [1, 2, 3, 4],
+      "description": "Schema version. v1 is the original snapshot format; v2 (065 Fix 7b) adds per-card active_sessions; v3 (073 Fix 3) adds env_cache so env_bootstrap doesn't re-run after restart with unchanged symphony env-spec files; v4 (074) adds per-session persona_scope. Older snapshots remain readable and load with empty defaults for newer fields."
     },
     "snapshot_at": {
       "type": "string",

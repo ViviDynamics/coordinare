@@ -60,6 +60,38 @@ def _persona_role_for_stage(stage: str) -> str | None:
     return _STAGE_TO_ROLE.get(stage)
 
 
+def _resolve_persona_slice_and_behavior(
+    state: CoordinareState,
+    card_id: str,
+    role: str,
+) -> tuple[dict[str, Any] | None, Any]:
+    """074 — Resolve the per-card persona slice and matching scope_behavior config.
+
+    Returns ``(slice, scope_behavior)``.  Either may be None: ``slice`` is None
+    when no scope was classified for this card/persona; ``scope_behavior`` is
+    None when the persona has not opted into scope tiering (FR-010 shadow mode).
+    Both lookups walk the same chain (state → active_sessions[card_id] →
+    persona_scope → personas[role] / config.personas[role].scope_behavior), so
+    factoring them here keeps the skip-routing and tier-injection sites in sync.
+    """
+    active_sessions = state.get("active_sessions") or {}
+    session = active_sessions.get(card_id) if isinstance(active_sessions, dict) else None
+    persona_scope = session.get("persona_scope") if isinstance(session, dict) else None
+    slice_dict: dict[str, Any] | None = None
+    if isinstance(persona_scope, dict):
+        raw_slice = (persona_scope.get("personas") or {}).get(role)
+        if isinstance(raw_slice, dict):
+            slice_dict = raw_slice
+
+    config = state.get("config")
+    personas_cfg = getattr(config, "personas", None) if config is not None else None
+    persona_cfg = getattr(personas_cfg, role, None) if personas_cfg is not None else None
+    scope_behavior = (
+        getattr(persona_cfg, "scope_behavior", None) if persona_cfg is not None else None
+    )
+    return slice_dict, scope_behavior
+
+
 async def dispatch_performer(state: CoordinareState) -> CoordinareState:
     """Dispatch work to the performer service for the current pipeline stage.
 
@@ -137,6 +169,32 @@ async def dispatch_performer(state: CoordinareState) -> CoordinareState:
     # back to implementing so a fresh PR can be created.
     card_id = str(card.get("id", ""))
     issue_id = str(card.get("issue_id") or "").strip()
+
+    # Persona scope skip routing (FR-008, FR-010): if the persona has opted
+    # into scope tiering and the classifier set depth=skip, advance past it.
+    # Closer is scope-invariant (FR-009) so applying uniformly is safe.
+    scope_role = _persona_role_for_stage(performer_stage)
+    if scope_role is not None and card_id:
+        slice_dict, scope_behavior = _resolve_persona_slice_and_behavior(
+            state, card_id, scope_role
+        )
+        if (
+            slice_dict is not None
+            and scope_behavior is not None
+            and slice_dict.get("depth") == "skip"
+        ):
+            logger.info(
+                "persona_scope.persona_skipped",
+                card_id=card_id,
+                persona=scope_role,
+                performer_stage=performer_stage,
+                focus=slice_dict.get("focus"),
+                overrides=slice_dict.get("overrides") or [],
+            )
+            updates = _advance_stage(state)
+            for key, value in updates.items():
+                state[key] = value  # type: ignore[literal-required]
+            return state
 
     # 053: Guard against repeated PR churn for the same issue.
     config = state.get("config")
@@ -540,6 +598,37 @@ async def dispatch_performer(state: CoordinareState) -> CoordinareState:
             if role_config.auth_token_env is not None:
                 card_context["auth_token_env"] = role_config.auth_token_env
             card_context.update(translate_tuning(role_config))
+
+    # Apply per-persona scope_behavior tier (FR-007, FR-009, FR-010).
+    # max_tool_calls + prompt_addon land as structured card_context fields;
+    # the base persona prompt is never mutated.  Closer is scope-invariant
+    # and only consumes `focus` as advisory context.
+    if role is not None and card_id:
+        slice_dict, scope_behavior = _resolve_persona_slice_and_behavior(
+            state, card_id, role
+        )
+        if slice_dict is not None:
+            focus = slice_dict.get("focus")
+            if focus:
+                card_context["scope_focus"] = focus
+            if role != "closer":
+                depth = slice_dict.get("depth")
+                if scope_behavior is not None and depth:
+                    tier = getattr(scope_behavior, depth, None)
+                    if tier is not None:
+                        max_tc = getattr(tier, "max_tool_calls", None)
+                        if max_tc is not None:
+                            card_context["max_tool_calls"] = max_tc
+                        addon = getattr(tier, "prompt_addon", None)
+                        if addon:
+                            card_context["scope_addon"] = addon
+                    else:
+                        logger.debug(
+                            "persona_scope.dispatch.tier_missing",
+                            card_id=card_id,
+                            persona=role,
+                            depth=depth,
+                        )
 
     # --- Dispatch ---
     # T022/T033/T037 (060): Attach per-symphony env-cache volume so performers find
