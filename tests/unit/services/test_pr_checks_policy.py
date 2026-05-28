@@ -147,3 +147,95 @@ def test_no_required_checks_forwards() -> None:
     rollup = _rollup([])
     d = decide(rollup, now=NOW)
     assert d.action == "FORWARD"
+
+
+# ---------------------------------------------------------------------------
+# 075: required_check_names override (persona-resolved required set)
+# ---------------------------------------------------------------------------
+
+
+def _check(name: str, status: str, conclusion: str | None = None, *, required: bool = False) -> CheckEntry:
+    return CheckEntry(
+        name=name,
+        status=status,  # type: ignore[arg-type]
+        conclusion=conclusion,  # type: ignore[arg-type]
+        is_required=required,
+    )
+
+
+def test_required_names_filters_to_named_checks_only() -> None:
+    """075: a failing check NOT in required_check_names is ignored."""
+    rollup = _rollup(
+        [
+            _check("lint", "completed", "success"),
+            _check("unit-tests", "completed", "success"),
+            _check("e2e", "completed", "failure"),  # not in required set → ignored
+        ]
+    )
+    d = decide(rollup, required_check_names={"lint", "unit-tests"}, now=NOW)
+    assert d.action == "FORWARD"
+
+
+def test_required_names_named_check_failing_bounces() -> None:
+    """075: a failing check IN required_check_names bounces."""
+    rollup = _rollup(
+        [
+            _check("lint", "completed", "failure"),
+            _check("unit-tests", "completed", "success"),
+        ]
+    )
+    d = decide(rollup, required_check_names={"lint", "unit-tests"}, now=NOW)
+    assert d.action == "BOUNCE"
+    assert d.failed == ["lint"]
+
+
+def test_required_names_missing_check_treated_as_pending() -> None:
+    """075: a name in required_check_names not yet present in rollup is pending."""
+    rollup = _rollup([_check("lint", "completed", "success")])
+    d = decide(rollup, required_check_names={"lint", "unit-tests"}, now=NOW)
+    assert d.action == "HOLD"
+    assert "unit-tests" in d.pending
+
+
+def test_required_names_missing_check_pending_timeout_bounces() -> None:
+    """075: pending_timeout applies to missing named checks as well."""
+    rollup = _rollup(
+        [_check("lint", "completed", "success")],
+        head_age_seconds=1000,
+    )
+    d = decide(
+        rollup,
+        required_check_names={"lint", "unit-tests"},
+        pending_timeout_seconds=900,
+        now=NOW,
+    )
+    assert d.action == "BOUNCE"
+    assert d.reason == "pending_timeout"
+
+
+def test_required_names_bypasses_branch_protection_readable() -> None:
+    """075: explicit required_check_names overrides the bp-unreadable gate."""
+    rollup = _rollup(
+        [_check("lint", "completed", "success")],
+        bp_readable=False,
+    )
+    d = decide(
+        rollup,
+        required_check_names={"lint"},
+        treat_unknown_required_as="block",
+        now=NOW,
+    )
+    assert d.action == "FORWARD"
+
+
+def test_required_names_empty_set_forwards() -> None:
+    """075: an empty required_check_names set means nothing is required → FORWARD
+    even if other checks are failing."""
+    rollup = _rollup(
+        [
+            _check("lint", "completed", "failure"),
+            _check("e2e", "in_progress"),
+        ]
+    )
+    d = decide(rollup, required_check_names=set(), now=NOW)
+    assert d.action == "FORWARD"

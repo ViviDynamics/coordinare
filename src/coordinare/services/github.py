@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import inspect
 from typing import Any, ClassVar
 from urllib.parse import quote
@@ -331,6 +332,21 @@ query GetLabelIds($owner: String!, $repo: String!) {
       nodes {
         id
         name
+      }
+    }
+  }
+}
+"""
+
+GET_BRANCH_PROTECTION_QUERY = """
+query GetBranchProtection($owner: String!, $repo: String!) {
+  repository(owner: $owner, name: $repo) {
+    branchProtectionRules(first: 50) {
+      nodes {
+        pattern
+        requiredStatusChecks {
+          context
+        }
       }
     }
   }
@@ -1438,6 +1454,54 @@ class GitHubService:
             msg = f"Repository not found: {owner}/{repo}"
             raise ValueError(msg)
         return str(repo_id)
+
+    async def get_required_status_checks(
+        self, owner: str, repo: str, default_branch: str
+    ) -> set[str] | None:
+        """075: Return the set of required-status-check contexts for ``default_branch``.
+
+        Used by the implementer CI-gate resolver as fallback layer 2 (between
+        persona_check_map and all_head_checks).  Matches branch-protection rules
+        by glob pattern (``*`` wildcards) against ``default_branch``.
+
+        Returns:
+            - A non-empty set when one or more matching rules declare required
+              status checks.
+            - An empty set when matching rules exist but declare none.
+            - ``None`` when the response shape indicates the token cannot read
+              branch protection (e.g. lacks admin:read scope) — callers should
+              treat this as "unreadable" and fall through to the next resolver
+              layer.
+        """
+        try:
+            result = await self._guarded_execute(
+                GET_BRANCH_PROTECTION_QUERY, {"owner": owner, "repo": repo}
+            )
+        except Exception:
+            return None
+
+        repo_block = (result or {}).get("repository") or {}
+        bpr_block = repo_block.get("branchProtectionRules")
+        if bpr_block is None:
+            return None
+
+        required: set[str] = set()
+        for rule in (bpr_block.get("nodes") or []):
+            if not isinstance(rule, dict):
+                continue
+            pattern = rule.get("pattern") or ""
+            if not pattern:
+                continue
+            if pattern != default_branch and (
+                "*" not in pattern
+                or not fnmatch.fnmatchcase(default_branch, pattern)
+            ):
+                continue
+            for rsc in (rule.get("requiredStatusChecks") or []):
+                ctx = (rsc or {}).get("context")
+                if ctx:
+                    required.add(str(ctx))
+        return required
 
     async def get_label_ids(self, owner: str, repo: str) -> dict[str, str]:
         result = await self._guarded_execute(

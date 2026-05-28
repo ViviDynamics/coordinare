@@ -966,3 +966,111 @@ async def test_transport_server_error_502_classified_as_transient() -> None:
     with pytest.raises(TransientGitHubError) as excinfo:
         await svc._execute("query { x }", {})
     assert "502" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# 075: get_required_status_checks
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_required_status_checks_exact_pattern_match() -> None:
+    """Exact pattern match against default_branch returns the configured contexts."""
+    svc = _initialized_svc(
+        {
+            "repository": {
+                "branchProtectionRules": {
+                    "nodes": [
+                        {
+                            "pattern": "main",
+                            "requiredStatusChecks": [
+                                {"context": "lint"},
+                                {"context": "unit-tests"},
+                            ],
+                        }
+                    ]
+                }
+            }
+        }
+    )
+    result = await svc.get_required_status_checks("acme", "repo", "main")
+    assert result == {"lint", "unit-tests"}
+
+
+@pytest.mark.asyncio
+async def test_get_required_status_checks_glob_pattern_match() -> None:
+    """Glob patterns like ``release/*`` match branches via fnmatch."""
+    svc = _initialized_svc(
+        {
+            "repository": {
+                "branchProtectionRules": {
+                    "nodes": [
+                        {
+                            "pattern": "release/*",
+                            "requiredStatusChecks": [{"context": "e2e"}],
+                        }
+                    ]
+                }
+            }
+        }
+    )
+    result = await svc.get_required_status_checks("acme", "repo", "release/1.0")
+    assert result == {"e2e"}
+
+
+@pytest.mark.asyncio
+async def test_get_required_status_checks_non_matching_pattern_skipped() -> None:
+    """Rules whose pattern does not match the default branch are ignored."""
+    svc = _initialized_svc(
+        {
+            "repository": {
+                "branchProtectionRules": {
+                    "nodes": [
+                        {
+                            "pattern": "develop",
+                            "requiredStatusChecks": [{"context": "lint"}],
+                        }
+                    ]
+                }
+            }
+        }
+    )
+    result = await svc.get_required_status_checks("acme", "repo", "main")
+    assert result == set()
+
+
+@pytest.mark.asyncio
+async def test_get_required_status_checks_null_rules_returns_none() -> None:
+    """A null branchProtectionRules block (token lacks admin:read) returns None
+    so callers can fall through to the next resolver layer."""
+    svc = _initialized_svc({"repository": {"branchProtectionRules": None}})
+    result = await svc.get_required_status_checks("acme", "repo", "main")
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_get_required_status_checks_empty_rules_returns_empty_set() -> None:
+    """Readable but empty rules list returns an empty set (distinct from None)."""
+    svc = _initialized_svc(
+        {"repository": {"branchProtectionRules": {"nodes": []}}}
+    )
+    result = await svc.get_required_status_checks("acme", "repo", "main")
+    assert result == set()
+
+
+@pytest.mark.asyncio
+async def test_get_required_status_checks_query_failure_returns_none() -> None:
+    """Any exception from the GQL call is swallowed → None (fall through)."""
+
+    class _RaisingClient:
+        def execute(self, _query: Any, variable_values: dict[str, Any]) -> Any:
+            raise RuntimeError("boom")
+
+    svc = GitHubService(token="tok", org="acme", project_number=1)
+    svc.project_id = "PVT_1"
+    svc._client = _RaisingClient()
+    svc._last_token = "tok"
+
+    result = await svc.get_required_status_checks("acme", "repo", "main")
+    assert result is None
+

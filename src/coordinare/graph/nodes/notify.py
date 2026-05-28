@@ -10,10 +10,12 @@ import structlog
 if TYPE_CHECKING:
     from coordinare.graph.state import CoordinareState
 from coordinare.models.notification import EventType, NotificationEvent, NotificationSeverity
+from coordinare.services.ci_gate import compute_ci_gate_signature
 
 logger = structlog.get_logger(__name__)
 
 PERSONA_SCOPE_ROLLUP_MARKER = "<!-- coordinare:persona-scope-rollup -->"
+CI_GATE_ROLLUP_MARKER_PREFIX = "<!-- coordinare:ci-gate:"
 
 
 def _persona_scope_signature(scope: dict[str, Any]) -> str:
@@ -114,6 +116,141 @@ async def _emit_persona_scope_rollup(
         card_id=card.get("id"),
         signature=signature,
         persona_count=len(scope.get("personas") or {}),
+    )
+
+
+def _ci_gate_signature(decision: dict[str, Any]) -> str:
+    """16-char dedup signature for a CIGateDecision dict (spec 075 contracts §3).
+
+    Delegates to ``compute_ci_gate_signature`` from ``ci_gate.py`` so the two
+    code paths (model form and persisted-dict form) share a single algorithm.
+    """
+    head_sha = str(decision.get("head_sha") or "")
+    verdict = str(decision.get("verdict") or "")
+    required = [str(r) for r in (decision.get("required_checks") or [])]
+    failed = decision.get("failed_checks") or []
+    failed_names = [str((c or {}).get("name", "")) for c in failed]
+    return compute_ci_gate_signature(
+        head_sha=head_sha,
+        verdict=verdict,
+        required_checks=required,
+        failed_names=failed_names,
+    )
+
+
+def _render_ci_gate_comment(decision: dict[str, Any]) -> str:
+    """Render the PR rollup markdown per contracts/gate-decision.md §3."""
+    verdict = str(decision.get("verdict") or "").lower()
+    head_sha = str(decision.get("head_sha") or "")
+    head_short = head_sha[:7] if head_sha else "—"
+    required = list(decision.get("required_checks") or [])
+    resolver_source = str(decision.get("resolver_source") or "all_head_checks")
+    failed = list(decision.get("failed_checks") or [])
+    pending = list(decision.get("pending_checks") or [])
+    bounce_count = int(decision.get("bounce_count_after") or 0)
+    max_bounces = int(decision.get("max_bounces_per_head") or 0)
+    sig = _ci_gate_signature(decision)
+
+    lines = [
+        f"{CI_GATE_ROLLUP_MARKER_PREFIX}{sig} -->",
+        f"### Coordinare CI gate — {verdict.upper()}",
+        "",
+        f"**HEAD**: `{head_short}` &nbsp; "
+        f"**Required checks**: {len(required)} ({resolver_source})",
+        "",
+    ]
+    if verdict == "pass":
+        lines.append("All required checks green. Advancing to reviewer.")
+    elif verdict == "hold":
+        lines.append("Waiting on pending checks:")
+        for name in pending:
+            lines.append(f"- `{name}`")
+    elif verdict in ("bounce", "escalate"):
+        if verdict == "bounce":
+            bounce_label = f"{bounce_count}/{max_bounces}" if max_bounces else str(bounce_count)
+            lines.append(f"Failing checks (bounce {bounce_label}):")
+        else:
+            max_label = f"/{max_bounces}" if max_bounces else ""
+            lines.append(f"Bounce limit reached ({bounce_count}{max_label}). "
+                         "Card moved to needs_human_review.")
+        lines.append("")
+        lines.append("| Check | Conclusion | Last line |")
+        lines.append("| --- | --- | --- |")
+        for c in failed:
+            name = str(c.get("name", ""))
+            conclusion = str(c.get("conclusion", ""))
+            url = c.get("html_url") or ""
+            last = (c.get("last_log_line") or "").replace("|", "\\|")
+            label = f"[{name}]({url})" if url else f"`{name}`"
+            last_cell = f"`{last}`" if last else "—"
+            lines.append(f"| {label} | {conclusion} | {last_cell} |")
+    return "\n".join(lines)
+
+
+async def _emit_ci_gate_rollup(
+    state: CoordinareState,
+    session: dict[str, Any],
+    card: dict[str, Any],
+) -> None:
+    """Post a deduplicated PR comment summarizing the latest CI-gate decision.
+
+    PASS verdicts are silent (the silent-success default).  HOLD/BOUNCE/
+    ESCALATE post once per (head_sha, signature); dedup checks both the
+    session-side ``ci_gate_rollup_signature`` and existing PR comments so
+    survival of restarts doesn't re-spam the PR.
+    """
+    decision = session.get("latest_ci_gate_decision")
+    if not isinstance(decision, dict):
+        return
+    verdict = str(decision.get("verdict") or "").lower()
+    if verdict not in ("hold", "bounce", "escalate"):
+        return  # PASS / unknown — silent.
+
+    signature = _ci_gate_signature(decision)
+    last = session.get("ci_gate_rollup_signature")
+    if signature == last:
+        return
+
+    github_service = state.get("github_service")
+    if github_service is None:
+        return
+    pr_node_id = card.get("pr_node_id")
+    if not pr_node_id:
+        return
+
+    marker = f"{CI_GATE_ROLLUP_MARKER_PREFIX}{signature} -->"
+
+    # Best-effort scan of existing PR comments to survive restarts.
+    issue_number = card.get("issue_number") or card.get("pr_number")
+    get_comments = getattr(github_service, "get_issue_comments", None)
+    if callable(get_comments) and issue_number is not None:
+        try:
+            existing = await get_comments(int(issue_number))
+        except Exception as exc:
+            logger.debug("ci_gate.rollup_comment_scan_failed", error=str(exc))
+            existing = []
+        for c in existing or []:
+            body = c.get("body") if isinstance(c, dict) else None
+            if isinstance(body, str) and marker in body:
+                session["ci_gate_rollup_signature"] = signature
+                return
+
+    body = _render_ci_gate_comment(decision)
+    try:
+        await github_service.add_comment(str(pr_node_id), body)
+    except Exception as exc:
+        logger.warning(
+            "ci_gate.rollup_post_failed",
+            card_id=card.get("id"),
+            error=str(exc),
+        )
+        return
+    session["ci_gate_rollup_signature"] = signature
+    logger.info(
+        "ci_gate.rollup_posted",
+        card_id=card.get("id"),
+        signature=signature,
+        verdict=verdict,
     )
 
 
@@ -369,5 +506,6 @@ async def notify(state: CoordinareState) -> CoordinareState:
     # fresh PersonaScope that hasn't been posted yet.
     if isinstance(sess, dict):
         await _emit_persona_scope_rollup(state, sess, card)
+        await _emit_ci_gate_rollup(state, sess, card)
 
     return state

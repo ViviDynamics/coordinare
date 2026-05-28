@@ -9,8 +9,8 @@
   "properties": {
     "schema_version": {
       "type": "integer",
-      "enum": [1, 2, 3, 4],
-      "description": "Schema version. v1 is the original snapshot format; v2 (065 Fix 7b) adds per-card active_sessions; v3 (073 Fix 3) adds env_cache so env_bootstrap doesn't re-run after restart with unchanged symphony env-spec files; v4 (074) adds per-session persona_scope. Older snapshots remain readable and load with empty defaults for newer fields."
+      "enum": [1, 2, 3, 4, 5, 6],
+      "description": "Schema version. v1 is the original snapshot format; v2 (065 Fix 7b) adds per-card active_sessions; v3 (073 Fix 3) adds env_cache so env_bootstrap doesn't re-run after restart with unchanged symphony env-spec files; v4 (074) adds per-session persona_scope; v5 (075) adds per-session bounce_counter and latest_ci_gate_decision for the implementer CI gate; v6 (075 fix) adds ci_gate_rollup_signature for notify.py dedup across daemon restarts. Older snapshots remain readable and load with empty defaults for newer fields."
     },
     "snapshot_at": {
       "type": "string",
@@ -164,7 +164,9 @@
           "system_error_count": { "type": "integer" },
           "system_error_reason": { "type": ["string", "null"] },
           "system_error_notified": { "type": "boolean" },
-          "requirements_changed": { "type": "boolean" }
+          "requirements_changed": { "type": "boolean" },
+          "bounce_counter": { "type": "object", "additionalProperties": { "type": "integer" }, "description": "075: per-HEAD CI-gate bounce counter (schema v5+)." },
+          "ci_gate_rollup_signature": { "type": ["string", "null"], "description": "075 fix: dedup signature for the last CI-gate PR rollup comment (schema v6+)." }
         }
       },
       "default": {}

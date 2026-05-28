@@ -54,6 +54,7 @@ class CheckRollup(BaseModel):
     branch_protection_readable: bool
     checks: list[CheckEntry]
     at_context_cap: bool = False
+    base_ref: str = ""
 
 
 # --- GraphQL query (kept in-module so tests don't need to read the contracts file) ---
@@ -272,6 +273,7 @@ def parse_rollup(data: dict[str, Any], pr_number: int) -> CheckRollup:
         branch_protection_readable=branch_protection_readable,
         checks=entries,
         at_context_cap=at_context_cap,
+        base_ref=base_ref,
     )
 
 

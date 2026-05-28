@@ -62,13 +62,58 @@ def decide(
     pending_timeout_seconds: int = 900,
     treat_unknown_required_as: Literal["pass", "block"] = "pass",
     now: datetime | None = None,
+    required_check_names: set[str] | None = None,
 ) -> GateDecision:
     """Evaluate a check rollup and produce a gate decision.
 
     Pure function. `now` is injectable for deterministic tests.
+
+    When ``required_check_names`` is provided (spec 075), it overrides the
+    ``is_required`` flag from the rollup: only checks whose name appears in
+    the set are treated as required, and the branch-protection-readable
+    gating is bypassed (the caller resolved the required set explicitly).
+    Names in the set that are not present in the rollup are treated as
+    pending (the expected check has not yet reported).  When ``None``
+    (the default), 064's existing behavior is preserved byte-identically.
     """
     now = now or datetime.now(UTC)
     elapsed = (now - rollup.head_pushed_at).total_seconds()
+
+    if required_check_names is not None:
+        present = {c.name for c in rollup.checks}
+        required = [c for c in rollup.checks if c.name in required_check_names]
+        missing = sorted(required_check_names - present)
+
+        failed = [c.name for c in required if _is_failure(c)]
+        if failed:
+            return GateDecision(
+                action="BOUNCE",
+                reason="required_check_failed",
+                failed=failed,
+                elapsed_seconds=elapsed,
+            )
+
+        pending = [c.name for c in required if _is_pending(c)] + missing
+        if pending:
+            if elapsed > pending_timeout_seconds:
+                return GateDecision(
+                    action="BOUNCE",
+                    reason="pending_timeout",
+                    pending=pending,
+                    elapsed_seconds=elapsed,
+                )
+            return GateDecision(
+                action="HOLD",
+                reason="checks_pending",
+                pending=pending,
+                elapsed_seconds=elapsed,
+            )
+
+        return GateDecision(
+            action="FORWARD",
+            reason="all required checks passing",
+            elapsed_seconds=elapsed,
+        )
 
     required = [c for c in rollup.checks if c.is_required]
 
