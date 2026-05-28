@@ -100,7 +100,7 @@ A human reviewer (or a future operator debugging a stalled card) needs to see wh
 
 ### Key Entities
 
-- **CIGateDecision**: Output of one gate evaluation. Shape: `{ decision: advance|wait|bounce|block, required_checks_source: classifier|branch_protection|all_checks, checks: [{name, status, conclusion, url}], advisory_failures: [...], evaluated_at: timestamp, head_sha: string }`. Persisted enough to dedupe PR-artifact posts.
+- **CIGateDecision**: Output of one gate evaluation. Shape: `{ verdict: pass|hold|bounce|escalate, head_sha: string, required_checks: [string], failed_checks: [{name, conclusion, html_url, last_log_line}], pending_checks: [string], resolver_source: persona_check_map|branch_protection|all_head_checks, bounce_count_after: int, decided_at: ISO-8601 }`. Advisory (non-required) failures travel on a separate reviewer-context channel, not on the decision object. Canonical schema lives in `contracts/gate-decision.md`.
 - **BounceCounter**: Per-card, per-head-SHA counter incremented on each bounce. Persisted on `CardSession` and round-tripped via `_SESSION_FIELDS`. Resets when head SHA changes.
 - **RequiredChecksList**: Either sourced from 074's `PersonaScope` classifier output, the project's GitHub branch-protection settings, or "all checks on HEAD" as fallback. The source MUST be recorded in `CIGateDecision` for audit.
 
@@ -109,7 +109,7 @@ A human reviewer (or a future operator debugging a stalled card) needs to see wh
 ### Measurable Outcomes
 
 - **SC-001**: Zero cards advance from `implementing` to `reviewing` with required CI checks in a non-success terminal conclusion on HEAD. Measured by post-hoc audit over a rolling window of merged cards.
-- **SC-002**: Implementer→reviewer handoff with green CI on a docs-only card (where 074's classifier narrows the required-checks list) completes within the same wall-clock budget as today's behavior plus the gate-evaluation overhead (≤2s p50 / ≤10s p95).
+- **SC-002**: Implementer→reviewer handoff with green CI on a docs-only card (where 074's classifier narrows the required-checks list) completes within the same wall-clock budget as today's behavior plus the gate-evaluation overhead (≤500ms p50 / ≤3s p95 per plan.md).
 - **SC-003**: A simulated bounce loop converges to either green CI (advance) or the blocked path within the configured bounce limit; no card loops indefinitely on the same failure.
 - **SC-004**: A reviewer reading a PR can determine, from PR-visible artifacts, every gate decision and its rationale without reading coordinare logs.
 - **SC-005**: A simulated GitHub API outage during gate evaluation does not advance the card, does not bounce it, and does not stall it indefinitely — re-evaluation on the next cycle is sufficient.

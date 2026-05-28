@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
@@ -19,7 +20,11 @@ import structlog
 
 from coordinare.graph.state import _retire_active_session, _set_current_card
 from coordinare.lib.acceptance_criteria import parse_acceptance_criteria
+from coordinare.services.ci_gate import CIGateDecision, FailedCheck
 from coordinare.services.github import PermanentGitHubError
+from coordinare.services.pr_checks_policy import decide
+from coordinare.services.pr_checks_service import PrChecksService
+from coordinare.services.required_checks_resolver import resolve
 from coordinare.transport.base import TransportError
 
 if TYPE_CHECKING:
@@ -829,6 +834,407 @@ async def _evaluate_pr_checks_gate(
     )
 
 
+def _get_ci_gate_config(state: CoordinareState) -> Any:
+    """Resolve the active symphony's persona_scope.ci_gate config (spec 075).
+
+    Returns the ``CIGateConfig`` if available, else None.  Legacy
+    single-symphony mode (no symphony_configs entry) returns None so the
+    implementer CI gate stays off until an operator opts in.
+    """
+    sym_name = state.get("current_symphony")
+    sym_configs = state.get("symphony_configs") or {}
+    sym_cfg = sym_configs.get(sym_name) if sym_name else None
+    if sym_cfg is None:
+        return None
+    persona_scope_cfg = getattr(sym_cfg, "persona_scope", None)
+    if persona_scope_cfg is None:
+        return None
+    return getattr(persona_scope_cfg, "ci_gate", None)
+
+
+def _get_persona_check_map(state: CoordinareState) -> dict | None:
+    """Pull the configured persona_check_map for the active symphony (075 US3).
+
+    ``PersonaCheckMapConfig`` is a Pydantic ``RootModel`` wrapping
+    ``dict[str, PersonaCheckMapPerDepth]``; flatten to the plain dict the
+    resolver expects.
+    """
+    sym_name = state.get("current_symphony")
+    sym_configs = state.get("symphony_configs") or {}
+    sym_cfg = sym_configs.get(sym_name) if sym_name else None
+    if sym_cfg is None:
+        return None
+    persona_scope_cfg = getattr(sym_cfg, "persona_scope", None)
+    if persona_scope_cfg is None:
+        return None
+    cm = getattr(persona_scope_cfg, "persona_check_map", None)
+    if cm is None:
+        return None
+    root = getattr(cm, "root", None)
+    if not root:
+        return None
+    out: dict[str, dict[str, list[str]]] = {}
+    for persona, per_depth in root.items():
+        out[persona] = {
+            "skim": list(getattr(per_depth, "skim", []) or []),
+            "normal": list(getattr(per_depth, "normal", []) or []),
+            "full": list(getattr(per_depth, "full", []) or []),
+        }
+    return out
+
+
+def _get_session_persona_scope(state: CoordinareState, card_id: str) -> dict | None:
+    sessions = state.get("active_sessions") or {}
+    sess = sessions.get(card_id)
+    if not isinstance(sess, dict):
+        return None
+    scope = sess.get("persona_scope")
+    return scope if isinstance(scope, dict) else None
+
+
+# FR-011 rate-limited warning: keyed by error class so different failure modes
+# don't suppress each other.  Mirrors `persona_classifier._LAST_WARN_AT`.
+_CI_GATE_API_ERROR_LAST_WARN_AT: dict[str, float] = {}  # mutable; cleared by test hook
+_CI_GATE_API_ERROR_COOLDOWN_SECONDS: float = 600.0  # constant
+
+
+def _reset_ci_gate_api_error_cooldown() -> None:
+    """Test hook: clear the api-error warning rate-limit window."""
+    _CI_GATE_API_ERROR_LAST_WARN_AT.clear()
+
+
+def _warn_ci_gate_api_error(
+    *,
+    pr: int | None,
+    card_id: str,
+    exc: BaseException,
+) -> None:
+    reason = type(exc).__name__
+    now = time.monotonic()
+    last = _CI_GATE_API_ERROR_LAST_WARN_AT.get(reason)
+    if last is not None and (now - last) < _CI_GATE_API_ERROR_COOLDOWN_SECONDS:
+        logger.debug(
+            "ci_gate.api_error_warning_suppressed",
+            card_id=card_id,
+            pr=pr,
+            reason=reason,
+            cooldown_seconds=_CI_GATE_API_ERROR_COOLDOWN_SECONDS,
+        )
+        return
+    _CI_GATE_API_ERROR_LAST_WARN_AT[reason] = now
+    logger.warning(
+        "ci_gate.api_error",
+        card_id=card_id,
+        pr=pr,
+        reason=reason,
+        error=str(exc),
+        fail_open=True,
+    )
+
+
+async def _evaluate_ci_gate(
+    state: CoordinareState,
+    card_id: str,
+    pr_url: str | None,
+) -> tuple[dict[str, Any], bool]:
+    """Run the implementer CI gate (spec 075) at implementer→reviewer boundary.
+
+    Returns a (state_updates, stop) tuple.  ``stop=True`` means BOUNCE/HOLD/
+    ESCALATE — caller should apply updates and skip ``_advance_stage``.
+    ``stop=False`` means PASS (or gate disabled / fail-open) — caller advances
+    normally.  Fails open on any exception per FR-011.
+    """
+    cfg = _get_ci_gate_config(state)
+    if cfg is None or not getattr(cfg, "enabled", False):
+        return {}, False
+
+    # FR-013: no PR yet → nothing to gate on.
+    if not pr_url:
+        return {}, False
+
+    parts = _pr_url_parts(pr_url)
+    if parts is None:
+        logger.warning("ci_gate.unparseable_pr_url", pr_url=pr_url)
+        return {}, False
+    owner, repo, pr_num = parts
+
+    github = state.get("github_service")
+    if github is None:
+        return {}, False
+
+    try:
+        # Cache PrChecksService on the github service object so the
+        # _bpr_forbidden flag survives between poll cycles.  Without caching a
+        # fresh instance is built every call and the flag resets to False,
+        # causing a repeated FORBIDDEN → fallback → WARNING on every poll for
+        # tokens that lack admin:read on branchProtectionRules.
+        _svc_cache: dict[tuple[str, str], PrChecksService] = getattr(
+            github, "_pr_checks_service_cache", None
+        ) or {}
+        if not hasattr(github, "_pr_checks_service_cache"):
+            github._pr_checks_service_cache = _svc_cache
+        cache_key = (owner, repo)
+        if cache_key not in _svc_cache:
+            _svc_cache[cache_key] = PrChecksService(github, owner, repo)
+        svc = _svc_cache[cache_key]
+        rollup = await svc.get_pr_check_rollup(pr_num)
+
+        # Warn once per HEAD when the GraphQL context cap is reached so
+        # operators know the required-checks set may be incomplete (>100
+        # contexts).  Dedup by tracking the last warned SHA on the session to
+        # avoid log spam across repeated gate evaluations on the same HEAD.
+        if rollup.at_context_cap:
+            sessions_snap = state.get("active_sessions") or {}
+            sess_snap = sessions_snap.get(card_id) if isinstance(sessions_snap, dict) else None
+            cap_warned_sha = (sess_snap or {}).get("_ci_gate_cap_warned_sha")
+            if cap_warned_sha != rollup.head_sha:
+                logger.warning(
+                    "ci_gate.context_cap_hit",
+                    pr=pr_num,
+                    head=rollup.head_sha[:7],
+                    note="PR has >100 check contexts; required-checks list may be incomplete",
+                )
+                if isinstance(sess_snap, dict):
+                    sess_snap["_ci_gate_cap_warned_sha"] = rollup.head_sha
+
+        all_head = [c.name for c in rollup.checks]
+        scope = _get_session_persona_scope(state, card_id)
+        persona_check_map = _get_persona_check_map(state)
+        branch_protection_set: set[str] | None = None
+        get_bp = getattr(github, "get_required_status_checks", None)
+        if callable(get_bp):
+            try:
+                # PR's base ref is the default branch we gate on.
+                # rollup.base_ref is populated from baseRefName in the GraphQL
+                # response; fall back to "main" only when the field is empty
+                # (e.g. parse_rollup received a malformed/stub payload).
+                base_ref = rollup.base_ref or "main"
+                if not rollup.base_ref:
+                    logger.warning(
+                        "ci_gate.base_ref_unknown",
+                        pr=pr_num,
+                        fallback=base_ref,
+                        note="branch_protection lookup may query wrong branch",
+                    )
+                bp = await get_bp(owner, repo, base_ref)
+                if bp is not None:
+                    branch_protection_set = set(bp)
+            except Exception as bp_exc:
+                logger.debug("ci_gate.branch_protection_lookup_failed", error=str(bp_exc))
+        resolved = resolve(
+            scope=scope,
+            persona_check_map=persona_check_map,
+            branch_protection_set=branch_protection_set,
+            all_head_checks=all_head,
+        )
+        logger.debug(
+            "ci_gate.resolver",
+            card_id=card_id,
+            pr=pr_num,
+            source=resolved["source"],
+            required_count=len(resolved["names"]),
+        )
+        required_names = set(resolved["names"])
+
+        decision = decide(
+            rollup,
+            pending_timeout_seconds=getattr(cfg, "pending_timeout_seconds", 900),
+            required_check_names=required_names,
+        )
+
+        head_sha = rollup.head_sha
+        bounce_counter = dict(state.get("bounce_counter") or {})
+        max_bounces = getattr(cfg, "max_bounces_per_head", 3)
+        now_iso = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+        # T058: stash the latest decision on the live session so notify.py
+        # can render a deduped PR rollup comment on the next cycle.
+        sessions_for_stash = state.get("active_sessions") or {}
+        session_for_stash = (
+            sessions_for_stash.get(card_id)
+            if isinstance(sessions_for_stash, dict) else None
+        )
+
+        def _stash(decision_dump: dict[str, Any]) -> None:
+            if isinstance(session_for_stash, dict):
+                session_for_stash["latest_ci_gate_decision"] = decision_dump
+
+        if decision.action == "FORWARD":
+            decision_obj = CIGateDecision(
+                verdict="pass",
+                head_sha=head_sha,
+                required_checks=sorted(required_names),
+                failed_checks=[],
+                resolver_source=resolved["source"],
+                bounce_count_after=0,
+                decided_at=now_iso,
+            )
+            # FR-014: surface non-required failures as advisory on PASS.
+            advisory_failures = [
+                {"name": c.name, "conclusion": c.conclusion or "failure"}
+                for c in rollup.checks
+                if c.conclusion == "failure" and c.name not in required_names
+            ]
+            logger.info(
+                "ci_gate.decided",
+                verdict="pass",
+                pr=pr_num,
+                head=head_sha[:7],
+                resolver_source=resolved["source"],
+                advisory_count=len(advisory_failures),
+            )
+            dump = decision_obj.model_dump(mode="json")
+            _stash(dump)
+            return (
+                {
+                    "latest_ci_gate_decision": dump,
+                    "ci_gate_advisory_failures": advisory_failures,
+                },
+                False,
+            )
+
+        if decision.action == "HOLD":
+            decision_obj = CIGateDecision(
+                verdict="hold",
+                head_sha=head_sha,
+                required_checks=sorted(required_names),
+                failed_checks=[],
+                pending_checks=sorted(decision.pending),
+                resolver_source=resolved["source"],
+                bounce_count_after=0,
+                decided_at=now_iso,
+            )
+            logger.info(
+                "ci_gate.decided",
+                verdict="hold",
+                pr=pr_num,
+                head=head_sha[:7],
+                pending=decision.pending,
+            )
+            dump = decision_obj.model_dump(mode="json")
+            _stash(dump)
+            return (
+                {
+                    "phase": "monitoring_performer",
+                    "latest_ci_gate_decision": dump,
+                    # Clear any advisory failures from a prior PASS so stale
+                    # data is not misread by a future consumer.
+                    "ci_gate_advisory_failures": [],
+                },
+                True,
+            )
+
+        # BOUNCE — increment counter and decide bounce vs escalate.
+        bounce_counter[head_sha] = bounce_counter.get(head_sha, 0) + 1
+        count = bounce_counter[head_sha]
+
+        url_by_name = {c.name: (c.details_url or "") for c in rollup.checks}
+        if decision.reason == "pending_timeout":
+            # Pending checks exceeded the timeout — represent them as failed
+            # entries with conclusion="timed_out" so the bounce decision satisfies
+            # the contract's non-empty failed_checks invariant.
+            failed_names = sorted(decision.pending)
+            failed_conclusion = "timed_out"
+        else:
+            failed_names = sorted(decision.failed)
+            failed_conclusion = "failure"
+        failed_objs = [
+            FailedCheck(
+                name=name,
+                conclusion=failed_conclusion,
+                html_url=url_by_name.get(name) or None,
+            )
+            for name in failed_names
+        ]
+
+        if count >= max_bounces:
+            decision_obj = CIGateDecision(
+                verdict="escalate",
+                head_sha=head_sha,
+                required_checks=sorted(required_names),
+                failed_checks=failed_objs,
+                resolver_source=resolved["source"],
+                bounce_count_after=count,
+                max_bounces_per_head=max_bounces,
+                decided_at=now_iso,
+            )
+            logger.warning(
+                "ci_gate.decided",
+                verdict="escalate",
+                pr=pr_num,
+                head=head_sha[:7],
+                failed=decision.failed,
+                bounce_count=count,
+            )
+            dump = decision_obj.model_dump(mode="json")
+            _stash(dump)
+            return (
+                {
+                    "phase": "blocked",
+                    # Reset dispatch so resume-from-blocked doesn't inherit a
+                    # stale performer session reference (mirrors BOUNCE path).
+                    "agent_dispatch": {},
+                    "agent_dispatch_at": None,
+                    "bounce_counter": bounce_counter,
+                    "latest_ci_gate_decision": dump,
+                    "ci_gate_advisory_failures": [],
+                },
+                True,
+            )
+
+        decision_obj = CIGateDecision(
+            verdict="bounce",
+            head_sha=head_sha,
+            required_checks=sorted(required_names),
+            failed_checks=failed_objs,
+            resolver_source=resolved["source"],
+            bounce_count_after=count,
+            max_bounces_per_head=max_bounces,
+            decided_at=now_iso,
+        )
+        if decision.reason == "pending_timeout":
+            body = (
+                f"CI gate: {len(failed_names)} required check(s) still pending "
+                f"past timeout on this HEAD ({', '.join(failed_names)}). "
+                f"Re-run or fix before re-handing off to reviewer."
+            )
+        else:
+            body = (
+                f"CI gate: {len(failed_names)} required check(s) failing on this HEAD "
+                f"({', '.join(failed_names)}). Fix and push before re-handing off "
+                f"to reviewer."
+            )
+        logger.warning(
+            "ci_gate.decided",
+            verdict="bounce",
+            pr=pr_num,
+            head=head_sha[:7],
+            failed=decision.failed,
+            bounce_count=count,
+        )
+        dump = decision_obj.model_dump(mode="json")
+        _stash(dump)
+        existing_rf = list(state.get("relay_feedback") or [])
+        existing_rf.append({"body": body, "author_login": "coordinare"})
+        return (
+            {
+                "performer_stage": "implementing",
+                "phase": "dispatching",
+                "agent_dispatch": {},
+                "agent_dispatch_at": None,
+                "bounce_counter": bounce_counter,
+                "latest_ci_gate_decision": dump,
+                "relay_feedback": existing_rf,
+                "ci_gate_advisory_failures": [],
+            },
+            True,
+        )
+    except Exception as exc:
+        # FR-011: fail-open on any error so a broken gate never blocks flow.
+        _warn_ci_gate_api_error(pr=pr_num, card_id=card_id, exc=exc)
+        return {}, False
+
+
 async def _refresh_backend_ui(
     state: dict[str, Any],
     service: Any,
@@ -1316,6 +1722,21 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
 
         # --- Terminal success states ---
         if marker in TERMINAL_SUCCESS_STATES:
+            # 075: implementer CI gate runs at implementer→reviewer boundary
+            # before stage advancement.  If the gate stops (bounce/hold/
+            # escalate), apply updates and return without advancing.
+            if stage == "implementing":
+                pr_url_for_gate = status.get("pr_url") if status else None
+                if not pr_url_for_gate and isinstance(card, dict):
+                    pr_url_for_gate = card.get("pr_url")
+                ci_updates, ci_stop = await _evaluate_ci_gate(
+                    state, card_id, pr_url_for_gate
+                )
+                for key, value in ci_updates.items():
+                    state[key] = value  # type: ignore[literal-required]
+                if ci_stop:
+                    return state
+
             updates = _advance_stage(state, status)
 
             # When advancing to monitoring_pr (final role complete), move the

@@ -795,3 +795,62 @@ async def test_v4_snapshot_roundtrips_persona_scope(tmp_path: Path) -> None:
 
     assert loaded is not None
     assert loaded.active_sessions["PVT_74"].persona_scope == scope
+
+
+# --- 075: bounce_counter persistence (v4 → v5 graceful upgrade) ---
+
+
+@pytest.mark.asyncio
+async def test_v4_snapshot_loads_with_empty_bounce_counter(tmp_path: Path) -> None:
+    """075: a v4 snapshot whose PersistedSession entries lack
+    ``bounce_counter`` deserializes cleanly under v5 with ``bounce_counter = {}``;
+    the next gate decision repopulates the head SHA entry.
+    """
+    import json
+
+    metrics = CoordinareMetrics()
+    path = tmp_path / "state.json"
+    store = StateStore(path=path, metrics=metrics)
+    snapshot = _make_snapshot(
+        phase="dispatching",
+        active_card_id="PVT_75",
+        active_sessions={
+            "PVT_75": PersistedSession(card_id="PVT_75", performer_stage="implementing"),
+        },
+    )
+    await store.save(snapshot)
+
+    data = json.loads(path.read_text())
+    data["schema_version"] = 4
+    data["active_sessions"]["PVT_75"].pop("bounce_counter", None)
+    path.write_text(json.dumps(data))
+
+    loaded = await store.load()
+    assert loaded is not None
+    assert loaded.active_sessions["PVT_75"].bounce_counter == {}
+
+
+@pytest.mark.asyncio
+async def test_v5_snapshot_roundtrips_bounce_counter(tmp_path: Path) -> None:
+    """075: per-HEAD bounce counts survive save → load so the escalation gate
+    does not forget bounces across daemon restarts.
+    """
+    metrics = CoordinareMetrics()
+    store = StateStore(path=tmp_path / "state.json", metrics=metrics)
+    snapshot = _make_snapshot(
+        phase="monitoring_performer",
+        active_card_id="PVT_75",
+        active_sessions={
+            "PVT_75": PersistedSession(
+                card_id="PVT_75",
+                performer_stage="implementing",
+                bounce_counter={"sha-abc": 2, "sha-def": 1},
+            ),
+        },
+    )
+
+    await store.save(snapshot)
+    loaded = await store.load()
+
+    assert loaded is not None
+    assert loaded.active_sessions["PVT_75"].bounce_counter == {"sha-abc": 2, "sha-def": 1}

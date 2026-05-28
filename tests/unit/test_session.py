@@ -189,6 +189,62 @@ def test_persona_scope_round_trips() -> None:
     assert recovered["persona_scope"] == scope
 
 
+def test_bounce_counter_round_trips() -> None:
+    """075: monitor_performer increments bounce_counter[head_sha] on each
+    failing-required-checks decision; if it's missing from _SESSION_FIELDS
+    the gate forgets bounces between cycles and never escalates to
+    needs_human_review.  Mirrors the persona_scope regression test."""
+    session = create_session_from_card(_sample_card())
+    session["bounce_counter"] = {"sha-abc": 2, "sha-def": 1}
+
+    state = initial_state()
+    session_to_state(session, state)
+    assert state["bounce_counter"] == {"sha-abc": 2, "sha-def": 1}
+
+    recovered = state_to_session(state)
+    assert recovered["bounce_counter"] == {"sha-abc": 2, "sha-def": 1}
+
+
+def test_latest_ci_gate_decision_round_trips() -> None:
+    """075: monitor_performer writes the most recent CIGateDecision to
+    flat state for notify.py to consume on the next cycle.  Must round-trip
+    through _SESSION_FIELDS or notify.py sees None and skips the rollup
+    comment."""
+    decision = {
+        "verdict": "bounce",
+        "head_sha": "sha-abc",
+        "resolver_source": "persona_check_map",
+        "required": ["lint", "unit-tests"],
+        "failing": ["lint"],
+    }
+    session = create_session_from_card(_sample_card())
+    session["latest_ci_gate_decision"] = decision
+
+    state = initial_state()
+    session_to_state(session, state)
+    assert state["latest_ci_gate_decision"] == decision
+
+    recovered = state_to_session(state)
+    assert recovered["latest_ci_gate_decision"] == decision
+
+
+def test_ci_gate_advisory_failures_round_trips() -> None:
+    """075: advisory failures (failed checks NOT in the resolved required
+    set) surface to notify.py through this field; must round-trip through
+    _SESSION_FIELDS or reviewers won't see non-required failures on a
+    PASS verdict."""
+    advisory = [{"name": "flaky-perf", "conclusion": "failure"}]
+    session = create_session_from_card(_sample_card())
+    session["ci_gate_advisory_failures"] = advisory
+
+    state = initial_state()
+    session_to_state(session, state)
+    assert state["ci_gate_advisory_failures"] == advisory
+
+    recovered = state_to_session(state)
+    assert recovered["ci_gate_advisory_failures"] == advisory
+
+
 def test_round_trip_preserves_non_session_fields() -> None:
     """session_to_state must not clobber non-session fields on state."""
     state = initial_state()
@@ -276,6 +332,10 @@ def test_session_fields_all_present_in_initial_state_or_coordinare_state() -> No
         "lifecycle_completed_at",
         "processed_review_ids",
         "persona_scope",
+        "bounce_counter",
+        "latest_ci_gate_decision",
+        "ci_gate_rollup_signature",
+        "ci_gate_advisory_failures",
     }
     for field in _SESSION_FIELDS:
         if field not in optional_in_initial:

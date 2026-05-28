@@ -9,7 +9,15 @@ from typing import Any, Literal
 from urllib.parse import urlparse
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    RootModel,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 from coordinare.models.notification import ChannelType, EventType
@@ -920,6 +928,41 @@ class CloserPrChecksConfig(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# 075 — Implementer CI Gate (nested under PersonaScopeConfig)
+# ---------------------------------------------------------------------------
+
+
+class PersonaCheckMapPerDepth(BaseModel):
+    """Per-depth glob patterns selecting required CI checks for a persona (spec 075).
+
+    Field names correspond to the ``Depth`` values from ``session.Depth``
+    (``skim | normal | full``).  An unrecognised depth value in the runtime
+    scope will silently find no patterns here and fall through to resolver
+    layer 2.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    skim: list[str] = Field(default_factory=list)
+    normal: list[str] = Field(default_factory=list)
+    full: list[str] = Field(default_factory=list)
+
+
+class PersonaCheckMapConfig(RootModel[dict[str, PersonaCheckMapPerDepth]]):
+    """Mapping persona name -> per-depth check globs (spec 075)."""
+
+
+class CIGateConfig(BaseModel):
+    """Implementer CI gate config nested under PersonaScopeConfig (spec 075)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    max_bounces_per_head: int = Field(default=3, ge=1, le=20)
+    pending_timeout_seconds: int = Field(default=900, ge=60, le=7200)
+
+
+# ---------------------------------------------------------------------------
 # 074 — Persona Scope Tiering
 # ---------------------------------------------------------------------------
 
@@ -938,6 +981,10 @@ class PersonaScopeConfig(BaseModel):
     forced_full_on_path_classes: dict[str, list[str]] = Field(default_factory=dict)
     classifier_latency_budget_seconds: float = Field(default=30.0, ge=1.0, le=600.0)
     classifier_failure_warning_cooldown_seconds: float = Field(default=600.0, ge=0.0)
+
+    # 075 — Implementer CI gate (opt-in; default-off, see contracts/config-schema.md).
+    persona_check_map: PersonaCheckMapConfig | None = None
+    ci_gate: CIGateConfig = Field(default_factory=CIGateConfig)
 
     @field_validator("path_classes")
     @classmethod

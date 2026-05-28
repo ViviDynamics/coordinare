@@ -52,4 +52,9 @@ Always `set -a && source .env && set +a` before launching the coordinare daemon 
 - PR target is `main`; squash merge.
 
 <!-- MANUAL ADDITIONS START -->
+
+## Recent Changes
+
+- **075-implementer-ci-gate**: `_evaluate_ci_gate` in `src/coordinare/graph/nodes/monitor_performer.py` runs at the implementer→reviewer hand-off, emitting `pass | hold | bounce | escalate` per the spec. Required-checks resolver in `src/coordinare/services/required_checks_resolver.py` falls back through `persona_check_map` → `branch_protection` → `all_head_checks`. PR rollup comments in `notify.py` are deduped per `(head_sha, verdict, required, failed-names)` signature.
+
 <!-- MANUAL ADDITIONS END -->

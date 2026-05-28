@@ -133,6 +133,24 @@ class CardSession(TypedDict, total=False):
     # through session ↔ state or the next cycle re-classifies from scratch
     # (acceptable, but loses the previous-cycle fallback chain in FR-006).
     persona_scope: PersonaScope | None
+    # 075: per-HEAD CI-gate bounce counter.  Keyed by head SHA so a new push
+    # resets the counter for that SHA; prior entries are preserved as audit.
+    # MUST round-trip through session ↔ state or the gate forgets bounces
+    # between cycles and never escalates to needs_human_review.
+    bounce_counter: dict[str, int]
+    # 075: most recent CIGateDecision dict, written by monitor_performer and
+    # consumed by notify.py for the PR rollup comment (one-cycle delay).
+    latest_ci_gate_decision: dict[str, Any] | None
+    # 075: signature of the last CI-gate rollup comment posted to the PR
+    # (notify.py dedup).  MUST round-trip through session ↔ state or the dedup
+    # check fails between cycles and triggers a redundant GitHub API call every
+    # HOLD cycle.  None = no comment posted yet for this card.
+    ci_gate_rollup_signature: str | None
+    # 075 FR-014: advisory (non-required) check failures surfaced on a PASS
+    # verdict so the reviewer persona can see what still needs attention.
+    # Cleared on every PASS; stale on BOUNCE/HOLD/ESCALATE (check the
+    # latest_ci_gate_decision verdict before consuming).
+    ci_gate_advisory_failures: list[dict[str, Any]]
 
 
 # Fields that live on both CardSession and CoordinareState (flat).
@@ -181,6 +199,10 @@ _SESSION_FIELDS: tuple[str, ...] = (
     "lifecycle_completed_at",
     "processed_review_ids",
     "persona_scope",
+    "bounce_counter",
+    "latest_ci_gate_decision",
+    "ci_gate_rollup_signature",
+    "ci_gate_advisory_failures",
 )
 
 
@@ -230,6 +252,10 @@ def create_session_from_card(card: dict[str, Any]) -> CardSession:
         lifecycle_completed_at=None,
         processed_review_ids=set(),
         persona_scope=None,
+        bounce_counter={},
+        latest_ci_gate_decision=None,
+        ci_gate_rollup_signature=None,
+        ci_gate_advisory_failures=[],
     )
 
 

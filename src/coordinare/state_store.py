@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-CURRENT_SCHEMA_VERSION: int = 4
+CURRENT_SCHEMA_VERSION: int = 6
 
 # Lowest schema_version we still know how to read.  v1 snapshots are upgraded
 # in-memory at load time (065 Fix 7b: active_sessions added in v2; v1 snapshots
@@ -24,6 +24,10 @@ CURRENT_SCHEMA_VERSION: int = 4
 # first poll cycle re-fetches the SHA from GitHub.
 # v4 (074) adds optional persona_scope on PersistedSession; v1-v3 snapshots load
 # with persona_scope = None and the next cycle recomputes (FR-011).
+# v5 (075) adds bounce_counter on PersistedSession; v1-v4 snapshots load with
+# bounce_counter = {} and the next gate decision populates the head SHA entry.
+# v6 (075 fix) adds ci_gate_rollup_signature on PersistedSession; v1-v5
+# snapshots load with None and the first HOLD/BOUNCE/ESCALATE cycle re-posts.
 MIN_SUPPORTED_SCHEMA_VERSION: int = 1
 
 WorkflowPhase = Literal[
@@ -91,6 +95,14 @@ class PersistedSession(BaseModel):
     # classify_scope node recomputes from scratch.  Stored as a plain dict for
     # JSON portability — the TypedDict shape lives in ``coordinare.session``.
     persona_scope: dict[str, Any] | None = None
+    # 075: per-HEAD CI-gate bounce counter (schema v5+).  Keyed by head SHA;
+    # MUST round-trip through session ↔ disk or escalation logic forgets the
+    # bounce count across daemon restarts.  Optional / default ``{}`` keeps
+    # v1-v4 snapshots loading unchanged.
+    bounce_counter: dict[str, int] = Field(default_factory=dict)
+    # 075 fix (schema v6+): signature of the last CI-gate rollup comment posted
+    # so notify.py dedup survives daemon restarts.  None = not yet posted.
+    ci_gate_rollup_signature: str | None = None
 
 
 class EnvCacheStateSnapshot(BaseModel):

@@ -118,6 +118,21 @@ def _persist_active_sessions(active_sessions: dict[str, Any]) -> dict[str, Persi
         head_last = head_last_raw if isinstance(head_last_raw, str) and head_last_raw else None
         persona_scope_raw = sess.get("persona_scope")
         persona_scope = persona_scope_raw if isinstance(persona_scope_raw, dict) else None
+        bounce_counter_raw = sess.get("bounce_counter")
+        bounce_counter: dict[str, int] = {}
+        if isinstance(bounce_counter_raw, dict):
+            for k, v in bounce_counter_raw.items():
+                # Reject bools (isinstance(True, int) is True) and non-finite
+                # floats so a corrupted snapshot can't crash startup on int().
+                if isinstance(v, bool) or not isinstance(v, (int, float)):
+                    continue
+                try:
+                    bounce_counter[str(k)] = int(v)
+                except (ValueError, OverflowError):
+                    continue
+        ci_gate_rollup_sig_raw = sess.get("ci_gate_rollup_signature")
+        ci_gate_rollup_sig = ci_gate_rollup_sig_raw \
+            if isinstance(ci_gate_rollup_sig_raw, str) and ci_gate_rollup_sig_raw else None
         out[cid] = PersistedSession(
             card_id=cid,
             performer_stage=(sess.get("performer_stage") or None),
@@ -139,6 +154,8 @@ def _persist_active_sessions(active_sessions: dict[str, Any]) -> dict[str, Persi
             head_at_dispatch=head_dispatch,
             head_at_last_turn=head_last,
             persona_scope=persona_scope,
+            bounce_counter=bounce_counter,
+            ci_gate_rollup_signature=ci_gate_rollup_sig,
         )
     return out
 
@@ -526,6 +543,9 @@ class CoordinareDaemon:
                     "head_at_dispatch": persisted.head_at_dispatch,
                     "head_at_last_turn": persisted.head_at_last_turn,
                     "persona_scope": persisted.persona_scope,
+                    "bounce_counter": dict(persisted.bounce_counter),
+                    "ci_gate_rollup_signature": persisted.ci_gate_rollup_signature,
+                    "ci_gate_advisory_failures": [],
                 }
                 # Seed current_card for the matching active_card_id from the
                 # top-level snapshot fields; other sessions get a stub that
