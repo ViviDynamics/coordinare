@@ -13,7 +13,20 @@ from performer.models import Score, Stand
 
 
 @pytest.fixture(autouse=True)
-def _clear_settings_cache():
+def _clear_settings_cache(monkeypatch: pytest.MonkeyPatch):
+    # Hermetic env: a developer's shell often carries ANTHROPIC_BASE_URL /
+    # ANTHROPIC_API_KEY (and possibly LITELLM_PROXY_*). These leak into the
+    # subprocess-env-merge assertions (e.g. a real ANTHROPIC_BASE_URL would
+    # win over the test's LITELLM_PROXY_BASE_URL), so clear them up front.
+    # Individual tests re-set whatever they need via monkeypatch.setenv.
+    for _var in (
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "LITELLM_PROXY_BASE_URL",
+        "LITELLM_PROXY_AUTH_TOKEN",
+    ):
+        monkeypatch.delenv(_var, raising=False)
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()

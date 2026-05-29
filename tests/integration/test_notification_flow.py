@@ -21,7 +21,10 @@ async def test_notification_pipeline_dispatches_event() -> None:
                 "description": "Task",
             },
             "notification_service": fake,
-            "phase": "dispatching",
+            # monitoring_performer is the real post-dispatch phase that emits
+            # card_dispatched; phase "dispatching" at notify time now means the
+            # dispatch was HELD and is intentionally suppressed (076 QA #150).
+            "phase": "monitoring_performer",
         }
     )
 

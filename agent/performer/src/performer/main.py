@@ -2127,18 +2127,31 @@ async def handle_status(
                     timeout=inference_timeout,
                 )
             except asyncio.TimeoutError:
-                log.error(
+                # 076 (live QA #150): service_inference is a best-effort,
+                # secondary probe — the dev-env install already ran into the
+                # mounted cache above.  A timeout here MUST NOT fail the whole
+                # bootstrap: doing so leaves the cache un-ready and coordinare
+                # re-dispatches the bootstrap forever (observed: 3 attempts, 0
+                # successes, ~30-45 min each on a slow backend, gating the
+                # symphony indefinitely).  Mirror _run_service_inference's own
+                # internal failsafe (which returns inference_succeeded=False on
+                # InferenceFailed / unexpected errors) — only the external
+                # wait_for timeout escaped it.  Report terminal success with the
+                # inference skipped, so the cache is marked ready and the
+                # degraded inference surfaces on the dashboard.
+                log.warning(
                     "service_inference.timeout",
                     job_id=perf.session_id,
                     timeout_seconds=inference_timeout,
+                    detail=(
+                        "inference timed out; treating bootstrap as complete "
+                        "(install already succeeded, inference is best-effort)"
+                    ),
                 )
-                perf.error_reason = (
-                    f"service_inference_timeout after {inference_timeout}s"
-                )
+                perf.state = "env_bootstrap_complete"
                 return PerformerResponse(
-                    status="error",
+                    status="env_bootstrap_complete",
                     session_id=perf.session_id,
-                    reason=perf.error_reason,
                     inference_succeeded=False,
                     inference_skipped_reason="timeout",
                 )

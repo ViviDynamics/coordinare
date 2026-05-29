@@ -50,6 +50,18 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
+# 076 — Daemon-process identity captured once at module-init for use as the
+# `coordinare.daemon_started_at` Docker label on every performer container the
+# daemon launches.  The reconciliation pass uses this on subsequent restarts
+# to distinguish "containers I launched" from "containers from a prior daemon
+# run that should be reaped."
+_DAEMON_STARTED_AT: str = datetime.now(UTC).isoformat()
+
+
+def get_daemon_started_at() -> str:
+    """Return the daemon's start-time ISO8601 UTC string (spec 076 FR-009)."""
+    return _DAEMON_STARTED_AT
+
 
 @dataclass
 class SessionEligibility:
@@ -368,6 +380,23 @@ _PHASE_TRANSITION_METRIC: dict[tuple[str, str], str] = {
 # GitHub is down. Use a fixed backoff so the circuit can probe-recover.
 _CIRCUIT_OPEN_BACKOFF_SECONDS: int = 60
 _BOOTSTRAP_POLL_MAX_ATTEMPTS: int = 720  # 720 x 10 s = 7200 s ~= 2 h
+
+
+def _bootstrap_progress_lines(log_lines: list[str]) -> list[str]:
+    """076 (live QA #150): the meaningful subset of an env_bootstrap container's
+    logs, for idle detection.
+
+    Coordinare polls ``GET /jobs/<id>`` every cycle, flooding the container's
+    stdout with uvicorn access lines that grow whether or not the bootstrap is
+    doing any work.  Filtering them out leaves the real progress signal — LLM
+    ``shim request`` lines, ``service_inference`` steps, and install command
+    output — which only changes when the bootstrap actually advances.  A frozen
+    result across the idle window means the container is hung, not just slow.
+    """
+    return [
+        ln for ln in log_lines
+        if "/jobs/" not in ln and not ln.lstrip().startswith("INFO:")
+    ]
 
 _CIRCUIT_TO_HEALTH_SUBSYSTEM: dict[str, str] = {
     "github": "github",
@@ -1566,18 +1595,32 @@ class CoordinareDaemon:
     ) -> None:
         """Poll a bootstrap job to completion and fire on_bootstrap_complete.
 
-        Runs for at most _BOOTSTRAP_POLL_MAX_ATTEMPTS iterations (720 x 10 s ~= 2 h).
+        Runs for at most ``bootstrap_max_seconds`` (config; default 1 h, polled
+        every 10 s).  Past that ceiling the bootstrap is declared failed AND its
+        container reaped, so a slow/hung bootstrap can't gate the symphony for
+        the legacy ~2 h.  ``bootstrap_max_seconds=0`` restores the legacy cap.
         """
+        # 076 (live QA #150): resolve the wall-clock budget + idle timeout.
+        _cfg = self._state.get("coordinare_config")
+        _budget_s = int(getattr(_cfg, "bootstrap_max_seconds", 0) or 0)
+        _idle_timeout_s = int(getattr(_cfg, "bootstrap_idle_timeout_seconds", 0) or 0)
+        max_attempts = (_budget_s // 10) if _budget_s > 0 else _BOOTSTRAP_POLL_MAX_ATTEMPTS
+        if max_attempts < 1:
+            max_attempts = 1
         last_logs_snapshot: list[str] = []
-        for _attempt in range(_BOOTSTRAP_POLL_MAX_ATTEMPTS):
+        _last_progress: list[str] | None = None
+        _last_progress_attempt = 0
+        for _attempt in range(max_attempts):
             await asyncio.sleep(10)
             # Snapshot container logs *before* check_status, because a terminal
             # status causes HTTPPerformerService to stop and `--rm`-remove the
-            # container, after which `docker logs` returns nothing.
+            # container, after which `docker logs` returns nothing.  ``--tail
+            # 500`` keeps enough history that the meaningful (non-poll) lines
+            # don't scroll out of the idle-detection window under poll-noise.
             if container_id:
                 try:
                     proc = await asyncio.create_subprocess_exec(
-                        "docker", "logs", "--tail", "200", container_id,
+                        "docker", "logs", "--tail", "500", container_id,
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.STDOUT,
                     )
@@ -1586,9 +1629,28 @@ class CoordinareDaemon:
                     )
                     snap = stdout_b.decode(errors="replace").splitlines()
                     if snap:
-                        last_logs_snapshot = snap[-200:]
+                        last_logs_snapshot = snap[-500:]
                 except Exception:
                     pass
+            # 076 idle reap: if the bootstrap's meaningful log output hasn't
+            # changed for ``bootstrap_idle_timeout_seconds``, it's hung (not just
+            # slow) — reap it now rather than waiting out the wall-clock budget.
+            if container_id and _idle_timeout_s > 0:
+                _progress = _bootstrap_progress_lines(last_logs_snapshot)
+                if _progress != _last_progress:
+                    _last_progress = _progress
+                    _last_progress_attempt = _attempt
+                elif (_attempt - _last_progress_attempt) * 10 >= _idle_timeout_s:
+                    logger.warning(
+                        "env_cache.bootstrap_idle_reaped",
+                        symphony=symphony_name,
+                        job_id=job_id,
+                        idle_seconds=(_attempt - _last_progress_attempt) * 10,
+                        idle_timeout_seconds=_idle_timeout_s,
+                    )
+                    await self._reap_bootstrap_container(container_id, symphony_name)
+                    env_cache_svc.on_bootstrap_complete(symphony_name, False, self._state)
+                    return
             try:
                 status_result = await svc.check_status(job_id)
             except Exception as exc:
@@ -1701,8 +1763,45 @@ class CoordinareDaemon:
                                 ),
                             )
                 return
-        logger.warning("env_cache.bootstrap_poll_timeout", symphony=symphony_name)
+        # 076 (live QA #150): budget exhausted.  Reap the container explicitly —
+        # it was started with ``--rm`` but a hung agent never exits, so without
+        # an explicit stop it would linger and keep holding a backend slot.
+        logger.warning(
+            "env_cache.bootstrap_poll_timeout",
+            symphony=symphony_name,
+            budget_seconds=_budget_s or (_BOOTSTRAP_POLL_MAX_ATTEMPTS * 10),
+            attempts=max_attempts,
+        )
+        if container_id:
+            await self._reap_bootstrap_container(container_id, symphony_name)
         env_cache_svc.on_bootstrap_complete(symphony_name, False, self._state)
+
+    async def _reap_bootstrap_container(self, container_id: str, symphony_name: str) -> None:
+        """076 (live QA #150): force-stop a wedged env_bootstrap container.
+
+        Shared by the wall-clock-budget and idle-reap paths.  Best-effort: a
+        failure to stop must not wedge the symphony (the caller still marks the
+        bootstrap failed so dispatch unblocks and the next cycle re-dispatches).
+        """
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "docker", "stop", "--time", "5", container_id,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await asyncio.wait_for(proc.wait(), timeout=20.0)
+            logger.warning(
+                "env_cache.bootstrap_container_reaped",
+                symphony=symphony_name,
+                container_id=container_id[:12],
+            )
+        except Exception as exc:
+            logger.warning(
+                "env_cache.bootstrap_reap_failed",
+                symphony=symphony_name,
+                container_id=container_id[:12],
+                error=str(exc),
+            )
 
     async def _execute_bootstrap_dispatch(
         self,
@@ -1883,6 +1982,43 @@ class CoordinareDaemon:
                 )
                 # Fresh start — self._state already initialised by initial_state()
 
+        # 076 (T056, FR-002): startup reconciliation pass.  Runs AFTER
+        # snapshot load and board reconciliation, BEFORE the first poll
+        # cycle.  Walks every in-flight session in the snapshot,
+        # enumerates Docker containers, and decides adopt / reap+replace
+        # / fresh-dispatch / orphan-sweep per card.  On Docker-down, the
+        # report sets docker_unreachable=True and the daemon refuses to
+        # dispatch any ephemeral performer for this process's lifetime
+        # (per FR-012).
+        self._reconciliation_blocked_by_docker = False
+        try:
+            from coordinare.services.docker_executor import DockerExecutor
+            from coordinare.services.reconciliation import run_startup_reconciliation
+
+            cfg = self._state.get("coordinare_config")
+            recon_budget = 30.0
+            if cfg is not None:
+                _dd = getattr(cfg, "dispatcher_dedup", None)
+                if _dd is not None:
+                    recon_budget = float(getattr(_dd, "reconciliation_budget_seconds", 30.0))
+            report = await run_startup_reconciliation(
+                self._state,
+                DockerExecutor(),
+                budget_seconds=recon_budget,
+            )
+            if report.docker_unreachable:
+                self._reconciliation_blocked_by_docker = True
+        except Exception as exc:  # pragma: no cover — defensive crash-blocker
+            # Reconciliation MUST NOT prevent the daemon from booting on a
+            # bug or unexpected failure — fall through to the normal cycle
+            # with a warning.  Real Docker-down is signalled via
+            # docker_unreachable on the report, not via an exception.
+            logger.warning(
+                "daemon.reconciliation_pass_crashed",
+                error=str(exc),
+                exc_info=True,
+            )
+
         previous_phase = self._state.get("phase")
         self._emit(
             **build_runtime_event(
@@ -2051,6 +2187,53 @@ class CoordinareDaemon:
                 self._cycle_active = False
                 cycle_count += 1
                 self._state["error_count"] = 0
+
+                # 076 (T064): reconciliation_decisions_last_startup is
+                # cleared per-card by notify.py on consumption (see
+                # contracts/notification-dedup.md and the
+                # ``recon_decisions.pop(...)`` site in notify.py).  No
+                # cycle-level clear needed.
+
+                # 076 (T092, FR-020): wedge invariant.  Runs at the end
+                # of every successful cycle.  Detects the forbidden
+                # "active_card pinned + no session + idle phase"
+                # combination that produced today's incident.  Default:
+                # release the pin; ≥3 wedges in 24h → promote to BLOCKED.
+                try:
+                    from coordinare.services.reconciliation import detect_wedged_state
+
+                    _dd_cfg = getattr(self._state.get("coordinare_config"), "dispatcher_dedup", None)
+                    _threshold = int(getattr(_dd_cfg, "wedge_block_threshold", 3))
+                    _window_hours = int(getattr(_dd_cfg, "wedge_block_window_hours", 24))
+                    detect_wedged_state(
+                        self._state,
+                        wedge_block_threshold=_threshold,
+                        wedge_block_window_hours=_window_hours,
+                    )
+                except Exception as _exc:  # pragma: no cover — defensive
+                    logger.warning(
+                        "daemon.wedge_invariant_crashed",
+                        error=str(_exc),
+                        exc_info=True,
+                    )
+
+                # 076 (T121, FR-025): board ↔ local-state reconciliation.
+                # Runs after the wedge invariant so a wedge-released pin
+                # doesn't re-trigger here.  Compares state.active_card
+                # .status with the board's column for the same card;
+                # divergence → release the pin so eligibility re-picks.
+                try:
+                    from coordinare.services.reconciliation import reconcile_board_state
+
+                    _board = self._state.get("board_snapshot") or {}
+                    if isinstance(_board, dict) and _board:
+                        reconcile_board_state(self._state, _board)
+                except Exception as _exc:  # pragma: no cover — defensive
+                    logger.warning(
+                        "daemon.board_reconcile_crashed",
+                        error=str(_exc),
+                        exc_info=True,
+                    )
 
                 # Dashboard: record cycle and broadcast updated snapshot to all open tabs
                 if self._dashboard_store is not None:

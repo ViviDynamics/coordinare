@@ -57,4 +57,26 @@ Always `set -a && source .env && set +a` before launching the coordinare daemon 
 
 - **075-implementer-ci-gate**: `_evaluate_ci_gate` in `src/coordinare/graph/nodes/monitor_performer.py` runs at the implementer→reviewer hand-off, emitting `pass | hold | bounce | escalate` per the spec. Required-checks resolver in `src/coordinare/services/required_checks_resolver.py` falls back through `persona_check_map` → `branch_protection` → `all_head_checks`. PR rollup comments in `notify.py` are deduped per `(head_sha, verdict, required, failed-names)` signature.
 
+- **076-qa-cycle (dispatcher dedup + lifecycle correctness)**: 5 user stories closing the 2026-05-28 duplicate-dispatch incident.
+  - **In-flight guard + per-card mutex** (`src/coordinare/services/dispatch_guard.py`): `dispatch_performer` now wraps its body in `async with dispatch_mutex(card_id, performer_stage)` + `await check_inflight(state, card_id, performer_stage)`. Refuses dispatch when an in-flight session is still alive; emits `dispatch_performer.in_flight_guard_tripped`.
+  - **Startup reconciliation pass** (`src/coordinare/services/reconciliation.py`): `run_startup_reconciliation()` is called from `daemon.py` boot. Enumerates `coordinare.spec_version=076`-labelled Docker containers via `DockerExecutor` and emits one of `adopted | reaped_and_replaced | fresh_dispatched | skipped_persistent | orphan_swept` per in-flight card.
+  - **Docker labels** (`src/coordinare/services/performer_lifecycle.py` + `http_performer_service.py`): every ephemeral container now carries `coordinare.session_id`, `coordinare.card_id`, `coordinare.performer_stage`, `coordinare.daemon_started_at`, `coordinare.spec_version="076"` plus the existing `coordinare.performer.id`. `_active_jobs` is keyed on the coordinare-allocated `session_id` (not the job-runner's `job_id`).
+  - **Wedge invariant** (`detect_wedged_state`): runs at end-of-cycle in `daemon.py`. When `active_card` is pinned but no session exists and `phase=idle`, releases the pin by default (clarification Q1). After ≥3 wedges in 24h, promotes to BLOCKED.
+  - **Board ↔ state reconciliation** (`reconcile_board_state`): per-cycle check. Releases the pin when the board moved the card back to TODO/BACKLOG while local pins IN_PROGRESS/IN_REVIEW/BLOCKED. Forward divergences (board=IN_REVIEW, local=IN_PROGRESS) are deferred to the existing startup `_reconcile_with_board` path.
+  - **PR-artefact write-through** (`monitor_performer._record_pr_artefacts`): every successful turn's `pr_url`/`pr_node_id`/`pr_number`/`head_sha`/`pushed_branch` is mirrored to BOTH `state.active_card` and `state.active_sessions[card_id]` with a `pr_artefacts_recorded_at` audit timestamp. Prevents the "successful turn forgotten" failure mode.
+  - **Idle-timeout retry counter** (`src/coordinare/services/retry_counter.py`): per-`(card_id, performer_stage)` rolling counter, default 2 retries per 24h window, then BLOCKED. Persists across daemon restarts via `idle_timeout_retries` on `PersistedSession`. Caps the qwen-stall failure mode.
+  - **Drain-or-reap relay handoff** (`drain_or_reap`): on `partial_progress` + idle-timeout retry, the prior container is drained (5 s budget) or force-stopped (5 s budget) before fresh dispatch — closes FR-007 "no agent_dispatch={} while prior container still alive".
+  - **Multi-PR divergence detection** (`detect_multi_pr_divergence` + `github.list_prs_by_branch_prefix`): immediately before each dispatch, queries GitHub for open PRs matching `coordinare/<card_node_id>/`. >1 match → refuse dispatch.
+  - **Notification dedup** (`notify._should_emit_card_dispatched`): suppresses `card_dispatched` events when the most recent reconciliation pass produced `ADOPTED` or `SKIPPED_PERSISTENT`.
+  - **Schema v6 → v7** (`state_store.py`): 5 new PersistedSession fields — `idle_timeout_retries`, `pr_artefacts_recorded_at`, `multi_pr_divergence`, `wedge_count_window`, `reconciliation_decisions_last_startup`. v1–v6 snapshots load with safe empty defaults.
+  - **Structured-log vocabulary** (grep recipes for operators):
+    - Reconciliation: `daemon.reconciliation_pass_(started|complete|aborted_docker_unreachable|budget_exceeded)`, `daemon.session_adopted`, `daemon.orphan_swept`, `daemon.reap_failed`, `check_board.stale_session_reconciled`
+    - In-flight guard: `dispatch_performer.(in_flight_guard_tripped|in_flight_guard_probe_failed|mutex_waited|multi_pr_divergence_refused)`
+    - Wedge invariant: `daemon.wedged_state_detected`, `daemon.wedge_resolution`
+    - Board sync: `daemon.board_state_reconciled`, `daemon.board_state_diverged_deferred`
+    - PR write-through: `monitor_performer.pr_artefacts_recorded`
+    - Retry counter: `monitor_performer.idle_timeout`, `monitor_performer.idle_timeout_exhausted`
+    - Notification dedup: `notify.card_dispatched_suppressed`
+  - **Config**: new top-level `dispatcher_dedup:` block with 8 tunables (defaults reflect clarifications Q1–Q5).
+
 <!-- MANUAL ADDITIONS END -->

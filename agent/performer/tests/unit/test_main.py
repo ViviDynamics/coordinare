@@ -243,9 +243,15 @@ class TestHandleStatus:
 
 class TestEnvBootstrapInferenceTimeout:
     """Fix 2: _run_service_inference must be wrapped in asyncio.wait_for so a
-    wedged LiteLLM proxy can't hang the env_bootstrap job indefinitely."""
+    wedged LiteLLM proxy can't hang the env_bootstrap job indefinitely.
 
-    async def test_inference_timeout_returns_error_response(self) -> None:
+    076 (live QA #150): a timeout is NON-FATAL — the dev-env install already
+    ran into the mounted cache, and service_inference is best-effort.  A
+    timeout must report terminal success (cache ready) with the inference
+    flagged as skipped, NOT status=error (which caused infinite re-dispatch).
+    """
+
+    async def test_inference_timeout_is_non_fatal_and_marks_complete(self) -> None:
         perf = _make_perf(session_id="sid")
         perf.role = "env_bootstrap"
         perf.score.env_cache_path = "/tmp/env-cache"
@@ -262,10 +268,12 @@ class TestEnvBootstrapInferenceTimeout:
         ):
             resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
 
-        assert resp.status == "error"
+        # Bootstrap completes (cache becomes ready) despite the inference timeout.
+        assert resp.status == "env_bootstrap_complete"
+        assert perf.state == "env_bootstrap_complete"
+        # Telemetry preserved so the dashboard shows inference as degraded.
         assert resp.inference_succeeded is False
         assert resp.inference_skipped_reason == "timeout"
-        assert "service_inference_timeout" in (resp.reason or "")
 
     async def test_inference_success_when_under_timeout(self) -> None:
         perf = _make_perf(session_id="sid")

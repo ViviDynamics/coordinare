@@ -10,9 +10,85 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from coordinare.graph.nodes.notify import notify
+from coordinare.graph.nodes.notify import (
+    PERSONA_SCOPE_ROLLUP_MARKER,
+    _emit_persona_scope_rollup,
+    _format_persona_scope_rollup,
+    _persona_scope_signature,
+    notify,
+)
 from coordinare.graph.state import initial_state
 from coordinare.models.notification import NotificationEvent
+
+_SCOPE = {
+    "personas": {
+        "implementer": {"depth": "deep", "focus": "auth | core", "overrides": ["max_turns=5"]},
+        "reviewer": {"depth": "shallow"},
+    },
+    "cycle_index": 3,
+    "classifier_model": "qwen3-8b",
+    "head_sha": "abcdef1234567890",
+}
+
+
+class TestPersonaScopeRollup:
+    def test_format_renders_marker_table_and_meta(self) -> None:
+        out = _format_persona_scope_rollup(_SCOPE)
+        assert out.startswith(PERSONA_SCOPE_ROLLUP_MARKER)
+        assert "| Persona | Depth | Focus | Overrides |" in out
+        assert "`implementer`" in out and "`reviewer`" in out
+        assert "auth \\| core" in out  # pipe escaped for markdown table
+        assert "max_turns=5" in out
+        assert "cycle `3`" in out and "classifier `qwen3-8b`" in out
+        assert "head `abcdef1`" in out  # truncated to 7
+
+    def test_format_handles_empty_meta_and_missing_fields(self) -> None:
+        out = _format_persona_scope_rollup({"personas": {"qa": {}}})
+        assert PERSONA_SCOPE_ROLLUP_MARKER in out
+        assert "`qa`" in out
+        assert "—" in out  # focus/overrides fall back to em-dash
+
+    def test_signature_stable_and_differs_on_change(self) -> None:
+        sig1 = _persona_scope_signature(_SCOPE)
+        sig2 = _persona_scope_signature(dict(_SCOPE))
+        assert sig1 == sig2
+        changed = {**_SCOPE, "personas": {"implementer": {"depth": "shallow"}}}
+        assert _persona_scope_signature(changed) != sig1
+
+    @pytest.mark.asyncio
+    async def test_emit_posts_comment_and_stamps_signature(self) -> None:
+        github = MagicMock()
+        github.add_comment = AsyncMock()
+        state = {"github_service": github}
+        session: dict = {"persona_scope": _SCOPE}
+        card = {"id": "c1", "pr_node_id": "PR_1"}
+        await _emit_persona_scope_rollup(state, session, card)
+        github.add_comment.assert_awaited_once()
+        assert session["persona_scope_rollup_signature"] == _persona_scope_signature(_SCOPE)
+        # Idempotent: same signature => no second post.
+        await _emit_persona_scope_rollup(state, session, card)
+        assert github.add_comment.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_emit_noops_without_scope_github_or_pr(self) -> None:
+        gh = MagicMock()
+        gh.add_comment = AsyncMock()
+        # no personas
+        await _emit_persona_scope_rollup({"github_service": gh}, {"persona_scope": {}}, {"pr_node_id": "P"})
+        # no github
+        await _emit_persona_scope_rollup({"github_service": None}, {"persona_scope": _SCOPE}, {"pr_node_id": "P"})
+        # no pr_node_id
+        await _emit_persona_scope_rollup({"github_service": gh}, {"persona_scope": _SCOPE}, {})
+        gh.add_comment.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_emit_swallows_post_error(self) -> None:
+        github = MagicMock()
+        github.add_comment = AsyncMock(side_effect=RuntimeError("boom"))
+        session: dict = {"persona_scope": _SCOPE}
+        await _emit_persona_scope_rollup({"github_service": github}, session, {"id": "c", "pr_node_id": "P"})
+        # signature NOT stamped on failure, so a later retry can re-post.
+        assert "persona_scope_rollup_signature" not in session
 
 
 @pytest.mark.asyncio
@@ -31,7 +107,10 @@ async def test_notify_includes_pr_url_in_payload_when_set() -> None:
         "previous_status": "TODO",
         "pr_url": "https://github.com/org/repo/pull/99",
     }
-    state["phase"] = "dispatching"
+    # Use monitoring_performer (the real post-dispatch phase) — phase
+    # "dispatching" at notify time now means the dispatch was HELD and
+    # card_dispatched is intentionally suppressed (076 live QA #150).
+    state["phase"] = "monitoring_performer"
 
     dispatched: list[NotificationEvent] = []
 
@@ -58,7 +137,8 @@ async def test_notify_excludes_pr_url_from_payload_when_not_set() -> None:
         "status": "TODO",
         "previous_status": "",
     }
-    state["phase"] = "dispatching"
+    # See note above: monitoring_performer is the real card_dispatched phase.
+    state["phase"] = "monitoring_performer"
 
     dispatched: list[NotificationEvent] = []
 
@@ -108,6 +188,40 @@ async def test_notify_suppresses_dispatched_re_emit_for_same_stage() -> None:
     state["performer_stage"] = "reviewing"
     await notify(state)
     assert notification_service.dispatch.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_notify_suppresses_card_dispatched_when_dispatch_held() -> None:
+    """076 live QA #150: when dispatch_performer holds (env_bootstrap_in_flight /
+    env_cache not ready / in-flight guard) it returns with phase still
+    "dispatching" and NO container started.  notify must NOT emit
+    card_dispatched in that case — otherwise every poll cycle re-announces and,
+    once the 600s Slack dedup window lapses, leaks a duplicate "dispatched"
+    post for a card that never launched a performer.
+    """
+    state = initial_state()
+    state["current_card"] = {
+        "id": "card-150",
+        "title": "Feature: Time tracking schema",
+        "status": "IN_PROGRESS",
+    }
+    state["phase"] = "dispatching"  # held: no container started this cycle
+    state["performer_stage"] = "assessing"
+
+    notification_service = MagicMock()
+    notification_service.dispatch = AsyncMock()
+    state["notification_service"] = notification_service
+
+    # Re-run several "held" cycles — none may emit.
+    for _ in range(3):
+        await notify(state)
+    assert notification_service.dispatch.await_count == 0
+
+    # Once a container actually starts, dispatch_performer advances the phase
+    # to monitoring_performer; THAT is when the operator should be told.
+    state["phase"] = "monitoring_performer"
+    await notify(state)
+    assert notification_service.dispatch.await_count == 1
 
 
 @pytest.mark.asyncio

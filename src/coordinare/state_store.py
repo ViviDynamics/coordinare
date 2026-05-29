@@ -8,14 +8,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 import structlog
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 if TYPE_CHECKING:
     from coordinare.metrics import CoordinareMetrics
 
 logger = structlog.get_logger(__name__)
 
-CURRENT_SCHEMA_VERSION: int = 6
+CURRENT_SCHEMA_VERSION: int = 7
 
 # Lowest schema_version we still know how to read.  v1 snapshots are upgraded
 # in-memory at load time (065 Fix 7b: active_sessions added in v2; v1 snapshots
@@ -28,6 +28,12 @@ CURRENT_SCHEMA_VERSION: int = 6
 # bounce_counter = {} and the next gate decision populates the head SHA entry.
 # v6 (075 fix) adds ci_gate_rollup_signature on PersistedSession; v1-v5
 # snapshots load with None and the first HOLD/BOUNCE/ESCALATE cycle re-posts.
+# v7 (076) adds dispatcher-dedup fields on PersistedSession:
+# idle_timeout_retries (per-(card,stage) rolling counter), pr_artefacts_recorded_at
+# (FR-016 audit timestamp), multi_pr_divergence (FR-024 surfaced record),
+# wedge_count_window (FR-020 promotion threshold tracking), and
+# reconciliation_decisions_last_startup (per-card decision audit trail).  v1-v6
+# snapshots load with all five fields at their safe empty defaults.
 MIN_SUPPORTED_SCHEMA_VERSION: int = 1
 
 WorkflowPhase = Literal[
@@ -103,6 +109,54 @@ class PersistedSession(BaseModel):
     # 075 fix (schema v6+): signature of the last CI-gate rollup comment posted
     # so notify.py dedup survives daemon restarts.  None = not yet posted.
     ci_gate_rollup_signature: str | None = None
+    # 076 (schema v7+): dispatcher-dedup + lifecycle-correctness state.  All
+    # five fields default to safe empty values so v1-v6 snapshots load
+    # unchanged.  See ``specs/076-qa-cycle/data-model.md`` §8 for semantics.
+    #
+    # Per-(card_id, performer_stage) idle-timeout retry counter (FR-019);
+    # keyed by ``f"{card_id}:{performer_stage}"``.  Serialised as plain dicts
+    # for JSON portability; the typed model lives in
+    # ``coordinare.services.dispatcher_dedup_models.IdleTimeoutRetryRecord``.
+    idle_timeout_retries: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    # Audit timestamp set by ``monitor_performer._record_pr_artefacts``
+    # whenever a successful turn's PR fields are written through to state
+    # (FR-016).  None means the session has not yet had a successful turn
+    # that produced GitHub artefacts.
+    pr_artefacts_recorded_at: datetime | None = None
+    # Surfaced when FR-024 multi-PR detection finds >1 open PR for this card.
+    # Plain dict for JSON portability; typed model is
+    # ``dispatcher_dedup_models.MultiPRDivergence``.  None = no divergence.
+    multi_pr_divergence: dict[str, Any] | None = None
+    # Per-card rolling list of wedge-detection timestamps (FR-020 promotion
+    # threshold).  Trimmed to the configured ``wedge_block_window_hours``
+    # window on every write.  Empty list = no recent wedges.
+    # Per-card rolling list of wedge-detection timestamps, keyed by
+    # ``card_id`` (data-model §8).  Per-card so card A's wedges don't
+    # trip card B's BLOCKED promotion threshold.
+    wedge_count_window: dict[str, list[datetime]] = Field(default_factory=dict)
+
+    @field_validator("wedge_count_window", mode="before")
+    @classmethod
+    def _coerce_legacy_flat_wedge_window(cls, v: object) -> object:
+        """Backward compatibility (076 dev-build snapshots).
+
+        An earlier iteration of 076 stored ``wedge_count_window`` as a
+        flat ``list[datetime]`` rather than the spec-final
+        ``dict[str, list[datetime]]``.  If we encounter such a snapshot,
+        reset to an empty dict — the wedge history is lost but the
+        daemon can load and proceed.  Without this validator,
+        Pydantic raises ValidationError on load and the daemon cannot
+        start.
+        """
+        if isinstance(v, list):
+            return {}
+        return v
+    # Per-card reconciliation decision audit trail from the most recent
+    # daemon startup (data-model §8).  Populated by
+    # ``run_startup_reconciliation``; cleared at the end of the first poll
+    # cycle so it doesn't suppress mid-run notifications (notification-dedup
+    # contract).  Values match ``ReconciliationDecision`` enum strings.
+    reconciliation_decisions_last_startup: dict[str, str] = Field(default_factory=dict)
 
 
 class EnvCacheStateSnapshot(BaseModel):
@@ -279,7 +333,10 @@ class StateStore:
                 reason="schema_mismatch",
                 detail=(
                     f"supported [{MIN_SUPPORTED_SCHEMA_VERSION}..{CURRENT_SCHEMA_VERSION}], "
-                    f"got {snapshot.schema_version}"
+                    f"got v{snapshot.schema_version}. "
+                    f"If downgrading coordinare, restore a snapshot from a "
+                    f"compatible version or upgrade back to the version "
+                    f"that wrote this snapshot."
                 ),
             )
 

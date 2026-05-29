@@ -165,7 +165,7 @@ async def test_dispatch_ephemeral_starts_container_and_dispatches(monkeypatch) -
     started_calls: list[str] = []
     stop_calls: list[str] = []
 
-    async def fake_start(config):
+    async def fake_start(config, **kwargs):
         started_calls.append(config.id)
         return StartedContainer(container_id="ctr-1", endpoint="http://127.0.0.1:55555")
 
@@ -201,7 +201,11 @@ async def test_dispatch_ephemeral_starts_container_and_dispatches(monkeypatch) -
     result = await svc.dispatch_card(_card(), _workspace())
 
     assert result["status"] == "ok"
-    assert result["session_id"] == "job-eph-1"
+    # 076 (T016): session_id is a coordinare-allocated UUID, distinct from
+    # the job-runner's job_id (which is still surfaced separately).
+    assert result["job_id"] == "job-eph-1"
+    assert result["session_id"] != result["job_id"]
+    assert len(result["session_id"]) == 36  # UUID4 length
     assert started_calls == ["perf-e1"]
     # stop NOT yet called — only on terminal state.
     assert stop_calls == []
@@ -211,7 +215,7 @@ async def test_dispatch_ephemeral_starts_container_and_dispatches(monkeypatch) -
 async def test_check_status_terminal_cleans_up_ephemeral(monkeypatch) -> None:
     stop_calls: list[str] = []
 
-    async def fake_start(config):
+    async def fake_start(config, **kwargs):
         return StartedContainer(container_id="ctr-9", endpoint="http://127.0.0.1:55555")
 
     async def fake_wait_ready(*args, **kwargs):
@@ -252,8 +256,10 @@ async def test_check_status_terminal_cleans_up_ephemeral(monkeypatch) -> None:
         return
 
     monkeypatch.setattr(svc, "_poll_container_logs", _noop_log_poll)
-    await svc.dispatch_card(_card(), _workspace())
-    status = await svc.check_status("job-T")
+    result = await svc.dispatch_card(_card(), _workspace())
+    # 076 (T016): check_status takes coordinare's session_id, not the
+    # job-runner's job_id.  The two are now distinct values.
+    status = await svc.check_status(result["session_id"])
 
     # Non-JSON summary falls through to plain-text fallback: always "error"
     # so monitor_performer can terminate the session (it doesn't recognise "ok").
@@ -390,7 +396,7 @@ async def test_check_health_draining_maps_to_draining() -> None:
 
 @pytest.mark.asyncio
 async def test_dispatch_ephemeral_start_failure_returns_error(monkeypatch) -> None:
-    async def fake_start(config):
+    async def fake_start(config, **kwargs):
         raise lifecycle.LifecycleError("no image")
 
     monkeypatch.setattr(hps_mod.performer_lifecycle, "start_ephemeral", fake_start)
@@ -403,7 +409,7 @@ async def test_dispatch_ephemeral_start_failure_returns_error(monkeypatch) -> No
 
 @pytest.mark.asyncio
 async def test_dispatch_ephemeral_readiness_timeout_returns_error(monkeypatch) -> None:
-    async def fake_start(config):
+    async def fake_start(config, **kwargs):
         return StartedContainer(container_id="ctr-rt", endpoint="http://127.0.0.1:59999")
 
     async def fake_wait_ready(*args, **kwargs):
@@ -424,7 +430,7 @@ async def test_dispatch_ephemeral_readiness_timeout_returns_error(monkeypatch) -
 
 @pytest.mark.asyncio
 async def test_dispatch_transport_error_returns_error(monkeypatch) -> None:
-    async def fake_start(config):
+    async def fake_start(config, **kwargs):
         return StartedContainer(container_id="ctr-te", endpoint="http://127.0.0.1:59998")
 
     async def fake_wait_ready(*args, **kwargs):
@@ -739,7 +745,7 @@ async def test_dispatch_ephemeral_tracks_job_in_active_jobs(monkeypatch) -> None
     """Each ephemeral dispatch creates an independent entry in _active_jobs."""
     call_count = 0
 
-    async def fake_start(config):
+    async def fake_start(config, **kwargs):
         nonlocal call_count
         call_count += 1
         return StartedContainer(
@@ -778,8 +784,13 @@ async def test_dispatch_ephemeral_tracks_job_in_active_jobs(monkeypatch) -> None
     assert r2["status"] == "ok"
     # Each dispatch tracked independently — no overwrite
     assert r1["job_id"] != r2["job_id"]
-    assert r1["job_id"] in svc._active_jobs
-    assert r2["job_id"] in svc._active_jobs
+    # 076 (T016): _active_jobs is now keyed on coordinare-allocated session_id
+    # (not the job-runner's job_id).  The job-runner's job_id lives on the
+    # _EphemeralJob value as a sub-field.
+    assert r1["session_id"] in svc._active_jobs
+    assert r2["session_id"] in svc._active_jobs
+    assert svc._active_jobs[r1["session_id"]].job_id == r1["job_id"]
+    assert svc._active_jobs[r2["session_id"]].job_id == r2["job_id"]
 
 
 # ---------------------------------------------------------------------------
@@ -810,7 +821,7 @@ async def test_dispatch_card_missing_repo_url_returns_error() -> None:
 @pytest.mark.asyncio
 async def test_ensure_client_ephemeral_with_active_job(monkeypatch) -> None:
     """_ensure_client(job_id=...) in ephemeral mode returns per-job client."""
-    async def fake_start(config):
+    async def fake_start(config, **kwargs):
         return StartedContainer(
             container_id="container-123",
             endpoint="http://localhost:8080",
@@ -1036,7 +1047,7 @@ async def test_dispatch_card_ephemeral_transport_error_on_post_job(monkeypatch) 
     """TransportError from post_job in ephemeral mode cleans up container."""
     from coordinare.transport.base import TransportError
 
-    async def fake_start(config):
+    async def fake_start(config, **kwargs):
         return StartedContainer(
             container_id="container-456",
             endpoint="http://localhost:9090",
@@ -1072,7 +1083,7 @@ async def test_dispatch_card_ephemeral_transport_error_on_post_job(monkeypatch) 
 @pytest.mark.asyncio
 async def test_dispatch_card_ephemeral_not_accepted_cleans_up(monkeypatch) -> None:
     """When performer returns 409 busy in ephemeral mode, container is stopped."""
-    async def fake_start(config):
+    async def fake_start(config, **kwargs):
         return StartedContainer(
             container_id="container-789",
             endpoint="http://localhost:8888",

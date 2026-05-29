@@ -85,18 +85,55 @@ async def _run_docker(*args: str, timeout: float = 30.0) -> tuple[int, str, str]
     return proc.returncode or 0, stdout_b.decode().strip(), stderr_b.decode().strip()
 
 
-async def start_ephemeral(config: PerformerEndpointConfig) -> StartedContainer:
+_LABEL_KEY_RE = __import__("re").compile(r"^coordinare\.[a-z0-9._-]+$")
+
+
+def _validate_extra_label(key: str, value: str) -> None:
+    """076 FR-009: validate Docker label key + value before passing to ``docker run``.
+
+    Keys MUST match ``^coordinare\\.[a-z0-9._-]+$``; values MUST be non-empty
+    strings ≤256 chars.  Caller (``http_performer_service.dispatch_card``)
+    is responsible for not constructing invalid pairs; this validation
+    catches typos at the launch site so a malformed label cannot silently
+    skip the reconciliation pass.
+    """
+    if not isinstance(key, str) or not _LABEL_KEY_RE.match(key):
+        msg = f"invalid extra_label key {key!r}: must match {_LABEL_KEY_RE.pattern}"
+        raise ContainerStartError(msg)
+    if not isinstance(value, str) or not value:
+        msg = f"invalid extra_label value for {key!r}: must be non-empty string"
+        raise ContainerStartError(msg)
+    if len(value) > 256:
+        msg = f"extra_label value for {key!r} exceeds 256 chars (got {len(value)})"
+        raise ContainerStartError(msg)
+
+
+async def start_ephemeral(
+    config: PerformerEndpointConfig,
+    *,
+    extra_labels: dict[str, str] | None = None,
+) -> StartedContainer:
     """Run a fresh container for *config* and return its id + endpoint URL.
 
     The container is started detached on a host port (either operator-pinned
     via ``config.port`` or chosen by docker via ``-p 0:8088``); the resolved
     host port is read back via ``docker port``. Auth, volumes, and env wiring
     for secrets are applied here when present.
+
+    076 FR-009: ``extra_labels`` (if provided) is added as additional
+    ``--label key=value`` args BEFORE the image argument.  Keys MUST match
+    ``^coordinare\\.[a-z0-9._-]+$``; values MUST be non-empty strings
+    ≤256 chars.  Validation failures raise :class:`ContainerStartError`.
     """
     if config.image is None:
         raise ContainerStartError(f"performer {config.id} has no image configured")
 
     args: list[str] = ["run", "-d", "--rm", "--label", f"coordinare.performer.id={config.id}"]
+
+    if extra_labels:
+        for k, v in extra_labels.items():
+            _validate_extra_label(k, v)
+            args += ["--label", f"{k}={v}"]
 
     if config.egress_allowlist:
         args += ["--cap-add", "NET_ADMIN"]

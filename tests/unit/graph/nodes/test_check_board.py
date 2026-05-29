@@ -2,18 +2,140 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from coordinare.graph.nodes.check_board import (
     _allowed_github_host,
+    _card_docs_dir,
     _dep_announcement_signature,
+    _derive_resume_stage,
     _safe_issue_url,
     _sort_by_priority,
     check_board,
 )
 from coordinare.graph.state import initial_state
 from coordinare.services.github import TransientGitHubError
+
+_LIFECYCLE = [
+    "assessing", "architecting", "implementing",
+    "reviewing", "security", "qa", "documenting", "closing_review",
+]
+
+
+def _fake_github(present_files: set[str]) -> object:
+    """Fake GitHubService whose get_file_blob_sha returns a sha only for paths
+    whose basename is in *present_files*."""
+    gh = SimpleNamespace(_org="ViviDynamics", _project_name="website")
+
+    async def _blob_sha(owner, repo, path, ref="HEAD"):
+        return "deadbeef" if path.rsplit("/", 1)[-1] in present_files else None
+
+    gh.get_file_blob_sha = _blob_sha
+    return gh
+
+
+_CARD_150 = {"id": "PVTI_x", "issue_number": 150,
+             "title": "Feature: Time tracking schema and model foundation"}
+
+
+class TestDeriveResumeStage:
+    def test_card_docs_dir_matches_performer_slug(self) -> None:
+        # Must match agent/performer _doc_folder: lowercased, non-alnum->dash, [:20].
+        assert _card_docs_dir(_CARD_150) == "docs/cards/150-feature-time-trackin"
+
+    def test_card_docs_dir_none_for_missing_title(self) -> None:
+        assert _card_docs_dir({"issue_number": 1}) is None
+
+    def test_card_docs_dir_without_issue_number(self) -> None:
+        # No issue_number => slug-only path (still mirrors the performer).
+        assert _card_docs_dir({"title": "Some Card!"}) == "docs/cards/some-card"
+
+    @pytest.mark.asyncio
+    async def test_all_mapped_stages_complete_returns_last(self) -> None:
+        # When every lifecycle stage has a doc artifact and all are present,
+        # the scan falls through to the final stage (no unmapped resume point).
+        gh = _fake_github({"assessment.md", "plan.md", "tasks.md"})
+        assert await _derive_resume_stage(gh, _CARD_150, ["assessing", "architecting"]) == "architecting"
+
+    @pytest.mark.asyncio
+    async def test_empty_lifecycle_returns_none(self) -> None:
+        gh = _fake_github({"assessment.md"})
+        assert await _derive_resume_stage(gh, _CARD_150, []) is None
+
+    @pytest.mark.asyncio
+    async def test_assessment_only_resumes_at_architecting(self) -> None:
+        # The #150 case: assessor ran (assessment.md) but architect never did.
+        gh = _fake_github({"assessment.md"})
+        assert await _derive_resume_stage(gh, _CARD_150, _LIFECYCLE) == "architecting"
+
+    @pytest.mark.asyncio
+    async def test_plan_and_tasks_present_resumes_at_implementing(self) -> None:
+        gh = _fake_github({"assessment.md", "plan.md", "tasks.md"})
+        assert await _derive_resume_stage(gh, _CARD_150, _LIFECYCLE) == "implementing"
+
+    @pytest.mark.asyncio
+    async def test_partial_architect_output_still_resumes_at_architecting(self) -> None:
+        # plan.md without tasks.md => architecting NOT complete.
+        gh = _fake_github({"assessment.md", "plan.md"})
+        assert await _derive_resume_stage(gh, _CARD_150, _LIFECYCLE) == "architecting"
+
+    @pytest.mark.asyncio
+    async def test_no_artifacts_resumes_at_first_stage(self) -> None:
+        gh = _fake_github(set())  # no branch / no artifacts
+        assert await _derive_resume_stage(gh, _CARD_150, _LIFECYCLE) == "assessing"
+
+    @pytest.mark.asyncio
+    async def test_none_github_returns_none(self) -> None:
+        assert await _derive_resume_stage(None, _CARD_150, _LIFECYCLE) is None
+
+    @pytest.mark.asyncio
+    async def test_github_error_is_non_fatal(self) -> None:
+        gh = SimpleNamespace(_org="o", _project_name="r")
+        gh.get_file_blob_sha = AsyncMock(side_effect=RuntimeError("boom"))
+        assert await _derive_resume_stage(gh, _CARD_150, _LIFECYCLE) is None
+
+    @pytest.mark.asyncio
+    async def test_missing_owner_repo_returns_none(self) -> None:
+        gh = SimpleNamespace()  # no _org/_project_name
+        gh.get_file_blob_sha = AsyncMock(return_value="x")
+        assert await _derive_resume_stage(gh, _CARD_150, _LIFECYCLE) is None
+
+    @pytest.mark.asyncio
+    async def test_check_board_readopt_applies_derived_stage(self) -> None:
+        """Integration: a re-adopted IN_PROGRESS card with no snapshot stage has
+        its derived resume stage applied to the session (covers the wiring in
+        the check_board re-adopt loop).  assessment.md present, no plan/tasks =>
+        the session resumes at architecting, NOT the "implementing" default."""
+        github = AsyncMock()
+        github.poll_board.return_value = {
+            "snapshot": {"TODO": [], "IN_PROGRESS": ["PVI_1"]},
+            "titles": {"PVI_1": "Feature: Time tracking schema and model foundation"},
+            "descriptions": {"PVI_1": "d"},
+            "issue_numbers": {"PVI_1": 150},
+            "issue_urls": {"PVI_1": "https://github.com/issues/150"},
+            "content_node_ids": {"PVI_1": "node_PVI_1"},
+            "item_labels": {},
+            "item_field_values": {},
+        }
+        github._org = "ViviDynamics"
+        github._project_name = "website"
+
+        async def _blob(owner, repo, path, ref="HEAD"):
+            return "sha" if path.endswith("assessment.md") else None
+
+        github.get_file_blob_sha = _blob
+
+        state = initial_state()
+        state["config"] = MagicMock(max_concurrent_cards=3, priority=MagicMock(field_name=None))
+        state["github_service"] = github
+        state["lifecycle_sequence"] = _LIFECYCLE
+
+        result = await check_board(state)
+
+        sess = result["active_sessions"]["PVI_1"]
+        assert sess["performer_stage"] == "architecting"
 
 
 class TestAllowedGithubHost:

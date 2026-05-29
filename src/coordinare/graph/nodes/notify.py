@@ -310,6 +310,24 @@ async def notify(state: CoordinareState) -> CoordinareState:
 
     card_id_for_guard = str(card.get("id") or card.get("title", "unknown"))
 
+    # 076 (live QA #150): suppress card_dispatched when the dispatch was HELD
+    # this cycle.  A genuine dispatch advances to phase "monitoring_performer"
+    # (dispatch_performer success path, after a container actually starts)
+    # BEFORE reaching notify.  Reaching notify with phase still "dispatching"
+    # means dispatch_performer returned early via a hold path (env_cache not
+    # ready, env_bootstrap_in_flight, or the in-flight guard) WITHOUT launching
+    # a performer.  Without this guard, every poll cycle re-emits card_dispatched
+    # and — once the 600s Slack dedup window lapses — leaks a duplicate
+    # "dispatched to <stage>" post for a card that never started a container.
+    # (Distinct from the dispatched_notified_stages gate below, which covers the
+    # monitoring_performer re-emit case; here no container exists at all.)
+    if event_type == EventType.card_dispatched and phase == "dispatching":
+        logger.info(
+            "notify.card_dispatched_suppressed_dispatch_held",
+            card_id=card_id_for_guard,
+        )
+        return state
+
     # 069 FR-003: empty open_questions means there's nothing actionable for
     # operators — never emit a content-free card_blocked Slack post.
     if event_type == EventType.card_blocked and not open_questions:
@@ -405,6 +423,27 @@ async def notify(state: CoordinareState) -> CoordinareState:
                 performer_stage=performer_stage,
             )
             return state
+
+        # 076 (T062-T064, FR-010): suppress card_dispatched when the most
+        # recent reconciliation pass ADOPTED an existing container for
+        # this card (the operator already saw the notification from the
+        # prior daemon process) or SKIPPED_PERSISTENT (no new dispatch
+        # happened at all).  See contracts/notification-dedup.md.
+        #
+        # Round-2 fix: pop the decision after consuming it so a
+        # genuinely-new dispatch for the SAME card later in the same
+        # cycle (after check_board.is_stale → fresh_dispatched, say) is
+        # not silently suppressed by the now-stale startup decision.
+        recon_decisions = state.get("reconciliation_decisions_last_startup")
+        if isinstance(recon_decisions, dict):
+            decision = recon_decisions.pop(card_id_for_guard, None)
+            if decision in ("adopted", "skipped_persistent"):
+                logger.info(
+                    "notify.card_dispatched_suppressed",
+                    card_id=card_id_for_guard,
+                    reconciliation_decision=decision,
+                )
+                return state
 
     # Human-readable summary per event type
     if event_type == EventType.card_dispatched:

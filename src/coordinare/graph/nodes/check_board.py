@@ -48,6 +48,77 @@ def _snapshot_stage_for_card(state: dict, card_id: str) -> str | None:
     return None
 
 
+# 076 (live QA #150): per-stage output artifacts written to the card's
+# ``docs/cards/<id>-<slug>/`` folder on its branch.  A stage is "complete" only
+# when ALL its listed artifacts exist.  Stages absent from this map (e.g.
+# ``implementing``, ``reviewing``) have no doc artifact — they're treated as the
+# resume point once every earlier doc-producing stage is complete.  Mirrors the
+# performer's ``_doc_folder`` naming (agent/performer/.../main.py:_doc_folder).
+_STAGE_OUTPUT_ARTIFACTS: dict[str, tuple[str, ...]] = {
+    "assessing": ("assessment.md",),
+    "architecting": ("plan.md", "tasks.md"),
+}
+
+
+def _card_docs_dir(card: dict) -> str | None:
+    """Return ``docs/cards/<issue>-<slug>`` for *card*, matching the performer's
+    ``_doc_folder`` slug algorithm (lowercased, non-alnum→dash, truncated 20)."""
+    import re
+
+    title = card.get("title")
+    if not isinstance(title, str) or not title:
+        return None
+    slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:20] or "untitled"
+    issue_num = card.get("issue_number")
+    if issue_num:
+        return f"docs/cards/{issue_num}-{slug}"
+    return f"docs/cards/{slug}"
+
+
+async def _derive_resume_stage(github: object, card: dict, lifecycle_seq: list[str]) -> str | None:
+    """076 (live QA #150): derive the stage to resume a re-adopted IN_PROGRESS
+    card at, by probing its branch for completed-stage artifacts.
+
+    Returns the EARLIEST lifecycle stage whose required output artifact(s) are
+    missing — i.e. the earliest incomplete stage — so a card whose assessor or
+    architect never actually finished resumes there instead of blindly jumping
+    to ``implementing`` (the ``create_session_from_card`` default) and running
+    the implementer with no plan.
+
+    Returns ``None`` when the stage can't be determined (no github client,
+    missing owner/repo, degenerate title, or any GitHub error); the caller then
+    keeps its existing default.  Best-effort and fully fail-safe: this runs only
+    on the rare re-adopt-without-snapshot-stage path, never the hot restart path.
+    """
+    if github is None or not lifecycle_seq:
+        return None
+    try:
+        from coordinare.services.dispatch_guard import canonical_branch_name
+
+        owner = getattr(github, "_org", None)
+        repo = getattr(github, "_project_name", None)
+        docs_dir = _card_docs_dir(card)
+        if not owner or not repo or not docs_dir:
+            return None
+        branch = canonical_branch_name(card).full_name
+        for stage in lifecycle_seq:
+            artifacts = _STAGE_OUTPUT_ARTIFACTS.get(stage)
+            if artifacts is None:
+                # First stage with no doc contract (implementing+): every
+                # earlier doc-producing stage is complete, so resume here.
+                return stage
+            for fname in artifacts:
+                sha = await github.get_file_blob_sha(  # type: ignore[attr-defined]
+                    owner, repo, f"{docs_dir}/{fname}", ref=branch
+                )
+                if not sha:
+                    return stage  # this stage's output is missing — resume here
+        return lifecycle_seq[-1]
+    except Exception as exc:
+        logger.warning("check_board.resume_stage_derivation_failed", error=str(exc))
+        return None
+
+
 # Phases where coordinare is passively waiting for an external actor (human reviewer,
 # CI system) and the session is not consuming any active worker capacity.
 PASSIVE_PHASES: frozenset[str] = frozenset({"monitoring_pr"})
@@ -460,6 +531,14 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
     # Detect that case here and route back through dispatching for a fresh
     # container.  Do NOT touch system_error_count: this is a clean restart
     # re-dispatch, not a retry of a real failure.
+    #
+    # 076 (T057, FR-008): previously this block unconditionally cleared
+    # agent_dispatch and routed back to dispatching whenever
+    # has_live_session returned False — that is the exact trigger
+    # sequence that produced today's duplicate-dispatch incident.  Now
+    # we route through reconciliation.handle_potentially_stale_session
+    # which attempts adopt → reap+replace → fresh as a triage,
+    # preserving in-flight container work where possible.
     _stale_phases = ("monitoring_performer", "monitoring_agent")
     _performer_services = state.get("performer_services") or {}
     if isinstance(_performer_services, dict) and _performer_services:
@@ -480,22 +559,24 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
             except Exception:
                 return False
 
-        # Rewrite the per-session-loaded state for this invocation.
+        # Top-level "stale current session" check.  Lazy import to avoid
+        # circulars (reconciliation imports docker_executor + http stack).
         if _is_stale(
             str(state.get("phase") or ""),
             str(state.get("performer_stage") or ""),
             state.get("agent_dispatch"),
         ):
             _card = state.get("current_card") or {}
-            logger.warning(
-                "check_board.stale_session_redispatch",
-                card_id=str(_card.get("id", "")) if isinstance(_card, dict) else "",
-                performer_stage=str(state.get("performer_stage") or ""),
-                session_id=str((state.get("agent_dispatch") or {}).get("session_id", "")),
-            )
-            state["phase"] = "dispatching"
-            state["agent_dispatch"] = {}
-            state["agent_dispatch_at"] = None
+            _top_card_id = str(_card.get("id", "")) if isinstance(_card, dict) else ""
+            if _top_card_id:
+                from coordinare.services.reconciliation import handle_potentially_stale_session
+                await handle_potentially_stale_session(state, _top_card_id)
+            else:
+                # No card id → fall back to the pre-076 clearing path so
+                # we don't wedge on a malformed session.
+                state["phase"] = "dispatching"
+                state["agent_dispatch"] = {}
+                state["agent_dispatch_at"] = None
 
         # Also rewrite stale entries in active_sessions so other sessions
         # don't trip the same transport error when their turn comes.
@@ -509,15 +590,8 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
                     str(_sess.get("performer_stage") or ""),
                     _sess.get("agent_dispatch"),
                 ):
-                    logger.warning(
-                        "check_board.stale_session_redispatch",
-                        card_id=_cid,
-                        performer_stage=str(_sess.get("performer_stage") or ""),
-                        session_id=str((_sess.get("agent_dispatch") or {}).get("session_id", "")),
-                    )
-                    _sess["phase"] = "dispatching"
-                    _sess["agent_dispatch"] = {}
-                    _sess["agent_dispatch_at"] = None
+                    from coordinare.services.reconciliation import handle_potentially_stale_session
+                    await handle_potentially_stale_session(state, _cid)
 
     in_progress = state["board_snapshot"].get("IN_PROGRESS", [])
     in_review = state["board_snapshot"].get("IN_REVIEW", [])
@@ -648,16 +722,17 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
         already_active_ids = set(active_sessions.keys())
         titles_p = board.get("titles", {})  # kept for the log statement below
         readopted_any = False
-        # 053/066: resume-stage policy used when no snapshot stage is available.
-        # Honor lifecycle_sequence[0], but downgrade assessor/architect → implementing
-        # when an implementer step exists (a re-adopted IN_PROGRESS card is mid-flight).
+        # 076 (live QA #150): resume-stage policy used when no snapshot stage is
+        # available.  The old policy blindly downgraded assessor/architect →
+        # implementing (assuming a re-adopted IN_PROGRESS card was always
+        # mid-implementation), which skipped an assessor/architect that never
+        # actually finished.  We now derive the resume stage from the card's
+        # completed-stage artifacts on its branch (see _derive_resume_stage),
+        # resuming at the earliest INCOMPLETE stage.
         lifecycle_seq = [
             str(stage) for stage in (state.get("lifecycle_sequence") or ["implementing"])
             if isinstance(stage, str) and stage
         ]
-        _resume_stage = lifecycle_seq[0] if lifecycle_seq else "implementing"
-        if "implementing" in lifecycle_seq and _resume_stage in {"assessing", "architecting"}:
-            _resume_stage = "implementing"
         _flat_cur = state.get("current_card") if isinstance(state.get("current_card"), dict) else None
         _flat_cur_id = str(_flat_cur.get("id", "")) if isinstance(_flat_cur, dict) else ""
         for item in in_progress:
@@ -678,6 +753,16 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
             _snapshot_stage = _snapshot_stage_for_card(state, item)
             if _snapshot_stage:
                 sess["performer_stage"] = _snapshot_stage
+            else:
+                # 076 (live QA #150): no durable stage to restore — derive the
+                # resume stage from completed-stage artifacts on the card branch
+                # so we resume at the earliest INCOMPLETE stage rather than the
+                # blind "implementing" default (which skipped an assessor /
+                # architect that never finished).  Falls back to that default
+                # only when derivation can't determine a stage.
+                _derived_stage = await _derive_resume_stage(github, card_dict, lifecycle_seq)
+                if _derived_stage:
+                    sess["performer_stage"] = _derived_stage
             # 069: a freshly-readopted session has no agent_dispatch.session_id,
             # so monitor_performer cannot poll status — leave the default
             # phase="dispatching" from create_session_from_card so a fresh

@@ -61,12 +61,19 @@ def create_health_app(
         phase = snapshot.phase if snapshot else "idle"
         snapshot_at = snapshot.snapshot_at.isoformat() if snapshot else None
 
+        # 076 — surface the daemon's start-time so an operator (and the
+        # reconciliation pass running inside the SAME process) can correlate
+        # `coordinare.daemon_started_at` Docker labels back to which daemon
+        # process launched a given performer container.
+        from coordinare.daemon import get_daemon_started_at
+
         return {
             "status": health_status,
             "phase": phase,
             "snapshot_at": snapshot_at,
             "circuit_breakers": cb_status,
             "uptime_seconds": round(monotonic() - _start_time, 1),
+            "daemon_started_at": get_daemon_started_at(),
         }
 
     @app.get("/live")

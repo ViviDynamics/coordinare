@@ -81,10 +81,19 @@ def _inject_claude_code_secrets(
 
 @dataclass
 class _EphemeralJob:
-    """State for one in-flight ephemeral container job."""
+    """State for one in-flight ephemeral container job.
+
+    076 (T017): the ``_active_jobs`` dict is keyed on ``session_id``
+    (coordinare-allocated UUID, also written as the
+    ``coordinare.session_id`` Docker label).  The job-runner's reply
+    ``job_id`` is preserved here as a side-by-side field for diagnostics
+    and for the per-job HTTP calls (``GET /jobs/<job_id>`` etc.).
+    """
+
     container_id: str
     endpoint: str
     client: PerformerHTTPClient
+    job_id: str | None = None
 
 
 class HTTPPerformerService:
@@ -243,6 +252,15 @@ class HTTPPerformerService:
     ) -> dict[str, Any]:
         ephemeral_job: _EphemeralJob | None = None
 
+        # 076 (T016) — pre-allocate the coordinare-side session_id BEFORE
+        # spinning up the container so it can be set as the
+        # ``coordinare.session_id`` Docker label.  The reconciliation pass
+        # uses this label on subsequent daemon restarts to match a
+        # running container to its persisted session.  Distinct from the
+        # job-runner's ``response.job_id`` (which is used as the
+        # ``/jobs/<id>/...`` URL component for HTTP calls).
+        session_id = str(uuid.uuid4())
+
         # Resolve the effective config: if extra_volumes are provided, create a
         # shallow copy with the updated volumes list (containerized performers only).
         effective_config = self._config
@@ -253,8 +271,33 @@ class HTTPPerformerService:
 
         # Ephemeral mode: spin up a fresh container before dispatching.
         if self._config.mode == "ephemeral":
+            # 076 (T015 + FR-009): build the 5 coordinare.* labels the
+            # reconciliation pass requires on every performer container.
+            from coordinare.daemon import get_daemon_started_at
+            extra_labels: dict[str, str] = {
+                "coordinare.session_id": session_id,
+                "coordinare.daemon_started_at": get_daemon_started_at(),
+                "coordinare.spec_version": "076",
+            }
+            # 076 regression fix: the env_bootstrap performer is symphony-scoped
+            # and carries no card context, so ``id``/``role`` are absent.  Only
+            # emit the card-scoped labels when populated — an empty-string label
+            # value fails ``_validate_extra_label`` and would abort the launch,
+            # deadlocking dispatch (coordinare believes a bootstrap is in-flight
+            # while no container ever started).  Reconciliation adopts strictly
+            # by ``coordinare.session_id``, so omitting these on card-less
+            # containers is safe.
+            card_id_label = str(card_context.get("id") or "")
+            stage_label = str(card_context.get("role") or "")
+            if card_id_label:
+                extra_labels["coordinare.card_id"] = card_id_label
+            if stage_label:
+                extra_labels["coordinare.performer_stage"] = stage_label
+
             try:
-                started = await performer_lifecycle.start_ephemeral(effective_config)
+                started = await performer_lifecycle.start_ephemeral(
+                    effective_config, extra_labels=extra_labels
+                )
             except performer_lifecycle.LifecycleError as exc:
                 logger.warning(
                     "http_performer.start_failed",
@@ -318,22 +361,31 @@ class HTTPPerformerService:
 
         job_id = response.job_id
         if ephemeral_job is not None:
-            self._active_jobs[job_id] = ephemeral_job
+            # 076 (T016/T017) — _active_jobs is keyed on coordinare-allocated
+            # session_id (not the job-runner's job_id); job_id stays on
+            # _EphemeralJob as a sub-field for HTTP-URL construction.
+            ephemeral_job.job_id = job_id
+            self._active_jobs[session_id] = ephemeral_job
             self._log_buffer = []
-            self._log_poll_tasks[job_id] = asyncio.create_task(
-                self._poll_container_logs(ephemeral_job.container_id, job_id),
-                name=f"log_poll_{job_id[:8]}",
+            self._log_poll_tasks[session_id] = asyncio.create_task(
+                self._poll_container_logs(ephemeral_job.container_id, session_id),
+                name=f"log_poll_{session_id[:8]}",
             )
+        else:
+            # Persistent mode: no per-container session.  Use the job-runner's
+            # job_id as the session_id (status quo for persistent endpoints).
+            session_id = job_id
         logger.info(
             "performer_endpoint.transition",
             performer_id=self._config.id,
             from_state="idle",
             to_state="busy",
+            session_id=session_id,
             job_id=job_id,
         )
         return {
             "status": "ok",
-            "session_id": job_id,
+            "session_id": session_id,
             "job_id": job_id,
             "accepted": True,
             "container_id": ephemeral_job.container_id if ephemeral_job is not None else None,
@@ -352,6 +404,12 @@ class HTTPPerformerService:
             # or the session predates this coordinare instance. Re-raise so
             # monitor_performer can route through its transport-error retry path.
             raise
+        # 076 (T016) — session_id is coordinare's identifier (the dict key for
+        # _active_jobs); the HTTP URLs need the job-runner's job_id, which
+        # we stored on _EphemeralJob.  For persistent mode the two are the
+        # same value (no _EphemeralJob); preserve that fallback.
+        ephemeral_job = self._active_jobs.get(session_id) if self._config.mode == "ephemeral" else None
+        url_job_id = ephemeral_job.job_id if (ephemeral_job and ephemeral_job.job_id) else session_id
         # Forward refreshed secrets (e.g. github_token from monitor_performer)
         # to the running job before polling status. Best-effort: a PATCH
         # failure is logged but must not block the status poll, because the
@@ -362,7 +420,7 @@ class HTTPPerformerService:
             if refreshed_token:
                 try:
                     await client.update_job_secrets(
-                        session_id, {"github_token": refreshed_token}
+                        url_job_id, {"github_token": refreshed_token}
                     )
                 except Exception as exc:
                     logger.warning(
@@ -372,7 +430,7 @@ class HTTPPerformerService:
                         exc_type=type(exc).__name__,
                     )
         try:
-            status = await client.get_job(session_id)
+            status = await client.get_job(url_job_id)
         except (PerformerAuthError, PerformerUnreachableError, TransportError):
             # Auth failure, unreachability, or transport error — clean up the
             # stale _active_jobs entry so subsequent check_health() calls aren't
