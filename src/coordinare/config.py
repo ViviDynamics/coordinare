@@ -690,6 +690,26 @@ class ProjectConfiguration(BaseSettings):
     # backend (e.g. one ollama server) that can't tolerate concurrent calls.
     serialize_env_bootstrap: bool = False
 
+    # 076 (live QA #150) — hard wall-clock ceiling on a single env_bootstrap
+    # container.  The bootstrap poll loop declares failure AND reaps the
+    # container once this elapses, so a slow or hung bootstrap can't gate the
+    # whole symphony (the legacy ceiling was a hardcoded ~2 h).  A failed
+    # bootstrap leaves the cache un-ready, so the next dispatch cycle simply
+    # re-dispatches it (automatic retry).  Set to 0 to restore the legacy
+    # ~2 h behaviour (no early reap).  Tune up for slow single-tenant
+    # backends whose first-run install legitimately exceeds the default.
+    bootstrap_max_seconds: int = Field(default=3600, ge=0, le=21600)
+
+    # 076 (live QA #150) — idle reap for env_bootstrap.  The wall-clock budget
+    # above can't tell "slow but progressing" from "hung", so a stuck bootstrap
+    # still burns the whole budget.  When the bootstrap container produces no
+    # NEW meaningful log output (LLM calls / install commands — coordinare's own
+    # status-poll lines are filtered out) for this many seconds, reap it early.
+    # Must be comfortably larger than the slowest legitimate gap (a long LLM
+    # completion or install step); 600 s is safe for slow single-tenant
+    # backends.  Set to 0 to disable idle reaping (wall-clock budget only).
+    bootstrap_idle_timeout_seconds: int = Field(default=600, ge=0, le=7200)
+
     # 045 — Maximum number of reviewer/security/qa → implementer feedback
     # cycles before blocking the card for human intervention.  Each
     # ``changes_requested`` / ``security_failed`` / ``qa_failed`` that routes
@@ -1114,6 +1134,46 @@ class OrchestraConfig(BaseModel):
     allocation_strategy: Literal["round_robin", "priority_order"] = "priority_order"
 
 
+class DispatcherDedupConfig(BaseModel):
+    """Dispatcher deduplication / reconciliation tunables (spec 076).
+
+    Controls the in-flight guard, startup reconciliation pass, idle-timeout
+    retry budget, wedge-invariant promotion, and multi-PR detection cadence
+    introduced by spec 076.  All defaults reflect the clarification answers
+    recorded in ``specs/076-qa-cycle/spec.md`` (Q1-Q5).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    reconciliation_budget_seconds: float = Field(default=30.0, gt=0.0, le=600.0)
+    drain_budget_seconds: float = Field(default=5.0, ge=0.0, le=60.0)
+    reap_budget_seconds: float = Field(default=5.0, ge=0.0, le=60.0)
+    idle_timeout_retries: int = Field(default=2, ge=0, le=20)
+    idle_timeout_window_hours: int = Field(default=24, ge=1, le=168)
+    # T171: empty-output (e.g. empty architecture plan) is usually a
+    # deterministic model-capability failure on a given card, so the
+    # default budget is low (1 retry, then BLOCK for a human) — bounding
+    # the previous infinite block→requeue churn loop.
+    empty_output_retries: int = Field(default=1, ge=0, le=20)
+    empty_output_window_hours: int = Field(default=24, ge=1, le=168)
+    wedge_block_threshold: int = Field(default=3, ge=1, le=100)
+    wedge_block_window_hours: int = Field(default=24, ge=1, le=168)
+    multi_pr_check_triggers: list[Literal["dispatch", "restart", "webhook"]] = Field(
+        default_factory=lambda: ["dispatch", "restart", "webhook"]
+    )
+
+    @field_validator("multi_pr_check_triggers")
+    @classmethod
+    def _validate_triggers_non_empty(
+        cls, v: list[str]
+    ) -> list[str]:
+        if not v:
+            msg = "multi_pr_check_triggers must contain at least one of: dispatch, restart, webhook"
+            raise ValueError(msg)
+        return v
+
+
 class CoordinareConfiguration(BaseModel):
     """Root configuration combining global defaults + multiple symphonies + orchestra."""
 
@@ -1122,6 +1182,9 @@ class CoordinareConfiguration(BaseModel):
     global_config: ProjectConfiguration
     symphonies: list[SymphonyConfig]
     orchestra: OrchestraConfig = Field(default_factory=OrchestraConfig)
+    # 076 — Dispatcher dedup + reconciliation tunables (top-level so all
+    # symphonies share the same dispatcher invariants).
+    dispatcher_dedup: DispatcherDedupConfig = Field(default_factory=DispatcherDedupConfig)
 
     @field_validator("symphonies")
     @classmethod

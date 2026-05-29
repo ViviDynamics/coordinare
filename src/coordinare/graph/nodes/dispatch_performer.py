@@ -93,7 +93,155 @@ def _resolve_persona_slice_and_behavior(
 
 
 async def dispatch_performer(state: CoordinareState) -> CoordinareState:
-    """Dispatch work to the performer service for the current pipeline stage.
+    """Public entry point for the dispatch graph node.
+
+    076 (FR-001, FR-006, T034): acquire the per-``(card_id, performer_stage)``
+    mutex and check the in-flight guard BEFORE delegating to the underlying
+    dispatch body.  The mutex prevents two concurrent graph invocations
+    from both passing the guard.  The guard prevents a second dispatch when
+    a session is already in flight for the same ``(card, stage)``.
+
+    If either identifier is unavailable (e.g. cold start with no current_card),
+    the dispatch falls through to the existing body unguarded — the
+    body's own missing-prerequisites check will handle it.
+
+    The pending-override path (031) runs before the mutex on purpose:
+    operator skip/restart signals must not be blocked by a stuck mutex,
+    and they explicitly mutate ``performer_stage`` / ``current_card`` so
+    their identifiers are not stable until they have been applied.
+    """
+    from coordinare.graph.nodes.monitor_performer import _apply_pending_override
+    from coordinare.services.dispatch_guard import check_inflight, dispatch_mutex
+
+    # Apply any operator override OUTSIDE the mutex.  Override return values
+    # are honoured directly (some terminate dispatch entirely; the
+    # `dispatching` branch falls through into the guarded body below).
+    override_result = _apply_pending_override(state)
+    if override_result is not None:
+        new_phase = override_result.get("phase")
+        if new_phase != "dispatching":
+            # Override produced a terminal-for-this-cycle state (blocked /
+            # monitoring_pr); honour it directly.  The body in
+            # _dispatch_performer_body will not run.
+            github_for_override = state.get("github_service")
+            return await _apply_override_terminal(override_result, state.get("current_card"), github_for_override)
+        # Override kept us in dispatching with mutated state — proceed.
+        state = override_result
+
+    card = state.get("current_card")
+    performer_stage = str(state.get("performer_stage") or "")
+    card_id = str(card.get("id", "")) if isinstance(card, dict) else ""
+
+    if not card_id or not performer_stage:
+        # No identifiers → cannot acquire a per-card mutex.  The body's
+        # missing-prerequisites branch handles this safely (sets phase=idle).
+        return await _dispatch_performer_body(state)
+
+    async with dispatch_mutex(card_id, performer_stage):
+        guard = await check_inflight(state, card_id, performer_stage)
+        if guard.advice == "refuse":
+            # Another in-flight session for this (card, stage) already
+            # exists and is live.  Return state UNMODIFIED so the graph
+            # loops back through monitor_performer for the existing
+            # session.  The structured log event is emitted from
+            # check_inflight (`dispatch_performer.in_flight_guard_tripped`).
+            return state
+
+        # 076 (T112, FR-024): multi-PR detection at the DISPATCH trigger.
+        # If we'd be about to launch a performer for a card with > 1
+        # open PR on the canonical prefix, refuse with a structured
+        # event so the operator can resolve the divergence manually.
+        try:
+            from coordinare.services.dispatch_guard import detect_multi_pr_divergence
+
+            github = state.get("github_service")
+            current_card = state.get("current_card") or {}
+            pr_url = current_card.get("pr_url") if isinstance(current_card, dict) else None
+            owner, repo = _owner_repo_from_pr_url(pr_url) if pr_url else (None, None)
+            if github is not None and owner and repo:
+                divergence = await detect_multi_pr_divergence(
+                    state,
+                    card_id,
+                    github_service=github,
+                    owner=owner,
+                    repo=repo,
+                    trigger="dispatch",
+                )
+                if divergence is not None:
+                    logger.warning(
+                        "dispatch_performer.multi_pr_divergence_refused",
+                        card_id=card_id,
+                        pr_numbers=divergence.get("pr_numbers"),
+                    )
+                    return state
+        except Exception as _exc:  # pragma: no cover — exercised via test_multi_pr_check_crash
+            # Detection failure MUST NOT block dispatch — that path
+            # historically produced today's bug.  Log and proceed.
+            logger.warning(
+                "dispatch_performer.multi_pr_divergence_check_crashed",
+                card_id=card_id,
+                error=str(_exc),
+            )
+
+        return await _dispatch_performer_body(state)
+
+
+def _owner_repo_from_pr_url(pr_url: str | None) -> tuple[str | None, str | None]:
+    """Extract (owner, repo) from a github.com PR URL.  None on failure."""
+    if not isinstance(pr_url, str):
+        return None, None
+    import re
+    m = re.match(r"https://github\.com/([^/]+)/([^/]+)/pull/\d+", pr_url)
+    if not m:
+        return None, None
+    return m.group(1), m.group(2)
+
+
+async def _apply_override_terminal(
+    override_result: CoordinareState,
+    card: dict[str, Any] | None,
+    github: Any,
+) -> CoordinareState:
+    """Handle the non-`dispatching` outcomes of `_apply_pending_override`.
+
+    Extracted from the original dispatch_performer body so the guarded
+    body itself never sees an override-finalising state.  Mirrors the
+    pre-076 behaviour exactly.
+    """
+    new_phase = override_result.get("phase")
+    if new_phase == "monitoring_pr" and github is not None:
+        effective_card = override_result.get("current_card", card)
+        if not isinstance(effective_card, dict):
+            return override_result
+        card_id = str(effective_card.get("id", ""))
+        pr_url = effective_card.get("pr_url")
+        pr_node_id = effective_card.get("pr_node_id")
+        if pr_url and pr_node_id:
+            try:
+                await github.move_card(card_id, "IN_REVIEW")
+            except Exception:
+                logger.warning("override.skip_move_card_failed", card_id=card_id)
+        else:
+            override_result["phase"] = "system_error"
+            override_result["system_error_count"] = override_result.get("system_error_count", 0) + 1
+            override_result["system_error_reason"] = (
+                "Skip override reached final stage but pr_url or pr_node_id is missing"
+            )
+            override_result["system_error_last_at"] = datetime.now(UTC)
+            override_result["system_error_notified"] = False
+            updated_card = override_result.get("current_card")
+            if isinstance(updated_card, dict):
+                previous_status = updated_card.get("previous_status")
+                if previous_status is not None:
+                    updated_card["status"] = previous_status
+                override_result["current_card"] = updated_card
+        return override_result
+    # Blocked or any other non-dispatching terminal — return as-is.
+    return override_result
+
+
+async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
+    """Original dispatch_performer body (pre-076 logic).
 
     Reads ``performer_stage`` from state, resolves the service from
     ``performer_services[performer_stage]``, performs a health check,
@@ -102,55 +250,24 @@ async def dispatch_performer(state: CoordinareState) -> CoordinareState:
 
     If the resolved service is ``None`` the stage is skipped by calling
     ``_advance_stage`` from ``monitor_performer``.
+
+    Called by the public ``dispatch_performer`` only after the in-flight
+    guard + per-card mutex have authorised the dispatch (T034).  The
+    pending-override handling that used to live here has been hoisted
+    into ``dispatch_performer`` so the override path runs outside the
+    mutex (overrides MUST NOT block on a stuck dispatch).
     """
     # Lazy import to avoid circular dependency -- monitor_performer is created
     # in parallel and will exist by the time this node is actually invoked.
-    from coordinare.graph.nodes.monitor_performer import _advance_stage, _apply_pending_override
+    from coordinare.graph.nodes.monitor_performer import _advance_stage
 
     card: dict[str, Any] | None = state.get("current_card")
     github = state.get("github_service")
 
-    # 031: Check for a pending human override before dispatching.
-    # Done after card/github extraction so skip-final can move the card.
-    override_result = _apply_pending_override(state)
-    if override_result is not None:
-        new_phase = override_result.get("phase")
-        if new_phase == "dispatching":
-            # Skip/restart kept us in dispatching — continue and dispatch
-            # for the updated performer_stage in this invocation.
-            state = override_result
-        elif new_phase == "monitoring_pr" and github is not None:
-            # Skip on final stage — move card to IN_REVIEW, validate PR fields.
-            effective_card = override_result.get("current_card", card)
-            if not isinstance(effective_card, dict):
-                return override_result
-            card_id = str(effective_card.get("id", ""))
-            pr_url = effective_card.get("pr_url")
-            pr_node_id = effective_card.get("pr_node_id")
-            if pr_url and pr_node_id:
-                try:
-                    await github.move_card(card_id, "IN_REVIEW")
-                except Exception:
-                    logger.warning("override.skip_move_card_failed", card_id=card_id)
-            else:
-                override_result["phase"] = "system_error"
-                override_result["system_error_count"] = state.get("system_error_count", 0) + 1
-                override_result["system_error_reason"] = (
-                    "Skip override reached final stage but pr_url or pr_node_id is missing"
-                )
-                override_result["system_error_last_at"] = datetime.now(UTC)
-                override_result["system_error_notified"] = False
-                # Restore card status — _advance_stage set IN_REVIEW but we never moved it.
-                updated_card = override_result.get("current_card")
-                if isinstance(updated_card, dict):
-                    previous_status = updated_card.get("previous_status")
-                    if previous_status is not None:
-                        updated_card["status"] = previous_status
-                    override_result["current_card"] = updated_card
-            return override_result
-        else:
-            # Non-dispatching phase (blocked, etc.) — return early.
-            return override_result
+    # 076 (T034): The pending-override handler used to live here.  It has
+    # been hoisted into the public ``dispatch_performer`` wrapper so the
+    # override path runs OUTSIDE the per-card mutex.  By the time this
+    # body runs, the override (if any) has already been applied to state.
     performer_stage: str = state.get("performer_stage", "")  # type: ignore[assignment]
     performer_services: dict[str, Any] = state.get("performer_services", {})  # type: ignore[assignment]
 

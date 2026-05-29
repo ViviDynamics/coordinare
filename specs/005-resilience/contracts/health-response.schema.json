@@ -39,6 +39,11 @@
     "uptime_seconds": {
       "type": "number",
       "minimum": 0
+    },
+    "daemon_started_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 timestamp captured once at daemon process start (spec 076 FR-009). Used as the `coordinare.daemon_started_at` Docker label on every performer container the daemon launches; the reconciliation pass uses this on subsequent restarts to distinguish containers launched by this daemon process from those left over from a prior process."
     }
   },
   "$defs": {

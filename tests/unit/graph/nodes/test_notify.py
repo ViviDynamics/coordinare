@@ -19,7 +19,7 @@ async def test_notify_dispatches_event() -> None:
         "description": "Task",
     }
     state["notification_service"] = fake
-    state["phase"] = "dispatching"
+    state["phase"] = "monitoring_performer"  # real card_dispatched phase (held "dispatching" is now suppressed)
 
     result = await notify(state)
 
@@ -41,7 +41,7 @@ async def test_notify_uses_card_id_for_dedup_key_when_available() -> None:
         "description": "Task",
     }
     state["notification_service"] = fake
-    state["phase"] = "dispatching"
+    state["phase"] = "monitoring_performer"  # real card_dispatched phase (held "dispatching" is now suppressed)
 
     await notify(state)
 
@@ -251,7 +251,7 @@ async def test_notify_performer_stage_none_does_not_leak_string_none() -> None:
         "previous_status": "TODO",
     }
     state["notification_service"] = fake
-    state["phase"] = "dispatching"
+    state["phase"] = "monitoring_performer"  # real card_dispatched phase (held "dispatching" is now suppressed)
     state["performer_stage"] = None  # explicit None, not missing
 
     await notify(state)

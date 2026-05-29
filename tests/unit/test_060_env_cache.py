@@ -1128,6 +1128,257 @@ class TestPollBootstrapCompletion:
         ec_svc.on_bootstrap_complete.assert_called_once_with("alpha", False, daemon._state)
 
     @pytest.mark.asyncio
+    async def test_budget_exhausted_reaps_container_and_marks_failure(self, monkeypatch) -> None:
+        """076 (live QA #150): a bootstrap that never reports terminal status
+        must be bounded by ``bootstrap_max_seconds`` — the loop stops at the
+        derived attempt cap, reaps the container, and marks failure (which
+        unblocks dispatch; the next cycle re-dispatches).
+        """
+        import coordinare.daemon as daemon_mod
+
+        daemon = _make_daemon_for_env_cache()
+        # 20s budget / 10s poll = 2 attempts, then the timeout/reap path.
+        cfg = MagicMock()
+        cfg.bootstrap_max_seconds = 20
+        cfg.bootstrap_idle_timeout_seconds = 0  # disable idle reap — testing the wall-clock path
+        daemon._state["coordinare_config"] = cfg
+
+        svc = MagicMock()
+        svc.check_status = AsyncMock(return_value={"status": "working"})  # never terminal
+        ec_svc = MagicMock()
+
+        # Fake docker subprocesses (logs snapshot each iter + the final reap).
+        stop_calls: list[tuple] = []
+
+        class _FakeProc:
+            def __init__(self, argv):
+                self._argv = argv
+
+            async def communicate(self):
+                return (b"", b"")
+
+            async def wait(self):
+                return 0
+
+        async def _fake_exec(*argv, **kwargs):
+            if "stop" in argv:
+                stop_calls.append(argv)
+            return _FakeProc(argv)
+
+        monkeypatch.setattr(daemon_mod.asyncio, "create_subprocess_exec", _fake_exec)
+
+        await daemon._poll_bootstrap_completion(
+            svc, "job-1", "alpha", ec_svc, container_id="ctr-hung-deadbeef"
+        )
+
+        # check_status polled exactly the budgeted number of times, never more.
+        assert svc.check_status.await_count == 2
+        # Container was explicitly reaped (docker stop) at the cap.
+        assert any("stop" in argv and "ctr-hung-deadbeef" in argv for argv in stop_calls)
+        # Failure recorded so the cache stays un-ready and dispatch unblocks.
+        ec_svc.on_bootstrap_complete.assert_called_once_with("alpha", False, daemon._state)
+
+    @pytest.mark.asyncio
+    async def test_sub_10s_budget_clamps_to_one_attempt(self, monkeypatch) -> None:
+        """076: a budget under one poll interval (10s) clamps to 1 attempt
+        rather than 0 (which would skip polling entirely)."""
+        import coordinare.daemon as daemon_mod
+
+        daemon = _make_daemon_for_env_cache()
+        cfg = MagicMock()
+        cfg.bootstrap_max_seconds = 5  # 5 // 10 == 0 -> clamped to 1
+        cfg.bootstrap_idle_timeout_seconds = 0
+        daemon._state["coordinare_config"] = cfg
+
+        svc = MagicMock()
+        svc.check_status = AsyncMock(return_value={"status": "working"})
+        ec_svc = MagicMock()
+
+        async def _fake_exec(*argv, **kwargs):
+            class _P:
+                async def communicate(self):
+                    return (b"", b"")
+
+                async def wait(self):
+                    return 0
+
+            return _P()
+
+        monkeypatch.setattr(daemon_mod.asyncio, "create_subprocess_exec", _fake_exec)
+
+        await daemon._poll_bootstrap_completion(svc, "j", "alpha", ec_svc, container_id="c")
+
+        assert svc.check_status.await_count == 1
+        ec_svc.on_bootstrap_complete.assert_called_once_with("alpha", False, daemon._state)
+
+    @pytest.mark.asyncio
+    async def test_reap_failure_is_non_fatal(self, monkeypatch) -> None:
+        """076: if the docker-stop reap itself fails, the bootstrap is still
+        marked failed (the symphony must not stay wedged on a reap error)."""
+        import coordinare.daemon as daemon_mod
+
+        daemon = _make_daemon_for_env_cache()
+        cfg = MagicMock()
+        cfg.bootstrap_max_seconds = 10  # 1 attempt
+        cfg.bootstrap_idle_timeout_seconds = 0
+        daemon._state["coordinare_config"] = cfg
+
+        svc = MagicMock()
+        svc.check_status = AsyncMock(return_value={"status": "working"})
+        ec_svc = MagicMock()
+
+        async def _fake_exec(*argv, **kwargs):
+            if "stop" in argv:
+                raise RuntimeError("docker daemon unreachable")
+
+            class _P:
+                async def communicate(self):
+                    return (b"", b"")
+
+                async def wait(self):
+                    return 0
+
+            return _P()
+
+        monkeypatch.setattr(daemon_mod.asyncio, "create_subprocess_exec", _fake_exec)
+
+        await daemon._poll_bootstrap_completion(svc, "j", "alpha", ec_svc, container_id="c-stuck")
+
+        ec_svc.on_bootstrap_complete.assert_called_once_with("alpha", False, daemon._state)
+
+    @pytest.mark.asyncio
+    async def test_idle_reap_fires_when_no_log_progress(self, monkeypatch) -> None:
+        """076 idle reap: a bootstrap whose meaningful log output is frozen for
+        bootstrap_idle_timeout_seconds is reaped early — well before the
+        wall-clock budget — and marked failed."""
+        import coordinare.daemon as daemon_mod
+
+        daemon = _make_daemon_for_env_cache()
+        cfg = MagicMock()
+        cfg.bootstrap_max_seconds = 3600  # large: wall-clock must NOT fire here
+        cfg.bootstrap_idle_timeout_seconds = 30  # 3 idle polls -> reap
+        daemon._state["coordinare_config"] = cfg
+
+        svc = MagicMock()
+        svc.check_status = AsyncMock(return_value={"status": "working"})  # never terminal
+        ec_svc = MagicMock()
+
+        stop_calls: list[tuple] = []
+
+        # Constant, poll-noise-only logs => no meaningful progress between polls.
+        frozen_logs = (
+            b'INFO:     172.0.0.1:1 - "GET /jobs/j HTTP/1.1" 200 OK\n'
+            b'INFO:     172.0.0.1:2 - "GET /jobs/j HTTP/1.1" 200 OK\n'
+        )
+
+        async def _fake_exec(*argv, **kwargs):
+            if "stop" in argv:
+                stop_calls.append(argv)
+
+            class _P:
+                async def communicate(self):
+                    return (frozen_logs, b"")
+
+                async def wait(self):
+                    return 0
+
+            return _P()
+
+        monkeypatch.setattr(daemon_mod.asyncio, "create_subprocess_exec", _fake_exec)
+
+        await daemon._poll_bootstrap_completion(svc, "j", "alpha", ec_svc, container_id="ctr-idle")
+
+        # Reaped on idle (attempts 0,1,2 poll; attempt 3 = 30s idle -> reap before check_status).
+        assert svc.check_status.await_count == 3
+        assert any("stop" in argv and "ctr-idle" in argv for argv in stop_calls)
+        ec_svc.on_bootstrap_complete.assert_called_once_with("alpha", False, daemon._state)
+
+    @pytest.mark.asyncio
+    async def test_idle_reap_not_triggered_while_logs_progress(self, monkeypatch) -> None:
+        """076 idle reap: a slow-but-progressing bootstrap (new meaningful log
+        lines each poll) is NOT reaped even past the idle window — it completes
+        normally."""
+        import coordinare.daemon as daemon_mod
+
+        daemon = _make_daemon_for_env_cache()
+        cfg = MagicMock()
+        cfg.bootstrap_max_seconds = 3600
+        cfg.bootstrap_idle_timeout_seconds = 30
+        daemon._state["coordinare_config"] = cfg
+        daemon._state["performer_services"] = {}
+
+        stop_calls: list[tuple] = []
+        counter = {"n": 0}
+
+        async def _fake_exec(*argv, **kwargs):
+            if "stop" in argv:
+                stop_calls.append(argv)
+
+            class _P:
+                async def communicate(self):
+                    # New meaningful (non-poll) line every iteration -> progress.
+                    counter["n"] += 1
+                    body = (
+                        f'2026-05-29 18:00:0{counter["n"]} [info] claude_code shim request n={counter["n"]}\n'
+                        'INFO:     172.0.0.1:1 - "GET /jobs/j HTTP/1.1" 200 OK\n'
+                    ).encode()
+                    return (body, b"")
+
+                async def wait(self):
+                    return 0
+
+            return _P()
+
+        monkeypatch.setattr(daemon_mod.asyncio, "create_subprocess_exec", _fake_exec)
+
+        # Terminal only after 6 polls — well past the 30s idle window — proving
+        # progress kept idle-reap from firing.
+        statuses = [{"status": "working"}] * 5 + [{"status": "env_bootstrap_complete"}]
+        svc = MagicMock()
+        svc.check_status = AsyncMock(side_effect=statuses)
+        ec_svc = MagicMock()
+
+        await daemon._poll_bootstrap_completion(svc, "j", "alpha", ec_svc, container_id="ctr-slow")
+
+        assert not stop_calls  # never reaped
+        ec_svc.on_bootstrap_complete.assert_called_once()
+        assert ec_svc.on_bootstrap_complete.call_args.args[1] is True  # completed successfully
+
+    @pytest.mark.asyncio
+    async def test_idle_reap_disabled_when_timeout_zero(self, monkeypatch) -> None:
+        """076 idle reap: bootstrap_idle_timeout_seconds=0 disables idle reaping
+        (wall-clock budget remains the only bound)."""
+        import coordinare.daemon as daemon_mod
+
+        daemon = _make_daemon_for_env_cache()
+        cfg = MagicMock()
+        cfg.bootstrap_max_seconds = 20  # 2 attempts -> wall-clock reap
+        cfg.bootstrap_idle_timeout_seconds = 0  # idle disabled
+        daemon._state["coordinare_config"] = cfg
+
+        svc = MagicMock()
+        svc.check_status = AsyncMock(return_value={"status": "working"})
+        ec_svc = MagicMock()
+
+        async def _fake_exec(*argv, **kwargs):
+            class _P:
+                async def communicate(self):
+                    return (b"", b"")  # frozen, but idle disabled => not reaped early
+
+                async def wait(self):
+                    return 0
+
+            return _P()
+
+        monkeypatch.setattr(daemon_mod.asyncio, "create_subprocess_exec", _fake_exec)
+
+        await daemon._poll_bootstrap_completion(svc, "j", "alpha", ec_svc, container_id="c")
+
+        # Ran the full 2-attempt wall-clock budget (idle did not short-circuit it).
+        assert svc.check_status.await_count == 2
+        ec_svc.on_bootstrap_complete.assert_called_once_with("alpha", False, daemon._state)
+
+    @pytest.mark.asyncio
     async def test_check_status_exception_marks_failure(self) -> None:
         daemon = _make_daemon_for_env_cache()
         svc = MagicMock()

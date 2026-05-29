@@ -151,6 +151,14 @@ class CardSession(TypedDict, total=False):
     # Cleared on every PASS; stale on BOUNCE/HOLD/ESCALATE (check the
     # latest_ci_gate_decision verdict before consuming).
     ci_gate_advisory_failures: list[dict[str, Any]]
+    # 076 dispatcher-dedup state (schema v7+).  All five default to safe
+    # empty values; live on both CardSession and PersistedSession so they
+    # survive daemon restarts.  See specs/076-qa-cycle/data-model.md §8.
+    idle_timeout_retries: dict[str, dict[str, Any]]
+    pr_artefacts_recorded_at: datetime | None
+    multi_pr_divergence: dict[str, Any] | None
+    wedge_count_window: dict[str, list[datetime]]
+    reconciliation_decisions_last_startup: dict[str, str]
 
 
 # Fields that live on both CardSession and CoordinareState (flat).
@@ -203,6 +211,12 @@ _SESSION_FIELDS: tuple[str, ...] = (
     "latest_ci_gate_decision",
     "ci_gate_rollup_signature",
     "ci_gate_advisory_failures",
+    # 076 dispatcher dedup
+    "idle_timeout_retries",
+    "pr_artefacts_recorded_at",
+    "multi_pr_divergence",
+    "wedge_count_window",
+    "reconciliation_decisions_last_startup",
 )
 
 
@@ -256,6 +270,12 @@ def create_session_from_card(card: dict[str, Any]) -> CardSession:
         latest_ci_gate_decision=None,
         ci_gate_rollup_signature=None,
         ci_gate_advisory_failures=[],
+        # 076 dispatcher dedup
+        idle_timeout_retries={},
+        pr_artefacts_recorded_at=None,
+        multi_pr_divergence=None,
+        wedge_count_window={},
+        reconciliation_decisions_last_startup={},
     )
 
 

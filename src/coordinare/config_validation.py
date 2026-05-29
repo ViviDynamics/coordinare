@@ -283,8 +283,9 @@ def pre_validate_raw(
 
     known_fields = frozenset(ProjectConfiguration.model_fields.keys())
     deprecated_keys = frozenset(DEPRECATION_REGISTRY.keys())
-    # Allow 057 top-level keys alongside global config fields
-    multi_symphony_keys = frozenset({"symphonies", "orchestra"})
+    # Allow 057 top-level keys alongside global config fields, and the
+    # 076 dispatcher_dedup top-level block.
+    multi_symphony_keys = frozenset({"symphonies", "orchestra", "dispatcher_dedup"})
     all_known = known_fields | deprecated_keys | multi_symphony_keys
 
     errors: list[ConfigFieldError] = []

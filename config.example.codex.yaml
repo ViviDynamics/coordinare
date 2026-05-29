@@ -107,3 +107,17 @@ performers:
     effort: low
     temperature: 0.0
     max_tokens: 2048
+
+# 076 — Dispatcher dedup + reconciliation tunables (defaults from spec 076 Q1-Q5).
+dispatcher_dedup:
+  enabled: true
+  reconciliation_budget_seconds: 30
+  drain_budget_seconds: 5
+  reap_budget_seconds: 5
+  idle_timeout_retries: 2
+  idle_timeout_window_hours: 24
+  empty_output_retries: 1
+  empty_output_window_hours: 24
+  wedge_block_threshold: 3
+  wedge_block_window_hours: 24
+  multi_pr_check_triggers: [dispatch, restart, webhook]

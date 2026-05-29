@@ -1593,3 +1593,73 @@ class GitHubService:
         if isinstance(obj, dict):
             return obj.get("oid")
         return None
+
+    async def list_prs_by_branch_prefix(
+        self,
+        owner: str,
+        repo: str,
+        prefix: str,
+        *,
+        state: str = "OPEN",
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """076 (T110, FR-024): list open PRs whose head ref starts with
+        ``prefix``.  Used by multi-PR divergence detection — if more than
+        one open PR matches ``coordinare/<card_node_id>/``, the card is
+        divergent and dispatch must refuse until the operator resolves.
+
+        Returns a list of ``{"number", "url", "head_ref"}`` dicts.  Empty
+        list on any error or zero matches (callers treat as "no
+        divergence detected").
+
+        Uses GraphQL because REST does not support arbitrary head-ref
+        prefix filtering.  Client-side filters the result by branch
+        prefix since GraphQL does not have a native prefix filter
+        either; the ``limit=20`` cap is the practical maximum.
+        """
+        query = (
+            "query($owner:String!,$repo:String!,$states:[PullRequestState!]) {"
+            " repository(owner:$owner, name:$repo) {"
+            "  pullRequests(first:50, states:$states, orderBy:{field:CREATED_AT,direction:DESC}) {"
+            "   nodes { number url headRefName }"
+            " }}}"
+        )
+        variables: dict[str, Any] = {
+            "owner": owner,
+            "repo": repo,
+            "states": [state],
+        }
+        try:
+            result = await self._guarded_execute(query, variables)
+        except Exception as exc:
+            logger.warning(
+                "github.list_prs_by_branch_prefix_failed",
+                owner=owner,
+                repo=repo,
+                prefix=prefix,
+                error=str(exc),
+            )
+            return []
+
+        nodes = (
+            result.get("repository", {}).get("pullRequests", {}).get("nodes", [])
+            if isinstance(result, dict)
+            else []
+        )
+        if not isinstance(nodes, list):
+            return []
+        matches: list[dict[str, Any]] = []
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            head_ref = node.get("headRefName")
+            if not isinstance(head_ref, str) or not head_ref.startswith(prefix):
+                continue
+            matches.append({
+                "number": node.get("number"),
+                "url": node.get("url"),
+                "head_ref": head_ref,
+            })
+            if len(matches) >= limit:
+                break
+        return matches

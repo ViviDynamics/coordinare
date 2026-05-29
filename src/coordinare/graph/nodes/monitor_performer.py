@@ -425,6 +425,79 @@ def _is_workflow_push_permission_error(reason: str) -> bool:
     )
 
 
+def _record_pr_artefacts(
+    state: CoordinareState,
+    status: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """076 (T073) FR-015 / FR-016: write through any new PR identifiers
+    reported by the performer.
+
+    Two distinct write paths:
+    1. RETURNS ``{"current_card": <merged card dict>}`` for the caller
+       (``_advance_stage`` or the DONE branch) to merge into the state
+       update dict it returns.  That merge updates the flat
+       ``state["current_card"]`` (which mirrors ``state["active_card"]``
+       in the same-cycle view).  Empty dict returned if no artefact
+       fields were present.
+    2. SIDE-EFFECT: directly mutates
+       ``state["active_sessions"][card_id]["current_card"]`` AND
+       ``state["active_sessions"][card_id]["pr_artefacts_recorded_at"]``
+       so the persisted-snapshot view is updated immediately and a
+       daemon restart loads the new PR identifiers.
+
+    No-ops on unparseable / missing status.  Logs
+    ``monitor_performer.pr_artefacts_recorded`` when any field is
+    actually written so operators can grep for the write-through.
+    """
+    if status is None:
+        return {}
+    pr_url = status.get("pr_url")
+    pr_node_id = status.get("pr_node_id")
+    pr_number = status.get("pr_number")
+    head_sha = status.get("head_sha")
+    pushed_branch = status.get("pushed_branch")
+    plan_path = status.get("plan_path")
+
+    if not any((pr_url, pr_node_id, pr_number, head_sha, pushed_branch, plan_path)):
+        return {}
+
+    updates: dict[str, Any] = {}
+    card = dict(state.get("current_card") or {})
+    if pr_url:
+        card["pr_url"] = pr_url
+    if pr_node_id:
+        card["pr_node_id"] = pr_node_id
+    if pr_number is not None:
+        card["pr_number"] = pr_number
+    if head_sha:
+        card["head_after"] = head_sha
+    if pushed_branch:
+        card["pushed_branch"] = pushed_branch
+    if plan_path:
+        card["plan_path"] = plan_path
+    updates["current_card"] = card
+
+    # Mirror to active_sessions[card_id] so a daemon restart loads the
+    # new PR identifiers from snapshot, not the stale ones.
+    card_id = str(card.get("id", ""))
+    if card_id:
+        sessions = state.get("active_sessions")
+        if isinstance(sessions, dict) and card_id in sessions and isinstance(sessions[card_id], dict):
+            sessions[card_id]["current_card"] = card
+            sessions[card_id]["pr_artefacts_recorded_at"] = datetime.now(UTC)
+
+    logger.info(
+        "monitor_performer.pr_artefacts_recorded",
+        card_id=card_id,
+        pr_url=pr_url,
+        pr_node_id=pr_node_id,
+        pr_number=pr_number,
+        head_sha=head_sha,
+        pushed_branch=pushed_branch,
+    )
+    return updates
+
+
 def _advance_stage(state: CoordinareState, status: dict[str, Any] | None = None) -> dict[str, Any]:
     """Compute the state update to advance the lifecycle to the next role.
 
@@ -448,43 +521,29 @@ def _advance_stage(state: CoordinareState, status: dict[str, Any] | None = None)
         # More roles remain — advance to the next stage.
         # Persist PR identifiers from the current role's status so they're
         # available to subsequent roles (e.g. reviewer needs the PR URL).
+        # 076 (T073, FR-015 + FR-016): _record_pr_artefacts also mirrors
+        # to active_sessions[card_id] so a daemon restart loads the new
+        # PR identifiers from snapshot rather than the stale ones.
         updates: dict[str, Any] = {
             "performer_stage": sequence[idx + 1],
             "phase": "dispatching",
             "agent_dispatch": {},
             "agent_dispatch_at": None,
         }
-        if status is not None:
-            card = dict(state.get("current_card") or {})
-            changed = False
-            pr_url = status.get("pr_url")
-            pr_node_id = status.get("pr_node_id")
-            plan_path = status.get("plan_path")
-            if pr_url:
-                card["pr_url"] = pr_url
-                changed = True
-            if pr_node_id:
-                card["pr_node_id"] = pr_node_id
-                changed = True
-            if plan_path:
-                card["plan_path"] = plan_path
-                changed = True
-            if changed:
-                updates["current_card"] = card
+        artefact_updates = _record_pr_artefacts(state, status)
+        if "current_card" in artefact_updates:
+            updates["current_card"] = artefact_updates["current_card"]
         return updates
 
     # All roles complete — transition to human review.
-    card: dict[str, Any] = dict(state.get("current_card") or {})
-    if status is not None:
-        pr_url = status.get("pr_url")
-        pr_node_id = status.get("pr_node_id")
-        plan_path = status.get("plan_path")
-        if pr_url:
-            card["pr_url"] = pr_url
-        if pr_node_id:
-            card["pr_node_id"] = pr_node_id
-        if plan_path:
-            card["plan_path"] = plan_path
+    # 076 (T073): write through any new PR identifiers BEFORE
+    # transitioning so monitoring_pr sees the correct head SHA.
+    artefact_updates = _record_pr_artefacts(state, status)
+    card: dict[str, Any] = (
+        artefact_updates.get("current_card")
+        if isinstance(artefact_updates.get("current_card"), dict)
+        else dict(state.get("current_card") or {})
+    )
 
     # 043: CI lint gate — defence-in-depth before transitioning to
     # monitoring_pr.  Run the detected lint command on the workspace if
@@ -1999,6 +2058,126 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
             state["open_questions"] = [advice]
             return state
 
+        # --- Idle-timeout (076 FR-019 / clarification Q3) ---
+        # Performers that hit the claude-code reader idle timeout surface
+        # the signal in one of three shapes (see
+        # agent/performer/src/performer/backends/claude_code.py):
+        #   1. explicit ``status=="idle_timeout"`` outcome (future-proof);
+        #   2. ``stop_reason=="idle_timeout"`` field (the done-with-output
+        #      case — handled as terminal-success elsewhere, but we still
+        #      detect it here as a guard); or
+        #   3. ``status=="error"`` with an ``error_reason`` of the form
+        #      ``"claude CLI idle for 600s with no terminal event"`` (the
+        #      no-output case — what card #101 actually hit).
+        # The reason string says "idle for Ns", NOT "idle timeout", so we
+        # match on the robust signature: any reason mentioning "idle" with
+        # either "no terminal" or "idle for".  Route matches through the
+        # rolling-window retry counter: 2 retries per (card, stage) per
+        # 24h, then BLOCKED.
+        _reason_lc = str(status.get("reason", "")).lower()
+        _is_idle_reason = "idle" in _reason_lc and (
+            "no terminal" in _reason_lc
+            or "idle for" in _reason_lc
+            or "idle timeout" in _reason_lc
+        )
+        _is_idle_timeout = (
+            marker == "idle_timeout"
+            or str(status.get("stop_reason", "")).lower() == "idle_timeout"
+            or (marker == "error" and _is_idle_reason)
+        )
+        if _is_idle_timeout:
+            from coordinare.services.retry_counter import record_idle_timeout
+
+            _dd_cfg = getattr(state.get("coordinare_config"), "dispatcher_dedup", None)
+            _budget = int(getattr(_dd_cfg, "idle_timeout_retries", 2))
+            _window_h = int(getattr(_dd_cfg, "idle_timeout_window_hours", 24))
+            decision = record_idle_timeout(
+                state, card_id, stage, budget=_budget, window_hours=_window_h,
+            )
+            if decision == "retry":
+                # 076 (FR-007): drain the prior container before fresh
+                # dispatch.  Best-effort; tolerates a hung drain.
+                # Drain/reap budgets come from dispatcher_dedup config
+                # so an operator can tune them per-deployment.
+                try:
+                    from coordinare.services.dispatch_guard import drain_or_reap
+                    from coordinare.services.docker_executor import DockerExecutor
+
+                    prior_session_id = (state.get("agent_dispatch") or {}).get("session_id")
+                    if isinstance(prior_session_id, str) and prior_session_id:
+                        perf_svc = (state.get("performer_services") or {}).get(stage)
+                        _drain_b = float(getattr(_dd_cfg, "drain_budget_seconds", 5.0))
+                        _reap_b = float(getattr(_dd_cfg, "reap_budget_seconds", 5.0))
+                        await drain_or_reap(
+                            prior_session_id,
+                            service=perf_svc,
+                            docker_executor=DockerExecutor(),
+                            drain_budget=_drain_b,
+                            reap_budget=_reap_b,
+                        )
+                except Exception:  # pragma: no cover — defensive: drain failure must not block the retry
+                    pass
+                state["performer_stage"] = stage
+                state["phase"] = "dispatching"
+                state["agent_dispatch"] = {}
+                state["agent_dispatch_at"] = None
+                return state
+            # decision == "block" — exhausted retry budget; move to BLOCKED
+            state["phase"] = "blocked"
+            state["open_questions"] = [
+                f"Performer stage '{stage}' idle-timed-out the configured "
+                f"max ({_budget}) retries in {_window_h}h for card {card_id}. "
+                "Operator intervention required."
+            ]
+            return state
+
+        # --- Empty-output terminal error (076 T171) ---
+        # A performer that returns a terminal error whose reason indicates
+        # empty / unusable output (e.g. "Backend produced an empty
+        # architecture plan", "produced an empty implementation") would,
+        # under the pre-T171 path, go blocked → handle_blocked finds no
+        # questions → requeue → re-dispatch → empty again — an infinite
+        # churn loop that re-runs a full (often 15+ min) stage every cycle
+        # and pings Slack each time.  Route it through a low-budget
+        # retry counter (default 1) so a deterministic capability failure
+        # fails fast to BLOCKED-for-human instead of looping.  Populating
+        # open_questions on the BLOCK keeps handle_blocked from requeuing.
+        _empty_reason_lc = str(status.get("reason", "")).lower()
+        _is_empty_output = marker == "error" and (
+            "empty architecture plan" in _empty_reason_lc
+            or "produced an empty" in _empty_reason_lc
+            or "empty implementation" in _empty_reason_lc
+            or "empty output" in _empty_reason_lc
+        )
+        if _is_empty_output:
+            from coordinare.services.retry_counter import record_empty_output
+
+            _dd_cfg = getattr(state.get("coordinare_config"), "dispatcher_dedup", None)
+            _eo_budget = int(getattr(_dd_cfg, "empty_output_retries", 1))
+            _eo_window = int(getattr(_dd_cfg, "empty_output_window_hours", 24))
+            decision = record_empty_output(
+                state, card_id, stage, budget=_eo_budget, window_hours=_eo_window,
+            )
+            if decision == "retry":
+                state["performer_stage"] = stage
+                state["phase"] = "dispatching"
+                state["agent_dispatch"] = {}
+                state["agent_dispatch_at"] = None
+                return state
+            # Budget exhausted → BLOCK for a human (do NOT requeue).  The
+            # open_questions entry makes handle_blocked keep the card
+            # blocked instead of re-dispatching it.
+            state["phase"] = "blocked"
+            state["open_questions"] = [
+                f"Performer stage '{stage}' produced empty/unusable output "
+                f"({str(status.get('reason', '')).strip()[:160]}) on "
+                f"{_eo_budget + 1} attempt(s) for card {card_id}. This is "
+                "typically a model-capability limit on a card too large for "
+                "the configured model — consider a stronger model for this "
+                "role or splitting the card. Operator intervention required."
+            ]
+            return state
+
         # --- Error status (FR-006) ---
         if marker == "error":
             reason = str(status.get("reason", ""))
@@ -2173,6 +2352,37 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
                 card_id=card_id,
                 has_next_focus=bool(focus_text),
             )
+            # 076 (T085, FR-007 / clarification Q5): drain (then reap) the
+            # prior container BEFORE clearing agent_dispatch.  The relay
+            # handoff must not enter a state where agent_dispatch={} but a
+            # container under the prior session_id is still making LLM
+            # calls.  drain_or_reap has a hard cap of drain+reap budget
+            # (default 5s+5s = 10s); budgets are pulled from
+            # dispatcher_dedup config for per-deployment tuning.
+            try:
+                from coordinare.services.dispatch_guard import drain_or_reap
+                from coordinare.services.docker_executor import DockerExecutor
+
+                prior_session_id = (state.get("agent_dispatch") or {}).get("session_id")
+                if isinstance(prior_session_id, str) and prior_session_id:
+                    perf_svc = (state.get("performer_services") or {}).get(stage)
+                    _dd_cfg2 = getattr(state.get("coordinare_config"), "dispatcher_dedup", None)
+                    _drain_b = float(getattr(_dd_cfg2, "drain_budget_seconds", 5.0))
+                    _reap_b = float(getattr(_dd_cfg2, "reap_budget_seconds", 5.0))
+                    await drain_or_reap(
+                        prior_session_id,
+                        service=perf_svc,
+                        docker_executor=DockerExecutor(),
+                        drain_budget=_drain_b,
+                        reap_budget=_reap_b,
+                    )
+            except Exception as _exc:  # pragma: no cover — defensive
+                logger.warning(
+                    "monitor_performer.relay_drain_failed",
+                    card_id=card_id,
+                    performer_stage=stage,
+                    error=str(_exc),
+                )
             state["relay_feedback"] = [  # type: ignore[typeddict-unknown-key]
                 {"body": relay_body, "author_login": "coordinare"}
             ]

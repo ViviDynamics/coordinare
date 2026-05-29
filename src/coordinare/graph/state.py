@@ -308,6 +308,14 @@ def initial_state() -> CoordinareState:
         "env_cache_service": None,
         "performer_services_by_id": {},
         "card_checks_state": {},
+        # 076 dispatcher dedup — defaults match CardSession initialisation
+        # in coordinare.session.create_session_from_card so a round-trip
+        # through session_to_state / state_to_session is a no-op.
+        "idle_timeout_retries": {},
+        "pr_artefacts_recorded_at": None,
+        "multi_pr_divergence": None,
+        "wedge_count_window": {},
+        "reconciliation_decisions_last_startup": {},
     }
 
 
