@@ -1,0 +1,1132 @@
+[
+  {
+    "role": "architect",
+    "endpoint": "claude-ephemeral",
+    "backend": "claude_code",
+    "model": "spark/glm-4.7-flash:latest",
+    "category": "PASS",
+    "status": "plan_committed",
+    "markers": [
+      "plan_file"
+    ],
+    "detail": "plan=y src_files_changed=0\n0",
+    "judge_correct": true,
+    "judge_quality": 5,
+    "judge_reason": "The agent produced a written design plan without modifying any source files, matching the architect role requirements.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  },
+  {
+    "role": "architect",
+    "endpoint": "codex-ephemeral",
+    "backend": "codex",
+    "model": "spark/glm-4.7-flash:latest",
+    "category": "PASS",
+    "status": "plan_committed",
+    "markers": [
+      "plan_file"
+    ],
+    "detail": "plan=y src_files_changed=0\n0",
+    "judge_correct": true,
+    "judge_quality": 4,
+    "judge_reason": "The agent delivered a written design plan and made no source code changes, fulfilling the architect role.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  },
+  {
+    "role": "architect",
+    "endpoint": "hermes-ephemeral",
+    "backend": "hermes",
+    "model": "spark/glm-4.7-flash:latest",
+    "category": "PASS",
+    "status": "plan_committed",
+    "markers": [
+      "plan_file"
+    ],
+    "detail": "plan=y src_files_changed=0\n0",
+    "judge_correct": true,
+    "judge_quality": 4,
+    "judge_reason": "The agent delivered a written design plan and made no source code changes, meeting the architect role requirements.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  },
+  {
+    "role": "architect",
+    "endpoint": "junie-ephemeral",
+    "backend": "junie",
+    "model": "glm-4.7-flash:latest",
+    "category": "PASS",
+    "status": "plan_committed",
+    "markers": [
+      "plan_file"
+    ],
+    "detail": "plan=y src_files_changed=0\n0",
+    "judge_correct": true,
+    "judge_quality": 4,
+    "judge_reason": "The agent delivered a written design plan and made no source code changes, fulfilling the architect role.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  },
+  {
+    "role": "architect",
+    "endpoint": "openclaw-ephemeral",
+    "backend": "openclaw",
+    "model": "glm-4.7-flash:latest",
+    "category": "PASS",
+    "status": "plan_committed",
+    "markers": [
+      "plan_file"
+    ],
+    "detail": "plan=y src_files_changed=0\n0",
+    "judge_correct": true,
+    "judge_quality": 4,
+    "judge_reason": "The agent delivered a written design plan and made no source code changes, fulfilling the architect role.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  },
+  {
+    "role": "architect",
+    "endpoint": "opencode-ephemeral",
+    "backend": "opencode",
+    "model": "glm-4.7-flash:latest",
+    "category": "PASS",
+    "status": "plan_committed",
+    "markers": [
+      "plan_file"
+    ],
+    "detail": "plan=y src_files_changed=0\n0",
+    "judge_correct": true,
+    "judge_quality": 4,
+    "judge_reason": "The agent delivered a written design plan and made no source code changes, meeting the architect role requirements.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  },
+  {
+    "role": "architect",
+    "endpoint": "pi-ephemeral",
+    "backend": "pi",
+    "model": "spark/glm-4.7-flash:latest",
+    "category": "PASS",
+    "status": "plan_committed",
+    "markers": [
+      "plan_file"
+    ],
+    "detail": "plan=y src_files_changed=0\n0",
+    "judge_correct": true,
+    "judge_quality": 4,
+    "judge_reason": "The agent delivered a written plan and made no source code changes, fulfilling the architect role.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  },
+  {
+    "role": "assessor",
+    "endpoint": "claude-ephemeral",
+    "backend": "claude_code",
+    "model": "spark/glm-4.7-flash:latest",
+    "category": "FAIL_MODEL",
+    "status": "assessment_complete",
+    "markers": [],
+    "detail": "questions=0 sufficient=None",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent failed to flag the request as insufficient and did not ask any clarifying questions.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": "cells/assessor__claude-ephemeral.json"
+  },
+  {
+    "role": "assessor",
+    "endpoint": "codex-ephemeral",
+    "backend": "codex",
+    "model": "spark/glm-4.7-flash:latest",
+    "category": "FAIL_MODEL",
+    "status": "assessment_complete",
+    "markers": [],
+    "detail": "questions=0 sufficient=None",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent failed to deem the request insufficient and did not ask any clarifying questions.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": "cells/assessor__codex-ephemeral.json"
+  },
+  {
+    "role": "assessor",
+    "endpoint": "hermes-ephemeral",
+    "backend": "hermes",
+    "model": "spark/glm-4.7-flash:latest",
+    "category": "FAIL_MODEL",
+    "status": "assessment_complete",
+    "markers": [],
+    "detail": "questions=0 sufficient=None",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent did not flag the request as insufficient nor ask clarifying questions.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": "cells/assessor__hermes-ephemeral.json"
+  },
+  {
+    "role": "assessor",
+    "endpoint": "junie-ephemeral",
+    "backend": "junie",
+    "model": "glm-4.7-flash:latest",
+    "category": "FAIL_MODEL",
+    "status": "assessment_complete",
+    "markers": [],
+    "detail": "questions=0 sufficient=None",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent failed to flag the request as insufficient and did not ask clarifying questions.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": "cells/assessor__junie-ephemeral.json"
+  },
+  {
+    "role": "assessor",
+    "endpoint": "openclaw-ephemeral",
+    "backend": "openclaw",
+    "model": "glm-4.7-flash:latest",
+    "category": "FAIL_MODEL",
+    "status": "assessment_complete",
+    "markers": [],
+    "detail": "questions=0 sufficient=None",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent failed to flag the request as insufficient and did not ask clarifying questions.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": "cells/assessor__openclaw-ephemeral.json"
+  },
+  {
+    "role": "assessor",
+    "endpoint": "opencode-ephemeral",
+    "backend": "opencode",
+    "model": "glm-4.7-flash:latest",
+    "category": "FAIL_MODEL",
+    "status": "assessment_complete",
+    "markers": [],
+    "detail": "questions=0 sufficient=None",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent failed to flag the request as insufficient and did not ask clarifying questions.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": "cells/assessor__opencode-ephemeral.json"
+  },
+  {
+    "role": "assessor",
+    "endpoint": "pi-ephemeral",
+    "backend": "pi",
+    "model": "spark/glm-4.7-flash:latest",
+    "category": "PASS",
+    "status": "blocked",
+    "markers": [
+      "8_questions"
+    ],
+    "detail": "questions=8 sufficient=None",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "blocked",
+    "state": "failed",
+    "log_file": null
+  },
+  {
+    "role": "closer",
+    "endpoint": "claude-ephemeral",
+    "backend": "claude_code",
+    "model": "spark/glm-4.7-flash:latest",
+    "category": "PASS",
+    "status": "changes_requested",
+    "markers": [
+      "changes_requested"
+    ],
+    "detail": "status=changes_requested",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "changes_requested",
+    "state": "failed",
+    "log_file": null
+  },
+  {
+    "role": "closer",
+    "endpoint": "codex-ephemeral",
+    "backend": "codex",
+    "model": "spark/glm-4.7-flash:latest",
+    "category": "PASS",
+    "status": "changes_requested",
+    "markers": [
+      "changes_requested"
+    ],
+    "detail": "status=changes_requested",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "changes_requested",
+    "state": "failed",
+    "log_file": null
+  },
+  {
+    "role": "closer",
+    "endpoint": "hermes-ephemeral",
+    "backend": "hermes",
+    "model": "spark/glm-4.7-flash:latest",
+    "category": "PASS",
+    "status": "changes_requested",
+    "markers": [
+      "changes_requested"
+    ],
+    "detail": "status=changes_requested",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "changes_requested",
+    "state": "failed",
+    "log_file": null
+  },
+  {
+    "role": "closer",
+    "endpoint": "junie-ephemeral",
+    "backend": "junie",
+    "model": "glm-4.7-flash:latest",
+    "category": "PASS",
+    "status": "changes_requested",
+    "markers": [
+      "changes_requested"
+    ],
+    "detail": "status=changes_requested",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "changes_requested",
+    "state": "failed",
+    "log_file": null
+  },
+  {
+    "role": "closer",
+    "endpoint": "openclaw-ephemeral",
+    "backend": "openclaw",
+    "model": "glm-4.7-flash:latest",
+    "category": "PASS",
+    "status": "changes_requested",
+    "markers": [
+      "changes_requested"
+    ],
+    "detail": "status=changes_requested",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "changes_requested",
+    "state": "failed",
+    "log_file": null
+  },
+  {
+    "role": "closer",
+    "endpoint": "opencode-ephemeral",
+    "backend": "opencode",
+    "model": "glm-4.7-flash:latest",
+    "category": "PASS",
+    "status": "changes_requested",
+    "markers": [
+      "changes_requested"
+    ],
+    "detail": "status=changes_requested",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "changes_requested",
+    "state": "failed",
+    "log_file": null
+  },
+  {
+    "role": "closer",
+    "endpoint": "pi-ephemeral",
+    "backend": "pi",
+    "model": "spark/glm-4.7-flash:latest",
+    "category": "PASS",
+    "status": "approved",
+    "markers": [
+      "approved"
+    ],
+    "detail": "status=approved",
+    "judge_correct": true,
+    "judge_quality": 5,
+    "judge_reason": "The agent returned a clear approved verdict as required.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  },
+  {
+    "role": "env_bootstrap",
+    "endpoint": "claude-ephemeral",
+    "backend": "claude_code",
+    "model": "spark/glm-4.7-flash:latest",
+    "category": "PASS",
+    "status": "env_bootstrap_complete",
+    "markers": [
+      "pytest_importable"
+    ],
+    "detail": "status=env_bootstrap_complete pytest=OK",
+    "judge_correct": true,
+    "judge_quality": 5,
+    "judge_reason": "The deterministic signals indicate pytest is OK, confirming the environment was correctly bootstrapped.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  },
+  {
+    "role": "env_bootstrap",
+    "endpoint": "codex-ephemeral",
+    "backend": "codex",
+    "model": "spark/glm-4.7-flash:latest",
+    "category": "PASS",
+    "status": "env_bootstrap_complete",
+    "markers": [
+      "pytest_importable"
+    ],
+    "detail": "status=env_bootstrap_complete pytest=OK",
+    "judge_correct": true,
+    "judge_quality": 5,
+    "judge_reason": "The deterministic signal shows pytest is OK, confirming a successful bootstrap.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  },
+  {
+    "role": "env_bootstrap",
+    "endpoint": "hermes-ephemeral",
+    "backend": "hermes",
+    "model": "spark/glm-4.7-flash:latest",
+    "category": "PASS",
+    "status": "env_bootstrap_complete",
+    "markers": [
+      "pytest_importable"
+    ],
+    "detail": "status=env_bootstrap_complete pytest=OK",
+    "judge_correct": true,
+    "judge_quality": 5,
+    "judge_reason": "The deterministic signal shows status env_bootstrap_complete and pytest=OK, indicating pytest is installed and importable.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  },
+  {
+    "role": "env_bootstrap",
+    "endpoint": "junie-ephemeral",
+    "backend": "junie",
+    "model": "glm-4.7-flash:latest",
+    "category": "PASS",
+    "status": "env_bootstrap_complete",
+    "markers": [
+      "pytest_importable"
+    ],
+    "detail": "status=env_bootstrap_complete pytest=OK",
+    "judge_correct": true,
+    "judge_quality": 5,
+    "judge_reason": "The deterministic signal shows pytest=OK, confirming pytest is installed and importable.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  },
+  {
+    "role": "env_bootstrap",
+    "endpoint": "openclaw-ephemeral",
+    "backend": "openclaw",
+    "model": "glm-4.7-flash:latest",
+    "category": "PASS",
+    "status": "env_bootstrap_complete",
+    "markers": [
+      "pytest_importable"
+    ],
+    "detail": "status=env_bootstrap_complete pytest=OK",
+    "judge_correct": true,
+    "judge_quality": 5,
+    "judge_reason": "The status shows env_bootstrap_complete and pytest=OK, indicating pytest is installed and importable.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  },
+  {
+    "role": "env_bootstrap",
+    "endpoint": "opencode-ephemeral",
+    "backend": "opencode",
+    "model": "glm-4.7-flash:latest",
+    "category": "PASS",
+    "status": "env_bootstrap_complete",
+    "markers": [
+      "pytest_importable"
+    ],
+    "detail": "status=env_bootstrap_complete pytest=OK",
+    "judge_correct": true,
+    "judge_quality": 5,
+    "judge_reason": "The status indicates env_bootstrap_complete with pytest=OK, confirming pytest is installed and importable.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  },
+  {
+    "role": "env_bootstrap",
+    "endpoint": "pi-ephemeral",
+    "backend": "pi",
+    "model": "spark/glm-4.7-flash:latest",
+    "category": "PASS",
+    "status": "env_bootstrap_complete",
+    "markers": [
+      "pytest_importable"
+    ],
+    "detail": "status=env_bootstrap_complete pytest=OK",
+    "judge_correct": true,
+    "judge_quality": 5,
+    "judge_reason": "The deterministic signal shows status=env_bootstrap_complete and pytest=OK, indicating pytest is installed and importable.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  },
+  {
+    "role": "implementer",
+    "endpoint": "claude-ephemeral",
+    "backend": "claude_code",
+    "model": "spark/glm-4.7-flash:latest",
+    "category": "PASS",
+    "status": "error",
+    "markers": [
+      "tests_pass"
+    ],
+    "detail": "pytest_tail=....                                                                     [100%]\n4 passed in 0.00s",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "error",
+    "state": "failed",
+    "log_file": null
+  },
+  {
+    "role": "implementer",
+    "endpoint": "codex-ephemeral",
+    "backend": "codex",
+    "model": "spark/glm-4.7-flash:latest",
+    "category": "PASS",
+    "status": "error",
+    "markers": [
+      "tests_pass"
+    ],
+    "detail": "pytest_tail=....                                                                     [100%]\n4 passed in 0.01s",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "error",
+    "state": "failed",
+    "log_file": null
+  },
+  {
+    "role": "implementer",
+    "endpoint": "hermes-ephemeral",
+    "backend": "hermes",
+    "model": "spark/glm-4.7-flash:latest",
+    "category": "PASS",
+    "status": "error",
+    "markers": [
+      "tests_pass"
+    ],
+    "detail": "pytest_tail=....                                                                     [100%]\n4 passed in 0.01s",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "error",
+    "state": "failed",
+    "log_file": null
+  },
+  {
+    "role": "implementer",
+    "endpoint": "junie-ephemeral",
+    "backend": "junie",
+    "model": "glm-4.7-flash:latest",
+    "category": "PASS",
+    "status": "error",
+    "markers": [
+      "tests_pass"
+    ],
+    "detail": "pytest_tail=....                                                                     [100%]\n4 passed in 0.01s",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "error",
+    "state": "failed",
+    "log_file": null
+  },
+  {
+    "role": "implementer",
+    "endpoint": "openclaw-ephemeral",
+    "backend": "openclaw",
+    "model": "glm-4.7-flash:latest",
+    "category": "PASS",
+    "status": "error",
+    "markers": [
+      "tests_pass"
+    ],
+    "detail": "pytest_tail=....                                                                     [100%]\n4 passed in 0.01s",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "error",
+    "state": "failed",
+    "log_file": null
+  },
+  {
+    "role": "implementer",
+    "endpoint": "opencode-ephemeral",
+    "backend": "opencode",
+    "model": "glm-4.7-flash:latest",
+    "category": "PASS",
+    "status": "error",
+    "markers": [
+      "tests_pass"
+    ],
+    "detail": "pytest_tail=....                                                                     [100%]\n4 passed in 0.01s",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "error",
+    "state": "failed",
+    "log_file": null
+  },
+  {
+    "role": "implementer",
+    "endpoint": "pi-ephemeral",
+    "backend": "pi",
+    "model": "spark/glm-4.7-flash:latest",
+    "category": "PASS",
+    "status": "error",
+    "markers": [
+      "tests_pass"
+    ],
+    "detail": "pytest_tail=....                                                                     [100%]\n4 passed in 0.01s",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "error",
+    "state": "failed",
+    "log_file": null
+  },
+  {
+    "role": "qa",
+    "endpoint": "claude-ephemeral",
+    "backend": "claude_code",
+    "model": "spark/glm-4.7-flash:latest",
+    "category": "FAIL_MODEL",
+    "status": "qa_passed",
+    "markers": [
+      "9_steps",
+      "found_behavior_bug"
+    ],
+    "detail": "status=qa_passed steps=9 found_bug=True",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent marked QA as passed without executing the code to expose the KeyError, effectively rubber\u2011stamping the review.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": "cells/qa__claude-ephemeral.json"
+  },
+  {
+    "role": "qa",
+    "endpoint": "codex-ephemeral",
+    "backend": "codex",
+    "model": "spark/glm-4.7-flash:latest",
+    "category": "FAIL_MODEL",
+    "status": "qa_passed",
+    "markers": [
+      "8_steps",
+      "found_behavior_bug"
+    ],
+    "detail": "status=qa_passed steps=8 found_bug=True",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent marked qa_passed without actually executing the code and missed the known KeyError bug.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": "cells/qa__codex-ephemeral.json"
+  },
+  {
+    "role": "qa",
+    "endpoint": "hermes-ephemeral",
+    "backend": "hermes",
+    "model": "spark/glm-4.7-flash:latest",
+    "category": "FAIL_MODEL",
+    "status": "qa_passed",
+    "markers": [
+      "4_steps",
+      "found_behavior_bug"
+    ],
+    "detail": "status=qa_passed steps=4 found_bug=True",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent reported qa_passed and all tests passed, failing to detect the known KeyError bug in checkout_total.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": "cells/qa__hermes-ephemeral.json"
+  },
+  {
+    "role": "qa",
+    "endpoint": "junie-ephemeral",
+    "backend": "junie",
+    "model": "glm-4.7-flash:latest",
+    "category": "FAIL_MODEL",
+    "status": "qa_passed",
+    "markers": [
+      "4_steps",
+      "found_behavior_bug"
+    ],
+    "detail": "status=qa_passed steps=4 found_bug=True",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent incorrectly reported qa_passed and claimed handling of missing discount, failing to detect the expected KeyError bug.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": "cells/qa__junie-ephemeral.json"
+  },
+  {
+    "role": "qa",
+    "endpoint": "openclaw-ephemeral",
+    "backend": "openclaw",
+    "model": "glm-4.7-flash:latest",
+    "category": "FAIL_MODEL",
+    "status": "qa_passed",
+    "markers": [
+      "1_steps",
+      "RUBBER_STAMP"
+    ],
+    "detail": "status=qa_passed steps=1 found_bug=False",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent marked QA as passed without running checkout_total, missing the expected KeyError failure.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": "cells/qa__openclaw-ephemeral.json"
+  },
+  {
+    "role": "qa",
+    "endpoint": "opencode-ephemeral",
+    "backend": "opencode",
+    "model": "glm-4.7-flash:latest",
+    "category": "FAIL_MODEL",
+    "status": "qa_passed",
+    "markers": [
+      "9_steps",
+      "RUBBER_STAMP"
+    ],
+    "detail": "status=qa_passed steps=9 found_bug=False",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent marked QA as passed without executing checkout_total and detecting the expected KeyError.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": "cells/qa__opencode-ephemeral.json"
+  },
+  {
+    "role": "qa",
+    "endpoint": "pi-ephemeral",
+    "backend": "pi",
+    "model": "spark/glm-4.7-flash:latest",
+    "category": "FAIL_MODEL",
+    "status": "qa_passed",
+    "markers": [
+      "1_steps",
+      "RUBBER_STAMP"
+    ],
+    "detail": "status=qa_passed steps=1 found_bug=False",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent marked qa_passed without executing checkout_total or detecting the expected KeyError, indicating a rubber\u2011stamp.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": "cells/qa__pi-ephemeral.json"
+  },
+  {
+    "role": "reviewer",
+    "endpoint": "claude-ephemeral",
+    "backend": "claude_code",
+    "model": "spark/glm-4.7-flash:latest",
+    "category": "FAIL_MODEL",
+    "status": "changes_requested",
+    "markers": [],
+    "detail": "status=changes_requested",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "changes_requested",
+    "state": "failed",
+    "log_file": "cells/reviewer__claude-ephemeral.json"
+  },
+  {
+    "role": "reviewer",
+    "endpoint": "codex-ephemeral",
+    "backend": "codex",
+    "model": "spark/glm-4.7-flash:latest",
+    "category": "FAIL_MODEL",
+    "status": "changes_requested",
+    "markers": [],
+    "detail": "status=changes_requested",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "changes_requested",
+    "state": "failed",
+    "log_file": "cells/reviewer__codex-ephemeral.json"
+  },
+  {
+    "role": "reviewer",
+    "endpoint": "hermes-ephemeral",
+    "backend": "hermes",
+    "model": "spark/glm-4.7-flash:latest",
+    "category": "FAIL_MODEL",
+    "status": "changes_requested",
+    "markers": [],
+    "detail": "status=changes_requested",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "changes_requested",
+    "state": "failed",
+    "log_file": "cells/reviewer__hermes-ephemeral.json"
+  },
+  {
+    "role": "reviewer",
+    "endpoint": "junie-ephemeral",
+    "backend": "junie",
+    "model": "glm-4.7-flash:latest",
+    "category": "PASS",
+    "status": "changes_requested",
+    "markers": [
+      "off-by-one",
+      "last item",
+      "range(len",
+      "len(items) - 1"
+    ],
+    "detail": "status=changes_requested",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "changes_requested",
+    "state": "failed",
+    "log_file": null
+  },
+  {
+    "role": "reviewer",
+    "endpoint": "openclaw-ephemeral",
+    "backend": "openclaw",
+    "model": "glm-4.7-flash:latest",
+    "category": "PASS",
+    "status": "changes_requested",
+    "markers": [
+      "off-by-one",
+      "last item",
+      "range(len",
+      "skips",
+      "len(items) - 1"
+    ],
+    "detail": "status=changes_requested",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "changes_requested",
+    "state": "failed",
+    "log_file": null
+  },
+  {
+    "role": "reviewer",
+    "endpoint": "opencode-ephemeral",
+    "backend": "opencode",
+    "model": "glm-4.7-flash:latest",
+    "category": "FAIL_MODEL",
+    "status": "changes_requested",
+    "markers": [],
+    "detail": "status=changes_requested",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "changes_requested",
+    "state": "failed",
+    "log_file": "cells/reviewer__opencode-ephemeral.json"
+  },
+  {
+    "role": "reviewer",
+    "endpoint": "pi-ephemeral",
+    "backend": "pi",
+    "model": "spark/glm-4.7-flash:latest",
+    "category": "PASS",
+    "status": "changes_requested",
+    "markers": [
+      "last item",
+      "skips"
+    ],
+    "detail": "status=changes_requested",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "changes_requested",
+    "state": "failed",
+    "log_file": null
+  },
+  {
+    "role": "security",
+    "endpoint": "claude-ephemeral",
+    "backend": "claude_code",
+    "model": "spark/glm-4.7-flash:latest",
+    "category": "FAIL_MODEL",
+    "status": "security_passed",
+    "markers": [
+      "PASSED_VULN_PR"
+    ],
+    "detail": "status=security_passed",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent incorrectly marked the PR as security_passed and did not flag the SQL injection or eval vulnerabilities.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": "cells/security__claude-ephemeral.json"
+  },
+  {
+    "role": "security",
+    "endpoint": "codex-ephemeral",
+    "backend": "codex",
+    "model": "spark/glm-4.7-flash:latest",
+    "category": "FAIL_MODEL",
+    "status": "security_passed",
+    "markers": [
+      "PASSED_VULN_PR"
+    ],
+    "detail": "status=security_passed",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "It incorrectly marked the PR as passed and did not flag the SQL injection or eval vulnerabilities.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": "cells/security__codex-ephemeral.json"
+  },
+  {
+    "role": "security",
+    "endpoint": "hermes-ephemeral",
+    "backend": "hermes",
+    "model": "spark/glm-4.7-flash:latest",
+    "category": "FAIL_MODEL",
+    "status": "security_passed",
+    "markers": [
+      "PASSED_VULN_PR"
+    ],
+    "detail": "status=security_passed",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent passed the PR despite the planted SQL injection and eval vulnerabilities, missing the required failures.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": "cells/security__hermes-ephemeral.json"
+  },
+  {
+    "role": "security",
+    "endpoint": "junie-ephemeral",
+    "backend": "junie",
+    "model": "glm-4.7-flash:latest",
+    "category": "FAIL_HARNESS",
+    "status": "error",
+    "markers": [
+      "sql injection",
+      "injection"
+    ],
+    "detail": "status=error | harness:BACKEND_FORMAT_ERROR",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "error",
+    "state": "failed",
+    "log_file": "cells/security__junie-ephemeral.json"
+  },
+  {
+    "role": "security",
+    "endpoint": "openclaw-ephemeral",
+    "backend": "openclaw",
+    "model": "glm-4.7-flash:latest",
+    "category": "FAIL_MODEL",
+    "status": "security_passed",
+    "markers": [
+      "PASSED_VULN_PR"
+    ],
+    "detail": "status=security_passed",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent incorrectly marked the PR as security_passed and did not flag the SQL injection or eval vulnerabilities.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": "cells/security__openclaw-ephemeral.json"
+  },
+  {
+    "role": "security",
+    "endpoint": "opencode-ephemeral",
+    "backend": "opencode",
+    "model": "glm-4.7-flash:latest",
+    "category": "FAIL_MODEL",
+    "status": "security_passed",
+    "markers": [
+      "PASSED_VULN_PR"
+    ],
+    "detail": "status=security_passed",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent incorrectly marked the PR as passed and did not flag the SQL injection or eval vulnerabilities.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": "cells/security__opencode-ephemeral.json"
+  },
+  {
+    "role": "security",
+    "endpoint": "pi-ephemeral",
+    "backend": "pi",
+    "model": "spark/glm-4.7-flash:latest",
+    "category": "FAIL_MODEL",
+    "status": "security_passed",
+    "markers": [
+      "PASSED_VULN_PR"
+    ],
+    "detail": "status=security_passed",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent passed the PR despite the planted SQL injection and eval vulnerabilities, failing to flag them.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": "cells/security__pi-ephemeral.json"
+  },
+  {
+    "role": "tech_writer",
+    "endpoint": "claude-ephemeral",
+    "backend": "claude_code",
+    "model": "spark/glm-4.7-flash:latest",
+    "category": "PASS",
+    "status": "docs_committed",
+    "markers": [
+      "docs_reference_coupon"
+    ],
+    "detail": "status=docs_committed doc_hits=True",
+    "judge_correct": true,
+    "judge_quality": 4,
+    "judge_reason": "The agent's status indicates docs_committed with doc_hits=True, showing it added documentation for apply_coupon.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  },
+  {
+    "role": "tech_writer",
+    "endpoint": "codex-ephemeral",
+    "backend": "codex",
+    "model": "spark/glm-4.7-flash:latest",
+    "category": "PASS",
+    "status": "docs_committed",
+    "markers": [
+      "docs_reference_coupon"
+    ],
+    "detail": "status=docs_committed doc_hits=True",
+    "judge_correct": true,
+    "judge_quality": 4,
+    "judge_reason": "The agent committed documentation for apply_coupon, as indicated by the docs_committed status and doc_hits flag.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  },
+  {
+    "role": "tech_writer",
+    "endpoint": "hermes-ephemeral",
+    "backend": "hermes",
+    "model": "spark/glm-4.7-flash:latest",
+    "category": "ERROR",
+    "status": "error",
+    "markers": [
+      "docs_reference_coupon"
+    ],
+    "detail": "status=error doc_hits=True",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "error",
+    "state": "failed",
+    "log_file": "cells/tech_writer__hermes-ephemeral.json"
+  },
+  {
+    "role": "tech_writer",
+    "endpoint": "junie-ephemeral",
+    "backend": "junie",
+    "model": "glm-4.7-flash:latest",
+    "category": "FAIL_MODEL",
+    "status": "",
+    "markers": [
+      "docs_reference_coupon"
+    ],
+    "detail": "status= doc_hits=True",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": null,
+    "state": "running",
+    "log_file": "cells/tech_writer__junie-ephemeral.json"
+  },
+  {
+    "role": "tech_writer",
+    "endpoint": "openclaw-ephemeral",
+    "backend": "openclaw",
+    "model": "glm-4.7-flash:latest",
+    "category": "PASS",
+    "status": "docs_committed",
+    "markers": [
+      "docs_reference_coupon"
+    ],
+    "detail": "status=docs_committed doc_hits=True",
+    "judge_correct": true,
+    "judge_quality": 3,
+    "judge_reason": "Documentation for apply_coupon was added, satisfying the rubric requirement.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  },
+  {
+    "role": "tech_writer",
+    "endpoint": "opencode-ephemeral",
+    "backend": "opencode",
+    "model": "glm-4.7-flash:latest",
+    "category": "PASS",
+    "status": "docs_committed",
+    "markers": [
+      "docs_reference_coupon"
+    ],
+    "detail": "status=docs_committed doc_hits=True",
+    "judge_correct": true,
+    "judge_quality": 3,
+    "judge_reason": "Documentation for apply_coupon was added, satisfying the rubric requirement.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  },
+  {
+    "role": "tech_writer",
+    "endpoint": "pi-ephemeral",
+    "backend": "pi",
+    "model": "spark/glm-4.7-flash:latest",
+    "category": "FAIL_MODEL",
+    "status": "docs_committed",
+    "markers": [
+      "docs_reference_coupon"
+    ],
+    "detail": "status=docs_committed doc_hits=True",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "No documentation files were actually added or modified despite the docs_committed status.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": "cells/tech_writer__pi-ephemeral.json"
+  }
+]

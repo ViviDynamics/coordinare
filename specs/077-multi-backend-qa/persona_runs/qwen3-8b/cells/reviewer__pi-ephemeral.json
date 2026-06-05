@@ -1,0 +1,23 @@
+{
+  "row": {
+    "role": "reviewer",
+    "endpoint": "pi-ephemeral",
+    "backend": "pi",
+    "model": "spark/qwen3:8b",
+    "category": "FAIL_MODEL",
+    "status": "changes_requested",
+    "markers": [],
+    "detail": "status=changes_requested",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "changes_requested",
+    "state": "failed",
+    "log_file": null
+  },
+  "state": "failed",
+  "error_code": "changes_requested",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"changes_requested\",\"session_id\":\"1ee2d15d-c26b-4265-aac9-8782414e2307\",\"questions\":[],\"comments\":[{\"body\":\"The review cannot proceed without seeing code changes. The `git diff` command returned no output, which suggests:\"},{\"body\":\"1. No changes have been made yet\"},{\"body\":\"2. The PR hasn't been committed yet\"},{\"body\":\"3. The changes may not be pushed to the remote repository\"}],\"body\":\"Please ensure your changes are committed and pushed to the remote repository. Verify the PR contains visible diffs before proceeding with the review.\",\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "npm warn deprecated node-domexception@1.0.0: Use your platform's native DOMException instead\nnpm warn deprecated @mariozechner/pi-agent-core@0.73.1: please use @earendil-works/pi-agent-core instead going forward\nnpm warn deprecated @mariozechner/pi-tui@0.73.1: please use @earendil-works/pi-tui instead going forward\nnpm warn deprecated @mariozechner/pi-ai@0.73.1: please use @earendil-works/pi-ai instead going forward\nnpm warn deprecated @mariozechner/pi-coding-agent@0.73.1: please use @earendil-works/pi-coding-agent instead going forward\n\nadded 203 packages in 9s\nINFO:     172.66.0.243:47905 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-04 15:33:17 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:58249 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:58291 - \"GET /jobs/569bf34a45c04979914830c908727e89 HTTP/1.1\" 200 OK\n2026-06-04 15:33:18 [info     ] clone_repository.existing_branch branch=fix/reviewer-offbyone\n2026-06-04 15:33:18 [info     ] cloned repository              branch=fix/reviewer-offbyone repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-04 15:33:18 [info     ] pi started                     model=spark/qwen3:8b provider=litellm\n2026-06-04 15:33:18 [info     ] dispatch accepted              session_id=1ee2d15d-c26b-4265-aac9-8782414e2307\nINFO:     172.66.0.243:34898 - \"GET /jobs/569bf34a45c04979914830c908727e89 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:45032 - \"GET /jobs/569bf34a45c04979914830c908727e89 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:33869 - \"GET /jobs/569bf34a45c04979914830c908727e89 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:58353 - \"GET /jobs/569bf34a45c04979914830c908727e89 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:49562 - \"GET /jobs/569bf34a45c04979914830c908727e89 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:17407 - \"GET /jobs/569bf34a45c04979914830c908727e89 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:63925 - \"GET /jobs/569bf34a45c04979914830c908727e89 HTTP/1.1\" 200 OK\n2026-06-04 15:33:53 [warning  ] backend.invalid_output.retrying attempt=1 failure_reason='could not be parsed as a JSON object' max_retries=1 output_preview=\"The review cannot proceed without seeing the code changes. The `git diff` command returned no output, which suggests either:\\n1. No changes have been made yet\\n2. The PR hasn't been committed yet\\n3. The\" stage=review\nINFO:     172.66.0.243:43913 - \"GET /jobs/569bf34a45c04979914830c908727e89 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:20685 - \"GET /jobs/569bf34a45c04979914830c908727e89 HTTP/1.1\" 200 OK\n2026-06-04 15:34:05 [info     ] review posted                  owner=ViviDynamics pr_number=1 repo=conductor-bench review_event=COMMENT\n2026-06-04 15:34:05 [info     ] pi stopped\n2026-06-04 15:34:05 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-q6x3w8k1\nINFO:     172.66.0.243:57838 - \"GET /jobs/569bf34a45c04979914830c908727e89 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from coordinare.graph.attribution import coordinare_attribution
 from coordinare.graph.nodes.github_retry import (
     clear_deferred_github_operation,
     defer_github_operation,
@@ -1113,8 +1114,10 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
                         issue_node = content_node_ids.get(item_id)
                         if issue_node:
                             with contextlib.suppress(Exception):
+                                header = coordinare_attribution(state.get("config"), None)
                                 await github_svc.add_comment(
                                     issue_node,
+                                    f"{header}\n\n"
                                     f"🔗 **Unresolvable dependency**: {dep_labels}\n\n"
                                     "The referenced issue(s) are not on the project board "
                                     "and could not be verified as closed (the issue may be "
@@ -1176,8 +1179,10 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
                         issue_node_id = content_node_ids.get(iid)
                         if issue_node_id:
                             with contextlib.suppress(Exception):
+                                header = coordinare_attribution(state.get("config"), None)
                                 await github.add_comment(
                                     issue_node_id,
+                                    f"{header}\n\n"
                                     f"🔄 **Circular dependency detected** involving: {cycle_desc}\n\n"
                                     "These cards form a dependency cycle — none can "
                                     "proceed.  Resolve by removing or reordering the "

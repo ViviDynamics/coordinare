@@ -1,0 +1,23 @@
+{
+  "row": {
+    "role": "reviewer",
+    "endpoint": "openclaw-ephemeral",
+    "backend": "openclaw",
+    "model": "llama3.1:8b-instruct-q4_0",
+    "category": "FAIL_MODEL",
+    "status": "changes_requested",
+    "markers": [],
+    "detail": "status=changes_requested",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "changes_requested",
+    "state": "failed",
+    "log_file": null
+  },
+  "state": "failed",
+  "error_code": "changes_requested",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"changes_requested\",\"session_id\":\"4b4a6297-a618-4778-9247-c65b8b75e05e\",\"questions\":[],\"comments\":[],\"body\":\"\\\"{\\\\\\\"status\\\\\\\": \\\\\\\"Complete\\\\\\\", \\\\\\\"result\\\\\\\": {\\\\\\\"discount_all\\\\\\\": \\\\\\\"[ ] PR was correct,[ ] discount_all PR is complete\\\\\\\"}, \\\\\\\"skillWorkshopStatus\\\\\\\": [null]}\\\"{\",\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "\nadded 285 packages in 13s\nINFO:     172.66.0.243:31201 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-05 03:07:40 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:59541 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:36010 - \"GET /jobs/0e4d60d54ef5449a953df357e1d1c011 HTTP/1.1\" 200 OK\n2026-06-05 03:07:41 [info     ] clone_repository.existing_branch branch=fix/reviewer-offbyone\n2026-06-05 03:07:41 [info     ] cloned repository              branch=fix/reviewer-offbyone repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-05 03:07:41 [info     ] openclaw.provider_config_written base_url=http://192.168.3.30:11434/v1 path=/root/.openclaw/openclaw.json provider=sparkollama\n2026-06-05 03:07:41 [info     ] openclaw.workspace_linked      workspace=/tmp/performer-33rts_ea\n2026-06-05 03:07:41 [info     ] openclaw.persona_to_soul       chars=134\n2026-06-05 03:07:41 [info     ] openclaw.card_docs_written     chars=178 path=/tmp/performer-33rts_ea/CARD.md\n2026-06-05 03:07:41 [info     ] openclaw starting              model=sparkollama/llama3.1:8b-instruct-q4_0 provider_routed=True session_key=coordinare-reviewing-f57391d7\n2026-06-05 03:07:41 [info     ] openclaw started               model=sparkollama/llama3.1:8b-instruct-q4_0 pid=92\n2026-06-05 03:07:41 [info     ] dispatch accepted              session_id=4b4a6297-a618-4778-9247-c65b8b75e05e\nINFO:     172.66.0.243:18540 - \"GET /jobs/0e4d60d54ef5449a953df357e1d1c011 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:54062 - \"GET /jobs/0e4d60d54ef5449a953df357e1d1c011 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:30493 - \"GET /jobs/0e4d60d54ef5449a953df357e1d1c011 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:52916 - \"GET /jobs/0e4d60d54ef5449a953df357e1d1c011 HTTP/1.1\" 200 OK\n2026-06-05 03:08:03 [warning  ] backend.invalid_output.retrying attempt=1 failure_reason='could not be parsed as a JSON object' max_retries=1 output_preview='\"{\\\\\"status\\\\\": \\\\\"Complete\\\\\", \\\\\"result\\\\\": {\\\\\"discount_all\\\\\": \\\\\"[ ] PR was correct,[ ] discount_all PR is complete\\\\\"}, \\\\\"skillWorkshopStatus\\\\\": [null]}\"{' stage=review\nINFO:     172.66.0.243:59703 - \"GET /jobs/0e4d60d54ef5449a953df357e1d1c011 HTTP/1.1\" 200 OK\n2026-06-05 03:08:05 [warning  ] backend.parse_lenient_fallback failure_reason='could not be parsed as a JSON object' output_preview='\"{\\\\\"status\\\\\": \\\\\"Complete\\\\\", \\\\\"result\\\\\": {\\\\\"discount_all\\\\\": \\\\\"[ ] PR was correct,[ ] discount_all PR is complete\\\\\"}, \\\\\"skillWorkshopStatus\\\\\": [null]}\"{' role=reviewing stage=review\n2026-06-05 03:08:06 [info     ] review posted                  owner=ViviDynamics pr_number=1 repo=conductor-bench review_event=COMMENT\n2026-06-05 03:08:06 [info     ] openclaw stopped\n2026-06-05 03:08:06 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-33rts_ea\nINFO:     172.66.0.243:39842 - \"GET /jobs/0e4d60d54ef5449a953df357e1d1c011 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

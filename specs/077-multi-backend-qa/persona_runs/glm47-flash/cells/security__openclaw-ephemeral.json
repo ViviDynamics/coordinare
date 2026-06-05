@@ -1,0 +1,25 @@
+{
+  "row": {
+    "role": "security",
+    "endpoint": "openclaw-ephemeral",
+    "backend": "openclaw",
+    "model": "glm-4.7-flash:latest",
+    "category": "FAIL_MODEL",
+    "status": "security_passed",
+    "markers": [
+      "PASSED_VULN_PR"
+    ],
+    "detail": "status=security_passed",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent incorrectly marked the PR as security_passed and did not flag the SQL injection or eval vulnerabilities.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  },
+  "state": "succeeded",
+  "error_code": null,
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"security_passed\",\"session_id\":\"8efccf8e-23db-4c7d-8f07-697003622edf\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "\nadded 292 packages in 14s\nINFO:     172.66.0.243:53362 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-03 18:25:37 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:28179 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:51219 - \"GET /jobs/231c60e2a3e84797b60bd7b5d474fa60 HTTP/1.1\" 200 OK\n2026-06-03 18:25:38 [info     ] clone_repository.existing_branch branch=feat/security-sqli\n2026-06-03 18:25:38 [info     ] cloned repository              branch=feat/security-sqli repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-03 18:25:38 [info     ] openclaw.provider_config_written base_url=http://192.168.3.30:11434/v1 path=/root/.openclaw/openclaw.json provider=sparkollama\n2026-06-03 18:25:38 [info     ] openclaw.workspace_linked      workspace=/tmp/performer-p1g7q3nt\n2026-06-03 18:25:38 [info     ] openclaw.persona_to_soul       chars=83\n2026-06-03 18:25:38 [info     ] openclaw.card_docs_written     chars=181 path=/tmp/performer-p1g7q3nt/CARD.md\n2026-06-03 18:25:38 [info     ] openclaw starting              model=sparkollama/glm-4.7-flash:latest provider_routed=True session_key=coordinare-security-76dce6d1\n2026-06-03 18:25:38 [info     ] openclaw started               model=sparkollama/glm-4.7-flash:latest pid=100\n2026-06-03 18:25:38 [info     ] dispatch accepted              session_id=8efccf8e-23db-4c7d-8f07-697003622edf\nINFO:     172.66.0.243:50123 - \"GET /jobs/231c60e2a3e84797b60bd7b5d474fa60 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:23813 - \"GET /jobs/231c60e2a3e84797b60bd7b5d474fa60 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:34444 - \"GET /jobs/231c60e2a3e84797b60bd7b5d474fa60 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:25329 - \"GET /jobs/231c60e2a3e84797b60bd7b5d474fa60 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:22489 - \"GET /jobs/231c60e2a3e84797b60bd7b5d474fa60 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:29293 - \"GET /jobs/231c60e2a3e84797b60bd7b5d474fa60 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:21921 - \"GET /jobs/231c60e2a3e84797b60bd7b5d474fa60 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:27233 - \"GET /jobs/231c60e2a3e84797b60bd7b5d474fa60 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:48114 - \"GET /jobs/231c60e2a3e84797b60bd7b5d474fa60 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:19417 - \"GET /jobs/231c60e2a3e84797b60bd7b5d474fa60 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:48194 - \"GET /jobs/231c60e2a3e84797b60bd7b5d474fa60 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:41384 - \"GET /jobs/231c60e2a3e84797b60bd7b5d474fa60 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:54211 - \"GET /jobs/231c60e2a3e84797b60bd7b5d474fa60 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:35072 - \"GET /jobs/231c60e2a3e84797b60bd7b5d474fa60 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:63053 - \"GET /jobs/231c60e2a3e84797b60bd7b5d474fa60 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:61350 - \"GET /jobs/231c60e2a3e84797b60bd7b5d474fa60 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:41159 - \"GET /jobs/231c60e2a3e84797b60bd7b5d474fa60 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:37712 - \"GET /jobs/231c60e2a3e84797b60bd7b5d474fa60 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:30363 - \"GET /jobs/231c60e2a3e84797b60bd7b5d474fa60 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:61913 - \"GET /jobs/231c60e2a3e84797b60bd7b5d474fa60 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:39879 - \"GET /jobs/231c60e2a3e84797b60bd7b5d474fa60 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:49509 - \"GET /jobs/231c60e2a3e84797b60bd7b5d474fa60 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:50569 - \"GET /jobs/231c60e2a3e84797b60bd7b5d474fa60 HTTP/1.1\" 200 OK\n2026-06-03 18:27:33 [info     ] commit_file.no_changes         path=docs/cards/security-review-user/security.md\n2026-06-03 18:27:33 [info     ] openclaw stopped\n2026-06-03 18:27:33 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-p1g7q3nt\nINFO:     172.66.0.243:59657 - \"GET /jobs/231c60e2a3e84797b60bd7b5d474fa60 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

@@ -79,6 +79,58 @@ def test_resolver_layer1_empty_intersection_falls_through() -> None:
     }
 
 
+# ---------------------------------------------------------------------------
+# 077 — Layer 1 depth-agnostic `any` (decoupled from 074 scope tiering)
+# ---------------------------------------------------------------------------
+
+
+def test_resolver_layer1_any_used_without_scope() -> None:
+    """077 decoupling: with no 074 scope, the depth-agnostic `any` list scopes
+    the gate (persona_check_map usable standalone)."""
+    check_map = {"implementer": {"any": ["lint*", "unit*"]}}
+    out = resolve(
+        persona_check_map=check_map,
+        all_head_checks=["lint", "unit-tests", "integration"],
+    )
+    assert out == {"names": ["lint", "unit-tests"], "source": "persona_check_map"}
+
+
+def test_resolver_layer1_any_fallback_when_depth_list_empty() -> None:
+    """Scope present but the depth-specific list is empty → fall back to `any`."""
+    scope = {"personas": {"implementer": {"depth": "full"}}}
+    check_map = {"implementer": {"any": ["lint*"], "full": []}}
+    out = resolve(
+        scope=scope,
+        persona_check_map=check_map,
+        all_head_checks=["lint", "unit-tests"],
+    )
+    assert out == {"names": ["lint"], "source": "persona_check_map"}
+
+
+def test_resolver_layer1_depth_specific_takes_precedence_over_any() -> None:
+    """When both a depth list and `any` are set, the depth list wins."""
+    scope = {"personas": {"implementer": {"depth": "full"}}}
+    check_map = {"implementer": {"any": ["lint*"], "full": ["unit*"]}}
+    out = resolve(
+        scope=scope,
+        persona_check_map=check_map,
+        all_head_checks=["lint", "unit-tests"],
+    )
+    assert out == {"names": ["unit-tests"], "source": "persona_check_map"}
+
+
+def test_resolver_layer1_any_empty_intersection_falls_through() -> None:
+    """`any` patterns match no HEAD check → fall through to branch protection."""
+    check_map = {"implementer": {"any": ["nomatch*"]}}
+    bp = {"lint"}
+    out = resolve(
+        persona_check_map=check_map,
+        branch_protection_set=bp,
+        all_head_checks=["lint", "unit-tests"],
+    )
+    assert out == {"names": ["lint"], "source": "branch_protection"}
+
+
 def test_resolver_layer2_branch_protection() -> None:
     bp = {"lint", "unit-tests"}
     out = resolve(

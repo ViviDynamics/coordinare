@@ -265,3 +265,54 @@ def test_config_validation_result_passed_strict_property() -> None:
     w = ConfigDeprecationWarning("slack_webhook_url", "006", "x", "y")
     r2 = ConfigValidationResult(passed=True, warnings=[w])
     assert r2.passed_strict is False
+
+
+# ---------------------------------------------------------------------------
+# 077 FR-007: performer backend-name validation
+# ---------------------------------------------------------------------------
+
+
+def test_unknown_performer_backend_rejected(tmp_path: Path) -> None:
+    """An unknown performers.<role>.backend value fails validation pre-dispatch."""
+    config_file = _write_valid_config(
+        tmp_path,
+        extra="performers:\n  reviewer:\n    backend: bogus\n    model: x\n",
+    )
+    result = validate_config(config_file)
+    assert result.passed is False
+    backend_errs = [e for e in result.errors if e.field_path == "performers.reviewer.backend"]
+    assert backend_errs, result.errors
+    assert backend_errs[0].error_type == ErrorType.invalid_value
+    assert "bogus" in backend_errs[0].fix_hint
+
+
+def test_claude_alias_rejected_in_favor_of_claude_code(tmp_path: Path) -> None:
+    """`backend: claude` is NOT a valid alias — canonical name is claude_code.
+
+    Catches the exact 077 config bug (a `claude` performer backend would fail
+    get_backend at dispatch).
+    """
+    config_file = _write_valid_config(
+        tmp_path,
+        extra="performers:\n  qa:\n    backend: claude\n    model: x\n",
+    )
+    result = validate_config(config_file)
+    assert result.passed is False
+    errs = [e for e in result.errors if e.field_path == "performers.qa.backend"]
+    assert errs, result.errors
+    assert "claude_code" in errs[0].fix_hint
+
+
+def test_valid_performer_backends_pass(tmp_path: Path) -> None:
+    """Canonical backend names (claude_code, codex) produce no backend error."""
+    config_file = _write_valid_config(
+        tmp_path,
+        extra=(
+            "performers:\n"
+            "  reviewer:\n    backend: claude_code\n    model: x\n"
+            "  architect:\n    backend: codex\n    model: x\n"
+        ),
+    )
+    result = validate_config(config_file)
+    backend_errs = [e for e in result.errors if e.field_path.endswith(".backend")]
+    assert backend_errs == [], backend_errs

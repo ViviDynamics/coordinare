@@ -1,0 +1,25 @@
+{
+  "row": {
+    "role": "tech_writer",
+    "endpoint": "codex-ephemeral",
+    "backend": "codex",
+    "model": "spark/mistral:instruct",
+    "category": "FAIL_HARNESS",
+    "status": "error",
+    "markers": [
+      "docs_reference_coupon"
+    ],
+    "detail": "status=error doc_hits=True | harness:BACKEND_FORMAT_ERROR",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "error",
+    "state": "failed",
+    "log_file": null
+  },
+  "state": "failed",
+  "error_code": "error",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"error\",\"session_id\":\"6b6a72e0-c31c-4118-81c2-9c0fe66f434e\",\"reason\":\"BACKEND_FORMAT_ERROR: Backend docs output could not be parsed as a JSON object after 2 attempts. Last output: ' Here is the corrected JSON object:\\\\n\\\\n```json\\\\n{\\\\n  \\\"files\\\": [\\\\n    {\\\\n      \\\"operation\\\": \\\"update\\\",\\\\n      \\\"file_path\\\": \\\"docs/api.md\\\",\\\\n      \\\"content_delta\\\": [\\\\n        \\\"- Add apply\\\\\\\\_coupon documentation\\\"\\\\n      ]\\\\n    }\\\\n  ]\\\\n}\\\\n```'\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "\nadded 2 packages in 3s\nINFO:     172.66.0.243:59241 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-05 04:07:47 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\n2026-06-05 04:07:47 [info     ] secret_resolved                name=OPENAI_API_KEY source=init_payload\nINFO:     172.66.0.243:45936 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:28234 - \"GET /jobs/d8e5dc28ee6445fc97c8045c01c8f750 HTTP/1.1\" 200 OK\n2026-06-05 04:07:48 [info     ] clone_repository.existing_branch branch=feat/techwriter-nodoc\n2026-06-05 04:07:48 [info     ] cloned repository              branch=feat/techwriter-nodoc repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-05 04:07:48 [debug    ] codex app-server ready         port=38387\n2026-06-05 04:07:48 [info     ] codex thread started           port=38387 thread_id=019e95f7-3afb-7b90-ac8e-49b9ec668b12\n2026-06-05 04:07:48 [info     ] codex turn started             turn_id=019e95f7-3b1e-7583-a1f9-41187aad1d8c\n2026-06-05 04:07:48 [info     ] dispatch accepted              session_id=6b6a72e0-c31c-4118-81c2-9c0fe66f434e\nINFO:     172.66.0.243:22364 - \"GET /jobs/d8e5dc28ee6445fc97c8045c01c8f750 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:38159 - \"GET /jobs/d8e5dc28ee6445fc97c8045c01c8f750 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:16479 - \"GET /jobs/d8e5dc28ee6445fc97c8045c01c8f750 HTTP/1.1\" 200 OK\n2026-06-05 04:08:06 [warning  ] backend.invalid_output.retrying attempt=1 failure_reason='could not be parsed as a JSON object' max_retries=1 output_preview=' Here\\'s an example of using `update_plan` to create a new plan for documenting the apply\\\\_coupon API:\\n\\n```javascript\\n{\\n  \"plan\": [\\n    {\\n      \"step\": \"Explore codebase for existing docs\",\\n      \"stat' stage=docs\nINFO:     172.66.0.243:21455 - \"GET /jobs/d8e5dc28ee6445fc97c8045c01c8f750 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:36687 - \"GET /jobs/d8e5dc28ee6445fc97c8045c01c8f750 HTTP/1.1\" 200 OK\n2026-06-05 04:08:12 [info     ] codex app-server stopped\n2026-06-05 04:08:12 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-rcfxa0vk\nINFO:     172.66.0.243:41122 - \"GET /jobs/d8e5dc28ee6445fc97c8045c01c8f750 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

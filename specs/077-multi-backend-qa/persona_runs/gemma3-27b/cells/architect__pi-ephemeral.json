@@ -1,0 +1,23 @@
+{
+  "row": {
+    "role": "architect",
+    "endpoint": "pi-ephemeral",
+    "backend": "pi",
+    "model": "spark/gemma3:27b",
+    "category": "ERROR",
+    "status": "error",
+    "markers": [],
+    "detail": "plan=n src_files_changed=0\n0",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "error",
+    "state": "failed",
+    "log_file": null
+  },
+  "state": "failed",
+  "error_code": "error",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"error\",\"session_id\":\"0212c351-ca7b-480f-9250-5e95a0c2c66d\",\"reason\":\"Backend produced an empty architecture plan\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "npm warn deprecated node-domexception@1.0.0: Use your platform's native DOMException instead\nnpm warn deprecated @mariozechner/pi-agent-core@0.73.1: please use @earendil-works/pi-agent-core instead going forward\nnpm warn deprecated @mariozechner/pi-tui@0.73.1: please use @earendil-works/pi-tui instead going forward\nnpm warn deprecated @mariozechner/pi-ai@0.73.1: please use @earendil-works/pi-ai instead going forward\nnpm warn deprecated @mariozechner/pi-coding-agent@0.73.1: please use @earendil-works/pi-coding-agent instead going forward\n\nadded 203 packages in 8s\nINFO:     172.66.0.243:39545 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-04 10:29:36 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:31738 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:64417 - \"GET /jobs/defc14f1ad5747a98ce99d0c6ecaa42f HTTP/1.1\" 200 OK\n2026-06-04 10:29:37 [info     ] clone_repository.new_branch    branch=bench-architect-fa8b1404\n2026-06-04 10:29:37 [info     ] cloned repository              branch=bench-architect-fa8b1404 repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-04 10:29:37 [info     ] pi started                     model=spark/gemma3:27b provider=litellm\n2026-06-04 10:29:37 [info     ] dispatch accepted              session_id=0212c351-ca7b-480f-9250-5e95a0c2c66d\n2026-06-04 10:29:39 [info     ] pi stopped\n2026-06-04 10:29:39 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-mp8dokds\nINFO:     172.66.0.243:57790 - \"GET /jobs/defc14f1ad5747a98ce99d0c6ecaa42f HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

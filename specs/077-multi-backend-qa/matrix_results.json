@@ -1,0 +1,1052 @@
+[
+  {
+    "model": "deepcoder:14b",
+    "backend": "claude_code",
+    "endpoint": "claude-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 0,
+    "pass": false,
+    "note": "API Error: 400 litellm.BadRequestError: OpenAIException - {\\\"error\\\":{\\\"message\\\":\\\"\\\\\\\"deepcoder:14b\\\\\\\" does not support thinking\\\",\\\"type"
+  },
+  {
+    "model": "deepcoder:14b",
+    "backend": "codex",
+    "endpoint": "codex-ephemeral",
+    "launched": true,
+    "state": "failed",
+    "shot_kb": 0,
+    "pass": false,
+    "note": "error"
+  },
+  {
+    "model": "deepcoder:14b",
+    "backend": "hermes",
+    "endpoint": "hermes-ephemeral",
+    "launched": true,
+    "state": "failed",
+    "shot_kb": 0,
+    "pass": false,
+    "note": "error"
+  },
+  {
+    "model": "deepcoder:14b",
+    "backend": "junie",
+    "endpoint": "junie-ephemeral",
+    "launched": true,
+    "state": "failed",
+    "shot_kb": 0,
+    "pass": false,
+    "note": "error"
+  },
+  {
+    "model": "deepcoder:14b",
+    "backend": "openclaw",
+    "endpoint": "openclaw-ephemeral",
+    "launched": true,
+    "state": "failed",
+    "shot_kb": 0,
+    "pass": false,
+    "note": "error"
+  },
+  {
+    "model": "deepcoder:14b",
+    "backend": "opencode",
+    "endpoint": "opencode-ephemeral",
+    "launched": true,
+    "state": "failed",
+    "shot_kb": 0,
+    "pass": false,
+    "note": "error"
+  },
+  {
+    "model": "deepcoder:14b",
+    "backend": "pi",
+    "endpoint": "pi-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 0,
+    "pass": false,
+    "note": ""
+  },
+  {
+    "model": "deepseek-coder-v2:16b",
+    "backend": "claude_code",
+    "endpoint": "claude-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 0,
+    "pass": false,
+    "note": "API Error: 400 litellm.BadRequestError: OpenAIException - {\\\"error\\\":{\\\"message\\\":\\\"\\\\\\\"deepseek-coder-v2:16b\\\\\\\" does not support thinking\\"
+  },
+  {
+    "model": "deepseek-coder-v2:16b",
+    "backend": "codex",
+    "endpoint": "codex-ephemeral",
+    "launched": true,
+    "state": "failed",
+    "shot_kb": 0,
+    "pass": false,
+    "note": "error"
+  },
+  {
+    "model": "deepseek-coder-v2:16b",
+    "backend": "hermes",
+    "endpoint": "hermes-ephemeral",
+    "launched": true,
+    "state": "failed",
+    "shot_kb": 0,
+    "pass": false,
+    "note": "error"
+  },
+  {
+    "model": "deepseek-coder-v2:16b",
+    "backend": "junie",
+    "endpoint": "junie-ephemeral",
+    "launched": true,
+    "state": "failed",
+    "shot_kb": 0,
+    "pass": false,
+    "note": "error"
+  },
+  {
+    "model": "deepseek-coder-v2:16b",
+    "backend": "openclaw",
+    "endpoint": "openclaw-ephemeral",
+    "launched": true,
+    "state": "failed",
+    "shot_kb": 0,
+    "pass": false,
+    "note": "error"
+  },
+  {
+    "model": "deepseek-coder-v2:16b",
+    "backend": "opencode",
+    "endpoint": "opencode-ephemeral",
+    "launched": true,
+    "state": "failed",
+    "shot_kb": 0,
+    "pass": false,
+    "note": "error"
+  },
+  {
+    "model": "deepseek-coder-v2:16b",
+    "backend": "pi",
+    "endpoint": "pi-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 0,
+    "pass": false,
+    "note": ""
+  },
+  {
+    "model": "glm-4.7-flash:latest",
+    "backend": "claude_code",
+    "endpoint": "claude-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 1596,
+    "pass": true,
+    "note": "\u2705 Task completed successfully!  **What I did:** 1. Created a Python script using Playwright to capture a full-page screenshot of https://viv"
+  },
+  {
+    "model": "glm-4.7-flash:latest",
+    "backend": "codex",
+    "endpoint": "codex-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 904,
+    "pass": true,
+    "note": "Perfect! I've successfully captured a screenshot of vividynamics.com homepage.  **What I did:**  1. Installed Puppeteer via npm for browser "
+  },
+  {
+    "model": "glm-4.7-flash:latest",
+    "backend": "hermes",
+    "endpoint": "hermes-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 1596,
+    "pass": true,
+    "note": "\u26a0 tirith security scanner enabled but not available \u2014 command scanning will use pattern matching only  Task completed successfully.  **Summa"
+  },
+  {
+    "model": "glm-4.7-flash:latest",
+    "backend": "junie",
+    "endpoint": "junie-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 1596,
+    "pass": true,
+    "note": "### Summary Successfully captured a full-page screenshot of vividynamics.com homepage and saved it to /tmp/agent_shot.png.  ### Changes - Cr"
+  },
+  {
+    "model": "glm-4.7-flash:latest",
+    "backend": "openclaw",
+    "endpoint": "openclaw-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 1596,
+    "pass": true,
+    "note": "\u2705 **Task Complete**  Successfully captured a screenshot of https://vividynamics.com homepage using Playwright with Chromium.  **What I did:*"
+  },
+  {
+    "model": "glm-4.7-flash:latest",
+    "backend": "opencode",
+    "endpoint": "opencode-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 1596,
+    "pass": true,
+    "note": "## Role Instructions  Your ONLY task: take a screenshot of the homepage at https://vividynamics.com and save it to the file /tmp/agent_shot."
+  },
+  {
+    "model": "glm-4.7-flash:latest",
+    "backend": "pi",
+    "endpoint": "pi-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 1596,
+    "pass": true,
+    "note": "\u2713 **Task Complete**  Screenshot successfully captured and saved to `/tmp/agent_shot.png`  **Details:** - **File:** `/tmp/agent_shot.png` - *"
+  },
+  {
+    "model": "gpt-oss:120b",
+    "backend": "claude_code",
+    "endpoint": "claude-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 1596,
+    "pass": true,
+    "note": ""
+  },
+  {
+    "model": "gpt-oss:120b",
+    "backend": "codex",
+    "endpoint": "codex-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 2197,
+    "pass": false,
+    "note": ""
+  },
+  {
+    "model": "gpt-oss:120b",
+    "backend": "hermes",
+    "endpoint": "hermes-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 1596,
+    "pass": true,
+    "note": ""
+  },
+  {
+    "model": "gpt-oss:120b",
+    "backend": "junie",
+    "endpoint": "junie-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 1596,
+    "pass": true,
+    "note": ""
+  },
+  {
+    "model": "gpt-oss:120b",
+    "backend": "openclaw",
+    "endpoint": "openclaw-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 1596,
+    "pass": true,
+    "note": ""
+  },
+  {
+    "model": "gpt-oss:120b",
+    "backend": "opencode",
+    "endpoint": "opencode-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 1596,
+    "pass": true,
+    "note": ""
+  },
+  {
+    "model": "gpt-oss:120b",
+    "backend": "pi",
+    "endpoint": "pi-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 1596,
+    "pass": true,
+    "note": ""
+  },
+  {
+    "model": "gpt-oss:20b",
+    "backend": "claude_code",
+    "endpoint": "claude-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 1596,
+    "pass": true,
+    "note": ""
+  },
+  {
+    "model": "gpt-oss:20b",
+    "backend": "codex",
+    "endpoint": "codex-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 2042,
+    "pass": true,
+    "note": ""
+  },
+  {
+    "model": "gpt-oss:20b",
+    "backend": "hermes",
+    "endpoint": "hermes-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 1596,
+    "pass": true,
+    "note": ""
+  },
+  {
+    "model": "gpt-oss:20b",
+    "backend": "junie",
+    "endpoint": "junie-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 1596,
+    "pass": true,
+    "note": ""
+  },
+  {
+    "model": "gpt-oss:20b",
+    "backend": "openclaw",
+    "endpoint": "openclaw-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 1596,
+    "pass": true,
+    "note": ""
+  },
+  {
+    "model": "gpt-oss:20b",
+    "backend": "opencode",
+    "endpoint": "opencode-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 1596,
+    "pass": true,
+    "note": ""
+  },
+  {
+    "model": "gpt-oss:20b",
+    "backend": "pi",
+    "endpoint": "pi-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 1596,
+    "pass": true,
+    "note": ""
+  },
+  {
+    "model": "laguna-xs.2:latest",
+    "backend": "claude_code",
+    "endpoint": "claude-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 1596,
+    "pass": true,
+    "note": "The task is complete. I used Playwright with Chromium to navigate to https://vividynamics.com and capture a full-page screenshot.  **Results"
+  },
+  {
+    "model": "laguna-xs.2:latest",
+    "backend": "codex",
+    "endpoint": "codex-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 904,
+    "pass": true,
+    "note": "Done! I used Playwright with Chromium to navigate to `https://vividynamics.com` and capture a screenshot.  **Result:** - Screenshot saved at"
+  },
+  {
+    "model": "laguna-xs.2:latest",
+    "backend": "hermes",
+    "endpoint": "hermes-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 1596,
+    "pass": true,
+    "note": "\u26a0 tirith security scanner enabled but not available \u2014 command scanning will use pattern matching only    \u250a review diff  a//tmp/screenshot.py"
+  },
+  {
+    "model": "laguna-xs.2:latest",
+    "backend": "junie",
+    "endpoint": "junie-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 1596,
+    "pass": true,
+    "note": "### Summary Successfully captured a screenshot of https://vividynamics.com and saved it to /tmp/agent_shot.png.  ### Changes - Created and e"
+  },
+  {
+    "model": "laguna-xs.2:latest",
+    "backend": "openclaw",
+    "endpoint": "openclaw-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 1596,
+    "pass": true,
+    "note": "\u2705 **Task completed successfully!**  I created a Python script using Playwright to take a screenshot of https://vividynamics.com and saved it"
+  },
+  {
+    "model": "laguna-xs.2:latest",
+    "backend": "opencode",
+    "endpoint": "opencode-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 1596,
+    "pass": true,
+    "note": "## Role Instructions  Your ONLY task: take a screenshot of the homepage at https://vividynamics.com and save it to the file /tmp/agent_shot."
+  },
+  {
+    "model": "laguna-xs.2:latest",
+    "backend": "pi",
+    "endpoint": "pi-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 1596,
+    "pass": true,
+    "note": "The task is complete. Here's what I did:  1. **Installed Playwright** for Python (if not already installed) 2. **Created and ran a Python sc"
+  },
+  {
+    "model": "llama3.1:70b-instruct-q4_K_M",
+    "backend": "claude_code",
+    "endpoint": "claude-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 0,
+    "pass": false,
+    "note": "API Error: 400 litellm.BadRequestError: OpenAIException - {\\\"error\\\":{\\\"message\\\":\\\"\\\\\\\"llama3.1:70b-instruct-q4_K_M\\\\\\\" does not support th"
+  },
+  {
+    "model": "llama3.1:70b-instruct-q4_K_M",
+    "backend": "codex",
+    "endpoint": "codex-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 0,
+    "pass": false,
+    "note": ""
+  },
+  {
+    "model": "llama3.1:70b-instruct-q4_K_M",
+    "backend": "hermes",
+    "endpoint": "hermes-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 0,
+    "pass": false,
+    "note": "\u26a0 tirith security scanner enabled but not available \u2014 command scanning will use pattern matching only  {\\\"name\\\": \\\"playwright_browser_cache"
+  },
+  {
+    "model": "llama3.1:70b-instruct-q4_K_M",
+    "backend": "junie",
+    "endpoint": "junie-ephemeral",
+    "launched": true,
+    "state": "failed",
+    "shot_kb": 0,
+    "pass": false,
+    "note": "error"
+  },
+  {
+    "model": "llama3.1:70b-instruct-q4_K_M",
+    "backend": "openclaw",
+    "endpoint": "openclaw-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 0,
+    "pass": false,
+    "note": "The required `playwright` Python package is already installed. Now that we have verified the correct setup for taking a screenshot of websit"
+  },
+  {
+    "model": "llama3.1:70b-instruct-q4_K_M",
+    "backend": "opencode",
+    "endpoint": "opencode-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 0,
+    "pass": false,
+    "note": "## Role Instructions  Your ONLY task: take a screenshot of the homepage at https://vividynamics.com and save it to the file /tmp/agent_shot."
+  },
+  {
+    "model": "llama3.1:70b-instruct-q4_K_M",
+    "backend": "pi",
+    "endpoint": "pi-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 0,
+    "pass": false,
+    "note": "{\\\"name\\\": \\\"bash\\\", \\\"parameters\\\": {\\\"command\\\": \\\"pip install playwright && python -c \\\\\\\"from playwright.sync_api import sync_playwright"
+  },
+  {
+    "model": "llama3.3-70b-iq4xs:latest",
+    "backend": "claude_code",
+    "endpoint": "claude-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 0,
+    "pass": false,
+    "note": "API Error: 400 litellm.BadRequestError: OpenAIException - {\\\"error\\\":{\\\"message\\\":\\\"\\\\\\\"llama3.3-70b-iq4xs:latest\\\\\\\" does not support think"
+  },
+  {
+    "model": "llama3.3-70b-iq4xs:latest",
+    "backend": "codex",
+    "endpoint": "codex-ephemeral",
+    "launched": true,
+    "state": "failed",
+    "shot_kb": 0,
+    "pass": false,
+    "note": "error"
+  },
+  {
+    "model": "llama3.3-70b-iq4xs:latest",
+    "backend": "hermes",
+    "endpoint": "hermes-ephemeral",
+    "launched": true,
+    "state": "failed",
+    "shot_kb": 0,
+    "pass": false,
+    "note": "error"
+  },
+  {
+    "model": "llama3.3-70b-iq4xs:latest",
+    "backend": "junie",
+    "endpoint": "junie-ephemeral",
+    "launched": true,
+    "state": "failed",
+    "shot_kb": 0,
+    "pass": false,
+    "note": "error"
+  },
+  {
+    "model": "llama3.3-70b-iq4xs:latest",
+    "backend": "openclaw",
+    "endpoint": "openclaw-ephemeral",
+    "launched": true,
+    "state": "failed",
+    "shot_kb": 0,
+    "pass": false,
+    "note": "error"
+  },
+  {
+    "model": "llama3.3-70b-iq4xs:latest",
+    "backend": "opencode",
+    "endpoint": "opencode-ephemeral",
+    "launched": true,
+    "state": "failed",
+    "shot_kb": 0,
+    "pass": false,
+    "note": "error"
+  },
+  {
+    "model": "llama3.3-70b-iq4xs:latest",
+    "backend": "pi",
+    "endpoint": "pi-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 0,
+    "pass": false,
+    "note": ""
+  },
+  {
+    "model": "llama3.3-70b-q4ks:latest",
+    "backend": "claude_code",
+    "endpoint": "claude-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 0,
+    "pass": false,
+    "note": "API Error: 400 litellm.BadRequestError: OpenAIException - {\\\"error\\\":{\\\"message\\\":\\\"\\\\\\\"llama3.3-70b-q4ks:latest\\\\\\\" does not support thinki"
+  },
+  {
+    "model": "llama3.3-70b-q4ks:latest",
+    "backend": "codex",
+    "endpoint": "codex-ephemeral",
+    "launched": true,
+    "state": "failed",
+    "shot_kb": 0,
+    "pass": false,
+    "note": "error"
+  },
+  {
+    "model": "llama3.3-70b-q4ks:latest",
+    "backend": "hermes",
+    "endpoint": "hermes-ephemeral",
+    "launched": true,
+    "state": "failed",
+    "shot_kb": 0,
+    "pass": false,
+    "note": "error"
+  },
+  {
+    "model": "llama3.3-70b-q4ks:latest",
+    "backend": "junie",
+    "endpoint": "junie-ephemeral",
+    "launched": true,
+    "state": "failed",
+    "shot_kb": 0,
+    "pass": false,
+    "note": "error"
+  },
+  {
+    "model": "llama3.3-70b-q4ks:latest",
+    "backend": "openclaw",
+    "endpoint": "openclaw-ephemeral",
+    "launched": true,
+    "state": "failed",
+    "shot_kb": 0,
+    "pass": false,
+    "note": "error"
+  },
+  {
+    "model": "llama3.3-70b-q4ks:latest",
+    "backend": "opencode",
+    "endpoint": "opencode-ephemeral",
+    "launched": true,
+    "state": "failed",
+    "shot_kb": 0,
+    "pass": false,
+    "note": "error"
+  },
+  {
+    "model": "llama3.3-70b-q4ks:latest",
+    "backend": "pi",
+    "endpoint": "pi-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 0,
+    "pass": false,
+    "note": ""
+  },
+  {
+    "model": "llama3.3:70b",
+    "backend": "claude_code",
+    "endpoint": "claude-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 0,
+    "pass": false,
+    "note": "API Error: 400 litellm.BadRequestError: OpenAIException - {\\\"error\\\":{\\\"message\\\":\\\"\\\\\\\"llama3.3:70b\\\\\\\" does not support thinking\\\",\\\"type\\"
+  },
+  {
+    "model": "llama3.3:70b",
+    "backend": "codex",
+    "endpoint": "codex-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 0,
+    "pass": false,
+    "note": ""
+  },
+  {
+    "model": "llama3.3:70b",
+    "backend": "hermes",
+    "endpoint": "hermes-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 0,
+    "pass": false,
+    "note": "\u26a0 tirith security scanner enabled but not available \u2014 command scanning will use pattern matching only  The task could not be completed becau"
+  },
+  {
+    "model": "llama3.3:70b",
+    "backend": "junie",
+    "endpoint": "junie-ephemeral",
+    "launched": true,
+    "state": "running",
+    "shot_kb": 588,
+    "pass": false,
+    "note": ""
+  },
+  {
+    "model": "llama3.3:70b",
+    "backend": "openclaw",
+    "endpoint": "openclaw-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 0,
+    "pass": false,
+    "note": "I installed the `playwright` package using pip.  Next, I will use Playwright with Chromium to take a screenshot of the homepage at https://v"
+  },
+  {
+    "model": "llama3.3:70b",
+    "backend": "opencode",
+    "endpoint": "opencode-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 0,
+    "pass": false,
+    "note": "## Role Instructions  Your ONLY task: take a screenshot of the homepage at https://vividynamics.com and save it to the file /tmp/agent_shot."
+  },
+  {
+    "model": "llama3.3:70b",
+    "backend": "pi",
+    "endpoint": "pi-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 0,
+    "pass": false,
+    "note": "```python from playwright.sync_api import sync_playwright with sync_playwright() as p:     b = p.chromium.launch()     pg = b.new_page()    "
+  },
+  {
+    "model": "qwen2.5-coder:14b-instruct-q6_K",
+    "backend": "claude_code",
+    "endpoint": "claude-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 0,
+    "pass": false,
+    "note": "API Error: 400 litellm.BadRequestError: OpenAIException - {\\\"error\\\":{\\\"message\\\":\\\"\\\\\\\"qwen2.5-coder:14b-instruct-q6_K\\\\\\\" does not support"
+  },
+  {
+    "model": "qwen2.5-coder:14b-instruct-q6_K",
+    "backend": "codex",
+    "endpoint": "codex-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 0,
+    "pass": false,
+    "note": "To take a screenshot of vividynamics.com homepage, I'll use a tool that can handle web page rendering and capturing. Since this is a one-off"
+  },
+  {
+    "model": "qwen2.5-coder:14b-instruct-q6_K",
+    "backend": "hermes",
+    "endpoint": "hermes-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 0,
+    "pass": false,
+    "note": "\u26a0 tirith security scanner enabled but not available \u2014 command scanning will use pattern matching only  {\\\"name\\\": \\\"terminal\\\", \\\"arguments\\"
+  },
+  {
+    "model": "qwen2.5-coder:14b-instruct-q6_K",
+    "backend": "junie",
+    "endpoint": "junie-ephemeral",
+    "launched": true,
+    "state": "failed",
+    "shot_kb": 0,
+    "pass": false,
+    "note": "error"
+  },
+  {
+    "model": "qwen2.5-coder:14b-instruct-q6_K",
+    "backend": "openclaw",
+    "endpoint": "openclaw-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 0,
+    "pass": false,
+    "note": "NO_REPLY"
+  },
+  {
+    "model": "qwen2.5-coder:14b-instruct-q6_K",
+    "backend": "opencode",
+    "endpoint": "opencode-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 0,
+    "pass": false,
+    "note": "## Role Instructions  Your ONLY task: take a screenshot of the homepage at https://vividynamics.com and save it to the file /tmp/agent_shot."
+  },
+  {
+    "model": "qwen2.5-coder:14b-instruct-q6_K",
+    "backend": "pi",
+    "endpoint": "pi-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 0,
+    "pass": false,
+    "note": "To take a screenshot of the homepage at `https://vividynamics.com` using Playwright with Chromium in Python, follow the steps below:  1. Ens"
+  },
+  {
+    "model": "qwen2.5:14b-instruct-q6_K",
+    "backend": "claude_code",
+    "endpoint": "claude-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 0,
+    "pass": false,
+    "note": "API Error: 400 litellm.BadRequestError: OpenAIException - {\\\"error\\\":{\\\"message\\\":\\\"\\\\\\\"qwen2.5:14b-instruct-q6_K\\\\\\\" does not support think"
+  },
+  {
+    "model": "qwen2.5:14b-instruct-q6_K",
+    "backend": "codex",
+    "endpoint": "codex-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 0,
+    "pass": false,
+    "note": ""
+  },
+  {
+    "model": "qwen2.5:14b-instruct-q6_K",
+    "backend": "hermes",
+    "endpoint": "hermes-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 0,
+    "pass": false,
+    "note": "\u26a0 tirith security scanner enabled but not available \u2014 command scanning will use pattern matching only  Playwright is already installed in th"
+  },
+  {
+    "model": "qwen2.5:14b-instruct-q6_K",
+    "backend": "junie",
+    "endpoint": "junie-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 1596,
+    "pass": true,
+    "note": "### Summary - Took a full-page screenshot of https://vividynamics.com homepage using Playwright Python. - Saved the screenshot at /tmp/agent"
+  },
+  {
+    "model": "qwen2.5:14b-instruct-q6_K",
+    "backend": "openclaw",
+    "endpoint": "openclaw-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 1596,
+    "pass": true,
+    "note": "The screenshot has been successfully captured, and `/tmp/agent_shot.png` contains a valid PNG image of the homepage at https://vividynamics."
+  },
+  {
+    "model": "qwen2.5:14b-instruct-q6_K",
+    "backend": "opencode",
+    "endpoint": "opencode-ephemeral",
+    "launched": true,
+    "state": "running",
+    "shot_kb": 588,
+    "pass": false,
+    "note": ""
+  },
+  {
+    "model": "qwen2.5:14b-instruct-q6_K",
+    "backend": "pi",
+    "endpoint": "pi-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 0,
+    "pass": false,
+    "note": "It seems that the screenshot was not created despite the script executing without errors. Let's try a different approach by ensuring we capt"
+  },
+  {
+    "model": "qwen2.5:32b",
+    "backend": "claude_code",
+    "endpoint": "claude-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 0,
+    "pass": false,
+    "note": "API Error: 400 litellm.BadRequestError: OpenAIException - {\\\"error\\\":{\\\"message\\\":\\\"\\\\\\\"qwen2.5:32b\\\\\\\" does not support thinking\\\",\\\"type\\\""
+  },
+  {
+    "model": "qwen2.5:32b",
+    "backend": "codex",
+    "endpoint": "codex-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 0,
+    "pass": false,
+    "note": ""
+  },
+  {
+    "model": "qwen2.5:32b",
+    "backend": "hermes",
+    "endpoint": "hermes-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 1596,
+    "pass": true,
+    "note": "\u26a0 tirith security scanner enabled but not available \u2014 command scanning will use pattern matching only  The screenshot of the homepage at htt"
+  },
+  {
+    "model": "qwen2.5:32b",
+    "backend": "junie",
+    "endpoint": "junie-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 1596,
+    "pass": true,
+    "note": "### Summary - Screenshot of vividynamics.com homepage successfully captured.  ### Changes - Executed Python script using Playwright to take "
+  },
+  {
+    "model": "qwen2.5:32b",
+    "backend": "openclaw",
+    "endpoint": "openclaw-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 0,
+    "pass": false,
+    "note": "The script has been created successfully. Now, let's run the script using Python to take the screenshot of the vividynamics.com homepage and"
+  },
+  {
+    "model": "qwen2.5:32b",
+    "backend": "opencode",
+    "endpoint": "opencode-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 1596,
+    "pass": true,
+    "note": "## Role Instructions  Your ONLY task: take a screenshot of the homepage at https://vividynamics.com and save it to the file /tmp/agent_shot."
+  },
+  {
+    "model": "qwen2.5:32b",
+    "backend": "pi",
+    "endpoint": "pi-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 1596,
+    "pass": true,
+    "note": "The screenshot has been successfully taken and saved to `/tmp/agent_shot.png`. The file exists and is valid.  Task completed."
+  },
+  {
+    "model": "qwen3-coder:30b",
+    "backend": "claude_code",
+    "endpoint": "claude-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 0,
+    "pass": false,
+    "note": "API Error: 400 litellm.BadRequestError: OpenAIException - {\\\"error\\\":{\\\"message\\\":\\\"\\\\\\\"qwen3-coder:30b\\\\\\\" does not support thinking\\\",\\\"ty"
+  },
+  {
+    "model": "qwen3-coder:30b",
+    "backend": "codex",
+    "endpoint": "codex-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 1596,
+    "pass": true,
+    "note": "I've successfully taken a screenshot of the vividynamics.com homepage and saved it to /tmp/agent_shot.png.  The task is complete. The screen"
+  },
+  {
+    "model": "qwen3-coder:30b",
+    "backend": "hermes",
+    "endpoint": "hermes-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 1596,
+    "pass": true,
+    "note": "\u26a0 tirith security scanner enabled but not available \u2014 command scanning will use pattern matching only    \u250a review diff  a//tmp/screenshot_sc"
+  },
+  {
+    "model": "qwen3-coder:30b",
+    "backend": "junie",
+    "endpoint": "junie-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 1596,
+    "pass": true,
+    "note": "### Summary Took a screenshot of the vividynamics.com homepage using Playwright with Chromium and saved it to /tmp/agent_shot.png.  ### Chan"
+  },
+  {
+    "model": "qwen3-coder:30b",
+    "backend": "openclaw",
+    "endpoint": "openclaw-ephemeral",
+    "launched": true,
+    "state": "failed",
+    "shot_kb": 1596,
+    "pass": true,
+    "note": "error"
+  },
+  {
+    "model": "qwen3-coder:30b",
+    "backend": "opencode",
+    "endpoint": "opencode-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 1596,
+    "pass": true,
+    "note": "## Role Instructions  Your ONLY task: take a screenshot of the homepage at https://vividynamics.com and save it to the file /tmp/agent_shot."
+  },
+  {
+    "model": "qwen3-coder:30b",
+    "backend": "pi",
+    "endpoint": "pi-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 1596,
+    "pass": true,
+    "note": "Perfect! The screenshot has been successfully created. The file `/tmp/agent_shot.png` exists and is a valid PNG file (1,635,302 bytes in siz"
+  },
+  {
+    "model": "qwen3.6:35b",
+    "backend": "claude_code",
+    "endpoint": "claude-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 1596,
+    "pass": true,
+    "note": "The screenshot was captured successfully. `/tmp/agent_shot.png` exists and is **~1.6 MB** (non-empty PNG of the full-page vividynamics.com h"
+  },
+  {
+    "model": "qwen3.6:35b",
+    "backend": "codex",
+    "endpoint": "codex-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 2042,
+    "pass": true,
+    "note": "Done. A 1920\u00d71080 PNG screenshot of the [vividynamics.com](https://vividynamics.com) homepage has been saved to `/tmp/agent_shot.png` (2.0 M"
+  },
+  {
+    "model": "qwen3.6:35b",
+    "backend": "hermes",
+    "endpoint": "hermes-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 1596,
+    "pass": true,
+    "note": "\u26a0 tirith security scanner enabled but not available \u2014 command scanning will use pattern matching only    \u250a review diff  a//tmp/screenshot.py"
+  },
+  {
+    "model": "qwen3.6:35b",
+    "backend": "junie",
+    "endpoint": "junie-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 1596,
+    "pass": true,
+    "note": "### Summary - Captured a full-page screenshot of https://vividynamics.com homepage and saved it to /tmp/agent_shot.png. ### Changes - No rep"
+  },
+  {
+    "model": "qwen3.6:35b",
+    "backend": "openclaw",
+    "endpoint": "openclaw-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 1596,
+    "pass": true,
+    "note": "Done. Here's what I did:  - Wrote and executed a short Python script using Playwright's Chromium to navigate to `https://vividynamics.com`. "
+  },
+  {
+    "model": "qwen3.6:35b",
+    "backend": "opencode",
+    "endpoint": "opencode-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 1596,
+    "pass": true,
+    "note": "## Role Instructions  Your ONLY task: take a screenshot of the homepage at https://vividynamics.com and save it to the file /tmp/agent_shot."
+  },
+  {
+    "model": "qwen3.6:35b",
+    "backend": "pi",
+    "endpoint": "pi-ephemeral",
+    "launched": true,
+    "state": "succeeded",
+    "shot_kb": 1596,
+    "pass": true,
+    "note": "Done. The screenshot has been taken and saved:  - **File**: `/tmp/agent_shot.png` - **Size**: 1.6 MB - **Valid PNG**: confirmed (header `895"
+  }
+]

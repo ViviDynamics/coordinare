@@ -17,7 +17,6 @@ from performer.server.models import PerformerCapabilities
 _BACKEND_BINARIES: dict[str, str] = {
     "claude_code": "claude",
     "codex": "codex",
-    "cursor": "cursor-agent",  # cursor install.sh creates ~/.local/bin/cursor-agent
     "junie": "junie",
     "opencode": "opencode",
 }

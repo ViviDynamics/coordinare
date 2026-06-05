@@ -1,0 +1,23 @@
+{
+  "row": {
+    "role": "assessor",
+    "endpoint": "hermes-ephemeral",
+    "backend": "hermes",
+    "model": "spark/qwen2.5:14b-instruct-q6_K",
+    "category": "ERROR",
+    "status": "error",
+    "markers": [],
+    "detail": "questions=0 sufficient=None",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "error",
+    "state": "failed",
+    "log_file": null
+  },
+  "state": "failed",
+  "error_code": "error",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"error\",\"session_id\":\"bfc36213-9a90-46a8-88d8-5371b6ff4b0c\",\"reason\":\"malformed_output\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.\n\n[notice] A new release of pip is available: 25.0.1 -> 26.1.2\n[notice] To update, run: pip install --upgrade pip\nINFO:     172.66.0.243:38932 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-04 10:46:24 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:26411 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:63782 - \"GET /jobs/ce8af6222f2e4715b19fd36b134ccb31 HTTP/1.1\" 200 OK\n2026-06-04 10:46:25 [info     ] clone_repository.new_branch    branch=bench-assessor-d64f02a9\n2026-06-04 10:46:25 [info     ] cloned repository              branch=bench-assessor-d64f02a9 repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-04 10:46:25 [info     ] hermes.card_docs_written       chars=182 path=/tmp/performer-fu29rndn/CARD.md\n2026-06-04 10:46:25 [info     ] hermes starting                base_url=https://litellm.vividynamics.com/v1 hermes_home=/tmp/hermes-job-apcbn03a model=spark/qwen2.5:14b-instruct-q6_K provider=litellm\n2026-06-04 10:46:25 [info     ] hermes started                 model=spark/qwen2.5:14b-instruct-q6_K pid=37\n2026-06-04 10:46:25 [info     ] dispatch accepted              session_id=bfc36213-9a90-46a8-88d8-5371b6ff4b0c\nINFO:     172.66.0.243:56491 - \"GET /jobs/ce8af6222f2e4715b19fd36b134ccb31 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:45893 - \"GET /jobs/ce8af6222f2e4715b19fd36b134ccb31 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:58551 - \"GET /jobs/ce8af6222f2e4715b19fd36b134ccb31 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:39291 - \"GET /jobs/ce8af6222f2e4715b19fd36b134ccb31 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:36595 - \"GET /jobs/ce8af6222f2e4715b19fd36b134ccb31 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:50223 - \"GET /jobs/ce8af6222f2e4715b19fd36b134ccb31 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:42416 - \"GET /jobs/ce8af6222f2e4715b19fd36b134ccb31 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:27449 - \"GET /jobs/ce8af6222f2e4715b19fd36b134ccb31 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:43700 - \"GET /jobs/ce8af6222f2e4715b19fd36b134ccb31 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:46283 - \"GET /jobs/ce8af6222f2e4715b19fd36b134ccb31 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:58472 - \"GET /jobs/ce8af6222f2e4715b19fd36b134ccb31 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:34284 - \"GET /jobs/ce8af6222f2e4715b19fd36b134ccb31 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:41954 - \"GET /jobs/ce8af6222f2e4715b19fd36b134ccb31 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:25644 - \"GET /jobs/ce8af6222f2e4715b19fd36b134ccb31 HTTP/1.1\" 200 OK\n2026-06-04 10:47:34 [info     ] hermes finalized               removed=/tmp/hermes-job-apcbn03a\n2026-06-04 10:47:35 [info     ] hermes stopped\n2026-06-04 10:47:35 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-fu29rndn\nINFO:     172.66.0.243:32834 - \"GET /jobs/ce8af6222f2e4715b19fd36b134ccb31 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

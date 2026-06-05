@@ -1,0 +1,25 @@
+{
+  "row": {
+    "role": "tech_writer",
+    "endpoint": "codex-ephemeral",
+    "backend": "codex",
+    "model": "spark/qwen2.5-coder:latest",
+    "category": "FAIL_MODEL",
+    "status": "docs_committed",
+    "markers": [
+      "docs_reference_coupon"
+    ],
+    "detail": "status=docs_committed doc_hits=True",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "No files were modified to add documentation for apply_coupon despite the docs_committed status.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  },
+  "state": "succeeded",
+  "error_code": null,
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"docs_committed\",\"session_id\":\"3bdd2dd5-4675-49de-8f9c-39cd43beb61b\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "\nadded 2 packages in 3s\nINFO:     172.66.0.243:53677 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-04 17:29:53 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\n2026-06-04 17:29:53 [info     ] secret_resolved                name=OPENAI_API_KEY source=init_payload\nINFO:     172.66.0.243:32000 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:32863 - \"GET /jobs/b3eb119feb46411d9d50111795bab12b HTTP/1.1\" 200 OK\n2026-06-04 17:29:54 [info     ] clone_repository.existing_branch branch=feat/techwriter-nodoc\n2026-06-04 17:29:54 [info     ] cloned repository              branch=feat/techwriter-nodoc repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-04 17:29:54 [debug    ] codex app-server ready         port=41203\n2026-06-04 17:29:54 [info     ] codex thread started           port=41203 thread_id=019e93af-37cb-7d63-9074-a8f7335242ef\n2026-06-04 17:29:54 [info     ] codex turn started             turn_id=019e93af-37ea-7f70-b7b4-484c666cfb48\n2026-06-04 17:29:54 [info     ] dispatch accepted              session_id=3bdd2dd5-4675-49de-8f9c-39cd43beb61b\nINFO:     172.66.0.243:20968 - \"GET /jobs/b3eb119feb46411d9d50111795bab12b HTTP/1.1\" 200 OK\n2026-06-04 17:30:00 [info     ] codex app-server stopped\n2026-06-04 17:30:00 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-_eja1xgm\nINFO:     172.66.0.243:27635 - \"GET /jobs/b3eb119feb46411d9d50111795bab12b HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

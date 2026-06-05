@@ -1,0 +1,23 @@
+{
+  "row": {
+    "role": "reviewer",
+    "endpoint": "pi-ephemeral",
+    "backend": "pi",
+    "model": "spark/qwen2.5-coder:7b",
+    "category": "FAIL_MODEL",
+    "status": "changes_requested",
+    "markers": [],
+    "detail": "status=changes_requested",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "changes_requested",
+    "state": "failed",
+    "log_file": null
+  },
+  "state": "failed",
+  "error_code": "changes_requested",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"changes_requested\",\"session_id\":\"300ed0e4-0a32-4681-8cdd-86e1c6d39957\",\"questions\":[],\"comments\":[],\"body\":\"Understood. Proceeding with reviewing the `discount_all` feature as per the provided acceptance criteria.\",\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "npm warn deprecated node-domexception@1.0.0: Use your platform's native DOMException instead\nnpm warn deprecated @mariozechner/pi-agent-core@0.73.1: please use @earendil-works/pi-agent-core instead going forward\nnpm warn deprecated @mariozechner/pi-tui@0.73.1: please use @earendil-works/pi-tui instead going forward\nnpm warn deprecated @mariozechner/pi-ai@0.73.1: please use @earendil-works/pi-ai instead going forward\nnpm warn deprecated @mariozechner/pi-coding-agent@0.73.1: please use @earendil-works/pi-coding-agent instead going forward\n\nadded 203 packages in 9s\nINFO:     172.66.0.243:33357 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-04 16:46:50 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:57040 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:16631 - \"GET /jobs/36033bdc78634e29af366bc1cdcf4e6c HTTP/1.1\" 200 OK\n2026-06-04 16:46:51 [info     ] clone_repository.existing_branch branch=fix/reviewer-offbyone\n2026-06-04 16:46:51 [info     ] cloned repository              branch=fix/reviewer-offbyone repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-04 16:46:51 [info     ] pi started                     model=spark/qwen2.5-coder:7b provider=litellm\n2026-06-04 16:46:52 [info     ] dispatch accepted              session_id=300ed0e4-0a32-4681-8cdd-86e1c6d39957\n2026-06-04 16:46:54 [warning  ] backend.invalid_output.retrying attempt=1 failure_reason='could not be parsed as a JSON object' max_retries=1 output_preview='Understood. Proceeding with reviewing the `discount_all` feature as per the provided acceptance criteria.\\n\\nPlease provide the necessary files and any relevant information so I can start the review.' stage=review\nINFO:     172.66.0.243:46921 - \"GET /jobs/36033bdc78634e29af366bc1cdcf4e6c HTTP/1.1\" 200 OK\n2026-06-04 16:46:59 [info     ] review posted                  owner=ViviDynamics pr_number=1 repo=conductor-bench review_event=COMMENT\n2026-06-04 16:46:59 [info     ] pi stopped\n2026-06-04 16:46:59 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-ecp1drsp\nINFO:     172.66.0.243:58044 - \"GET /jobs/36033bdc78634e29af366bc1cdcf4e6c HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

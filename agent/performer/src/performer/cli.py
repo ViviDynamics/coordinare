@@ -2,8 +2,8 @@
 
 These commands are installed by ``pip install .`` (see ``pyproject.toml``
 ``[project.scripts]``) and end up on ``$PATH`` inside every performer
-Docker image, so any backend (claude_code, opencode, codex, junie,
-cursor) can shell out to them via its built-in shell-execution tool.
+Docker image, so any backend (claude_code, opencode, codex, junie)
+can shell out to them via its built-in shell-execution tool.
 
 Context is passed via environment variables that the performer wrapper
 exports when launching the backend (see ``workspace.py`` —

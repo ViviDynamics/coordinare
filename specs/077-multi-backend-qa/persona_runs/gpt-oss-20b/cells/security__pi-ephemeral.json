@@ -1,0 +1,25 @@
+{
+  "row": {
+    "role": "security",
+    "endpoint": "pi-ephemeral",
+    "backend": "pi",
+    "model": "spark/gpt-oss:20b",
+    "category": "FAIL_MODEL",
+    "status": "security_passed",
+    "markers": [
+      "PASSED_VULN_PR"
+    ],
+    "detail": "status=security_passed",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent incorrectly marked the PR as security_passed despite the known SQL injection and eval vulnerabilities.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  },
+  "state": "succeeded",
+  "error_code": null,
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"security_passed\",\"session_id\":\"2847ee9b-339d-4be6-bf1a-d43e2fe38516\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "npm warn deprecated node-domexception@1.0.0: Use your platform's native DOMException instead\nnpm warn deprecated @mariozechner/pi-agent-core@0.73.1: please use @earendil-works/pi-agent-core instead going forward\nnpm warn deprecated @mariozechner/pi-tui@0.73.1: please use @earendil-works/pi-tui instead going forward\nnpm warn deprecated @mariozechner/pi-ai@0.73.1: please use @earendil-works/pi-ai instead going forward\nnpm warn deprecated @mariozechner/pi-coding-agent@0.73.1: please use @earendil-works/pi-coding-agent instead going forward\n\nadded 202 packages in 9s\nINFO:     172.66.0.243:64015 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-03 15:06:29 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:33561 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:56490 - \"GET /jobs/23af108faa3245f08a270bd7fd54b2e4 HTTP/1.1\" 200 OK\n2026-06-03 15:06:31 [info     ] clone_repository.existing_branch branch=feat/security-sqli\n2026-06-03 15:06:31 [info     ] cloned repository              branch=feat/security-sqli repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-03 15:06:31 [info     ] pi started                     model=spark/gpt-oss:20b provider=litellm\n2026-06-03 15:06:31 [info     ] dispatch accepted              session_id=2847ee9b-339d-4be6-bf1a-d43e2fe38516\nINFO:     172.66.0.243:39142 - \"GET /jobs/23af108faa3245f08a270bd7fd54b2e4 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:65100 - \"GET /jobs/23af108faa3245f08a270bd7fd54b2e4 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:20451 - \"GET /jobs/23af108faa3245f08a270bd7fd54b2e4 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:32088 - \"GET /jobs/23af108faa3245f08a270bd7fd54b2e4 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:40423 - \"GET /jobs/23af108faa3245f08a270bd7fd54b2e4 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:61854 - \"GET /jobs/23af108faa3245f08a270bd7fd54b2e4 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:38167 - \"GET /jobs/23af108faa3245f08a270bd7fd54b2e4 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:61199 - \"GET /jobs/23af108faa3245f08a270bd7fd54b2e4 HTTP/1.1\" 200 OK\n2026-06-03 15:07:11 [warning  ] backend.invalid_output.retrying attempt=1 failure_reason='could not be parsed as a JSON object' max_retries=1 output_preview='**Security review completed.**  \\nThe code in `src/bench/lookup.py` no longer contains injection vulnerabilities.  \\nAll untrusted input is correctly sanitized:\\n\\n- `lookup_user` uses a parameterized SQL' stage=security\nINFO:     172.66.0.243:37944 - \"GET /jobs/23af108faa3245f08a270bd7fd54b2e4 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:21122 - \"GET /jobs/23af108faa3245f08a270bd7fd54b2e4 HTTP/1.1\" 200 OK\n2026-06-03 15:07:20 [info     ] commit_file.committed          branch=feat/security-sqli path=docs/cards/security-review-user/security.md\n2026-06-03 15:07:20 [info     ] pi stopped\n2026-06-03 15:07:20 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-t_8rhgvf\nINFO:     172.66.0.243:26750 - \"GET /jobs/23af108faa3245f08a270bd7fd54b2e4 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

@@ -1,0 +1,23 @@
+{
+  "row": {
+    "role": "reviewer",
+    "endpoint": "pi-ephemeral",
+    "backend": "pi",
+    "model": "spark/qwen2.5-coder:latest",
+    "category": "FAIL_MODEL",
+    "status": "changes_requested",
+    "markers": [],
+    "detail": "status=changes_requested",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "changes_requested",
+    "state": "failed",
+    "log_file": null
+  },
+  "state": "failed",
+  "error_code": "changes_requested",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"changes_requested\",\"session_id\":\"66ae6199-17c9-48d1-92b7-a6258c7da171\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "npm warn deprecated @mariozechner/pi-agent-core@0.73.1: please use @earendil-works/pi-agent-core instead going forward\nnpm warn deprecated node-domexception@1.0.0: Use your platform's native DOMException instead\nnpm warn deprecated @mariozechner/pi-tui@0.73.1: please use @earendil-works/pi-tui instead going forward\nnpm warn deprecated @mariozechner/pi-ai@0.73.1: please use @earendil-works/pi-ai instead going forward\nnpm warn deprecated @mariozechner/pi-coding-agent@0.73.1: please use @earendil-works/pi-coding-agent instead going forward\n\nadded 203 packages in 9s\nINFO:     172.66.0.243:27896 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-04 17:22:47 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:51023 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:39663 - \"GET /jobs/f598d667254b4fd9a67b6bfa7802c744 HTTP/1.1\" 200 OK\n2026-06-04 17:22:49 [info     ] clone_repository.existing_branch branch=fix/reviewer-offbyone\n2026-06-04 17:22:49 [info     ] cloned repository              branch=fix/reviewer-offbyone repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-04 17:22:49 [info     ] pi started                     model=spark/qwen2.5-coder:latest provider=litellm\n2026-06-04 17:22:49 [info     ] dispatch accepted              session_id=66ae6199-17c9-48d1-92b7-a6258c7da171\n2026-06-04 17:22:52 [info     ] review posted                  owner=ViviDynamics pr_number=1 repo=conductor-bench review_event=COMMENT\n2026-06-04 17:22:52 [info     ] pi stopped\n2026-06-04 17:22:52 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-k13__9nw\nINFO:     172.66.0.243:53015 - \"GET /jobs/f598d667254b4fd9a67b6bfa7802c744 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

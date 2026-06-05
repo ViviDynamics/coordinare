@@ -116,14 +116,14 @@
 ## Task 15 — Backend parameter wiring and CodexBackend fixes
 
 - [X] Fix `CodexBackend.start()`: wire `effort`, `temperature`, `max_tokens` into CLI invocation
-- [X] Add backend parameter wiring tests for all backends (codex, opencode, cursor, junie, claude)
+- [X] Add backend parameter wiring tests for all backends (codex, opencode, junie, claude)
 - [X] Move backend wiring/conformance tests from coordinare unit suite to performer package
 
 ## Task 16 — API key injection for all backends
 
 - [X] Forward `ANTHROPIC_API_KEY` to ephemeral performer containers in `_build_job_payload`
-- [X] Inject `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` into subprocess env for opencode, junie, cursor backends
-- [X] Document Cursor and Junie volume-mount auth in `config.example.yaml`
+- [X] Inject `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` into subprocess env for opencode, junie backends
+- [X] Document Junie volume-mount auth in `config.example.yaml`
 
 ## Task 17 — CalVer versioning and GHCR CI pipeline
 

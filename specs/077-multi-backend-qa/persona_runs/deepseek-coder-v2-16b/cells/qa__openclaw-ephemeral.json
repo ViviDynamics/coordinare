@@ -1,0 +1,23 @@
+{
+  "row": {
+    "role": "qa",
+    "endpoint": "openclaw-ephemeral",
+    "backend": "openclaw",
+    "model": "deepseek-coder-v2:16b",
+    "category": "FAIL_HARNESS",
+    "status": "error",
+    "markers": [],
+    "detail": "status=error steps=0 found_bug=False | harness:subprocess_exit",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "error",
+    "state": "failed",
+    "log_file": null
+  },
+  "state": "failed",
+  "error_code": "error",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"error\",\"session_id\":\"0cc17313-1bd7-4b99-9091-8f7f97d7453a\",\"reason\":\"subprocess_exit:1\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "\nadded 285 packages in 11s\nINFO:     172.66.0.243:55389 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-04 12:36:07 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:32237 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:24548 - \"GET /jobs/cbc9a4333bbf4cd98fb09a21e264d969 HTTP/1.1\" 200 OK\n2026-06-04 12:36:08 [info     ] clone_repository.existing_branch branch=feat/qa-behavior\n2026-06-04 12:36:08 [info     ] cloned repository              branch=feat/qa-behavior repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-04 12:36:08 [info     ] openclaw.provider_config_written base_url=http://192.168.3.30:11434/v1 path=/root/.openclaw/openclaw.json provider=sparkollama\n2026-06-04 12:36:08 [info     ] openclaw.workspace_linked      workspace=/tmp/performer-7ikcv6le\n2026-06-04 12:36:08 [info     ] openclaw.persona_to_soul       chars=123\n2026-06-04 12:36:08 [info     ] openclaw.card_docs_written     chars=161 path=/tmp/performer-7ikcv6le/CARD.md\n2026-06-04 12:36:08 [info     ] openclaw starting              model=sparkollama/deepseek-coder-v2:16b provider_routed=True session_key=coordinare-qa-c0513da6\n2026-06-04 12:36:08 [info     ] openclaw started               model=sparkollama/deepseek-coder-v2:16b pid=96\n2026-06-04 12:36:08 [info     ] dispatch accepted              session_id=0cc17313-1bd7-4b99-9091-8f7f97d7453a\nINFO:     172.66.0.243:35169 - \"GET /jobs/cbc9a4333bbf4cd98fb09a21e264d969 HTTP/1.1\" 200 OK\n2026-06-04 12:36:12 [warning  ] openclaw failed                rc=1 stderr='not support tools\\n[agent/embedded] embedded run failover decision: runId=9d1b0431-81fe-441d-90d4-324275700b6f stage=assistant decision=surface_error reason=format from=sparkollama/deepseek-coder-v2:16b profile=- rawError=400 registry.ollama.ai/library/deepseek-coder-v2:16b does not support tools\\n[diagnostic] lane task error: lane=main durationMs=1724 error=\"FailoverError: LLM request failed: provider rejected the request schema or tool payload.\"\\n[diagnostic] lane task error: lane=session:agent:main:coordinare-qa-c0513da6 durationMs=1727 error=\"FailoverError: LLM request failed: provider rejected the request schema or tool payload.\"\\n[model-fallback/decision] model fallback decision: decision=candidate_failed requested=sparkollama/deepseek-coder-v2:16b candidate=sparkollama/deepseek-coder-v2:16b reason=format next=none detail=400 registry.ollama.ai/library/deepseek-coder-v2:16b does not support tools\\nFailoverError: LLM request failed: provider rejected the request schema or tool payload.\\n'\n2026-06-04 12:36:14 [info     ] openclaw stopped\n2026-06-04 12:36:14 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-7ikcv6le\nINFO:     172.66.0.243:61552 - \"GET /jobs/cbc9a4333bbf4cd98fb09a21e264d969 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

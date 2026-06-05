@@ -1,0 +1,23 @@
+{
+  "row": {
+    "role": "security",
+    "endpoint": "pi-ephemeral",
+    "backend": "pi",
+    "model": "spark/qwen2.5:14b-instruct-q6_K",
+    "category": "FAIL_HARNESS",
+    "status": "error",
+    "markers": [],
+    "detail": "status=error | harness:BACKEND_FORMAT_ERROR",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "error",
+    "state": "failed",
+    "log_file": null
+  },
+  "state": "failed",
+  "error_code": "error",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"error\",\"session_id\":\"86fcc247-6a55-4fec-9152-ed4610769293\",\"reason\":\"BACKEND_FORMAT_ERROR: Backend security output was empty after 2 attempts. Last output: ''\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "npm warn deprecated node-domexception@1.0.0: Use your platform's native DOMException instead\nnpm warn deprecated @mariozechner/pi-agent-core@0.73.1: please use @earendil-works/pi-agent-core instead going forward\nnpm warn deprecated @mariozechner/pi-tui@0.73.1: please use @earendil-works/pi-tui instead going forward\nnpm warn deprecated @mariozechner/pi-ai@0.73.1: please use @earendil-works/pi-ai instead going forward\nnpm warn deprecated @mariozechner/pi-coding-agent@0.73.1: please use @earendil-works/pi-coding-agent instead going forward\n\nadded 203 packages in 8s\nINFO:     172.66.0.243:43178 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-04 11:34:50 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:34863 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:46505 - \"GET /jobs/87a28085524c4311a8818af1654f5b42 HTTP/1.1\" 200 OK\n2026-06-04 11:34:51 [info     ] clone_repository.existing_branch branch=feat/security-sqli\n2026-06-04 11:34:51 [info     ] cloned repository              branch=feat/security-sqli repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-04 11:34:51 [info     ] pi started                     model=spark/qwen2.5:14b-instruct-q6_K provider=litellm\n2026-06-04 11:34:51 [info     ] dispatch accepted              session_id=86fcc247-6a55-4fec-9152-ed4610769293\nINFO:     172.66.0.243:48842 - \"GET /jobs/87a28085524c4311a8818af1654f5b42 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:24257 - \"GET /jobs/87a28085524c4311a8818af1654f5b42 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:36529 - \"GET /jobs/87a28085524c4311a8818af1654f5b42 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:54818 - \"GET /jobs/87a28085524c4311a8818af1654f5b42 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:43319 - \"GET /jobs/87a28085524c4311a8818af1654f5b42 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:60032 - \"GET /jobs/87a28085524c4311a8818af1654f5b42 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:51896 - \"GET /jobs/87a28085524c4311a8818af1654f5b42 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:46718 - \"GET /jobs/87a28085524c4311a8818af1654f5b42 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:29290 - \"GET /jobs/87a28085524c4311a8818af1654f5b42 HTTP/1.1\" 200 OK\n2026-06-04 11:35:37 [warning  ] backend.invalid_output.retrying attempt=1 failure_reason='could not be parsed as a JSON object' max_retries=1 output_preview='After reviewing the provided documents, here are my key observations:\\n\\n1. **SQL Injection (via f-string) - CRITICAL Severity**\\n   - The initial implementation (`src/bench/lookup.py`, line 8) used an `' stage=security\nINFO:     172.66.0.243:24783 - \"GET /jobs/87a28085524c4311a8818af1654f5b42 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:49433 - \"GET /jobs/87a28085524c4311a8818af1654f5b42 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:19012 - \"GET /jobs/87a28085524c4311a8818af1654f5b42 HTTP/1.1\" 200 OK\n2026-06-04 11:35:51 [info     ] pi stopped\n2026-06-04 11:35:51 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-1o8pw84z\nINFO:     172.66.0.243:23845 - \"GET /jobs/87a28085524c4311a8818af1654f5b42 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

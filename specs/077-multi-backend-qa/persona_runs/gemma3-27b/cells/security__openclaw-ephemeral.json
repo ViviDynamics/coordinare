@@ -1,0 +1,23 @@
+{
+  "row": {
+    "role": "security",
+    "endpoint": "openclaw-ephemeral",
+    "backend": "openclaw",
+    "model": "gemma3:27b",
+    "category": "FAIL_HARNESS",
+    "status": "error",
+    "markers": [],
+    "detail": "status=error | harness:subprocess_exit",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "error",
+    "state": "failed",
+    "log_file": null
+  },
+  "state": "failed",
+  "error_code": "error",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"error\",\"session_id\":\"0f4fc92f-56d9-4841-8c44-8e88cc38e826\",\"reason\":\"subprocess_exit:1\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "\nadded 285 packages in 12s\nINFO:     172.66.0.243:37070 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-04 10:35:18 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:61387 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:33147 - \"GET /jobs/bd8d5333da94462bba7421f2e4f17596 HTTP/1.1\" 200 OK\n2026-06-04 10:35:19 [info     ] clone_repository.existing_branch branch=feat/security-sqli\n2026-06-04 10:35:19 [info     ] cloned repository              branch=feat/security-sqli repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-04 10:35:19 [info     ] openclaw.provider_config_written base_url=http://192.168.3.30:11434/v1 path=/root/.openclaw/openclaw.json provider=sparkollama\n2026-06-04 10:35:19 [info     ] openclaw.workspace_linked      workspace=/tmp/performer-0lpuj6h6\n2026-06-04 10:35:19 [info     ] openclaw.persona_to_soul       chars=83\n2026-06-04 10:35:19 [info     ] openclaw.card_docs_written     chars=181 path=/tmp/performer-0lpuj6h6/CARD.md\n2026-06-04 10:35:19 [info     ] openclaw starting              model=sparkollama/gemma3:27b provider_routed=True session_key=coordinare-security-58f7e784\n2026-06-04 10:35:19 [info     ] openclaw started               model=sparkollama/gemma3:27b pid=96\n2026-06-04 10:35:20 [info     ] dispatch accepted              session_id=0f4fc92f-56d9-4841-8c44-8e88cc38e826\nINFO:     172.66.0.243:25701 - \"GET /jobs/bd8d5333da94462bba7421f2e4f17596 HTTP/1.1\" 200 OK\n2026-06-04 10:35:24 [warning  ] openclaw failed                rc=1 stderr='r=400 registry.ollama.ai/library/gemma3:27b does not support tools\\n[agent/embedded] embedded run failover decision: runId=95c12b58-1484-40c0-b628-9d127e374f48 stage=assistant decision=surface_error reason=format from=sparkollama/gemma3:27b profile=- rawError=400 registry.ollama.ai/library/gemma3:27b does not support tools\\n[diagnostic] lane task error: lane=main durationMs=1939 error=\"FailoverError: LLM request failed: provider rejected the request schema or tool payload.\"\\n[diagnostic] lane task error: lane=session:agent:main:coordinare-security-58f7e784 durationMs=1942 error=\"FailoverError: LLM request failed: provider rejected the request schema or tool payload.\"\\n[model-fallback/decision] model fallback decision: decision=candidate_failed requested=sparkollama/gemma3:27b candidate=sparkollama/gemma3:27b reason=format next=none detail=400 registry.ollama.ai/library/gemma3:27b does not support tools\\nFailoverError: LLM request failed: provider rejected the request schema or tool payload.\\n'\n2026-06-04 10:35:26 [info     ] openclaw stopped\n2026-06-04 10:35:26 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-0lpuj6h6\nINFO:     172.66.0.243:34424 - \"GET /jobs/bd8d5333da94462bba7421f2e4f17596 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

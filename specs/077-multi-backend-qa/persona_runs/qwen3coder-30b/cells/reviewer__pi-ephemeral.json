@@ -1,0 +1,25 @@
+{
+  "row": {
+    "role": "reviewer",
+    "endpoint": "pi-ephemeral",
+    "backend": "pi",
+    "model": "spark/qwen3-coder:30b",
+    "category": "FAIL_MODEL",
+    "status": "approved",
+    "markers": [
+      "APPROVED_BUGGY_PR"
+    ],
+    "detail": "status=approved",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "Approved the PR without noting the off\u2011by\u2011one error that skips the last item.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  },
+  "state": "succeeded",
+  "error_code": null,
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"approved\",\"session_id\":\"6ca9bf36-e943-4a79-bdce-7cd8f03c5283\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "npm warn deprecated node-domexception@1.0.0: Use your platform's native DOMException instead\nnpm warn deprecated @mariozechner/pi-agent-core@0.73.1: please use @earendil-works/pi-agent-core instead going forward\nnpm warn deprecated @mariozechner/pi-tui@0.73.1: please use @earendil-works/pi-tui instead going forward\nnpm warn deprecated @mariozechner/pi-ai@0.73.1: please use @earendil-works/pi-ai instead going forward\nnpm warn deprecated @mariozechner/pi-coding-agent@0.73.1: please use @earendil-works/pi-coding-agent instead going forward\n\nadded 203 packages in 11s\nINFO:     172.66.0.243:47404 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-04 00:25:22 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:32191 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:57415 - \"GET /jobs/0111789a402946879ac6b6f0081e4371 HTTP/1.1\" 200 OK\n2026-06-04 00:25:23 [info     ] clone_repository.existing_branch branch=fix/reviewer-offbyone\n2026-06-04 00:25:23 [info     ] cloned repository              branch=fix/reviewer-offbyone repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-04 00:25:23 [info     ] pi started                     model=spark/qwen3-coder:30b provider=litellm\n2026-06-04 00:25:23 [info     ] dispatch accepted              session_id=6ca9bf36-e943-4a79-bdce-7cd8f03c5283\nINFO:     172.66.0.243:41559 - \"GET /jobs/0111789a402946879ac6b6f0081e4371 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:49670 - \"GET /jobs/0111789a402946879ac6b6f0081e4371 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:30384 - \"GET /jobs/0111789a402946879ac6b6f0081e4371 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:64781 - \"GET /jobs/0111789a402946879ac6b6f0081e4371 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:48107 - \"GET /jobs/0111789a402946879ac6b6f0081e4371 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:41760 - \"GET /jobs/0111789a402946879ac6b6f0081e4371 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:27818 - \"GET /jobs/0111789a402946879ac6b6f0081e4371 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:25782 - \"GET /jobs/0111789a402946879ac6b6f0081e4371 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:18803 - \"GET /jobs/0111789a402946879ac6b6f0081e4371 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:51636 - \"GET /jobs/0111789a402946879ac6b6f0081e4371 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:62130 - \"GET /jobs/0111789a402946879ac6b6f0081e4371 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:44912 - \"GET /jobs/0111789a402946879ac6b6f0081e4371 HTTP/1.1\" 200 OK\n2026-06-04 00:26:25 [warning  ] backend.invalid_output.retrying attempt=1 failure_reason='could not be parsed as a JSON object' max_retries=1 output_preview='## Review Result: APPROVE\\n\\nThe PR correctly addresses the correctness issue by fixing the off-by-one error in the `discount_all` function. \\n\\n### Summary of Changes:\\n1. **Fixed the core bug**: Changed ' stage=review\nINFO:     172.66.0.243:60481 - \"GET /jobs/0111789a402946879ac6b6f0081e4371 HTTP/1.1\" 200 OK\n2026-06-04 00:26:30 [info     ] review posted                  owner=ViviDynamics pr_number=1 repo=conductor-bench review_event=COMMENT\n2026-06-04 00:26:30 [info     ] pi stopped\n2026-06-04 00:26:30 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-9o7f5n4v\nINFO:     172.66.0.243:64455 - \"GET /jobs/0111789a402946879ac6b6f0081e4371 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

@@ -1,0 +1,25 @@
+{
+  "row": {
+    "role": "security",
+    "endpoint": "openclaw-ephemeral",
+    "backend": "openclaw",
+    "model": "qwen2.5:14b-instruct-q6_K",
+    "category": "FAIL_HARNESS",
+    "status": "error",
+    "markers": [
+      "injection"
+    ],
+    "detail": "status=error | harness:BACKEND_FORMAT_ERROR",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "error",
+    "state": "failed",
+    "log_file": null
+  },
+  "state": "failed",
+  "error_code": "error",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"error\",\"session_id\":\"52259aac-02ec-4ef9-b701-ddbcefc06792\",\"reason\":\"BACKEND_FORMAT_ERROR: Backend security output could not be parsed as a JSON object after 2 attempts. Last output: 'Since there are no additional plan, task breakdown, or research files available for this security review task regarding `lookup_user` and `compute_filter`, I will proceed with a general security review based on the provided description and criteria:\\\\n\\\\n### Security Review Findings\\\\n\\\\n1. **Injection Vuln'\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "\nadded 285 packages in 12s\nINFO:     172.66.0.243:62709 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-04 11:33:39 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:42628 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:61269 - \"GET /jobs/a71fc86c4d8c4edaa4f98da41ad33d61 HTTP/1.1\" 200 OK\n2026-06-04 11:33:41 [info     ] clone_repository.existing_branch branch=feat/security-sqli\n2026-06-04 11:33:41 [info     ] cloned repository              branch=feat/security-sqli repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-04 11:33:41 [info     ] openclaw.provider_config_written base_url=http://192.168.3.30:11434/v1 path=/root/.openclaw/openclaw.json provider=sparkollama\n2026-06-04 11:33:41 [info     ] openclaw.workspace_linked      workspace=/tmp/performer-wo17yu8p\n2026-06-04 11:33:41 [info     ] openclaw.persona_to_soul       chars=83\n2026-06-04 11:33:41 [info     ] openclaw.card_docs_written     chars=181 path=/tmp/performer-wo17yu8p/CARD.md\n2026-06-04 11:33:41 [info     ] openclaw starting              model=sparkollama/qwen2.5:14b-instruct-q6_K provider_routed=True session_key=coordinare-security-6fc1f91f\n2026-06-04 11:33:41 [info     ] openclaw started               model=sparkollama/qwen2.5:14b-instruct-q6_K pid=96\n2026-06-04 11:33:41 [info     ] dispatch accepted              session_id=52259aac-02ec-4ef9-b701-ddbcefc06792\nINFO:     172.66.0.243:53395 - \"GET /jobs/a71fc86c4d8c4edaa4f98da41ad33d61 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:44277 - \"GET /jobs/a71fc86c4d8c4edaa4f98da41ad33d61 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:49112 - \"GET /jobs/a71fc86c4d8c4edaa4f98da41ad33d61 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:39715 - \"GET /jobs/a71fc86c4d8c4edaa4f98da41ad33d61 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:32709 - \"GET /jobs/a71fc86c4d8c4edaa4f98da41ad33d61 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:61949 - \"GET /jobs/a71fc86c4d8c4edaa4f98da41ad33d61 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:42863 - \"GET /jobs/a71fc86c4d8c4edaa4f98da41ad33d61 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:21069 - \"GET /jobs/a71fc86c4d8c4edaa4f98da41ad33d61 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:24489 - \"GET /jobs/a71fc86c4d8c4edaa4f98da41ad33d61 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:59448 - \"GET /jobs/a71fc86c4d8c4edaa4f98da41ad33d61 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:34867 - \"GET /jobs/a71fc86c4d8c4edaa4f98da41ad33d61 HTTP/1.1\" 200 OK\n2026-06-04 11:34:35 [warning  ] backend.invalid_output.retrying attempt=1 failure_reason='could not be parsed as a JSON object' max_retries=1 output_preview='Since there are no additional plan, task breakdown, or research files available for this security review task regarding `lookup_user` and `compute_filter`, I will proceed with a general security revie' stage=security\n2026-06-04 11:34:37 [info     ] openclaw stopped\n2026-06-04 11:34:37 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-wo17yu8p\nINFO:     172.66.0.243:33274 - \"GET /jobs/a71fc86c4d8c4edaa4f98da41ad33d61 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

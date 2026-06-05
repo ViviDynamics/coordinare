@@ -356,3 +356,42 @@ async def test_env_literal_placeholder_treated_as_unset(
     infer_kwargs = captured.get("_infer_kwargs", {})
     assert infer_kwargs.get("agent_version") == DEFAULT_INFERENCE_AGENT_VERSION
     assert infer_kwargs.get("max_tool_calls") == DEFAULT_INFERENCE_MAX_TOOL_CALLS
+
+
+# ---------------------------------------------------------------------------
+# 077 T025 [US4] — service-inference timeout stays NON-FATAL (backend-agnostic)
+# ---------------------------------------------------------------------------
+# The env_bootstrap stage runs `_run_service_inference` regardless of which
+# backend executes the role (opencode for 077 US4, claude_code previously).
+# The probe timing out MUST NOT fail the bootstrap — it returns a
+# skipped-reason result so the env cache is still marked ready (076 T175,
+# carried into main). This guards that contract for the opencode bootstrap.
+
+
+@pytest.mark.asyncio
+async def test_inference_timeout_is_non_fatal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    captured: dict[str, Any] = {}
+    _patch_llm_path(monkeypatch, captured)
+
+    # Override infer_services to time out — the failsafe must catch it.
+    import coordinare_service_inference as svc_inf
+
+    async def _timing_out_infer_services(**_kwargs: Any) -> Any:
+        raise TimeoutError("service inference exceeded step timeout")
+
+    monkeypatch.setattr(svc_inf, "infer_services", _timing_out_infer_services)
+
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+
+    # Must NOT raise — the bootstrap continues with inference skipped.
+    out = await _run_service_inference(project_dir, str(cache_dir))
+
+    assert out.get("inference_succeeded") is not True
+    reason = out.get("inference_skipped_reason") or ""
+    assert "TimeoutError" in reason

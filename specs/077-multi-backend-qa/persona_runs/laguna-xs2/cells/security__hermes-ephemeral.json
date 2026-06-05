@@ -1,0 +1,25 @@
+{
+  "row": {
+    "role": "security",
+    "endpoint": "hermes-ephemeral",
+    "backend": "hermes",
+    "model": "spark/laguna-xs.2:latest",
+    "category": "FAIL_MODEL",
+    "status": "security_passed",
+    "markers": [
+      "PASSED_VULN_PR"
+    ],
+    "detail": "status=security_passed",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent incorrectly marked the PR as passed, missing the SQL injection and eval vulnerabilities.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  },
+  "state": "succeeded",
+  "error_code": null,
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"security_passed\",\"session_id\":\"26a798cb-d8cd-429e-b646-8c5fbadd1b58\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.\n\n[notice] A new release of pip is available: 25.0.1 -> 26.1.2\n[notice] To update, run: pip install --upgrade pip\nINFO:     172.66.0.243:43035 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-03 21:49:13 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:42685 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:21765 - \"GET /jobs/0ea6569d9ab944dc83be1beae372217f HTTP/1.1\" 200 OK\n2026-06-03 21:49:14 [info     ] clone_repository.existing_branch branch=feat/security-sqli\n2026-06-03 21:49:14 [info     ] cloned repository              branch=feat/security-sqli repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-03 21:49:14 [info     ] hermes.card_docs_written       chars=181 path=/tmp/performer-j8dax37c/CARD.md\n2026-06-03 21:49:14 [info     ] hermes starting                base_url=https://litellm.vividynamics.com/v1 hermes_home=/tmp/hermes-job-m7rmzsk4 model=spark/laguna-xs.2:latest provider=litellm\n2026-06-03 21:49:14 [info     ] hermes started                 model=spark/laguna-xs.2:latest pid=46\n2026-06-03 21:49:14 [info     ] dispatch accepted              session_id=26a798cb-d8cd-429e-b646-8c5fbadd1b58\nINFO:     172.66.0.243:19981 - \"GET /jobs/0ea6569d9ab944dc83be1beae372217f HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:34280 - \"GET /jobs/0ea6569d9ab944dc83be1beae372217f HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:52418 - \"GET /jobs/0ea6569d9ab944dc83be1beae372217f HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:40693 - \"GET /jobs/0ea6569d9ab944dc83be1beae372217f HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:24192 - \"GET /jobs/0ea6569d9ab944dc83be1beae372217f HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:59125 - \"GET /jobs/0ea6569d9ab944dc83be1beae372217f HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:63465 - \"GET /jobs/0ea6569d9ab944dc83be1beae372217f HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:28980 - \"GET /jobs/0ea6569d9ab944dc83be1beae372217f HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:25620 - \"GET /jobs/0ea6569d9ab944dc83be1beae372217f HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:37182 - \"GET /jobs/0ea6569d9ab944dc83be1beae372217f HTTP/1.1\" 200 OK\n2026-06-03 21:50:06 [info     ] hermes finalized               removed=/tmp/hermes-job-m7rmzsk4\n2026-06-03 21:50:07 [info     ] commit_file.committed          branch=feat/security-sqli path=docs/cards/security-review-user/security.md\n2026-06-03 21:50:07 [info     ] hermes stopped\n2026-06-03 21:50:07 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-j8dax37c\nINFO:     172.66.0.243:60371 - \"GET /jobs/0ea6569d9ab944dc83be1beae372217f HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

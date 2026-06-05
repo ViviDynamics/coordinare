@@ -1,0 +1,25 @@
+{
+  "row": {
+    "role": "tech_writer",
+    "endpoint": "openclaw-ephemeral",
+    "backend": "openclaw",
+    "model": "qwen3:8b",
+    "category": "FAIL_HARNESS",
+    "status": "error",
+    "markers": [
+      "docs_reference_coupon"
+    ],
+    "detail": "status=error doc_hits=True | harness:BACKEND_FORMAT_ERROR",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "error",
+    "state": "failed",
+    "log_file": null
+  },
+  "state": "failed",
+  "error_code": "error",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"error\",\"session_id\":\"ce4fbd7d-4fe8-4dce-859e-6fb4f6014fcb\",\"reason\":\"BACKEND_FORMAT_ERROR: Backend docs output could not be parsed as a JSON object after 2 attempts. Last output: \\\"## Coupon API Documentation\\\\n\\\\n### apply_coupon\\\\n**Description:** Applies a discount coupon to a transaction.  \\\\n**Parameters:**  \\\\n- `coupon_code` (string): The coupon code to apply. Valid codes: `SAVE10`, `SAVE25`.  \\\\n**Example:**  \\\\n```js\\\\napply_coupon('SAVE10');\\\\n```  \\\\n**Notes:**  \\\\n- Coupons are case-sen\\\"\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "\nadded 285 packages in 13s\nINFO:     172.66.0.243:35795 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-04 16:07:35 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:23016 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:61517 - \"GET /jobs/e5b879eae6794dc98e25f34014a9b561 HTTP/1.1\" 200 OK\n2026-06-04 16:07:36 [info     ] clone_repository.existing_branch branch=feat/techwriter-nodoc\n2026-06-04 16:07:36 [info     ] cloned repository              branch=feat/techwriter-nodoc repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-04 16:07:36 [info     ] openclaw.provider_config_written base_url=http://192.168.3.30:11434/v1 path=/root/.openclaw/openclaw.json provider=sparkollama\n2026-06-04 16:07:36 [info     ] openclaw.workspace_linked      workspace=/tmp/performer-z2ydkfe6\n2026-06-04 16:07:36 [info     ] openclaw.persona_to_soul       chars=106\n2026-06-04 16:07:36 [info     ] openclaw.card_docs_written     chars=199 path=/tmp/performer-z2ydkfe6/CARD.md\n2026-06-04 16:07:36 [info     ] openclaw starting              model=sparkollama/qwen3:8b provider_routed=True session_key=coordinare-documenting-18af38ba\n2026-06-04 16:07:36 [info     ] openclaw started               model=sparkollama/qwen3:8b pid=92\n2026-06-04 16:07:36 [info     ] dispatch accepted              session_id=ce4fbd7d-4fe8-4dce-859e-6fb4f6014fcb\nINFO:     172.66.0.243:40171 - \"GET /jobs/e5b879eae6794dc98e25f34014a9b561 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:19069 - \"GET /jobs/e5b879eae6794dc98e25f34014a9b561 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:54290 - \"GET /jobs/e5b879eae6794dc98e25f34014a9b561 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:53871 - \"GET /jobs/e5b879eae6794dc98e25f34014a9b561 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:25767 - \"GET /jobs/e5b879eae6794dc98e25f34014a9b561 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:64072 - \"GET /jobs/e5b879eae6794dc98e25f34014a9b561 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:36338 - \"GET /jobs/e5b879eae6794dc98e25f34014a9b561 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:35405 - \"GET /jobs/e5b879eae6794dc98e25f34014a9b561 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:57116 - \"GET /jobs/e5b879eae6794dc98e25f34014a9b561 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:32581 - \"GET /jobs/e5b879eae6794dc98e25f34014a9b561 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:63457 - \"GET /jobs/e5b879eae6794dc98e25f34014a9b561 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:21045 - \"GET /jobs/e5b879eae6794dc98e25f34014a9b561 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:46922 - \"GET /jobs/e5b879eae6794dc98e25f34014a9b561 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:53964 - \"GET /jobs/e5b879eae6794dc98e25f34014a9b561 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:33094 - \"GET /jobs/e5b879eae6794dc98e25f34014a9b561 HTTP/1.1\" 200 OK\n2026-06-04 16:08:50 [warning  ] backend.invalid_output.retrying attempt=1 failure_reason='could not be parsed as a JSON object' max_retries=1 output_preview='## Coupon API Documentation\\n\\n### apply_coupon\\n**Description:** Applies a discount coupon to a transaction.  \\n**Parameters:**  \\n- `coupon_code` (string): The coupon code to apply. Valid codes: `SAVE10`' stage=docs\n2026-06-04 16:08:52 [info     ] openclaw stopped\n2026-06-04 16:08:52 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-z2ydkfe6\nINFO:     172.66.0.243:36032 - \"GET /jobs/e5b879eae6794dc98e25f34014a9b561 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

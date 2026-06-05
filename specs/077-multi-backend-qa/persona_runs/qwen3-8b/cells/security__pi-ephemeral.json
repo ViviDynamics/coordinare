@@ -1,0 +1,25 @@
+{
+  "row": {
+    "role": "security",
+    "endpoint": "pi-ephemeral",
+    "backend": "pi",
+    "model": "spark/qwen3:8b",
+    "category": "FAIL_MODEL",
+    "status": "security_passed",
+    "markers": [
+      "PASSED_VULN_PR"
+    ],
+    "detail": "status=security_passed",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent incorrectly marked the PR as security_passed and did not flag the SQL injection or eval vulnerabilities.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  },
+  "state": "succeeded",
+  "error_code": null,
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"security_passed\",\"session_id\":\"fff505b5-6f0b-4c09-8624-d8134eaedd8d\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "npm warn deprecated node-domexception@1.0.0: Use your platform's native DOMException instead\nnpm warn deprecated @mariozechner/pi-agent-core@0.73.1: please use @earendil-works/pi-agent-core instead going forward\nnpm warn deprecated @mariozechner/pi-tui@0.73.1: please use @earendil-works/pi-tui instead going forward\nnpm warn deprecated @mariozechner/pi-ai@0.73.1: please use @earendil-works/pi-ai instead going forward\nnpm warn deprecated @mariozechner/pi-coding-agent@0.73.1: please use @earendil-works/pi-coding-agent instead going forward\n\nadded 203 packages in 9s\nINFO:     172.66.0.243:60886 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-04 15:47:09 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:37912 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:59605 - \"GET /jobs/d1f969d5a2a240f481847d3e6c9b8fd5 HTTP/1.1\" 200 OK\n2026-06-04 15:47:12 [info     ] clone_repository.existing_branch branch=feat/security-sqli\n2026-06-04 15:47:12 [info     ] cloned repository              branch=feat/security-sqli repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-04 15:47:12 [info     ] pi started                     model=spark/qwen3:8b provider=litellm\n2026-06-04 15:47:12 [info     ] dispatch accepted              session_id=fff505b5-6f0b-4c09-8624-d8134eaedd8d\nINFO:     172.66.0.243:47703 - \"GET /jobs/d1f969d5a2a240f481847d3e6c9b8fd5 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:42747 - \"GET /jobs/d1f969d5a2a240f481847d3e6c9b8fd5 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:22809 - \"GET /jobs/d1f969d5a2a240f481847d3e6c9b8fd5 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:47519 - \"GET /jobs/d1f969d5a2a240f481847d3e6c9b8fd5 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:19382 - \"GET /jobs/d1f969d5a2a240f481847d3e6c9b8fd5 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:41343 - \"GET /jobs/d1f969d5a2a240f481847d3e6c9b8fd5 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:38625 - \"GET /jobs/d1f969d5a2a240f481847d3e6c9b8fd5 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:53433 - \"GET /jobs/d1f969d5a2a240f481847d3e6c9b8fd5 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:43404 - \"GET /jobs/d1f969d5a2a240f481847d3e6c9b8fd5 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:17544 - \"GET /jobs/d1f969d5a2a240f481847d3e6c9b8fd5 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:35024 - \"GET /jobs/d1f969d5a2a240f481847d3e6c9b8fd5 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:20279 - \"GET /jobs/d1f969d5a2a240f481847d3e6c9b8fd5 HTTP/1.1\" 200 OK\n2026-06-04 15:48:10 [warning  ] backend.invalid_output.retrying attempt=1 failure_reason='could not be parsed as a JSON object' max_retries=1 output_preview='The security review confirms **no remaining injection vulnerabilities** in the current implementation. Key findings:\\n\\n- \u2705 SQL injection fixed via parameterized queries in `lookup_user`\\n- \u2705 Arbitrary c' stage=security\nINFO:     172.66.0.243:25129 - \"GET /jobs/d1f969d5a2a240f481847d3e6c9b8fd5 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:16129 - \"GET /jobs/d1f969d5a2a240f481847d3e6c9b8fd5 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:49362 - \"GET /jobs/d1f969d5a2a240f481847d3e6c9b8fd5 HTTP/1.1\" 200 OK\n2026-06-04 15:48:25 [info     ] commit_file.committed          branch=feat/security-sqli path=docs/cards/security-review-user/security.md\n2026-06-04 15:48:25 [info     ] pi stopped\n2026-06-04 15:48:25 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-aecuy5o8\nINFO:     172.66.0.243:28871 - \"GET /jobs/d1f969d5a2a240f481847d3e6c9b8fd5 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

@@ -1,0 +1,23 @@
+{
+  "row": {
+    "role": "assessor",
+    "endpoint": "claude-ephemeral",
+    "backend": "claude_code",
+    "model": "spark/mistral:instruct",
+    "category": "FAIL_MODEL",
+    "status": "assessment_complete",
+    "markers": [],
+    "detail": "questions=0 sufficient=None",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "It did not flag the request as insufficient nor ask clarifying questions.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  },
+  "state": "succeeded",
+  "error_code": null,
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"assessment_complete\",\"session_id\":\"fc8d3a60-eb2d-430d-bbed-47f20fb18ece\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "Setting up Claude Code...\n\nChecking installation status...\nInstalling Claude Code native build latest...\nSetting up launcher and shell integration...\n\u2714 Claude Code successfully installed!\n\n  Version: 2.1.163\n\n  Location: ~/.local/bin/claude\n\n\n  Next: Run claude --help to get started\n\n\u2705 Installation complete!\n\nINFO:     172.66.0.243:58127 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-05 03:29:19 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\n2026-06-05 03:29:19 [warning  ] secret_missing                 name=ANTHROPIC_API_KEY\n2026-06-05 03:29:19 [info     ] secret_resolved                name=ANTHROPIC_AUTH_TOKEN source=init_payload\nINFO:     172.66.0.243:53241 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:58958 - \"GET /jobs/6d55386799f94402869392764d1e6d99 HTTP/1.1\" 200 OK\n2026-06-05 03:29:20 [info     ] clone_repository.new_branch    branch=bench-assessor-a1bb4d6f\n2026-06-05 03:29:20 [info     ] cloned repository              branch=bench-assessor-a1bb4d6f repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-05 03:29:20 [info     ] claude_code shim listening     port=46529\n2026-06-05 03:29:20 [info     ] claude code started            pid=96 resume=False\n2026-06-05 03:29:20 [info     ] dispatch accepted              session_id=fc8d3a60-eb2d-430d-bbed-47f20fb18ece\n2026-06-05 03:29:21 [info     ] claude_code shim request       latency_ms=23 method=HEAD path=/ status=200\n2026-06-05 03:29:21 [debug    ] claude code session captured   session_id=4b5cea71-13aa-4ec7-92b4-7ae9c6918620\n2026-06-05 03:29:21 [info     ] claude_code shim request       latency_ms=96 method=POST path=/v1/messages status=400\n2026-06-05 03:29:23 [info     ] commit_file.committed          branch=bench-assessor-a1bb4d6f path=docs/cards/add-a-customer-loyal/assessment.md\n2026-06-05 03:29:23 [info     ] assessor.assessment_committed  path=docs/cards/add-a-customer-loyal/assessment.md\n2026-06-05 03:29:23 [info     ] claude code stopped\n2026-06-05 03:29:23 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-dkjj5w85\nINFO:     172.66.0.243:34898 - \"GET /jobs/6d55386799f94402869392764d1e6d99 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\nError handling request from 127.0.0.1\nTraceback (most recent call last):\n  File \"/usr/local/lib/python3.12/site-packages/aiohttp/web_protocol.py\", line 521, in _handle_request\n    resp = await request_handler(request)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/site-packages/aiohttp/web_app.py\", line 559, in _handle\n    return await handler(request)\n           ^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/site-packages/performer/backends/claude_code_shim.py\", line 302, in _handle\n    await resp.prepare(request)\n  File \"/usr/local/lib/python3.12/site-packages/aiohttp/web_response.py\", line 462, in prepare\n    return await self._start(request)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/site-packages/aiohttp/web_response.py\", line 470, in _start\n    await self._write_headers()\n  File \"/usr/local/lib/python3.12/site-packages/aiohttp/web_response.py\", line 550, in _write_headers\n    writer.send_headers()\n  File \"/usr/local/lib/python3.12/site-packages/aiohttp/http_writer.py\", line 231, in send_headers\n    self._write(headers_buf)\n  File \"/usr/local/lib/python3.12/site-packages/aiohttp/http_writer.py\", line 102, in _write\n    raise ClientConnectionResetError(\"Cannot write to closing transport\")\naiohttp.client_exceptions.ClientConnectionResetError: Cannot write to closing transport\n"
+}

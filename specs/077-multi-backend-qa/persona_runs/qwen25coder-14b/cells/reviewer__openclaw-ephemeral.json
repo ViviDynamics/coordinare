@@ -1,0 +1,23 @@
+{
+  "row": {
+    "role": "reviewer",
+    "endpoint": "openclaw-ephemeral",
+    "backend": "openclaw",
+    "model": "qwen2.5-coder:14b-instruct-q6_K",
+    "category": "FAIL_MODEL",
+    "status": "changes_requested",
+    "markers": [],
+    "detail": "status=changes_requested",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "changes_requested",
+    "state": "failed",
+    "log_file": null
+  },
+  "state": "failed",
+  "error_code": "changes_requested",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"changes_requested\",\"session_id\":\"26f21367-cde6-47c7-9f10-8cfca0bc3524\",\"questions\":[],\"comments\":[],\"body\":\"NO_REPLY\",\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "\nadded 285 packages in 15s\nINFO:     172.66.0.243:42024 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-04 13:36:15 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:44783 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:32548 - \"GET /jobs/5c6644804ce8467caafcde8f665ffbbd HTTP/1.1\" 200 OK\n2026-06-04 13:36:17 [info     ] clone_repository.existing_branch branch=fix/reviewer-offbyone\n2026-06-04 13:36:17 [info     ] cloned repository              branch=fix/reviewer-offbyone repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-04 13:36:17 [info     ] openclaw.provider_config_written base_url=http://192.168.3.30:11434/v1 path=/root/.openclaw/openclaw.json provider=sparkollama\n2026-06-04 13:36:17 [info     ] openclaw.workspace_linked      workspace=/tmp/performer-ougdyesu\n2026-06-04 13:36:17 [info     ] openclaw.persona_to_soul       chars=134\n2026-06-04 13:36:17 [info     ] openclaw.card_docs_written     chars=178 path=/tmp/performer-ougdyesu/CARD.md\n2026-06-04 13:36:17 [info     ] openclaw starting              model=sparkollama/qwen2.5-coder:14b-instruct-q6_K provider_routed=True session_key=coordinare-reviewing-17a04bea\n2026-06-04 13:36:17 [info     ] openclaw started               model=sparkollama/qwen2.5-coder:14b-instruct-q6_K pid=92\n2026-06-04 13:36:17 [info     ] dispatch accepted              session_id=26f21367-cde6-47c7-9f10-8cfca0bc3524\nINFO:     172.66.0.243:18677 - \"GET /jobs/5c6644804ce8467caafcde8f665ffbbd HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:30429 - \"GET /jobs/5c6644804ce8467caafcde8f665ffbbd HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:35143 - \"GET /jobs/5c6644804ce8467caafcde8f665ffbbd HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:62848 - \"GET /jobs/5c6644804ce8467caafcde8f665ffbbd HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:42737 - \"GET /jobs/5c6644804ce8467caafcde8f665ffbbd HTTP/1.1\" 200 OK\n2026-06-04 13:36:41 [warning  ] backend.invalid_output.retrying attempt=1 failure_reason='could not be parsed as a JSON object' max_retries=1 output_preview=NO_REPLY stage=review\n2026-06-04 13:36:43 [warning  ] backend.parse_lenient_fallback failure_reason='could not be parsed as a JSON object' output_preview=NO_REPLY role=reviewing stage=review\n2026-06-04 13:36:44 [info     ] review posted                  owner=ViviDynamics pr_number=1 repo=conductor-bench review_event=COMMENT\n2026-06-04 13:36:44 [info     ] openclaw stopped\n2026-06-04 13:36:44 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-ougdyesu\nINFO:     172.66.0.243:33942 - \"GET /jobs/5c6644804ce8467caafcde8f665ffbbd HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

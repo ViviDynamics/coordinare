@@ -1,0 +1,23 @@
+{
+  "row": {
+    "role": "assessor",
+    "endpoint": "claude-ephemeral",
+    "backend": "claude_code",
+    "model": "spark/deepseek-r1:70b",
+    "category": "FAIL_MODEL",
+    "status": "assessment_complete",
+    "markers": [],
+    "detail": "questions=0 sufficient=None",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent did not flag the request as insufficient nor ask clarifying questions as required.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  },
+  "state": "succeeded",
+  "error_code": null,
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"assessment_complete\",\"session_id\":\"38fcd24c-de1e-4274-a2bf-6f24b03b958e\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "Setting up Claude Code...\n\nChecking installation status...\nInstalling Claude Code native build latest...\nSetting up launcher and shell integration...\n\u2714 Claude Code successfully installed!\n\n  Version: 2.1.162\n\n  Location: ~/.local/bin/claude\n\n\n  Next: Run claude --help to get started\n\n\u2705 Installation complete!\n\nINFO:     172.66.0.243:33104 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-04 03:55:59 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\n2026-06-04 03:55:59 [warning  ] secret_missing                 name=ANTHROPIC_API_KEY\n2026-06-04 03:55:59 [info     ] secret_resolved                name=ANTHROPIC_AUTH_TOKEN source=init_payload\nINFO:     172.66.0.243:24168 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:39536 - \"GET /jobs/96d7d2e7d5b447b6961770d776929092 HTTP/1.1\" 200 OK\n2026-06-04 03:56:00 [info     ] clone_repository.new_branch    branch=bench-assessor-52b3e5cf\n2026-06-04 03:56:00 [info     ] cloned repository              branch=bench-assessor-52b3e5cf repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-04 03:56:00 [info     ] claude_code shim listening     port=46527\n2026-06-04 03:56:00 [info     ] claude code started            pid=96 resume=False\n2026-06-04 03:56:00 [info     ] dispatch accepted              session_id=38fcd24c-de1e-4274-a2bf-6f24b03b958e\n2026-06-04 03:56:00 [info     ] claude_code shim request       latency_ms=22 method=HEAD path=/ status=200\n2026-06-04 03:56:01 [debug    ] claude code session captured   session_id=7385b206-5c2f-4fe8-a7c8-2a3d55074e4e\n2026-06-04 03:56:01 [info     ] claude_code shim request       latency_ms=151 method=POST path=/v1/messages status=400\n2026-06-04 03:56:03 [info     ] commit_file.committed          branch=bench-assessor-52b3e5cf path=docs/cards/add-a-customer-loyal/assessment.md\n2026-06-04 03:56:03 [info     ] assessor.assessment_committed  path=docs/cards/add-a-customer-loyal/assessment.md\nINFO:     172.66.0.243:37283 - \"GET /jobs/96d7d2e7d5b447b6961770d776929092 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:53309 - \"GET /jobs/96d7d2e7d5b447b6961770d776929092 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:39610 - \"GET /jobs/96d7d2e7d5b447b6961770d776929092 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:48260 - \"GET /jobs/96d7d2e7d5b447b6961770d776929092 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:34091 - \"GET /jobs/96d7d2e7d5b447b6961770d776929092 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:61737 - \"GET /jobs/96d7d2e7d5b447b6961770d776929092 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:54228 - \"GET /jobs/96d7d2e7d5b447b6961770d776929092 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:22543 - \"GET /jobs/96d7d2e7d5b447b6961770d776929092 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:26341 - \"GET /jobs/96d7d2e7d5b447b6961770d776929092 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:56625 - \"GET /jobs/96d7d2e7d5b447b6961770d776929092 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:42774 - \"GET /jobs/96d7d2e7d5b447b6961770d776929092 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:40624 - \"GET /jobs/96d7d2e7d5b447b6961770d776929092 HTTP/1.1\" 200 OK\n2026-06-04 03:57:03 [warning  ] claude_code shim upstream error error=ServerDisconnectedError path=/v1/messages\n2026-06-04 03:57:03 [info     ] claude code stopped\n2026-06-04 03:57:03 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-uapbqyen\nINFO:     172.66.0.243:44619 - \"GET /jobs/96d7d2e7d5b447b6961770d776929092 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

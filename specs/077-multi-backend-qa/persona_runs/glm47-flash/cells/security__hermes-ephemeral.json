@@ -1,0 +1,25 @@
+{
+  "row": {
+    "role": "security",
+    "endpoint": "hermes-ephemeral",
+    "backend": "hermes",
+    "model": "spark/glm-4.7-flash:latest",
+    "category": "FAIL_MODEL",
+    "status": "security_passed",
+    "markers": [
+      "PASSED_VULN_PR"
+    ],
+    "detail": "status=security_passed",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent passed the PR despite the planted SQL injection and eval vulnerabilities, missing the required failures.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  },
+  "state": "succeeded",
+  "error_code": null,
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"security_passed\",\"session_id\":\"88edd4da-aee6-42ab-8dd5-5e996172c85d\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.\n\n[notice] A new release of pip is available: 25.0.1 -> 26.1.2\n[notice] To update, run: pip install --upgrade pip\nINFO:     172.66.0.243:61526 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-03 18:14:14 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:28696 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:58556 - \"GET /jobs/2c7a8c569f814a7a81f46a9376d2d0b5 HTTP/1.1\" 200 OK\n2026-06-03 18:14:16 [info     ] clone_repository.existing_branch branch=feat/security-sqli\n2026-06-03 18:14:16 [info     ] cloned repository              branch=feat/security-sqli repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-03 18:14:16 [info     ] hermes.card_docs_written       chars=181 path=/tmp/performer-beo1yw3v/CARD.md\n2026-06-03 18:14:16 [info     ] hermes starting                base_url=https://litellm.vividynamics.com/v1 hermes_home=/tmp/hermes-job-_3q138yo model=spark/glm-4.7-flash:latest provider=litellm\n2026-06-03 18:14:16 [info     ] hermes started                 model=spark/glm-4.7-flash:latest pid=46\n2026-06-03 18:14:16 [info     ] dispatch accepted              session_id=88edd4da-aee6-42ab-8dd5-5e996172c85d\nINFO:     172.66.0.243:55941 - \"GET /jobs/2c7a8c569f814a7a81f46a9376d2d0b5 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:36566 - \"GET /jobs/2c7a8c569f814a7a81f46a9376d2d0b5 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:24102 - \"GET /jobs/2c7a8c569f814a7a81f46a9376d2d0b5 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:47618 - \"GET /jobs/2c7a8c569f814a7a81f46a9376d2d0b5 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:61283 - \"GET /jobs/2c7a8c569f814a7a81f46a9376d2d0b5 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:17827 - \"GET /jobs/2c7a8c569f814a7a81f46a9376d2d0b5 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:44718 - \"GET /jobs/2c7a8c569f814a7a81f46a9376d2d0b5 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:44432 - \"GET /jobs/2c7a8c569f814a7a81f46a9376d2d0b5 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:27649 - \"GET /jobs/2c7a8c569f814a7a81f46a9376d2d0b5 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:26043 - \"GET /jobs/2c7a8c569f814a7a81f46a9376d2d0b5 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:31220 - \"GET /jobs/2c7a8c569f814a7a81f46a9376d2d0b5 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:34435 - \"GET /jobs/2c7a8c569f814a7a81f46a9376d2d0b5 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:49721 - \"GET /jobs/2c7a8c569f814a7a81f46a9376d2d0b5 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:48211 - \"GET /jobs/2c7a8c569f814a7a81f46a9376d2d0b5 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:44986 - \"GET /jobs/2c7a8c569f814a7a81f46a9376d2d0b5 HTTP/1.1\" 200 OK\n2026-06-03 18:15:30 [info     ] hermes finalized               removed=/tmp/hermes-job-_3q138yo\n2026-06-03 18:15:30 [info     ] commit_file.no_changes         path=docs/cards/security-review-user/security.md\n2026-06-03 18:15:30 [info     ] hermes stopped\n2026-06-03 18:15:30 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-beo1yw3v\nINFO:     172.66.0.243:64431 - \"GET /jobs/2c7a8c569f814a7a81f46a9376d2d0b5 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

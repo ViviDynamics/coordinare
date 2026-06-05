@@ -1,0 +1,25 @@
+{
+  "row": {
+    "role": "security",
+    "endpoint": "claude-ephemeral",
+    "backend": "claude_code",
+    "model": "spark/llama3.1:70b-instruct-q4_K_M",
+    "category": "FAIL_MODEL",
+    "status": "security_passed",
+    "markers": [
+      "PASSED_VULN_PR"
+    ],
+    "detail": "status=security_passed",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent incorrectly marked the PR as security_passed and did not flag the SQL injection or eval vulnerabilities.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  },
+  "state": "succeeded",
+  "error_code": null,
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"security_passed\",\"session_id\":\"56538c76-018b-47df-9a15-9c3cf4b49795\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "Setting up Claude Code...\n\nChecking installation status...\nInstalling Claude Code native build latest...\nSetting up launcher and shell integration...\n\u2714 Claude Code successfully installed!\n\n  Version: 2.1.163\n\n  Location: ~/.local/bin/claude\n\n\n  Next: Run claude --help to get started\n\n\u2705 Installation complete!\n\nINFO:     172.66.0.243:44855 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-05 00:22:23 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\n2026-06-05 00:22:23 [warning  ] secret_missing                 name=ANTHROPIC_API_KEY\n2026-06-05 00:22:23 [info     ] secret_resolved                name=ANTHROPIC_AUTH_TOKEN source=init_payload\nINFO:     172.66.0.243:16039 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:65359 - \"GET /jobs/3dab209e1b284a63ab603bb04516dab6 HTTP/1.1\" 200 OK\n2026-06-05 00:22:24 [info     ] clone_repository.existing_branch branch=feat/security-sqli\n2026-06-05 00:22:24 [info     ] cloned repository              branch=feat/security-sqli repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-05 00:22:24 [info     ] claude_code shim listening     port=36699\n2026-06-05 00:22:24 [info     ] claude code started            pid=105 resume=False\n2026-06-05 00:22:24 [info     ] claude_code shim request       latency_ms=21 method=HEAD path=/ status=200\n2026-06-05 00:22:24 [info     ] dispatch accepted              session_id=56538c76-018b-47df-9a15-9c3cf4b49795\n2026-06-05 00:22:24 [debug    ] claude code session captured   session_id=a2e22a31-4e14-4fa6-b55b-bf1debd2d93e\n2026-06-05 00:22:24 [info     ] claude_code shim request       latency_ms=153 method=POST path=/v1/messages status=400\n2026-06-05 00:22:27 [info     ] commit_file.committed          branch=feat/security-sqli path=docs/cards/security-review-user/security.md\nINFO:     172.66.0.243:51225 - \"GET /jobs/3dab209e1b284a63ab603bb04516dab6 HTTP/1.1\" 200 OK\n2026-06-05 00:22:29 [info     ] claude code stopped\n2026-06-05 00:22:29 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-mrv8d07b\nINFO:     172.66.0.243:47311 - \"GET /jobs/3dab209e1b284a63ab603bb04516dab6 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\nError handling request from 127.0.0.1\nTraceback (most recent call last):\n  File \"/usr/local/lib/python3.12/site-packages/aiohttp/web_protocol.py\", line 521, in _handle_request\n    resp = await request_handler(request)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/site-packages/aiohttp/web_app.py\", line 559, in _handle\n    return await handler(request)\n           ^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/site-packages/performer/backends/claude_code_shim.py\", line 302, in _handle\n    await resp.prepare(request)\n  File \"/usr/local/lib/python3.12/site-packages/aiohttp/web_response.py\", line 462, in prepare\n    return await self._start(request)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/site-packages/aiohttp/web_response.py\", line 470, in _start\n    await self._write_headers()\n  File \"/usr/local/lib/python3.12/site-packages/aiohttp/web_response.py\", line 550, in _write_headers\n    writer.send_headers()\n  File \"/usr/local/lib/python3.12/site-packages/aiohttp/http_writer.py\", line 231, in send_headers\n    self._write(headers_buf)\n  File \"/usr/local/lib/python3.12/site-packages/aiohttp/http_writer.py\", line 102, in _write\n    raise ClientConnectionResetError(\"Cannot write to closing transport\")\naiohttp.client_exceptions.ClientConnectionResetError: Cannot write to closing transport\n"
+}

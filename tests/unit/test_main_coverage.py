@@ -455,7 +455,7 @@ def test_build_http_services_ephemeral_replicates_by_max_concurrency(
     ep = SimpleNamespace(id="impl-pool", mode="ephemeral", roles=["implementer"])
     cfg = _http_config([ep], performers_by_role={"implementer": 3})
 
-    result = app_main._build_http_performer_services(cfg)
+    result, _bootstrap = app_main._build_http_performer_services(cfg)
 
     assert "implementing" in result
     assert len(result["implementing"]) == 3
@@ -476,7 +476,7 @@ def test_build_http_services_persistent_does_not_replicate(
     ep = SimpleNamespace(id="impl", mode="persistent", roles=["implementer"])
     cfg = _http_config([ep], performers_by_role={"implementer": 5})
 
-    result = app_main._build_http_performer_services(cfg)
+    result, _bootstrap = app_main._build_http_performer_services(cfg)
 
     assert len(result["implementing"]) == 1
 
@@ -494,7 +494,7 @@ def test_build_http_services_ephemeral_singleton_stage_clamps_to_one(
     ep = SimpleNamespace(id="assessor", mode="ephemeral", roles=["assessor"])
     cfg = _http_config([ep], performers_by_role={"assessor": 4})
 
-    result = app_main._build_http_performer_services(cfg)
+    result, _bootstrap = app_main._build_http_performer_services(cfg)
 
     assert len(result["assessing"]) == 1
 
@@ -511,7 +511,7 @@ def test_build_http_services_skips_subprocess(
     ep = SimpleNamespace(id="legacy", mode="subprocess", roles=["implementer"])
     cfg = _http_config([ep], performers_by_role={"implementer": 2})
 
-    result = app_main._build_http_performer_services(cfg)
+    result, _bootstrap = app_main._build_http_performer_services(cfg)
 
     assert result == {}
 
@@ -528,9 +528,43 @@ def test_build_http_services_ephemeral_no_performers_config_defaults_to_one(
     ep = SimpleNamespace(id="impl", mode="ephemeral", roles=["implementer"])
     cfg = _http_config([ep], performers_by_role=None)
 
-    result = app_main._build_http_performer_services(cfg)
+    result, _bootstrap = app_main._build_http_performer_services(cfg)
 
     assert len(result["implementing"]) == 1
+
+
+def test_env_bootstrap_endpoint_registered_by_id_not_as_stage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """077: env_bootstrap is not a lifecycle stage, so its endpoint gets NO stage
+    pool — but it must be registered by id so the env-cache bootstrap dispatch can
+    find it. Without this it fails with bootstrap_svc_not_found and the env-cache
+    can never rebuild (which silently froze the cache and blocked Chrome install)."""
+    import coordinare.services.http_performer_service as hps_mod
+    monkeypatch.setattr(
+        hps_mod, "HTTPPerformerService", lambda cfg: SimpleNamespace(_cfg=cfg, _config=cfg)
+    )
+
+    ep = SimpleNamespace(id="opencode-ephemeral", mode="ephemeral", roles=["env_bootstrap"])
+    cfg = _http_config([ep], performers_by_role={"env_bootstrap": 1})
+
+    services_by_stage, bootstrap_by_id = app_main._build_http_performer_services(cfg)
+
+    # No lifecycle stage pool was created for env_bootstrap...
+    assert services_by_stage == {}
+    # ...but the endpoint is captured by performer id.
+    assert "opencode-ephemeral" in bootstrap_by_id
+
+    # And _compose_performer_pools surfaces it in performer_services_by_id, which
+    # is exactly what the bootstrap dispatch looks up.
+    _sl, _smc, by_id = app_main._compose_performer_pools(
+        config=cfg,
+        service_lists={},
+        http_services_by_stage=services_by_stage,
+        performer_services={},
+        bootstrap_services_by_id=bootstrap_by_id,
+    )
+    assert "opencode-ephemeral" in by_id
 
 
 # ---------------------------------------------------------------------------

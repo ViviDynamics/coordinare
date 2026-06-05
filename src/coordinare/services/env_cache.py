@@ -17,12 +17,20 @@ from coordinare_service_inference.cache_key import (
 )
 
 from coordinare.models.env_cache import BootstrapJobPayload, EnvCacheState
+from coordinare.services.env_manifest import (
+    STRUCTURED_SPEC_FILES,
+    derive_manifest,
+    render_checklist,
+    render_verify_sh,
+)
+from coordinare.services.env_manifest_llm import enrich_from_readme
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
     from typing import Protocol
 
     from coordinare.models.performer_endpoint import VolumeMount
+    from coordinare.services.env_manifest_llm import ChatJson
 
     class _GitHubService(Protocol):
         async def get_file_blob_sha(self, org: str, repo: str, path: str) -> str | None: ...
@@ -31,6 +39,11 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 DEFAULT_DEVENV_ROOT = "/devenv"
+
+# 077: when a bootstrap FAILED for the current spec SHA, auto-retry it on a
+# later cycle rather than waiting for the README to change.  The cooldown keeps
+# a failing bootstrap from spinning up a fresh container on every poll cycle.
+BOOTSTRAP_RETRY_COOLDOWN_S = 120.0
 
 
 def sanitise_symphony_name(name: str) -> str:
@@ -278,10 +291,15 @@ class EnvCacheService:
         state: dict[str, Any],
         dispatch_fn: Callable[[str, BootstrapJobPayload], Coroutine[Any, Any, None]],
         container_devenv_root: str = DEFAULT_DEVENV_ROOT,
+        llm_chat: ChatJson | None = None,
     ) -> None:
         """Check for README SHA changes and dispatch bootstrap if needed.
 
         FR-008: returns immediately if symphony has no env_bootstrap configured.
+
+        ``llm_chat`` (optional) is wired by the daemon to the coordinare's LLM and
+        used for the best-effort README pass that augments the deterministic
+        manifest with system packages described only in prose.
         """
         if symphony_config.env_bootstrap_performer_id is None:
             return
@@ -319,6 +337,7 @@ class EnvCacheService:
                 cache_state=cache_state,
                 dispatch_fn=dispatch_fn,
                 container_devenv_root=container_devenv_root,
+                llm_chat=llm_chat,
             )
             return
 
@@ -350,7 +369,37 @@ class EnvCacheService:
             )
             return
 
+        # 077: record the current spec SHA every cycle (even when no bootstrap is
+        # needed) so consumer dispatch can gate on "cache matches current spec".
+        cache_state.last_seen_spec_sha = current_sha
+
         needs_bootstrap = cache_state.readme_sha is None or current_sha != cache_state.readme_sha
+
+        # 077: break the failed-bootstrap deadlock.  readme_sha is set
+        # optimistically at dispatch time (and persisted in the snapshot), so a
+        # bootstrap that FAILED can leave readme_sha == current_sha while
+        # last_bootstrap_succeeded is False.  Without this, needs_bootstrap stays
+        # False forever, the consumer-gate holds indefinitely, and the only way
+        # to recover is a manual trigger.  Retry on failure, but honour a
+        # cooldown so we don't relaunch a container every poll cycle.
+        if not needs_bootstrap and cache_state.last_bootstrap_succeeded is False:
+            last_at = cache_state.last_bootstrap_at
+            cooldown_elapsed = (
+                last_at is None
+                or (datetime.now(UTC) - last_at).total_seconds() >= BOOTSTRAP_RETRY_COOLDOWN_S
+            )
+            if cooldown_elapsed:
+                needs_bootstrap = True
+                # Only announce the retry when it will actually dispatch — not on
+                # every poll cycle while a prior retry is still in-flight (the
+                # in_flight guard below would otherwise log this repeatedly).
+                if not cache_state.bootstrap_in_flight:
+                    logger.info(
+                        "env_cache.bootstrap_retry_after_failure",
+                        symphony=symphony_name,
+                        sha=current_sha,
+                        last_error=cache_state.last_bootstrap_error,
+                    )
 
         if not needs_bootstrap:
             return
@@ -374,6 +423,7 @@ class EnvCacheService:
             cache_state=cache_state,
             dispatch_fn=dispatch_fn,
             container_devenv_root=container_devenv_root,
+            llm_chat=llm_chat,
         )
 
     async def _do_dispatch(
@@ -387,6 +437,7 @@ class EnvCacheService:
         cache_state: EnvCacheState,
         dispatch_fn: Callable[[str, BootstrapJobPayload], Coroutine[Any, Any, None]],
         container_devenv_root: str = DEFAULT_DEVENV_ROOT,
+        llm_chat: ChatJson | None = None,
     ) -> None:
         repo = eff_config.project_name or symphony_name
         env_spec_contents: dict[str, str] = {}
@@ -408,6 +459,25 @@ class EnvCacheService:
                 return
 
         cache_mount_path = f"{container_devenv_root}/{cache_state.sanitised_name}"
+
+        # 077: derive an authoritative dependency manifest from the symphony's
+        # structured project files (best-effort: missing files are normal), then
+        # layer in README-described system packages via the optional LLM pass.
+        # The manifest drives BOTH the install checklist (persona) and the
+        # verification (coordinare-written verify.sh) so a pinned tool version
+        # can't be silently missed by a free-forming agent.
+        dependency_checklist, verify_provided = await self._build_manifest_artifacts(
+            symphony_name=symphony_name,
+            repo=repo,
+            github_org=eff_config.github_org,
+            github_service=github_service,
+            readme_contents=env_spec_contents,
+            current_sha=current_sha,
+            cache_dir=cache_state.cache_dir,
+            cache_mount_path=cache_mount_path,
+            llm_chat=llm_chat,
+        )
+
         payload = BootstrapJobPayload(
             symphony_name=symphony_name,
             symphony_org=eff_config.github_org,
@@ -415,18 +485,22 @@ class EnvCacheService:
             env_spec_files=symphony_config.env_spec_files,
             env_spec_contents=env_spec_contents,
             cache_mount_path=cache_mount_path,
+            # 077: feed the prior attempt's verification failure back to the agent
+            # so it fixes the specific gap (e.g. a pinned Ruby version) on retry.
+            last_failure=cache_state.last_bootstrap_error,
+            dependency_checklist=dependency_checklist,
+            verify_provided=verify_provided,
         )
 
-        try:
-            await dispatch_fn(symphony_config.env_bootstrap_performer_id, payload)
-        except Exception as exc:
-            logger.warning(
-                "env_cache.dispatch_failed",
-                symphony=symphony_name,
-                error=str(exc),
-            )
-            return
-
+        # Mark in-flight BEFORE dispatching. dispatch_fn may fail SYNCHRONOUSLY
+        # (e.g. a readiness timeout inside dispatch_card) and call
+        # on_bootstrap_complete(False) itself — which clears bootstrap_in_flight.
+        # If we set bootstrap_in_flight=True AFTER dispatch_fn returns, we clobber
+        # that reset and wedge in_flight=True forever with no container and no poll
+        # task: a stale-in-flight deadlock that blocks every consumer AND the
+        # auto-retry (its `if bootstrap_in_flight: return` guard). Setting it first
+        # lets the in-handler reset stick; the async-success path leaves it True
+        # until the poll task fires completion.
         cache_state.readme_sha = current_sha
         cache_state.bootstrap_in_flight = True
         logger.info(
@@ -435,6 +509,84 @@ class EnvCacheService:
             performer_id=symphony_config.env_bootstrap_performer_id,
             new_sha=current_sha,
         )
+        try:
+            await dispatch_fn(symphony_config.env_bootstrap_performer_id, payload)
+        except Exception as exc:
+            logger.warning(
+                "env_cache.dispatch_failed",
+                symphony=symphony_name,
+                error=str(exc),
+            )
+            # Roll back the optimistic in-flight state so the next cycle retries
+            # instead of wedging on a dispatch that never produced a job.
+            cache_state.bootstrap_in_flight = False
+            cache_state.readme_sha = None
+            return
+
+    async def _build_manifest_artifacts(
+        self,
+        *,
+        symphony_name: str,
+        repo: str,
+        github_org: str,
+        github_service: _GitHubService,
+        readme_contents: dict[str, str],
+        current_sha: str,
+        cache_dir: Path,
+        cache_mount_path: str,
+        llm_chat: ChatJson | None,
+    ) -> tuple[str | None, bool]:
+        """Derive the manifest, write an authoritative verify.sh into the cache,
+        and return ``(dependency_checklist, verify_provided)``.
+
+        Best-effort throughout: any failure (no parseable deps, fetch/IO error)
+        returns ``(None, False)`` so the bootstrap falls back to the prior
+        agent-writes-verify behaviour rather than blocking.
+        """
+        # Fetch structured project files (missing files are normal — skip them).
+        struct_contents: dict[str, str] = {}
+        for spec_file in STRUCTURED_SPEC_FILES:
+            try:
+                content = await github_service.get_file_content(github_org, repo, spec_file)
+            except Exception:
+                content = None
+            if content:
+                struct_contents[spec_file] = content
+
+        manifest = derive_manifest(symphony_name, struct_contents, spec_sha=current_sha)
+
+        # Best-effort README pass for system packages described only in prose.
+        readme_text = readme_contents.get("README.md") or next(
+            (c for c in readme_contents.values() if c), ""
+        )
+        manifest = await enrich_from_readme(manifest, readme_text, llm_chat)
+
+        if not manifest.items:
+            logger.info("env_cache.manifest_empty", symphony=symphony_name)
+            return None, False
+
+        # Write the authoritative verify.sh + manifest.json into the host cache
+        # dir (it appears at cache_mount_path inside consumer containers).
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            verify_path = cache_dir / "verify.sh"
+            verify_path.write_text(render_verify_sh(manifest, cache_mount_path=cache_mount_path))
+            verify_path.chmod(0o755)
+            (cache_dir / "manifest.json").write_text(manifest.model_dump_json(indent=2))
+        except OSError as exc:
+            logger.warning(
+                "env_cache.manifest_write_failed", symphony=symphony_name, error=str(exc)
+            )
+            return render_checklist(manifest), False
+
+        logger.info(
+            "env_cache.manifest_derived",
+            symphony=symphony_name,
+            items=len(manifest.items),
+            runtimes=[f"{i.name}=={i.version}" for i in manifest.runtime_pins()],
+            llm_derived=manifest.llm_derived,
+        )
+        return render_checklist(manifest), True
 
     def mark_runtime_health_failed(
         self,
@@ -506,8 +658,14 @@ class EnvCacheService:
         symphony_name: str,
         success: bool,
         state: dict[str, Any],
+        error: str | None = None,
     ) -> None:
-        """Called when a bootstrap performer session ends."""
+        """Called when a bootstrap performer session ends.
+
+        ``error`` is a human-readable failure reason (verify output, dispatch
+        error, reap reason); stored on the cache state for the dashboard and
+        cleared on success.
+        """
         env_cache: dict[str, Any] = state.get("env_cache") or {}
         cache_state: EnvCacheState | None = env_cache.get(symphony_name)
         if cache_state is None:
@@ -516,6 +674,8 @@ class EnvCacheService:
         cache_state.bootstrap_in_flight = False
         cache_state.last_bootstrap_at = datetime.now(UTC)
         cache_state.last_bootstrap_succeeded = success
+        # 077: surface WHY a bootstrap failed (dashboard); clear on success.
+        cache_state.last_bootstrap_error = None if success else (error or "bootstrap failed")
 
         # 061: Mark the cache usable only after a successful bootstrap.
         # cache_dir_ready stays False until at least one bootstrap succeeds,

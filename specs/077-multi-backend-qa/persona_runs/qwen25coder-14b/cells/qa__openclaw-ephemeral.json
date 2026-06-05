@@ -1,0 +1,26 @@
+{
+  "row": {
+    "role": "qa",
+    "endpoint": "openclaw-ephemeral",
+    "backend": "openclaw",
+    "model": "qwen2.5-coder:14b-instruct-q6_K",
+    "category": "FAIL_MODEL",
+    "status": "qa_passed",
+    "markers": [
+      "1_steps",
+      "RUBBER_STAMP"
+    ],
+    "detail": "status=qa_passed steps=1 found_bug=False",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent marked qa_passed without actually running checkout_total or detecting the expected KeyError, thus rubber\u2011stamping the test.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  },
+  "state": "succeeded",
+  "error_code": null,
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"qa_passed\",\"session_id\":\"3a613992-98c6-478d-b478-20444ca3df9f\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"report\":{\"criteria_checked\":0,\"criteria_passed\":0,\"env_limited\":false,\"environment_error\":null,\"new_tests_added\":0,\"verification_steps\":[\"Verify acceptance criterion: checkout_total behaves correctly for typical carts\"],\"pre_fix_repro_steps\":[],\"demo_setup_steps\":[],\"visual_capture_commands\":[],\"visual_capture_blockers\":[],\"visual_evidence\":[],\"visual_validation_required\":false,\"qa_freshness_check\":{\"latest_main_sha\":null,\"branch_head_sha\":null,\"up_to_date\":null,\"detail\":\"freshness_check_indeterminate\"}},\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "\nadded 285 packages in 15s\nINFO:     172.66.0.243:41338 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-04 13:48:17 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:56795 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:42390 - \"GET /jobs/80e7c51a94ed4239a84c748c8680a0d5 HTTP/1.1\" 200 OK\n2026-06-04 13:48:18 [info     ] clone_repository.existing_branch branch=feat/qa-behavior\n2026-06-04 13:48:18 [info     ] cloned repository              branch=feat/qa-behavior repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-04 13:48:18 [info     ] openclaw.provider_config_written base_url=http://192.168.3.30:11434/v1 path=/root/.openclaw/openclaw.json provider=sparkollama\n2026-06-04 13:48:18 [info     ] openclaw.workspace_linked      workspace=/tmp/performer-qzutrdr4\n2026-06-04 13:48:18 [info     ] openclaw.persona_to_soul       chars=123\n2026-06-04 13:48:18 [info     ] openclaw.card_docs_written     chars=161 path=/tmp/performer-qzutrdr4/CARD.md\n2026-06-04 13:48:18 [info     ] openclaw starting              model=sparkollama/qwen2.5-coder:14b-instruct-q6_K provider_routed=True session_key=coordinare-qa-4cc24c58\n2026-06-04 13:48:18 [info     ] openclaw started               model=sparkollama/qwen2.5-coder:14b-instruct-q6_K pid=96\n2026-06-04 13:48:19 [info     ] dispatch accepted              session_id=3a613992-98c6-478d-b478-20444ca3df9f\nINFO:     172.66.0.243:30245 - \"GET /jobs/80e7c51a94ed4239a84c748c8680a0d5 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:61082 - \"GET /jobs/80e7c51a94ed4239a84c748c8680a0d5 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:60226 - \"GET /jobs/80e7c51a94ed4239a84c748c8680a0d5 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:57984 - \"GET /jobs/80e7c51a94ed4239a84c748c8680a0d5 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:39584 - \"GET /jobs/80e7c51a94ed4239a84c748c8680a0d5 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:21153 - \"GET /jobs/80e7c51a94ed4239a84c748c8680a0d5 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:53277 - \"GET /jobs/80e7c51a94ed4239a84c748c8680a0d5 HTTP/1.1\" 200 OK\n2026-06-04 13:48:53 [info     ] commit_file.no_changes         path=docs/cards/qa-checkout-total/qa.md\n2026-06-04 13:48:54 [info     ] pr comment posted              owner=ViviDynamics pr_number=3 repo=conductor-bench\n2026-06-04 13:48:54 [info     ] openclaw stopped\n2026-06-04 13:48:54 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-qzutrdr4\nINFO:     172.66.0.243:56720 - \"GET /jobs/80e7c51a94ed4239a84c748c8680a0d5 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

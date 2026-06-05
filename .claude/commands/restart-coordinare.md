@@ -51,14 +51,32 @@ If `NOT_RUNNING` and ports are already free, skip to Step 3.
 If `$ARGUMENTS` contains `--rebuild`:
 
 Build the base image first (Dockerfile.full inherits FROM coordinare-performer:base), then the full image.
-The build context must be `agent/performer/` (not `.`) so that `COPY pyproject.toml` and `COPY src/` resolve to the performer package, not the coordinare root.
+
+The base build context MUST be the repo root (`.`), because `Dockerfile.base` does
+`COPY packages/service_inference/...` and `COPY agent/performer/...` — paths relative to
+the repo root. Using `agent/performer/` as context fails with `/agent/performer/src: not found`,
+and a subsequent full build can then silently succeed as a full cache hit and ship STALE
+performer source. The full build context stays `agent/performer/` (Dockerfile.full only
+COPYs `entrypoint.sh` + `devenv-profile.sh`, which live there).
 
 ```bash
-docker build -t coordinare-performer:base -f agent/performer/Dockerfile.base agent/performer/ 2>&1 | tail -8
+docker build -t coordinare-performer:base -f agent/performer/Dockerfile.base . 2>&1 | tail -8
 docker build -t coordinare-performer:full -f agent/performer/Dockerfile.full agent/performer/ 2>&1 | tail -8
 ```
 
 Report success or failure of each build. If either fails, stop and tell the user — do not start coordinare against a broken image.
+
+Then verify the built image actually contains the current performer source (catches a
+stale/cached rebuild). Pick a marker — a string/symbol from a recent change — and grep for it
+inside the image, e.g.:
+
+```bash
+docker run --rm --entrypoint sh coordinare-performer:full -c \
+  "grep -c '<recent-change-marker>' /app/src/performer/backends/<file>.py"
+```
+
+A count of `0` means the image is stale despite a "successful" build — rebuild the base with
+repo-root context (`.`) before continuing. Do not start coordinare against a stale image.
 
 ## Step 4: Verify .env exists
 

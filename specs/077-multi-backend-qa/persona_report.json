@@ -1,0 +1,3027 @@
+{
+  "totals": {
+    "PASS": 589,
+    "FAIL_HARNESS": 223,
+    "ERROR": 302,
+    "FAIL_MODEL": 398
+  },
+  "n_cells": 1512,
+  "models": [
+    "deepcoder:14b",
+    "deepseek-coder-v2:16b",
+    "deepseek-r1:32b",
+    "deepseek-r1:70b",
+    "gemma3:27b",
+    "glm-4.7-flash:latest",
+    "gpt-oss:120b",
+    "gpt-oss:20b",
+    "laguna-xs.2:latest",
+    "llama3.1:70b-instruct-q4_K_M",
+    "llama3.1:8b-instruct-q4_0",
+    "llama3.3-70b-iq4xs:latest",
+    "llama3.3-70b-q4ks:latest",
+    "llama3.3:70b",
+    "mistral:instruct",
+    "qwen2.5-coder:14b-instruct-q6_K",
+    "qwen2.5-coder:7b",
+    "qwen2.5-coder:latest",
+    "qwen2.5:14b-instruct-q6_K",
+    "qwen2.5:32b",
+    "qwen3-coder:30b",
+    "qwen3.6:35b",
+    "qwen3:8b",
+    "qwq:32b"
+  ],
+  "backends": [
+    "claude_code",
+    "codex",
+    "hermes",
+    "junie",
+    "openclaw",
+    "opencode",
+    "pi"
+  ],
+  "personas": [
+    "assessor",
+    "architect",
+    "implementer",
+    "reviewer",
+    "security",
+    "qa",
+    "tech_writer",
+    "closer",
+    "env_bootstrap"
+  ],
+  "recommendations": {
+    "assessor": [
+      {
+        "model": "glm-4.7-flash:latest",
+        "backend": "pi",
+        "judge_quality": null
+      },
+      {
+        "model": "gpt-oss:120b",
+        "backend": "junie",
+        "judge_quality": null
+      },
+      {
+        "model": "gpt-oss:120b",
+        "backend": "pi",
+        "judge_quality": null
+      },
+      {
+        "model": "gpt-oss:20b",
+        "backend": "pi",
+        "judge_quality": null
+      },
+      {
+        "model": "llama3.3:70b",
+        "backend": "pi",
+        "judge_quality": null
+      },
+      {
+        "model": "mistral:instruct",
+        "backend": "opencode",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5:14b-instruct-q6_K",
+        "backend": "pi",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5-coder:latest",
+        "backend": "opencode",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen3:8b",
+        "backend": "pi",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen3.6:35b",
+        "backend": "claude_code",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen3-coder:30b",
+        "backend": "pi",
+        "judge_quality": null
+      },
+      {
+        "model": "qwq:32b",
+        "backend": "codex",
+        "judge_quality": null
+      },
+      {
+        "model": "qwq:32b",
+        "backend": "pi",
+        "judge_quality": null
+      }
+    ],
+    "architect": [
+      {
+        "model": "glm-4.7-flash:latest",
+        "backend": "claude_code",
+        "judge_quality": 5
+      },
+      {
+        "model": "gpt-oss:120b",
+        "backend": "pi",
+        "judge_quality": 5
+      },
+      {
+        "model": "gpt-oss:20b",
+        "backend": "openclaw",
+        "judge_quality": 5
+      },
+      {
+        "model": "laguna-xs.2:latest",
+        "backend": "codex",
+        "judge_quality": 5
+      },
+      {
+        "model": "laguna-xs.2:latest",
+        "backend": "junie",
+        "judge_quality": 5
+      },
+      {
+        "model": "llama3.3:70b",
+        "backend": "junie",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen2.5:14b-instruct-q6_K",
+        "backend": "claude_code",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen2.5:32b",
+        "backend": "openclaw",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen3:8b",
+        "backend": "hermes",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen3-coder:30b",
+        "backend": "openclaw",
+        "judge_quality": 5
+      },
+      {
+        "model": "deepcoder:14b",
+        "backend": "claude_code",
+        "judge_quality": 4
+      },
+      {
+        "model": "deepseek-coder-v2:16b",
+        "backend": "claude_code",
+        "judge_quality": 4
+      },
+      {
+        "model": "deepseek-r1:32b",
+        "backend": "claude_code",
+        "judge_quality": 4
+      },
+      {
+        "model": "deepseek-r1:70b",
+        "backend": "claude_code",
+        "judge_quality": 4
+      },
+      {
+        "model": "gemma3:27b",
+        "backend": "claude_code",
+        "judge_quality": 4
+      },
+      {
+        "model": "glm-4.7-flash:latest",
+        "backend": "codex",
+        "judge_quality": 4
+      },
+      {
+        "model": "glm-4.7-flash:latest",
+        "backend": "hermes",
+        "judge_quality": 4
+      },
+      {
+        "model": "glm-4.7-flash:latest",
+        "backend": "junie",
+        "judge_quality": 4
+      },
+      {
+        "model": "glm-4.7-flash:latest",
+        "backend": "openclaw",
+        "judge_quality": 4
+      },
+      {
+        "model": "glm-4.7-flash:latest",
+        "backend": "opencode",
+        "judge_quality": 4
+      },
+      {
+        "model": "glm-4.7-flash:latest",
+        "backend": "pi",
+        "judge_quality": 4
+      },
+      {
+        "model": "gpt-oss:120b",
+        "backend": "claude_code",
+        "judge_quality": 4
+      },
+      {
+        "model": "gpt-oss:120b",
+        "backend": "codex",
+        "judge_quality": 4
+      },
+      {
+        "model": "gpt-oss:120b",
+        "backend": "hermes",
+        "judge_quality": 4
+      },
+      {
+        "model": "gpt-oss:120b",
+        "backend": "junie",
+        "judge_quality": 4
+      },
+      {
+        "model": "gpt-oss:120b",
+        "backend": "openclaw",
+        "judge_quality": 4
+      },
+      {
+        "model": "gpt-oss:120b",
+        "backend": "opencode",
+        "judge_quality": 4
+      },
+      {
+        "model": "gpt-oss:20b",
+        "backend": "claude_code",
+        "judge_quality": 4
+      },
+      {
+        "model": "gpt-oss:20b",
+        "backend": "codex",
+        "judge_quality": 4
+      },
+      {
+        "model": "gpt-oss:20b",
+        "backend": "hermes",
+        "judge_quality": 4
+      },
+      {
+        "model": "gpt-oss:20b",
+        "backend": "junie",
+        "judge_quality": 4
+      },
+      {
+        "model": "gpt-oss:20b",
+        "backend": "opencode",
+        "judge_quality": 4
+      },
+      {
+        "model": "gpt-oss:20b",
+        "backend": "pi",
+        "judge_quality": 4
+      },
+      {
+        "model": "laguna-xs.2:latest",
+        "backend": "claude_code",
+        "judge_quality": 4
+      },
+      {
+        "model": "laguna-xs.2:latest",
+        "backend": "hermes",
+        "judge_quality": 4
+      },
+      {
+        "model": "laguna-xs.2:latest",
+        "backend": "openclaw",
+        "judge_quality": 4
+      },
+      {
+        "model": "laguna-xs.2:latest",
+        "backend": "opencode",
+        "judge_quality": 4
+      },
+      {
+        "model": "laguna-xs.2:latest",
+        "backend": "pi",
+        "judge_quality": 4
+      },
+      {
+        "model": "llama3.1:70b-instruct-q4_K_M",
+        "backend": "claude_code",
+        "judge_quality": 4
+      },
+      {
+        "model": "llama3.1:70b-instruct-q4_K_M",
+        "backend": "hermes",
+        "judge_quality": 4
+      },
+      {
+        "model": "llama3.1:70b-instruct-q4_K_M",
+        "backend": "openclaw",
+        "judge_quality": 4
+      },
+      {
+        "model": "llama3.1:70b-instruct-q4_K_M",
+        "backend": "opencode",
+        "judge_quality": 4
+      },
+      {
+        "model": "llama3.1:70b-instruct-q4_K_M",
+        "backend": "pi",
+        "judge_quality": 4
+      },
+      {
+        "model": "llama3.1:8b-instruct-q4_0",
+        "backend": "claude_code",
+        "judge_quality": 4
+      },
+      {
+        "model": "llama3.1:8b-instruct-q4_0",
+        "backend": "hermes",
+        "judge_quality": 4
+      },
+      {
+        "model": "llama3.1:8b-instruct-q4_0",
+        "backend": "openclaw",
+        "judge_quality": 4
+      },
+      {
+        "model": "llama3.1:8b-instruct-q4_0",
+        "backend": "opencode",
+        "judge_quality": 4
+      },
+      {
+        "model": "llama3.1:8b-instruct-q4_0",
+        "backend": "pi",
+        "judge_quality": 4
+      },
+      {
+        "model": "llama3.3-70b-iq4xs:latest",
+        "backend": "claude_code",
+        "judge_quality": 4
+      },
+      {
+        "model": "llama3.3-70b-q4ks:latest",
+        "backend": "claude_code",
+        "judge_quality": 4
+      },
+      {
+        "model": "llama3.3:70b",
+        "backend": "claude_code",
+        "judge_quality": 4
+      },
+      {
+        "model": "llama3.3:70b",
+        "backend": "hermes",
+        "judge_quality": 4
+      },
+      {
+        "model": "llama3.3:70b",
+        "backend": "openclaw",
+        "judge_quality": 4
+      },
+      {
+        "model": "llama3.3:70b",
+        "backend": "opencode",
+        "judge_quality": 4
+      },
+      {
+        "model": "llama3.3:70b",
+        "backend": "pi",
+        "judge_quality": 4
+      },
+      {
+        "model": "mistral:instruct",
+        "backend": "claude_code",
+        "judge_quality": 4
+      },
+      {
+        "model": "mistral:instruct",
+        "backend": "codex",
+        "judge_quality": 4
+      },
+      {
+        "model": "mistral:instruct",
+        "backend": "hermes",
+        "judge_quality": 4
+      },
+      {
+        "model": "mistral:instruct",
+        "backend": "openclaw",
+        "judge_quality": 4
+      },
+      {
+        "model": "mistral:instruct",
+        "backend": "opencode",
+        "judge_quality": 4
+      },
+      {
+        "model": "mistral:instruct",
+        "backend": "pi",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen2.5:14b-instruct-q6_K",
+        "backend": "hermes",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen2.5:14b-instruct-q6_K",
+        "backend": "junie",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen2.5:14b-instruct-q6_K",
+        "backend": "openclaw",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen2.5:14b-instruct-q6_K",
+        "backend": "opencode",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen2.5:14b-instruct-q6_K",
+        "backend": "pi",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen2.5:32b",
+        "backend": "claude_code",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen2.5:32b",
+        "backend": "hermes",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen2.5:32b",
+        "backend": "junie",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen2.5:32b",
+        "backend": "opencode",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen2.5:32b",
+        "backend": "pi",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen2.5-coder:14b-instruct-q6_K",
+        "backend": "claude_code",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen2.5-coder:14b-instruct-q6_K",
+        "backend": "codex",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen2.5-coder:14b-instruct-q6_K",
+        "backend": "hermes",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen2.5-coder:14b-instruct-q6_K",
+        "backend": "openclaw",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen2.5-coder:14b-instruct-q6_K",
+        "backend": "opencode",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen2.5-coder:14b-instruct-q6_K",
+        "backend": "pi",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen2.5-coder:7b",
+        "backend": "claude_code",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen2.5-coder:7b",
+        "backend": "codex",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen2.5-coder:7b",
+        "backend": "hermes",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen2.5-coder:7b",
+        "backend": "openclaw",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen2.5-coder:7b",
+        "backend": "opencode",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen2.5-coder:7b",
+        "backend": "pi",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen2.5-coder:latest",
+        "backend": "claude_code",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen2.5-coder:latest",
+        "backend": "codex",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen2.5-coder:latest",
+        "backend": "hermes",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen2.5-coder:latest",
+        "backend": "openclaw",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen2.5-coder:latest",
+        "backend": "opencode",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen2.5-coder:latest",
+        "backend": "pi",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen3:8b",
+        "backend": "claude_code",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen3:8b",
+        "backend": "junie",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen3:8b",
+        "backend": "openclaw",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen3:8b",
+        "backend": "opencode",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen3.6:35b",
+        "backend": "claude_code",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen3.6:35b",
+        "backend": "codex",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen3.6:35b",
+        "backend": "hermes",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen3.6:35b",
+        "backend": "junie",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen3.6:35b",
+        "backend": "openclaw",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen3.6:35b",
+        "backend": "opencode",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen3.6:35b",
+        "backend": "pi",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen3-coder:30b",
+        "backend": "claude_code",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen3-coder:30b",
+        "backend": "codex",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen3-coder:30b",
+        "backend": "hermes",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen3-coder:30b",
+        "backend": "junie",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen3-coder:30b",
+        "backend": "opencode",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen3-coder:30b",
+        "backend": "pi",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwq:32b",
+        "backend": "claude_code",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwq:32b",
+        "backend": "hermes",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwq:32b",
+        "backend": "openclaw",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwq:32b",
+        "backend": "opencode",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwq:32b",
+        "backend": "pi",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen3:8b",
+        "backend": "pi",
+        "judge_quality": 3
+      },
+      {
+        "model": "deepcoder:14b",
+        "backend": "codex",
+        "judge_quality": null
+      },
+      {
+        "model": "deepseek-coder-v2:16b",
+        "backend": "codex",
+        "judge_quality": null
+      },
+      {
+        "model": "deepseek-r1:32b",
+        "backend": "codex",
+        "judge_quality": null
+      },
+      {
+        "model": "deepseek-r1:70b",
+        "backend": "codex",
+        "judge_quality": null
+      },
+      {
+        "model": "gemma3:27b",
+        "backend": "codex",
+        "judge_quality": null
+      },
+      {
+        "model": "llama3.1:70b-instruct-q4_K_M",
+        "backend": "codex",
+        "judge_quality": null
+      },
+      {
+        "model": "llama3.1:70b-instruct-q4_K_M",
+        "backend": "junie",
+        "judge_quality": null
+      },
+      {
+        "model": "llama3.1:8b-instruct-q4_0",
+        "backend": "codex",
+        "judge_quality": null
+      },
+      {
+        "model": "llama3.3-70b-iq4xs:latest",
+        "backend": "codex",
+        "judge_quality": null
+      },
+      {
+        "model": "llama3.3-70b-q4ks:latest",
+        "backend": "codex",
+        "judge_quality": null
+      },
+      {
+        "model": "llama3.3:70b",
+        "backend": "codex",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5:14b-instruct-q6_K",
+        "backend": "codex",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5:32b",
+        "backend": "codex",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen3:8b",
+        "backend": "codex",
+        "judge_quality": null
+      },
+      {
+        "model": "qwq:32b",
+        "backend": "codex",
+        "judge_quality": null
+      },
+      {
+        "model": "qwq:32b",
+        "backend": "junie",
+        "judge_quality": null
+      }
+    ],
+    "implementer": [
+      {
+        "model": "deepcoder:14b",
+        "backend": "claude_code",
+        "judge_quality": null
+      },
+      {
+        "model": "deepcoder:14b",
+        "backend": "codex",
+        "judge_quality": null
+      },
+      {
+        "model": "deepcoder:14b",
+        "backend": "junie",
+        "judge_quality": null
+      },
+      {
+        "model": "deepcoder:14b",
+        "backend": "opencode",
+        "judge_quality": null
+      },
+      {
+        "model": "deepcoder:14b",
+        "backend": "pi",
+        "judge_quality": null
+      },
+      {
+        "model": "deepseek-coder-v2:16b",
+        "backend": "claude_code",
+        "judge_quality": null
+      },
+      {
+        "model": "deepseek-coder-v2:16b",
+        "backend": "codex",
+        "judge_quality": null
+      },
+      {
+        "model": "deepseek-coder-v2:16b",
+        "backend": "junie",
+        "judge_quality": null
+      },
+      {
+        "model": "deepseek-coder-v2:16b",
+        "backend": "opencode",
+        "judge_quality": null
+      },
+      {
+        "model": "deepseek-coder-v2:16b",
+        "backend": "pi",
+        "judge_quality": null
+      },
+      {
+        "model": "deepseek-r1:32b",
+        "backend": "claude_code",
+        "judge_quality": null
+      },
+      {
+        "model": "deepseek-r1:32b",
+        "backend": "codex",
+        "judge_quality": null
+      },
+      {
+        "model": "deepseek-r1:32b",
+        "backend": "junie",
+        "judge_quality": null
+      },
+      {
+        "model": "deepseek-r1:32b",
+        "backend": "opencode",
+        "judge_quality": null
+      },
+      {
+        "model": "deepseek-r1:32b",
+        "backend": "pi",
+        "judge_quality": null
+      },
+      {
+        "model": "deepseek-r1:70b",
+        "backend": "claude_code",
+        "judge_quality": null
+      },
+      {
+        "model": "deepseek-r1:70b",
+        "backend": "codex",
+        "judge_quality": null
+      },
+      {
+        "model": "deepseek-r1:70b",
+        "backend": "junie",
+        "judge_quality": null
+      },
+      {
+        "model": "deepseek-r1:70b",
+        "backend": "opencode",
+        "judge_quality": null
+      },
+      {
+        "model": "deepseek-r1:70b",
+        "backend": "pi",
+        "judge_quality": null
+      },
+      {
+        "model": "gemma3:27b",
+        "backend": "claude_code",
+        "judge_quality": null
+      },
+      {
+        "model": "gemma3:27b",
+        "backend": "codex",
+        "judge_quality": null
+      },
+      {
+        "model": "gemma3:27b",
+        "backend": "junie",
+        "judge_quality": null
+      },
+      {
+        "model": "gemma3:27b",
+        "backend": "opencode",
+        "judge_quality": null
+      },
+      {
+        "model": "gemma3:27b",
+        "backend": "pi",
+        "judge_quality": null
+      },
+      {
+        "model": "glm-4.7-flash:latest",
+        "backend": "claude_code",
+        "judge_quality": null
+      },
+      {
+        "model": "glm-4.7-flash:latest",
+        "backend": "codex",
+        "judge_quality": null
+      },
+      {
+        "model": "glm-4.7-flash:latest",
+        "backend": "hermes",
+        "judge_quality": null
+      },
+      {
+        "model": "glm-4.7-flash:latest",
+        "backend": "junie",
+        "judge_quality": null
+      },
+      {
+        "model": "glm-4.7-flash:latest",
+        "backend": "openclaw",
+        "judge_quality": null
+      },
+      {
+        "model": "glm-4.7-flash:latest",
+        "backend": "opencode",
+        "judge_quality": null
+      },
+      {
+        "model": "glm-4.7-flash:latest",
+        "backend": "pi",
+        "judge_quality": null
+      },
+      {
+        "model": "gpt-oss:120b",
+        "backend": "claude_code",
+        "judge_quality": null
+      },
+      {
+        "model": "gpt-oss:120b",
+        "backend": "codex",
+        "judge_quality": null
+      },
+      {
+        "model": "gpt-oss:120b",
+        "backend": "hermes",
+        "judge_quality": null
+      },
+      {
+        "model": "gpt-oss:120b",
+        "backend": "junie",
+        "judge_quality": null
+      },
+      {
+        "model": "gpt-oss:120b",
+        "backend": "openclaw",
+        "judge_quality": null
+      },
+      {
+        "model": "gpt-oss:120b",
+        "backend": "opencode",
+        "judge_quality": null
+      },
+      {
+        "model": "gpt-oss:120b",
+        "backend": "pi",
+        "judge_quality": null
+      },
+      {
+        "model": "gpt-oss:20b",
+        "backend": "claude_code",
+        "judge_quality": null
+      },
+      {
+        "model": "gpt-oss:20b",
+        "backend": "codex",
+        "judge_quality": null
+      },
+      {
+        "model": "gpt-oss:20b",
+        "backend": "hermes",
+        "judge_quality": null
+      },
+      {
+        "model": "gpt-oss:20b",
+        "backend": "junie",
+        "judge_quality": null
+      },
+      {
+        "model": "gpt-oss:20b",
+        "backend": "openclaw",
+        "judge_quality": null
+      },
+      {
+        "model": "gpt-oss:20b",
+        "backend": "opencode",
+        "judge_quality": null
+      },
+      {
+        "model": "gpt-oss:20b",
+        "backend": "pi",
+        "judge_quality": null
+      },
+      {
+        "model": "laguna-xs.2:latest",
+        "backend": "claude_code",
+        "judge_quality": null
+      },
+      {
+        "model": "laguna-xs.2:latest",
+        "backend": "codex",
+        "judge_quality": null
+      },
+      {
+        "model": "laguna-xs.2:latest",
+        "backend": "hermes",
+        "judge_quality": null
+      },
+      {
+        "model": "laguna-xs.2:latest",
+        "backend": "junie",
+        "judge_quality": null
+      },
+      {
+        "model": "laguna-xs.2:latest",
+        "backend": "openclaw",
+        "judge_quality": null
+      },
+      {
+        "model": "laguna-xs.2:latest",
+        "backend": "opencode",
+        "judge_quality": null
+      },
+      {
+        "model": "laguna-xs.2:latest",
+        "backend": "pi",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5:14b-instruct-q6_K",
+        "backend": "claude_code",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5:14b-instruct-q6_K",
+        "backend": "codex",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5:14b-instruct-q6_K",
+        "backend": "hermes",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5:14b-instruct-q6_K",
+        "backend": "junie",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5:14b-instruct-q6_K",
+        "backend": "openclaw",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5:14b-instruct-q6_K",
+        "backend": "opencode",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5:14b-instruct-q6_K",
+        "backend": "pi",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5:32b",
+        "backend": "claude_code",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5:32b",
+        "backend": "codex",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5:32b",
+        "backend": "hermes",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5:32b",
+        "backend": "junie",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5:32b",
+        "backend": "openclaw",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5:32b",
+        "backend": "opencode",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5-coder:14b-instruct-q6_K",
+        "backend": "claude_code",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5-coder:14b-instruct-q6_K",
+        "backend": "codex",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5-coder:14b-instruct-q6_K",
+        "backend": "hermes",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5-coder:14b-instruct-q6_K",
+        "backend": "junie",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5-coder:14b-instruct-q6_K",
+        "backend": "openclaw",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5-coder:14b-instruct-q6_K",
+        "backend": "opencode",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5-coder:14b-instruct-q6_K",
+        "backend": "pi",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen3:8b",
+        "backend": "codex",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen3:8b",
+        "backend": "junie",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen3.6:35b",
+        "backend": "claude_code",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen3.6:35b",
+        "backend": "codex",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen3.6:35b",
+        "backend": "hermes",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen3.6:35b",
+        "backend": "junie",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen3.6:35b",
+        "backend": "openclaw",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen3.6:35b",
+        "backend": "opencode",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen3.6:35b",
+        "backend": "pi",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen3-coder:30b",
+        "backend": "claude_code",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen3-coder:30b",
+        "backend": "codex",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen3-coder:30b",
+        "backend": "hermes",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen3-coder:30b",
+        "backend": "junie",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen3-coder:30b",
+        "backend": "openclaw",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen3-coder:30b",
+        "backend": "opencode",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen3-coder:30b",
+        "backend": "pi",
+        "judge_quality": null
+      },
+      {
+        "model": "qwq:32b",
+        "backend": "claude_code",
+        "judge_quality": null
+      },
+      {
+        "model": "qwq:32b",
+        "backend": "codex",
+        "judge_quality": null
+      },
+      {
+        "model": "qwq:32b",
+        "backend": "hermes",
+        "judge_quality": null
+      },
+      {
+        "model": "qwq:32b",
+        "backend": "junie",
+        "judge_quality": null
+      },
+      {
+        "model": "qwq:32b",
+        "backend": "openclaw",
+        "judge_quality": null
+      },
+      {
+        "model": "qwq:32b",
+        "backend": "opencode",
+        "judge_quality": null
+      },
+      {
+        "model": "qwq:32b",
+        "backend": "pi",
+        "judge_quality": null
+      }
+    ],
+    "reviewer": [
+      {
+        "model": "glm-4.7-flash:latest",
+        "backend": "junie",
+        "judge_quality": null
+      },
+      {
+        "model": "glm-4.7-flash:latest",
+        "backend": "openclaw",
+        "judge_quality": null
+      },
+      {
+        "model": "glm-4.7-flash:latest",
+        "backend": "pi",
+        "judge_quality": null
+      },
+      {
+        "model": "gpt-oss:120b",
+        "backend": "claude_code",
+        "judge_quality": null
+      },
+      {
+        "model": "gpt-oss:120b",
+        "backend": "hermes",
+        "judge_quality": null
+      },
+      {
+        "model": "gpt-oss:120b",
+        "backend": "junie",
+        "judge_quality": null
+      },
+      {
+        "model": "gpt-oss:120b",
+        "backend": "openclaw",
+        "judge_quality": null
+      },
+      {
+        "model": "gpt-oss:120b",
+        "backend": "opencode",
+        "judge_quality": null
+      },
+      {
+        "model": "gpt-oss:20b",
+        "backend": "claude_code",
+        "judge_quality": null
+      },
+      {
+        "model": "gpt-oss:20b",
+        "backend": "junie",
+        "judge_quality": null
+      },
+      {
+        "model": "gpt-oss:20b",
+        "backend": "opencode",
+        "judge_quality": null
+      },
+      {
+        "model": "laguna-xs.2:latest",
+        "backend": "claude_code",
+        "judge_quality": null
+      },
+      {
+        "model": "laguna-xs.2:latest",
+        "backend": "codex",
+        "judge_quality": null
+      },
+      {
+        "model": "laguna-xs.2:latest",
+        "backend": "hermes",
+        "judge_quality": null
+      },
+      {
+        "model": "laguna-xs.2:latest",
+        "backend": "junie",
+        "judge_quality": null
+      },
+      {
+        "model": "laguna-xs.2:latest",
+        "backend": "pi",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5:14b-instruct-q6_K",
+        "backend": "pi",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5:32b",
+        "backend": "pi",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen3:8b",
+        "backend": "junie",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen3.6:35b",
+        "backend": "claude_code",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen3.6:35b",
+        "backend": "codex",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen3.6:35b",
+        "backend": "hermes",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen3.6:35b",
+        "backend": "junie",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen3.6:35b",
+        "backend": "openclaw",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen3.6:35b",
+        "backend": "opencode",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen3-coder:30b",
+        "backend": "junie",
+        "judge_quality": null
+      }
+    ],
+    "security": [
+      {
+        "model": "gpt-oss:120b",
+        "backend": "pi",
+        "judge_quality": null
+      },
+      {
+        "model": "qwq:32b",
+        "backend": "opencode",
+        "judge_quality": null
+      }
+    ],
+    "qa": [
+      {
+        "model": "gpt-oss:20b",
+        "backend": "claude_code",
+        "judge_quality": null
+      },
+      {
+        "model": "laguna-xs.2:latest",
+        "backend": "hermes",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen3.6:35b",
+        "backend": "pi",
+        "judge_quality": null
+      },
+      {
+        "model": "qwq:32b",
+        "backend": "openclaw",
+        "judge_quality": null
+      }
+    ],
+    "tech_writer": [
+      {
+        "model": "deepcoder:14b",
+        "backend": "claude_code",
+        "judge_quality": 4
+      },
+      {
+        "model": "deepseek-coder-v2:16b",
+        "backend": "pi",
+        "judge_quality": 4
+      },
+      {
+        "model": "deepseek-r1:32b",
+        "backend": "pi",
+        "judge_quality": 4
+      },
+      {
+        "model": "glm-4.7-flash:latest",
+        "backend": "claude_code",
+        "judge_quality": 4
+      },
+      {
+        "model": "glm-4.7-flash:latest",
+        "backend": "codex",
+        "judge_quality": 4
+      },
+      {
+        "model": "gpt-oss:120b",
+        "backend": "codex",
+        "judge_quality": 4
+      },
+      {
+        "model": "gpt-oss:120b",
+        "backend": "openclaw",
+        "judge_quality": 4
+      },
+      {
+        "model": "gpt-oss:120b",
+        "backend": "opencode",
+        "judge_quality": 4
+      },
+      {
+        "model": "gpt-oss:20b",
+        "backend": "claude_code",
+        "judge_quality": 4
+      },
+      {
+        "model": "gpt-oss:20b",
+        "backend": "codex",
+        "judge_quality": 4
+      },
+      {
+        "model": "gpt-oss:20b",
+        "backend": "hermes",
+        "judge_quality": 4
+      },
+      {
+        "model": "gpt-oss:20b",
+        "backend": "openclaw",
+        "judge_quality": 4
+      },
+      {
+        "model": "gpt-oss:20b",
+        "backend": "opencode",
+        "judge_quality": 4
+      },
+      {
+        "model": "laguna-xs.2:latest",
+        "backend": "codex",
+        "judge_quality": 4
+      },
+      {
+        "model": "laguna-xs.2:latest",
+        "backend": "hermes",
+        "judge_quality": 4
+      },
+      {
+        "model": "llama3.1:8b-instruct-q4_0",
+        "backend": "hermes",
+        "judge_quality": 4
+      },
+      {
+        "model": "llama3.3-70b-iq4xs:latest",
+        "backend": "claude_code",
+        "judge_quality": 4
+      },
+      {
+        "model": "llama3.3:70b",
+        "backend": "hermes",
+        "judge_quality": 4
+      },
+      {
+        "model": "llama3.3:70b",
+        "backend": "pi",
+        "judge_quality": 4
+      },
+      {
+        "model": "mistral:instruct",
+        "backend": "openclaw",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen2.5:14b-instruct-q6_K",
+        "backend": "codex",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen2.5:32b",
+        "backend": "claude_code",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen2.5:32b",
+        "backend": "codex",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen2.5:32b",
+        "backend": "pi",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen2.5-coder:14b-instruct-q6_K",
+        "backend": "opencode",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen2.5-coder:7b",
+        "backend": "codex",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen2.5-coder:latest",
+        "backend": "claude_code",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen2.5-coder:latest",
+        "backend": "hermes",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen2.5-coder:latest",
+        "backend": "openclaw",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen2.5-coder:latest",
+        "backend": "opencode",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen2.5-coder:latest",
+        "backend": "pi",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen3:8b",
+        "backend": "claude_code",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen3:8b",
+        "backend": "opencode",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen3:8b",
+        "backend": "pi",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen3.6:35b",
+        "backend": "codex",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen3.6:35b",
+        "backend": "openclaw",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen3.6:35b",
+        "backend": "pi",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen3-coder:30b",
+        "backend": "claude_code",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen3-coder:30b",
+        "backend": "codex",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen3-coder:30b",
+        "backend": "opencode",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwen3-coder:30b",
+        "backend": "pi",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwq:32b",
+        "backend": "claude_code",
+        "judge_quality": 4
+      },
+      {
+        "model": "qwq:32b",
+        "backend": "opencode",
+        "judge_quality": 4
+      },
+      {
+        "model": "deepcoder:14b",
+        "backend": "pi",
+        "judge_quality": 3
+      },
+      {
+        "model": "deepseek-r1:32b",
+        "backend": "claude_code",
+        "judge_quality": 3
+      },
+      {
+        "model": "deepseek-r1:70b",
+        "backend": "pi",
+        "judge_quality": 3
+      },
+      {
+        "model": "gemma3:27b",
+        "backend": "claude_code",
+        "judge_quality": 3
+      },
+      {
+        "model": "gemma3:27b",
+        "backend": "pi",
+        "judge_quality": 3
+      },
+      {
+        "model": "glm-4.7-flash:latest",
+        "backend": "openclaw",
+        "judge_quality": 3
+      },
+      {
+        "model": "glm-4.7-flash:latest",
+        "backend": "opencode",
+        "judge_quality": 3
+      },
+      {
+        "model": "gpt-oss:120b",
+        "backend": "claude_code",
+        "judge_quality": 3
+      },
+      {
+        "model": "gpt-oss:120b",
+        "backend": "hermes",
+        "judge_quality": 3
+      },
+      {
+        "model": "gpt-oss:120b",
+        "backend": "pi",
+        "judge_quality": 3
+      },
+      {
+        "model": "gpt-oss:20b",
+        "backend": "pi",
+        "judge_quality": 3
+      },
+      {
+        "model": "laguna-xs.2:latest",
+        "backend": "claude_code",
+        "judge_quality": 3
+      },
+      {
+        "model": "llama3.1:70b-instruct-q4_K_M",
+        "backend": "claude_code",
+        "judge_quality": 3
+      },
+      {
+        "model": "llama3.1:70b-instruct-q4_K_M",
+        "backend": "codex",
+        "judge_quality": 3
+      },
+      {
+        "model": "llama3.1:70b-instruct-q4_K_M",
+        "backend": "opencode",
+        "judge_quality": 3
+      },
+      {
+        "model": "llama3.1:8b-instruct-q4_0",
+        "backend": "codex",
+        "judge_quality": 3
+      },
+      {
+        "model": "llama3.1:8b-instruct-q4_0",
+        "backend": "openclaw",
+        "judge_quality": 3
+      },
+      {
+        "model": "llama3.1:8b-instruct-q4_0",
+        "backend": "opencode",
+        "judge_quality": 3
+      },
+      {
+        "model": "llama3.1:8b-instruct-q4_0",
+        "backend": "pi",
+        "judge_quality": 3
+      },
+      {
+        "model": "llama3.3-70b-iq4xs:latest",
+        "backend": "pi",
+        "judge_quality": 3
+      },
+      {
+        "model": "llama3.3-70b-q4ks:latest",
+        "backend": "claude_code",
+        "judge_quality": 3
+      },
+      {
+        "model": "llama3.3-70b-q4ks:latest",
+        "backend": "pi",
+        "judge_quality": 3
+      },
+      {
+        "model": "llama3.3:70b",
+        "backend": "claude_code",
+        "judge_quality": 3
+      },
+      {
+        "model": "llama3.3:70b",
+        "backend": "codex",
+        "judge_quality": 3
+      },
+      {
+        "model": "qwen2.5:14b-instruct-q6_K",
+        "backend": "pi",
+        "judge_quality": 3
+      },
+      {
+        "model": "qwen2.5-coder:14b-instruct-q6_K",
+        "backend": "claude_code",
+        "judge_quality": 3
+      },
+      {
+        "model": "qwen2.5-coder:14b-instruct-q6_K",
+        "backend": "codex",
+        "judge_quality": 3
+      },
+      {
+        "model": "qwen2.5-coder:14b-instruct-q6_K",
+        "backend": "hermes",
+        "judge_quality": 3
+      },
+      {
+        "model": "qwen2.5-coder:14b-instruct-q6_K",
+        "backend": "openclaw",
+        "judge_quality": 3
+      },
+      {
+        "model": "qwen2.5-coder:14b-instruct-q6_K",
+        "backend": "pi",
+        "judge_quality": 3
+      },
+      {
+        "model": "qwen2.5-coder:7b",
+        "backend": "claude_code",
+        "judge_quality": 3
+      },
+      {
+        "model": "qwen2.5-coder:7b",
+        "backend": "hermes",
+        "judge_quality": 3
+      },
+      {
+        "model": "qwen2.5-coder:7b",
+        "backend": "opencode",
+        "judge_quality": 3
+      },
+      {
+        "model": "qwen2.5-coder:7b",
+        "backend": "pi",
+        "judge_quality": 3
+      },
+      {
+        "model": "qwen3:8b",
+        "backend": "codex",
+        "judge_quality": 3
+      },
+      {
+        "model": "qwen3.6:35b",
+        "backend": "claude_code",
+        "judge_quality": 3
+      },
+      {
+        "model": "qwq:32b",
+        "backend": "codex",
+        "judge_quality": 3
+      },
+      {
+        "model": "deepseek-r1:70b",
+        "backend": "claude_code",
+        "judge_quality": null
+      }
+    ],
+    "closer": [
+      {
+        "model": "glm-4.7-flash:latest",
+        "backend": "pi",
+        "judge_quality": 5
+      },
+      {
+        "model": "gpt-oss:120b",
+        "backend": "junie",
+        "judge_quality": 5
+      },
+      {
+        "model": "gpt-oss:120b",
+        "backend": "opencode",
+        "judge_quality": 5
+      },
+      {
+        "model": "gpt-oss:20b",
+        "backend": "claude_code",
+        "judge_quality": 5
+      },
+      {
+        "model": "llama3.1:8b-instruct-q4_0",
+        "backend": "pi",
+        "judge_quality": 5
+      },
+      {
+        "model": "llama3.3:70b",
+        "backend": "pi",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen2.5:14b-instruct-q6_K",
+        "backend": "codex",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen3.6:35b",
+        "backend": "codex",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen3.6:35b",
+        "backend": "pi",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen3-coder:30b",
+        "backend": "junie",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen3-coder:30b",
+        "backend": "pi",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwq:32b",
+        "backend": "opencode",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwq:32b",
+        "backend": "pi",
+        "judge_quality": 5
+      },
+      {
+        "model": "laguna-xs.2:latest",
+        "backend": "pi",
+        "judge_quality": 4
+      },
+      {
+        "model": "deepcoder:14b",
+        "backend": "claude_code",
+        "judge_quality": null
+      },
+      {
+        "model": "deepseek-coder-v2:16b",
+        "backend": "claude_code",
+        "judge_quality": null
+      },
+      {
+        "model": "deepseek-r1:32b",
+        "backend": "claude_code",
+        "judge_quality": null
+      },
+      {
+        "model": "deepseek-r1:70b",
+        "backend": "claude_code",
+        "judge_quality": null
+      },
+      {
+        "model": "gemma3:27b",
+        "backend": "claude_code",
+        "judge_quality": null
+      },
+      {
+        "model": "glm-4.7-flash:latest",
+        "backend": "claude_code",
+        "judge_quality": null
+      },
+      {
+        "model": "glm-4.7-flash:latest",
+        "backend": "codex",
+        "judge_quality": null
+      },
+      {
+        "model": "glm-4.7-flash:latest",
+        "backend": "hermes",
+        "judge_quality": null
+      },
+      {
+        "model": "glm-4.7-flash:latest",
+        "backend": "junie",
+        "judge_quality": null
+      },
+      {
+        "model": "glm-4.7-flash:latest",
+        "backend": "openclaw",
+        "judge_quality": null
+      },
+      {
+        "model": "glm-4.7-flash:latest",
+        "backend": "opencode",
+        "judge_quality": null
+      },
+      {
+        "model": "gpt-oss:120b",
+        "backend": "claude_code",
+        "judge_quality": null
+      },
+      {
+        "model": "gpt-oss:120b",
+        "backend": "codex",
+        "judge_quality": null
+      },
+      {
+        "model": "gpt-oss:120b",
+        "backend": "hermes",
+        "judge_quality": null
+      },
+      {
+        "model": "gpt-oss:120b",
+        "backend": "openclaw",
+        "judge_quality": null
+      },
+      {
+        "model": "gpt-oss:120b",
+        "backend": "pi",
+        "judge_quality": null
+      },
+      {
+        "model": "gpt-oss:20b",
+        "backend": "codex",
+        "judge_quality": null
+      },
+      {
+        "model": "gpt-oss:20b",
+        "backend": "hermes",
+        "judge_quality": null
+      },
+      {
+        "model": "gpt-oss:20b",
+        "backend": "openclaw",
+        "judge_quality": null
+      },
+      {
+        "model": "gpt-oss:20b",
+        "backend": "opencode",
+        "judge_quality": null
+      },
+      {
+        "model": "gpt-oss:20b",
+        "backend": "pi",
+        "judge_quality": null
+      },
+      {
+        "model": "laguna-xs.2:latest",
+        "backend": "claude_code",
+        "judge_quality": null
+      },
+      {
+        "model": "laguna-xs.2:latest",
+        "backend": "codex",
+        "judge_quality": null
+      },
+      {
+        "model": "laguna-xs.2:latest",
+        "backend": "junie",
+        "judge_quality": null
+      },
+      {
+        "model": "laguna-xs.2:latest",
+        "backend": "openclaw",
+        "judge_quality": null
+      },
+      {
+        "model": "llama3.1:70b-instruct-q4_K_M",
+        "backend": "claude_code",
+        "judge_quality": null
+      },
+      {
+        "model": "llama3.1:70b-instruct-q4_K_M",
+        "backend": "hermes",
+        "judge_quality": null
+      },
+      {
+        "model": "llama3.1:70b-instruct-q4_K_M",
+        "backend": "junie",
+        "judge_quality": null
+      },
+      {
+        "model": "llama3.1:70b-instruct-q4_K_M",
+        "backend": "openclaw",
+        "judge_quality": null
+      },
+      {
+        "model": "llama3.1:70b-instruct-q4_K_M",
+        "backend": "opencode",
+        "judge_quality": null
+      },
+      {
+        "model": "llama3.1:70b-instruct-q4_K_M",
+        "backend": "pi",
+        "judge_quality": null
+      },
+      {
+        "model": "llama3.1:8b-instruct-q4_0",
+        "backend": "claude_code",
+        "judge_quality": null
+      },
+      {
+        "model": "llama3.1:8b-instruct-q4_0",
+        "backend": "hermes",
+        "judge_quality": null
+      },
+      {
+        "model": "llama3.1:8b-instruct-q4_0",
+        "backend": "openclaw",
+        "judge_quality": null
+      },
+      {
+        "model": "llama3.1:8b-instruct-q4_0",
+        "backend": "opencode",
+        "judge_quality": null
+      },
+      {
+        "model": "llama3.3-70b-iq4xs:latest",
+        "backend": "claude_code",
+        "judge_quality": null
+      },
+      {
+        "model": "llama3.3-70b-q4ks:latest",
+        "backend": "claude_code",
+        "judge_quality": null
+      },
+      {
+        "model": "llama3.3:70b",
+        "backend": "claude_code",
+        "judge_quality": null
+      },
+      {
+        "model": "llama3.3:70b",
+        "backend": "hermes",
+        "judge_quality": null
+      },
+      {
+        "model": "llama3.3:70b",
+        "backend": "junie",
+        "judge_quality": null
+      },
+      {
+        "model": "llama3.3:70b",
+        "backend": "openclaw",
+        "judge_quality": null
+      },
+      {
+        "model": "mistral:instruct",
+        "backend": "claude_code",
+        "judge_quality": null
+      },
+      {
+        "model": "mistral:instruct",
+        "backend": "codex",
+        "judge_quality": null
+      },
+      {
+        "model": "mistral:instruct",
+        "backend": "hermes",
+        "judge_quality": null
+      },
+      {
+        "model": "mistral:instruct",
+        "backend": "openclaw",
+        "judge_quality": null
+      },
+      {
+        "model": "mistral:instruct",
+        "backend": "opencode",
+        "judge_quality": null
+      },
+      {
+        "model": "mistral:instruct",
+        "backend": "pi",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5:14b-instruct-q6_K",
+        "backend": "claude_code",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5:14b-instruct-q6_K",
+        "backend": "hermes",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5:14b-instruct-q6_K",
+        "backend": "junie",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5:14b-instruct-q6_K",
+        "backend": "openclaw",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5:14b-instruct-q6_K",
+        "backend": "opencode",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5:14b-instruct-q6_K",
+        "backend": "pi",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5:32b",
+        "backend": "claude_code",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5:32b",
+        "backend": "codex",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5:32b",
+        "backend": "hermes",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5:32b",
+        "backend": "junie",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5:32b",
+        "backend": "openclaw",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5:32b",
+        "backend": "opencode",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5:32b",
+        "backend": "pi",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5-coder:14b-instruct-q6_K",
+        "backend": "claude_code",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5-coder:14b-instruct-q6_K",
+        "backend": "codex",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5-coder:14b-instruct-q6_K",
+        "backend": "hermes",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5-coder:14b-instruct-q6_K",
+        "backend": "openclaw",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5-coder:14b-instruct-q6_K",
+        "backend": "opencode",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5-coder:14b-instruct-q6_K",
+        "backend": "pi",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5-coder:7b",
+        "backend": "claude_code",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5-coder:7b",
+        "backend": "codex",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5-coder:7b",
+        "backend": "hermes",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5-coder:7b",
+        "backend": "junie",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5-coder:7b",
+        "backend": "openclaw",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5-coder:7b",
+        "backend": "opencode",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5-coder:7b",
+        "backend": "pi",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5-coder:latest",
+        "backend": "claude_code",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5-coder:latest",
+        "backend": "codex",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5-coder:latest",
+        "backend": "hermes",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5-coder:latest",
+        "backend": "openclaw",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5-coder:latest",
+        "backend": "opencode",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen2.5-coder:latest",
+        "backend": "pi",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen3:8b",
+        "backend": "claude_code",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen3:8b",
+        "backend": "codex",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen3:8b",
+        "backend": "hermes",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen3:8b",
+        "backend": "junie",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen3:8b",
+        "backend": "openclaw",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen3:8b",
+        "backend": "opencode",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen3:8b",
+        "backend": "pi",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen3.6:35b",
+        "backend": "claude_code",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen3.6:35b",
+        "backend": "hermes",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen3.6:35b",
+        "backend": "junie",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen3.6:35b",
+        "backend": "openclaw",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen3.6:35b",
+        "backend": "opencode",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen3-coder:30b",
+        "backend": "claude_code",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen3-coder:30b",
+        "backend": "codex",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen3-coder:30b",
+        "backend": "hermes",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen3-coder:30b",
+        "backend": "openclaw",
+        "judge_quality": null
+      },
+      {
+        "model": "qwen3-coder:30b",
+        "backend": "opencode",
+        "judge_quality": null
+      },
+      {
+        "model": "qwq:32b",
+        "backend": "claude_code",
+        "judge_quality": null
+      },
+      {
+        "model": "qwq:32b",
+        "backend": "codex",
+        "judge_quality": null
+      },
+      {
+        "model": "qwq:32b",
+        "backend": "hermes",
+        "judge_quality": null
+      },
+      {
+        "model": "qwq:32b",
+        "backend": "openclaw",
+        "judge_quality": null
+      }
+    ],
+    "env_bootstrap": [
+      {
+        "model": "deepcoder:14b",
+        "backend": "claude_code",
+        "judge_quality": 5
+      },
+      {
+        "model": "deepcoder:14b",
+        "backend": "pi",
+        "judge_quality": 5
+      },
+      {
+        "model": "deepseek-coder-v2:16b",
+        "backend": "claude_code",
+        "judge_quality": 5
+      },
+      {
+        "model": "deepseek-coder-v2:16b",
+        "backend": "pi",
+        "judge_quality": 5
+      },
+      {
+        "model": "deepseek-r1:32b",
+        "backend": "claude_code",
+        "judge_quality": 5
+      },
+      {
+        "model": "deepseek-r1:32b",
+        "backend": "pi",
+        "judge_quality": 5
+      },
+      {
+        "model": "deepseek-r1:70b",
+        "backend": "claude_code",
+        "judge_quality": 5
+      },
+      {
+        "model": "deepseek-r1:70b",
+        "backend": "pi",
+        "judge_quality": 5
+      },
+      {
+        "model": "gemma3:27b",
+        "backend": "claude_code",
+        "judge_quality": 5
+      },
+      {
+        "model": "gemma3:27b",
+        "backend": "pi",
+        "judge_quality": 5
+      },
+      {
+        "model": "glm-4.7-flash:latest",
+        "backend": "claude_code",
+        "judge_quality": 5
+      },
+      {
+        "model": "glm-4.7-flash:latest",
+        "backend": "codex",
+        "judge_quality": 5
+      },
+      {
+        "model": "glm-4.7-flash:latest",
+        "backend": "hermes",
+        "judge_quality": 5
+      },
+      {
+        "model": "glm-4.7-flash:latest",
+        "backend": "junie",
+        "judge_quality": 5
+      },
+      {
+        "model": "glm-4.7-flash:latest",
+        "backend": "openclaw",
+        "judge_quality": 5
+      },
+      {
+        "model": "glm-4.7-flash:latest",
+        "backend": "opencode",
+        "judge_quality": 5
+      },
+      {
+        "model": "glm-4.7-flash:latest",
+        "backend": "pi",
+        "judge_quality": 5
+      },
+      {
+        "model": "gpt-oss:120b",
+        "backend": "claude_code",
+        "judge_quality": 5
+      },
+      {
+        "model": "gpt-oss:120b",
+        "backend": "codex",
+        "judge_quality": 5
+      },
+      {
+        "model": "gpt-oss:120b",
+        "backend": "hermes",
+        "judge_quality": 5
+      },
+      {
+        "model": "gpt-oss:120b",
+        "backend": "junie",
+        "judge_quality": 5
+      },
+      {
+        "model": "gpt-oss:120b",
+        "backend": "openclaw",
+        "judge_quality": 5
+      },
+      {
+        "model": "gpt-oss:120b",
+        "backend": "opencode",
+        "judge_quality": 5
+      },
+      {
+        "model": "gpt-oss:120b",
+        "backend": "pi",
+        "judge_quality": 5
+      },
+      {
+        "model": "gpt-oss:20b",
+        "backend": "claude_code",
+        "judge_quality": 5
+      },
+      {
+        "model": "gpt-oss:20b",
+        "backend": "codex",
+        "judge_quality": 5
+      },
+      {
+        "model": "gpt-oss:20b",
+        "backend": "hermes",
+        "judge_quality": 5
+      },
+      {
+        "model": "gpt-oss:20b",
+        "backend": "junie",
+        "judge_quality": 5
+      },
+      {
+        "model": "gpt-oss:20b",
+        "backend": "openclaw",
+        "judge_quality": 5
+      },
+      {
+        "model": "gpt-oss:20b",
+        "backend": "opencode",
+        "judge_quality": 5
+      },
+      {
+        "model": "gpt-oss:20b",
+        "backend": "pi",
+        "judge_quality": 5
+      },
+      {
+        "model": "laguna-xs.2:latest",
+        "backend": "claude_code",
+        "judge_quality": 5
+      },
+      {
+        "model": "laguna-xs.2:latest",
+        "backend": "codex",
+        "judge_quality": 5
+      },
+      {
+        "model": "laguna-xs.2:latest",
+        "backend": "hermes",
+        "judge_quality": 5
+      },
+      {
+        "model": "laguna-xs.2:latest",
+        "backend": "junie",
+        "judge_quality": 5
+      },
+      {
+        "model": "laguna-xs.2:latest",
+        "backend": "openclaw",
+        "judge_quality": 5
+      },
+      {
+        "model": "laguna-xs.2:latest",
+        "backend": "opencode",
+        "judge_quality": 5
+      },
+      {
+        "model": "laguna-xs.2:latest",
+        "backend": "pi",
+        "judge_quality": 5
+      },
+      {
+        "model": "llama3.1:70b-instruct-q4_K_M",
+        "backend": "claude_code",
+        "judge_quality": 5
+      },
+      {
+        "model": "llama3.1:70b-instruct-q4_K_M",
+        "backend": "codex",
+        "judge_quality": 5
+      },
+      {
+        "model": "llama3.1:70b-instruct-q4_K_M",
+        "backend": "hermes",
+        "judge_quality": 5
+      },
+      {
+        "model": "llama3.1:70b-instruct-q4_K_M",
+        "backend": "openclaw",
+        "judge_quality": 5
+      },
+      {
+        "model": "llama3.1:70b-instruct-q4_K_M",
+        "backend": "opencode",
+        "judge_quality": 5
+      },
+      {
+        "model": "llama3.1:70b-instruct-q4_K_M",
+        "backend": "pi",
+        "judge_quality": 5
+      },
+      {
+        "model": "llama3.1:8b-instruct-q4_0",
+        "backend": "claude_code",
+        "judge_quality": 5
+      },
+      {
+        "model": "llama3.1:8b-instruct-q4_0",
+        "backend": "codex",
+        "judge_quality": 5
+      },
+      {
+        "model": "llama3.1:8b-instruct-q4_0",
+        "backend": "hermes",
+        "judge_quality": 5
+      },
+      {
+        "model": "llama3.1:8b-instruct-q4_0",
+        "backend": "openclaw",
+        "judge_quality": 5
+      },
+      {
+        "model": "llama3.1:8b-instruct-q4_0",
+        "backend": "opencode",
+        "judge_quality": 5
+      },
+      {
+        "model": "llama3.1:8b-instruct-q4_0",
+        "backend": "pi",
+        "judge_quality": 5
+      },
+      {
+        "model": "llama3.3-70b-iq4xs:latest",
+        "backend": "claude_code",
+        "judge_quality": 5
+      },
+      {
+        "model": "llama3.3-70b-iq4xs:latest",
+        "backend": "pi",
+        "judge_quality": 5
+      },
+      {
+        "model": "llama3.3-70b-q4ks:latest",
+        "backend": "claude_code",
+        "judge_quality": 5
+      },
+      {
+        "model": "llama3.3-70b-q4ks:latest",
+        "backend": "pi",
+        "judge_quality": 5
+      },
+      {
+        "model": "llama3.3:70b",
+        "backend": "claude_code",
+        "judge_quality": 5
+      },
+      {
+        "model": "llama3.3:70b",
+        "backend": "codex",
+        "judge_quality": 5
+      },
+      {
+        "model": "llama3.3:70b",
+        "backend": "hermes",
+        "judge_quality": 5
+      },
+      {
+        "model": "llama3.3:70b",
+        "backend": "junie",
+        "judge_quality": 5
+      },
+      {
+        "model": "llama3.3:70b",
+        "backend": "openclaw",
+        "judge_quality": 5
+      },
+      {
+        "model": "llama3.3:70b",
+        "backend": "opencode",
+        "judge_quality": 5
+      },
+      {
+        "model": "llama3.3:70b",
+        "backend": "pi",
+        "judge_quality": 5
+      },
+      {
+        "model": "mistral:instruct",
+        "backend": "claude_code",
+        "judge_quality": 5
+      },
+      {
+        "model": "mistral:instruct",
+        "backend": "codex",
+        "judge_quality": 5
+      },
+      {
+        "model": "mistral:instruct",
+        "backend": "hermes",
+        "judge_quality": 5
+      },
+      {
+        "model": "mistral:instruct",
+        "backend": "opencode",
+        "judge_quality": 5
+      },
+      {
+        "model": "mistral:instruct",
+        "backend": "pi",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen2.5:14b-instruct-q6_K",
+        "backend": "claude_code",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen2.5:14b-instruct-q6_K",
+        "backend": "codex",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen2.5:14b-instruct-q6_K",
+        "backend": "hermes",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen2.5:14b-instruct-q6_K",
+        "backend": "junie",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen2.5:14b-instruct-q6_K",
+        "backend": "openclaw",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen2.5:14b-instruct-q6_K",
+        "backend": "opencode",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen2.5:14b-instruct-q6_K",
+        "backend": "pi",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen2.5:32b",
+        "backend": "claude_code",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen2.5:32b",
+        "backend": "codex",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen2.5:32b",
+        "backend": "hermes",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen2.5:32b",
+        "backend": "junie",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen2.5:32b",
+        "backend": "openclaw",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen2.5:32b",
+        "backend": "opencode",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen2.5:32b",
+        "backend": "pi",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen2.5-coder:14b-instruct-q6_K",
+        "backend": "claude_code",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen2.5-coder:14b-instruct-q6_K",
+        "backend": "codex",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen2.5-coder:14b-instruct-q6_K",
+        "backend": "hermes",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen2.5-coder:14b-instruct-q6_K",
+        "backend": "openclaw",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen2.5-coder:14b-instruct-q6_K",
+        "backend": "opencode",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen2.5-coder:14b-instruct-q6_K",
+        "backend": "pi",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen2.5-coder:7b",
+        "backend": "claude_code",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen2.5-coder:7b",
+        "backend": "codex",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen2.5-coder:7b",
+        "backend": "hermes",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen2.5-coder:7b",
+        "backend": "openclaw",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen2.5-coder:7b",
+        "backend": "opencode",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen2.5-coder:7b",
+        "backend": "pi",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen2.5-coder:latest",
+        "backend": "claude_code",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen2.5-coder:latest",
+        "backend": "codex",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen2.5-coder:latest",
+        "backend": "hermes",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen2.5-coder:latest",
+        "backend": "openclaw",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen2.5-coder:latest",
+        "backend": "opencode",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen2.5-coder:latest",
+        "backend": "pi",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen3:8b",
+        "backend": "claude_code",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen3:8b",
+        "backend": "codex",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen3:8b",
+        "backend": "hermes",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen3:8b",
+        "backend": "junie",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen3:8b",
+        "backend": "openclaw",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen3:8b",
+        "backend": "opencode",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen3:8b",
+        "backend": "pi",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen3.6:35b",
+        "backend": "claude_code",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen3.6:35b",
+        "backend": "codex",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen3.6:35b",
+        "backend": "hermes",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen3.6:35b",
+        "backend": "junie",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen3.6:35b",
+        "backend": "openclaw",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen3.6:35b",
+        "backend": "opencode",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen3.6:35b",
+        "backend": "pi",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen3-coder:30b",
+        "backend": "claude_code",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen3-coder:30b",
+        "backend": "codex",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen3-coder:30b",
+        "backend": "hermes",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen3-coder:30b",
+        "backend": "junie",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen3-coder:30b",
+        "backend": "openclaw",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen3-coder:30b",
+        "backend": "opencode",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwen3-coder:30b",
+        "backend": "pi",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwq:32b",
+        "backend": "claude_code",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwq:32b",
+        "backend": "codex",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwq:32b",
+        "backend": "hermes",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwq:32b",
+        "backend": "openclaw",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwq:32b",
+        "backend": "opencode",
+        "judge_quality": 5
+      },
+      {
+        "model": "qwq:32b",
+        "backend": "pi",
+        "judge_quality": 5
+      }
+    ]
+  },
+  "triage": {
+    "model lacks tool-calling (route elsewhere)": 235,
+    "junie standalone-issue build crash": 114,
+    "other / uncategorised": 79,
+    "backend parse failure on valid output": 96,
+    "backend subprocess crash": 1
+  }
+}

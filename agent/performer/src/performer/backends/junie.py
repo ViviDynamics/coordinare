@@ -16,8 +16,18 @@ so this adapter mirrors the ``claude_code`` pattern rather than the OpenCode
 Custom-LLM support
 ------------------
 When ``JUNIE_PROVIDER_BASE_URL`` is set in the environment, the adapter
-writes a profile JSON to ``$JUNIE_HOME/models/<id>.json`` (``$JUNIE_HOME``
-defaults to ``~/.junie``) and selects it via ``--model custom:<id>``.
+writes a profile JSON to ``$JUNIE_HOME/models/<profile_id>.json`` (``$JUNIE_HOME``
+defaults to ``~/.junie``; relocated to a writable temp dir if the configured
+home is read-only) and selects it via ``--model custom:<profile_id>``.
+
+Two Junie-specific contract details (verified empirically — see the inline
+comments in ``_maybe_write_custom_profile``):
+  - the profile's ``id`` FIELD is the upstream/wire model name (e.g.
+    ``spark/qwen3.6:35b``, from ``JUNIE_PROVIDER_MODEL``), NOT the local
+    profile id (which is the filename / ``--model custom:`` selector);
+  - ``JUNIE_PROVIDER_BASE_URL`` must be the FULL endpoint URL
+    (``https://host/v1/chat/completions``), not a ``/v1`` base — Junie POSTs to
+    it verbatim. This differs from codex/pi/opencode, which take a ``/v1`` base.
 See https://junie.jetbrains.com/docs/custom-llm-models.html.
 """
 from __future__ import annotations
@@ -26,6 +36,7 @@ import asyncio
 import json
 import os
 import re
+import shutil
 import signal
 import tempfile
 from collections import deque
@@ -36,7 +47,7 @@ import structlog
 
 from performer.backends._card_docs import card_docs_prompt_section
 from performer.backends.base import BackendStatus
-from performer.models import BackendEvent, BackendEventType, Score, Stand
+from performer.models import DIAGNOSTIC_ROLE, LOCAL_CAPTURE_RULE, BackendEvent, BackendEventType, Score, Stand
 
 log = structlog.get_logger(__name__)
 
@@ -69,27 +80,88 @@ def _maybe_write_custom_profile() -> str | None:
     base_url = os.environ.get("JUNIE_PROVIDER_BASE_URL", "").strip()
     if not base_url:
         return None
+    # The *local* profile id = the filename (`<profile_id>.json`) and the
+    # `--model custom:<profile_id>` selector; it must be path/CLI-safe.
     profile_id = os.environ.get("JUNIE_PROVIDER_MODEL_ID", "vivi").strip() or "vivi"
     if not _PROFILE_ID_RE.match(profile_id):
         raise ValueError(
             f"unsafe JUNIE_PROVIDER_MODEL_ID (must match [A-Za-z0-9_-]+): {profile_id!r}"
         )
     api_type = os.environ.get("JUNIE_PROVIDER_API_TYPE", "OpenAICompletion").strip()
-    junie_home = Path(os.environ.get("JUNIE_HOME") or Path.home() / ".junie")
-    models_dir = junie_home / "models"
-    models_dir.mkdir(parents=True, exist_ok=True)
+    # Per Junie's custom-LLM schema, the profile's `id` FIELD is "the model
+    # identifier as expected by the API endpoint" — i.e. the upstream/wire model
+    # name (e.g. spark/qwen3.6:35b), NOT the local profile id. Junie sends this
+    # verbatim as the request `model`. Use the configured wire model; fall back
+    # to the profile id only if unset. (Verified: setting id=<profile_id> made
+    # LiteLLM 400 with "no healthy deployments for model=vivi".)
+    wire_model = os.environ.get("JUNIE_PROVIDER_MODEL", "").strip() or profile_id
+    # `baseUrl` must be the FULL endpoint URL — Junie's OpenAICompletion client
+    # POSTs to baseUrl verbatim (no path appended), so it must be e.g.
+    # https://host/v1/chat/completions, NOT a https://host/v1 base. (Verified:
+    # a /v1 base → POST /v1 → 404; host root → POST / → 405.)
     profile = {
-        "id": profile_id,
+        "id": wire_model,
         "baseUrl": base_url,
         "apiType": api_type,
     }
-    if model := os.environ.get("JUNIE_PROVIDER_MODEL"):
-        profile["model"] = model
     if api_key_env := os.environ.get("JUNIE_PROVIDER_API_KEY_ENV"):
         if value := os.environ.get(api_key_env):
             profile["apiKey"] = value
-    (models_dir / f"{profile_id}.json").write_text(json.dumps(profile, indent=2))
+
+    junie_home = Path(os.environ.get("JUNIE_HOME") or Path.home() / ".junie")
+    try:
+        _write_profile(junie_home, profile_id, profile)
+    except OSError:
+        # JUNIE_HOME is read-only — e.g. the operator mounts ~/.junie creds
+        # read-only (the recommended secure default), but Junie writes custom-LLM
+        # profiles under $JUNIE_HOME/models/. Fall back to a writable job-scoped
+        # home seeded from the read-only creds, and export JUNIE_HOME so the
+        # junie subprocess (which inherits os.environ) finds both the creds and
+        # the freshly-written profile. Mirrors hermes' job-scoped HERMES_HOME.
+        writable_home = Path(tempfile.mkdtemp(prefix="junie-home-"))
+        _seed_junie_home(junie_home, writable_home)
+        os.environ["JUNIE_HOME"] = str(writable_home)
+        _write_profile(writable_home, profile_id, profile)
+        log.info(
+            "junie.custom_profile_writable_home",
+            source=str(junie_home),
+            home=str(writable_home),
+            reason="source JUNIE_HOME read-only",
+        )
     return profile_id
+
+
+def _write_profile(home: Path, profile_id: str, profile: dict) -> None:
+    """Write ``<home>/models/<profile_id>.json``. Raises OSError if read-only."""
+    models_dir = home / "models"
+    models_dir.mkdir(parents=True, exist_ok=True)
+    (models_dir / f"{profile_id}.json").write_text(json.dumps(profile, indent=2))
+
+
+def _seed_junie_home(src: Path, dst: Path) -> None:
+    """Best-effort copy of an existing (read-only) JUNIE_HOME into a writable one.
+
+    Carries over Junie's auth/license files so the subprocess stays authenticated
+    when we relocate JUNIE_HOME. Skips the ``models`` dir (we rewrite it) and
+    swallows per-entry copy errors so a partial creds dir can't block dispatch.
+    """
+    if not src.exists():
+        return
+    try:
+        entries = list(src.iterdir())
+    except OSError:
+        return
+    for item in entries:
+        if item.name == "models":
+            continue
+        target = dst / item.name
+        try:
+            if item.is_dir():
+                shutil.copytree(item, target, dirs_exist_ok=True)
+            else:
+                shutil.copy2(item, target)
+        except OSError:
+            continue
 
 
 class JunieBackend:
@@ -389,7 +461,13 @@ def _build_task_prompt(
                 parts.append(f"- {item}")
 
     parts += ["", "---"]
-    if score.role in _JSON_ONLY_ROLES:
+    if score.role == DIAGNOSTIC_ROLE:
+        parts += [
+            "This is a one-off diagnostic/benchmark task. Use any tools at your "
+            "disposal to complete it. You do NOT need to commit, push, or open a "
+            "pull request — just perform the task and report what you did.",
+        ]
+    elif score.role in _JSON_ONLY_ROLES:
         parts += [
             "Return ONLY a valid JSON object for your role contract.",
             "Do not include markdown, prose, or code fences.",
@@ -401,6 +479,7 @@ def _build_task_prompt(
                 "Set `visual_validation_required=true` for UI/UX/visual changes and capture at least one artifact in `visual_evidence` for those tasks.",
                 "Include `visual_evidence` entries when screenshots/GIFs/videos/artifacts are available.",
                 "Include exact capture attempts in `visual_capture_commands` (commands/scripts you ran).",
+                LOCAL_CAPTURE_RULE,
                 "If visual evidence cannot be captured, include `demo_setup_steps` and `visual_capture_blockers` with concrete details.",
                 (
                     "Screenshot uploads: after capturing a screenshot to disk, run "

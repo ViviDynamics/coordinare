@@ -452,6 +452,62 @@ async def _run_env_cache_health_check(
     )
 
 
+async def run_env_cache_verify(
+    env_cache_path: str, cache_env: dict[str, str] | None = None
+) -> tuple[bool | None, str]:
+    """Run ``<env_cache_path>/verify.sh`` to confirm the bootstrap installed
+    what the spec files require, BEFORE the bootstrap reports success.
+
+    077: the bootstrap agent writes ``verify.sh`` asserting every installed
+    dependency is present + runnable (it sources activate.sh, then invokes the
+    tools). The env_bootstrap performer runs it after the install turn and
+    FAILS the bootstrap on a non-zero exit — so a silent install failure (e.g.
+    an ``apt-get install`` that located no package) can no longer be reported as
+    success and have the cache marked ready. "Confirm installation before
+    exiting."
+
+    Returns ``(passed, detail)``:
+      * ``passed is None``  → verify.sh absent (not run; caller treats as a
+        degraded-but-not-failed legacy bootstrap for backward compatibility).
+      * ``passed is False`` → verify.sh ran and failed (or errored/timed out).
+      * ``passed is True``  → verify.sh passed.
+    """
+    if not env_cache_path:
+        return None, "no env_cache_path"
+    verify = Path(env_cache_path) / "verify.sh"
+    if not verify.is_file():
+        return None, "verify.sh absent"
+    env = {**os.environ, **(cache_env or {})}
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "bash", str(verify),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            env=env,
+        )
+        out_b, _ = await asyncio.wait_for(proc.communicate(), timeout=180.0)
+    except (OSError, asyncio.TimeoutError) as exc:
+        log.warning(
+            "env_cache.verify_errored", env_cache_path=env_cache_path, error=str(exc)
+        )
+        return False, f"verify.sh did not run cleanly: {exc}"
+    out = out_b.decode(errors="replace")
+    if proc.returncode != 0:
+        log.warning(
+            "env_cache.verify_nonzero",
+            env_cache_path=env_cache_path,
+            returncode=proc.returncode,
+            output_tail=out[-500:],
+        )
+        return False, out[-1000:]
+    log.info(
+        "env_cache.verify_passed",
+        env_cache_path=env_cache_path,
+        output_tail=out[-200:],
+    )
+    return True, out[-500:]
+
+
 def stop_env_cache_services(
     env_cache_path: str, cache_env: dict[str, str] | None = None
 ) -> None:
@@ -721,7 +777,19 @@ async def commit_files(
 
 
 def cleanup_stand(stand: Stand) -> None:
-    """Remove the stand directory unconditionally."""
+    """Remove the stand directory (unless PERFORMER_KEEP_STAND is set).
+
+    077: benchmarking / diagnostics need to inspect the post-job workspace
+    (committed plan files, test results, docs) — but the job loop tears the
+    stand down in its ``finally`` before the terminal status is even read, so an
+    external grader that docker-execs after the job sees an empty container.
+    Setting ``PERFORMER_KEEP_STAND=1`` skips the teardown so the workspace
+    survives for inspection. Unset (the default) preserves the production
+    behavior of always cleaning up.
+    """
+    if os.environ.get("PERFORMER_KEEP_STAND", "").strip().lower() in ("1", "true", "yes"):
+        log.info("kept stand (PERFORMER_KEEP_STAND)", path=str(stand.path))
+        return
     shutil.rmtree(stand.path, ignore_errors=True)
     log.info("cleaned up stand", path=str(stand.path))
 

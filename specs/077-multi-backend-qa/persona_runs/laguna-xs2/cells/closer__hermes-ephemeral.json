@@ -1,0 +1,23 @@
+{
+  "row": {
+    "role": "closer",
+    "endpoint": "hermes-ephemeral",
+    "backend": "hermes",
+    "model": "spark/laguna-xs.2:latest",
+    "category": "ERROR",
+    "status": "error",
+    "markers": [],
+    "detail": "status=error",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "error",
+    "state": "failed",
+    "log_file": null
+  },
+  "state": "failed",
+  "error_code": "error",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"error\",\"session_id\":\"9d697e20-6c6a-4119-b7b2-6747dde881c6\",\"reason\":\"malformed_output\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.\n\n[notice] A new release of pip is available: 25.0.1 -> 26.1.2\n[notice] To update, run: pip install --upgrade pip\nINFO:     172.66.0.243:65181 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-03 23:19:33 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:55259 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:50264 - \"GET /jobs/f520ce318787427396f3533d4a7b5c46 HTTP/1.1\" 200 OK\n2026-06-03 23:19:34 [info     ] clone_repository.existing_branch branch=feat/closer-ready\n2026-06-03 23:19:34 [info     ] cloned repository              branch=feat/closer-ready repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-03 23:19:34 [info     ] hermes.card_docs_written       chars=149 path=/tmp/performer-kesneyt2/CARD.md\n2026-06-03 23:19:34 [info     ] hermes starting                base_url=https://litellm.vividynamics.com/v1 hermes_home=/tmp/hermes-job-scq3xaqt model=spark/laguna-xs.2:latest provider=litellm\n2026-06-03 23:19:34 [info     ] hermes started                 model=spark/laguna-xs.2:latest pid=42\n2026-06-03 23:19:34 [info     ] dispatch accepted              session_id=9d697e20-6c6a-4119-b7b2-6747dde881c6\nINFO:     172.66.0.243:22432 - \"GET /jobs/f520ce318787427396f3533d4a7b5c46 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:63593 - \"GET /jobs/f520ce318787427396f3533d4a7b5c46 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:64157 - \"GET /jobs/f520ce318787427396f3533d4a7b5c46 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:27338 - \"GET /jobs/f520ce318787427396f3533d4a7b5c46 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:45207 - \"GET /jobs/f520ce318787427396f3533d4a7b5c46 HTTP/1.1\" 200 OK\n2026-06-03 23:20:03 [info     ] hermes finalized               removed=/tmp/hermes-job-scq3xaqt\nINFO:     172.66.0.243:38463 - \"GET /jobs/f520ce318787427396f3533d4a7b5c46 HTTP/1.1\" 200 OK\n2026-06-03 23:20:04 [info     ] hermes stopped\n2026-06-03 23:20:04 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-kesneyt2\nINFO:     172.66.0.243:65119 - \"GET /jobs/f520ce318787427396f3533d4a7b5c46 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

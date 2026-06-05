@@ -1,0 +1,23 @@
+{
+  "row": {
+    "role": "reviewer",
+    "endpoint": "hermes-ephemeral",
+    "backend": "hermes",
+    "model": "spark/qwen2.5-coder:latest",
+    "category": "FAIL_MODEL",
+    "status": "changes_requested",
+    "markers": [],
+    "detail": "status=changes_requested",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "changes_requested",
+    "state": "failed",
+    "log_file": null
+  },
+  "state": "failed",
+  "error_code": "changes_requested",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"changes_requested\",\"session_id\":\"02c465a2-b618-4376-8479-d55e1d13af68\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.\n\n[notice] A new release of pip is available: 25.0.1 -> 26.1.2\n[notice] To update, run: pip install --upgrade pip\nINFO:     172.66.0.243:16316 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-04 17:21:03 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:31530 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:61519 - \"GET /jobs/3be0fe0f569947faa3ea146fc708e45a HTTP/1.1\" 200 OK\n2026-06-04 17:21:05 [info     ] clone_repository.existing_branch branch=fix/reviewer-offbyone\n2026-06-04 17:21:05 [info     ] cloned repository              branch=fix/reviewer-offbyone repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-04 17:21:05 [info     ] hermes.card_docs_written       chars=178 path=/tmp/performer-_066vhxb/CARD.md\n2026-06-04 17:21:05 [info     ] hermes starting                base_url=https://litellm.vividynamics.com/v1 hermes_home=/tmp/hermes-job-kn68vxhk model=spark/qwen2.5-coder:latest provider=litellm\n2026-06-04 17:21:05 [info     ] hermes started                 model=spark/qwen2.5-coder:latest pid=42\n2026-06-04 17:21:05 [info     ] dispatch accepted              session_id=02c465a2-b618-4376-8479-d55e1d13af68\nINFO:     172.66.0.243:25806 - \"GET /jobs/3be0fe0f569947faa3ea146fc708e45a HTTP/1.1\" 200 OK\n2026-06-04 17:21:09 [info     ] hermes finalized               removed=/tmp/hermes-job-kn68vxhk\n2026-06-04 17:21:10 [info     ] review posted                  owner=ViviDynamics pr_number=1 repo=conductor-bench review_event=COMMENT\n2026-06-04 17:21:10 [info     ] hermes stopped\n2026-06-04 17:21:10 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-_066vhxb\nINFO:     172.66.0.243:29536 - \"GET /jobs/3be0fe0f569947faa3ea146fc708e45a HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

@@ -1,0 +1,25 @@
+{
+  "row": {
+    "role": "tech_writer",
+    "endpoint": "hermes-ephemeral",
+    "backend": "hermes",
+    "model": "spark/qwen3-coder:30b",
+    "category": "FAIL_HARNESS",
+    "status": "error",
+    "markers": [
+      "docs_reference_coupon"
+    ],
+    "detail": "status=error doc_hits=True | harness:BACKEND_FORMAT_ERROR",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "error",
+    "state": "failed",
+    "log_file": null
+  },
+  "state": "failed",
+  "error_code": "error",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"error\",\"session_id\":\"3ab9874e-2f6d-4808-98aa-b51b7447a0d1\",\"reason\":\"BACKEND_FORMAT_ERROR: Backend docs output could not be parsed as a JSON object after 2 attempts. Last output: \\\"\u26a0 tirith security scanner enabled but not available \u2014 command scanning will use pattern matching only\\\\r\\\\n  \u250a review diff\\\\r\\\\na/README.md \u2192 b/README.md\\\\r\\\\n@@ -1,15 +1,62 @@\\\\r\\\\n-# conductor-bench\\\\r\\\\n+# Coupon API Documentation\\\\r\\\\n \\\\r\\\\n-A tiny, self-contained fixture project used by `coordinare`'s persona-capability\\\\r\\\\n\\\"\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.\n\n[notice] A new release of pip is available: 25.0.1 -> 26.1.2\n[notice] To update, run: pip install --upgrade pip\nINFO:     172.66.0.243:49376 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-04 00:55:01 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:61204 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:32310 - \"GET /jobs/8b66545230ba4b36a4caff03d71726bc HTTP/1.1\" 200 OK\n2026-06-04 00:55:02 [info     ] clone_repository.existing_branch branch=feat/techwriter-nodoc\n2026-06-04 00:55:02 [info     ] cloned repository              branch=feat/techwriter-nodoc repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-04 00:55:02 [info     ] hermes.card_docs_written       chars=199 path=/tmp/performer-uuhnkdhd/CARD.md\n2026-06-04 00:55:02 [info     ] hermes starting                base_url=https://litellm.vividynamics.com/v1 hermes_home=/tmp/hermes-job-azqph6dm model=spark/qwen3-coder:30b provider=litellm\n2026-06-04 00:55:02 [info     ] hermes started                 model=spark/qwen3-coder:30b pid=41\n2026-06-04 00:55:02 [info     ] dispatch accepted              session_id=3ab9874e-2f6d-4808-98aa-b51b7447a0d1\nINFO:     172.66.0.243:43904 - \"GET /jobs/8b66545230ba4b36a4caff03d71726bc HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:16279 - \"GET /jobs/8b66545230ba4b36a4caff03d71726bc HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:28720 - \"GET /jobs/8b66545230ba4b36a4caff03d71726bc HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:38501 - \"GET /jobs/8b66545230ba4b36a4caff03d71726bc HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:21098 - \"GET /jobs/8b66545230ba4b36a4caff03d71726bc HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:44897 - \"GET /jobs/8b66545230ba4b36a4caff03d71726bc HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:45031 - \"GET /jobs/8b66545230ba4b36a4caff03d71726bc HTTP/1.1\" 200 OK\n2026-06-04 00:55:40 [info     ] hermes finalized               removed=/tmp/hermes-job-azqph6dm\nINFO:     172.66.0.243:19496 - \"GET /jobs/8b66545230ba4b36a4caff03d71726bc HTTP/1.1\" 200 OK\n2026-06-04 00:55:42 [warning  ] backend.invalid_output.retrying attempt=1 failure_reason='could not be parsed as a JSON object' max_retries=1 output_preview='\u26a0 tirith security scanner enabled but not available \u2014 command scanning will use pattern matching only\\r\\n  \u250a review diff\\r\\na/README.md \u2192 b/README.md\\r\\n@@ -1,15 +1,62 @@\\r\\n-# conductor-bench\\r\\n+# Coupon API ' stage=docs\n2026-06-04 00:55:44 [info     ] hermes stopped\n2026-06-04 00:55:44 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-uuhnkdhd\nINFO:     172.66.0.243:42507 - \"GET /jobs/8b66545230ba4b36a4caff03d71726bc HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

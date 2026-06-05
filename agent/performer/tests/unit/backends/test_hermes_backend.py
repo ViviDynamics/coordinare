@@ -412,32 +412,41 @@ class TestUS2CapabilityGating:
     async def test_custom_provider_written_when_base_url_set(
         self, tmp_path: Path, hermes_env, monkeypatch
     ) -> None:
-        """When HERMES_BASE_URL is set, the per-job hermes.config.yaml must
-        register the HERMES_PROVIDER value as a user-defined OpenAI-compatible
-        provider so ``hermes chat --provider <name>`` resolves. Without this
-        the CLI rejects non-built-in names with "Unknown provider"."""
+        """077: when HERMES_BASE_URL is set, the per-job config.yaml must use
+        hermes-agent 0.15.2's `model:` schema (provider=custom + base_url +
+        default + api_key_env) — the older `providers:` block is ignored by
+        0.15.2 ("no providers found"). CLI must pass --provider custom."""
         monkeypatch.setenv("HERMES_PROVIDER", "litellm")
         monkeypatch.setenv("HERMES_BASE_URL", "https://provider.example/v1")
+        monkeypatch.setenv("HERMES_MODEL", "spark/qwen3.6:35b")
         proc = _fake_proc(returncode=None)
         adapter = HermesBackend()
         with patch(
             "performer.backends.hermes.asyncio.create_subprocess_exec",
             new=AsyncMock(return_value=proc),
-        ):
+        ) as mock_exec:
             await adapter.start(_stand(tmp_path), _score())
         try:
             cfg = (adapter._profile_dir / "config.yaml").read_text()
-            assert "providers:" in cfg
-            assert "litellm:" in cfg
+            assert "model:" in cfg
+            assert "provider: custom" in cfg
             assert "base_url: https://provider.example/v1" in cfg
-            assert "key_env: HERMES_API_KEY" in cfg
-            assert "api_mode: chat_completions" in cfg
-            # The actual secret must never land on disk.
+            assert "default: spark/qwen3.6:35b" in cfg
+            # Key referenced via env, never embedded.
+            assert "api_key_env: HERMES_API_KEY" in cfg
             assert "sk-test-12345" not in cfg
+            # The stale providers: schema must be gone (note: api_key_env is
+            # the NEW field — don't false-match on the "key_env" substring).
+            assert "providers:" not in cfg
+            assert "api_mode:" not in cfg
+            # CLI passes the built-in custom provider, not the label "litellm".
+            args = list(mock_exec.call_args[0])
+            p_idx = args.index("--provider")
+            assert args[p_idx + 1] == "custom"
         finally:
             await adapter.stop()
 
-    async def test_no_providers_block_when_base_url_unset(
+    async def test_no_model_block_when_base_url_unset(
         self, tmp_path: Path, hermes_env
     ) -> None:
         proc = _fake_proc(returncode=None)
@@ -449,6 +458,7 @@ class TestUS2CapabilityGating:
             await adapter.start(_stand(tmp_path), _score())
         try:
             cfg = (adapter._profile_dir / "config.yaml").read_text()
+            assert "model:" not in cfg
             assert "providers:" not in cfg
         finally:
             await adapter.stop()
@@ -747,3 +757,62 @@ class TestUS3Lifecycle:
             status = BackendStatus(state="error", error_reason=reason)
             assert status.state in allowed
             assert ":" in reason or reason in {"malformed_output", "stopped"}
+
+
+# ---------------------------------------------------------------------------
+# 077: card docs written as CARD.md (commit-safe) for tech_writer
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_card_docs_written_excluded_and_referenced(tmp_path, hermes_env):
+    """Hermes writes the card context to CARD.md, git-excludes it (it commits,
+    unlike the read-only reviewer), and points the prompt at it."""
+    (tmp_path / ".git" / "info").mkdir(parents=True)  # simulate a real checkout
+    proc = _fake_proc(returncode=None)
+    adapter = HermesBackend()
+    with patch(
+        "performer.backends.hermes.asyncio.create_subprocess_exec",
+        new=AsyncMock(return_value=proc),
+    ) as mock_exec:
+        await adapter.start(
+            _stand(tmp_path),
+            _score(role="tech_writer", title="Reduce contact-form margins",
+                   description="Excessive mobile margins on the contact card.",
+                   acceptance_criteria=["Margins reduced on mobile"]),
+        )
+    try:
+        # CARD.md written with the card context.
+        card_md = tmp_path / "CARD.md"
+        assert card_md.is_file()
+        body = card_md.read_text()
+        assert "Reduce contact-form margins" in body
+        assert "Excessive mobile margins" in body
+        assert "Margins reduced on mobile" in body
+        # git-excluded so the committing tech_writer can't leak it into the PR.
+        assert "CARD.md" in (tmp_path / ".git" / "info" / "exclude").read_text().split()
+        # prompt points the agent at it.
+        args = list(mock_exec.call_args[0])
+        q_idx = args.index("-q")
+        assert "CARD.md" in args[q_idx + 1]
+    finally:
+        await adapter.stop()
+
+
+@pytest.mark.asyncio
+async def test_card_docs_exclude_no_duplicate_on_existing_entry(tmp_path, hermes_env):
+    """Re-running with CARD.md already in exclude does not duplicate the entry."""
+    info = tmp_path / ".git" / "info"
+    info.mkdir(parents=True)
+    (info / "exclude").write_text("*.log\nCARD.md\n")
+    adapter = HermesBackend()
+    with patch(
+        "performer.backends.hermes.asyncio.create_subprocess_exec",
+        new=AsyncMock(return_value=_fake_proc(returncode=None)),
+    ):
+        await adapter.start(_stand(tmp_path), _score(role="tech_writer"))
+    try:
+        lines = (info / "exclude").read_text().split()
+        assert lines.count("CARD.md") == 1
+    finally:
+        await adapter.stop()

@@ -231,6 +231,11 @@ config.*.yaml
 !config.example.yaml
 !config.example.*
 
+# Backup snapshots created during ops (config/state/env)
+*.bak
+*.bak.*
+*.bak-*
+
 # Codex local/sensitive artifacts
 .codex/auth.json
 .codex/history.jsonl
@@ -245,3 +250,4 @@ tmp
 coordinare.state.json*
 .claude/scheduled_tasks.lock
 
+tmp/

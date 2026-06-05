@@ -1,0 +1,23 @@
+{
+  "row": {
+    "role": "closer",
+    "endpoint": "codex-ephemeral",
+    "backend": "codex",
+    "model": "spark/llama3.3:70b",
+    "category": "FAIL_HARNESS",
+    "status": "error",
+    "markers": [],
+    "detail": "status=error | harness:BACKEND_FORMAT_ERROR",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "error",
+    "state": "failed",
+    "log_file": null
+  },
+  "state": "failed",
+  "error_code": "error",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"error\",\"session_id\":\"800d176a-ec1e-44f1-b14c-c4c4428efc7a\",\"reason\":\"BACKEND_FORMAT_ERROR: Backend review output was empty after 2 attempts. Last output: ''\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "\nadded 2 packages in 3s\nINFO:     172.66.0.243:22144 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-04 21:49:39 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\n2026-06-04 21:49:39 [info     ] secret_resolved                name=OPENAI_API_KEY source=init_payload\nINFO:     172.66.0.243:46320 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:19765 - \"GET /jobs/ee7ef0009c194d9b909b103030d5ee46 HTTP/1.1\" 200 OK\n2026-06-04 21:49:40 [info     ] clone_repository.existing_branch branch=feat/closer-ready\n2026-06-04 21:49:40 [info     ] cloned repository              branch=feat/closer-ready repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-04 21:49:41 [debug    ] codex app-server ready         port=32877\n2026-06-04 21:49:41 [info     ] codex thread started           port=32877 thread_id=019e949d-0d5d-7d32-b41a-93196ec45067\n2026-06-04 21:49:41 [info     ] codex turn started             turn_id=019e949d-0d82-7903-ab74-47509915a9bd\n2026-06-04 21:49:41 [info     ] dispatch accepted              session_id=800d176a-ec1e-44f1-b14c-c4c4428efc7a\nINFO:     172.66.0.243:57878 - \"GET /jobs/ee7ef0009c194d9b909b103030d5ee46 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:46427 - \"GET /jobs/ee7ef0009c194d9b909b103030d5ee46 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:49600 - \"GET /jobs/ee7ef0009c194d9b909b103030d5ee46 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:28006 - \"GET /jobs/ee7ef0009c194d9b909b103030d5ee46 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:33663 - \"GET /jobs/ee7ef0009c194d9b909b103030d5ee46 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:29952 - \"GET /jobs/ee7ef0009c194d9b909b103030d5ee46 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:63670 - \"GET /jobs/ee7ef0009c194d9b909b103030d5ee46 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:37203 - \"GET /jobs/ee7ef0009c194d9b909b103030d5ee46 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:46144 - \"GET /jobs/ee7ef0009c194d9b909b103030d5ee46 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:26674 - \"GET /jobs/ee7ef0009c194d9b909b103030d5ee46 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:56720 - \"GET /jobs/ee7ef0009c194d9b909b103030d5ee46 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:34331 - \"GET /jobs/ee7ef0009c194d9b909b103030d5ee46 HTTP/1.1\" 200 OK\n2026-06-04 21:50:44 [warning  ] codex.turn_completed.empty_output accumulator_len=0 item_roles=[] item_types=[] raw_turn='{\"id\": \"019e949d-0d82-7903-ab74-47509915a9bd\", \"items\": [], \"itemsView\": \"notLoaded\", \"status\": \"completed\", \"error\": null, \"startedAt\": 1780609781, \"completedAt\": 1780609844, \"durationMs\": 63617}' usage={}\nINFO:     172.66.0.243:37941 - \"GET /jobs/ee7ef0009c194d9b909b103030d5ee46 HTTP/1.1\" 200 OK\n2026-06-04 21:50:45 [warning  ] backend.invalid_output.retrying attempt=1 failure_reason='was empty' max_retries=1 output_preview= stage=review\nINFO:     172.66.0.243:50778 - \"GET /jobs/ee7ef0009c194d9b909b103030d5ee46 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:23040 - \"GET /jobs/ee7ef0009c194d9b909b103030d5ee46 HTTP/1.1\" 200 OK\n2026-06-04 21:50:55 [warning  ] codex.turn_completed.empty_output accumulator_len=0 item_roles=[] item_types=[] raw_turn='{\"id\": \"019e949e-097a-79a3-b31c-0b6ccbe47bc2\", \"items\": [], \"itemsView\": \"notLoaded\", \"status\": \"completed\", \"error\": null, \"startedAt\": 1780609845, \"completedAt\": 1780609855, \"durationMs\": 9984}' usage={}\n2026-06-04 21:50:55 [info     ] codex app-server stopped\n2026-06-04 21:50:55 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-iz4w_0c0\nINFO:     172.66.0.243:33168 - \"GET /jobs/ee7ef0009c194d9b909b103030d5ee46 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

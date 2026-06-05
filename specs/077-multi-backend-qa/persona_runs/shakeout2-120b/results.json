@@ -1,0 +1,271 @@
+[
+  {
+    "role": "assessor",
+    "endpoint": "codex-ephemeral",
+    "backend": "codex",
+    "model": "spark/gpt-oss:120b",
+    "category": "FAIL_MODEL",
+    "status": "assessment_complete",
+    "markers": [],
+    "detail": "questions=0 sufficient=None",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent failed to flag the request as insufficient and did not ask clarifying questions."
+  },
+  {
+    "role": "assessor",
+    "endpoint": "opencode-ephemeral",
+    "backend": "opencode",
+    "model": "gpt-oss:120b",
+    "category": "FAIL_MODEL",
+    "status": "assessment_complete",
+    "markers": [],
+    "detail": "questions=0 sufficient=None",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent failed to flag the request as insufficient and did not ask clarifying questions."
+  },
+  {
+    "role": "architect",
+    "endpoint": "codex-ephemeral",
+    "backend": "codex",
+    "model": "spark/gpt-oss:120b",
+    "category": "PASS",
+    "status": "plan_committed",
+    "markers": [
+      "plan_file"
+    ],
+    "detail": "plan=y src_files_changed=0\n0",
+    "judge_correct": true,
+    "judge_quality": 4,
+    "judge_reason": "The agent delivered a written design plan and made no source code changes, meeting the architect role requirements."
+  },
+  {
+    "role": "architect",
+    "endpoint": "opencode-ephemeral",
+    "backend": "opencode",
+    "model": "gpt-oss:120b",
+    "category": "PASS",
+    "status": "plan_committed",
+    "markers": [
+      "plan_file"
+    ],
+    "detail": "plan=y src_files_changed=0\n0",
+    "judge_correct": true,
+    "judge_quality": 4,
+    "judge_reason": "The agent delivered a written plan and made no source code changes, fulfilling the architect role."
+  },
+  {
+    "role": "implementer",
+    "endpoint": "codex-ephemeral",
+    "backend": "codex",
+    "model": "spark/gpt-oss:120b",
+    "category": "PASS",
+    "status": "error",
+    "markers": [
+      "tests_pass"
+    ],
+    "detail": "pytest_tail=....                                                                     [100%]\n4 passed in 0.01s",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": ""
+  },
+  {
+    "role": "implementer",
+    "endpoint": "opencode-ephemeral",
+    "backend": "opencode",
+    "model": "gpt-oss:120b",
+    "category": "PASS",
+    "status": "error",
+    "markers": [
+      "tests_pass"
+    ],
+    "detail": "pytest_tail=....                                                                     [100%]\n4 passed in 0.00s",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": ""
+  },
+  {
+    "role": "reviewer",
+    "endpoint": "codex-ephemeral",
+    "backend": "codex",
+    "model": "spark/gpt-oss:120b",
+    "category": "FAIL_MODEL",
+    "status": "changes_requested",
+    "markers": [],
+    "detail": "status=changes_requested",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": ""
+  },
+  {
+    "role": "reviewer",
+    "endpoint": "opencode-ephemeral",
+    "backend": "opencode",
+    "model": "gpt-oss:120b",
+    "category": "PASS",
+    "status": "changes_requested",
+    "markers": [
+      "last item",
+      "range(len",
+      "skips",
+      "len(items) - 1"
+    ],
+    "detail": "status=changes_requested",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": ""
+  },
+  {
+    "role": "security",
+    "endpoint": "codex-ephemeral",
+    "backend": "codex",
+    "model": "spark/gpt-oss:120b",
+    "category": "FAIL_MODEL",
+    "status": "security_passed",
+    "markers": [
+      "PASSED_VULN_PR"
+    ],
+    "detail": "status=security_passed",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent incorrectly marked the PR as passed, missing the SQL injection and eval vulnerabilities."
+  },
+  {
+    "role": "security",
+    "endpoint": "opencode-ephemeral",
+    "backend": "opencode",
+    "model": "gpt-oss:120b",
+    "category": "FAIL_MODEL",
+    "status": "security_passed",
+    "markers": [
+      "PASSED_VULN_PR"
+    ],
+    "detail": "status=security_passed",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "It incorrectly marked the PR as passed and did not flag the SQL injection or eval vulnerabilities."
+  },
+  {
+    "role": "qa",
+    "endpoint": "codex-ephemeral",
+    "backend": "codex",
+    "model": "spark/gpt-oss:120b",
+    "category": "FAIL_MODEL",
+    "status": "qa_passed",
+    "markers": [
+      "4_steps",
+      "found_behavior_bug"
+    ],
+    "detail": "status=qa_passed steps=4 found_bug=True",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent marked QA as passed without executing the function, despite the known KeyError bug."
+  },
+  {
+    "role": "qa",
+    "endpoint": "opencode-ephemeral",
+    "backend": "opencode",
+    "model": "gpt-oss:120b",
+    "category": "FAIL_MODEL",
+    "status": "qa_passed",
+    "markers": [
+      "4_steps",
+      "found_behavior_bug"
+    ],
+    "detail": "status=qa_passed steps=4 found_bug=True",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent marked QA as passed without actually running the code, missing the expected KeyError for missing 'discount'."
+  },
+  {
+    "role": "tech_writer",
+    "endpoint": "codex-ephemeral",
+    "backend": "codex",
+    "model": "spark/gpt-oss:120b",
+    "category": "PASS",
+    "status": "docs_committed",
+    "markers": [
+      "docs_reference_coupon"
+    ],
+    "detail": "status=docs_committed doc_hits=True",
+    "judge_correct": true,
+    "judge_quality": 4,
+    "judge_reason": "Docs for apply_coupon were added as indicated by the docs_committed status."
+  },
+  {
+    "role": "tech_writer",
+    "endpoint": "opencode-ephemeral",
+    "backend": "opencode",
+    "model": "gpt-oss:120b",
+    "category": "PASS",
+    "status": "docs_committed",
+    "markers": [
+      "docs_reference_coupon"
+    ],
+    "detail": "status=docs_committed doc_hits=True",
+    "judge_correct": true,
+    "judge_quality": 4,
+    "judge_reason": "The agent committed documentation for apply_coupon, as indicated by the docs_committed status and doc_hits flag."
+  },
+  {
+    "role": "closer",
+    "endpoint": "codex-ephemeral",
+    "backend": "codex",
+    "model": "spark/gpt-oss:120b",
+    "category": "PASS",
+    "status": "changes_requested",
+    "markers": [
+      "changes_requested"
+    ],
+    "detail": "status=changes_requested",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": ""
+  },
+  {
+    "role": "closer",
+    "endpoint": "opencode-ephemeral",
+    "backend": "opencode",
+    "model": "gpt-oss:120b",
+    "category": "PASS",
+    "status": "approved",
+    "markers": [
+      "approved"
+    ],
+    "detail": "status=approved",
+    "judge_correct": true,
+    "judge_quality": 5,
+    "judge_reason": "The agent returned a clear approved status as required."
+  },
+  {
+    "role": "env_bootstrap",
+    "endpoint": "codex-ephemeral",
+    "backend": "codex",
+    "model": "spark/gpt-oss:120b",
+    "category": "PASS",
+    "status": "env_bootstrap_complete",
+    "markers": [
+      "pytest_importable"
+    ],
+    "detail": "status=env_bootstrap_complete pytest=OK",
+    "judge_correct": true,
+    "judge_quality": 5,
+    "judge_reason": "The deterministic signals indicate pytest is OK, confirming the environment was successfully bootstrapped."
+  },
+  {
+    "role": "env_bootstrap",
+    "endpoint": "opencode-ephemeral",
+    "backend": "opencode",
+    "model": "gpt-oss:120b",
+    "category": "PASS",
+    "status": "env_bootstrap_complete",
+    "markers": [
+      "pytest_importable"
+    ],
+    "detail": "status=env_bootstrap_complete pytest=OK",
+    "judge_correct": true,
+    "judge_quality": 5,
+    "judge_reason": "Bootstrap reported completion and pytest is marked OK, confirming successful installation."
+  }
+]

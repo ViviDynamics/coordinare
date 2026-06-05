@@ -1,0 +1,23 @@
+{
+  "row": {
+    "role": "assessor",
+    "endpoint": "openclaw-ephemeral",
+    "backend": "openclaw",
+    "model": "llama3.1:8b-instruct-q4_0",
+    "category": "FAIL_MODEL",
+    "status": "assessment_complete",
+    "markers": [],
+    "detail": "questions=0 sufficient=None",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent did not flag the request as insufficient nor ask clarifying questions, contrary to the rubric.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  },
+  "state": "succeeded",
+  "error_code": null,
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"assessment_complete\",\"session_id\":\"587bb580-c50d-4b27-82a7-9dd186d73811\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "\nadded 285 packages in 14s\nINFO:     172.66.0.243:61131 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-05 02:54:01 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:23438 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:41644 - \"GET /jobs/d5e72baf9964418c87f673da6f0219be HTTP/1.1\" 200 OK\n2026-06-05 02:54:02 [info     ] clone_repository.new_branch    branch=bench-assessor-56f352ea\n2026-06-05 02:54:02 [info     ] cloned repository              branch=bench-assessor-56f352ea repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-05 02:54:02 [info     ] openclaw.provider_config_written base_url=http://192.168.3.30:11434/v1 path=/root/.openclaw/openclaw.json provider=sparkollama\n2026-06-05 02:54:02 [info     ] openclaw.workspace_linked      workspace=/tmp/performer-5phld7is\n2026-06-05 02:54:02 [info     ] openclaw.persona_to_soul       chars=130\n2026-06-05 02:54:02 [info     ] openclaw.card_docs_written     chars=182 path=/tmp/performer-5phld7is/CARD.md\n2026-06-05 02:54:02 [info     ] openclaw starting              model=sparkollama/llama3.1:8b-instruct-q4_0 provider_routed=True session_key=coordinare-assessing-2d917c53\n2026-06-05 02:54:02 [info     ] openclaw started               model=sparkollama/llama3.1:8b-instruct-q4_0 pid=87\n2026-06-05 02:54:02 [info     ] dispatch accepted              session_id=587bb580-c50d-4b27-82a7-9dd186d73811\nINFO:     172.66.0.243:56726 - \"GET /jobs/d5e72baf9964418c87f673da6f0219be HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:27306 - \"GET /jobs/d5e72baf9964418c87f673da6f0219be HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:43418 - \"GET /jobs/d5e72baf9964418c87f673da6f0219be HTTP/1.1\" 200 OK\n2026-06-05 02:54:17 [info     ] commit_file.committed          branch=bench-assessor-56f352ea path=docs/cards/add-a-customer-loyal/assessment.md\n2026-06-05 02:54:17 [info     ] assessor.assessment_committed  path=docs/cards/add-a-customer-loyal/assessment.md\n2026-06-05 02:54:17 [info     ] openclaw stopped\n2026-06-05 02:54:17 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-5phld7is\nINFO:     172.66.0.243:17227 - \"GET /jobs/d5e72baf9964418c87f673da6f0219be HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

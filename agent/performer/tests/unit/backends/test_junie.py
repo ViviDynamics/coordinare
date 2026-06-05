@@ -1,0 +1,198 @@
+"""Unit tests for the Junie (native CLI) and opencode_compat backends."""
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
+
+import pytest
+
+from performer.backends.junie import (
+    JunieBackend,
+    _build_task_prompt as _junie_build_task_prompt,
+    _maybe_write_custom_profile,
+)
+from performer.backends.opencode_compat import (
+    _build_task_prompt as _compat_build_task_prompt,
+)
+from performer.models import Score, Stand
+
+
+class TestJunieBackend:
+    def test_default_executable(self) -> None:
+        adapter = JunieBackend()
+        assert adapter._executable == "junie"
+
+    def test_env_override_executable(self, monkeypatch) -> None:
+        monkeypatch.setenv("JUNIE_EXECUTABLE", "junie-cli")
+        adapter = JunieBackend()
+        assert adapter._executable == "junie-cli"
+
+    def test_custom_profile_skipped_when_no_base_url(self, monkeypatch, tmp_path) -> None:
+        monkeypatch.delenv("JUNIE_PROVIDER_BASE_URL", raising=False)
+        monkeypatch.setenv("JUNIE_HOME", str(tmp_path))
+        assert _maybe_write_custom_profile() is None
+        assert not (tmp_path / "models").exists()
+
+    @pytest.mark.parametrize(
+        "bad_id",
+        ["../evil", "a/b", "foo.bar", "name with space", "id;rm -rf /", ".."],
+    )
+    def test_custom_profile_rejects_unsafe_id(self, monkeypatch, tmp_path, bad_id) -> None:
+        monkeypatch.setenv("JUNIE_HOME", str(tmp_path))
+        monkeypatch.setenv("JUNIE_PROVIDER_BASE_URL", "https://litellm.example/v1")
+        monkeypatch.setenv("JUNIE_PROVIDER_MODEL_ID", bad_id)
+        with pytest.raises(ValueError, match="unsafe JUNIE_PROVIDER_MODEL_ID"):
+            _maybe_write_custom_profile()
+
+    def test_custom_profile_written_from_env(self, monkeypatch, tmp_path) -> None:
+        monkeypatch.setenv("JUNIE_HOME", str(tmp_path))
+        monkeypatch.setenv("JUNIE_PROVIDER_BASE_URL", "https://litellm.example/v1")
+        monkeypatch.setenv("JUNIE_PROVIDER_MODEL_ID", "vivi")
+        monkeypatch.setenv("JUNIE_PROVIDER_API_TYPE", "OpenAICompletion")
+        monkeypatch.setenv("JUNIE_PROVIDER_MODEL", "gpt-4o-mini")
+        monkeypatch.setenv("JUNIE_PROVIDER_API_KEY_ENV", "LITELLM_MASTER_KEY")
+        monkeypatch.setenv("LITELLM_MASTER_KEY", "sk-abc")
+
+        profile_id = _maybe_write_custom_profile()
+        # The local profile id (filename / --model custom:<id>) comes from MODEL_ID.
+        assert profile_id == "vivi"
+
+        profile_path = Path(tmp_path) / "models" / "vivi.json"
+        assert profile_path.exists()
+        data = json.loads(profile_path.read_text())
+        # The `id` FIELD is the WIRE model name (JUNIE_PROVIDER_MODEL), per Junie's
+        # schema — NOT the local profile id. Junie sends it verbatim as `model`.
+        assert data["id"] == "gpt-4o-mini"
+        assert data["baseUrl"] == "https://litellm.example/v1"
+        assert data["apiType"] == "OpenAICompletion"
+        assert "model" not in data  # not part of Junie's schema; id carries the wire model
+        assert data["apiKey"] == "sk-abc"
+
+    def test_custom_profile_id_field_falls_back_to_profile_id_when_no_wire_model(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """When JUNIE_PROVIDER_MODEL is unset, the id field falls back to the
+        profile id (best-effort) rather than being empty."""
+        monkeypatch.setenv("JUNIE_HOME", str(tmp_path))
+        monkeypatch.setenv("JUNIE_PROVIDER_BASE_URL", "https://litellm.example/v1/chat/completions")
+        monkeypatch.setenv("JUNIE_PROVIDER_MODEL_ID", "vivi")
+        monkeypatch.delenv("JUNIE_PROVIDER_MODEL", raising=False)
+        assert _maybe_write_custom_profile() == "vivi"
+        data = json.loads((Path(tmp_path) / "models" / "vivi.json").read_text())
+        assert data["id"] == "vivi"
+
+    def test_custom_profile_falls_back_to_writable_home_when_source_readonly(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """077 live-fix: a read-only JUNIE_HOME (the ~/.junie ro creds mount) must
+        NOT crash dispatch with EROFS. The profile is written to a writable
+        job-scoped home seeded from the creds, and JUNIE_HOME is re-exported."""
+        ro_home = tmp_path / "ro_junie"
+        models = ro_home / "models"
+        models.mkdir(parents=True)  # pre-existing models dir (as a warm creds mount)
+        (ro_home / "auth.token").write_text("license-token")  # a creds file to carry over
+        models.chmod(0o500)  # existing models dir read-only → write_text raises OSError
+        ro_home.chmod(0o500)  # read + execute, no write
+        monkeypatch.setenv("JUNIE_HOME", str(ro_home))
+        monkeypatch.setenv("JUNIE_PROVIDER_BASE_URL", "https://litellm.example/v1")
+        monkeypatch.setenv("JUNIE_PROVIDER_MODEL_ID", "vivi")
+        try:
+            profile_id = _maybe_write_custom_profile()
+            assert profile_id == "vivi"
+            # JUNIE_HOME was relocated to a writable dir (not the read-only mount).
+            new_home = Path(os.environ["JUNIE_HOME"])
+            assert new_home != ro_home
+            assert (new_home / "models" / "vivi.json").exists()
+            # Creds were seeded into the writable home so junie stays authenticated.
+            assert (new_home / "auth.token").read_text() == "license-token"
+        finally:
+            ro_home.chmod(0o700)  # restore so pytest can clean tmp_path
+            (ro_home / "models").chmod(0o700)
+
+
+class TestJunieLaunchFailureCleanup:
+    @pytest.mark.asyncio
+    async def test_temp_json_unlinked_when_subprocess_exec_raises(self, tmp_path) -> None:
+        backend = JunieBackend()
+        backend._stand = Stand(path=tmp_path, branch="main")
+        backend._score = Score(title="t", repo_url="https://github.com/o/r", branch="main")
+        backend._original_prompt = "prompt"
+
+        with patch(
+            "performer.backends.junie.asyncio.create_subprocess_exec",
+            AsyncMock(side_effect=OSError("boom")),
+        ):
+            with pytest.raises(OSError):
+                await backend._launch("prompt")
+
+        # The json_output tempfile should not leak to /tmp after a failed launch.
+        assert backend._json_output_path is None
+
+
+# ---------------------------------------------------------------------------
+# FR-018 regression guards: prompt-body persona wiring is retained for
+# backends with no job-isolated native persona slot.
+# ---------------------------------------------------------------------------
+
+
+def _persona_score(marker: str) -> Score:
+    return Score(
+        title="T",
+        repo_url="https://github.com/org/repo",
+        branch="main",
+        github_token="tok",
+        persona_instructions=marker,
+    )
+
+
+class TestProsonaPromptBodyRegression:
+    def test_junie_keeps_persona_in_prompt_body(self) -> None:
+        """Junie has no job-isolated persona slot — persona stays in the prompt."""
+        prompt = _junie_build_task_prompt(_persona_score("PERSONA_MARKER_JUNIE"))
+        assert "PERSONA_MARKER_JUNIE" in prompt
+        assert "## Role Instructions" in prompt
+
+    def test_opencode_compat_keeps_persona_in_prompt_body(self) -> None:
+        """opencode_compat has no job-isolated persona slot — persona stays in the prompt."""
+        prompt = _compat_build_task_prompt(_persona_score("PERSONA_MARKER_COMPAT"))
+        assert "PERSONA_MARKER_COMPAT" in prompt
+        assert "## Role Instructions" in prompt
+
+
+# ---------------------------------------------------------------------------
+# ## Card Documentation section threads through both backends
+# ---------------------------------------------------------------------------
+
+
+def _doc_score() -> Score:
+    return Score(
+        title="T",
+        issue_number=70,
+        repo_url="https://github.com/org/repo",
+        branch="main",
+        github_token="tok",
+    )
+
+
+class TestCardDocsSection:
+    def test_junie_emits_card_docs_section(self, tmp_path: Path) -> None:
+        (tmp_path / "docs" / "cards" / "70-t").mkdir(parents=True)
+        prompt = _junie_build_task_prompt(_doc_score(), stand_path=tmp_path)
+        assert "## Card Documentation" in prompt
+        assert "docs/cards/70-t/" in prompt
+
+    def test_junie_omits_section_when_folder_missing(self, tmp_path: Path) -> None:
+        prompt = _junie_build_task_prompt(_doc_score(), stand_path=tmp_path)
+        assert "## Card Documentation" not in prompt
+
+    def test_opencode_compat_emits_card_docs_section(self, tmp_path: Path) -> None:
+        (tmp_path / "docs" / "cards" / "70-t").mkdir(parents=True)
+        prompt = _compat_build_task_prompt(_doc_score(), stand_path=tmp_path)
+        assert "## Card Documentation" in prompt
+        assert "docs/cards/70-t/" in prompt
+
+    def test_opencode_compat_omits_section_when_folder_missing(self, tmp_path: Path) -> None:
+        prompt = _compat_build_task_prompt(_doc_score(), stand_path=tmp_path)
+        assert "## Card Documentation" not in prompt

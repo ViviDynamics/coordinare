@@ -52,6 +52,7 @@ def test_persona_check_map_parses_valid_structure() -> None:
     cfg = PersonaCheckMapConfig.model_validate(
         {
             "implementer": {
+                "any": ["lint*", "unit-tests*"],   # 077 FR-013 depth-agnostic
                 "skim": ["lint*"],
                 "normal": ["lint*", "unit-tests*"],
                 "full": ["lint*", "unit-tests*", "integration*", "e2e*"],
@@ -60,10 +61,21 @@ def test_persona_check_map_parses_valid_structure() -> None:
         }
     )
     assert "implementer" in cfg.root
+    assert cfg.root["implementer"].any == ["lint*", "unit-tests*"]
     assert cfg.root["implementer"].skim == ["lint*"]
     assert cfg.root["reviewer"].normal == ["lint*", "unit-tests*"]
+    assert cfg.root["reviewer"].any == []  # defaults empty when omitted
     assert cfg.root["reviewer"].skim == []
     assert cfg.root["reviewer"].full == []
+
+
+def test_persona_check_map_any_only_parses() -> None:
+    """077 FR-013: an `any`-only map (no depth keys) is valid — the standalone
+    gate-scoping shape used without 074 tiering."""
+    cfg = PersonaCheckMapConfig.model_validate(
+        {"implementer": {"any": ["Validate version", "Unit tests*"]}}
+    )
+    assert cfg.root["implementer"].any == ["Validate version", "Unit tests*"]
 
 
 def test_persona_check_map_rejects_non_dict_root() -> None:

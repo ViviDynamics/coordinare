@@ -1,0 +1,23 @@
+{
+  "row": {
+    "role": "qa",
+    "endpoint": "codex-ephemeral",
+    "backend": "codex",
+    "model": "spark/qwen3:8b",
+    "category": "FAIL_MODEL",
+    "status": "qa_failed",
+    "markers": [],
+    "detail": "status=qa_failed steps=0 found_bug=False",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "qa_failed",
+    "state": "failed",
+    "log_file": null
+  },
+  "state": "failed",
+  "error_code": "qa_failed",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"qa_failed\",\"session_id\":\"5f17e4ef-cb34-4c7a-8892-07b74219418e\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[{\"criterion\":\"Visual evidence artifact path exists\",\"expected\":\"Each local visual artifact path points to an existing file.\",\"actual\":\"Artifact path does not exist: github.com/user-attachments/assets/checkout_total_1.png\",\"test\":\"visual-capture\"},{\"criterion\":\"Visual evidence artifact path exists\",\"expected\":\"Each local visual artifact path points to an existing file.\",\"actual\":\"Artifact path does not exist: github.com/user-attachments/assets/checkout_total_2.png\",\"test\":\"visual-capture\"}],\"report\":{\"qa_freshness_check\":{\"latest_main_sha\":null,\"branch_head_sha\":null,\"up_to_date\":null,\"detail\":\"freshness_check_indeterminate\"}},\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "\nadded 2 packages in 3s\nINFO:     172.66.0.243:49956 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-04 15:48:42 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\n2026-06-04 15:48:42 [info     ] secret_resolved                name=OPENAI_API_KEY source=init_payload\nINFO:     172.66.0.243:57005 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:22004 - \"GET /jobs/96fd2ae641884337951ff88c9bfe8f4e HTTP/1.1\" 200 OK\n2026-06-04 15:48:43 [info     ] clone_repository.existing_branch branch=feat/qa-behavior\n2026-06-04 15:48:43 [info     ] cloned repository              branch=feat/qa-behavior repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-04 15:48:43 [debug    ] codex app-server ready         port=58557\n2026-06-04 15:48:43 [info     ] codex thread started           port=58557 thread_id=019e9352-96b7-75b0-8394-bb9accc67407\n2026-06-04 15:48:43 [info     ] codex turn started             turn_id=019e9352-96d9-70d2-b23c-3e6128c959b5\n2026-06-04 15:48:44 [info     ] dispatch accepted              session_id=5f17e4ef-cb34-4c7a-8892-07b74219418e\nINFO:     172.66.0.243:61341 - \"GET /jobs/96fd2ae641884337951ff88c9bfe8f4e HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:28783 - \"GET /jobs/96fd2ae641884337951ff88c9bfe8f4e HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:24054 - \"GET /jobs/96fd2ae641884337951ff88c9bfe8f4e HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:20246 - \"GET /jobs/96fd2ae641884337951ff88c9bfe8f4e HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:31485 - \"GET /jobs/96fd2ae641884337951ff88c9bfe8f4e HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:39838 - \"GET /jobs/96fd2ae641884337951ff88c9bfe8f4e HTTP/1.1\" 200 OK\n2026-06-04 15:49:17 [info     ] commit_file.committed          branch=feat/qa-behavior path=docs/cards/qa-checkout-total/qa.md\n2026-06-04 15:49:17 [warning  ] cdn_upload.file_not_found      path=/tmp/performer-bd09dmgs/github.com/user-attachments/assets/checkout_total_1.png\n2026-06-04 15:49:17 [warning  ] cdn_upload.file_not_found      path=/tmp/performer-bd09dmgs/github.com/user-attachments/assets/checkout_total_2.png\nINFO:     172.66.0.243:55655 - \"GET /jobs/96fd2ae641884337951ff88c9bfe8f4e HTTP/1.1\" 200 OK\n2026-06-04 15:49:18 [info     ] pr comment posted              owner=ViviDynamics pr_number=3 repo=conductor-bench\n2026-06-04 15:49:18 [info     ] codex app-server stopped\n2026-06-04 15:49:18 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-bd09dmgs\nINFO:     172.66.0.243:37668 - \"GET /jobs/96fd2ae641884337951ff88c9bfe8f4e HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

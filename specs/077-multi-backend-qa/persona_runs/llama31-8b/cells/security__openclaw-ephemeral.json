@@ -1,0 +1,23 @@
+{
+  "row": {
+    "role": "security",
+    "endpoint": "openclaw-ephemeral",
+    "backend": "openclaw",
+    "model": "llama3.1:8b-instruct-q4_0",
+    "category": "FAIL_HARNESS",
+    "status": "error",
+    "markers": [],
+    "detail": "status=error | harness:BACKEND_FORMAT_ERROR",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "error",
+    "state": "failed",
+    "log_file": null
+  },
+  "state": "failed",
+  "error_code": "error",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"error\",\"session_id\":\"45352608-fcd2-4d0a-b637-09d4da0639bb\",\"reason\":\"BACKEND_FORMAT_ERROR: Backend security output could not be parsed as a JSON object after 2 attempts. Last output: \\\"The task description includes instructions to read `plan.md`, but since it's not available, the `edit` tool is suggested to create this missing file.\\\\n\\\\n\\\\n\\\\nTo complete this task, you can add a new task or line to this file that details what should be looked up and evaluated concerning user data.\\\\n\\\\n\\\\nYou \\\"\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "\nadded 285 packages in 13s\nINFO:     172.66.0.243:29496 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-05 03:10:26 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:42629 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:37880 - \"GET /jobs/ed354a20c17d4edcb1b99ab5d370869b HTTP/1.1\" 200 OK\n2026-06-05 03:10:27 [info     ] clone_repository.existing_branch branch=feat/security-sqli\n2026-06-05 03:10:27 [info     ] cloned repository              branch=feat/security-sqli repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-05 03:10:27 [info     ] openclaw.provider_config_written base_url=http://192.168.3.30:11434/v1 path=/root/.openclaw/openclaw.json provider=sparkollama\n2026-06-05 03:10:27 [info     ] openclaw.workspace_linked      workspace=/tmp/performer-a5hi26i5\n2026-06-05 03:10:27 [info     ] openclaw.persona_to_soul       chars=83\n2026-06-05 03:10:27 [info     ] openclaw.card_docs_written     chars=181 path=/tmp/performer-a5hi26i5/CARD.md\n2026-06-05 03:10:27 [info     ] openclaw starting              model=sparkollama/llama3.1:8b-instruct-q4_0 provider_routed=True session_key=coordinare-security-7ed0786a\n2026-06-05 03:10:27 [info     ] openclaw started               model=sparkollama/llama3.1:8b-instruct-q4_0 pid=96\n2026-06-05 03:10:27 [info     ] dispatch accepted              session_id=45352608-fcd2-4d0a-b637-09d4da0639bb\nINFO:     172.66.0.243:30333 - \"GET /jobs/ed354a20c17d4edcb1b99ab5d370869b HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:45504 - \"GET /jobs/ed354a20c17d4edcb1b99ab5d370869b HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:18376 - \"GET /jobs/ed354a20c17d4edcb1b99ab5d370869b HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:27355 - \"GET /jobs/ed354a20c17d4edcb1b99ab5d370869b HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:34005 - \"GET /jobs/ed354a20c17d4edcb1b99ab5d370869b HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:37431 - \"GET /jobs/ed354a20c17d4edcb1b99ab5d370869b HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:38101 - \"GET /jobs/ed354a20c17d4edcb1b99ab5d370869b HTTP/1.1\" 200 OK\n2026-06-05 03:11:02 [warning  ] backend.invalid_output.retrying attempt=1 failure_reason='could not be parsed as a JSON object' max_retries=1 output_preview=\"The task description includes instructions to read `plan.md`, but since it's not available, the `edit` tool is suggested to create this missing file.\\n\\n\\n\\nTo complete this task, you can add a new task o\" stage=security\n2026-06-05 03:11:04 [info     ] openclaw stopped\n2026-06-05 03:11:04 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-a5hi26i5\nINFO:     172.66.0.243:19646 - \"GET /jobs/ed354a20c17d4edcb1b99ab5d370869b HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

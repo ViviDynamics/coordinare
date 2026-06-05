@@ -1,0 +1,104 @@
+# =============================================================================
+# Coordinare Configuration Example — OpenClaw Backend
+# =============================================================================
+#
+# Minimal, copy-pasteable config for running performers on OpenClaw
+# (https://openclaw.ai), a self-hosted assistant from the same family as
+# Hermes/Pi. See config.example.yaml for the full reference (auth modes,
+# transport options, notifications). This file focuses on the OpenClaw-specific
+# wiring.
+#
+# How OpenClaw runs under coordinare:
+#   - The performer invokes `openclaw agent --local --json` once per card
+#     (`--local` runs the embedded agent directly — no Gateway). One-shot, like
+#     hermes/pi; relay feedback is replayed into the next invocation's prompt.
+#   - Model routing (OpenAI-compatible via a self-hosted proxy, NO vendor
+#     login): set the OPENCLAW_PROVIDER_* env vars below and OpenClawBackend
+#     writes `~/.openclaw/openclaw.json` at job start — a custom
+#     `openai-completions` provider pointed at OPENCLAW_PROVIDER_BASE_URL, with
+#     the model allowlisted under `agents.defaults.models` (OpenClaw REJECTS
+#     non-allowlisted models). The API key is interpolated from
+#     OPENCLAW_PROVIDER_ENV_KEY via `${ENV}` syntax — never written to disk.
+#     `mode: "merge"` preserves OpenClaw's bundled provider defaults.
+#   - No manual `compat` block is needed: OpenClaw auto-forces
+#     `compat.supportsDeveloperRole: false` for non-native openai-completions
+#     endpoints, so OpenAI-compatible models that reject the `developer` role
+#     (e.g. qwen) work directly.
+#   - The model is routed as `<OPENCLAW_PROVIDER_NAME>/<model>` (e.g.
+#     `litellm/spark/qwen3.6:35b`).
+#   - The `openclaw` CLI installs on container start via the entrypoint
+#     `openclaw)` arm (`npm install -g openclaw`) — not baked into the image.
+#   - Terminal contract: `openclaw agent --json` emits `{payloads, meta}`; the
+#     adapter treats `meta.stopReason == "stop"` as done and surfaces
+#     `payloads[0].text`.
+#
+# Spec reference: specs/077-multi-backend-qa/ (US6, research R-07)
+# =============================================================================
+
+
+# --- GitHub ---
+
+github_org: "your-org"
+github_token: "${COORDINARE_GITHUB_TOKEN}"
+github_auth: "pat"   # or "app" — see config.example.yaml for App auth fields
+
+human_reviewers:
+  - "your-github-handle"
+
+
+# --- Symphonies ---
+
+symphonies:
+  - name: my-project
+    github_project_number: 1
+
+
+# --- Containerized Performer (OpenClaw) ---
+#
+# No host credential mount is required — the provider config is written from
+# the OPENCLAW_PROVIDER_* env at job start. The API key lives only in the
+# env var named by OPENCLAW_PROVIDER_ENV_KEY.
+
+performer_endpoints:
+  - id: openclaw-ephemeral
+    mode: ephemeral
+    roles:
+      - reviewer            # or any role(s)
+    image: coordinare-performer:full
+    env:
+      BACKEND: openclaw
+      OPENCLAW_PROVIDER_BASE_URL: https://your-proxy.example.com/v1
+      OPENCLAW_PROVIDER_NAME: litellm          # becomes the modelID prefix
+      OPENCLAW_PROVIDER_ENV_KEY: LITELLM_MASTER_KEY  # in-container key var
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
+
+
+# --- Performers ---
+#
+# Pick `backend: openclaw` per role (or at `default:`). The per-role `model:`
+# is allowlisted + routed as `<OPENCLAW_PROVIDER_NAME>/<model>`.
+
+performers:
+  default:
+    backend: openclaw
+    model: spark/qwen3.6:35b
+
+  reviewer:
+    backend: openclaw
+    model: spark/qwen3.6:35b
+    max_tokens: 24576
+
+
+# 076 — Dispatcher dedup + reconciliation tunables (defaults from spec 076 Q1-Q5).
+dispatcher_dedup:
+  enabled: true
+  reconciliation_budget_seconds: 30
+  drain_budget_seconds: 5
+  reap_budget_seconds: 5
+  idle_timeout_retries: 2
+  idle_timeout_window_hours: 24
+  empty_output_retries: 1
+  empty_output_window_hours: 24
+  wedge_block_threshold: 3
+  wedge_block_window_hours: 24
+  multi_pr_check_triggers: [dispatch, restart, webhook]

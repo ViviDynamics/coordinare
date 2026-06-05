@@ -1,0 +1,23 @@
+{
+  "row": {
+    "role": "qa",
+    "endpoint": "pi-ephemeral",
+    "backend": "pi",
+    "model": "spark/gemma3:27b",
+    "category": "FAIL_HARNESS",
+    "status": "error",
+    "markers": [],
+    "detail": "status=error steps=0 found_bug=False | harness:BACKEND_FORMAT_ERROR",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "error",
+    "state": "failed",
+    "log_file": null
+  },
+  "state": "failed",
+  "error_code": "error",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"error\",\"session_id\":\"9e22e1e2-7974-4bb0-bc72-61e2d9419fe1\",\"reason\":\"BACKEND_FORMAT_ERROR: Backend QA output was empty after 2 attempts. Last output: ''\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "npm warn deprecated node-domexception@1.0.0: Use your platform's native DOMException instead\nnpm warn deprecated @mariozechner/pi-agent-core@0.73.1: please use @earendil-works/pi-agent-core instead going forward\nnpm warn deprecated @mariozechner/pi-tui@0.73.1: please use @earendil-works/pi-tui instead going forward\nnpm warn deprecated @mariozechner/pi-ai@0.73.1: please use @earendil-works/pi-ai instead going forward\nnpm warn deprecated @mariozechner/pi-coding-agent@0.73.1: please use @earendil-works/pi-coding-agent instead going forward\n\nadded 203 packages in 8s\nINFO:     172.66.0.243:54681 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-04 10:37:45 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:28071 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:61350 - \"GET /jobs/cb42ea4b21a8439aac0d114b12a56f3e HTTP/1.1\" 200 OK\n2026-06-04 10:37:46 [info     ] clone_repository.existing_branch branch=feat/qa-behavior\n2026-06-04 10:37:46 [info     ] cloned repository              branch=feat/qa-behavior repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-04 10:37:46 [info     ] pi started                     model=spark/gemma3:27b provider=litellm\n2026-06-04 10:37:46 [info     ] dispatch accepted              session_id=9e22e1e2-7974-4bb0-bc72-61e2d9419fe1\n2026-06-04 10:37:48 [warning  ] backend.invalid_output.retrying attempt=1 failure_reason='was empty' max_retries=1 output_preview= stage=QA\nINFO:     172.66.0.243:34615 - \"GET /jobs/cb42ea4b21a8439aac0d114b12a56f3e HTTP/1.1\" 200 OK\n2026-06-04 10:37:50 [info     ] pi stopped\n2026-06-04 10:37:50 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-zl45b9jk\nINFO:     172.66.0.243:38665 - \"GET /jobs/cb42ea4b21a8439aac0d114b12a56f3e HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

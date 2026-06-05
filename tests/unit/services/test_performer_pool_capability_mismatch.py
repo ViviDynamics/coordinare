@@ -76,10 +76,10 @@ async def test_capability_mismatch_backend_missing() -> None:
     )
     state.availability = "idle"
 
-    # Try to select for a role requiring cursor backend
+    # Try to select for a role requiring the codex backend
     selected = pool.select_for(
         role="dev",
-        backend="cursor",  # Requires cursor, but performer only has opencode
+        backend="codex",  # Requires codex, but performer only has opencode
         required_flags=set(),
     )
 

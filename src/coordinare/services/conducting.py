@@ -319,6 +319,11 @@ class OpenAiApiBackend:
             log.warning("openai_api_unexpected_response", keys=list(data.keys()) if isinstance(data, dict) else None)
             return ""
 
+    async def chat_json(self, messages: list[dict[str, str]]) -> str:
+        """Public JSON-mode chat for ad-hoc coordinare prompts (e.g. 077 env
+        manifest README pass). Returns the assistant text ('' on any failure)."""
+        return await self._chat(messages, json_mode=True)
+
     async def assess(self, card: dict[str, Any]) -> dict[str, Any]:
         prompt = _build_assess_prompt(card)
         text = await self._chat(

@@ -1,0 +1,23 @@
+{
+  "row": {
+    "role": "implementer",
+    "endpoint": "pi-ephemeral",
+    "backend": "pi",
+    "model": "spark/qwen2.5-coder:latest",
+    "category": "ERROR",
+    "status": "error",
+    "markers": [],
+    "detail": "pytest_tail==========================\nFAILED tests/test_cart.py::test_shipping_cost - assert 10.0 == 5.0\n1 failed, 3 passed in 0.02s",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "error",
+    "state": "failed",
+    "log_file": null
+  },
+  "state": "failed",
+  "error_code": "error",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"error\",\"session_id\":\"2c16131c-e754-48fc-9468-566695aa83a1\",\"reason\":\"check-run poll failed: GitHub API error 403: {\\\"message\\\":\\\"Resource not accessible by personal access token\\\",\\\"documentation_url\\\":\\\"https://docs.github.com/rest/checks/runs#list-check-runs-for-a-git-reference\\\",\\\"status\\\":\\\"403\\\"}\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "npm warn deprecated node-domexception@1.0.0: Use your platform's native DOMException instead\nnpm warn deprecated @mariozechner/pi-agent-core@0.73.1: please use @earendil-works/pi-agent-core instead going forward\nnpm warn deprecated @mariozechner/pi-tui@0.73.1: please use @earendil-works/pi-tui instead going forward\nnpm warn deprecated @mariozechner/pi-ai@0.73.1: please use @earendil-works/pi-ai instead going forward\nnpm warn deprecated @mariozechner/pi-coding-agent@0.73.1: please use @earendil-works/pi-coding-agent instead going forward\n\nadded 203 packages in 17s\nINFO:     172.66.0.243:46301 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-04 17:19:40 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:58412 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:63302 - \"GET /jobs/28b235d9c7a240a6b6e700766d7fd7dd HTTP/1.1\" 200 OK\n2026-06-04 17:19:42 [info     ] clone_repository.existing_branch branch=feat/impl-failing-test\n2026-06-04 17:19:42 [info     ] cloned repository              branch=feat/impl-failing-test repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-04 17:19:42 [info     ] pi started                     model=spark/qwen2.5-coder:latest provider=litellm\n2026-06-04 17:19:42 [info     ] dispatch accepted              session_id=2c16131c-e754-48fc-9468-566695aa83a1\nINFO:     172.66.0.243:30784 - \"GET /jobs/28b235d9c7a240a6b6e700766d7fd7dd HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:42685 - \"GET /jobs/28b235d9c7a240a6b6e700766d7fd7dd HTTP/1.1\" 200 OK\n2026-06-04 17:19:54 [info     ] ci_check.coordinare_not_available label=implementing\n2026-06-04 17:19:54 [info     ] pushed branch                  branch=feat/impl-failing-test remote_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-04 17:19:55 [info     ] pull request already exists, updating and fetching branch=feat/impl-failing-test\nINFO:     172.66.0.243:25659 - \"GET /jobs/28b235d9c7a240a6b6e700766d7fd7dd HTTP/1.1\" 200 OK\n2026-06-04 17:19:58 [info     ] pi stopped\n2026-06-04 17:19:58 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-9ljslqx7\nINFO:     172.66.0.243:59603 - \"GET /jobs/28b235d9c7a240a6b6e700766d7fd7dd HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

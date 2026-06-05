@@ -56,7 +56,7 @@
     },
     "backend": {
       "type": ["string", "null"],
-      "description": "Performer backend name (e.g. opencode, junie, cursor, claude_code, codex). Typically set on dispatch acceptance responses.",
+      "description": "Performer backend name (e.g. opencode, junie, claude_code, codex). Typically set on dispatch acceptance responses.",
       "default": null
     },
     "model": {

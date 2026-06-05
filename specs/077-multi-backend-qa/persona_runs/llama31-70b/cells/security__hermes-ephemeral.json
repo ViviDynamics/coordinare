@@ -1,0 +1,25 @@
+{
+  "row": {
+    "role": "security",
+    "endpoint": "hermes-ephemeral",
+    "backend": "hermes",
+    "model": "spark/llama3.1:70b-instruct-q4_K_M",
+    "category": "FAIL_MODEL",
+    "status": "security_passed",
+    "markers": [
+      "PASSED_VULN_PR"
+    ],
+    "detail": "status=security_passed",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent incorrectly marked the PR as passed, missing the SQL injection and eval vulnerabilities.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  },
+  "state": "succeeded",
+  "error_code": null,
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"security_passed\",\"session_id\":\"d6f010a6-7e46-423c-985d-a31ce0b0b0b9\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.\n\n[notice] A new release of pip is available: 25.0.1 -> 26.1.2\n[notice] To update, run: pip install --upgrade pip\nINFO:     172.66.0.243:52537 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-05 00:25:32 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:52215 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:37167 - \"GET /jobs/447fa5be67b84c8ea6c28608a9b4e5e8 HTTP/1.1\" 200 OK\n2026-06-05 00:25:33 [info     ] clone_repository.existing_branch branch=feat/security-sqli\n2026-06-05 00:25:33 [info     ] cloned repository              branch=feat/security-sqli repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-05 00:25:33 [info     ] hermes.card_docs_written       chars=181 path=/tmp/performer-7vq5f84z/CARD.md\n2026-06-05 00:25:33 [info     ] hermes starting                base_url=https://litellm.vividynamics.com/v1 hermes_home=/tmp/hermes-job-40e3kldb model=spark/llama3.1:70b-instruct-q4_K_M provider=litellm\n2026-06-05 00:25:33 [info     ] hermes started                 model=spark/llama3.1:70b-instruct-q4_K_M pid=46\n2026-06-05 00:25:33 [info     ] dispatch accepted              session_id=d6f010a6-7e46-423c-985d-a31ce0b0b0b9\nINFO:     172.66.0.243:54001 - \"GET /jobs/447fa5be67b84c8ea6c28608a9b4e5e8 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:29644 - \"GET /jobs/447fa5be67b84c8ea6c28608a9b4e5e8 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:61632 - \"GET /jobs/447fa5be67b84c8ea6c28608a9b4e5e8 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:50378 - \"GET /jobs/447fa5be67b84c8ea6c28608a9b4e5e8 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:27092 - \"GET /jobs/447fa5be67b84c8ea6c28608a9b4e5e8 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:54477 - \"GET /jobs/447fa5be67b84c8ea6c28608a9b4e5e8 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:56218 - \"GET /jobs/447fa5be67b84c8ea6c28608a9b4e5e8 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:21543 - \"GET /jobs/447fa5be67b84c8ea6c28608a9b4e5e8 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:58400 - \"GET /jobs/447fa5be67b84c8ea6c28608a9b4e5e8 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:50372 - \"GET /jobs/447fa5be67b84c8ea6c28608a9b4e5e8 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:54356 - \"GET /jobs/447fa5be67b84c8ea6c28608a9b4e5e8 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:48323 - \"GET /jobs/447fa5be67b84c8ea6c28608a9b4e5e8 HTTP/1.1\" 200 OK\n2026-06-05 00:26:33 [info     ] hermes finalized               removed=/tmp/hermes-job-40e3kldb\n2026-06-05 00:26:33 [info     ] commit_file.no_changes         path=docs/cards/security-review-user/security.md\n2026-06-05 00:26:33 [info     ] hermes stopped\n2026-06-05 00:26:33 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-7vq5f84z\nINFO:     172.66.0.243:28767 - \"GET /jobs/447fa5be67b84c8ea6c28608a9b4e5e8 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

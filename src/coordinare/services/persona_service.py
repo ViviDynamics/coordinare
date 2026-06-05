@@ -313,7 +313,15 @@ DEFAULT_INSTRUCTIONS: dict[str, str] = {
         '"comments": ["path/to/file:42 — description of issue", ...]}\n'
         "```\n"
         "Do NOT include a `suggestions` field — feedback is either "
-        "blocking (in `comments`) or not worth mentioning."
+        "blocking (in `comments`) or not worth mentioning.\n\n"
+        "## Justify every rejection (REQUIRED)\n"
+        "If `approved` is false you MUST give the implementer something to act "
+        "on: provide at least one specific `comments` entry (anchored to "
+        "`path:line`) OR a concrete `body` naming the exact problem. A bare "
+        "`{\"approved\": false}` with empty `body` and empty `comments` is "
+        "INVALID — it strands the card with nothing to fix. If you cannot name "
+        "a concrete, blocking issue, then there is no issue: set "
+        "`approved: true`."
     ),
     "security": (
         "## Role\n"

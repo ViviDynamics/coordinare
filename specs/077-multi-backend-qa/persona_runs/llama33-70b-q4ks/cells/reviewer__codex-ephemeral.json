@@ -1,0 +1,23 @@
+{
+  "row": {
+    "role": "reviewer",
+    "endpoint": "codex-ephemeral",
+    "backend": "codex",
+    "model": "spark/llama3.3-70b-q4ks:latest",
+    "category": "ERROR",
+    "status": "error",
+    "markers": [],
+    "detail": "status=error",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "error",
+    "state": "failed",
+    "log_file": null
+  },
+  "state": "failed",
+  "error_code": "error",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"error\",\"session_id\":\"94ab20ce-4583-4e2e-99dc-96c9c8437d54\",\"reason\":\"{\\\"error\\\":{\\\"message\\\":\\\"litellm.BadRequestError: OpenAIException - {\\\\\\\"error\\\\\\\":{\\\\\\\"message\\\\\\\":\\\\\\\"registry.ollama.ai/library/llama3.3-70b-q4ks:latest does not support tools\\\\\\\",\\\\\\\"type\\\\\\\":\\\\\\\"invalid_request_error\\\\\\\",\\\\\\\"param\\\\\\\":null,\\\\\\\"code\\\\\\\":null}}\\\\n. Received Model Group=spark/llama3.3-70b-q4ks:latest\\\\nAvailable Model Group Fallbacks=None\\\",\\\"type\\\":null,\\\"param\\\":null,\\\"code\\\":\\\"400\\\"}}\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "\nadded 2 packages in 3s\nINFO:     172.66.0.243:31648 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-05 02:13:56 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\n2026-06-05 02:13:56 [info     ] secret_resolved                name=OPENAI_API_KEY source=init_payload\nINFO:     172.66.0.243:25072 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:51278 - \"GET /jobs/2790ee32c34d4f698c667f7cc549c695 HTTP/1.1\" 200 OK\n2026-06-05 02:13:57 [info     ] clone_repository.existing_branch branch=fix/reviewer-offbyone\n2026-06-05 02:13:57 [info     ] cloned repository              branch=fix/reviewer-offbyone repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-05 02:13:57 [debug    ] codex app-server ready         port=33837\n2026-06-05 02:13:57 [info     ] codex thread started           port=33837 thread_id=019e958f-0087-7712-9404-f58ecab7946b\n2026-06-05 02:13:57 [info     ] codex turn started             turn_id=019e958f-00ae-7241-8ac0-acad7285f971\n2026-06-05 02:13:57 [info     ] dispatch accepted              session_id=94ab20ce-4583-4e2e-99dc-96c9c8437d54\n2026-06-05 02:13:59 [info     ] codex app-server stopped\n2026-06-05 02:13:59 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-a7bx57xo\nINFO:     172.66.0.243:38961 - \"GET /jobs/2790ee32c34d4f698c667f7cc549c695 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

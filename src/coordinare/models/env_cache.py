@@ -19,8 +19,18 @@ class EnvCacheState(BaseModel):
     readme_sha: str | None = None
     bootstrap_in_flight: bool = False
     pending_sha: str | None = None
+    # 077: the most recent combined spec-file SHA observed by check_and_trigger
+    # (refreshed every cycle, even when no bootstrap is needed). Consumer dispatch
+    # gates on ``readme_sha == last_seen_spec_sha`` so a card never runs against a
+    # cache that predates the current spec (e.g. a README that just added Chrome).
+    # Live/derived — re-populated within one poll cycle, so not persisted.
+    last_seen_spec_sha: str | None = None
     last_bootstrap_at: datetime | None = None
     last_bootstrap_succeeded: bool | None = None
+    # 077: human-readable reason the last bootstrap FAILED (verify output, dispatch
+    # error, reap reason, …). Set on failure, cleared on success. Surfaced on the
+    # dashboard so an operator can see WHY a symphony's env bootstrap is failing.
+    last_bootstrap_error: str | None = None
     cache_dir_ready: bool = False
 
     # 063 Phase 4 (T024): set by EnvCacheService.mark_runtime_health_failed when
@@ -71,5 +81,30 @@ class BootstrapJobPayload(BaseModel):
             "'/devenv/my-project-a1b2c3'. Coordinare sets this from "
             "'{container_devenv_root}/{sanitised_symphony_name}'. The default is "
             "illustrative; the actual value is always computed by coordinare from config."
+        ),
+    )
+    last_failure: str | None = Field(
+        default=None,
+        description=(
+            "077: the previous bootstrap's verification failure (verify.sh output / "
+            "error reason), injected into the persona on a RETRY so the agent can "
+            "fix the specific issue (e.g. a pinned Ruby version that wasn't installed) "
+            "instead of repeating the same miss."
+        ),
+    )
+    dependency_checklist: str | None = Field(
+        default=None,
+        description=(
+            "077: coordinare-derived authoritative install checklist (from the manifest). "
+            "Injected into the persona so the agent installs EXACTLY these dependencies "
+            "with their pinned versions, instead of free-forming from the README."
+        ),
+    )
+    verify_provided: bool = Field(
+        default=False,
+        description=(
+            "077: True when coordinare has written an authoritative verify.sh into the "
+            "cache from the manifest. The agent must RUN it and make it pass, and must "
+            "NOT create/overwrite it (coordinare owns the verification contract)."
         ),
     )

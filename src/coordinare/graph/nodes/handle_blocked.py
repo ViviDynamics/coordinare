@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from coordinare.graph.attribution import coordinare_attribution
 from coordinare.graph.nodes.github_retry import (
     clear_deferred_github_operation,
     defer_github_operation,
@@ -172,8 +173,10 @@ async def handle_blocked(state: CoordinareState) -> CoordinareState:
     if should_repost_reminder:
         if issue_id:
             try:
+                header = coordinare_attribution(state.get("config"), stage)
                 await github.add_comment(
-                    issue_id, f"**{role_label}** — Needs input:\n{question_lines}",
+                    issue_id,
+                    f"{header}\n\n**{role_label}** — Needs input:\n{question_lines}",
                 )
                 clear_deferred_github_operation(state, "handle_blocked_comment")
             except Exception as exc:

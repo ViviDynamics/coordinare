@@ -1,0 +1,23 @@
+{
+  "row": {
+    "role": "qa",
+    "endpoint": "openclaw-ephemeral",
+    "backend": "openclaw",
+    "model": "mistral:instruct",
+    "category": "FAIL_HARNESS",
+    "status": "error",
+    "markers": [],
+    "detail": "status=error steps=0 found_bug=False | harness:BACKEND_FORMAT_ERROR",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "error",
+    "state": "failed",
+    "log_file": null
+  },
+  "state": "failed",
+  "error_code": "error",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"error\",\"session_id\":\"2d42f6d9-c408-49f3-b7c2-015302317265\",\"reason\":\"BACKEND_FORMAT_ERROR: Backend QA output could not be parsed as a JSON object after 2 attempts. Last output: 'As an assistant, here is a summary of the tools available for me to use:\\\\n\\\\n1. read: Read file contents, used for reading files such as documents, configuration files, or memory logs.\\\\n2. write: Create or overwrite files, used for creating new files or writing content into existing ones. This operation'\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "\nadded 285 packages in 13s\nINFO:     172.66.0.243:32318 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-05 04:06:10 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:19398 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:55996 - \"GET /jobs/2ec452cb9a79464fbe4da6ce2f97ec4e HTTP/1.1\" 200 OK\n2026-06-05 04:06:11 [info     ] clone_repository.existing_branch branch=feat/qa-behavior\n2026-06-05 04:06:11 [info     ] cloned repository              branch=feat/qa-behavior repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-05 04:06:11 [info     ] openclaw.provider_config_written base_url=http://192.168.3.30:11434/v1 path=/root/.openclaw/openclaw.json provider=sparkollama\n2026-06-05 04:06:11 [info     ] openclaw.workspace_linked      workspace=/tmp/performer-i3aoqlz8\n2026-06-05 04:06:11 [info     ] openclaw.persona_to_soul       chars=123\n2026-06-05 04:06:11 [info     ] openclaw.card_docs_written     chars=161 path=/tmp/performer-i3aoqlz8/CARD.md\n2026-06-05 04:06:11 [info     ] openclaw starting              model=sparkollama/mistral:instruct provider_routed=True session_key=coordinare-qa-d25a3af0\n2026-06-05 04:06:11 [info     ] openclaw started               model=sparkollama/mistral:instruct pid=96\n2026-06-05 04:06:11 [info     ] dispatch accepted              session_id=2d42f6d9-c408-49f3-b7c2-015302317265\nINFO:     172.66.0.243:27015 - \"GET /jobs/2ec452cb9a79464fbe4da6ce2f97ec4e HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:25069 - \"GET /jobs/2ec452cb9a79464fbe4da6ce2f97ec4e HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:52508 - \"GET /jobs/2ec452cb9a79464fbe4da6ce2f97ec4e HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:35670 - \"GET /jobs/2ec452cb9a79464fbe4da6ce2f97ec4e HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:51611 - \"GET /jobs/2ec452cb9a79464fbe4da6ce2f97ec4e HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:39969 - \"GET /jobs/2ec452cb9a79464fbe4da6ce2f97ec4e HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:41460 - \"GET /jobs/2ec452cb9a79464fbe4da6ce2f97ec4e HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:42991 - \"GET /jobs/2ec452cb9a79464fbe4da6ce2f97ec4e HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:35767 - \"GET /jobs/2ec452cb9a79464fbe4da6ce2f97ec4e HTTP/1.1\" 200 OK\n2026-06-05 04:06:59 [warning  ] backend.invalid_output.retrying attempt=1 failure_reason='could not be parsed as a JSON object' max_retries=1 output_preview='As an assistant, here is a summary of the tools available for me to use:\\n\\n1. read: Read file contents, used for reading files such as documents, configuration files, or memory logs.\\n2. write: Create o' stage=QA\nINFO:     172.66.0.243:63289 - \"GET /jobs/2ec452cb9a79464fbe4da6ce2f97ec4e HTTP/1.1\" 200 OK\n2026-06-05 04:07:01 [info     ] openclaw stopped\n2026-06-05 04:07:01 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-i3aoqlz8\nINFO:     172.66.0.243:38265 - \"GET /jobs/2ec452cb9a79464fbe4da6ce2f97ec4e HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

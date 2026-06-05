@@ -1,0 +1,25 @@
+{
+  "row": {
+    "role": "implementer",
+    "endpoint": "hermes-ephemeral",
+    "backend": "hermes",
+    "model": "spark/deepcoder:14b",
+    "category": "FAIL_HARNESS",
+    "status": "error",
+    "markers": [
+      "tests_pass"
+    ],
+    "detail": "pytest_tail=....                                                                     [100%]\n4 passed in 0.01s | harness:subprocess_exit",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "error",
+    "state": "failed",
+    "log_file": null
+  },
+  "state": "failed",
+  "error_code": "error",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"error\",\"session_id\":\"fab25222-2fa6-4d60-9f9a-28001219e7e5\",\"reason\":\"subprocess_exit:1\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.\n\n[notice] A new release of pip is available: 25.0.1 -> 26.1.2\n[notice] To update, run: pip install --upgrade pip\nINFO:     172.66.0.243:27999 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-04 12:48:58 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:22412 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:56667 - \"GET /jobs/9b44c17e73974b5ca0393e880b58c06f HTTP/1.1\" 200 OK\n2026-06-04 12:49:00 [info     ] clone_repository.existing_branch branch=feat/impl-failing-test\n2026-06-04 12:49:00 [info     ] cloned repository              branch=feat/impl-failing-test repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-04 12:49:00 [info     ] hermes.card_docs_written       chars=240 path=/tmp/performer-yhmj4090/CARD.md\n2026-06-04 12:49:00 [info     ] hermes starting                base_url=https://litellm.vividynamics.com/v1 hermes_home=/tmp/hermes-job-7qqwet_4 model=spark/deepcoder:14b provider=litellm\n2026-06-04 12:49:00 [info     ] hermes started                 model=spark/deepcoder:14b pid=42\n2026-06-04 12:49:00 [info     ] dispatch accepted              session_id=fab25222-2fa6-4d60-9f9a-28001219e7e5\n2026-06-04 12:49:01 [warning  ] hermes failed                  rc=1 stderr=\"Error: Error code: 400 - {'error': {'message': 'litellm.BadRequestError: OpenAIException - registry.ollama.ai/library/deepcoder:14b does not support tools. Received Model Group=spark/deepcoder:14b\\\\nAvailable Model Group Fallbacks=None', 'type': 'invalid_request_error', 'param': None, 'code': '400'}}\\n\\nsession_id: 20260604_124900_1046fe\\n\" stdout='  \u26a0 tirith security scanner enabled but not available \u2014 command scanning will use pattern matching only\\r\\n'\n2026-06-04 12:49:01 [info     ] hermes finalized               removed=/tmp/hermes-job-7qqwet_4\n2026-06-04 12:49:02 [info     ] hermes stopped\n2026-06-04 12:49:02 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-yhmj4090\nINFO:     172.66.0.243:57458 - \"GET /jobs/9b44c17e73974b5ca0393e880b58c06f HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

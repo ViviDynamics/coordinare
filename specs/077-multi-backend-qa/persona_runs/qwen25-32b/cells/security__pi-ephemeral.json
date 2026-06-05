@@ -1,0 +1,23 @@
+{
+  "row": {
+    "role": "security",
+    "endpoint": "pi-ephemeral",
+    "backend": "pi",
+    "model": "spark/qwen2.5:32b",
+    "category": "FAIL_MODEL",
+    "status": "security_failed",
+    "markers": [],
+    "detail": "status=security_failed",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "security_failed",
+    "state": "failed",
+    "log_file": null
+  },
+  "state": "failed",
+  "error_code": "security_failed",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"security_failed\",\"session_id\":\"40c390a5-79b1-4388-9de8-56ec4ace32bd\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[{\"description\":\"The security response was not a valid JSON object.\",\"severity\":\"high\"}],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "npm warn deprecated node-domexception@1.0.0: Use your platform's native DOMException instead\nnpm warn deprecated @mariozechner/pi-agent-core@0.73.1: please use @earendil-works/pi-agent-core instead going forward\nnpm warn deprecated @mariozechner/pi-tui@0.73.1: please use @earendil-works/pi-tui instead going forward\nnpm warn deprecated @mariozechner/pi-ai@0.73.1: please use @earendil-works/pi-ai instead going forward\nnpm warn deprecated @mariozechner/pi-coding-agent@0.73.1: please use @earendil-works/pi-coding-agent instead going forward\n\nadded 203 packages in 9s\nINFO:     172.66.0.243:21450 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-04 02:47:41 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:63819 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:44526 - \"GET /jobs/5f576abbfce841c99bf2a5f558a86cd8 HTTP/1.1\" 200 OK\n2026-06-04 02:47:42 [info     ] clone_repository.existing_branch branch=feat/security-sqli\n2026-06-04 02:47:42 [info     ] cloned repository              branch=feat/security-sqli repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-04 02:47:42 [info     ] pi started                     model=spark/qwen2.5:32b provider=litellm\n2026-06-04 02:47:43 [info     ] dispatch accepted              session_id=40c390a5-79b1-4388-9de8-56ec4ace32bd\nINFO:     172.66.0.243:31468 - \"GET /jobs/5f576abbfce841c99bf2a5f558a86cd8 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:31854 - \"GET /jobs/5f576abbfce841c99bf2a5f558a86cd8 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:65038 - \"GET /jobs/5f576abbfce841c99bf2a5f558a86cd8 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:28312 - \"GET /jobs/5f576abbfce841c99bf2a5f558a86cd8 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:31561 - \"GET /jobs/5f576abbfce841c99bf2a5f558a86cd8 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:52259 - \"GET /jobs/5f576abbfce841c99bf2a5f558a86cd8 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:26113 - \"GET /jobs/5f576abbfce841c99bf2a5f558a86cd8 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:47611 - \"GET /jobs/5f576abbfce841c99bf2a5f558a86cd8 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:38901 - \"GET /jobs/5f576abbfce841c99bf2a5f558a86cd8 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:25143 - \"GET /jobs/5f576abbfce841c99bf2a5f558a86cd8 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:39540 - \"GET /jobs/5f576abbfce841c99bf2a5f558a86cd8 HTTP/1.1\" 200 OK\n2026-06-04 02:48:37 [warning  ] backend.invalid_output.retrying attempt=1 failure_reason='could not be parsed as a JSON object' max_retries=1 output_preview=\"The directory contains two files: `assessment.md` and `security.md`.\\n\\nI'll read these files to understand the context of the task and any specific concerns related to security.\\n\\nLet's start with `asse\" stage=security\nINFO:     172.66.0.243:65055 - \"GET /jobs/5f576abbfce841c99bf2a5f558a86cd8 HTTP/1.1\" 200 OK\n2026-06-04 02:48:46 [info     ] commit_file.committed          branch=feat/security-sqli path=docs/cards/security-review-user/security.md\n2026-06-04 02:48:46 [info     ] pi stopped\n2026-06-04 02:48:46 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-582o8nbh\nINFO:     172.66.0.243:51145 - \"GET /jobs/5f576abbfce841c99bf2a5f558a86cd8 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

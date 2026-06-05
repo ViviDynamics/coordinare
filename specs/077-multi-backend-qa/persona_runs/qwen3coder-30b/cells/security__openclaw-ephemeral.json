@@ -1,0 +1,25 @@
+{
+  "row": {
+    "role": "security",
+    "endpoint": "openclaw-ephemeral",
+    "backend": "openclaw",
+    "model": "qwen3-coder:30b",
+    "category": "FAIL_MODEL",
+    "status": "security_passed",
+    "markers": [
+      "PASSED_VULN_PR"
+    ],
+    "detail": "status=security_passed",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent incorrectly marked the PR as passed and failed to flag the SQL injection and eval vulnerabilities.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  },
+  "state": "succeeded",
+  "error_code": null,
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"security_passed\",\"session_id\":\"9a58c380-4e9a-4f68-b275-aa47aea86d1f\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "\nadded 285 packages in 12s\nINFO:     172.66.0.243:40522 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-04 00:32:42 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:24577 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:61897 - \"GET /jobs/2ba90bcc09b8479e8064601153b3bc1a HTTP/1.1\" 200 OK\n2026-06-04 00:32:43 [info     ] clone_repository.existing_branch branch=feat/security-sqli\n2026-06-04 00:32:43 [info     ] cloned repository              branch=feat/security-sqli repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-04 00:32:43 [info     ] openclaw.provider_config_written base_url=http://192.168.3.30:11434/v1 path=/root/.openclaw/openclaw.json provider=sparkollama\n2026-06-04 00:32:43 [info     ] openclaw.workspace_linked      workspace=/tmp/performer-bgg_4ezy\n2026-06-04 00:32:43 [info     ] openclaw.persona_to_soul       chars=83\n2026-06-04 00:32:43 [info     ] openclaw.card_docs_written     chars=181 path=/tmp/performer-bgg_4ezy/CARD.md\n2026-06-04 00:32:43 [info     ] openclaw starting              model=sparkollama/qwen3-coder:30b provider_routed=True session_key=coordinare-security-54076c2d\n2026-06-04 00:32:43 [info     ] openclaw started               model=sparkollama/qwen3-coder:30b pid=96\n2026-06-04 00:32:43 [info     ] dispatch accepted              session_id=9a58c380-4e9a-4f68-b275-aa47aea86d1f\nINFO:     172.66.0.243:44252 - \"GET /jobs/2ba90bcc09b8479e8064601153b3bc1a HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:45511 - \"GET /jobs/2ba90bcc09b8479e8064601153b3bc1a HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:34801 - \"GET /jobs/2ba90bcc09b8479e8064601153b3bc1a HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:49337 - \"GET /jobs/2ba90bcc09b8479e8064601153b3bc1a HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:29183 - \"GET /jobs/2ba90bcc09b8479e8064601153b3bc1a HTTP/1.1\" 200 OK\n2026-06-04 00:33:07 [info     ] commit_file.no_changes         path=docs/cards/security-review-user/security.md\n2026-06-04 00:33:07 [info     ] openclaw stopped\n2026-06-04 00:33:07 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-bgg_4ezy\nINFO:     172.66.0.243:37876 - \"GET /jobs/2ba90bcc09b8479e8064601153b3bc1a HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

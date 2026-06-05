@@ -1,0 +1,23 @@
+{
+  "row": {
+    "role": "assessor",
+    "endpoint": "hermes-ephemeral",
+    "backend": "hermes",
+    "model": "spark/gpt-oss:20b",
+    "category": "FAIL_MODEL",
+    "status": "assessment_complete",
+    "markers": [],
+    "detail": "questions=0 sufficient=None",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent failed to flag the request as insufficient and did not ask clarifying questions.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  },
+  "state": "succeeded",
+  "error_code": null,
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"assessment_complete\",\"session_id\":\"e89a6f38-49dd-404b-b402-af4ccd896d1d\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.\n\n[notice] A new release of pip is available: 25.0.1 -> 26.1.2\n[notice] To update, run: pip install --upgrade pip\nINFO:     172.66.0.243:42039 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-03 13:58:49 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:61161 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:65043 - \"GET /jobs/ec23859eb5b14db68dbfba87eb2bc539 HTTP/1.1\" 200 OK\n2026-06-03 13:58:50 [info     ] clone_repository.new_branch    branch=bench-assessor-15ff82fb\n2026-06-03 13:58:50 [info     ] cloned repository              branch=bench-assessor-15ff82fb repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-03 13:58:50 [info     ] hermes.card_docs_written       chars=182 path=/tmp/performer-nxe2lu15/CARD.md\n2026-06-03 13:58:50 [info     ] hermes starting                base_url=https://litellm.vividynamics.com/v1 hermes_home=/tmp/hermes-job-i2u6rv33 model=spark/gpt-oss:20b provider=litellm\n2026-06-03 13:58:50 [info     ] hermes started                 model=spark/gpt-oss:20b pid=37\n2026-06-03 13:58:50 [info     ] dispatch accepted              session_id=e89a6f38-49dd-404b-b402-af4ccd896d1d\nINFO:     172.66.0.243:20155 - \"GET /jobs/ec23859eb5b14db68dbfba87eb2bc539 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:26686 - \"GET /jobs/ec23859eb5b14db68dbfba87eb2bc539 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:37881 - \"GET /jobs/ec23859eb5b14db68dbfba87eb2bc539 HTTP/1.1\" 200 OK\n2026-06-03 13:59:08 [info     ] hermes finalized               removed=/tmp/hermes-job-i2u6rv33\nINFO:     172.66.0.243:64070 - \"GET /jobs/ec23859eb5b14db68dbfba87eb2bc539 HTTP/1.1\" 200 OK\n2026-06-03 13:59:09 [info     ] commit_file.committed          branch=bench-assessor-15ff82fb path=docs/cards/add-a-customer-loyal/assessment.md\n2026-06-03 13:59:09 [info     ] assessor.assessment_committed  path=docs/cards/add-a-customer-loyal/assessment.md\n2026-06-03 13:59:09 [info     ] hermes stopped\n2026-06-03 13:59:09 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-nxe2lu15\nINFO:     172.66.0.243:37337 - \"GET /jobs/ec23859eb5b14db68dbfba87eb2bc539 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

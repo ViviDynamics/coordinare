@@ -88,6 +88,24 @@ case "${BACKEND:-}" in
     npm install -g @openai/codex@latest --no-fund --no-audit 2>&1 \
       || echo "WARNING: codex upgrade failed, continuing with installed version" >&2
     ;;
+  pi)
+    # Pi (pi.dev) ships on npm; not baked into the base image, so this is a
+    # fresh install on first start (and an upgrade thereafter). Custom
+    # OpenAI-compatible provider routing → LiteLLM is configured per-job by
+    # PiBackend (writes ~/.pi/agent/models.json). 077 POC: verified against
+    # spark/qwen3.6:35b.
+    npm install -g @mariozechner/pi-coding-agent --no-fund --no-audit 2>&1 \
+      || echo "WARNING: pi install/upgrade failed, continuing with installed version" >&2
+    ;;
+  openclaw)
+    # OpenClaw (openclaw.ai) ships on npm; not baked into the base image, so
+    # this is a fresh install on first start (and an upgrade thereafter).
+    # Custom OpenAI-compatible provider routing → LiteLLM is configured per-job
+    # by OpenClawBackend (writes ~/.openclaw/openclaw.json). 077 POC: verified
+    # against spark/qwen3.6:35b (OpenClaw 2026.5.27).
+    npm install -g openclaw --no-fund --no-audit 2>&1 \
+      || echo "WARNING: openclaw install/upgrade failed, continuing with installed version" >&2
+    ;;
   claude|claude_code)
     curl -fsSL https://claude.ai/install.sh | bash 2>&1 \
       || echo "WARNING: claude-code upgrade failed, continuing with installed version" >&2
@@ -107,10 +125,6 @@ case "${BACKEND:-}" in
   junie)
     curl -fsSL https://junie.jetbrains.com/install.sh | bash 2>&1 \
       || echo "WARNING: junie upgrade failed, continuing with installed version" >&2
-    ;;
-  cursor)
-    curl -fsSL https://cursor.com/install | sh 2>&1 \
-      || echo "WARNING: cursor upgrade failed, continuing with installed version" >&2
     ;;
   hermes)
     # hermes-agent ships on PyPI; spec 068 assumes the package is baked into

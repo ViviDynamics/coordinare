@@ -66,7 +66,7 @@ async def test_dockerfile_full_advertises_all_capabilities(require_docker: None,
 
     # Test each backend individually (entrypoint.sh installs per BACKEND env var)
     # and verify that tool flags are present in all cases.
-    backends_to_test = ["claude_code", "codex", "cursor", "junie", "opencode"]
+    backends_to_test = ["claude_code", "codex", "junie", "opencode"]
     advertised_backends = set()
     advertised_tool_flags = set()
 
@@ -112,7 +112,7 @@ async def test_dockerfile_full_advertises_all_capabilities(require_docker: None,
                 )
 
     # Verify all backends are advertised across the test configurations
-    expected_backends = {"claude_code", "codex", "cursor", "junie", "opencode"}
+    expected_backends = {"claude_code", "codex", "junie", "opencode"}
     assert (
         expected_backends.issubset(advertised_backends)
     ), f"Not all backends advertised. Got: {advertised_backends}, expected: {expected_backends}"

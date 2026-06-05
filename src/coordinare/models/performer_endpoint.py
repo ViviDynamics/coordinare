@@ -84,7 +84,12 @@ class PerformerEndpointConfig(BaseModel):
     endpoint: HttpUrl | None = None
     port: int | None = None
     auth_token: SecretStr | None = None
-    readiness_timeout_s: int = 120
+    # 077: ephemeral performer containers npm-install their backend CLI (opencode,
+    # openclaw, pi) at cold start, which can push the job-runner's HTTP readiness
+    # past 120s — causing spurious "readiness timeout" dispatch failures that, after
+    # max-retries, park the card in the Blocked column. 300s gives cold starts room
+    # while still declaring a genuinely-dead container failed in a few minutes.
+    readiness_timeout_s: int = 300
     failure_threshold: int = 5
     secret_sources: SecretSourceConfig = Field(default_factory=SecretSourceConfig)
     volumes: list[VolumeMount] = Field(default_factory=list)

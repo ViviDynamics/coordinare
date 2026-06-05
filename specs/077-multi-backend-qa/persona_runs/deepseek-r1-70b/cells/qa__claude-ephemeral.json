@@ -1,0 +1,26 @@
+{
+  "row": {
+    "role": "qa",
+    "endpoint": "claude-ephemeral",
+    "backend": "claude_code",
+    "model": "spark/deepseek-r1:70b",
+    "category": "FAIL_MODEL",
+    "status": "qa_passed",
+    "markers": [
+      "1_steps",
+      "RUBBER_STAMP"
+    ],
+    "detail": "status=qa_passed steps=1 found_bug=False",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent marked qa_passed without running checkout_total or detecting the expected KeyError, thus rubber\u2011stamping the test.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  },
+  "state": "succeeded",
+  "error_code": null,
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"qa_passed\",\"session_id\":\"bfaf9576-dfb0-45a9-b6a4-78afe90e9591\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"report\":{\"criteria_checked\":0,\"criteria_passed\":0,\"env_limited\":false,\"environment_error\":null,\"new_tests_added\":0,\"verification_steps\":[\"Verify acceptance criterion: checkout_total behaves correctly for typical carts\"],\"pre_fix_repro_steps\":[],\"demo_setup_steps\":[],\"visual_capture_commands\":[],\"visual_capture_blockers\":[],\"visual_evidence\":[],\"visual_validation_required\":false,\"qa_freshness_check\":{\"latest_main_sha\":null,\"branch_head_sha\":null,\"up_to_date\":null,\"detail\":\"freshness_check_indeterminate\"}},\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "Setting up Claude Code...\n\nChecking installation status...\nInstalling Claude Code native build latest...\nSetting up launcher and shell integration...\n\u2714 Claude Code successfully installed!\n\n  Version: 2.1.162\n\n  Location: ~/.local/bin/claude\n\n\n  Next: Run claude --help to get started\n\n\u2705 Installation complete!\n\nINFO:     172.66.0.243:46678 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-04 04:13:20 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\n2026-06-04 04:13:20 [warning  ] secret_missing                 name=ANTHROPIC_API_KEY\n2026-06-04 04:13:20 [info     ] secret_resolved                name=ANTHROPIC_AUTH_TOKEN source=init_payload\nINFO:     172.66.0.243:65193 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:49359 - \"GET /jobs/b6109868ca0d481b81b346066cd6af01 HTTP/1.1\" 200 OK\n2026-06-04 04:13:21 [info     ] clone_repository.existing_branch branch=feat/qa-behavior\n2026-06-04 04:13:21 [info     ] cloned repository              branch=feat/qa-behavior repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-04 04:13:21 [info     ] claude_code shim listening     port=45131\n2026-06-04 04:13:21 [info     ] claude code started            pid=105 resume=False\n2026-06-04 04:13:22 [info     ] claude_code shim request       latency_ms=22 method=HEAD path=/ status=200\n2026-06-04 04:13:22 [info     ] dispatch accepted              session_id=bfaf9576-dfb0-45a9-b6a4-78afe90e9591\n2026-06-04 04:13:22 [debug    ] claude code session captured   session_id=0d141701-8388-4c05-bd87-33fa74d1472a\n2026-06-04 04:13:22 [info     ] claude_code shim request       latency_ms=155 method=POST path=/v1/messages status=400\n2026-06-04 04:13:24 [info     ] commit_file.no_changes         path=docs/cards/qa-checkout-total/qa.md\n2026-06-04 04:13:24 [info     ] pr comment posted              owner=ViviDynamics pr_number=3 repo=conductor-bench\nINFO:     172.66.0.243:59463 - \"GET /jobs/b6109868ca0d481b81b346066cd6af01 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:41970 - \"GET /jobs/b6109868ca0d481b81b346066cd6af01 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:34127 - \"GET /jobs/b6109868ca0d481b81b346066cd6af01 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:49172 - \"GET /jobs/b6109868ca0d481b81b346066cd6af01 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:27507 - \"GET /jobs/b6109868ca0d481b81b346066cd6af01 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:23773 - \"GET /jobs/b6109868ca0d481b81b346066cd6af01 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:33410 - \"GET /jobs/b6109868ca0d481b81b346066cd6af01 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:58458 - \"GET /jobs/b6109868ca0d481b81b346066cd6af01 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:31895 - \"GET /jobs/b6109868ca0d481b81b346066cd6af01 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:60136 - \"GET /jobs/b6109868ca0d481b81b346066cd6af01 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:36748 - \"GET /jobs/b6109868ca0d481b81b346066cd6af01 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:31266 - \"GET /jobs/b6109868ca0d481b81b346066cd6af01 HTTP/1.1\" 200 OK\n2026-06-04 04:14:25 [warning  ] claude_code shim upstream error error=ServerDisconnectedError path=/v1/messages\n2026-06-04 04:14:25 [info     ] claude code stopped\n2026-06-04 04:14:25 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-85kmaybe\nINFO:     172.66.0.243:26470 - \"GET /jobs/b6109868ca0d481b81b346066cd6af01 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

@@ -1,0 +1,23 @@
+{
+  "row": {
+    "role": "reviewer",
+    "endpoint": "openclaw-ephemeral",
+    "backend": "openclaw",
+    "model": "qwen3-coder:30b",
+    "category": "FAIL_MODEL",
+    "status": "changes_requested",
+    "markers": [],
+    "detail": "status=changes_requested",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "changes_requested",
+    "state": "failed",
+    "log_file": null
+  },
+  "state": "failed",
+  "error_code": "changes_requested",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"changes_requested\",\"session_id\":\"536e8870-dc29-4138-b2f0-f221c6c71382\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "\nadded 285 packages in 13s\nINFO:     172.66.0.243:24380 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-04 00:24:49 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:46853 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:61846 - \"GET /jobs/5207e0557b00401faa969a12f020787f HTTP/1.1\" 200 OK\n2026-06-04 00:24:50 [info     ] clone_repository.existing_branch branch=fix/reviewer-offbyone\n2026-06-04 00:24:50 [info     ] cloned repository              branch=fix/reviewer-offbyone repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-04 00:24:50 [info     ] openclaw.provider_config_written base_url=http://192.168.3.30:11434/v1 path=/root/.openclaw/openclaw.json provider=sparkollama\n2026-06-04 00:24:50 [info     ] openclaw.workspace_linked      workspace=/tmp/performer-i8nun9v4\n2026-06-04 00:24:50 [info     ] openclaw.persona_to_soul       chars=134\n2026-06-04 00:24:50 [info     ] openclaw.card_docs_written     chars=178 path=/tmp/performer-i8nun9v4/CARD.md\n2026-06-04 00:24:50 [info     ] openclaw starting              model=sparkollama/qwen3-coder:30b provider_routed=True session_key=coordinare-reviewing-706ad5cd\n2026-06-04 00:24:50 [info     ] openclaw started               model=sparkollama/qwen3-coder:30b pid=92\n2026-06-04 00:24:50 [info     ] dispatch accepted              session_id=536e8870-dc29-4138-b2f0-f221c6c71382\nINFO:     172.66.0.243:39731 - \"GET /jobs/5207e0557b00401faa969a12f020787f HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:58560 - \"GET /jobs/5207e0557b00401faa969a12f020787f HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:33732 - \"GET /jobs/5207e0557b00401faa969a12f020787f HTTP/1.1\" 200 OK\n2026-06-04 00:25:09 [info     ] review posted                  owner=ViviDynamics pr_number=1 repo=conductor-bench review_event=COMMENT\n2026-06-04 00:25:09 [info     ] openclaw stopped\n2026-06-04 00:25:09 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-i8nun9v4\nINFO:     172.66.0.243:52540 - \"GET /jobs/5207e0557b00401faa969a12f020787f HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

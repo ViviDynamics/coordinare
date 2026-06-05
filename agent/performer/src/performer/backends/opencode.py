@@ -26,7 +26,7 @@ from pathlib import Path
 from performer.backends._card_docs import card_docs_prompt_section
 from performer.backends.base import BackendStatus
 from performer.io_utils import iter_lines_chunked
-from performer.models import BackendEvent, BackendEventType, Score, Stand
+from performer.models import DIAGNOSTIC_ROLE, LOCAL_CAPTURE_RULE, BackendEvent, BackendEventType, Score, Stand
 
 log = structlog.get_logger(__name__)
 
@@ -79,6 +79,12 @@ class OpenCodeAdapter:
         self._event_buffer: deque[BackendEvent] = deque(maxlen=200)
         self._log_buffer: deque[str] = deque(maxlen=200)
         self._client: httpx.AsyncClient | None = None
+        # 077: accumulate the assistant's final message text (full, untruncated)
+        # keyed by part id, so it can be surfaced as BackendStatus.output when the
+        # session completes. Without this, output-parsing roles (qa, etc.) see an
+        # empty .output — opencode only ever set `progress` (truncated). message.part.updated
+        # carries the part's CURRENT full text, so last-write-wins per id is correct.
+        self._text_parts: dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # BackendAdapter protocol
@@ -99,6 +105,26 @@ class OpenCodeAdapter:
         self._port = port
         self._workspace_dir = str(stand.path)
 
+        env = {**os.environ, **stand.cache_env, **stand.git_env, **score.tool_env}
+
+        # 077: opt-in custom OpenAI-compatible provider → LiteLLM. When
+        # ``OPENCODE_PROVIDER_BASE_URL`` is set (the env prefix is keyed off
+        # adapter_name), write an ``opencode.json`` into the workspace declaring
+        # the provider and route the model through it. Unset → the existing
+        # mounted-creds flow is untouched. Verified end-to-end against LiteLLM +
+        # spark/qwen3.6:35b.
+        effective_model = model
+        prefix = self._adapter_name.upper()
+        provider_base_url = env.get(f"{prefix}_PROVIDER_BASE_URL", "")
+        if provider_base_url:
+            provider_name = env.get(f"{prefix}_PROVIDER_NAME", "litellm")
+            provider_env_key = env.get(f"{prefix}_PROVIDER_ENV_KEY", "OPENAI_API_KEY")
+            self._write_provider_config(
+                Path(stand.path), provider_name, provider_base_url, provider_env_key, model
+            )
+            if model and not model.startswith(f"{provider_name}/"):
+                effective_model = f"{provider_name}/{model}"
+
         self._proc = await asyncio.create_subprocess_exec(
             self._executable, "serve",
             "--port", str(port),
@@ -107,7 +133,7 @@ class OpenCodeAdapter:
             stderr=asyncio.subprocess.STDOUT,
             cwd=str(stand.path),
             start_new_session=True,
-            env={**os.environ, **stand.cache_env, **stand.git_env, **score.tool_env},
+            env=env,
         )
 
         # Drain server logs in background (prevents pipe buffer fill)
@@ -127,8 +153,8 @@ class OpenCodeAdapter:
 
         # Create a new session for this task, optionally pinning model and token cap.
         session_body: dict = {}
-        if model:
-            session_body["modelID"] = model
+        if effective_model:
+            session_body["modelID"] = effective_model
         if max_tokens is not None:
             session_body["maxTokens"] = max_tokens
         resp = await self._client.post("/session", json=session_body if session_body else None)
@@ -158,6 +184,49 @@ class OpenCodeAdapter:
             self._event_reader_loop(), name=f"{self._adapter_name}-event-reader"
         )
 
+    def _write_provider_config(
+        self,
+        workspace: Path,
+        name: str,
+        base_url: str,
+        env_key: str,
+        model: str | None,
+    ) -> None:
+        """Write an ``opencode.json`` declaring a custom OpenAI-compatible provider.
+
+        Mirrors ``PiBackend._write_provider_config``: declares
+        ``provider.<name>`` via ``@ai-sdk/openai-compatible``
+        pointed at ``base_url``, with the API key resolved from ``env_key`` using
+        opencode's ``{env:VAR}`` syntax. 077 POC: verified against LiteLLM +
+        spark/qwen3.6:35b. No ``compat`` block is needed (the AI-SDK
+        openai-compatible client uses standard system/user roles).
+        """
+        provider: dict = {
+            "npm": "@ai-sdk/openai-compatible",
+            "name": name,
+            "options": {"baseURL": base_url, "apiKey": f"{{env:{env_key}}}"},
+            "models": {model: {}} if model else {},
+        }
+        config = {
+            "$schema": "https://opencode.ai/config.json",
+            # 077: auto-approve all tool actions. opencode 1.15.x defaults to
+            # "ask" for bash/edit, but these performer containers run headless
+            # (`opencode serve`, no interactive approver), so without this the
+            # agent blocks forever on a `permission.asked` event and never runs
+            # its commands (observed: env_bootstrap hung ~16 min, cache never
+            # populated). The containers are ephemeral and network-isolated, so
+            # blanket allow is appropriate here.
+            "permission": "allow",
+            "provider": {name: provider},
+        }
+        (workspace / "opencode.json").write_text(json.dumps(config, indent=2))
+        log.info(
+            "backend.provider_config_written",
+            backend=self._adapter_name,
+            provider=name,
+            base_url=base_url,
+        )
+
     def get_status(self) -> BackendStatus:
         """Return the current backend status (non-blocking)."""
         return self._status
@@ -178,6 +247,9 @@ class OpenCodeAdapter:
             json={"parts": [{"type": "text", "text": feedback}]},
         )
         self._status = BackendStatus(state="working")
+        # 077: clear accumulated text so this turn's (e.g. JSON-repair) output
+        # replaces the prior turn's rather than mixing stale text into .output.
+        self._text_parts = {}
         # Restart the SSE reader if it exited after the previous turn completed
         if self._reader_task is None or self._reader_task.done():
             self._reader_task = asyncio.create_task(
@@ -295,7 +367,7 @@ class OpenCodeAdapter:
     async def _resolve_final_status(self) -> None:
         """Query session state when the SSE stream ends unexpectedly."""
         if self._client is None or self._session_id is None:
-            self._status = BackendStatus(state="done")
+            self._status = self._done_status()
             return
         try:
             resp = await self._client.get(f"/session/{self._session_id}")
@@ -303,11 +375,20 @@ class OpenCodeAdapter:
                 info = resp.json()
                 # Session is idle when time.idle is set
                 if info.get("time", {}).get("idle"):
-                    self._status = BackendStatus(state="done")
+                    self._status = self._done_status()
                     return
         except Exception:
             pass
-        self._status = BackendStatus(state="done")
+        self._status = self._done_status()
+
+    def _assembled_output(self) -> str:
+        """Join the accumulated assistant text parts into the final message."""
+        return "\n".join(t for t in self._text_parts.values() if t).strip()
+
+    def _done_status(self) -> BackendStatus:
+        """Build a terminal 'done' status carrying the assistant's full output so
+        output-parsing roles (assessor/reviewer/qa/...) can read it."""
+        return BackendStatus(state="done", output=self._assembled_output() or None)
 
     def _emit(self, type: BackendEventType, text: str, detail: str = "") -> None:
         self._event_buffer.append(BackendEvent(type=type, text=text[:_MAX_TEXT], detail=detail))
@@ -324,14 +405,14 @@ class OpenCodeAdapter:
             time_info = session.get("time", {})
             # Session is done when time.idle is set (opencode convention)
             if time_info.get("idle"):
-                self._status = BackendStatus(state="done")
+                self._status = self._done_status()
             elif session.get("error") or time_info.get("error"):
                 reason = str(session.get("error", "unknown error"))
                 self._status = BackendStatus(state="error", error_reason=reason)
 
         elif event_type == "session.idle":
             # Legacy / alternative event type
-            self._status = BackendStatus(state="done")
+            self._status = self._done_status()
 
         elif event_type == "session.error":
             reason = props.get("error", {}).get("message", str(props))
@@ -342,10 +423,16 @@ class OpenCodeAdapter:
             part = props.get("part", {})
             part_type = part.get("type", "")
             if part_type == "text":
-                text = part.get("text", "")[:_MAX_TEXT]
-                if text:
-                    self._status = BackendStatus(state="working", progress=text)
-                    self._emit(BackendEventType.progress, text)
+                full_text = part.get("text", "")
+                if full_text:
+                    # Accumulate the FULL text (untruncated) keyed by part id for
+                    # the final .output; message.part.updated carries the part's
+                    # current cumulative text, so last-write-wins is correct.
+                    part_id = str(part.get("id") or part.get("messageID") or "default")
+                    self._text_parts[part_id] = full_text
+                    preview = full_text[:_MAX_TEXT]
+                    self._status = BackendStatus(state="working", progress=preview)
+                    self._emit(BackendEventType.progress, preview)
             elif part_type in ("tool-input", "tool_input"):
                 tool = part.get("toolName", part.get("tool_name", "tool"))
                 input_text = str(part.get("input", ""))[:_MAX_TEXT]
@@ -424,7 +511,13 @@ def _build_task_prompt(
                 parts.append(f"- {item}")
 
     parts += ["", "---"]
-    if score.role in _JSON_ONLY_ROLES:
+    if score.role == DIAGNOSTIC_ROLE:
+        parts += [
+            "This is a one-off diagnostic/benchmark task. Use any tools at your "
+            "disposal to complete it. You do NOT need to commit, push, or open a "
+            "pull request — just perform the task and report what you did.",
+        ]
+    elif score.role in _JSON_ONLY_ROLES:
         parts += [
             "Return ONLY a valid JSON object for your role contract.",
             "Do not include markdown, prose, or code fences.",
@@ -436,6 +529,7 @@ def _build_task_prompt(
                 "Set `visual_validation_required=true` for UI/UX/visual changes and capture at least one artifact in `visual_evidence` for those tasks.",
                 "Include `visual_evidence` entries when screenshots/GIFs/videos/artifacts are available.",
                 "Include exact capture attempts in `visual_capture_commands` (commands/scripts you ran).",
+                LOCAL_CAPTURE_RULE,
                 "If visual evidence cannot be captured, include `demo_setup_steps` and `visual_capture_blockers` with concrete details.",
                 (
                     "Screenshot uploads: after capturing a screenshot to disk, run "

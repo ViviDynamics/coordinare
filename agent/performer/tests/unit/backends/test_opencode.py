@@ -241,6 +241,99 @@ class TestOpenCodeAdapterStart:
 
 
 # ---------------------------------------------------------------------------
+# 077 US4 — opt-in custom OpenAI-compatible provider routing (OPENCODE_PROVIDER_*)
+# ---------------------------------------------------------------------------
+
+class TestOpenCodeProviderRouting:
+    @respx.mock
+    async def test_provider_override_writes_config_and_prefixes_model(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """With OPENCODE_PROVIDER_BASE_URL set, start() writes an opencode.json
+        custom provider pointed at the proxy and routes the model through it as
+        ``<provider>/<model>`` — never a vendor-hosted model (077 FR / C-3)."""
+        monkeypatch.setenv("OPENCODE_PROVIDER_BASE_URL", "https://litellm.example/v1")
+        monkeypatch.setenv("OPENCODE_PROVIDER_NAME", "litellm")
+        monkeypatch.setenv("OPENCODE_PROVIDER_ENV_KEY", "LITELLM_MASTER_KEY")
+        monkeypatch.setenv("LITELLM_MASTER_KEY", "secret-key")
+
+        proc = _fake_proc()
+        port = 19920
+
+        respx.get(f"http://127.0.0.1:{port}/global/health").mock(
+            return_value=httpx.Response(200, json={"healthy": True})
+        )
+        session_mock = respx.post(f"http://127.0.0.1:{port}/session").mock(
+            return_value=httpx.Response(200, json={"id": "sess-prov"})
+        )
+        respx.post(f"http://127.0.0.1:{port}/session/sess-prov/prompt_async").mock(
+            return_value=httpx.Response(204)
+        )
+        respx.get(f"http://127.0.0.1:{port}/event").mock(
+            return_value=httpx.Response(200, content=b"")
+        )
+
+        with patch(
+            "performer.backends.opencode.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=proc),
+        ), patch("performer.backends.opencode._find_free_port", return_value=port):
+            await OpenCodeAdapter().start(
+                _stand(tmp_path), _score(), model="spark/qwen3.6:35b"
+            )
+
+        # modelID is provider-prefixed so opencode routes to the custom provider.
+        body = json.loads(session_mock.calls[0].request.content)
+        assert body["modelID"] == "litellm/spark/qwen3.6:35b"
+
+        # opencode.json written into the workspace with an env-interpolated key.
+        cfg = json.loads((tmp_path / "opencode.json").read_text())
+        prov = cfg["provider"]["litellm"]
+        assert prov["npm"] == "@ai-sdk/openai-compatible"
+        assert prov["options"]["baseURL"] == "https://litellm.example/v1"
+        assert prov["options"]["apiKey"] == "{env:LITELLM_MASTER_KEY}"
+        assert "spark/qwen3.6:35b" in prov["models"]
+        # 077: headless performer containers must auto-approve tool actions, else
+        # opencode blocks on permission.asked and never runs its commands.
+        assert cfg["permission"] == "allow"
+
+    @respx.mock
+    async def test_no_provider_env_leaves_model_unprefixed_and_no_config(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Without OPENCODE_PROVIDER_BASE_URL the mounted-creds path is untouched:
+        no opencode.json is written and the model is passed through verbatim."""
+        monkeypatch.delenv("OPENCODE_PROVIDER_BASE_URL", raising=False)
+
+        proc = _fake_proc()
+        port = 19922
+
+        respx.get(f"http://127.0.0.1:{port}/global/health").mock(
+            return_value=httpx.Response(200, json={"healthy": True})
+        )
+        session_mock = respx.post(f"http://127.0.0.1:{port}/session").mock(
+            return_value=httpx.Response(200, json={"id": "sess-plain"})
+        )
+        respx.post(f"http://127.0.0.1:{port}/session/sess-plain/prompt_async").mock(
+            return_value=httpx.Response(204)
+        )
+        respx.get(f"http://127.0.0.1:{port}/event").mock(
+            return_value=httpx.Response(200, content=b"")
+        )
+
+        with patch(
+            "performer.backends.opencode.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=proc),
+        ), patch("performer.backends.opencode._find_free_port", return_value=port):
+            await OpenCodeAdapter().start(
+                _stand(tmp_path), _score(), model="some/model"
+            )
+
+        body = json.loads(session_mock.calls[0].request.content)
+        assert body["modelID"] == "some/model"
+        assert not (tmp_path / "opencode.json").exists()
+
+
+# ---------------------------------------------------------------------------
 # get_status() / drain_events()
 # ---------------------------------------------------------------------------
 
@@ -284,6 +377,58 @@ class TestOpenCodeAdapterGetStatus:
         assert len(events) == 1
         assert events[0].type.value == "progress"
         assert "Working on it" in events[0].text
+
+    async def test_output_assembled_full_text_on_done(self) -> None:
+        """077: the FULL assistant text (untruncated) is surfaced as .output when
+        the session completes, so output-parsing roles (qa/assessor/reviewer) can
+        read it. Previously only the truncated `progress` was set and .output was
+        always empty — the cause of 'QA output was empty'."""
+        adapter = OpenCodeAdapter()
+        long_text = '{"approved": true, "comments": []} ' + "x" * 500  # > _MAX_TEXT
+        adapter._handle_event({
+            "type": "message.part.updated",
+            "properties": {"part": {"id": "p1", "type": "text", "text": long_text}},
+        })
+        # progress stays truncated...
+        assert len(adapter.get_status().progress or "") <= 200
+        # ...but completion surfaces the full, untruncated text as .output.
+        adapter._handle_event({"type": "session.idle"})
+        status = adapter.get_status()
+        assert status.state == "done"
+        assert status.output == long_text
+
+    async def test_output_last_write_wins_per_part(self) -> None:
+        """message.part.updated carries the part's cumulative text; latest wins."""
+        adapter = OpenCodeAdapter()
+        for t in ("partial", "partial answer", "partial answer done"):
+            adapter._handle_event({
+                "type": "message.part.updated",
+                "properties": {"part": {"id": "p1", "type": "text", "text": t}},
+            })
+        adapter._handle_event({"type": "session.idle"})
+        assert adapter.get_status().output == "partial answer done"
+
+    async def test_output_none_when_no_assistant_text(self) -> None:
+        """No assistant text produced → .output is None (a genuine empty result,
+        not a crash); only then should output-parsing roles treat it as empty."""
+        adapter = OpenCodeAdapter()
+        adapter._handle_event({"type": "session.idle"})
+        assert adapter.get_status().output is None
+
+    async def test_relay_feedback_resets_accumulated_output(self) -> None:
+        """A follow-up turn (JSON-repair retry) must not mix stale text into output."""
+        adapter = OpenCodeAdapter()
+        adapter._handle_event({
+            "type": "message.part.updated",
+            "properties": {"part": {"id": "p1", "type": "text", "text": "stale prose"}},
+        })
+        adapter._text_parts = {}  # simulate relay_feedback reset
+        adapter._handle_event({
+            "type": "message.part.updated",
+            "properties": {"part": {"id": "p2", "type": "text", "text": '{"sufficient": true}'}},
+        })
+        adapter._handle_event({"type": "session.idle"})
+        assert adapter.get_status().output == '{"sufficient": true}'
 
     async def test_message_part_updated_tool_input(self) -> None:
         adapter = OpenCodeAdapter()

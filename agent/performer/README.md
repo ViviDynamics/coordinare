@@ -23,7 +23,7 @@ Run from the repository root.
 
 The **slim** image extends the base with a single backend CLI and optional
 Playwright for browser automation.  Choose one of: `claude_code`, `codex`,
-`cursor`, `junie`, `opencode`.
+`junie`, `opencode`.
 
 ```sh
 docker build \

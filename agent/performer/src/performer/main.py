@@ -10,6 +10,7 @@ import sys
 import traceback
 import uuid
 from datetime import UTC, datetime
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
@@ -26,7 +27,7 @@ from performer.cdn_upload import resolve_visual_evidence_urls
 from performer.config import Settings, get_settings
 from performer.github import GitHubAPIError, create_pull_request, get_check_run_logs, get_check_runs, list_pr_comments, post_issue_comment, post_pr_comment, post_pull_request_review, resolve_pr_review_threads, summarise_check_runs
 from performer.io_utils import iter_lines_chunked
-from performer.models import Performance, Score, Stand, _redact_secrets
+from performer.models import DIAGNOSTIC_ROLE, Performance, Score, Stand, _redact_secrets
 from performer.protocol import (
     FAILURE_STATUSES,
     TERMINAL_STATUSES,
@@ -673,6 +674,92 @@ def _default_verification_steps(score: Score) -> list[str]:
     ]
 
 
+_ROLE_DISPLAY = {
+    "assessing": "Assessor",
+    "architecting": "Architect",
+    "implementing": "Implementer",
+    "reviewing": "Reviewer",
+    "closing_review": "Closer",
+    "security": "Security",
+    "qa": "QA",
+    "documenting": "Tech Writer",
+    "env_bootstrap": "Env Bootstrap",
+}
+
+
+def _attribution_header(
+    *,
+    origin: str,
+    role: str,
+    display: str,
+    harness: str,
+    model: str,
+) -> str:
+    """Standardized attribution header for every PR/issue comment (077).
+
+    Emits a hidden machine-readable marker followed by a human-readable blockquote
+    line, so a reader (or a tool) can always tell *who* commented, with *which*
+    agent harness, driving *which* model backend. Kept byte-for-byte in sync with
+    the coordinare-side builder (``coordinare.graph.attribution.attribution_header``)
+    — both units post as the same GitHub app, so this header is the only
+    disambiguator. ``origin`` is ``performer`` or ``coordinare``; ``role`` is the
+    raw lifecycle stage key (e.g. ``reviewing``) for the marker; ``display`` is the
+    human label (e.g. ``Reviewer``).
+    """
+    marker = (
+        f"<!-- coordinare-attribution origin={origin} role={role} "
+        f"harness={harness} model={model} -->"
+    )
+    icon = "🎼" if origin == "coordinare" else "🤖"
+    if origin == "coordinare":
+        line = f"> {icon} **Coordinare** · re: {display} (`{harness}` · `{model}`)"
+    else:
+        line = f"> {icon} **{display}** · harness `{harness}` · model `{model}`"
+    return f"{marker}\n{line}"
+
+
+def _persona_tag(score: Score, role: str | None = None) -> str:
+    """Attribution header for performer bot comments — which persona/harness/model
+    produced it.
+
+    Every bot comment posts as the same GitHub app ('vivi-coordinare'), so without
+    this you can't tell the reviewer from the closer from QA, nor which backend
+    drove it (the whole point of a multi-backend round). ``role`` overrides
+    ``score.role`` — pass ``perf.role`` (the authoritative running stage) when
+    available, since ``score.role`` can carry a stale default.
+    """
+    r = role or score.role or "performer"
+    display = _ROLE_DISPLAY.get(r, r)
+    harness = score.backend or "?"
+    model = score.model or "?"
+    return _attribution_header(
+        origin="performer", role=r, display=display, harness=harness, model=model
+    )
+
+
+_QA_ENV_FAILURE_PATTERNS = re.compile(
+    r"pg::|connectionbad|could not connect|connection refused|econnrefused|"
+    r"read-?only file system|sqlite3|not on \$?path|command not found|not installed|"
+    r"no such file|headless|chromium|chrome|browser|display|selenium|webdriver|"
+    r"postgres|pg_ctl|initdb|database (is )?(unavailable|not running|down)|"
+    r"no screenshot|no artifacts|visual artifacts|could not (start|launch|run)",
+    re.IGNORECASE,
+)
+
+
+def _qa_failure_is_environmental(f: dict) -> bool:
+    """077: True if a QA failure reflects the container's inability to VERIFY
+    (no DB/browser/binary on PATH, read-only fs, capture blocked) rather than a
+    real code defect. Environmental limits are advisory — they must not block the
+    lifecycle; only genuine defects do."""
+    if str(f.get("type", "")).lower() in {"visual-capture", "environment", "env"}:
+        return True
+    blob = " ".join(
+        str(f.get(k, "")) for k in ("message", "actual", "expected", "criterion", "test")
+    )
+    return bool(_QA_ENV_FAILURE_PATTERNS.search(blob))
+
+
 def _build_qa_pr_comment(
     *,
     score: Score,
@@ -692,6 +779,8 @@ def _build_qa_pr_comment(
     bug_like = _is_bug_like_ticket(score)
     verify_heading = "Fix Verification Steps" if bug_like else "Demo / Verification Steps"
     lines = [
+        _persona_tag(score),
+        "",
         "## QA Evidence",
         "",
         f"**Result:** {'PASSED' if passed else 'FAILED'}",
@@ -792,6 +881,7 @@ async def _handle_backend_parse_failure(
     stage_label: str,
     settings: Settings | None,
     failure_reason: str,
+    lenient_fallback: Callable[[], Awaitable[PerformerResponse]] | None = None,
 ) -> PerformerResponse:
     """Retry the backend up to ``settings.BACKEND_PARSE_RETRIES`` times, or bubble
     up the error with an output preview.
@@ -873,6 +963,20 @@ async def _handle_backend_parse_failure(
             ),
         )
     redacted_long = _redact_secrets((raw or "")[:300])
+    # 077: retries exhausted. For roles that can SAFELY interpret prose (assessor
+    # → default-sufficient; reviewer → changes-requested, never auto-approve), fall
+    # back to that instead of hard-failing the stage — a weak/limited model that
+    # emits a correct verdict as prose shouldn't park the card in the Blocked
+    # column. The fallback is responsible for redacting any text it surfaces.
+    if lenient_fallback is not None:
+        log.warning(
+            "backend.parse_lenient_fallback",
+            stage=stage_label,
+            role=perf.role,
+            failure_reason=failure_reason,
+            output_preview=redacted_short,
+        )
+        return await lenient_fallback()
     perf.state = "error"
     prefix = f"{_FORMAT_ERROR_PREFIX} " if is_json_contract_role else ""
     perf.error_reason = (
@@ -1363,6 +1467,11 @@ async def handle_status(
             session_id=perf.session_id,
             **perf.inference_state,
         )
+    if perf.state == "diagnostic_complete":
+        return PerformerResponse(
+            status="diagnostic_complete",
+            session_id=perf.session_id,
+        )
     if perf.state == "blocked":
         return PerformerResponse(
             status="blocked",
@@ -1377,6 +1486,19 @@ async def handle_status(
     backend_status: BackendStatus = perf.backend.get_status()
 
     if backend_status.state == "done":
+        # 077: diagnostic/benchmark probe — return the agent's output verbatim
+        # with NO lifecycle scaffolding (no commit/push/PR, no verify, no
+        # service-inference). Short-circuits before every role branch so a
+        # viability probe ("can this backend drive a browser on this model?")
+        # isn't distorted by a role's commit/PR/JSON contract.
+        if perf.role == DIAGNOSTIC_ROLE:
+            perf.state = "diagnostic_complete"
+            return PerformerResponse(
+                status="diagnostic_complete",
+                session_id=perf.session_id,
+                progress=(backend_status.output or "").strip()[:4000],
+            )
+
         # 020: Architect path — commit plan file instead of opening a PR.
         # Plan content can arrive two ways:
         #   1. inline — backend sets BackendStatus.output to the plan text
@@ -1459,9 +1581,41 @@ async def handle_status(
                 )
             assess_output = _extract_json(assess_raw) if isinstance(assess_raw, str) else assess_raw
             if not isinstance(assess_output, dict):
+                async def _assessor_lenient_sufficient() -> PerformerResponse:
+                    # 077: prose assessment (no parseable JSON) → treat as sufficient.
+                    # We cannot extract blocking questions from prose, and the parser
+                    # already biases to sufficient when no questions are present
+                    # (see below), so prose-with-no-structured-questions is the same
+                    # case. The raw prose is committed as the assessment report (same
+                    # as the structured-sufficient path); no error_reason is produced,
+                    # so no unredacted text reaches operator surfaces.
+                    folder = _doc_folder(perf.score)
+                    assessment_path = f"{folder}/assessment.md"
+                    n = perf.score.issue_number
+                    # Redact before committing: unstructured backend output is
+                    # untrusted and may echo credentials; this path (unlike the
+                    # structured-sufficient one) handles arbitrary prose, so scrub it.
+                    content = (
+                        f"# Assessment: {perf.score.title}\n\n"
+                        f"_(Recorded from unstructured backend output.)_\n\n"
+                        f"{_redact_secrets(assess_raw)}"
+                    )
+                    try:
+                        await commit_file(
+                            perf.stand, assessment_path, content,
+                            f"chore: add assessment for #{n}" if n else "chore: add assessment",
+                        )
+                    except Exception as exc:
+                        log.warning("assessor.commit_assessment_failed", error=str(exc))
+                    perf.state = "assessment_complete"
+                    return PerformerResponse(
+                        status="assessment_complete", session_id=perf.session_id,
+                    )
+
                 return await _handle_backend_parse_failure(
                     perf, assess_raw, "assessment", settings,
                     "could not be parsed as a JSON object",
+                    lenient_fallback=_assessor_lenient_sufficient,
                 )
 
             sufficient = assess_output.get("sufficient", True)
@@ -1527,9 +1681,72 @@ async def handle_status(
                 )
             review_output = _extract_json(review_raw) if isinstance(review_raw, str) else review_raw
             if not isinstance(review_output, dict):
+                async def _reviewer_lenient_changes() -> PerformerResponse:
+                    # 077: prose review (no parseable JSON) → request changes. NEVER
+                    # auto-approve on ambiguity (safety). Post the model's notes as
+                    # feedback so the implementer can act, REDACTED before posting to
+                    # the PR (a public surface), and keep the loop moving instead of
+                    # hard-erroring → Blocked column.
+                    pr_number = 0
+                    pr_url = (perf.pr_url or "").rstrip("/")
+                    if pr_url and "/" in pr_url:
+                        try:
+                            pr_number = int(pr_url.rsplit("/", 1)[-1])
+                        except (ValueError, IndexError):
+                            pass
+                    if pr_number <= 0:
+                        perf.state = "error"
+                        perf.error_reason = (
+                            f"Cannot post review: pr_url is missing or invalid ({perf.pr_url!r})"
+                        )
+                        return PerformerResponse(
+                            status="error", session_id=perf.session_id,
+                            reason=perf.error_reason,
+                        )
+                    owner, repo = perf.score.owner_repo
+                    token = perf.score.effective_github_token
+                    header_label = (
+                        "Bot Closer Review" if perf.role == "closing_review" else "Bot Review"
+                    )
+                    safe_body = _redact_secrets(review_raw[:1500])
+                    full_body = (
+                        f"{_persona_tag(perf.score, perf.role)}\n\n"
+                        f"**{header_label}: CHANGES REQUESTED**\n\n"
+                        "_(Backend did not return a structured verdict; recording its "
+                        "notes verbatim.)_\n\n"
+                        f"{safe_body}"
+                    )
+                    try:
+                        await post_pull_request_review(
+                            owner, repo, pr_number, event="COMMENT",
+                            body=full_body, comments=[], token=token,
+                        )
+                    except Exception as exc:
+                        log.warning("reviewer.lenient_post_failed", error=str(exc))
+                    max_cycles = settings.REVIEWER_MAX_CYCLES if settings else 3
+                    perf.review_cycle += 1
+                    if perf.review_cycle >= max_cycles:
+                        summary = (
+                            f"Review cycle limit reached ({perf.review_cycle}). "
+                            "Unresolved issues remain."
+                        )
+                        perf.state = "blocked"
+                        perf.open_questions = [summary]
+                        return PerformerResponse(
+                            status="blocked", session_id=perf.session_id,
+                            questions=[summary],
+                        )
+                    perf.review_comments = []
+                    perf.state = "changes_requested"
+                    return PerformerResponse(
+                        status="changes_requested", session_id=perf.session_id,
+                        body=safe_body or None,
+                    )
+
                 return await _handle_backend_parse_failure(
                     perf, review_raw, "review", settings,
                     "could not be parsed as a JSON object",
+                    lenient_fallback=_reviewer_lenient_changes,
                 )
 
             is_approved = review_output.get("approved") is True  # strict bool check
@@ -1570,7 +1787,7 @@ async def handle_status(
             owner, repo = perf.score.owner_repo
             token = perf.score.effective_github_token
             header_label = "Bot Closer Review" if perf.role == "closing_review" else "Bot Review"
-            full_body = f"**{header_label}: {verdict}**\n\n{review_body}"
+            full_body = f"{_persona_tag(perf.score, perf.role)}\n\n**{header_label}: {verdict}**\n\n{review_body}"
             await post_pull_request_review(
                 owner, repo, pr_number, event=event,
                 body=full_body, comments=comments, token=token,
@@ -1699,7 +1916,7 @@ async def handle_status(
                     if fp in seen_fingerprints:
                         log.info("advisory_comment_skipped_dedup", category=cat, severity=sev, fingerprint=fp)
                         continue
-                    body = f"[Advisory - Security] **{cat}** ({sev})\n\n{desc}"
+                    body = f"{_persona_tag(perf.score, perf.role)}\n\n[Advisory - Security] **{cat}** ({sev})\n\n{desc}"
                     try:
                         await post_pr_comment(owner, repo, pr_number, body=body, token=token)
                         seen_fingerprints.add(fp)
@@ -1880,7 +2097,15 @@ async def handle_status(
                     })
                     log.warning("qa.freshness_check_failed", error=str(_exc))
 
-            qa_passed_flag = (not failures) and (not env_error)
+            # 077 (pipeline-tolerant): split environmental incapability (couldn't
+            # run tests / no browser / no DB / missing binary) from real code
+            # defects. QA blocks ONLY on defects it actually found; environmental
+            # limits are advisory so a card isn't trapped by a container that
+            # can't verify it. A FAILED verdict must mean "checked and broken",
+            # not "couldn't check".
+            defect_failures = [f for f in failures if not _qa_failure_is_environmental(f)]
+            env_limited = bool(env_error) or len(defect_failures) < len(failures)
+            qa_passed_flag = not defect_failures
 
             # Commit QA report to the architecture folder
             folder = _doc_folder(perf.score)
@@ -2002,21 +2227,24 @@ async def handle_status(
                         exc_info=True,
                     )
 
-            # Check for environment failure before acceptance criteria
-            if env_error:
-                perf.state = "blocked"
-                perf.open_questions = [env_error]
-                return PerformerResponse(
-                    status="blocked",
-                    session_id=perf.session_id,
-                    questions=[env_error],
-                )
-
-            if not failures:
+            # 077: env_error and environmental failures are ADVISORY — they no
+            # longer hard-block QA. The lifecycle only stops for real defects
+            # (defect_failures). If QA couldn't verify due to the container's
+            # limits, it passes DEGRADED with the limitation recorded.
+            if not defect_failures:
+                if env_limited:
+                    log.warning(
+                        "qa.env_limited_advisory_pass",
+                        session_id=perf.session_id,
+                        env_error=(env_error or "")[:200],
+                        env_failure_count=len(failures) - len(defect_failures),
+                    )
                 perf.state = "qa_passed"
                 perf.qa_report = {
                     "criteria_checked": qa_output.get("criteria_checked", 0),
                     "criteria_passed": qa_output.get("criteria_passed", 0),
+                    "env_limited": env_limited,
+                    "environment_error": env_error or None,
                     "new_tests_added": len(perf.qa_new_tests),
                     "verification_steps": verification_steps,
                     "pre_fix_repro_steps": pre_fix_repro_steps,
@@ -2034,11 +2262,12 @@ async def handle_status(
                     report=perf.qa_report,
                 )
 
-            # Failures exist
+            # Real code defects exist → changes_requested / block (as before).
+            # Only defect_failures count; environmental limits were advisory above.
             max_cycles = settings.QA_MAX_CYCLES if settings else 3
             perf.qa_cycle += 1
             if perf.qa_cycle >= max_cycles:
-                summary = f"QA: {len(failures)} acceptance criterion failure(s) after {perf.qa_cycle} fix attempt(s)"
+                summary = f"QA: {len(defect_failures)} acceptance criterion failure(s) after {perf.qa_cycle} fix attempt(s)"
                 perf.state = "blocked"
                 perf.open_questions = [summary]
                 return PerformerResponse(
@@ -2046,7 +2275,7 @@ async def handle_status(
                     session_id=perf.session_id,
                     questions=[summary],
                 )
-            perf.qa_failures = [f for f in failures if isinstance(f, dict)]
+            perf.qa_failures = [f for f in defect_failures if isinstance(f, dict)]
             perf.state = "qa_failed"
             _fail_report: dict | None = {"qa_freshness_check": qa_freshness_check} if qa_freshness_check else None
             return PerformerResponse(
@@ -2118,6 +2347,44 @@ async def handle_status(
         # surface as backend_status.state == "error" and route through the
         # generic error path elsewhere in this function.
         if perf.role == "env_bootstrap":
+            # 077 (Tier 2): confirm the install actually worked before reporting
+            # success. The agent wrote verify.sh asserting every documented
+            # dependency is present + runnable; a non-zero exit means a silent
+            # install failure (e.g. apt-get located no package), so we FAIL the
+            # bootstrap here. The coordinare's on_bootstrap_complete(success=False)
+            # path then clears readme_sha and retries — instead of marking a
+            # broken cache "ready". A missing verify.sh is treated as a degraded
+            # (legacy) bootstrap: logged, not failed.
+            from performer.workspace import run_env_cache_verify
+
+            verify_passed, verify_detail = await run_env_cache_verify(
+                perf.score.env_cache_path,
+                getattr(perf.stand, "cache_env", None),
+            )
+            if verify_passed is False:
+                perf.state = "error"
+                perf.error_reason = (
+                    "env-cache verification failed (verify.sh non-zero): "
+                    f"{verify_detail[-600:]}"
+                )
+                log.warning(
+                    "env_bootstrap.verify_failed",
+                    session_id=perf.session_id,
+                    detail=verify_detail[-300:],
+                )
+                return PerformerResponse(
+                    status="error",
+                    session_id=perf.session_id,
+                    reason=perf.error_reason,
+                )
+            if verify_passed is None:
+                log.warning(
+                    "env_bootstrap.verify_script_missing",
+                    session_id=perf.session_id,
+                    detail="verify.sh not written by bootstrap agent; "
+                    "cannot confirm install — proceeding as degraded",
+                )
+
             inference_timeout = get_settings().SERVICE_INFERENCE_TIMEOUT
             try:
                 perf.inference_state = await asyncio.wait_for(

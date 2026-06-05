@@ -1,0 +1,23 @@
+{
+  "row": {
+    "role": "assessor",
+    "endpoint": "openclaw-ephemeral",
+    "backend": "openclaw",
+    "model": "qwen2.5:32b",
+    "category": "FAIL_MODEL",
+    "status": "assessment_complete",
+    "markers": [],
+    "detail": "questions=0 sufficient=None",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent failed to flag the request as insufficient and did not ask clarifying questions.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  },
+  "state": "succeeded",
+  "error_code": null,
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"assessment_complete\",\"session_id\":\"1e4cdc79-7f69-434e-9254-0b8f9f9260cf\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "\nadded 285 packages in 14s\nINFO:     172.66.0.243:40455 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-04 01:26:07 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:63007 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:54088 - \"GET /jobs/9c37415105ff433ab9655a7b4f9ef5f8 HTTP/1.1\" 200 OK\n2026-06-04 01:26:08 [info     ] clone_repository.new_branch    branch=bench-assessor-ef2df18f\n2026-06-04 01:26:08 [info     ] cloned repository              branch=bench-assessor-ef2df18f repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-04 01:26:08 [info     ] openclaw.provider_config_written base_url=http://192.168.3.30:11434/v1 path=/root/.openclaw/openclaw.json provider=sparkollama\n2026-06-04 01:26:08 [info     ] openclaw.workspace_linked      workspace=/tmp/performer-cz0i_cq9\n2026-06-04 01:26:08 [info     ] openclaw.persona_to_soul       chars=130\n2026-06-04 01:26:08 [info     ] openclaw.card_docs_written     chars=182 path=/tmp/performer-cz0i_cq9/CARD.md\n2026-06-04 01:26:08 [info     ] openclaw starting              model=sparkollama/qwen2.5:32b provider_routed=True session_key=coordinare-assessing-8ced11d8\n2026-06-04 01:26:08 [info     ] openclaw started               model=sparkollama/qwen2.5:32b pid=87\n2026-06-04 01:26:08 [info     ] dispatch accepted              session_id=1e4cdc79-7f69-434e-9254-0b8f9f9260cf\nINFO:     172.66.0.243:60399 - \"GET /jobs/9c37415105ff433ab9655a7b4f9ef5f8 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:34033 - \"GET /jobs/9c37415105ff433ab9655a7b4f9ef5f8 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:39026 - \"GET /jobs/9c37415105ff433ab9655a7b4f9ef5f8 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:33998 - \"GET /jobs/9c37415105ff433ab9655a7b4f9ef5f8 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:24540 - \"GET /jobs/9c37415105ff433ab9655a7b4f9ef5f8 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:38216 - \"GET /jobs/9c37415105ff433ab9655a7b4f9ef5f8 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:61532 - \"GET /jobs/9c37415105ff433ab9655a7b4f9ef5f8 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:61416 - \"GET /jobs/9c37415105ff433ab9655a7b4f9ef5f8 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:55612 - \"GET /jobs/9c37415105ff433ab9655a7b4f9ef5f8 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:20400 - \"GET /jobs/9c37415105ff433ab9655a7b4f9ef5f8 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:53792 - \"GET /jobs/9c37415105ff433ab9655a7b4f9ef5f8 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:18766 - \"GET /jobs/9c37415105ff433ab9655a7b4f9ef5f8 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:27854 - \"GET /jobs/9c37415105ff433ab9655a7b4f9ef5f8 HTTP/1.1\" 200 OK\n2026-06-04 01:27:15 [info     ] commit_file.committed          branch=bench-assessor-ef2df18f path=docs/cards/add-a-customer-loyal/assessment.md\n2026-06-04 01:27:15 [info     ] assessor.assessment_committed  path=docs/cards/add-a-customer-loyal/assessment.md\n2026-06-04 01:27:15 [info     ] openclaw stopped\n2026-06-04 01:27:15 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-cz0i_cq9\nINFO:     172.66.0.243:31550 - \"GET /jobs/9c37415105ff433ab9655a7b4f9ef5f8 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

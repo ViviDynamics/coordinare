@@ -1,0 +1,23 @@
+{
+  "row": {
+    "role": "reviewer",
+    "endpoint": "claude-ephemeral",
+    "backend": "claude_code",
+    "model": "spark/deepseek-r1:70b",
+    "category": "FAIL_MODEL",
+    "status": "changes_requested",
+    "markers": [],
+    "detail": "status=changes_requested",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "changes_requested",
+    "state": "failed",
+    "log_file": null
+  },
+  "state": "failed",
+  "error_code": "changes_requested",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"changes_requested\",\"session_id\":\"61c6cb49-d5d2-4288-862c-dad5f98e5adf\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "Setting up Claude Code...\n\nChecking installation status...\nInstalling Claude Code native build latest...\nSetting up launcher and shell integration...\n\u2714 Claude Code successfully installed!\n\n  Version: 2.1.162\n\n  Location: ~/.local/bin/claude\n\n\n  Next: Run claude --help to get started\n\n\u2705 Installation complete!\n\nINFO:     172.66.0.243:51746 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-04 04:06:49 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\n2026-06-04 04:06:49 [warning  ] secret_missing                 name=ANTHROPIC_API_KEY\n2026-06-04 04:06:49 [info     ] secret_resolved                name=ANTHROPIC_AUTH_TOKEN source=init_payload\nINFO:     172.66.0.243:38980 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:39277 - \"GET /jobs/dc9323c032a447f7baa57100f1756b61 HTTP/1.1\" 200 OK\n2026-06-04 04:06:50 [info     ] clone_repository.existing_branch branch=fix/reviewer-offbyone\n2026-06-04 04:06:50 [info     ] cloned repository              branch=fix/reviewer-offbyone repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-04 04:06:50 [info     ] claude_code shim listening     port=33469\n2026-06-04 04:06:50 [info     ] claude code started            pid=101 resume=False\n2026-06-04 04:06:50 [info     ] claude_code shim request       latency_ms=20 method=HEAD path=/ status=200\n2026-06-04 04:06:50 [info     ] dispatch accepted              session_id=61c6cb49-d5d2-4288-862c-dad5f98e5adf\n2026-06-04 04:06:50 [debug    ] claude code session captured   session_id=56c49e1c-e7fc-4fda-9fc8-479f3628238f\n2026-06-04 04:06:51 [info     ] claude_code shim request       latency_ms=167 method=POST path=/v1/messages status=400\n2026-06-04 04:06:53 [info     ] review posted                  owner=ViviDynamics pr_number=1 repo=conductor-bench review_event=COMMENT\nINFO:     172.66.0.243:48972 - \"GET /jobs/dc9323c032a447f7baa57100f1756b61 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:44828 - \"GET /jobs/dc9323c032a447f7baa57100f1756b61 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:38388 - \"GET /jobs/dc9323c032a447f7baa57100f1756b61 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:44442 - \"GET /jobs/dc9323c032a447f7baa57100f1756b61 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:37041 - \"GET /jobs/dc9323c032a447f7baa57100f1756b61 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:33927 - \"GET /jobs/dc9323c032a447f7baa57100f1756b61 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:35852 - \"GET /jobs/dc9323c032a447f7baa57100f1756b61 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:28446 - \"GET /jobs/dc9323c032a447f7baa57100f1756b61 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:28621 - \"GET /jobs/dc9323c032a447f7baa57100f1756b61 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:51782 - \"GET /jobs/dc9323c032a447f7baa57100f1756b61 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:19195 - \"GET /jobs/dc9323c032a447f7baa57100f1756b61 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:51928 - \"GET /jobs/dc9323c032a447f7baa57100f1756b61 HTTP/1.1\" 200 OK\n2026-06-04 04:07:53 [warning  ] claude_code shim upstream error error=ServerDisconnectedError path=/v1/messages\n2026-06-04 04:07:53 [info     ] claude code stopped\n2026-06-04 04:07:53 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-f5os5pyr\nINFO:     172.66.0.243:46801 - \"GET /jobs/dc9323c032a447f7baa57100f1756b61 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

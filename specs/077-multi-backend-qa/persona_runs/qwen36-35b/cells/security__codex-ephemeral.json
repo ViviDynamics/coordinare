@@ -1,0 +1,25 @@
+{
+  "row": {
+    "role": "security",
+    "endpoint": "codex-ephemeral",
+    "backend": "codex",
+    "model": "spark/qwen3.6:35b",
+    "category": "FAIL_MODEL",
+    "status": "security_passed",
+    "markers": [
+      "PASSED_VULN_PR"
+    ],
+    "detail": "status=security_passed",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent incorrectly marked the PR as security_passed despite the known SQL injection and eval vulnerabilities.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  },
+  "state": "succeeded",
+  "error_code": null,
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"security_passed\",\"session_id\":\"e8e4d75c-321b-435d-a3f7-e7a49cae9179\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "\nadded 2 packages in 3s\nINFO:     172.66.0.243:33763 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-03 15:54:22 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\n2026-06-03 15:54:22 [info     ] secret_resolved                name=OPENAI_API_KEY source=init_payload\nINFO:     172.66.0.243:22440 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:39521 - \"GET /jobs/bc2c860464b1406d8d2eac9a87e86fac HTTP/1.1\" 200 OK\n2026-06-03 15:54:23 [info     ] clone_repository.existing_branch branch=feat/security-sqli\n2026-06-03 15:54:23 [info     ] cloned repository              branch=feat/security-sqli repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-03 15:54:24 [debug    ] codex app-server ready         port=50725\n2026-06-03 15:54:24 [info     ] codex thread started           port=50725 thread_id=019e8e31-6bc1-71d0-93b2-2dbb2ac458a6\n2026-06-03 15:54:24 [info     ] codex turn started             turn_id=019e8e31-6be6-7a53-aab9-24ca4eadd10a\n2026-06-03 15:54:24 [info     ] dispatch accepted              session_id=e8e4d75c-321b-435d-a3f7-e7a49cae9179\nINFO:     172.66.0.243:48165 - \"GET /jobs/bc2c860464b1406d8d2eac9a87e86fac HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:46070 - \"GET /jobs/bc2c860464b1406d8d2eac9a87e86fac HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:26641 - \"GET /jobs/bc2c860464b1406d8d2eac9a87e86fac HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:56190 - \"GET /jobs/bc2c860464b1406d8d2eac9a87e86fac HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:64371 - \"GET /jobs/bc2c860464b1406d8d2eac9a87e86fac HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:50702 - \"GET /jobs/bc2c860464b1406d8d2eac9a87e86fac HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:23270 - \"GET /jobs/bc2c860464b1406d8d2eac9a87e86fac HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:33651 - \"GET /jobs/bc2c860464b1406d8d2eac9a87e86fac HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:58100 - \"GET /jobs/bc2c860464b1406d8d2eac9a87e86fac HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:38588 - \"GET /jobs/bc2c860464b1406d8d2eac9a87e86fac HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:39167 - \"GET /jobs/bc2c860464b1406d8d2eac9a87e86fac HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:41950 - \"GET /jobs/bc2c860464b1406d8d2eac9a87e86fac HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:56915 - \"GET /jobs/bc2c860464b1406d8d2eac9a87e86fac HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:43964 - \"GET /jobs/bc2c860464b1406d8d2eac9a87e86fac HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:31552 - \"GET /jobs/bc2c860464b1406d8d2eac9a87e86fac HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:50189 - \"GET /jobs/bc2c860464b1406d8d2eac9a87e86fac HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:58925 - \"GET /jobs/bc2c860464b1406d8d2eac9a87e86fac HTTP/1.1\" 200 OK\n2026-06-03 15:55:52 [warning  ] backend.invalid_output.retrying attempt=1 failure_reason='could not be parsed as a JSON object' max_retries=1 output_preview='Now I have full context on the code, the fix, and prior review findings. Here is my security review:\\n\\n```json\\n{\\n  \"role\": \"security_reviewer\",\\n  \"card\": \"security-review-user\",\\n  \"review\": {\\n    \"scop' stage=security\nINFO:     172.66.0.243:62155 - \"GET /jobs/bc2c860464b1406d8d2eac9a87e86fac HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:56064 - \"GET /jobs/bc2c860464b1406d8d2eac9a87e86fac HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:18679 - \"GET /jobs/bc2c860464b1406d8d2eac9a87e86fac HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:40906 - \"GET /jobs/bc2c860464b1406d8d2eac9a87e86fac HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:27884 - \"GET /jobs/bc2c860464b1406d8d2eac9a87e86fac HTTP/1.1\" 200 OK\n2026-06-03 15:56:13 [info     ] commit_file.committed          branch=feat/security-sqli path=docs/cards/security-review-user/security.md\n2026-06-03 15:56:13 [info     ] codex app-server stopped\n2026-06-03 15:56:13 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-zvyzfwpm\nINFO:     172.66.0.243:53769 - \"GET /jobs/bc2c860464b1406d8d2eac9a87e86fac HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

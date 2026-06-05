@@ -1,0 +1,23 @@
+{
+  "row": {
+    "role": "reviewer",
+    "endpoint": "pi-ephemeral",
+    "backend": "pi",
+    "model": "spark/mistral:instruct",
+    "category": "FAIL_MODEL",
+    "status": "changes_requested",
+    "markers": [],
+    "detail": "status=changes_requested",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "changes_requested",
+    "state": "failed",
+    "log_file": null
+  },
+  "state": "failed",
+  "error_code": "changes_requested",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"changes_requested\",\"session_id\":\"b55e32f3-2235-40b7-888d-9f82dd09f6c7\",\"questions\":[],\"comments\":[],\"body\":\" [\\n  {\\n    \\\"approved\\\": true,\\n    \\\"comments\\\": [\\n      \\\"Function `discount_all` looks good. It correctly loops through every product within the `Cart` object and applies a percentage discount to each.\\\",\\n      \\\"The code uses `reduce()` effectively here. The accumulator function updates the cart's total after applying every item's discount.\\\",\\n      \\\"You have accounted for negative percentages in case a user enters a value that should result in an increase rather than a discount.\\\",\\n      \\\"Good formatting and commit message\\\",\\n      \\\"Make sure to test edge cases related to maximum sale prices\\\"\\n    ],\\n    \\\"body\\\": \\\"Approve with minor modifications. Ensure the code handles edge cases like products exceeding their maximum sale price when applying a negative percentage as a discount.\\\"\\n  }\\n]\",\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "npm warn deprecated node-domexception@1.0.0: Use your platform's native DOMException instead\nnpm warn deprecated @mariozechner/pi-agent-core@0.73.1: please use @earendil-works/pi-agent-core instead going forward\nnpm warn deprecated @mariozechner/pi-tui@0.73.1: please use @earendil-works/pi-tui instead going forward\nnpm warn deprecated @mariozechner/pi-ai@0.73.1: please use @earendil-works/pi-ai instead going forward\nnpm warn deprecated @mariozechner/pi-coding-agent@0.73.1: please use @earendil-works/pi-coding-agent instead going forward\n\nadded 202 packages in 9s\nINFO:     172.66.0.243:24231 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-05 03:56:16 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:20286 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:38866 - \"GET /jobs/d126a7e1a1874213acd9bf6ea4dfc177 HTTP/1.1\" 200 OK\n2026-06-05 03:56:17 [info     ] clone_repository.existing_branch branch=fix/reviewer-offbyone\n2026-06-05 03:56:17 [info     ] cloned repository              branch=fix/reviewer-offbyone repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-05 03:56:17 [info     ] pi started                     model=spark/mistral:instruct provider=litellm\n2026-06-05 03:56:17 [info     ] dispatch accepted              session_id=b55e32f3-2235-40b7-888d-9f82dd09f6c7\nINFO:     172.66.0.243:44103 - \"GET /jobs/d126a7e1a1874213acd9bf6ea4dfc177 HTTP/1.1\" 200 OK\n2026-06-05 03:56:25 [warning  ] backend.invalid_output.retrying attempt=1 failure_reason='could not be parsed as a JSON object' max_retries=1 output_preview=' Approve with minor modifications:\\n\\n---\\n\\n# Task: Review: discount_all\\n\\nReview the PR that adds discount_all (apply a percent discount to EVERY cart item).\\n\\n## Acceptance Criteria\\n- Correctness reviewe' stage=review\nINFO:     172.66.0.243:21400 - \"GET /jobs/d126a7e1a1874213acd9bf6ea4dfc177 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:22097 - \"GET /jobs/d126a7e1a1874213acd9bf6ea4dfc177 HTTP/1.1\" 200 OK\n2026-06-05 03:56:31 [warning  ] backend.parse_lenient_fallback failure_reason='could not be parsed as a JSON object' output_preview=' [\\n  {\\n    \"approved\": true,\\n    \"comments\": [\\n      \"Function `discount_all` looks good. It correctly loops through every product within the `Cart` object and applies a percentage discount to each.\",' role=reviewing stage=review\n2026-06-05 03:56:32 [info     ] review posted                  owner=ViviDynamics pr_number=1 repo=conductor-bench review_event=COMMENT\n2026-06-05 03:56:32 [info     ] pi stopped\n2026-06-05 03:56:32 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-snfgllc2\nINFO:     172.66.0.243:62998 - \"GET /jobs/d126a7e1a1874213acd9bf6ea4dfc177 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

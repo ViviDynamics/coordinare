@@ -1,0 +1,23 @@
+{
+  "row": {
+    "role": "reviewer",
+    "endpoint": "codex-ephemeral",
+    "backend": "codex",
+    "model": "spark/qwen3-coder:30b",
+    "category": "FAIL_MODEL",
+    "status": "changes_requested",
+    "markers": [],
+    "detail": "status=changes_requested",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "changes_requested",
+    "state": "failed",
+    "log_file": null
+  },
+  "state": "failed",
+  "error_code": "changes_requested",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"changes_requested\",\"session_id\":\"7e807ad0-7f0f-4e58-b0ef-14e585c3839c\",\"questions\":[],\"comments\":[{\"body\":\"I need to examine the actual code changes in the PR to properly review the discount_all feature implementation. The review cannot be completed without seeing the code modifications that add the discount_all functionality to apply a percent discount to every cart item.\"}],\"body\":\"Unable to review PR for discount_all feature as the actual code changes are not provided in the review request. Need to see the implementation details to assess correctness of applying a percent discount to every cart item.\",\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "\nadded 2 packages in 3s\nINFO:     172.66.0.243:59279 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-04 00:20:48 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\n2026-06-04 00:20:48 [info     ] secret_resolved                name=OPENAI_API_KEY source=init_payload\nINFO:     172.66.0.243:61275 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:25487 - \"GET /jobs/b6fbc94e221d4e6cb32dc8cfa9d745b3 HTTP/1.1\" 200 OK\n2026-06-04 00:20:49 [info     ] clone_repository.existing_branch branch=fix/reviewer-offbyone\n2026-06-04 00:20:49 [info     ] cloned repository              branch=fix/reviewer-offbyone repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-04 00:20:49 [debug    ] codex app-server ready         port=58141\n2026-06-04 00:20:49 [info     ] codex thread started           port=58141 thread_id=019e9001-1134-7532-bbc6-1716c30fd667\n2026-06-04 00:20:49 [info     ] codex turn started             turn_id=019e9001-115d-7080-9db9-2d58d0561311\n2026-06-04 00:20:49 [info     ] dispatch accepted              session_id=7e807ad0-7f0f-4e58-b0ef-14e585c3839c\nINFO:     172.66.0.243:23226 - \"GET /jobs/b6fbc94e221d4e6cb32dc8cfa9d745b3 HTTP/1.1\" 200 OK\n2026-06-04 00:20:55 [warning  ] backend.invalid_output.retrying attempt=1 failure_reason='could not be parsed as a JSON object' max_retries=1 output_preview=\"I'll review the PR for the discount_all feature that applies a percent discount to every cart item. Let me start by examining the code changes.\" stage=review\nINFO:     172.66.0.243:19881 - \"GET /jobs/b6fbc94e221d4e6cb32dc8cfa9d745b3 HTTP/1.1\" 200 OK\n2026-06-04 00:21:00 [info     ] review posted                  owner=ViviDynamics pr_number=1 repo=conductor-bench review_event=COMMENT\n2026-06-04 00:21:00 [info     ] codex app-server stopped\n2026-06-04 00:21:00 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-9iwwusn8\nINFO:     172.66.0.243:19587 - \"GET /jobs/b6fbc94e221d4e6cb32dc8cfa9d745b3 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

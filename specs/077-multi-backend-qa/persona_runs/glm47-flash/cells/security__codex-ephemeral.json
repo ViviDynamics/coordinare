@@ -1,0 +1,25 @@
+{
+  "row": {
+    "role": "security",
+    "endpoint": "codex-ephemeral",
+    "backend": "codex",
+    "model": "spark/glm-4.7-flash:latest",
+    "category": "FAIL_MODEL",
+    "status": "security_passed",
+    "markers": [
+      "PASSED_VULN_PR"
+    ],
+    "detail": "status=security_passed",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "It incorrectly marked the PR as passed and did not flag the SQL injection or eval vulnerabilities.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  },
+  "state": "succeeded",
+  "error_code": null,
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"security_passed\",\"session_id\":\"d46ce77c-d353-4161-a6c3-bea3578ccfbe\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "\nadded 2 packages in 4s\nINFO:     172.66.0.243:47494 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-03 18:10:23 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\n2026-06-03 18:10:23 [info     ] secret_resolved                name=OPENAI_API_KEY source=init_payload\nINFO:     172.66.0.243:50451 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:38974 - \"GET /jobs/6e6fe8764f3d4e07b2e54c41ff691517 HTTP/1.1\" 200 OK\n2026-06-03 18:10:25 [info     ] clone_repository.existing_branch branch=feat/security-sqli\n2026-06-03 18:10:25 [info     ] cloned repository              branch=feat/security-sqli repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-03 18:10:25 [debug    ] codex app-server ready         port=48791\n2026-06-03 18:10:25 [info     ] codex thread started           port=48791 thread_id=019e8ead-f3eb-7963-b3ba-7725e3bd9142\n2026-06-03 18:10:25 [info     ] codex turn started             turn_id=019e8ead-f41a-77b1-a713-42754bf0482b\n2026-06-03 18:10:25 [info     ] dispatch accepted              session_id=d46ce77c-d353-4161-a6c3-bea3578ccfbe\nINFO:     172.66.0.243:48766 - \"GET /jobs/6e6fe8764f3d4e07b2e54c41ff691517 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:60729 - \"GET /jobs/6e6fe8764f3d4e07b2e54c41ff691517 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:49491 - \"GET /jobs/6e6fe8764f3d4e07b2e54c41ff691517 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:29771 - \"GET /jobs/6e6fe8764f3d4e07b2e54c41ff691517 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:39295 - \"GET /jobs/6e6fe8764f3d4e07b2e54c41ff691517 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:62677 - \"GET /jobs/6e6fe8764f3d4e07b2e54c41ff691517 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:23081 - \"GET /jobs/6e6fe8764f3d4e07b2e54c41ff691517 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:29744 - \"GET /jobs/6e6fe8764f3d4e07b2e54c41ff691517 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:64535 - \"GET /jobs/6e6fe8764f3d4e07b2e54c41ff691517 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:29916 - \"GET /jobs/6e6fe8764f3d4e07b2e54c41ff691517 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:25023 - \"GET /jobs/6e6fe8764f3d4e07b2e54c41ff691517 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:25370 - \"GET /jobs/6e6fe8764f3d4e07b2e54c41ff691517 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:53496 - \"GET /jobs/6e6fe8764f3d4e07b2e54c41ff691517 HTTP/1.1\" 200 OK\n2026-06-03 18:11:31 [info     ] commit_file.no_changes         path=docs/cards/security-review-user/security.md\n2026-06-03 18:11:31 [info     ] codex app-server stopped\n2026-06-03 18:11:31 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-rxtlqxhj\nINFO:     172.66.0.243:40405 - \"GET /jobs/6e6fe8764f3d4e07b2e54c41ff691517 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

@@ -182,6 +182,9 @@ class EnvCacheStateSnapshot(BaseModel):
     readme_sha: str | None = None
     last_bootstrap_at: datetime | None = None
     last_bootstrap_succeeded: bool | None = None
+    # 077: persist the failure reason so the dashboard shows it after a restart
+    # and the feedback-injection retry survives a restart.
+    last_bootstrap_error: str | None = None
     cache_dir_ready: bool = False
 
 

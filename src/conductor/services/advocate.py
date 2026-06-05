@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from coordinare.graph.attribution import coordinare_attribution
 from coordinare.metrics import METRICS
 from coordinare.models.advocate import (
     AdvocateAction,
@@ -371,7 +372,11 @@ class AdvocateService:
 
     async def _post_comment(self, issue_id: str, body: str) -> None:
         try:
-            await self._github.add_comment(issue_id, body)
+            # Advocate is the coordinare's community-issue persona — it acts on no
+            # lifecycle stage, so emit the bare-Coordinare attribution header
+            # (AdvocateConfig has no `.performers`, so harness/model resolve to "?").
+            header = coordinare_attribution(self._config, None)
+            await self._github.add_comment(issue_id, f"{header}\n\n{body}")
         except Exception as exc:
             logger.error("advocate_add_comment_failed", issue_id=issue_id, error=str(exc))
 

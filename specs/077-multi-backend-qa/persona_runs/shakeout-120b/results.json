@@ -1,0 +1,252 @@
+[
+  {
+    "role": "assessor",
+    "endpoint": "codex-ephemeral",
+    "backend": "codex",
+    "model": "spark/gpt-oss:120b",
+    "category": "FAIL_HARNESS",
+    "status": "dispatch_error",
+    "markers": [],
+    "detail": "questions=0 sufficient=None | harness:dispatch_error,WorkspaceSetupError",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": ""
+  },
+  {
+    "role": "assessor",
+    "endpoint": "opencode-ephemeral",
+    "backend": "opencode",
+    "model": "gpt-oss:120b",
+    "category": "FAIL_HARNESS",
+    "status": "dispatch_error",
+    "markers": [],
+    "detail": "questions=0 sufficient=None | harness:dispatch_error,WorkspaceSetupError",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": ""
+  },
+  {
+    "role": "architect",
+    "endpoint": "codex-ephemeral",
+    "backend": "codex",
+    "model": "spark/gpt-oss:120b",
+    "category": "FAIL_HARNESS",
+    "status": "dispatch_error",
+    "markers": [],
+    "detail": "plan=n src_files_changed=0 | harness:dispatch_error,WorkspaceSetupError",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": ""
+  },
+  {
+    "role": "architect",
+    "endpoint": "opencode-ephemeral",
+    "backend": "opencode",
+    "model": "gpt-oss:120b",
+    "category": "FAIL_HARNESS",
+    "status": "dispatch_error",
+    "markers": [],
+    "detail": "plan=n src_files_changed=0 | harness:dispatch_error,WorkspaceSetupError",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": ""
+  },
+  {
+    "role": "implementer",
+    "endpoint": "codex-ephemeral",
+    "backend": "codex",
+    "model": "spark/gpt-oss:120b",
+    "category": "ERROR",
+    "status": "error",
+    "markers": [],
+    "detail": "pytest_tail=NOPYTEST",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": ""
+  },
+  {
+    "role": "implementer",
+    "endpoint": "opencode-ephemeral",
+    "backend": "opencode",
+    "model": "gpt-oss:120b",
+    "category": "ERROR",
+    "status": "error",
+    "markers": [],
+    "detail": "pytest_tail=NOPYTEST",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": ""
+  },
+  {
+    "role": "reviewer",
+    "endpoint": "codex-ephemeral",
+    "backend": "codex",
+    "model": "spark/gpt-oss:120b",
+    "category": "FAIL_MODEL",
+    "status": "changes_requested",
+    "markers": [],
+    "detail": "status=changes_requested",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": ""
+  },
+  {
+    "role": "reviewer",
+    "endpoint": "opencode-ephemeral",
+    "backend": "opencode",
+    "model": "gpt-oss:120b",
+    "category": "PASS",
+    "status": "changes_requested",
+    "markers": [
+      "last item",
+      "range(len",
+      "skips",
+      "len(items) - 1"
+    ],
+    "detail": "status=changes_requested",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": ""
+  },
+  {
+    "role": "security",
+    "endpoint": "codex-ephemeral",
+    "backend": "codex",
+    "model": "spark/gpt-oss:120b",
+    "category": "FAIL_MODEL",
+    "status": "security_passed",
+    "markers": [
+      "PASSED_VULN_PR"
+    ],
+    "detail": "status=security_passed",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent incorrectly marked the PR as security_passed and did not flag the SQL injection or eval vulnerabilities."
+  },
+  {
+    "role": "security",
+    "endpoint": "opencode-ephemeral",
+    "backend": "opencode",
+    "model": "gpt-oss:120b",
+    "category": "FAIL_MODEL",
+    "status": "security_passed",
+    "markers": [
+      "PASSED_VULN_PR"
+    ],
+    "detail": "status=security_passed",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent incorrectly marked the PR as security_passed despite the known SQL injection and eval vulnerabilities."
+  },
+  {
+    "role": "qa",
+    "endpoint": "codex-ephemeral",
+    "backend": "codex",
+    "model": "spark/gpt-oss:120b",
+    "category": "FAIL_MODEL",
+    "status": "qa_passed",
+    "markers": [
+      "1_steps",
+      "RUBBER_STAMP"
+    ],
+    "detail": "status=qa_passed steps=1 found_bug=False",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent marked qa_passed without running the code or detecting the expected KeyError, indicating a rubber\u2011stamp QA."
+  },
+  {
+    "role": "qa",
+    "endpoint": "opencode-ephemeral",
+    "backend": "opencode",
+    "model": "gpt-oss:120b",
+    "category": "FAIL_HARNESS",
+    "status": "error",
+    "markers": [],
+    "detail": "status=error steps=0 found_bug=False | harness:BACKEND_FORMAT_ERROR",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": ""
+  },
+  {
+    "role": "tech_writer",
+    "endpoint": "codex-ephemeral",
+    "backend": "codex",
+    "model": "spark/gpt-oss:120b",
+    "category": "FAIL_MODEL",
+    "status": "docs_committed",
+    "markers": [],
+    "detail": "status=docs_committed doc_hits=False",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "Docs were committed but did not include any documentation for apply_coupon, so the required documentation was missing."
+  },
+  {
+    "role": "tech_writer",
+    "endpoint": "opencode-ephemeral",
+    "backend": "opencode",
+    "model": "gpt-oss:120b",
+    "category": "FAIL_MODEL",
+    "status": "docs_committed",
+    "markers": [],
+    "detail": "status=docs_committed doc_hits=False",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "No documentation for apply_coupon was actually added despite the docs_committed status."
+  },
+  {
+    "role": "closer",
+    "endpoint": "codex-ephemeral",
+    "backend": "codex",
+    "model": "spark/gpt-oss:120b",
+    "category": "PASS",
+    "status": "changes_requested",
+    "markers": [
+      "changes_requested"
+    ],
+    "detail": "status=changes_requested",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": ""
+  },
+  {
+    "role": "closer",
+    "endpoint": "opencode-ephemeral",
+    "backend": "opencode",
+    "model": "gpt-oss:120b",
+    "category": "PASS",
+    "status": "changes_requested",
+    "markers": [
+      "changes_requested"
+    ],
+    "detail": "status=changes_requested",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": ""
+  },
+  {
+    "role": "env_bootstrap",
+    "endpoint": "codex-ephemeral",
+    "backend": "codex",
+    "model": "spark/gpt-oss:120b",
+    "category": "FAIL_HARNESS",
+    "status": "dispatch_error",
+    "markers": [],
+    "detail": "status=dispatch_error pytest=missing | harness:dispatch_error,WorkspaceSetupError",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": ""
+  },
+  {
+    "role": "env_bootstrap",
+    "endpoint": "opencode-ephemeral",
+    "backend": "opencode",
+    "model": "gpt-oss:120b",
+    "category": "FAIL_HARNESS",
+    "status": "dispatch_error",
+    "markers": [],
+    "detail": "status=dispatch_error pytest=missing | harness:dispatch_error,WorkspaceSetupError",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": ""
+  }
+]

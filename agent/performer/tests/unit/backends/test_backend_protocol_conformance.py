@@ -12,7 +12,6 @@ import pytest
 from performer.backends.base import BackendAdapter
 from performer.backends.claude_code import ClaudeCodeBackend
 from performer.backends.codex import CodexBackend
-from performer.backends.cursor import CursorBackend
 from performer.backends.junie import JunieBackend
 from performer.backends.opencode import OpenCodeAdapter
 
@@ -33,7 +32,6 @@ _PROTOCOL_START_KWARGS = set(_kwonly_params(BackendAdapter.start))
 _CONCRETE_BACKENDS = [
     ClaudeCodeBackend,
     CodexBackend,
-    CursorBackend,
     JunieBackend,
     OpenCodeAdapter,
 ]

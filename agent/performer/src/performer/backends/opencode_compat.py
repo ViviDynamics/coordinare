@@ -48,7 +48,7 @@ from performer.backends._lcd_helpers import (
 )
 from performer.backends.base import BackendStatus
 from performer.io_utils import iter_lines_chunked
-from performer.models import BackendEvent, BackendEventType, Score, Stand
+from performer.models import DIAGNOSTIC_ROLE, BackendEvent, BackendEventType, Score, Stand
 
 log = structlog.get_logger(__name__)
 
@@ -680,7 +680,13 @@ def _build_task_prompt(
             elif isinstance(item, str):
                 parts.append(f"- {item}")
     parts += ["", "---"]
-    if score.role in _JSON_ONLY_ROLES:
+    if score.role == DIAGNOSTIC_ROLE:
+        parts += [
+            "This is a one-off diagnostic/benchmark task. Use any tools at your "
+            "disposal to complete it. You do NOT need to commit, push, or open a "
+            "pull request — just perform the task and report what you did.",
+        ]
+    elif score.role in _JSON_ONLY_ROLES:
         parts += [
             "Return ONLY a valid JSON object for your role contract.",
             "Do not include markdown, prose, or code fences.",

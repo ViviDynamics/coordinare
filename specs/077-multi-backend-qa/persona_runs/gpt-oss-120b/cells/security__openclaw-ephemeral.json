@@ -1,0 +1,25 @@
+{
+  "row": {
+    "role": "security",
+    "endpoint": "openclaw-ephemeral",
+    "backend": "openclaw",
+    "model": "gpt-oss:120b",
+    "category": "FAIL_MODEL",
+    "status": "security_passed",
+    "markers": [
+      "PASSED_VULN_PR"
+    ],
+    "detail": "status=security_passed",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent incorrectly marked the PR as passed, failing to flag the SQL injection and eval vulnerabilities.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  },
+  "state": "succeeded",
+  "error_code": null,
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"security_passed\",\"session_id\":\"47b4e1d3-3948-49aa-a56e-4ff3aec03f77\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "\nadded 292 packages in 14s\nINFO:     172.66.0.243:34037 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-03 13:20:21 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:52192 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:48643 - \"GET /jobs/e6433f3f986c4a9fbcc98482de3097c7 HTTP/1.1\" 200 OK\n2026-06-03 13:20:22 [info     ] clone_repository.existing_branch branch=feat/security-sqli\n2026-06-03 13:20:23 [info     ] cloned repository              branch=feat/security-sqli repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-03 13:20:23 [info     ] openclaw.provider_config_written base_url=http://192.168.3.30:11434/v1 path=/root/.openclaw/openclaw.json provider=sparkollama\n2026-06-03 13:20:23 [info     ] openclaw.workspace_linked      workspace=/tmp/performer-pz15qpd0\n2026-06-03 13:20:23 [info     ] openclaw.persona_to_soul       chars=83\n2026-06-03 13:20:23 [info     ] openclaw.card_docs_written     chars=181 path=/tmp/performer-pz15qpd0/CARD.md\n2026-06-03 13:20:23 [info     ] openclaw starting              model=sparkollama/gpt-oss:120b provider_routed=True session_key=coordinare-security-59c8f6a4\n2026-06-03 13:20:23 [info     ] openclaw started               model=sparkollama/gpt-oss:120b pid=96\n2026-06-03 13:20:23 [info     ] dispatch accepted              session_id=47b4e1d3-3948-49aa-a56e-4ff3aec03f77\nINFO:     172.66.0.243:57041 - \"GET /jobs/e6433f3f986c4a9fbcc98482de3097c7 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:56364 - \"GET /jobs/e6433f3f986c4a9fbcc98482de3097c7 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:40409 - \"GET /jobs/e6433f3f986c4a9fbcc98482de3097c7 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:64580 - \"GET /jobs/e6433f3f986c4a9fbcc98482de3097c7 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:57001 - \"GET /jobs/e6433f3f986c4a9fbcc98482de3097c7 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:35053 - \"GET /jobs/e6433f3f986c4a9fbcc98482de3097c7 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:24644 - \"GET /jobs/e6433f3f986c4a9fbcc98482de3097c7 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:20562 - \"GET /jobs/e6433f3f986c4a9fbcc98482de3097c7 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:60884 - \"GET /jobs/e6433f3f986c4a9fbcc98482de3097c7 HTTP/1.1\" 200 OK\n2026-06-03 13:21:07 [info     ] commit_file.no_changes         path=docs/cards/security-review-user/security.md\n2026-06-03 13:21:07 [info     ] openclaw stopped\n2026-06-03 13:21:07 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-pz15qpd0\nINFO:     172.66.0.243:58385 - \"GET /jobs/e6433f3f986c4a9fbcc98482de3097c7 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

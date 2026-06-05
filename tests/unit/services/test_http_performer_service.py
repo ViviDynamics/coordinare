@@ -919,7 +919,7 @@ async def test_dispatch_includes_anthropic_api_key_in_secrets(monkeypatch) -> No
 
 @pytest.mark.asyncio
 async def test_dispatch_injects_both_api_keys_for_opencode_backends(monkeypatch) -> None:
-    """opencode/junie/cursor receive both OPENAI_API_KEY and ANTHROPIC_API_KEY when set."""
+    """opencode/junie receive both OPENAI_API_KEY and ANTHROPIC_API_KEY when set."""
     payloads: list[dict] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -933,7 +933,7 @@ async def test_dispatch_injects_both_api_keys_for_opencode_backends(monkeypatch)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
 
-    for backend in ("opencode", "junie", "cursor"):
+    for backend in ("opencode", "junie"):
         payloads.clear()
         card = {**_card(), "backend": backend}
         svc = HTTPPerformerService(_persistent_config(), client=_client(handler))

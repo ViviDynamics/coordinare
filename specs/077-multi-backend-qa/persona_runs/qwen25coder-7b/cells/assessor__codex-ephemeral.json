@@ -1,0 +1,23 @@
+{
+  "row": {
+    "role": "assessor",
+    "endpoint": "codex-ephemeral",
+    "backend": "codex",
+    "model": "spark/qwen2.5-coder:7b",
+    "category": "FAIL_MODEL",
+    "status": "assessment_complete",
+    "markers": [],
+    "detail": "questions=0 sufficient=None",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent did not deem the request insufficient nor ask clarifying questions as required.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  },
+  "state": "succeeded",
+  "error_code": null,
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"assessment_complete\",\"session_id\":\"507464fb-502d-4a94-b4e9-88f98c414a22\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "\nadded 2 packages in 5s\nINFO:     172.66.0.243:44132 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-04 16:31:15 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\n2026-06-04 16:31:15 [info     ] secret_resolved                name=OPENAI_API_KEY source=init_payload\nINFO:     172.66.0.243:28848 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:65104 - \"GET /jobs/1ced2e96406540b5a30ca67c680d2207 HTTP/1.1\" 200 OK\n2026-06-04 16:31:16 [info     ] clone_repository.new_branch    branch=bench-assessor-435661b8\n2026-06-04 16:31:16 [info     ] cloned repository              branch=bench-assessor-435661b8 repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-04 16:31:16 [debug    ] codex app-server ready         port=48483\n2026-06-04 16:31:16 [info     ] codex thread started           port=48483 thread_id=019e9379-8953-7bc3-a3a8-4972976d3e47\n2026-06-04 16:31:16 [info     ] codex turn started             turn_id=019e9379-8978-7733-8f4f-9c8c878b32cd\n2026-06-04 16:31:16 [info     ] dispatch accepted              session_id=507464fb-502d-4a94-b4e9-88f98c414a22\nINFO:     172.66.0.243:54919 - \"GET /jobs/1ced2e96406540b5a30ca67c680d2207 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:29240 - \"GET /jobs/1ced2e96406540b5a30ca67c680d2207 HTTP/1.1\" 200 OK\n2026-06-04 16:31:29 [info     ] commit_file.committed          branch=bench-assessor-435661b8 path=docs/cards/add-a-customer-loyal/assessment.md\n2026-06-04 16:31:29 [info     ] assessor.assessment_committed  path=docs/cards/add-a-customer-loyal/assessment.md\n2026-06-04 16:31:29 [info     ] codex app-server stopped\n2026-06-04 16:31:29 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-3zfoeqev\nINFO:     172.66.0.243:40326 - \"GET /jobs/1ced2e96406540b5a30ca67c680d2207 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

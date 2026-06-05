@@ -1,0 +1,25 @@
+{
+  "row": {
+    "role": "tech_writer",
+    "endpoint": "codex-ephemeral",
+    "backend": "codex",
+    "model": "spark/deepcoder:14b",
+    "category": "ERROR",
+    "status": "error",
+    "markers": [
+      "docs_reference_coupon"
+    ],
+    "detail": "status=error doc_hits=True",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "error",
+    "state": "failed",
+    "log_file": null
+  },
+  "state": "failed",
+  "error_code": "error",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"error\",\"session_id\":\"1647ffbd-e36c-4ead-a759-9e6c2c53cd21\",\"reason\":\"{\\\"error\\\":{\\\"message\\\":\\\"litellm.BadRequestError: OpenAIException - {\\\\\\\"error\\\\\\\":{\\\\\\\"message\\\\\\\":\\\\\\\"registry.ollama.ai/library/deepcoder:14b does not support tools\\\\\\\",\\\\\\\"type\\\\\\\":\\\\\\\"invalid_request_error\\\\\\\",\\\\\\\"param\\\\\\\":null,\\\\\\\"code\\\\\\\":null}}\\\\n. Received Model Group=spark/deepcoder:14b\\\\nAvailable Model Group Fallbacks=None\\\",\\\"type\\\":null,\\\"param\\\":null,\\\"code\\\":\\\"400\\\"}}\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "\nadded 2 packages in 3s\nINFO:     172.66.0.243:30729 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-04 12:56:36 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\n2026-06-04 12:56:36 [info     ] secret_resolved                name=OPENAI_API_KEY source=init_payload\nINFO:     172.66.0.243:30916 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:56917 - \"GET /jobs/5808c1a4825d4366939627a6677df743 HTTP/1.1\" 200 OK\n2026-06-04 12:56:37 [info     ] clone_repository.existing_branch branch=feat/techwriter-nodoc\n2026-06-04 12:56:37 [info     ] cloned repository              branch=feat/techwriter-nodoc repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-04 12:56:37 [debug    ] codex app-server ready         port=47911\n2026-06-04 12:56:37 [info     ] codex thread started           port=47911 thread_id=019e92b5-0711-7042-9d33-21002f882de8\n2026-06-04 12:56:37 [info     ] codex turn started             turn_id=019e92b5-0734-79b1-bc16-5a81f5534dfa\n2026-06-04 12:56:37 [info     ] dispatch accepted              session_id=1647ffbd-e36c-4ead-a759-9e6c2c53cd21\n2026-06-04 12:56:39 [info     ] codex app-server stopped\n2026-06-04 12:56:39 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-tvla1lj2\nINFO:     172.66.0.243:36318 - \"GET /jobs/5808c1a4825d4366939627a6677df743 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

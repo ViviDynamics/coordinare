@@ -1,0 +1,23 @@
+{
+  "row": {
+    "role": "qa",
+    "endpoint": "codex-ephemeral",
+    "backend": "codex",
+    "model": "spark/qwen2.5:32b",
+    "category": "FAIL_HARNESS",
+    "status": "error",
+    "markers": [],
+    "detail": "status=error steps=0 found_bug=False | harness:BACKEND_FORMAT_ERROR",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "error",
+    "state": "failed",
+    "log_file": null
+  },
+  "state": "failed",
+  "error_code": "error",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"error\",\"session_id\":\"f8977969-6412-404d-a293-e7bb4817ed23\",\"reason\":\"BACKEND_FORMAT_ERROR: Backend QA output was empty after 2 attempts. Last output: ''\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "\nadded 2 packages in 3s\nINFO:     172.66.0.243:34344 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-04 02:48:54 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\n2026-06-04 02:48:54 [info     ] secret_resolved                name=OPENAI_API_KEY source=init_payload\nINFO:     172.66.0.243:32140 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:35760 - \"GET /jobs/fe5470da31b8431d847194b50d279286 HTTP/1.1\" 200 OK\n2026-06-04 02:48:55 [info     ] clone_repository.existing_branch branch=feat/qa-behavior\n2026-06-04 02:48:55 [info     ] cloned repository              branch=feat/qa-behavior repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-04 02:48:55 [debug    ] codex app-server ready         port=39817\n2026-06-04 02:48:55 [info     ] codex thread started           port=39817 thread_id=019e9088-a716-7ad0-a9a4-2cb45b614c2e\n2026-06-04 02:48:55 [info     ] codex turn started             turn_id=019e9088-a738-78e0-aff8-9265b0bfe619\n2026-06-04 02:48:55 [info     ] dispatch accepted              session_id=f8977969-6412-404d-a293-e7bb4817ed23\nINFO:     172.66.0.243:57998 - \"GET /jobs/fe5470da31b8431d847194b50d279286 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:31913 - \"GET /jobs/fe5470da31b8431d847194b50d279286 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:18778 - \"GET /jobs/fe5470da31b8431d847194b50d279286 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:43716 - \"GET /jobs/fe5470da31b8431d847194b50d279286 HTTP/1.1\" 200 OK\n2026-06-04 02:49:19 [warning  ] codex.turn_completed.empty_output accumulator_len=0 item_roles=[] item_types=[] raw_turn='{\"id\": \"019e9088-a738-78e0-aff8-9265b0bfe619\", \"items\": [], \"itemsView\": \"notLoaded\", \"status\": \"completed\", \"error\": null, \"startedAt\": 1780541335, \"completedAt\": 1780541359, \"durationMs\": 23777}' usage={}\nINFO:     172.66.0.243:56108 - \"GET /jobs/fe5470da31b8431d847194b50d279286 HTTP/1.1\" 200 OK\n2026-06-04 02:49:19 [warning  ] backend.invalid_output.retrying attempt=1 failure_reason='was empty' max_retries=1 output_preview= stage=QA\nINFO:     172.66.0.243:24143 - \"GET /jobs/fe5470da31b8431d847194b50d279286 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:40988 - \"GET /jobs/fe5470da31b8431d847194b50d279286 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:65249 - \"GET /jobs/fe5470da31b8431d847194b50d279286 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:50140 - \"GET /jobs/fe5470da31b8431d847194b50d279286 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:36868 - \"GET /jobs/fe5470da31b8431d847194b50d279286 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:48132 - \"GET /jobs/fe5470da31b8431d847194b50d279286 HTTP/1.1\" 200 OK\n2026-06-04 02:49:49 [warning  ] codex.turn_completed.empty_output accumulator_len=0 item_roles=[] item_types=[] raw_turn='{\"id\": \"019e9089-068f-7030-adfb-63810dbf4c19\", \"items\": [], \"itemsView\": \"notLoaded\", \"status\": \"completed\", \"error\": null, \"startedAt\": 1780541359, \"completedAt\": 1780541389, \"durationMs\": 29925}' usage={}\n2026-06-04 02:49:49 [info     ] codex app-server stopped\n2026-06-04 02:49:49 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-b6m7wt8a\nINFO:     172.66.0.243:37411 - \"GET /jobs/fe5470da31b8431d847194b50d279286 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

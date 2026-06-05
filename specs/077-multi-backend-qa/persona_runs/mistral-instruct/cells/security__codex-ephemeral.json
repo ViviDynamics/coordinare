@@ -1,0 +1,25 @@
+{
+  "row": {
+    "role": "security",
+    "endpoint": "codex-ephemeral",
+    "backend": "codex",
+    "model": "spark/mistral:instruct",
+    "category": "FAIL_MODEL",
+    "status": "security_passed",
+    "markers": [
+      "PASSED_VULN_PR"
+    ],
+    "detail": "status=security_passed",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "It marked the PR as security_passed and failed to flag the SQL injection and eval vulnerabilities.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  },
+  "state": "succeeded",
+  "error_code": null,
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"security_passed\",\"session_id\":\"19bb90d5-4e98-4028-b740-cfa8b82c52e6\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "\nadded 2 packages in 3s\nINFO:     172.66.0.243:59706 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-05 03:56:43 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\n2026-06-05 03:56:43 [info     ] secret_resolved                name=OPENAI_API_KEY source=init_payload\nINFO:     172.66.0.243:41124 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:27302 - \"GET /jobs/99880050137246e1ab46456c272bc8e0 HTTP/1.1\" 200 OK\n2026-06-05 03:56:44 [info     ] clone_repository.existing_branch branch=feat/security-sqli\n2026-06-05 03:56:44 [info     ] cloned repository              branch=feat/security-sqli repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-05 03:56:44 [debug    ] codex app-server ready         port=39445\n2026-06-05 03:56:44 [info     ] codex thread started           port=39445 thread_id=019e95ed-19f3-7471-a4f8-7045b755fadb\n2026-06-05 03:56:44 [info     ] codex turn started             turn_id=019e95ed-1a18-78f0-ac80-78119c5e531d\n2026-06-05 03:56:44 [info     ] dispatch accepted              session_id=19bb90d5-4e98-4028-b740-cfa8b82c52e6\nINFO:     172.66.0.243:56818 - \"GET /jobs/99880050137246e1ab46456c272bc8e0 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:37199 - \"GET /jobs/99880050137246e1ab46456c272bc8e0 HTTP/1.1\" 200 OK\n2026-06-05 03:56:54 [warning  ] backend.invalid_output.retrying attempt=1 failure_reason='could not be parsed as a JSON object' max_retries=1 output_preview=\" As requested, here's the structure for my final message when solving queries in this environment:\\n\\n1. Include relevant context from the `<environment_context>` section provided in the docstring at th\" stage=security\nINFO:     172.66.0.243:61501 - \"GET /jobs/99880050137246e1ab46456c272bc8e0 HTTP/1.1\" 200 OK\n2026-06-05 03:57:01 [info     ] commit_file.committed          branch=feat/security-sqli path=docs/cards/security-review-user/security.md\n2026-06-05 03:57:01 [info     ] codex app-server stopped\n2026-06-05 03:57:01 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-0yblsp21\nINFO:     172.66.0.243:20546 - \"GET /jobs/99880050137246e1ab46456c272bc8e0 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

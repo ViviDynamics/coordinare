@@ -1,0 +1,23 @@
+{
+  "row": {
+    "role": "qa",
+    "endpoint": "codex-ephemeral",
+    "backend": "codex",
+    "model": "spark/llama3.3-70b-iq4xs:latest",
+    "category": "ERROR",
+    "status": "error",
+    "markers": [],
+    "detail": "status=error steps=0 found_bug=False",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "error",
+    "state": "failed",
+    "log_file": null
+  },
+  "state": "failed",
+  "error_code": "error",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"error\",\"session_id\":\"bbaccb46-bb94-486c-9b9b-e669b209af02\",\"reason\":\"{\\\"error\\\":{\\\"message\\\":\\\"litellm.BadRequestError: OpenAIException - {\\\\\\\"error\\\\\\\":{\\\\\\\"message\\\\\\\":\\\\\\\"registry.ollama.ai/library/llama3.3-70b-iq4xs:latest does not support tools\\\\\\\",\\\\\\\"type\\\\\\\":\\\\\\\"invalid_request_error\\\\\\\",\\\\\\\"param\\\\\\\":null,\\\\\\\"code\\\\\\\":null}}\\\\n. Received Model Group=spark/llama3.3-70b-iq4xs:latest\\\\nAvailable Model Group Fallbacks=None\\\",\\\"type\\\":null,\\\"param\\\":null,\\\"code\\\":\\\"400\\\"}}\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "\nadded 2 packages in 3s\nINFO:     172.66.0.243:23868 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-05 02:38:38 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\n2026-06-05 02:38:38 [info     ] secret_resolved                name=OPENAI_API_KEY source=init_payload\nINFO:     172.66.0.243:20222 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:34512 - \"GET /jobs/ae380d556a9741839657c318c79dc251 HTTP/1.1\" 200 OK\n2026-06-05 02:38:39 [info     ] clone_repository.existing_branch branch=feat/qa-behavior\n2026-06-05 02:38:39 [info     ] cloned repository              branch=feat/qa-behavior repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-05 02:38:40 [debug    ] codex app-server ready         port=37855\n2026-06-05 02:38:40 [info     ] codex thread started           port=37855 thread_id=019e95a5-9fbd-76e3-bcc8-d168ef6a18b4\n2026-06-05 02:38:40 [info     ] codex turn started             turn_id=019e95a5-9fe2-7243-b71e-15fbb6f80e79\n2026-06-05 02:38:40 [info     ] dispatch accepted              session_id=bbaccb46-bb94-486c-9b9b-e669b209af02\n2026-06-05 02:38:42 [info     ] codex app-server stopped\n2026-06-05 02:38:42 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-b2iloano\nINFO:     172.66.0.243:16506 - \"GET /jobs/ae380d556a9741839657c318c79dc251 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

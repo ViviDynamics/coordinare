@@ -1,0 +1,23 @@
+{
+  "row": {
+    "role": "assessor",
+    "endpoint": "openclaw-ephemeral",
+    "backend": "openclaw",
+    "model": "mistral:instruct",
+    "category": "FAIL_MODEL",
+    "status": "assessment_complete",
+    "markers": [],
+    "detail": "questions=0 sufficient=None",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent did not flag the request as insufficient or ask clarifying questions, contrary to the rubric.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  },
+  "state": "succeeded",
+  "error_code": null,
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"assessment_complete\",\"session_id\":\"e015067c-54f6-4f43-9aec-c58dde86dc83\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "\nadded 285 packages in 14s\nINFO:     172.66.0.243:64881 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-05 03:35:59 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:54055 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:42909 - \"GET /jobs/ce4959c15ca94a82b36772b15fd98b43 HTTP/1.1\" 200 OK\n2026-06-05 03:36:00 [info     ] clone_repository.new_branch    branch=bench-assessor-e1eef211\n2026-06-05 03:36:00 [info     ] cloned repository              branch=bench-assessor-e1eef211 repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-05 03:36:00 [info     ] openclaw.provider_config_written base_url=http://192.168.3.30:11434/v1 path=/root/.openclaw/openclaw.json provider=sparkollama\n2026-06-05 03:36:00 [info     ] openclaw.workspace_linked      workspace=/tmp/performer-8a1umi_g\n2026-06-05 03:36:00 [info     ] openclaw.persona_to_soul       chars=130\n2026-06-05 03:36:00 [info     ] openclaw.card_docs_written     chars=182 path=/tmp/performer-8a1umi_g/CARD.md\n2026-06-05 03:36:00 [info     ] openclaw starting              model=sparkollama/mistral:instruct provider_routed=True session_key=coordinare-assessing-12bd525c\n2026-06-05 03:36:00 [info     ] openclaw started               model=sparkollama/mistral:instruct pid=87\n2026-06-05 03:36:00 [info     ] dispatch accepted              session_id=e015067c-54f6-4f43-9aec-c58dde86dc83\nINFO:     172.66.0.243:58097 - \"GET /jobs/ce4959c15ca94a82b36772b15fd98b43 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:38996 - \"GET /jobs/ce4959c15ca94a82b36772b15fd98b43 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:16430 - \"GET /jobs/ce4959c15ca94a82b36772b15fd98b43 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:60342 - \"GET /jobs/ce4959c15ca94a82b36772b15fd98b43 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:23773 - \"GET /jobs/ce4959c15ca94a82b36772b15fd98b43 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:41224 - \"GET /jobs/ce4959c15ca94a82b36772b15fd98b43 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:40410 - \"GET /jobs/ce4959c15ca94a82b36772b15fd98b43 HTTP/1.1\" 200 OK\n2026-06-05 03:36:38 [warning  ] backend.invalid_output.retrying attempt=1 failure_reason='could not be parsed as a JSON object' max_retries=1 output_preview='The following files have been injected for the current session context:\\n- /root/.openclaw/workspace/HEARTBEAT.md\\n- /root/.openclaw/workspace/AGENTS.md\\n- /root/.openclaw/workspace/SOUL.md\\n- /root/.open' stage=assessment\nINFO:     172.66.0.243:45113 - \"GET /jobs/ce4959c15ca94a82b36772b15fd98b43 HTTP/1.1\" 200 OK\n2026-06-05 03:36:40 [warning  ] backend.parse_lenient_fallback failure_reason='could not be parsed as a JSON object' output_preview='The following files have been injected for the current session context:\\n- /root/.openclaw/workspace/HEARTBEAT.md\\n- /root/.openclaw/workspace/AGENTS.md\\n- /root/.openclaw/workspace/SOUL.md\\n- /root/.open' role=assessing stage=assessment\n2026-06-05 03:36:41 [info     ] commit_file.committed          branch=bench-assessor-e1eef211 path=docs/cards/add-a-customer-loyal/assessment.md\n2026-06-05 03:36:41 [info     ] openclaw stopped\n2026-06-05 03:36:41 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-8a1umi_g\nINFO:     172.66.0.243:31290 - \"GET /jobs/ce4959c15ca94a82b36772b15fd98b43 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

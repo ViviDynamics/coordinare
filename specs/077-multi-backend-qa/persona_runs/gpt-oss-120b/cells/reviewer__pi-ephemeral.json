@@ -1,0 +1,23 @@
+{
+  "row": {
+    "role": "reviewer",
+    "endpoint": "pi-ephemeral",
+    "backend": "pi",
+    "model": "spark/gpt-oss:120b",
+    "category": "FAIL_MODEL",
+    "status": "changes_requested",
+    "markers": [],
+    "detail": "status=changes_requested",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "changes_requested",
+    "state": "failed",
+    "log_file": null
+  },
+  "state": "failed",
+  "error_code": "changes_requested",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"changes_requested\",\"session_id\":\"37786174-aeee-48da-bd47-ab3cf905cf20\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "npm warn deprecated node-domexception@1.0.0: Use your platform's native DOMException instead\nnpm warn deprecated @mariozechner/pi-agent-core@0.73.1: please use @earendil-works/pi-agent-core instead going forward\nnpm warn deprecated @mariozechner/pi-tui@0.73.1: please use @earendil-works/pi-tui instead going forward\nnpm warn deprecated @mariozechner/pi-ai@0.73.1: please use @earendil-works/pi-ai instead going forward\nnpm warn deprecated @mariozechner/pi-coding-agent@0.73.1: please use @earendil-works/pi-coding-agent instead going forward\n\nadded 202 packages in 9s\nINFO:     172.66.0.243:16974 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-03 13:13:50 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:35911 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:41574 - \"GET /jobs/f876d482f1be4f0fa84f5bb1454c0fad HTTP/1.1\" 200 OK\n2026-06-03 13:13:51 [info     ] clone_repository.existing_branch branch=fix/reviewer-offbyone\n2026-06-03 13:13:51 [info     ] cloned repository              branch=fix/reviewer-offbyone repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-03 13:13:51 [info     ] pi started                     model=spark/gpt-oss:120b provider=litellm\n2026-06-03 13:13:51 [info     ] dispatch accepted              session_id=37786174-aeee-48da-bd47-ab3cf905cf20\nINFO:     172.66.0.243:34109 - \"GET /jobs/f876d482f1be4f0fa84f5bb1454c0fad HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:46248 - \"GET /jobs/f876d482f1be4f0fa84f5bb1454c0fad HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:32590 - \"GET /jobs/f876d482f1be4f0fa84f5bb1454c0fad HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:54082 - \"GET /jobs/f876d482f1be4f0fa84f5bb1454c0fad HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:34538 - \"GET /jobs/f876d482f1be4f0fa84f5bb1454c0fad HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:38694 - \"GET /jobs/f876d482f1be4f0fa84f5bb1454c0fad HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:36640 - \"GET /jobs/f876d482f1be4f0fa84f5bb1454c0fad HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:55371 - \"GET /jobs/f876d482f1be4f0fa84f5bb1454c0fad HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:51939 - \"GET /jobs/f876d482f1be4f0fa84f5bb1454c0fad HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:18320 - \"GET /jobs/f876d482f1be4f0fa84f5bb1454c0fad HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:43637 - \"GET /jobs/f876d482f1be4f0fa84f5bb1454c0fad HTTP/1.1\" 200 OK\n2026-06-03 13:14:45 [warning  ] backend.invalid_output.retrying attempt=1 failure_reason='was empty' max_retries=1 output_preview= stage=review\nINFO:     172.66.0.243:24492 - \"GET /jobs/f876d482f1be4f0fa84f5bb1454c0fad HTTP/1.1\" 200 OK\n2026-06-03 13:14:52 [info     ] review posted                  owner=ViviDynamics pr_number=1 repo=conductor-bench review_event=COMMENT\n2026-06-03 13:14:52 [info     ] pi stopped\n2026-06-03 13:14:52 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-_x0mcwx0\nINFO:     172.66.0.243:42491 - \"GET /jobs/f876d482f1be4f0fa84f5bb1454c0fad HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

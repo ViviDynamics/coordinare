@@ -1,0 +1,23 @@
+{
+  "row": {
+    "role": "reviewer",
+    "endpoint": "codex-ephemeral",
+    "backend": "codex",
+    "model": "spark/qwen3:8b",
+    "category": "FAIL_MODEL",
+    "status": "changes_requested",
+    "markers": [],
+    "detail": "status=changes_requested",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "changes_requested",
+    "state": "failed",
+    "log_file": null
+  },
+  "state": "failed",
+  "error_code": "changes_requested",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"changes_requested\",\"session_id\":\"cb797bd5-f5ea-4a36-85ee-de9585e4782c\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "\nadded 2 packages in 4s\nINFO:     172.66.0.243:41066 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-04 15:19:47 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\n2026-06-04 15:19:47 [info     ] secret_resolved                name=OPENAI_API_KEY source=init_payload\nINFO:     172.66.0.243:23013 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:60821 - \"GET /jobs/9488dc5bb8d74d30b66c4428a40826f9 HTTP/1.1\" 200 OK\n2026-06-04 15:19:49 [info     ] clone_repository.existing_branch branch=fix/reviewer-offbyone\n2026-06-04 15:19:49 [info     ] cloned repository              branch=fix/reviewer-offbyone repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-04 15:19:49 [debug    ] codex app-server ready         port=41897\n2026-06-04 15:19:49 [info     ] codex thread started           port=41897 thread_id=019e9338-1f91-7a12-ae4b-776a80b1e78b\n2026-06-04 15:19:49 [info     ] codex turn started             turn_id=019e9338-1fbe-7193-95ad-df3045999835\n2026-06-04 15:19:49 [info     ] dispatch accepted              session_id=cb797bd5-f5ea-4a36-85ee-de9585e4782c\nINFO:     172.66.0.243:37027 - \"GET /jobs/9488dc5bb8d74d30b66c4428a40826f9 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:48366 - \"GET /jobs/9488dc5bb8d74d30b66c4428a40826f9 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:28456 - \"GET /jobs/9488dc5bb8d74d30b66c4428a40826f9 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:31761 - \"GET /jobs/9488dc5bb8d74d30b66c4428a40826f9 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:36260 - \"GET /jobs/9488dc5bb8d74d30b66c4428a40826f9 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:33714 - \"GET /jobs/9488dc5bb8d74d30b66c4428a40826f9 HTTP/1.1\" 200 OK\n2026-06-04 15:20:22 [info     ] review posted                  owner=ViviDynamics pr_number=1 repo=conductor-bench review_event=COMMENT\n2026-06-04 15:20:22 [info     ] codex app-server stopped\n2026-06-04 15:20:22 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-3yuq7ph2\nINFO:     172.66.0.243:23023 - \"GET /jobs/9488dc5bb8d74d30b66c4428a40826f9 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

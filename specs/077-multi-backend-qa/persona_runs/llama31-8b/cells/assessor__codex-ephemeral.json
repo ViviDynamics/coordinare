@@ -1,0 +1,23 @@
+{
+  "row": {
+    "role": "assessor",
+    "endpoint": "codex-ephemeral",
+    "backend": "codex",
+    "model": "spark/llama3.1:8b-instruct-q4_0",
+    "category": "FAIL_HARNESS",
+    "status": "error",
+    "markers": [],
+    "detail": "questions=0 sufficient=None | harness:BACKEND_FORMAT_ERROR",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "error",
+    "state": "failed",
+    "log_file": null
+  },
+  "state": "failed",
+  "error_code": "error",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"error\",\"session_id\":\"9f5add75-1de9-4bba-ad9e-6330536f191d\",\"reason\":\"BACKEND_FORMAT_ERROR: Backend assessment output was empty after 2 attempts. Last output: ''\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "\nadded 2 packages in 3s\nINFO:     172.66.0.243:19864 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-05 02:47:11 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\n2026-06-05 02:47:11 [info     ] secret_resolved                name=OPENAI_API_KEY source=init_payload\nINFO:     172.66.0.243:47696 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:25670 - \"GET /jobs/8aa3600efa0d4e23a6110a5d7fd80e6a HTTP/1.1\" 200 OK\n2026-06-05 02:47:12 [info     ] clone_repository.new_branch    branch=bench-assessor-a62bdf1c\n2026-06-05 02:47:12 [info     ] cloned repository              branch=bench-assessor-a62bdf1c repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-05 02:47:12 [debug    ] codex app-server ready         port=50101\n2026-06-05 02:47:12 [info     ] codex thread started           port=50101 thread_id=019e95ad-723b-7920-ae3c-272ba9875350\n2026-06-05 02:47:12 [info     ] codex turn started             turn_id=019e95ad-7260-7040-bc1f-dacb2923890e\n2026-06-05 02:47:12 [info     ] dispatch accepted              session_id=9f5add75-1de9-4bba-ad9e-6330536f191d\nINFO:     172.66.0.243:45592 - \"GET /jobs/8aa3600efa0d4e23a6110a5d7fd80e6a HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:54763 - \"GET /jobs/8aa3600efa0d4e23a6110a5d7fd80e6a HTTP/1.1\" 200 OK\n2026-06-05 02:47:22 [warning  ] codex.turn_completed.empty_output accumulator_len=0 item_roles=[] item_types=[] raw_turn='{\"id\": \"019e95ad-7260-7040-bc1f-dacb2923890e\", \"items\": [], \"itemsView\": \"notLoaded\", \"status\": \"completed\", \"error\": null, \"startedAt\": 1780627632, \"completedAt\": 1780627642, \"durationMs\": 9271}' usage={}\n2026-06-05 02:47:22 [warning  ] backend.invalid_output.retrying attempt=1 failure_reason='was empty' max_retries=1 output_preview= stage=assessment\n2026-06-05 02:47:24 [warning  ] codex.turn_completed.empty_output accumulator_len=0 item_roles=[] item_types=[] raw_turn='{\"id\": \"019e95ad-999b-7fc0-972c-d9e5d4f36818\", \"items\": [], \"itemsView\": \"notLoaded\", \"status\": \"completed\", \"error\": null, \"startedAt\": 1780627642, \"completedAt\": 1780627644, \"durationMs\": 2057}' usage={}\nINFO:     172.66.0.243:59556 - \"GET /jobs/8aa3600efa0d4e23a6110a5d7fd80e6a HTTP/1.1\" 200 OK\n2026-06-05 02:47:26 [info     ] codex app-server stopped\n2026-06-05 02:47:26 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-30ufa4si\nINFO:     172.66.0.243:40989 - \"GET /jobs/8aa3600efa0d4e23a6110a5d7fd80e6a HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

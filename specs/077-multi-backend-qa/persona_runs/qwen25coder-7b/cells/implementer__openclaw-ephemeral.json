@@ -1,0 +1,23 @@
+{
+  "row": {
+    "role": "implementer",
+    "endpoint": "openclaw-ephemeral",
+    "backend": "openclaw",
+    "model": "qwen2.5-coder:7b",
+    "category": "ERROR",
+    "status": "error",
+    "markers": [],
+    "detail": "pytest_tail==========================\nFAILED tests/test_cart.py::test_shipping_cost - assert 10.0 == 5.0\n1 failed, 3 passed in 0.02s",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "error",
+    "state": "failed",
+    "log_file": null
+  },
+  "state": "failed",
+  "error_code": "error",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"error\",\"session_id\":\"9205ecba-6551-4c9a-a5ac-1ad1590dca15\",\"reason\":\"check-run poll failed: GitHub API error 403: {\\\"message\\\":\\\"Resource not accessible by personal access token\\\",\\\"documentation_url\\\":\\\"https://docs.github.com/rest/checks/runs#list-check-runs-for-a-git-reference\\\",\\\"status\\\":\\\"403\\\"}\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "\nadded 285 packages in 13s\nINFO:     172.66.0.243:16270 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-04 16:43:18 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:26377 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:19445 - \"GET /jobs/2650132213f94e298a3800e89fb96d1a HTTP/1.1\" 200 OK\n2026-06-04 16:43:19 [info     ] clone_repository.existing_branch branch=feat/impl-failing-test\n2026-06-04 16:43:19 [info     ] cloned repository              branch=feat/impl-failing-test repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-04 16:43:19 [info     ] openclaw.provider_config_written base_url=http://192.168.3.30:11434/v1 path=/root/.openclaw/openclaw.json provider=sparkollama\n2026-06-04 16:43:19 [info     ] openclaw.workspace_linked      workspace=/tmp/performer-xz1n8tak\n2026-06-04 16:43:19 [info     ] openclaw.persona_to_soul       chars=116\n2026-06-04 16:43:19 [info     ] openclaw.card_docs_written     chars=240 path=/tmp/performer-xz1n8tak/CARD.md\n2026-06-04 16:43:19 [info     ] openclaw starting              model=sparkollama/qwen2.5-coder:7b provider_routed=True session_key=coordinare-implementing-fd901b2d\n2026-06-04 16:43:19 [info     ] openclaw started               model=sparkollama/qwen2.5-coder:7b pid=92\n2026-06-04 16:43:19 [info     ] dispatch accepted              session_id=9205ecba-6551-4c9a-a5ac-1ad1590dca15\nINFO:     172.66.0.243:18210 - \"GET /jobs/2650132213f94e298a3800e89fb96d1a HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:44971 - \"GET /jobs/2650132213f94e298a3800e89fb96d1a HTTP/1.1\" 200 OK\n2026-06-04 16:43:31 [info     ] ci_check.coordinare_not_available label=implementing\n2026-06-04 16:43:31 [info     ] pushed branch                  branch=feat/impl-failing-test remote_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-04 16:43:32 [info     ] pull request already exists, updating and fetching branch=feat/impl-failing-test\nINFO:     172.66.0.243:58432 - \"GET /jobs/2650132213f94e298a3800e89fb96d1a HTTP/1.1\" 200 OK\n2026-06-04 16:43:35 [info     ] openclaw stopped\n2026-06-04 16:43:35 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-xz1n8tak\nINFO:     172.66.0.243:45420 - \"GET /jobs/2650132213f94e298a3800e89fb96d1a HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

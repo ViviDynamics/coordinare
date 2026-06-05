@@ -1,0 +1,23 @@
+{
+  "row": {
+    "role": "assessor",
+    "endpoint": "pi-ephemeral",
+    "backend": "pi",
+    "model": "spark/qwen2.5-coder:latest",
+    "category": "FAIL_MODEL",
+    "status": "assessment_complete",
+    "markers": [],
+    "detail": "questions=0 sufficient=None",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent failed to flag the request as insufficient and did not ask clarifying questions.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  },
+  "state": "succeeded",
+  "error_code": null,
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"assessment_complete\",\"session_id\":\"5cfe33a0-c5db-45fb-a353-a76fcf97a3a8\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "npm warn deprecated node-domexception@1.0.0: Use your platform's native DOMException instead\nnpm warn deprecated @mariozechner/pi-agent-core@0.73.1: please use @earendil-works/pi-agent-core instead going forward\nnpm warn deprecated @mariozechner/pi-tui@0.73.1: please use @earendil-works/pi-tui instead going forward\nnpm warn deprecated @mariozechner/pi-ai@0.73.1: please use @earendil-works/pi-ai instead going forward\nnpm warn deprecated @mariozechner/pi-coding-agent@0.73.1: please use @earendil-works/pi-coding-agent instead going forward\n\nadded 203 packages in 9s\nINFO:     172.66.0.243:29712 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-04 17:08:54 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:25652 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:35517 - \"GET /jobs/f3e63e249c8548989e97f1d5116321c0 HTTP/1.1\" 200 OK\n2026-06-04 17:08:55 [info     ] clone_repository.new_branch    branch=bench-assessor-5c209995\n2026-06-04 17:08:55 [info     ] cloned repository              branch=bench-assessor-5c209995 repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-04 17:08:55 [info     ] pi started                     model=spark/qwen2.5-coder:latest provider=litellm\n2026-06-04 17:08:55 [info     ] dispatch accepted              session_id=5cfe33a0-c5db-45fb-a353-a76fcf97a3a8\nINFO:     172.66.0.243:64963 - \"GET /jobs/f3e63e249c8548989e97f1d5116321c0 HTTP/1.1\" 200 OK\n2026-06-04 17:09:00 [info     ] commit_file.committed          branch=bench-assessor-5c209995 path=docs/cards/add-a-customer-loyal/assessment.md\n2026-06-04 17:09:00 [info     ] assessor.assessment_committed  path=docs/cards/add-a-customer-loyal/assessment.md\n2026-06-04 17:09:00 [info     ] pi stopped\n2026-06-04 17:09:00 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-jdkxtncq\nINFO:     172.66.0.243:64233 - \"GET /jobs/f3e63e249c8548989e97f1d5116321c0 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

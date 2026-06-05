@@ -1,0 +1,23 @@
+{
+  "row": {
+    "role": "assessor",
+    "endpoint": "hermes-ephemeral",
+    "backend": "hermes",
+    "model": "spark/mistral:instruct",
+    "category": "FAIL_MODEL",
+    "status": "assessment_complete",
+    "markers": [],
+    "detail": "questions=0 sufficient=None",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent did not flag the request as insufficient nor ask clarifying questions despite the under-specified nature.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  },
+  "state": "succeeded",
+  "error_code": null,
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"assessment_complete\",\"session_id\":\"0b04f20e-3fd5-4182-8046-98492848011c\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.\n\n[notice] A new release of pip is available: 25.0.1 -> 26.1.2\n[notice] To update, run: pip install --upgrade pip\nINFO:     172.66.0.243:53038 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-05 03:30:26 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:61027 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:27936 - \"GET /jobs/984fc28b9d6047cd9b22c068747b5436 HTTP/1.1\" 200 OK\n2026-06-05 03:30:26 [info     ] clone_repository.new_branch    branch=bench-assessor-1d778b87\n2026-06-05 03:30:26 [info     ] cloned repository              branch=bench-assessor-1d778b87 repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-05 03:30:26 [info     ] hermes.card_docs_written       chars=182 path=/tmp/performer-utazzspc/CARD.md\n2026-06-05 03:30:26 [info     ] hermes starting                base_url=https://litellm.vividynamics.com/v1 hermes_home=/tmp/hermes-job-z6z7i2yj model=spark/mistral:instruct provider=litellm\n2026-06-05 03:30:26 [info     ] hermes started                 model=spark/mistral:instruct pid=37\n2026-06-05 03:30:26 [info     ] dispatch accepted              session_id=0b04f20e-3fd5-4182-8046-98492848011c\nINFO:     172.66.0.243:61351 - \"GET /jobs/984fc28b9d6047cd9b22c068747b5436 HTTP/1.1\" 200 OK\n2026-06-05 03:30:33 [info     ] hermes finalized               removed=/tmp/hermes-job-z6z7i2yj\n2026-06-05 03:30:35 [info     ] commit_file.committed          branch=bench-assessor-1d778b87 path=docs/cards/add-a-customer-loyal/assessment.md\n2026-06-05 03:30:35 [info     ] assessor.assessment_committed  path=docs/cards/add-a-customer-loyal/assessment.md\n2026-06-05 03:30:35 [info     ] hermes stopped\n2026-06-05 03:30:35 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-utazzspc\nINFO:     172.66.0.243:35975 - \"GET /jobs/984fc28b9d6047cd9b22c068747b5436 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

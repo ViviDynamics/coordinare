@@ -536,10 +536,13 @@ def _build_performer_services(
 
 def _build_http_performer_services(
     config: ProjectConfiguration,
-) -> dict[str, list[Any]]:
+) -> tuple[dict[str, list[Any]], dict[str, Any]]:
     """Build HTTPPerformerService instances from ``config.performer_endpoints``.
 
-    Returns a stage → list[HTTPPerformerService] mapping.  Each endpoint is
+    Returns ``(services_by_stage, bootstrap_services_by_id)``: a stage →
+    list[HTTPPerformerService] mapping, plus an id → service map for
+    ``env_bootstrap`` endpoints (which have no lifecycle stage but must be
+    dispatchable by id for env-cache bootstrap).  Each endpoint is
     registered under every stage corresponding to a role in ``cfg.roles``.
     Subprocess-mode endpoints are skipped here — they go through the legacy
     ``config.performers.<role>`` pipeline.
@@ -555,6 +558,12 @@ def _build_http_performer_services(
 
     _stage_names = set(_ROLE_TO_STAGE.values())
     services_by_stage: dict[str, list[Any]] = {}
+    # 077: env_bootstrap is NOT a lifecycle stage, so its endpoint must not get a
+    # stage slot-pool — but the env-cache bootstrap dispatch looks the endpoint up
+    # by performer *id* (daemon check_and_trigger), so it must still reach
+    # performer_services_by_id or every re-bootstrap fails with
+    # bootstrap_svc_not_found and the env-cache can never rebuild.
+    bootstrap_services_by_id: dict[str, Any] = {}
     log_dir = getattr(config, "performer_log_dir", None)
     if log_dir is not None:
         from pathlib import PurePosixPath
@@ -593,6 +602,12 @@ def _build_http_performer_services(
             if stage is None:
                 if role in _stage_names:
                     stage = role  # already a stage name
+                elif role == "env_bootstrap":
+                    # Not a lifecycle stage; register by id for bootstrap dispatch
+                    # (see bootstrap_services_by_id note above) but give it no pool.
+                    if cfg.id:
+                        bootstrap_services_by_id[cfg.id] = service
+                    continue
                 else:
                     logger.warning(
                         "performer_endpoint.unknown_role",
@@ -608,7 +623,7 @@ def _build_http_performer_services(
                     copies = min(copies, 1)
                 copies = max(copies, 1)
             services_by_stage.setdefault(stage, []).extend([service] * copies)
-    return services_by_stage
+    return services_by_stage, bootstrap_services_by_id
 
 
 def _resolve_stage_max_concurrency(
@@ -638,6 +653,7 @@ def _compose_performer_pools(
     service_lists: dict[str, list],
     http_services_by_stage: dict[str, list],
     performer_services: dict[str, Any],
+    bootstrap_services_by_id: dict[str, Any] | None = None,
 ) -> tuple[dict[str, list], dict[str, int], dict[str, Any]]:
     """Merge subprocess + HTTP performer services and resolve per-stage caps.
 
@@ -665,6 +681,12 @@ def _compose_performer_pools(
             svc_id = getattr(getattr(svc, "_config", None), "id", None)
             if svc_id:
                 performer_services_by_id[svc_id] = svc
+
+    # 077: env_bootstrap endpoints have no lifecycle stage, so they never appear
+    # in http_services_by_stage — but the bootstrap dispatch looks them up by id.
+    # Merge them in so check_and_trigger can find the bootstrap performer.
+    for svc_id, svc in (bootstrap_services_by_id or {}).items():
+        performer_services_by_id.setdefault(svc_id, svc)
 
     return service_lists, stage_max_c, performer_services_by_id
 
@@ -761,12 +783,13 @@ async def _bootstrap_services(
                 count=orphan_count,
                 hint="containers left by a previous coordinare crash",
             )
-    http_services_by_stage = _build_http_performer_services(config)
+    http_services_by_stage, bootstrap_services_by_id = _build_http_performer_services(config)
     service_lists, stage_max_c, performer_services_by_id = _compose_performer_pools(
         config=config,
         service_lists=service_lists,
         http_services_by_stage=http_services_by_stage,
         performer_services=performer_services,
+        bootstrap_services_by_id=bootstrap_services_by_id,
     )
 
     # Register all pools once after subprocess + HTTP services are merged.

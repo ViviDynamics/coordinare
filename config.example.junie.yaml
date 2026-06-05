@@ -12,7 +12,7 @@
 #   - Image: build a Junie-capable image with the `junie` CLI installed.
 #
 # Caveats:
-#   - Same device-fingerprint risk as Cursor. JetBrains tokens are tied to the
+#   - JetBrains tokens encode a device fingerprint and are tied to the
 #     device that completed OAuth; validate headless auth first.
 #   - Mount read-only; expired tokens cannot be refreshed inside the container.
 #   - If your JetBrains config lives elsewhere (e.g. XDG_CONFIG_HOME), adjust
@@ -42,9 +42,35 @@ symphonies:
 # Prerequisites:
 #   1. Log in to your JetBrains account on the coordinare host: `junie login`.
 #   2. Confirm ~/.junie/ exists with valid credentials.
-#   3. Build a Junie-capable image:
+#   3. Build a Junie-capable image. The image MUST have `unzip` on PATH — the
+#      JetBrains junie installer downloads a .zip and shells out to unzip;
+#      without it the install aborts ("No version found"). coordinare-performer
+#      :base ships unzip.
 #        docker build -t coordinare-performer:junie \
 #          -f agent/performer/Dockerfile.junie .
+#
+# Custom OpenAI-compatible LLM (route Junie at a self-hosted proxy, e.g. LiteLLM)
+# ------------------------------------------------------------------------------
+# Set the JUNIE_PROVIDER_* env below and the adapter writes a Junie custom-LLM
+# profile (~/.junie/models/<MODEL_ID>.json) and selects it via
+# `--model custom:<MODEL_ID>`. Two Junie-specific gotchas (verified):
+#   - JUNIE_PROVIDER_BASE_URL must be the FULL endpoint URL
+#     (https://host/v1/chat/completions), NOT a /v1 base — Junie POSTs to it
+#     verbatim. (Unlike codex/pi/opencode, which take a /v1 base.)
+#   - JUNIE_PROVIDER_MODEL is the upstream/wire model name and becomes the
+#     profile's `id` field (what Junie sends as the request `model`).
+#     JUNIE_PROVIDER_MODEL_ID is only the LOCAL profile id (the filename /
+#     `--model custom:` selector) and must match [A-Za-z0-9_-]+.
+#   - Mounting ~/.junie read-only (below) is fine: when the profile write would
+#     hit the read-only mount, the adapter relocates JUNIE_HOME to a writable
+#     temp dir seeded from the creds.
+#     env:
+#       JUNIE_PROVIDER_BASE_URL:   "https://litellm.example.com/v1/chat/completions"
+#       JUNIE_PROVIDER_MODEL:      "spark/qwen3.6:35b"   # wire model → profile `id`
+#       JUNIE_PROVIDER_MODEL_ID:   "vivi"                # local profile id (filename)
+#       JUNIE_PROVIDER_API_TYPE:   "OpenAICompletion"    # or OpenAIResponses/Google/Anthropic
+#       JUNIE_PROVIDER_API_KEY_ENV: "LITELLM_MASTER_KEY" # env var holding the key
+#       LITELLM_MASTER_KEY:        "${LITELLM_MASTER_KEY}"
 
 performer_endpoints:
   - id: junie-ephemeral

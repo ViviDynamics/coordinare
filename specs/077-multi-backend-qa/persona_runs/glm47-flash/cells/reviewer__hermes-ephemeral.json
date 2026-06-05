@@ -1,0 +1,23 @@
+{
+  "row": {
+    "role": "reviewer",
+    "endpoint": "hermes-ephemeral",
+    "backend": "hermes",
+    "model": "spark/glm-4.7-flash:latest",
+    "category": "FAIL_MODEL",
+    "status": "changes_requested",
+    "markers": [],
+    "detail": "status=changes_requested",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "changes_requested",
+    "state": "failed",
+    "log_file": null
+  },
+  "state": "failed",
+  "error_code": "changes_requested",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"changes_requested\",\"session_id\":\"7ce37809-9b1d-4cd2-b71f-94e800b34bba\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.\n\n[notice] A new release of pip is available: 25.0.1 -> 26.1.2\n[notice] To update, run: pip install --upgrade pip\nINFO:     172.66.0.243:26999 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-03 18:01:43 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:52381 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:32500 - \"GET /jobs/0f8152c555244b15a13aa188d743c26a HTTP/1.1\" 200 OK\n2026-06-03 18:01:44 [info     ] clone_repository.existing_branch branch=fix/reviewer-offbyone\n2026-06-03 18:01:44 [info     ] cloned repository              branch=fix/reviewer-offbyone repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-03 18:01:44 [info     ] hermes.card_docs_written       chars=178 path=/tmp/performer-wrkqh1mu/CARD.md\n2026-06-03 18:01:44 [info     ] hermes starting                base_url=https://litellm.vividynamics.com/v1 hermes_home=/tmp/hermes-job-53loxvcp model=spark/glm-4.7-flash:latest provider=litellm\n2026-06-03 18:01:44 [info     ] hermes started                 model=spark/glm-4.7-flash:latest pid=42\n2026-06-03 18:01:45 [info     ] dispatch accepted              session_id=7ce37809-9b1d-4cd2-b71f-94e800b34bba\nINFO:     172.66.0.243:20496 - \"GET /jobs/0f8152c555244b15a13aa188d743c26a HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:56014 - \"GET /jobs/0f8152c555244b15a13aa188d743c26a HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:25386 - \"GET /jobs/0f8152c555244b15a13aa188d743c26a HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:58971 - \"GET /jobs/0f8152c555244b15a13aa188d743c26a HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:36617 - \"GET /jobs/0f8152c555244b15a13aa188d743c26a HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:37366 - \"GET /jobs/0f8152c555244b15a13aa188d743c26a HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:59748 - \"GET /jobs/0f8152c555244b15a13aa188d743c26a HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:48723 - \"GET /jobs/0f8152c555244b15a13aa188d743c26a HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:43543 - \"GET /jobs/0f8152c555244b15a13aa188d743c26a HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:38603 - \"GET /jobs/0f8152c555244b15a13aa188d743c26a HTTP/1.1\" 200 OK\n2026-06-03 18:02:34 [info     ] hermes finalized               removed=/tmp/hermes-job-53loxvcp\n2026-06-03 18:02:36 [info     ] review posted                  owner=ViviDynamics pr_number=1 repo=conductor-bench review_event=COMMENT\n2026-06-03 18:02:36 [info     ] hermes stopped\n2026-06-03 18:02:36 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-wrkqh1mu\nINFO:     172.66.0.243:22168 - \"GET /jobs/0f8152c555244b15a13aa188d743c26a HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

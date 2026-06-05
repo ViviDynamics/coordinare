@@ -68,6 +68,32 @@ _GITHUB_REPO_RE = re.compile(
     r"^https://[A-Za-z0-9.\-]+(:[0-9]+)?/[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+(\.git)?$"
 )
 
+# 077: free-form viability/benchmark probe role. A diagnostic job runs the
+# agent agentically with the persona/task verbatim and full tooling, but with
+# NONE of the lifecycle scaffolding — no JSON-verdict contract, no commit/
+# push/PR, no env-cache verify or service-inference. It exists so a smoke
+# harness (or operator) can answer "can THIS backend actually do X on THIS
+# model?" — e.g. drive a headless browser — without routing through a
+# distorting lifecycle role. Terminal status: "diagnostic_complete".
+DIAGNOSTIC_ROLE = "diagnostic"
+
+# 077: visual evidence must come from driving the application IN THIS
+# environment — never a third-party screenshot/URL-rendering service. Observed
+# failure: codex (on a large model) "screenshotted" the task URL via Thum.io and
+# saved the result, which captures an external/cached page rather than the
+# change under test — fabricated QA evidence. Injected into the QA visual-
+# evidence contract across backends.
+LOCAL_CAPTURE_RULE = (
+    "Capture all visual evidence by driving a browser IN THIS environment "
+    "(Playwright + Chromium are installed here) against the app running in this "
+    "workspace — e.g. the local dev server / build / localhost. Do NOT use any "
+    "third-party screenshot or URL-rendering service (Thum.io, screenshotapi, "
+    "urlbox, microlink, htmlcsstoimage, etc.): they capture an external or "
+    "cached page, not the change under test, and count as fabricated evidence. "
+    "If you cannot drive the local app, record that in visual_capture_blockers "
+    "rather than substituting an external service."
+)
+
 
 class Score(BaseModel):
     """Dispatch payload received from the coordinare."""

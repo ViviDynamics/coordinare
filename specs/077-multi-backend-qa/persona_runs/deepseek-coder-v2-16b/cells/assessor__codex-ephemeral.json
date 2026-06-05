@@ -1,0 +1,23 @@
+{
+  "row": {
+    "role": "assessor",
+    "endpoint": "codex-ephemeral",
+    "backend": "codex",
+    "model": "spark/deepseek-coder-v2:16b",
+    "category": "ERROR",
+    "status": "error",
+    "markers": [],
+    "detail": "questions=0 sufficient=None",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "error",
+    "state": "failed",
+    "log_file": null
+  },
+  "state": "failed",
+  "error_code": "error",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"error\",\"session_id\":\"e16f006f-d125-41ff-bf94-4e75fcf5c9fa\",\"reason\":\"{\\\"error\\\":{\\\"message\\\":\\\"litellm.BadRequestError: OpenAIException - {\\\\\\\"error\\\\\\\":{\\\\\\\"message\\\\\\\":\\\\\\\"registry.ollama.ai/library/deepseek-coder-v2:16b does not support tools\\\\\\\",\\\\\\\"type\\\\\\\":\\\\\\\"invalid_request_error\\\\\\\",\\\\\\\"param\\\\\\\":null,\\\\\\\"code\\\\\\\":null}}\\\\n. Received Model Group=spark/deepseek-coder-v2:16b\\\\nAvailable Model Group Fallbacks=None\\\",\\\"type\\\":null,\\\"param\\\":null,\\\"code\\\":\\\"400\\\"}}\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "\nadded 2 packages in 3s\nINFO:     172.66.0.243:19010 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-04 12:23:20 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\n2026-06-04 12:23:20 [info     ] secret_resolved                name=OPENAI_API_KEY source=init_payload\nINFO:     172.66.0.243:63711 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:26227 - \"GET /jobs/4bdec8b42aa646e9ae5d6fc0e8ebccb4 HTTP/1.1\" 200 OK\n2026-06-04 12:23:21 [info     ] clone_repository.new_branch    branch=bench-assessor-7d3b49a0\n2026-06-04 12:23:21 [info     ] cloned repository              branch=bench-assessor-7d3b49a0 repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-04 12:23:21 [debug    ] codex app-server ready         port=36321\n2026-06-04 12:23:21 [info     ] codex thread started           port=36321 thread_id=019e9296-90e9-7a40-a040-2333b9babbf6\n2026-06-04 12:23:21 [info     ] codex turn started             turn_id=019e9296-910d-7853-b04b-5477243d6157\n2026-06-04 12:23:21 [info     ] dispatch accepted              session_id=e16f006f-d125-41ff-bf94-4e75fcf5c9fa\n2026-06-04 12:23:23 [info     ] codex app-server stopped\n2026-06-04 12:23:23 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-om7kkv1w\nINFO:     172.66.0.243:24194 - \"GET /jobs/4bdec8b42aa646e9ae5d6fc0e8ebccb4 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

@@ -1,0 +1,25 @@
+{
+  "row": {
+    "role": "security",
+    "endpoint": "pi-ephemeral",
+    "backend": "pi",
+    "model": "spark/qwen2.5-coder:latest",
+    "category": "FAIL_MODEL",
+    "status": "security_passed",
+    "markers": [
+      "PASSED_VULN_PR"
+    ],
+    "detail": "status=security_passed",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent incorrectly marked the PR as passed despite the presence of SQL injection and eval vulnerabilities.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  },
+  "state": "succeeded",
+  "error_code": null,
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"security_passed\",\"session_id\":\"599cfb8c-0de0-439f-8629-45163083b2f3\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "npm warn deprecated @mariozechner/pi-agent-core@0.73.1: please use @earendil-works/pi-agent-core instead going forward\nnpm warn deprecated node-domexception@1.0.0: Use your platform's native DOMException instead\nnpm warn deprecated @mariozechner/pi-tui@0.73.1: please use @earendil-works/pi-tui instead going forward\nnpm warn deprecated @mariozechner/pi-ai@0.73.1: please use @earendil-works/pi-ai instead going forward\nnpm warn deprecated @mariozechner/pi-coding-agent@0.73.1: please use @earendil-works/pi-coding-agent instead going forward\n\nadded 203 packages in 9s\nINFO:     172.66.0.243:29157 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-04 17:26:01 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:57279 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:45661 - \"GET /jobs/10418fdc2074470ea94e31ec51e9e6ab HTTP/1.1\" 200 OK\n2026-06-04 17:26:03 [info     ] clone_repository.existing_branch branch=feat/security-sqli\n2026-06-04 17:26:03 [info     ] cloned repository              branch=feat/security-sqli repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-04 17:26:03 [info     ] pi started                     model=spark/qwen2.5-coder:latest provider=litellm\n2026-06-04 17:26:03 [info     ] dispatch accepted              session_id=599cfb8c-0de0-439f-8629-45163083b2f3\nINFO:     172.66.0.243:20642 - \"GET /jobs/10418fdc2074470ea94e31ec51e9e6ab HTTP/1.1\" 200 OK\n2026-06-04 17:26:07 [warning  ] backend.invalid_output.retrying attempt=1 failure_reason='could not be parsed as a JSON object' max_retries=1 output_preview='I am ready to help you with the security review of the user lookup and filter functionality. Please provide me with the path to the relevant files so I can read their contents and perform the review.' stage=security\nINFO:     172.66.0.243:43634 - \"GET /jobs/10418fdc2074470ea94e31ec51e9e6ab HTTP/1.1\" 200 OK\n2026-06-04 17:26:12 [info     ] commit_file.committed          branch=feat/security-sqli path=docs/cards/security-review-user/security.md\n2026-06-04 17:26:12 [info     ] pi stopped\n2026-06-04 17:26:12 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-uu4gpa1p\nINFO:     172.66.0.243:49911 - \"GET /jobs/10418fdc2074470ea94e31ec51e9e6ab HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

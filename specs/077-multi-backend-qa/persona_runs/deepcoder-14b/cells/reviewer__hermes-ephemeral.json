@@ -1,0 +1,23 @@
+{
+  "row": {
+    "role": "reviewer",
+    "endpoint": "hermes-ephemeral",
+    "backend": "hermes",
+    "model": "spark/deepcoder:14b",
+    "category": "FAIL_HARNESS",
+    "status": "error",
+    "markers": [],
+    "detail": "status=error | harness:subprocess_exit",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "error",
+    "state": "failed",
+    "log_file": null
+  },
+  "state": "failed",
+  "error_code": "error",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"error\",\"session_id\":\"f81ee283-735a-4886-aa5b-e3111924bda8\",\"reason\":\"subprocess_exit:1\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.\n\n[notice] A new release of pip is available: 25.0.1 -> 26.1.2\n[notice] To update, run: pip install --upgrade pip\nINFO:     172.66.0.243:41318 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-04 12:51:06 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:25057 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:34154 - \"GET /jobs/2d4cf01e2d1c42dda87384a4f3e88df3 HTTP/1.1\" 200 OK\n2026-06-04 12:51:07 [info     ] clone_repository.existing_branch branch=fix/reviewer-offbyone\n2026-06-04 12:51:07 [info     ] cloned repository              branch=fix/reviewer-offbyone repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-04 12:51:07 [info     ] hermes.card_docs_written       chars=178 path=/tmp/performer-n21p8spc/CARD.md\n2026-06-04 12:51:07 [info     ] hermes starting                base_url=https://litellm.vividynamics.com/v1 hermes_home=/tmp/hermes-job-d3wyumbd model=spark/deepcoder:14b provider=litellm\n2026-06-04 12:51:07 [info     ] hermes started                 model=spark/deepcoder:14b pid=42\n2026-06-04 12:51:07 [info     ] dispatch accepted              session_id=f81ee283-735a-4886-aa5b-e3111924bda8\n2026-06-04 12:51:09 [warning  ] hermes failed                  rc=1 stderr=\"Error: Error code: 400 - {'error': {'message': 'litellm.BadRequestError: OpenAIException - registry.ollama.ai/library/deepcoder:14b does not support tools. Received Model Group=spark/deepcoder:14b\\\\nAvailable Model Group Fallbacks=None', 'type': 'invalid_request_error', 'param': None, 'code': '400'}}\\n\\nsession_id: 20260604_125107_a6eda7\\n\" stdout='  \u26a0 tirith security scanner enabled but not available \u2014 command scanning will use pattern matching only\\r\\n'\n2026-06-04 12:51:09 [info     ] hermes finalized               removed=/tmp/hermes-job-d3wyumbd\n2026-06-04 12:51:09 [info     ] hermes stopped\n2026-06-04 12:51:09 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-n21p8spc\nINFO:     172.66.0.243:25160 - \"GET /jobs/2d4cf01e2d1c42dda87384a4f3e88df3 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

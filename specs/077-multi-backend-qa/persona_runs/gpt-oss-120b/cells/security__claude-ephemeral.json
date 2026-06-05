@@ -1,0 +1,25 @@
+{
+  "row": {
+    "role": "security",
+    "endpoint": "claude-ephemeral",
+    "backend": "claude_code",
+    "model": "spark/gpt-oss:120b",
+    "category": "FAIL_MODEL",
+    "status": "security_passed",
+    "markers": [
+      "PASSED_VULN_PR"
+    ],
+    "detail": "status=security_passed",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent incorrectly marked the PR as passed despite the known SQL injection and eval vulnerabilities.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  },
+  "state": "succeeded",
+  "error_code": null,
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"security_passed\",\"session_id\":\"a2038f91-6826-4713-a68e-8c05c634a216\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "Setting up Claude Code...\n\nChecking installation status...\nInstalling Claude Code native build latest...\nSetting up launcher and shell integration...\n\u2714 Claude Code successfully installed!\n\n  Version: 2.1.161\n\n  Location: ~/.local/bin/claude\n\n\n  Next: Run claude --help to get started\n\n\u2705 Installation complete!\n\nINFO:     172.66.0.243:60058 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-03 13:15:53 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\n2026-06-03 13:15:53 [warning  ] secret_missing                 name=ANTHROPIC_API_KEY\n2026-06-03 13:15:53 [info     ] secret_resolved                name=ANTHROPIC_AUTH_TOKEN source=init_payload\nINFO:     172.66.0.243:28536 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:31868 - \"GET /jobs/5969e7c63e15407ebb322c63c9c19687 HTTP/1.1\" 200 OK\n2026-06-03 13:15:55 [info     ] clone_repository.existing_branch branch=feat/security-sqli\n2026-06-03 13:15:55 [info     ] cloned repository              branch=feat/security-sqli repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-03 13:15:55 [info     ] claude_code shim listening     port=34443\n2026-06-03 13:15:55 [info     ] claude code started            pid=101 resume=False\n2026-06-03 13:15:55 [info     ] claude_code shim request       latency_ms=21 method=HEAD path=/ status=200\n2026-06-03 13:15:55 [info     ] dispatch accepted              session_id=a2038f91-6826-4713-a68e-8c05c634a216\n2026-06-03 13:15:55 [debug    ] claude code session captured   session_id=4f1f6709-1952-443d-981c-df108a0e2a69\nINFO:     172.66.0.243:59812 - \"GET /jobs/5969e7c63e15407ebb322c63c9c19687 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:19624 - \"GET /jobs/5969e7c63e15407ebb322c63c9c19687 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:33362 - \"GET /jobs/5969e7c63e15407ebb322c63c9c19687 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:45617 - \"GET /jobs/5969e7c63e15407ebb322c63c9c19687 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:41349 - \"GET /jobs/5969e7c63e15407ebb322c63c9c19687 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:60320 - \"GET /jobs/5969e7c63e15407ebb322c63c9c19687 HTTP/1.1\" 200 OK\n2026-06-03 13:16:23 [info     ] claude_code shim request       latency_ms=28351 method=POST path=/v1/messages status=200\n2026-06-03 13:16:25 [info     ] claude_code shim request       latency_ms=29673 method=POST path=/v1/messages status=200\nINFO:     172.66.0.243:29439 - \"GET /jobs/5969e7c63e15407ebb322c63c9c19687 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:51563 - \"GET /jobs/5969e7c63e15407ebb322c63c9c19687 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:60236 - \"GET /jobs/5969e7c63e15407ebb322c63c9c19687 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:25127 - \"GET /jobs/5969e7c63e15407ebb322c63c9c19687 HTTP/1.1\" 200 OK\n2026-06-03 13:16:46 [info     ] claude_code shim request       latency_ms=22895 method=POST path=/v1/messages status=200\nINFO:     172.66.0.243:32797 - \"GET /jobs/5969e7c63e15407ebb322c63c9c19687 HTTP/1.1\" 200 OK\n2026-06-03 13:16:52 [info     ] claude_code shim request       latency_ms=6085 method=POST path=/v1/messages status=200\n2026-06-03 13:16:53 [info     ] commit_file.no_changes         path=docs/cards/security-review-user/security.md\n2026-06-03 13:16:53 [info     ] claude code stopped\n2026-06-03 13:16:53 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-rj9km68e\nINFO:     172.66.0.243:22822 - \"GET /jobs/5969e7c63e15407ebb322c63c9c19687 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

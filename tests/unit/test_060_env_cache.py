@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
 
 from coordinare.models.env_cache import BootstrapJobPayload, EnvCacheState
 from coordinare.services.env_cache import (
+    BOOTSTRAP_RETRY_COOLDOWN_S,
     EnvCacheService,
     _collect_env_volumes_for_persistent_performer,
     get_env_volume_for_symphony,
@@ -330,6 +332,100 @@ class TestEnvCacheServiceCheckAndTrigger:
         dispatch_fn.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_retries_when_prior_bootstrap_failed_and_cooldown_elapsed(
+        self, tmp_path: Path
+    ) -> None:
+        """077: a FAILED bootstrap (readme_sha == current_sha, succeeded=False)
+        must auto-retry once the cooldown has elapsed — otherwise the
+        consumer-gate deadlocks waiting on a success that never re-fires."""
+        svc, _ = self._make_service()
+        cache_dir = tmp_path / "env"
+        cache_dir.mkdir()
+        cache_state = EnvCacheState(
+            symphony_name="sym",
+            sanitised_name="sym-abc",
+            cache_dir=cache_dir,
+            readme_sha=_combined_sha({"README.md": "same_sha"}),
+            last_bootstrap_succeeded=False,
+            last_bootstrap_at=datetime.now(UTC)
+            - timedelta(seconds=BOOTSTRAP_RETRY_COOLDOWN_S + 5),
+        )
+        sym_cfg = self._make_symphony_config()
+        sym_cfg.effective_config = MagicMock(return_value=self._make_eff_config())
+        github = AsyncMock()
+        github.get_file_blob_sha = AsyncMock(return_value="same_sha")
+        github.get_file_content = AsyncMock(return_value="# README content")
+        dispatch_fn = AsyncMock()
+
+        state: dict = {"env_cache": {"sym": cache_state}, "config": MagicMock()}
+        await svc.check_and_trigger("sym", sym_cfg, github, state, dispatch_fn)
+
+        dispatch_fn.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_no_retry_when_prior_failure_within_cooldown(
+        self, tmp_path: Path
+    ) -> None:
+        """077: a recently-failed bootstrap must NOT relaunch a container on the
+        very next poll cycle — the cooldown throttles retries."""
+        svc, _ = self._make_service()
+        cache_dir = tmp_path / "env"
+        cache_dir.mkdir()
+        cache_state = EnvCacheState(
+            symphony_name="sym",
+            sanitised_name="sym-abc",
+            cache_dir=cache_dir,
+            readme_sha=_combined_sha({"README.md": "same_sha"}),
+            last_bootstrap_succeeded=False,
+            last_bootstrap_at=datetime.now(UTC) - timedelta(seconds=5),
+        )
+        sym_cfg = self._make_symphony_config()
+        sym_cfg.effective_config = MagicMock(return_value=self._make_eff_config())
+        github = AsyncMock()
+        github.get_file_blob_sha = AsyncMock(return_value="same_sha")
+        dispatch_fn = AsyncMock()
+
+        state: dict = {"env_cache": {"sym": cache_state}, "config": MagicMock()}
+        await svc.check_and_trigger("sym", sym_cfg, github, state, dispatch_fn)
+
+        dispatch_fn.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_synchronous_dispatch_failure_does_not_wedge_in_flight(
+        self, tmp_path: Path
+    ) -> None:
+        """077: when dispatch fails SYNCHRONOUSLY (e.g. readiness timeout) the
+        daemon calls on_bootstrap_complete(False) inside dispatch_fn, clearing
+        in_flight. _do_dispatch must NOT then re-set in_flight=True — that would
+        wedge it forever with no container (stale-in-flight deadlock)."""
+        svc, _ = self._make_service()
+        cache_dir = tmp_path / "env"
+        cache_dir.mkdir()
+        cache_state = EnvCacheState(
+            symphony_name="sym",
+            sanitised_name="sym-abc",
+            cache_dir=cache_dir,
+            readme_sha="old_sha",
+        )
+        global_cfg = MagicMock()
+        sym_cfg = self._make_symphony_config()
+        sym_cfg.effective_config = MagicMock(return_value=self._make_eff_config())
+        github = AsyncMock()
+        github.get_file_blob_sha = AsyncMock(return_value="new_sha")
+        github.get_file_content = AsyncMock(return_value="# README content")
+        state: dict = {"env_cache": {"sym": cache_state}, "config": global_cfg}
+
+        async def failing_dispatch(performer_id: str, payload: object) -> None:
+            # Mirror the daemon: a synchronous dispatch failure reports completion
+            # itself (no job id) rather than raising.
+            svc.on_bootstrap_complete("sym", False, state, error="readiness timeout")
+
+        await svc.check_and_trigger("sym", sym_cfg, github, state, failing_dispatch)
+
+        assert cache_state.bootstrap_in_flight is False  # not wedged
+        assert cache_state.last_bootstrap_succeeded is False
+
+    @pytest.mark.asyncio
     async def test_returns_early_when_cache_state_missing(self, tmp_path: Path) -> None:
         svc, _ = self._make_service()
         sym_cfg = self._make_symphony_config()
@@ -555,6 +651,25 @@ class TestOnBootstrapComplete:
         assert cache_state.bootstrap_in_flight is False
         assert cache_state.last_bootstrap_succeeded is True
         assert cache_state.last_bootstrap_at is not None
+
+    def test_records_error_on_failure_and_clears_on_success(self, tmp_path: Path) -> None:
+        """077: a failed bootstrap stores last_bootstrap_error (for the dashboard);
+        a successful one clears it."""
+        svc = self._make_service()
+        cache_state = EnvCacheState(
+            symphony_name="sym",
+            sanitised_name="sym-abc",
+            cache_dir=tmp_path,
+            bootstrap_in_flight=True,
+        )
+        state = {"env_cache": {"sym": cache_state}}
+        svc.on_bootstrap_complete("sym", False, state, error="verify failed: chromium missing")
+        assert cache_state.last_bootstrap_succeeded is False
+        assert cache_state.last_bootstrap_error == "verify failed: chromium missing"
+        # A later success clears the error.
+        svc.on_bootstrap_complete("sym", True, state)
+        assert cache_state.last_bootstrap_succeeded is True
+        assert cache_state.last_bootstrap_error is None
 
     def test_forces_recheck_when_pending_sha_differs(self, tmp_path: Path) -> None:
         svc = self._make_service()
@@ -987,7 +1102,7 @@ class TestDaemonEnvCacheBootstrapLoop:
         await daemon.start()
 
         from unittest.mock import ANY
-        mock_ec_svc.on_bootstrap_complete.assert_called_once_with(sym_name, False, ANY)
+        mock_ec_svc.on_bootstrap_complete.assert_called_once_with(sym_name, False, ANY, error=ANY)
 
     @pytest.mark.asyncio
     async def test_bootstrap_dispatch_fn_missing_performer_logs_warning(
@@ -1112,7 +1227,7 @@ class TestPollBootstrapCompletion:
 
         await daemon._poll_bootstrap_completion(svc, "job-1", "alpha", ec_svc)
 
-        ec_svc.on_bootstrap_complete.assert_called_once_with("alpha", False, daemon._state)
+        ec_svc.on_bootstrap_complete.assert_called_once_with("alpha", False, daemon._state, error=ANY)
 
     @pytest.mark.asyncio
     async def test_failure_get_agent_logs_raises(self) -> None:
@@ -1125,7 +1240,7 @@ class TestPollBootstrapCompletion:
 
         await daemon._poll_bootstrap_completion(svc, "job-1", "alpha", ec_svc)
 
-        ec_svc.on_bootstrap_complete.assert_called_once_with("alpha", False, daemon._state)
+        ec_svc.on_bootstrap_complete.assert_called_once_with("alpha", False, daemon._state, error=ANY)
 
     @pytest.mark.asyncio
     async def test_budget_exhausted_reaps_container_and_marks_failure(self, monkeypatch) -> None:
@@ -1176,7 +1291,7 @@ class TestPollBootstrapCompletion:
         # Container was explicitly reaped (docker stop) at the cap.
         assert any("stop" in argv and "ctr-hung-deadbeef" in argv for argv in stop_calls)
         # Failure recorded so the cache stays un-ready and dispatch unblocks.
-        ec_svc.on_bootstrap_complete.assert_called_once_with("alpha", False, daemon._state)
+        ec_svc.on_bootstrap_complete.assert_called_once_with("alpha", False, daemon._state, error=ANY)
 
     @pytest.mark.asyncio
     async def test_sub_10s_budget_clamps_to_one_attempt(self, monkeypatch) -> None:
@@ -1209,7 +1324,7 @@ class TestPollBootstrapCompletion:
         await daemon._poll_bootstrap_completion(svc, "j", "alpha", ec_svc, container_id="c")
 
         assert svc.check_status.await_count == 1
-        ec_svc.on_bootstrap_complete.assert_called_once_with("alpha", False, daemon._state)
+        ec_svc.on_bootstrap_complete.assert_called_once_with("alpha", False, daemon._state, error=ANY)
 
     @pytest.mark.asyncio
     async def test_reap_failure_is_non_fatal(self, monkeypatch) -> None:
@@ -1244,7 +1359,7 @@ class TestPollBootstrapCompletion:
 
         await daemon._poll_bootstrap_completion(svc, "j", "alpha", ec_svc, container_id="c-stuck")
 
-        ec_svc.on_bootstrap_complete.assert_called_once_with("alpha", False, daemon._state)
+        ec_svc.on_bootstrap_complete.assert_called_once_with("alpha", False, daemon._state, error=ANY)
 
     @pytest.mark.asyncio
     async def test_idle_reap_fires_when_no_log_progress(self, monkeypatch) -> None:
@@ -1291,7 +1406,7 @@ class TestPollBootstrapCompletion:
         # Reaped on idle (attempts 0,1,2 poll; attempt 3 = 30s idle -> reap before check_status).
         assert svc.check_status.await_count == 3
         assert any("stop" in argv and "ctr-idle" in argv for argv in stop_calls)
-        ec_svc.on_bootstrap_complete.assert_called_once_with("alpha", False, daemon._state)
+        ec_svc.on_bootstrap_complete.assert_called_once_with("alpha", False, daemon._state, error=ANY)
 
     @pytest.mark.asyncio
     async def test_idle_reap_not_triggered_while_logs_progress(self, monkeypatch) -> None:
@@ -1376,7 +1491,7 @@ class TestPollBootstrapCompletion:
 
         # Ran the full 2-attempt wall-clock budget (idle did not short-circuit it).
         assert svc.check_status.await_count == 2
-        ec_svc.on_bootstrap_complete.assert_called_once_with("alpha", False, daemon._state)
+        ec_svc.on_bootstrap_complete.assert_called_once_with("alpha", False, daemon._state, error=ANY)
 
     @pytest.mark.asyncio
     async def test_check_status_exception_marks_failure(self) -> None:
@@ -1387,7 +1502,7 @@ class TestPollBootstrapCompletion:
 
         await daemon._poll_bootstrap_completion(svc, "job-1", "alpha", ec_svc)
 
-        ec_svc.on_bootstrap_complete.assert_called_once_with("alpha", False, daemon._state)
+        ec_svc.on_bootstrap_complete.assert_called_once_with("alpha", False, daemon._state, error=ANY)
 
     @pytest.mark.asyncio
     async def test_failure_uses_active_jobs_container_id_lookup(self, monkeypatch) -> None:
@@ -1414,7 +1529,7 @@ class TestPollBootstrapCompletion:
         ec_svc = MagicMock()
         await daemon._poll_bootstrap_completion(svc, "job-1", "alpha", ec_svc)
 
-        ec_svc.on_bootstrap_complete.assert_called_once_with("alpha", False, daemon._state)
+        ec_svc.on_bootstrap_complete.assert_called_once_with("alpha", False, daemon._state, error=ANY)
 
     @pytest.mark.asyncio
     async def test_container_id_logs_snapshot_branch(self, monkeypatch) -> None:
@@ -1505,3 +1620,197 @@ class TestValidateEnvBootstrapPerformerIds:
         raw["symphonies"][0].pop("env_bootstrap_performer_id", None)
         cfg = CoordinareConfiguration(**coerce_multi_symphony_raw(raw))
         assert cfg.symphonies[0].env_bootstrap_performer_id is None
+
+
+def test_env_bootstrap_persona_mandates_idempotent_reinstall() -> None:
+    """077: the bootstrap persona must instruct the agent to RE-RUN installs on a
+    populated cache (idempotent), so a newly-documented dependency (e.g. a
+    headless browser added to the README) gets installed rather than skipped
+    because the cache already has a toolchain/activate.sh. Without this, the
+    env-cache SHA-change re-bootstrap silently no-ops and never picks up new deps.
+    """
+    from coordinare.services.http_performer_service import HTTPPerformerService
+
+    card_context = {
+        "symphony_org": "ViviDynamics",
+        "symphony_repo": "website",
+        "cache_mount_path": "/devenv/website",
+        "env_spec_files": ["README.md"],
+        "env_spec_contents": {
+            "README.md": "Install Google Chrome / Chromium for the system tests."
+        },
+        "backend": "opencode",
+    }
+
+    # The method does not use ``self`` — call it with None as the instance.
+    payload = HTTPPerformerService._build_env_bootstrap_payload(None, card_context)
+    persona = payload.persona.lower()
+
+    # Must mandate re-running idempotent installs on an already-populated cache.
+    assert "re-run" in persona
+    assert "idempotent" in persona
+    assert "already" in persona
+    # The spec-file content is embedded so the agent sees the documented dep.
+    assert "chrome" in persona
+    # 077: system packages must be made self-contained via the cache's debs/ dir
+    # (offline-safe), NOT a bare apt-get install that fails silently without apt
+    # lists / egress — the bug that left Chromium uninstalled.
+    assert "debs/" in persona
+    assert "apt-get download" in persona
+    assert "silently" in persona
+    # 077 Tier 1: agent must write verify.sh and confirm the install before exit.
+    assert "verify.sh" in persona
+    assert "confirm the installation before exiting" in persona
+    # 077: activate.sh is sourced into every shell — it MUST NOT abort (a sourced
+    # `exit 1` killed CLI installs and deadlocked bootstraps). Hard assertions go
+    # in verify.sh (run standalone), not activate.sh.
+    assert "sourced into every shell" in persona
+    assert "never abort" in persona
+    # 077: pinned language runtimes (e.g. Ruby 3.4.2) are NOT in apt — the agent
+    # must install the EXACT pinned version via a version manager / build tool,
+    # not accept the distro default (the Ruby-3.3.8-vs-3.4.2 cascade failure).
+    assert "pinned" in persona
+    assert ".ruby-version" in persona
+    assert "ruby-build" in persona
+
+
+def _bootstrap_card_context(**extra) -> dict:
+    ctx = {
+        "symphony_org": "ViviDynamics",
+        "symphony_repo": "website",
+        "cache_mount_path": "/devenv/website",
+        "env_spec_files": ["README.md"],
+        "env_spec_contents": {"README.md": "Install Ruby 3.4.2 and Chrome."},
+        "backend": "opencode",
+    }
+    ctx.update(extra)
+    return ctx
+
+
+class TestManifestArtifacts:
+    """077: coordinare derives the manifest, writes an authoritative verify.sh."""
+
+    @pytest.mark.asyncio
+    async def test_writes_verify_and_returns_checklist(self, tmp_path: Path) -> None:
+        svc = EnvCacheService(MagicMock())
+        files = {
+            ".ruby-version": "3.4.2\n",
+            "Gemfile": 'gem "rails"\ngem "puma"\n',
+            "Gemfile.lock": "BUNDLED WITH\n   2.5.6\n",
+        }
+
+        async def fake_get(org: str, repo: str, path: str) -> str | None:
+            return files.get(path)
+
+        github = MagicMock()
+        github.get_file_content = fake_get
+        cache_dir = tmp_path / "cache"
+
+        checklist, verify_provided = await svc._build_manifest_artifacts(
+            symphony_name="website",
+            repo="website",
+            github_org="ViviDynamics",
+            github_service=github,
+            readme_contents={"README.md": "Rails app."},
+            current_sha="abc123",
+            cache_dir=cache_dir,
+            cache_mount_path="/devenv/website",
+            llm_chat=None,
+        )
+
+        assert verify_provided is True
+        assert "ruby ==3.4.2" in checklist
+        verify = (cache_dir / "verify.sh").read_text()
+        assert "RUBY_VERSION" in verify and "3.4.2" in verify
+        assert (cache_dir / "verify.sh").stat().st_mode & 0o100  # executable
+        manifest = (cache_dir / "manifest.json").read_text()
+        assert "rails" in manifest and "2.5.6" in manifest
+
+    @pytest.mark.asyncio
+    async def test_no_deps_returns_none_false(self, tmp_path: Path) -> None:
+        """A project with no parseable pin files → fall back (agent writes verify)."""
+        svc = EnvCacheService(MagicMock())
+
+        async def fake_get(org: str, repo: str, path: str) -> str | None:
+            return None
+
+        github = MagicMock()
+        github.get_file_content = fake_get
+        cache_dir = tmp_path / "cache"
+
+        checklist, verify_provided = await svc._build_manifest_artifacts(
+            symphony_name="sym",
+            repo="sym",
+            github_org="org",
+            github_service=github,
+            readme_contents={"README.md": "no structured deps"},
+            current_sha="sha",
+            cache_dir=cache_dir,
+            cache_mount_path="/devenv/sym",
+            llm_chat=None,
+        )
+        assert checklist is None
+        assert verify_provided is False
+        assert not (cache_dir / "verify.sh").exists()
+
+
+def test_env_bootstrap_persona_injects_previous_failure_on_retry() -> None:
+    """077 feedback-injection: on a retry, the prior verification failure is put
+    FIRST in the persona so the agent fixes the specific gap (e.g. the pinned
+    Ruby version) instead of repeating the same miss."""
+    from coordinare.services.http_performer_service import HTTPPerformerService
+
+    ctx = _bootstrap_card_context(
+        last_failure="version mismatch (expected 3.4.2, got 3.3.8)\nFAIL: Bundler is not available",
+    )
+    payload = HTTPPerformerService._build_env_bootstrap_payload(None, ctx)
+    persona = payload.persona
+
+    assert "RETRY" in persona
+    assert "3.4.2" in persona  # the specific failure is injected verbatim
+    assert "Bundler is not available" in persona
+    # The failure appears BEFORE the generic bootstrap instructions.
+    assert persona.index("RETRY") < persona.index("environment bootstrap agent")
+
+
+def test_env_bootstrap_persona_no_retry_block_on_first_attempt() -> None:
+    """No prior failure → no retry block (first/clean bootstrap)."""
+    from coordinare.services.http_performer_service import HTTPPerformerService
+
+    payload = HTTPPerformerService._build_env_bootstrap_payload(None, _bootstrap_card_context())
+    assert "RETRY" not in payload.persona
+
+
+def test_env_bootstrap_persona_injects_manifest_checklist() -> None:
+    """077: the coordinare-derived checklist is injected (authoritative install list),
+    and a coordinare-provided verify.sh flips the persona to 'run it, don't write it'."""
+    from coordinare.services.http_performer_service import HTTPPerformerService
+
+    checklist = (
+        "AUTHORITATIVE DEPENDENCY CHECKLIST (derived by coordinare from the project files).\n"
+        "  - [runtime] ruby ==3.4.2  (language runtime; from .ruby-version)"
+    )
+    ctx = _bootstrap_card_context(
+        dependency_checklist=checklist,
+        verify_provided=True,
+    )
+    payload = HTTPPerformerService._build_env_bootstrap_payload(None, ctx)
+    persona = payload.persona
+
+    # Checklist present and ahead of the free-form spec files.
+    assert "AUTHORITATIVE DEPENDENCY CHECKLIST" in persona
+    assert "ruby ==3.4.2" in persona
+    assert persona.index("AUTHORITATIVE DEPENDENCY CHECKLIST") < persona.index("Spec files")
+    # verify_provided → coordinare owns verify.sh; agent must not author it.
+    assert "coordinare-owned" in persona.lower()
+    assert "do not create, overwrite, or delete it" in persona.lower()
+
+
+def test_env_bootstrap_persona_agent_writes_verify_when_not_provided() -> None:
+    """Without a coordinare manifest, the agent is still told to author verify.sh."""
+    from coordinare.services.http_performer_service import HTTPPerformerService
+
+    payload = HTTPPerformerService._build_env_bootstrap_payload(None, _bootstrap_card_context())
+    persona = payload.persona.lower()
+    assert "also write an executable verification script" in persona
+    assert "authoritative dependency checklist" not in persona

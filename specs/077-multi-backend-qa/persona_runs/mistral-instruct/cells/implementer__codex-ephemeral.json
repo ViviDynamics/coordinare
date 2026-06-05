@@ -1,0 +1,23 @@
+{
+  "row": {
+    "role": "implementer",
+    "endpoint": "codex-ephemeral",
+    "backend": "codex",
+    "model": "spark/mistral:instruct",
+    "category": "ERROR",
+    "status": "error",
+    "markers": [],
+    "detail": "pytest_tail==========================\nFAILED tests/test_cart.py::test_shipping_cost - assert 10.0 == 5.0\n1 failed, 3 passed in 0.02s",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "error",
+    "state": "failed",
+    "log_file": null
+  },
+  "state": "failed",
+  "error_code": "error",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"error\",\"session_id\":\"ac1c9608-a724-44f6-a217-ee29c90de4cf\",\"reason\":\"check-run poll failed: GitHub API error 403: {\\\"message\\\":\\\"Resource not accessible by personal access token\\\",\\\"documentation_url\\\":\\\"https://docs.github.com/rest/checks/runs#list-check-runs-for-a-git-reference\\\",\\\"status\\\":\\\"403\\\"}\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "\nadded 2 packages in 3s\nINFO:     172.66.0.243:44714 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-05 03:45:20 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\n2026-06-05 03:45:20 [info     ] secret_resolved                name=OPENAI_API_KEY source=init_payload\nINFO:     172.66.0.243:19127 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:47197 - \"GET /jobs/54a0578cfa304353ac3c91883daa130d HTTP/1.1\" 200 OK\n2026-06-05 03:45:21 [info     ] clone_repository.existing_branch branch=feat/impl-failing-test\n2026-06-05 03:45:21 [info     ] cloned repository              branch=feat/impl-failing-test repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-05 03:45:21 [debug    ] codex app-server ready         port=54811\n2026-06-05 03:45:21 [info     ] codex thread started           port=54811 thread_id=019e95e2-ae3d-7e10-a77a-41861274e5f5\n2026-06-05 03:45:21 [info     ] codex turn started             turn_id=019e95e2-ae63-7dc3-b08c-43e12bc441dc\n2026-06-05 03:45:21 [info     ] dispatch accepted              session_id=ac1c9608-a724-44f6-a217-ee29c90de4cf\nINFO:     172.66.0.243:40208 - \"GET /jobs/54a0578cfa304353ac3c91883daa130d HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:17637 - \"GET /jobs/54a0578cfa304353ac3c91883daa130d HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:25405 - \"GET /jobs/54a0578cfa304353ac3c91883daa130d HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:47750 - \"GET /jobs/54a0578cfa304353ac3c91883daa130d HTTP/1.1\" 200 OK\n2026-06-05 03:45:43 [info     ] ci_check.coordinare_not_available label=implementing\n2026-06-05 03:45:43 [info     ] pushed branch                  branch=feat/impl-failing-test remote_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-05 03:45:44 [info     ] pull request already exists, updating and fetching branch=feat/impl-failing-test\nINFO:     172.66.0.243:52479 - \"GET /jobs/54a0578cfa304353ac3c91883daa130d HTTP/1.1\" 200 OK\n2026-06-05 03:45:47 [info     ] codex app-server stopped\n2026-06-05 03:45:47 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-oyoji29w\nINFO:     172.66.0.243:48404 - \"GET /jobs/54a0578cfa304353ac3c91883daa130d HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

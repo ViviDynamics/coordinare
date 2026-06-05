@@ -1,0 +1,26 @@
+{
+  "row": {
+    "role": "qa",
+    "endpoint": "codex-ephemeral",
+    "backend": "codex",
+    "model": "spark/mistral:instruct",
+    "category": "FAIL_MODEL",
+    "status": "qa_passed",
+    "markers": [
+      "1_steps",
+      "RUBBER_STAMP"
+    ],
+    "detail": "status=qa_passed steps=1 found_bug=False",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent marked qa_passed without running the code or detecting the expected KeyError, thus failing to verify the bug.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  },
+  "state": "succeeded",
+  "error_code": null,
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"qa_passed\",\"session_id\":\"fbd52e60-4173-41e2-a285-974a75e8335b\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"report\":{\"criteria_checked\":0,\"criteria_passed\":0,\"env_limited\":false,\"environment_error\":null,\"new_tests_added\":0,\"verification_steps\":[\"Verify acceptance criterion: checkout_total behaves correctly for typical carts\"],\"pre_fix_repro_steps\":[],\"demo_setup_steps\":[],\"visual_capture_commands\":[\"performer-upload-screenshot checkout.png\",\"cat checkout.png\"],\"visual_capture_blockers\":[],\"visual_evidence\":[],\"visual_validation_required\":false,\"qa_freshness_check\":{\"latest_main_sha\":null,\"branch_head_sha\":null,\"up_to_date\":null,\"detail\":\"freshness_check_indeterminate\"}},\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "\nadded 2 packages in 3s\nINFO:     172.66.0.243:38078 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-05 04:01:45 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\n2026-06-05 04:01:45 [info     ] secret_resolved                name=OPENAI_API_KEY source=init_payload\nINFO:     172.66.0.243:29944 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:57047 - \"GET /jobs/e2fe99c5a80b4fdc9ff8d3a5aea3c78c HTTP/1.1\" 200 OK\n2026-06-05 04:01:46 [info     ] clone_repository.existing_branch branch=feat/qa-behavior\n2026-06-05 04:01:46 [info     ] cloned repository              branch=feat/qa-behavior repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-05 04:01:46 [debug    ] codex app-server ready         port=39999\n2026-06-05 04:01:46 [info     ] codex thread started           port=39999 thread_id=019e95f1-b512-7232-a714-b11a6f5ccea7\n2026-06-05 04:01:46 [info     ] codex turn started             turn_id=019e95f1-b533-7972-8668-140f44658b3e\n2026-06-05 04:01:46 [info     ] dispatch accepted              session_id=fbd52e60-4173-41e2-a285-974a75e8335b\nINFO:     172.66.0.243:61730 - \"GET /jobs/e2fe99c5a80b4fdc9ff8d3a5aea3c78c HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:28444 - \"GET /jobs/e2fe99c5a80b4fdc9ff8d3a5aea3c78c HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:54141 - \"GET /jobs/e2fe99c5a80b4fdc9ff8d3a5aea3c78c HTTP/1.1\" 200 OK\n2026-06-05 04:02:00 [warning  ] backend.invalid_output.retrying attempt=1 failure_reason='could not be parsed as a JSON object' max_retries=1 output_preview=' In this scenario, you are a coding agent using Codex CLI, an open-source terminal-based coding assistant developed by OpenAI. Your job is to work autonomously on programming tasks in a way that is pr' stage=QA\nINFO:     172.66.0.243:23968 - \"GET /jobs/e2fe99c5a80b4fdc9ff8d3a5aea3c78c HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:56556 - \"GET /jobs/e2fe99c5a80b4fdc9ff8d3a5aea3c78c HTTP/1.1\" 200 OK\n2026-06-05 04:02:11 [info     ] commit_file.committed          branch=feat/qa-behavior path=docs/cards/qa-checkout-total/qa.md\n2026-06-05 04:02:12 [info     ] pr comment posted              owner=ViviDynamics pr_number=3 repo=conductor-bench\n2026-06-05 04:02:12 [info     ] codex app-server stopped\n2026-06-05 04:02:12 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-w0imkck1\nINFO:     172.66.0.243:62746 - \"GET /jobs/e2fe99c5a80b4fdc9ff8d3a5aea3c78c HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

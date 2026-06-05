@@ -1,0 +1,23 @@
+{
+  "row": {
+    "role": "qa",
+    "endpoint": "openclaw-ephemeral",
+    "backend": "openclaw",
+    "model": "llama3.1:8b-instruct-q4_0",
+    "category": "FAIL_HARNESS",
+    "status": "error",
+    "markers": [],
+    "detail": "status=error steps=0 found_bug=False | harness:BACKEND_FORMAT_ERROR",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "error",
+    "state": "failed",
+    "log_file": null
+  },
+  "state": "failed",
+  "error_code": "error",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"error\",\"session_id\":\"5ad4f662-42f3-42b5-bd9b-1633e9016f19\",\"reason\":\"BACKEND_FORMAT_ERROR: Backend QA output could not be parsed as a JSON object after 2 attempts. Last output: '{\\\"name\\\": \\\"create_goal\\\", \\\"parameters\\\": {\\\"objective\\\":\\\"# Task: QA: checkout_total\\\\\\\\n\\\\\\\\nQA the PR adding checkout_total(cart).\\\\\\\\n\\\\\\\\n\\\\\\\\n## Card Documentation\\\\\\\\n\\\\\\\\nWorking docs for this card live under `docs/cards/qa-checkout-total/` on this branch.\\\\\\\\nRead any files present there before acting. Typical contents:\\\\\\\\'\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "\nadded 285 packages in 13s\nINFO:     172.66.0.243:16845 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-05 03:15:48 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:45512 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:60711 - \"GET /jobs/25ec9d8c4db9494298b8cbc93bbd25f2 HTTP/1.1\" 200 OK\n2026-06-05 03:15:49 [info     ] clone_repository.existing_branch branch=feat/qa-behavior\n2026-06-05 03:15:49 [info     ] cloned repository              branch=feat/qa-behavior repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-05 03:15:49 [info     ] openclaw.provider_config_written base_url=http://192.168.3.30:11434/v1 path=/root/.openclaw/openclaw.json provider=sparkollama\n2026-06-05 03:15:49 [info     ] openclaw.workspace_linked      workspace=/tmp/performer-eu9ryhmn\n2026-06-05 03:15:49 [info     ] openclaw.persona_to_soul       chars=123\n2026-06-05 03:15:49 [info     ] openclaw.card_docs_written     chars=161 path=/tmp/performer-eu9ryhmn/CARD.md\n2026-06-05 03:15:49 [info     ] openclaw starting              model=sparkollama/llama3.1:8b-instruct-q4_0 provider_routed=True session_key=coordinare-qa-ebe2daef\n2026-06-05 03:15:49 [info     ] openclaw started               model=sparkollama/llama3.1:8b-instruct-q4_0 pid=96\n2026-06-05 03:15:50 [info     ] dispatch accepted              session_id=5ad4f662-42f3-42b5-bd9b-1633e9016f19\nINFO:     172.66.0.243:58342 - \"GET /jobs/25ec9d8c4db9494298b8cbc93bbd25f2 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:44252 - \"GET /jobs/25ec9d8c4db9494298b8cbc93bbd25f2 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:36806 - \"GET /jobs/25ec9d8c4db9494298b8cbc93bbd25f2 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:52640 - \"GET /jobs/25ec9d8c4db9494298b8cbc93bbd25f2 HTTP/1.1\" 200 OK\n2026-06-05 03:16:12 [warning  ] backend.invalid_output.retrying attempt=1 failure_reason='could not be parsed as a JSON object' max_retries=1 output_preview='{\"name\": \"create_goal\", \"parameters\": {\"objective\":\"# Task: QA: checkout_total\\\\n\\\\nQA the PR adding checkout_total(cart).\\\\n\\\\n\\\\n## Card Documentation\\\\n\\\\nWorking docs for this card live under `docs/cards' stage=QA\nINFO:     172.66.0.243:35928 - \"GET /jobs/25ec9d8c4db9494298b8cbc93bbd25f2 HTTP/1.1\" 200 OK\n2026-06-05 03:16:14 [info     ] openclaw stopped\n2026-06-05 03:16:14 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-eu9ryhmn\nINFO:     172.66.0.243:61542 - \"GET /jobs/25ec9d8c4db9494298b8cbc93bbd25f2 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

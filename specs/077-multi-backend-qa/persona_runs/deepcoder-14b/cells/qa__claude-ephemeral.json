@@ -1,0 +1,26 @@
+{
+  "row": {
+    "role": "qa",
+    "endpoint": "claude-ephemeral",
+    "backend": "claude_code",
+    "model": "spark/deepcoder:14b",
+    "category": "FAIL_MODEL",
+    "status": "qa_passed",
+    "markers": [
+      "1_steps",
+      "RUBBER_STAMP"
+    ],
+    "detail": "status=qa_passed steps=1 found_bug=False",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent marked qa_passed without actually running checkout_total or detecting the expected KeyError, thus rubber\u2011stamping the test.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  },
+  "state": "succeeded",
+  "error_code": null,
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"qa_passed\",\"session_id\":\"2ff796c9-3081-4702-987c-bc97f42fdb58\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"report\":{\"criteria_checked\":0,\"criteria_passed\":0,\"env_limited\":false,\"environment_error\":null,\"new_tests_added\":0,\"verification_steps\":[\"Verify acceptance criterion: checkout_total behaves correctly for typical carts\"],\"pre_fix_repro_steps\":[],\"demo_setup_steps\":[],\"visual_capture_commands\":[],\"visual_capture_blockers\":[],\"visual_evidence\":[],\"visual_validation_required\":false,\"qa_freshness_check\":{\"latest_main_sha\":null,\"branch_head_sha\":null,\"up_to_date\":null,\"detail\":\"freshness_check_indeterminate\"}},\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "Setting up Claude Code...\n\nChecking installation status...\nInstalling Claude Code native build latest...\nSetting up launcher and shell integration...\n\u2714 Claude Code successfully installed!\n\n  Version: 2.1.162\n\n  Location: ~/.local/bin/claude\n\n\n  Next: Run claude --help to get started\n\n\u2705 Installation complete!\n\nINFO:     172.66.0.243:57833 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-04 12:54:46 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\n2026-06-04 12:54:46 [warning  ] secret_missing                 name=ANTHROPIC_API_KEY\n2026-06-04 12:54:46 [info     ] secret_resolved                name=ANTHROPIC_AUTH_TOKEN source=init_payload\nINFO:     172.66.0.243:37021 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:50909 - \"GET /jobs/8e01bbc723ba41c78a5100eb30360650 HTTP/1.1\" 200 OK\n2026-06-04 12:54:47 [info     ] clone_repository.existing_branch branch=feat/qa-behavior\n2026-06-04 12:54:47 [info     ] cloned repository              branch=feat/qa-behavior repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-04 12:54:47 [info     ] claude_code shim listening     port=46559\n2026-06-04 12:54:47 [info     ] claude code started            pid=105 resume=False\n2026-06-04 12:54:48 [info     ] claude_code shim request       latency_ms=22 method=HEAD path=/ status=200\n2026-06-04 12:54:48 [debug    ] claude code session captured   session_id=df969423-7dbd-448b-8eea-6b7774d1f5a6\n2026-06-04 12:54:48 [info     ] dispatch accepted              session_id=2ff796c9-3081-4702-987c-bc97f42fdb58\n2026-06-04 12:54:48 [info     ] claude_code shim request       latency_ms=111 method=POST path=/v1/messages status=400\n2026-06-04 12:54:50 [info     ] commit_file.no_changes         path=docs/cards/qa-checkout-total/qa.md\n2026-06-04 12:54:50 [info     ] pr comment posted              owner=ViviDynamics pr_number=3 repo=conductor-bench\n2026-06-04 12:54:50 [info     ] claude code stopped\n2026-06-04 12:54:50 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-2vhaae87\nINFO:     172.66.0.243:56536 - \"GET /jobs/8e01bbc723ba41c78a5100eb30360650 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\nError handling request from 127.0.0.1\nTraceback (most recent call last):\n  File \"/usr/local/lib/python3.12/site-packages/aiohttp/web_protocol.py\", line 521, in _handle_request\n    resp = await request_handler(request)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/site-packages/aiohttp/web_app.py\", line 559, in _handle\n    return await handler(request)\n           ^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/site-packages/performer/backends/claude_code_shim.py\", line 302, in _handle\n    await resp.prepare(request)\n  File \"/usr/local/lib/python3.12/site-packages/aiohttp/web_response.py\", line 462, in prepare\n    return await self._start(request)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/site-packages/aiohttp/web_response.py\", line 470, in _start\n    await self._write_headers()\n  File \"/usr/local/lib/python3.12/site-packages/aiohttp/web_response.py\", line 550, in _write_headers\n    writer.send_headers()\n  File \"/usr/local/lib/python3.12/site-packages/aiohttp/http_writer.py\", line 231, in send_headers\n    self._write(headers_buf)\n  File \"/usr/local/lib/python3.12/site-packages/aiohttp/http_writer.py\", line 102, in _write\n    raise ClientConnectionResetError(\"Cannot write to closing transport\")\naiohttp.client_exceptions.ClientConnectionResetError: Cannot write to closing transport\n"
+}

@@ -1,0 +1,25 @@
+{
+  "row": {
+    "role": "tech_writer",
+    "endpoint": "openclaw-ephemeral",
+    "backend": "openclaw",
+    "model": "llama3.3-70b-iq4xs:latest",
+    "category": "FAIL_HARNESS",
+    "status": "error",
+    "markers": [
+      "docs_reference_coupon"
+    ],
+    "detail": "status=error doc_hits=True | harness:subprocess_exit",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "error",
+    "state": "failed",
+    "log_file": null
+  },
+  "state": "failed",
+  "error_code": "error",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"error\",\"session_id\":\"b5b74313-edb8-4623-b9bc-e5d1376d5cd1\",\"reason\":\"subprocess_exit:1\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "\nadded 285 packages in 13s\nINFO:     172.66.0.243:30808 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-05 02:42:30 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:17468 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:25848 - \"GET /jobs/42086d35f2994f8ca42c1791f7bc54ee HTTP/1.1\" 200 OK\n2026-06-05 02:42:31 [info     ] clone_repository.existing_branch branch=feat/techwriter-nodoc\n2026-06-05 02:42:31 [info     ] cloned repository              branch=feat/techwriter-nodoc repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-05 02:42:31 [info     ] openclaw.provider_config_written base_url=http://192.168.3.30:11434/v1 path=/root/.openclaw/openclaw.json provider=sparkollama\n2026-06-05 02:42:31 [info     ] openclaw.workspace_linked      workspace=/tmp/performer-ga4zsa0w\n2026-06-05 02:42:31 [info     ] openclaw.persona_to_soul       chars=106\n2026-06-05 02:42:31 [info     ] openclaw.card_docs_written     chars=199 path=/tmp/performer-ga4zsa0w/CARD.md\n2026-06-05 02:42:31 [info     ] openclaw starting              model=sparkollama/llama3.3-70b-iq4xs:latest provider_routed=True session_key=coordinare-documenting-364741ba\n2026-06-05 02:42:31 [info     ] openclaw started               model=sparkollama/llama3.3-70b-iq4xs:latest pid=92\n2026-06-05 02:42:31 [info     ] dispatch accepted              session_id=b5b74313-edb8-4623-b9bc-e5d1376d5cd1\nINFO:     172.66.0.243:24135 - \"GET /jobs/42086d35f2994f8ca42c1791f7bc54ee HTTP/1.1\" 200 OK\n2026-06-05 02:42:36 [warning  ] openclaw failed                rc=1 stderr='dded] embedded run failover decision: runId=31997d10-0a7d-4fc1-8851-5c003df2a984 stage=assistant decision=surface_error reason=format from=sparkollama/llama3.3-70b-iq4xs:latest profile=- rawError=400 registry.ollama.ai/library/llama3.3-70b-iq4xs:latest does not support tools\\n[diagnostic] lane task error: lane=main durationMs=1885 error=\"FailoverError: LLM request failed: provider rejected the request schema or tool payload.\"\\n[diagnostic] lane task error: lane=session:agent:main:coordinare-documenting-364741ba durationMs=1888 error=\"FailoverError: LLM request failed: provider rejected the request schema or tool payload.\"\\n[model-fallback/decision] model fallback decision: decision=candidate_failed requested=sparkollama/llama3.3-70b-iq4xs:latest candidate=sparkollama/llama3.3-70b-iq4xs:latest reason=format next=none detail=400 registry.ollama.ai/library/llama3.3-70b-iq4xs:latest does not support tools\\nFailoverError: LLM request failed: provider rejected the request schema or tool payload.\\n'\n2026-06-05 02:42:37 [info     ] openclaw stopped\n2026-06-05 02:42:37 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-ga4zsa0w\nINFO:     172.66.0.243:26317 - \"GET /jobs/42086d35f2994f8ca42c1791f7bc54ee HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

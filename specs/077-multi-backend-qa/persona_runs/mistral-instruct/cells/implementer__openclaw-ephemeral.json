@@ -1,0 +1,23 @@
+{
+  "row": {
+    "role": "implementer",
+    "endpoint": "openclaw-ephemeral",
+    "backend": "openclaw",
+    "model": "mistral:instruct",
+    "category": "ERROR",
+    "status": "error",
+    "markers": [],
+    "detail": "pytest_tail==========================\nFAILED tests/test_cart.py::test_shipping_cost - assert 10.0 == 5.0\n1 failed, 3 passed in 0.02s",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "error",
+    "state": "failed",
+    "log_file": null
+  },
+  "state": "failed",
+  "error_code": "error",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"error\",\"session_id\":\"f021707a-2894-4090-961c-e32a27b808e8\",\"reason\":\"check-run poll failed: GitHub API error 403: {\\\"message\\\":\\\"Resource not accessible by personal access token\\\",\\\"documentation_url\\\":\\\"https://docs.github.com/rest/checks/runs#list-check-runs-for-a-git-reference\\\",\\\"status\\\":\\\"403\\\"}\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "\nadded 285 packages in 13s\nINFO:     172.66.0.243:61804 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-05 03:49:58 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:22399 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:61943 - \"GET /jobs/4c2b709c2e0049a4a31c92098ac1fde9 HTTP/1.1\" 200 OK\n2026-06-05 03:49:59 [info     ] clone_repository.existing_branch branch=feat/impl-failing-test\n2026-06-05 03:49:59 [info     ] cloned repository              branch=feat/impl-failing-test repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-05 03:49:59 [info     ] openclaw.provider_config_written base_url=http://192.168.3.30:11434/v1 path=/root/.openclaw/openclaw.json provider=sparkollama\n2026-06-05 03:49:59 [info     ] openclaw.workspace_linked      workspace=/tmp/performer-i5pqih74\n2026-06-05 03:49:59 [info     ] openclaw.persona_to_soul       chars=116\n2026-06-05 03:49:59 [info     ] openclaw.card_docs_written     chars=240 path=/tmp/performer-i5pqih74/CARD.md\n2026-06-05 03:49:59 [info     ] openclaw starting              model=sparkollama/mistral:instruct provider_routed=True session_key=coordinare-implementing-ae3ec97a\n2026-06-05 03:49:59 [info     ] openclaw started               model=sparkollama/mistral:instruct pid=92\n2026-06-05 03:49:59 [info     ] dispatch accepted              session_id=f021707a-2894-4090-961c-e32a27b808e8\nINFO:     172.66.0.243:52448 - \"GET /jobs/4c2b709c2e0049a4a31c92098ac1fde9 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:63215 - \"GET /jobs/4c2b709c2e0049a4a31c92098ac1fde9 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:24395 - \"GET /jobs/4c2b709c2e0049a4a31c92098ac1fde9 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:50283 - \"GET /jobs/4c2b709c2e0049a4a31c92098ac1fde9 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:62105 - \"GET /jobs/4c2b709c2e0049a4a31c92098ac1fde9 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:20188 - \"GET /jobs/4c2b709c2e0049a4a31c92098ac1fde9 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:20601 - \"GET /jobs/4c2b709c2e0049a4a31c92098ac1fde9 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:48707 - \"GET /jobs/4c2b709c2e0049a4a31c92098ac1fde9 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:18329 - \"GET /jobs/4c2b709c2e0049a4a31c92098ac1fde9 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:36390 - \"GET /jobs/4c2b709c2e0049a4a31c92098ac1fde9 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:42878 - \"GET /jobs/4c2b709c2e0049a4a31c92098ac1fde9 HTTP/1.1\" 200 OK\n2026-06-05 03:50:57 [info     ] ci_check.coordinare_not_available label=implementing\n2026-06-05 03:50:57 [info     ] pushed branch                  branch=feat/impl-failing-test remote_url=https://github.com/ViviDynamics/conductor-bench.git\nINFO:     172.66.0.243:60475 - \"GET /jobs/4c2b709c2e0049a4a31c92098ac1fde9 HTTP/1.1\" 200 OK\n2026-06-05 03:50:59 [info     ] pull request already exists, updating and fetching branch=feat/impl-failing-test\n2026-06-05 03:51:02 [info     ] openclaw stopped\n2026-06-05 03:51:02 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-i5pqih74\nINFO:     172.66.0.243:39204 - \"GET /jobs/4c2b709c2e0049a4a31c92098ac1fde9 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

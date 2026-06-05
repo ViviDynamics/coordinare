@@ -1,0 +1,100 @@
+# =============================================================================
+# Coordinare Configuration Example — Pi Backend
+# =============================================================================
+#
+# Minimal, copy-pasteable config for running performers on Pi
+# (https://pi.dev), a terminal coding agent from the same family as
+# Hermes/OpenClaw. See config.example.yaml for the full reference. This file
+# focuses on the Pi-specific wiring.
+#
+# How Pi runs under coordinare:
+#   - The performer invokes `pi -p --mode json --provider <name> --model <id>`
+#     once per card (print/exit, JSON-lines event stream). One-shot, like
+#     hermes/openclaw.
+#   - Model routing (OpenAI-compatible via a self-hosted proxy, NO vendor
+#     login): set the PI_PROVIDER_* env vars below and PiBackend writes
+#     `~/.pi/agent/models.json` at job start — a custom provider pointed at
+#     PI_PROVIDER_BASE_URL (`api: "openai-completions"`), with the API key
+#     interpolated from PI_PROVIDER_ENV_KEY via `${ENV}` syntax (never written
+#     to disk).
+#   - A `compat` block (`supportsDeveloperRole: false`,
+#     `supportsReasoningEffort: false`) IS written — it is required for
+#     OpenAI-compatible models (e.g. qwen) that reject the `developer` role /
+#     `reasoning_effort`. (NOTE: this differs from OpenClaw, which auto-disables
+#     the developer role and needs no manual compat block.)
+#   - The `pi` CLI installs on container start via the entrypoint `pi)` arm
+#     (`npm install -g @mariozechner/pi-coding-agent`) — not baked into the image.
+#   - Terminal contract: the adapter parses the JSON-lines stream
+#     (message_update/tool_execution_start/agent_end) and extracts the final
+#     assistant text from `agent_end.messages[]`.
+#
+# Spec reference: specs/077-multi-backend-qa/ (US2, research R-01)
+# =============================================================================
+
+
+# --- GitHub ---
+
+github_org: "your-org"
+github_token: "${COORDINARE_GITHUB_TOKEN}"
+github_auth: "pat"   # or "app" — see config.example.yaml for App auth fields
+
+human_reviewers:
+  - "your-github-handle"
+
+
+# --- Symphonies ---
+
+symphonies:
+  - name: my-project
+    github_project_number: 1
+
+
+# --- Containerized Performer (Pi) ---
+#
+# No host credential mount is required — the provider config (models.json) is
+# written from the PI_PROVIDER_* env at job start. The API key lives only in
+# the env var named by PI_PROVIDER_ENV_KEY.
+
+performer_endpoints:
+  - id: pi-ephemeral
+    mode: ephemeral
+    roles:
+      - closer              # or any role(s)
+    image: coordinare-performer:full
+    env:
+      BACKEND: pi
+      PI_PROVIDER_BASE_URL: https://your-proxy.example.com/v1
+      PI_PROVIDER_NAME: litellm
+      PI_PROVIDER_ENV_KEY: LITELLM_MASTER_KEY   # in-container key var
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
+
+
+# --- Performers ---
+#
+# Pick `backend: pi` per role (or at `default:`). The per-role `model:` is
+# passed to `pi --model`.
+
+performers:
+  default:
+    backend: pi
+    model: spark/qwen3.6:35b
+
+  closer:
+    backend: pi
+    model: spark/qwen3.6:35b
+    max_tokens: 8192
+
+
+# 076 — Dispatcher dedup + reconciliation tunables (defaults from spec 076 Q1-Q5).
+dispatcher_dedup:
+  enabled: true
+  reconciliation_budget_seconds: 30
+  drain_budget_seconds: 5
+  reap_budget_seconds: 5
+  idle_timeout_retries: 2
+  idle_timeout_window_hours: 24
+  empty_output_retries: 1
+  empty_output_window_hours: 24
+  wedge_block_threshold: 3
+  wedge_block_window_hours: 24
+  multi_pr_check_triggers: [dispatch, restart, webhook]

@@ -1,0 +1,26 @@
+{
+  "row": {
+    "role": "qa",
+    "endpoint": "hermes-ephemeral",
+    "backend": "hermes",
+    "model": "spark/glm-4.7-flash:latest",
+    "category": "FAIL_MODEL",
+    "status": "qa_passed",
+    "markers": [
+      "4_steps",
+      "found_behavior_bug"
+    ],
+    "detail": "status=qa_passed steps=4 found_bug=True",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent reported qa_passed and all tests passed, failing to detect the known KeyError bug in checkout_total.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  },
+  "state": "succeeded",
+  "error_code": null,
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"qa_passed\",\"session_id\":\"2e2eac87-14fa-41b8-b21a-913c830280ae\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"report\":{\"criteria_checked\":4,\"criteria_passed\":4,\"env_limited\":false,\"environment_error\":null,\"new_tests_added\":0,\"verification_steps\":[\"Test 1: Typical cart with discount - PASS\",\"Test 2: Empty cart (no discount key) - PASS\",\"Test 3: Discount-only cart - PASS\",\"Test 4: Discount percentage logic verification - PASS\"],\"pre_fix_repro_steps\":[],\"demo_setup_steps\":[],\"visual_capture_commands\":[],\"visual_capture_blockers\":[],\"visual_evidence\":[],\"visual_validation_required\":false,\"qa_freshness_check\":{\"latest_main_sha\":null,\"branch_head_sha\":null,\"up_to_date\":null,\"detail\":\"freshness_check_indeterminate\"}},\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.\n\n[notice] A new release of pip is available: 25.0.1 -> 26.1.2\n[notice] To update, run: pip install --upgrade pip\nINFO:     172.66.0.243:54786 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-03 18:37:54 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:18315 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:52364 - \"GET /jobs/a65db1e682cd4d76afb55f04af74da98 HTTP/1.1\" 200 OK\n2026-06-03 18:37:55 [info     ] clone_repository.existing_branch branch=feat/qa-behavior\n2026-06-03 18:37:55 [info     ] cloned repository              branch=feat/qa-behavior repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-03 18:37:55 [info     ] hermes.card_docs_written       chars=161 path=/tmp/performer-st5ljyb9/CARD.md\n2026-06-03 18:37:55 [info     ] hermes starting                base_url=https://litellm.vividynamics.com/v1 hermes_home=/tmp/hermes-job-2xhz25gl model=spark/glm-4.7-flash:latest provider=litellm\n2026-06-03 18:37:55 [info     ] hermes started                 model=spark/glm-4.7-flash:latest pid=46\n2026-06-03 18:37:55 [info     ] dispatch accepted              session_id=2e2eac87-14fa-41b8-b21a-913c830280ae\nINFO:     172.66.0.243:58859 - \"GET /jobs/a65db1e682cd4d76afb55f04af74da98 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:26036 - \"GET /jobs/a65db1e682cd4d76afb55f04af74da98 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:37779 - \"GET /jobs/a65db1e682cd4d76afb55f04af74da98 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:24951 - \"GET /jobs/a65db1e682cd4d76afb55f04af74da98 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:26342 - \"GET /jobs/a65db1e682cd4d76afb55f04af74da98 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:38398 - \"GET /jobs/a65db1e682cd4d76afb55f04af74da98 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:30515 - \"GET /jobs/a65db1e682cd4d76afb55f04af74da98 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:39554 - \"GET /jobs/a65db1e682cd4d76afb55f04af74da98 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:32259 - \"GET /jobs/a65db1e682cd4d76afb55f04af74da98 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:48547 - \"GET /jobs/a65db1e682cd4d76afb55f04af74da98 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:17068 - \"GET /jobs/a65db1e682cd4d76afb55f04af74da98 HTTP/1.1\" 200 OK\n2026-06-03 18:38:52 [info     ] hermes finalized               removed=/tmp/hermes-job-2xhz25gl\nINFO:     172.66.0.243:22941 - \"GET /jobs/a65db1e682cd4d76afb55f04af74da98 HTTP/1.1\" 200 OK\n2026-06-03 18:38:54 [info     ] commit_file.committed          branch=feat/qa-behavior path=docs/cards/qa-checkout-total/qa.md\n2026-06-03 18:38:55 [info     ] pr comment posted              owner=ViviDynamics pr_number=3 repo=conductor-bench\n2026-06-03 18:38:55 [info     ] hermes stopped\n2026-06-03 18:38:55 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-st5ljyb9\nINFO:     172.66.0.243:48539 - \"GET /jobs/a65db1e682cd4d76afb55f04af74da98 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

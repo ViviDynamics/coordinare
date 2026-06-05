@@ -7,10 +7,24 @@ import pytest
 from pydantic import ValidationError
 
 from performer.protocol import (
+    FAILURE_STATUSES,
+    TERMINAL_STATUSES,
     PerformerMessage,
     PerformerMetrics,
     PerformerResponse,
 )
+
+
+class TestDiagnosticStatus:
+    def test_diagnostic_complete_is_terminal_success(self) -> None:
+        # 077: a diagnostic probe ends the job (terminal) and counts as success.
+        assert "diagnostic_complete" in TERMINAL_STATUSES
+        assert "diagnostic_complete" not in FAILURE_STATUSES
+
+    def test_diagnostic_complete_serialises(self) -> None:
+        resp = PerformerResponse(status="diagnostic_complete", progress="took screenshot")
+        dumped = json.loads(resp.model_dump_json())
+        assert dumped["status"] == "diagnostic_complete"
 
 
 class TestPerformerMessage:

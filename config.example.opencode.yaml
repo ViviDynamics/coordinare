@@ -7,10 +7,19 @@
 #
 # How OpenCode runs under coordinare:
 #   - Persistent CLI session per card (the adapter manages start/stop).
-#   - Authentication: OpenCode reads provider API keys from
-#     ~/.opencode/config.json inside the container. Mount the host directory
-#     read-only so the same credentials are available to every job.
-#   - Image: build a OpenCode-capable image with the `opencode` CLI installed.
+#   - Authentication — TWO supported modes:
+#       (A) Mounted creds (vendor models): OpenCode reads provider API keys
+#           from ~/.opencode/config.json inside the container. Mount the host
+#           directory read-only so the same credentials are available to every
+#           job. Use this to drive Anthropic/OpenAI/etc. hosted models.
+#       (B) Self-hosted OpenAI-compatible provider (077 US4, no login): set the
+#           OPENCODE_PROVIDER_* env vars on the endpoint and the adapter writes
+#           an opencode.json custom provider at job start — NO ~/.opencode mount
+#           needed. Routes every role to one OpenAI-compatible endpoint (e.g. a
+#           LiteLLM proxy serving a self-hosted model). See the second endpoint
+#           example below.
+#   - Image: build a OpenCode-capable image with the `opencode` CLI installed
+#     (the entrypoint `opencode)` arm also installs/upgrades it on start).
 # =============================================================================
 
 
@@ -72,6 +81,31 @@ performer_endpoints:
     #   COORDINARE_INFERENCE_MAX_TOKENS:     "${COORDINARE_INFERENCE_MAX_TOKENS}"
     #   COORDINARE_INFERENCE_MAX_TOOL_CALLS: "${COORDINARE_INFERENCE_MAX_TOOL_CALLS}"
     #   COORDINARE_INFERENCE_AGENT_VERSION:  "${COORDINARE_INFERENCE_AGENT_VERSION}"
+
+# --- Mode (B): self-hosted OpenAI-compatible provider, NO login mount (077) ---
+#
+# When OPENCODE_PROVIDER_BASE_URL is set, OpenCodeAdapter writes an opencode.json
+# custom provider (@ai-sdk/openai-compatible) into the workspace at job start and
+# routes the session modelID as `<OPENCODE_PROVIDER_NAME>/<model>` (e.g.
+# litellm/spark/qwen3.6:35b). No ~/.opencode mount and no `compat` block are
+# needed — the AI-SDK openai-compatible client uses standard system/user roles.
+# The API key is resolved in-container from OPENCODE_PROVIDER_ENV_KEY via
+# opencode's `{env:VAR}` syntax. Verified end-to-end against LiteLLM +
+# spark/qwen3.6:35b (research.md R-03).
+#
+#   - id: opencode-ephemeral
+#     mode: ephemeral
+#     roles: [ env_bootstrap ]          # or any role(s)
+#     image: coordinare-performer:full
+#     env:
+#       BACKEND: opencode
+#       OPENCODE_PROVIDER_BASE_URL: https://litellm.example.com/v1
+#       OPENCODE_PROVIDER_NAME: litellm        # becomes the modelID prefix
+#       OPENCODE_PROVIDER_ENV_KEY: LITELLM_MASTER_KEY   # in-container key var
+#       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
+#       # service_inference (env_bootstrap role) — same COORDINARE_INFERENCE_*
+#       # seam as above; its timeout stays non-fatal (the bootstrap completes
+#       # with inference skipped rather than failing).
 
 
 # --- Performers ---

@@ -177,7 +177,7 @@ components:
           type: array
           items:
             type: string
-          description: Supported backend identifiers (e.g. claude_code, codex, cursor, junie, opencode).
+          description: Supported backend identifiers (e.g. claude_code, codex, junie, opencode).
         tool_flags:
           type: array
           items:
