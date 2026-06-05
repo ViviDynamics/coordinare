@@ -2,12 +2,16 @@
 
 3-layer chain (highest priority first):
 
-1. ``persona_check_map`` ∩ ``PersonaScope.personas["implementer"].depth``
-   — per-card narrowed set from 074's persona classification.
+1. ``persona_check_map`` — per-persona glob narrowing of the required set.
+   With 074 scope tiering ON, uses ``personas["implementer"].depth``'s list;
+   with tiering OFF (or an empty depth list), falls back to the depth-agnostic
+   ``any`` list (077 decoupling — gate-scoping no longer requires the 074
+   classifier).
 2. ``branch_protection`` — the GitHub branch-protection required-checks set.
 3. ``all_head_checks`` — every check observed on HEAD (fallback / US1 MVP).
 
-US1 lands layer 3 only.  US3 fills in layers 1 and 2.
+US1 lands layer 3 only.  US3 fills in layers 1 and 2; 077 makes layer 1 usable
+without 074 via ``persona_check_map.<persona>.any``.
 """
 
 from __future__ import annotations
@@ -39,22 +43,31 @@ def resolve(
     """
     head_names = sorted({c for c in all_head_checks})
 
-    # Layer 1: persona_check_map narrows when scope + map both exist.
-    if scope and persona_check_map:
-        persona = (scope.get("personas") or {}).get("implementer") or {}
-        depth = persona.get("depth")
-        if depth and depth != "skip":
-            per_persona = persona_check_map.get("implementer") or {}
-            patterns = per_persona.get(depth) or []
-            if patterns:
-                matched = sorted(
-                    {n for n in head_names if any(fnmatch.fnmatchcase(n, p) for p in patterns)}
-                )
-                # T041: empty intersection falls through to layer 2 so a
-                # narrow persona-scope pattern doesn't silently zero out the
-                # required-checks set when no observed check matches.
-                if matched:
-                    return {"names": matched, "source": "persona_check_map"}
+    # Layer 1: persona_check_map narrows the required set. Two modes (077
+    # decoupling): with 074 scope tiering ON, the runtime scope supplies the
+    # implementer's depth and we use the depth-specific list; with tiering OFF
+    # (scope is None) — or when the depth-specific list is empty — we fall back
+    # to the depth-agnostic ``any`` list, so the gate can be scoped per-persona
+    # WITHOUT enabling the persona classifier.
+    if persona_check_map:
+        per_persona = persona_check_map.get("implementer") or {}
+        patterns: list[str] = []
+        if scope:
+            persona = (scope.get("personas") or {}).get("implementer") or {}
+            depth = persona.get("depth")
+            if depth and depth != "skip":
+                patterns = per_persona.get(depth) or []
+        if not patterns:
+            patterns = per_persona.get("any") or []
+        if patterns:
+            matched = sorted(
+                {n for n in head_names if any(fnmatch.fnmatchcase(n, p) for p in patterns)}
+            )
+            # T041: empty intersection falls through to layer 2 so a narrow
+            # pattern doesn't silently zero out the required-checks set when no
+            # observed check matches.
+            if matched:
+                return {"names": matched, "source": "persona_check_map"}
 
     # Layer 2: branch-protection set (intersected with HEAD checks so we never
     # gate on a name that didn't report).

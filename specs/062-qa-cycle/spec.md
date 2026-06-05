@@ -40,7 +40,7 @@ The desired behaviour: each performer container ships with the `rtk` binary inst
 1. **Given** a performer image built with the new RTK install step, **When** the container starts with `BACKEND=codex RTK_ENABLED=1`, **Then** `rtk init` has been run for the codex CLI before `python -m performer` exec.
 2. **Given** `RTK_ENABLED` is unset or `0`, **When** the container starts, **Then** `rtk init` is skipped and behaviour matches today's image byte-for-byte.
 3. **Given** the rtk install step fails at image build time, **Then** the build fails loudly (it is bootstrap, not a runtime upgrade) so we don't ship an image silently missing the binary.
-4. **Given** a backend without a supported rtk hook (junie / cursor / opencode in the first cut), **When** the container starts with `RTK_ENABLED=1`, **Then** the entrypoint logs a warning and continues without registering a hook.
+4. **Given** a backend without a supported rtk hook (junie / opencode in the first cut), **When** the container starts with `RTK_ENABLED=1`, **Then** the entrypoint logs a warning and continues without registering a hook.
 
 ---
 
@@ -72,5 +72,5 @@ The desired behaviour: each performer container ships with the `rtk` binary inst
 - Automatically starting an ephemeral performer container from the endpoint. Ephemeral containers are spun up on demand by the dispatch path; the endpoint only validates that the *service handle* exists in coordinare's state.
 - Reviving / re-initialising a half-initialised daemon. If `env_cache_service` is `None`, restarting the daemon remains the recommended remediation.
 - Broader dashboard rework or unrelated env-cache UX changes.
-- RTK hook integration for `opencode`, `junie`, `cursor` backends — deferred until upstream hook surfaces are confirmed. The first cut covers `codex` and `claude` only.
+- RTK hook integration for `opencode`, `junie` backends — deferred until upstream hook surfaces are confirmed. The first cut covers `codex` and `claude` only.
 - Coordinare-side token accounting changes. We measure the savings using existing performer-reported usage; no new metrics plumbing in this round.

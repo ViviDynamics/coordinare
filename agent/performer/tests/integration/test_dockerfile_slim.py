@@ -14,7 +14,7 @@ import pytest
 from tests.conftest import resolve_published_port, wait_for_status
 
 
-BACKENDS = ["claude_code", "codex", "cursor", "junie", "opencode"]
+BACKENDS = ["claude_code", "codex", "junie", "opencode"]
 
 
 @pytest.mark.timeout(600)

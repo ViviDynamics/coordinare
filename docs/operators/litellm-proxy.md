@@ -25,7 +25,7 @@ byte-identical to the pre-feature baseline; the CLI uses its default
 endpoint (`https://api.anthropic.com`).
 
 These vars are **only** injected for the `claude_code` backend
-(FR-005). The opencode, junie, cursor, codex, and hermes backends do not
+(FR-005). The opencode, junie, codex, and hermes backends do not
 read them.
 
 ### The in-container response shim

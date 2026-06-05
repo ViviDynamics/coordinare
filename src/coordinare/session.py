@@ -138,6 +138,19 @@ class CardSession(TypedDict, total=False):
     # MUST round-trip through session ↔ state or the gate forgets bounces
     # between cycles and never escalates to needs_human_review.
     bounce_counter: dict[str, int]
+    # 077: consecutive empty-feedback re-reviews for the current reviewer turn.
+    # Bounds the re-dispatch-on-empty retry (weak-model flip-flop) before the
+    # 065 Fix 4c block fires. MUST round-trip so the counter survives the
+    # re-review cycle.
+    review_empty_retry_count: int
+    # 077 stall watchdog: timestamp of the last poll on which the performer made
+    # forward progress (new events / token growth). Round-trips so the stall
+    # window survives the multi-session save/load between poll cycles.
+    last_progress_at: datetime | None
+    # 077 stall watchdog: fingerprint of the last poll's progress signal
+    # (event count + last event + token total). Compared between polls to tell
+    # real forward progress from a wedged turn re-returning the same events.
+    last_progress_fingerprint: str | None
     # 075: most recent CIGateDecision dict, written by monitor_performer and
     # consumed by notify.py for the PR rollup comment (one-cycle delay).
     latest_ci_gate_decision: dict[str, Any] | None
@@ -208,6 +221,9 @@ _SESSION_FIELDS: tuple[str, ...] = (
     "processed_review_ids",
     "persona_scope",
     "bounce_counter",
+    "review_empty_retry_count",
+    "last_progress_at",
+    "last_progress_fingerprint",
     "latest_ci_gate_decision",
     "ci_gate_rollup_signature",
     "ci_gate_advisory_failures",
@@ -267,6 +283,9 @@ def create_session_from_card(card: dict[str, Any]) -> CardSession:
         processed_review_ids=set(),
         persona_scope=None,
         bounce_counter={},
+        review_empty_retry_count=0,
+        last_progress_at=None,
+        last_progress_fingerprint=None,
         latest_ci_gate_decision=None,
         ci_gate_rollup_signature=None,
         ci_gate_advisory_failures=[],

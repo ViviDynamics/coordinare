@@ -31,7 +31,7 @@ from performer.backends.base import BackendStatus
 from performer.backends.claude_code_shim import ClaudeCodeShim
 from performer.config import Settings, get_settings
 from performer.io_utils import iter_lines_chunked
-from performer.models import BackendEvent, BackendEventType, Score, Stand
+from performer.models import DIAGNOSTIC_ROLE, LOCAL_CAPTURE_RULE, BackendEvent, BackendEventType, Score, Stand
 
 log = structlog.get_logger(__name__)
 
@@ -293,8 +293,10 @@ class ClaudeCodeBackend:
         ]
         if self._model:
             args += ["--model", self._model]
-        if self._max_tokens is not None:
-            args += ["--max-tokens", str(self._max_tokens)]
+        # 077: the Claude Code CLI has no `--max-tokens` flag (passing it aborts
+        # with "error: unknown option '--max-tokens'", exit 1 — it crashed the qa
+        # stage). The output-token cap is configured via the
+        # CLAUDE_CODE_MAX_OUTPUT_TOKENS env var instead (set in subproc_env below).
         # FR-016: route persona to Claude Code's native system-prompt slot
         # instead of embedding it in the task prompt body.
         if self._persona:
@@ -322,6 +324,11 @@ class ClaudeCodeBackend:
             # sandbox boundary, so opt into the documented escape hatch.
             "IS_SANDBOX": "1",
         }
+        # 077: cap output tokens via the env var the CLI actually honours
+        # (there is no --max-tokens flag). Caller-provided value wins over any
+        # ambient setting.
+        if self._max_tokens is not None:
+            subproc_env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(self._max_tokens)
         for _k, _v in self._proxy_env.items():
             subproc_env.setdefault(_k, _v)
 
@@ -722,7 +729,13 @@ def _build_task_prompt(
                 parts.append(f"- {item}")
 
     parts += ["", "---"]
-    if score.role in _JSON_ONLY_ROLES:
+    if score.role == DIAGNOSTIC_ROLE:
+        parts += [
+            "This is a one-off diagnostic/benchmark task. Use any tools at your "
+            "disposal to complete it. You do NOT need to commit, push, or open a "
+            "pull request — just perform the task and report what you did.",
+        ]
+    elif score.role in _JSON_ONLY_ROLES:
         parts += [
             "Return ONLY a valid JSON object for your role contract.",
             "Do not include markdown, prose, or code fences.",
@@ -734,6 +747,7 @@ def _build_task_prompt(
                 "Set `visual_validation_required=true` for UI/UX/visual changes and capture at least one artifact in `visual_evidence` for those tasks.",
                 "Include `visual_evidence` entries when screenshots/GIFs/videos/artifacts are available.",
                 "Include exact capture attempts in `visual_capture_commands` (commands/scripts you ran).",
+                LOCAL_CAPTURE_RULE,
                 "If visual evidence cannot be captured, include `demo_setup_steps` and `visual_capture_blockers` with concrete details.",
                 (
                     "Screenshot uploads: after capturing a screenshot to disk, run "

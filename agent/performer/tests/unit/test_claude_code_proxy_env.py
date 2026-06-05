@@ -81,7 +81,6 @@ class TestBackendScoping:
         [
             "performer.backends.opencode",
             "performer.backends.junie",
-            "performer.backends.cursor",
             "performer.backends.codex",
             "performer.backends.hermes",
         ],

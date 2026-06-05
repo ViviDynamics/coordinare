@@ -43,7 +43,7 @@ curl -s -H "Authorization: Bearer devtoken" http://localhost:8088/status | jq .
 #   "availability": "idle",
 #   "current_job_id": null,
 #   "capabilities": {
-#     "backends": ["claude_code", "codex", "cursor", "junie", "opencode"],
+#     "backends": ["claude_code", "codex", "junie", "opencode"],
 #     "tool_flags": ["git", "node", "python", "lint", "format", "test_runner", "ripgrep", "jq", "shell", "browser"]
 #   },
 #   "auth_enabled": true,

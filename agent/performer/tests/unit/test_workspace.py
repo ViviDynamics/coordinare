@@ -386,6 +386,19 @@ class TestCleanupStand:
         stand = Stand(path=tmp_path / "nonexistent", branch="main")
         cleanup_stand(stand)  # should not raise
 
+    def test_keep_stand_env_preserves_workspace(self, tmp_path: Path, monkeypatch) -> None:
+        # 077: PERFORMER_KEEP_STAND=1 keeps the workspace for post-job grading.
+        target = tmp_path / "stand"
+        target.mkdir()
+        (target / "file.txt").write_text("data")
+        stand = Stand(path=target, branch="b")
+        monkeypatch.setenv("PERFORMER_KEEP_STAND", "1")
+        cleanup_stand(stand)
+        assert target.exists()  # preserved
+        monkeypatch.setenv("PERFORMER_KEEP_STAND", "0")
+        cleanup_stand(stand)
+        assert not target.exists()  # default behavior restored
+
 
 class TestRedactAuthHeaders:
     def test_basic_auth_header_redacted(self) -> None:

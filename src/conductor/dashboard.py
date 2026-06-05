@@ -1658,6 +1658,21 @@ function renderSymphoniesPage(s) {
     var bootBtn = sym.env_bootstrap_performer_id
       ? '<button class="action-btn sym-row-bootstrap" data-sym="' + esc(sym.name) + '" style="padding:2px 8px;font-size:11px">Bootstrap</button>'
       : '<span style="color:var(--color-text-muted)">—</span>';
+    // 077: at-a-glance bootstrap status badge (colored dot + label) so a failing
+    // env bootstrap is visible on the overview without opening the symphony.
+    var bootStatus = '';
+    if (sym.env_bootstrap_performer_id) {
+      var bsColor, bsText;
+      if (sym.bootstrap_in_flight) { bsColor = 'var(--color-accent-blue)'; bsText = 'bootstrapping…'; }
+      else if (sym.last_bootstrap_succeeded === false) { bsColor = 'var(--color-accent-red)'; bsText = 'failed'; }
+      else if (sym.cache_dir_ready && sym.last_bootstrap_succeeded === true) { bsColor = 'var(--color-accent-green)'; bsText = 'ready'; }
+      else { bsColor = 'var(--color-text-muted)'; bsText = 'not bootstrapped'; }
+      var bsTitle = (sym.last_bootstrap_succeeded === false && sym.last_bootstrap_error)
+        ? ' title="' + esc(sym.last_bootstrap_error) + '"' : '';
+      bootStatus = '<span' + bsTitle + ' style="display:inline-flex;align-items:center;gap:5px;margin-right:8px;font-size:11px;color:' + bsColor + '">'
+        + '<span style="width:8px;height:8px;border-radius:50%;background:' + bsColor + ';display:inline-block;flex:none"></span>'
+        + bsText + '</span>';
+    }
     return '<tr>'
       + '<td><a href="/symphonies/' + encodeURIComponent(sym.name) + '" onclick="navigate(event,this.pathname)" style="color:var(--color-accent-blue)">' + esc(sym.name) + '</a></td>'
       + '<td style="color:var(--color-text-muted)">' + (sym.github_project_number != null ? '#' + sym.github_project_number : '—') + '</td>'
@@ -1665,7 +1680,7 @@ function renderSymphoniesPage(s) {
       + '<td>' + (sym.cycle_count != null ? sym.cycle_count : '—') + '</td>'
       + '<td>' + (sym.error_count != null ? sym.error_count : '—') + '</td>'
       + '<td>' + (sym.last_poll_at ? esc(fmtTime(sym.last_poll_at)) : '—') + '</td>'
-      + '<td>' + bootBtn + '</td>'
+      + '<td>' + bootStatus + bootBtn + '</td>'
       + '</tr>';
   }).join('');
   el.innerHTML = '<div style="overflow-x:auto"><table style="width:100%;font-size:12px"><thead><tr>'
@@ -1802,8 +1817,18 @@ async function loadSymphonyDetail(name, el) {
       ecRows = '<tr><td style="font-size:12px;color:var(--color-text-muted)">Env cache state not initialised yet.</td></tr>';
     }
     var disabled = (ec && ec.bootstrap_in_flight) ? 'disabled' : '';
+    // 077: prominent error banner when the last bootstrap failed, with the reason
+    // (verify failure / dispatch error / reap reason) so an operator sees WHY.
+    var ecErrBanner = (ec && ec.last_bootstrap_succeeded === false && ec.last_bootstrap_error)
+      ? '<div style="background:rgba(220,50,50,0.12);border:1px solid var(--color-accent-red);'
+        + 'border-radius:6px;padding:8px 10px;margin-bottom:10px;font-size:12px;color:var(--color-accent-red)">'
+        + '⚠ <strong>Env bootstrap failing for ' + esc(name) + ':</strong> '
+        + esc(ec.last_bootstrap_error)
+        + '</div>'
+      : '';
     ecSection = '<div class="card" style="margin-bottom:14px">'
       + '<div style="font-weight:bold;margin-bottom:10px;font-size:13px">Env bootstrap</div>'
+      + ecErrBanner
       + '<table style="font-size:12px;margin-bottom:10px"><tbody>' + ecRows + '</tbody></table>'
       + '<button class="action-btn" id="sym-env-bootstrap-btn" ' + disabled + '>Force bootstrap now</button>'
       + ' <span id="sym-env-bootstrap-msg" class="action-msg"></span>'
@@ -3022,14 +3047,21 @@ def create_dashboard_app(
         symphony_states = daemon.state.get("symphony_states") or {}
         config_version = daemon.state.get("config_version", 0)
 
+        env_cache_states = daemon.state.get("env_cache") or {}
         symphonies = []
         for i, (name, cfg) in enumerate(symphony_configs.items()):
             state = symphony_states.get(name)
+            # 077: bootstrap status for the at-a-glance overview badge.
+            _ec = env_cache_states.get(name)
             symphonies.append({
                 "name": name,
                 "priority": i,
                 "github_project_number": getattr(cfg, "github_project_number", None),
                 "env_bootstrap_performer_id": getattr(cfg, "env_bootstrap_performer_id", None),
+                "bootstrap_in_flight": bool(getattr(_ec, "bootstrap_in_flight", False)) if _ec else False,
+                "cache_dir_ready": bool(getattr(_ec, "cache_dir_ready", False)) if _ec else False,
+                "last_bootstrap_succeeded": getattr(_ec, "last_bootstrap_succeeded", None) if _ec else None,
+                "last_bootstrap_error": getattr(_ec, "last_bootstrap_error", None) if _ec else None,
                 "cycle_count": getattr(state, "cycle_count", 0) if state else 0,
                 "error_count": getattr(state, "error_count", 0) if state else 0,
                 "last_error": getattr(state, "last_error", None) if state else None,
@@ -3076,6 +3108,7 @@ def create_dashboard_app(
                     else None
                 ),
                 "last_bootstrap_succeeded": getattr(ec, "last_bootstrap_succeeded", None),
+                "last_bootstrap_error": getattr(ec, "last_bootstrap_error", None),
                 # 063 T026d: service-inference summary
                 "last_inference_at": (
                     ec.last_inference_at.isoformat()

@@ -444,8 +444,15 @@ def prepare_conflict_resolution(
 def build_conflict_block_comment(
     job: RebaseJob,
     human_reviewers: list[str] | None = None,
+    header: str = "",
 ) -> str:
-    """Build a diagnostic GitHub issue comment for an unresolvable conflict."""
+    """Build a diagnostic GitHub issue comment for an unresolvable conflict.
+
+    ``header`` is an optional standardized attribution header (spec 077). A
+    rebase conflict concerns the implementer's branch, so callers with config
+    access should pass ``coordinare_attribution(config, "implementing")``; it is
+    prepended above the visible comment body.
+    """
     mentions = ""
     if human_reviewers:
         mentions = " ".join(f"@{r}" for r in human_reviewers) + " "
@@ -453,8 +460,9 @@ def build_conflict_block_comment(
     files = "\n".join(f"- `{f}`" for f in job.conflicted_files[:10])
     preview = job.conflict_preview[:800] if job.conflict_preview else "(no preview available)"
 
+    prefix = f"{header}\n\n" if header else ""
     return (
-        f"{mentions}**Rebase conflict on `{job.branch}`**\n\n"
+        f"{prefix}{mentions}**Rebase conflict on `{job.branch}`**\n\n"
         f"Could not rebase onto main (`{job.target_main_sha[:8]}`). "
         f"The performer was unable to resolve the conflicts automatically.\n\n"
         f"**Conflicted files:**\n{files}\n\n"

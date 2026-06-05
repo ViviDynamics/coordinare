@@ -97,6 +97,41 @@ class TestClaudeCodeBackendStart:
         assert "--print" in args
         assert "--verbose" in args
 
+    async def test_max_tokens_uses_env_var_not_unsupported_flag(
+        self, tmp_path: Path
+    ) -> None:
+        """077: the Claude Code CLI has no --max-tokens flag (passing it aborts
+        with exit 1 — it crashed the qa stage). The cap must be delivered via the
+        CLAUDE_CODE_MAX_OUTPUT_TOKENS env var instead."""
+        proc = _fake_proc()
+        adapter = ClaudeCodeBackend()
+
+        with patch(
+            "performer.backends.claude_code.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=proc),
+        ) as mock_exec:
+            await adapter.start(_stand(tmp_path), _score(), max_tokens=8192)
+
+        args = list(mock_exec.call_args[0])
+        assert "--max-tokens" not in args  # the flag the CLI rejects
+        env = mock_exec.call_args.kwargs["env"]
+        assert env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "8192"
+
+    async def test_no_max_tokens_omits_env_var(self, tmp_path: Path) -> None:
+        proc = _fake_proc()
+        adapter = ClaudeCodeBackend()
+
+        with patch(
+            "performer.backends.claude_code.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=proc),
+        ) as mock_exec:
+            await adapter.start(_stand(tmp_path), _score())
+
+        args = list(mock_exec.call_args[0])
+        assert "--max-tokens" not in args
+        env = mock_exec.call_args.kwargs["env"]
+        assert "CLAUDE_CODE_MAX_OUTPUT_TOKENS" not in env
+
     async def test_start_does_not_use_resume_on_first_call(self, tmp_path: Path) -> None:
         proc = _fake_proc()
         adapter = ClaudeCodeBackend()
@@ -1264,6 +1299,22 @@ class TestBuildTaskPrompt:
         prompt = _build_task_prompt(_score(role="reviewing"))
         assert "Return ONLY a valid JSON object" in prompt
         assert "Do not include markdown, prose, or code fences." in prompt
+
+    def test_qa_role_forbids_external_screenshot_services(self) -> None:
+        # 077: QA visual evidence must come from driving the local app, never a
+        # third-party screenshot service (observed: codex used Thum.io).
+        prompt = _build_task_prompt(_score(role="qa"))
+        assert "Thum.io" in prompt
+        assert "third-party screenshot" in prompt
+        assert "fabricated evidence" in prompt
+
+    def test_diagnostic_role_uses_free_form_footer(self) -> None:
+        # 077: diagnostic/benchmark probe — no JSON contract, no commit/PR tail.
+        prompt = _build_task_prompt(_score(role="diagnostic"))
+        assert "one-off diagnostic" in prompt
+        assert "do NOT need to commit" in prompt.lower() or "not need to commit" in prompt.lower()
+        assert "Return ONLY a valid JSON object" not in prompt
+        assert "Commit your changes" not in prompt
         assert "Commit your changes" not in prompt
 
     def test_reviewer_noun_role_uses_json_only_footer(self) -> None:

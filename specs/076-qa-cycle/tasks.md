@@ -15,7 +15,7 @@ Per spec/AGENTS conventions:
 
 - [X] T001 Add `dispatcher_dedup:` config block (with the 8 tunables from data-model §9) as a new Pydantic model `DispatcherDedupConfig` in `src/coordinare/config.py`; wire it onto the top-level `CoordinareConfiguration` with sensible defaults; preserve `extra="forbid"` semantics
 - [X] T002 [P] Add `dispatcher_dedup:` block to all 5 active configs (`config.yaml`, `config.claude.yaml`, `config.hermes.yaml`, `config.junie.yaml`, `config.opencode.yaml`) with the same default values as T001, commented in place under the existing `persona_scope.ci_gate` block on the `website` symphony
-- [X] T003 [P] Add `dispatcher_dedup:` block to all 7 example configs (`config.example.yaml`, `config.example.claude_code.yaml`, `config.example.codex.yaml`, `config.example.cursor.yaml`, `config.example.hermes.yaml`, `config.example.junie.yaml`, `config.example.opencode.yaml`)
+- [X] T003 [P] Add `dispatcher_dedup:` block to all 6 example configs (`config.example.yaml`, `config.example.claude_code.yaml`, `config.example.codex.yaml`, `config.example.hermes.yaml`, `config.example.junie.yaml`, `config.example.opencode.yaml`)
 - [X] T004 Bump `CURRENT_SCHEMA_VERSION` from 6 to 7 in `src/coordinare/state_store.py`; update the version-band comment block (lines 18–31) to document v7 fields (idle_timeout_retries, pr_artefacts_recorded_at, multi_pr_divergence, wedge_count_window, reconciliation_decisions_last_startup)
 - [X] T005 Add a module-level `_DAEMON_STARTED_AT: datetime | None = None` plus `def get_daemon_started_at() -> str` accessor in `src/coordinare/daemon.py`; populate at daemon init with an ISO8601 UTC timestamp; expose via the existing health endpoint as a new `daemon_started_at` field
 

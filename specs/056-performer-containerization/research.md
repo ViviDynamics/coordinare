@@ -61,7 +61,7 @@ All `NEEDS CLARIFICATION` items in the plan's Technical Context were resolved du
 
 - **Decision**:
   - `performer:base` — Debian-slim + Python 3.12 + Node 22 + git + jq + ripgrep + bash. No agent CLIs. Smallest variant; meant for BYO-CLI.
-  - `performer:slim-<backend>` — base + the named backend's CLI only. One image per supported backend (5 today: `claude_code`, `codex`, `cursor`, `junie`, `opencode`). Browser binaries omitted unless `BROWSER=true` build arg supplied.
+  - `performer:slim-<backend>` — base + the named backend's CLI only. One image per supported backend (4 today: `claude_code`, `codex`, `junie`, `opencode`). Browser binaries omitted unless `BROWSER=true` build arg supplied.
   - `performer:full` — base + every supported backend + Playwright + Chromium + linters/formatters/test runners commonly used across the supported languages.
 - **Rationale**: Matches FR-014..FR-016 and SC-005. The slim variant defaults to no browser to keep the image small, with an opt-in build arg for QA personas that need only one backend plus a browser.
 - **Alternatives considered**: A single image with feature flags — defeats the size goal. One slim per (backend × browser) combination — combinatorial explosion.

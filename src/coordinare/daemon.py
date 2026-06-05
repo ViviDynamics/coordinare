@@ -194,6 +194,7 @@ def _persist_env_cache(env_cache: dict[str, Any]) -> dict[str, EnvCacheStateSnap
             sanitised_name=str(get("sanitised_name") or ""),
             cache_dir=str(cache_dir) if cache_dir is not None else "",
             readme_sha=get("readme_sha"),
+            last_bootstrap_error=get("last_bootstrap_error"),
             last_bootstrap_at=get("last_bootstrap_at"),
             last_bootstrap_succeeded=get("last_bootstrap_succeeded"),
             cache_dir_ready=bool(get("cache_dir_ready") or False),
@@ -460,6 +461,34 @@ class CoordinareDaemon:
     def state_store(self) -> StateStore | None:
         return self._state_store
 
+    def _lifecycle_signature(self) -> tuple:
+        """Lightweight fingerprint of lifecycle-relevant state.
+
+        Changes whenever a card's stage advances, so it can trigger snapshot
+        persistence even when the daemon ``phase`` is unchanged (``phase`` stays
+        ``monitoring_performer`` across an entire card lifecycle). Includes the
+        per-session ``performer_stage`` so multi-symphony / shared-pool stage
+        progress — held in ``active_sessions`` rather than at top level — is
+        captured too. Cheap and must not raise.
+        """
+        card = self._state.get("current_card")
+        card_id = card.get("id") if isinstance(card, dict) else None
+        sessions = self._state.get("active_sessions")
+        if isinstance(sessions, dict):
+            session_stages: tuple = tuple(sorted(
+                (str(cid), str((s or {}).get("performer_stage") or ""))
+                for cid, s in sessions.items()
+                if isinstance(s, dict) or s is None
+            ))
+        else:
+            session_stages = ()
+        return (
+            str(self._state.get("phase") or ""),
+            str(card_id or ""),
+            str(self._state.get("performer_stage") or ""),
+            session_stages,
+        )
+
     def _build_snapshot(self) -> WorkflowSnapshot:
         card = self._state.get("current_card")
         card_dict = card if isinstance(card, dict) else {}
@@ -471,6 +500,18 @@ class CoordinareDaemon:
         clarifications = list(raw_clarifications) if isinstance(raw_clarifications, list) else []
         last_notified = self._state.get("last_blocked_notified_at")
         performer_stage = self._state.get("performer_stage")
+        # 077: in shared-pool / multi-symphony mode the live stage lives in the
+        # active session (top-level current_card/performer_stage stay stale, as
+        # active_card_id is None here). Prefer the active session's stage so the
+        # persisted top-level field is current — handle_blocked / handle_system_error
+        # read state["performer_stage"] (defaulting to "assessing") and would
+        # otherwise resume an interrupted card at the wrong stage.
+        _snap_sessions = self._state.get("active_sessions")
+        if isinstance(_snap_sessions, dict) and _snap_sessions:
+            _snap_active_id = _pick_stable_active_card_id(_snap_sessions)
+            _snap_sess = _snap_sessions.get(_snap_active_id) if _snap_active_id else None
+            if isinstance(_snap_sess, dict) and _snap_sess.get("performer_stage"):
+                performer_stage = _snap_sess.get("performer_stage")
         lifecycle_sequence = self._state.get("lifecycle_sequence")
 
         # Coerce a value to a non-empty string or None.  Critical: ``str(None)``
@@ -640,6 +681,7 @@ class CoordinareDaemon:
                         live.readme_sha = persisted.readme_sha
                         live.last_bootstrap_at = persisted.last_bootstrap_at
                         live.last_bootstrap_succeeded = persisted.last_bootstrap_succeeded
+                        live.last_bootstrap_error = persisted.last_bootstrap_error
                         live.cache_dir_ready = persisted.cache_dir_ready
                     except Exception as exc:  # pragma: no cover — defensive
                         logger.warning(
@@ -1585,6 +1627,113 @@ class CoordinareDaemon:
         else:
             logger.info("runtime_event", **event)
 
+    def _get_manifest_llm_chat(self) -> Any:
+        """077: build (once) a JSON-chat callable for the env-manifest README
+        pass, from the coordinare's conducting-brain config. Returns None when the
+        brain isn't an OpenAI-compatible backend (→ deterministic-only manifest).
+        """
+        sentinel = object()
+        cached = getattr(self, "_manifest_llm_chat", sentinel)
+        if cached is not sentinel:
+            return cached
+        cfg = self._state.get("config")
+        cc = getattr(cfg, "conducting", None) if cfg is not None else None
+        if cc is None:
+            return None  # config not ready yet — don't memoize a premature None
+        chat = None
+        if getattr(cc, "backend", None) == "openai_api":
+            import os
+
+            from coordinare.services.conducting import OpenAiApiBackend
+
+            backend = OpenAiApiBackend(
+                api_key=os.getenv(cc.api_key_env or "OPENAI_API_KEY"),
+                model=cc.model or "gpt-4o-mini",
+                max_tokens=cc.max_tokens,
+                temperature=cc.temperature,
+                base_url=cc.base_url,
+                effort=cc.effort,
+            )
+            chat = backend.chat_json
+        self._manifest_llm_chat = chat
+        return chat
+
+    async def _verify_env_cache_clean(
+        self, symphony_name: str, svc: Any
+    ) -> tuple[bool | None, str]:
+        """077: run the cache's ``verify.sh`` in a CLEAN consumer-context
+        container — the performer image with ONLY the cache mounted read-only at
+        the same path consumers use — so a broken consumer-facing ``activate.sh``
+        can't false-pass via installs the bootstrap container did online.
+
+        verify.sh sources activate.sh and asserts every dependency is runnable
+        (it installs from the cache's local debs, no network), so this is a
+        faithful "does the cache alone provide a working toolchain" check.
+
+        Returns ``(passed, detail)``: ``passed`` is True/False when verify.sh
+        ran, or None when it can't be run (absent script / docker error) — None
+        is degraded and does NOT downgrade success, to avoid looping on infra
+        errors. ``detail`` is a concise human-readable reason (the verify FAIL
+        lines) for the dashboard.
+        """
+        from pathlib import Path
+
+        from coordinare.models.env_cache import EnvCacheState
+        from coordinare.services.env_cache import DEFAULT_DEVENV_ROOT
+        from coordinare.services.http_performer_service import HTTPPerformerService
+
+        ec = (self._state.get("env_cache") or {}).get(symphony_name)
+        if not isinstance(ec, EnvCacheState):
+            return None, "no env-cache state for symphony"
+        cache_dir = Path(ec.cache_dir)
+        if not (cache_dir / "verify.sh").is_file():
+            logger.warning(
+                "env_cache.clean_verify_skipped",
+                symphony=symphony_name,
+                reason="no verify.sh in cache — cannot confirm consumer install",
+            )
+            return None, "no verify.sh in cache (cannot confirm consumer install)"
+        devenv_root = (
+            svc.devenv_root if isinstance(svc, HTTPPerformerService) else DEFAULT_DEVENV_ROOT
+        )
+        image = getattr(getattr(svc, "_config", None), "image", None) or "coordinare-performer:full"
+        # Mount at the SAME container path the bootstrap used, since activate.sh /
+        # verify.sh hardcode that absolute DEVEENV path.
+        container_path = f"{devenv_root}/{ec.sanitised_name}"
+        cmd = [
+            "docker", "run", "--rm",
+            "-v", f"{cache_dir}:{container_path}:ro",
+            "--entrypoint", "bash", str(image),
+            f"{container_path}/verify.sh",
+        ]
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            out_b, _ = await asyncio.wait_for(proc.communicate(), timeout=300.0)
+        except Exception as exc:
+            logger.warning(
+                "env_cache.clean_verify_errored",
+                symphony=symphony_name,
+                error=str(exc),
+            )
+            return None, f"clean verify could not run: {exc}"
+        out = out_b.decode(errors="replace")
+        passed = proc.returncode == 0
+        logger.info(
+            "env_cache.clean_verify_result",
+            symphony=symphony_name,
+            passed=passed,
+            returncode=proc.returncode,
+            output_tail=out[-500:],
+        )
+        # Concise reason for the dashboard: the FAIL lines verify.sh emitted.
+        fails = [ln.strip() for ln in out.splitlines() if "FAIL" in ln.upper()][:5]
+        detail = "; ".join(fails) if fails else (out[-300:].strip() or "verify.sh non-zero")
+        return passed, detail
+
     async def _poll_bootstrap_completion(
         self,
         svc: Any,
@@ -1649,7 +1798,13 @@ class CoordinareDaemon:
                         idle_timeout_seconds=_idle_timeout_s,
                     )
                     await self._reap_bootstrap_container(container_id, symphony_name)
-                    env_cache_svc.on_bootstrap_complete(symphony_name, False, self._state)
+                    env_cache_svc.on_bootstrap_complete(
+                        symphony_name, False, self._state,
+                        error=(
+                            "bootstrap hung — no progress for "
+                            f"{(_attempt - _last_progress_attempt) * 10}s; reaped"
+                        ),
+                    )
                     return
             try:
                 status_result = await svc.check_status(job_id)
@@ -1659,7 +1814,10 @@ class CoordinareDaemon:
                     symphony=symphony_name,
                     error=str(exc),
                 )
-                env_cache_svc.on_bootstrap_complete(symphony_name, False, self._state)
+                env_cache_svc.on_bootstrap_complete(
+                    symphony_name, False, self._state,
+                    error=f"bootstrap polling failed: {exc}",
+                )
                 return
             if status_result.get("status") not in ("working", None):
                 # 060/Option A: performer reports a terminal status when the
@@ -1744,7 +1902,44 @@ class CoordinareDaemon:
                         symphony=symphony_name,
                         error=str(_exc),
                     )
-                env_cache_svc.on_bootstrap_complete(symphony_name, ok, self._state)
+                # 077: authoritative clean-context verify. The performer ran
+                # verify.sh INSIDE its own bootstrap container, where the agent's
+                # ad-hoc online installs can mask a broken consumer-facing
+                # activate.sh (false pass — observed: chromium present in the
+                # bootstrap container via online apt, but the activate.sh debs
+                # path didn't actually yield a working chromium for consumers).
+                # Re-run verify.sh in a CLEAN container (image + cache mounted
+                # read-only = a consumer's exact world); only that result is
+                # authoritative. A non-zero clean verify downgrades success so
+                # on_bootstrap_complete(False) clears readme_sha and retries —
+                # a broken cache is never marked ready.
+                _boot_err: str | None = None
+                if not ok:
+                    _boot_err = (
+                        status_result.get("error")
+                        or status_result.get("message")
+                        or status_result.get("reason")
+                        or "bootstrap performer reported a terminal failure"
+                    )
+                if ok:
+                    _clean_ok, _clean_detail = await self._verify_env_cache_clean(
+                        symphony_name, svc
+                    )
+                    if _clean_ok is False:
+                        logger.warning(
+                            "env_cache.clean_verify_failed",
+                            symphony=symphony_name,
+                            job_id=job_id,
+                            detail=_clean_detail,
+                        )
+                        ok = False
+                        _boot_err = (
+                            "env verification failed in a clean consumer context: "
+                            f"{_clean_detail}"
+                        )
+                env_cache_svc.on_bootstrap_complete(
+                    symphony_name, ok, self._state, error=_boot_err
+                )
                 if ok:
                     from coordinare.services.http_performer_service import HTTPPerformerService
                     _performer_svcs = self._state.get("performer_services") or {}
@@ -1774,7 +1969,13 @@ class CoordinareDaemon:
         )
         if container_id:
             await self._reap_bootstrap_container(container_id, symphony_name)
-        env_cache_svc.on_bootstrap_complete(symphony_name, False, self._state)
+        env_cache_svc.on_bootstrap_complete(
+            symphony_name, False, self._state,
+            error=(
+                "bootstrap exceeded its time budget "
+                f"({_budget_s or _BOOTSTRAP_POLL_MAX_ATTEMPTS * 10}s) and was reaped"
+            ),
+        )
 
     async def _reap_bootstrap_container(self, container_id: str, symphony_name: str) -> None:
         """076 (live QA #150): force-stop a wedged env_bootstrap container.
@@ -1933,12 +2134,29 @@ class CoordinareDaemon:
             self._bootstrap_poll_tasks.add(bootstrap_task)
             bootstrap_task.add_done_callback(self._bootstrap_poll_tasks.discard)
         else:
+            # dispatch_card returns a rich {"status","reason"} on every failure
+            # mode (container start failed / readiness timeout / payload error /
+            # transport-auth / 409 busy).  Surface that reason instead of the
+            # generic "no job id" so the dashboard + feedback-injection know
+            # WHICH dispatch layer failed.
+            _status = (result or {}).get("status")
+            _reason = (result or {}).get("reason")
+            _detail = (
+                f"bootstrap dispatch failed ({_status}): {_reason}"
+                if _reason
+                else "bootstrap dispatch produced no job id"
+            )
             logger.warning(
                 "env_cache.bootstrap_no_job_id",
                 symphony=symphony_name,
                 performer_id=performer_id,
+                status=_status,
+                reason=_reason,
             )
-            env_cache_svc.on_bootstrap_complete(symphony_name, False, self._state)
+            env_cache_svc.on_bootstrap_complete(
+                symphony_name, False, self._state,
+                error=_detail,
+            )
 
     async def start(self) -> None:
         self._main_task = asyncio.current_task()
@@ -2020,6 +2238,7 @@ class CoordinareDaemon:
             )
 
         previous_phase = self._state.get("phase")
+        previous_lifecycle_sig = self._lifecycle_signature()
         self._emit(
             **build_runtime_event(
                 category="startup",
@@ -2139,6 +2358,7 @@ class CoordinareDaemon:
                                 state=self._state,
                                 dispatch_fn=_bootstrap_dispatch_fn,
                                 container_devenv_root=_bootstrap_devenv_root,
+                                llm_chat=self._get_manifest_llm_chat(),
                             )
 
                     logger.info(
@@ -2278,9 +2498,19 @@ class CoordinareDaemon:
                     previous_phase = current_phase
                     # 028: Track when the phase was entered
                     self._state["phase_entered_at"] = datetime.now(UTC)
-                    # T021: Persist snapshot on every phase transition
-                    if self._state_store is not None:
+
+                # T021 + 077: Persist the snapshot whenever lifecycle-relevant
+                # state changes — NOT only on daemon `phase` transitions. `phase`
+                # stays 'monitoring_performer' across an ENTIRE card lifecycle
+                # (assess→architect→…→qa), so the old phase-only trigger captured
+                # just the first stage and every restart rewound the card to
+                # 'assessing'. The signature includes `phase`, so this still
+                # covers the phase-transition case the old code handled.
+                if self._state_store is not None:
+                    _lifecycle_sig = self._lifecycle_signature()
+                    if _lifecycle_sig != previous_lifecycle_sig:
                         await self._state_store.save(self._build_snapshot())
+                        previous_lifecycle_sig = _lifecycle_sig
 
                 # T019: Prolonged idle detection
                 current_phase = self._state.get("phase")
@@ -2467,6 +2697,23 @@ class CoordinareDaemon:
             else:
                 # Happy-path cycle end — clear cycle_id before inter-cycle sleep
                 clear_cycle_id()
+
+        # 077: Flush final state on shutdown so a clean restart resumes at the
+        # current lifecycle stage instead of the last transition snapshot. The
+        # per-cycle signature save above already keeps the snapshot current to
+        # within one poll, so this is a best-effort belt-and-suspenders flush.
+        # Gate it on the lifecycle signature actually having changed since the
+        # last save: an idle daemon whose state never moved must NOT write a
+        # snapshot (test_no_snapshot_write_when_phase_unchanged), and a redundant
+        # rewrite of already-persisted state is pointless.
+        if (
+            self._state_store is not None
+            and self._lifecycle_signature() != previous_lifecycle_sig
+        ):
+            try:
+                await self._state_store.save(self._build_snapshot())
+            except Exception as exc:  # pragma: no cover — best-effort flush
+                logger.warning("daemon.shutdown_snapshot_failed", error=str(exc))
 
         self._emit(
             **build_runtime_event(

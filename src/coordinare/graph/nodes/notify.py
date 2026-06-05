@@ -9,6 +9,7 @@ import structlog
 
 if TYPE_CHECKING:
     from coordinare.graph.state import CoordinareState
+from coordinare.graph.attribution import coordinare_attribution
 from coordinare.models.notification import EventType, NotificationEvent, NotificationSeverity
 from coordinare.services.ci_gate import compute_ci_gate_signature
 
@@ -100,7 +101,8 @@ async def _emit_persona_scope_rollup(
     last_signature = session.get("persona_scope_rollup_signature")
     if signature == last_signature:
         return
-    body = _format_persona_scope_rollup(scope)
+    header = coordinare_attribution(state.get("config"), state.get("performer_stage"))
+    body = f"{header}\n\n{_format_persona_scope_rollup(scope)}"
     try:
         await github_service.add_comment(str(pr_node_id), body)
     except Exception as exc:
@@ -235,7 +237,9 @@ async def _emit_ci_gate_rollup(
                 session["ci_gate_rollup_signature"] = signature
                 return
 
-    body = _render_ci_gate_comment(decision)
+    # CI gate acts on the implementer's work — tag the implementing stage.
+    header = coordinare_attribution(state.get("config"), "implementing")
+    body = f"{header}\n\n{_render_ci_gate_comment(decision)}"
     try:
         await github_service.add_comment(str(pr_node_id), body)
     except Exception as exc:

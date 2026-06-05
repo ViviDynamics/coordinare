@@ -406,7 +406,7 @@ The script must be idempotent and safe to source repeatedly.
 - `backends/claude_code.py`, `backends/codex.py`, `backends/opencode.py`
   — subprocess env now layers `os.environ` < `cache_env` < `git_env`
   so git auth still wins but cache vars are visible to the agent. Junie
-  and Cursor backends inherit the opencode change.
+  backend inherits the opencode change.
 
 ### Files
 
@@ -631,8 +631,8 @@ Phase 17 adds an **agent-callable** layer on top of that fallback:
   agent forgets to call the CLI, or the CLI fails inside the run, the
   wrapper retries the upload and rewrites the path. Two-layer defence.
 
-**Why CLI-on-PATH rather than MCP** — all five backends (claude_code,
-codex, opencode, junie, cursor) support shell execution natively; a
+**Why CLI-on-PATH rather than MCP** — all four backends (claude_code,
+codex, opencode, junie) support shell execution natively; a
 plain CLI installed by `pip install .` works for all of them without
 per-backend MCP server wiring. The shim is a thin wrapper around the
 same helper used by the post-process path, so we don't double the test

@@ -74,7 +74,7 @@ All three fixes are independent and can be implemented in any order. No new depe
 
 ## Task 5: Single-image performer with runtime backend selection
 
-**Problem**: `Dockerfile.full` previously installed 10-byte stub shell scripts for each backend CLI (`codex`, `claude`, `cursor`, `junie`, `opencode`). These satisfied `shutil.which()` checks but would immediately exit when invoked, causing all real backend calls to fail silently.
+**Problem**: `Dockerfile.full` previously installed 10-byte stub shell scripts for each backend CLI (`codex`, `claude`, `junie`, `opencode`). These satisfied `shutil.which()` checks but would immediately exit when invoked, causing all real backend calls to fail silently.
 
 **Approach**: Replace stub binaries and per-backend Dockerfile variants with a single image + runtime entrypoint that installs the real CLI on container start.
 
@@ -226,7 +226,7 @@ All three fixes are independent and can be implemented in any order. No new depe
 
 **Fix — Missing CodexBackend params**: `CodexBackend.start()` accepted `effort`, `temperature`, and `max_tokens` in its signature but never forwarded them to the codex CLI invocation. Fixed by wiring all three into the command-line arguments passed to `codex`.
 
-**Tests — Backend parameter wiring**: Added a suite of wiring tests (`tests/backends/test_*_wiring.py`) covering each backend (codex, opencode, cursor, junie, claude) to assert that all `JobInitPayload` fields are correctly forwarded to the CLI invocation. Tests moved from coordinare unit suite to the performer package where the backend code lives.
+**Tests — Backend parameter wiring**: Added a suite of wiring tests (`tests/backends/test_*_wiring.py`) covering each backend (codex, opencode, junie, claude) to assert that all `JobInitPayload` fields are correctly forwarded to the CLI invocation. Tests moved from coordinare unit suite to the performer package where the backend code lives.
 
 ---
 
@@ -234,12 +234,12 @@ All three fixes are independent and can be implemented in any order. No new depe
 
 **Files**: `src/coordinare/services/http_performer_service.py`, `agent/performer/src/performer/backends/*.py`, `config.example.yaml`
 
-**Problem**: Only `OPENAI_API_KEY` was forwarded to performer containers; other backends (`opencode`, `junie`, `cursor`) needed `ANTHROPIC_API_KEY`, and all needed their keys available in the container's secret resolver.
+**Problem**: Only `OPENAI_API_KEY` was forwarded to performer containers; other backends (`opencode`, `junie`) needed `ANTHROPIC_API_KEY`, and all needed their keys available in the container's secret resolver.
 
 **Fixes**:
 - `ANTHROPIC_API_KEY` added to the secrets forwarded in `_build_job_payload` alongside `OPENAI_API_KEY`
-- Opencode, Junie, and Cursor backends updated to inject `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` from the resolved secrets dict into the subprocess environment
-- `config.example.yaml` updated with volume-mount examples for Cursor and Junie (which require host-side credential files), with inline comments explaining the auth flow
+- Opencode and Junie backends updated to inject `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` from the resolved secrets dict into the subprocess environment
+- `config.example.yaml` updated with volume-mount examples for Junie (which require host-side credential files), with inline comments explaining the auth flow
 
 ---
 

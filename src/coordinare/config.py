@@ -352,7 +352,7 @@ class PerformerRoleConfig(BaseModel):
     # (currently: claude_code). When set, the coordinare forwards them to the
     # performer's job-init payload as ANTHROPIC_BASE_URL / ANTHROPIC_API_KEY so
     # the per-role subprocess hits a proxy (e.g. LiteLLM) instead of api.anthropic.com.
-    # Other backends (opencode, codex, junie, cursor) read their provider keys from
+    # Other backends (opencode, codex, junie) read their provider keys from
     # the container env directly and ignore these fields.
     base_url: str | None = None
     api_key_env: str | None = None
@@ -955,14 +955,18 @@ class CloserPrChecksConfig(BaseModel):
 class PersonaCheckMapPerDepth(BaseModel):
     """Per-depth glob patterns selecting required CI checks for a persona (spec 075).
 
-    Field names correspond to the ``Depth`` values from ``session.Depth``
-    (``skim | normal | full``).  An unrecognised depth value in the runtime
-    scope will silently find no patterns here and fall through to resolver
-    layer 2.
+    The ``skim``/``normal``/``full`` fields correspond to the ``Depth`` values
+    from ``session.Depth`` and are used when 074 persona-scope tiering is active
+    (the runtime scope supplies a depth). The ``any`` field is depth-agnostic:
+    it lets the implementer CI gate be scoped **without** enabling 074 tiering
+    (077 decoupling) and also serves as a fallback when the depth-specific list
+    is empty. An unrecognised depth value falls through to ``any``, then to
+    resolver layer 2.
     """
 
     model_config = ConfigDict(extra="forbid")
 
+    any: list[str] = Field(default_factory=list)
     skim: list[str] = Field(default_factory=list)
     normal: list[str] = Field(default_factory=list)
     full: list[str] = Field(default_factory=list)
@@ -1151,6 +1155,14 @@ class DispatcherDedupConfig(BaseModel):
     reap_budget_seconds: float = Field(default=5.0, ge=0.0, le=60.0)
     idle_timeout_retries: int = Field(default=2, ge=0, le=20)
     idle_timeout_window_hours: int = Field(default=24, ge=1, le=168)
+    # 077 stall watchdog: a performer turn that is still "working" but has made
+    # NO forward progress (no new events, no token growth) for this many seconds
+    # is treated as wedged (e.g. a hung upstream model read the backend reports as
+    # "busy") and killed + retried via the idle-timeout budget. The backend's own
+    # idle_timeout and the opt-in role_timeouts both miss this case. 0 disables it
+    # (default — opt-in per deployment); set conservatively above the slowest
+    # legitimate no-output gap so working turns are never falsely tripped.
+    stall_timeout_seconds: int = Field(default=0, ge=0, le=7200)
     # T171: empty-output (e.g. empty architecture plan) is usually a
     # deterministic model-capability failure on a given card, so the
     # default budget is low (1 retry, then BLOCK for a human) — bounding
@@ -1289,6 +1301,29 @@ def validate_persona_scope_config(
                 "personas.closer.scope_behavior is set but closer is "
                 "scope-invariant (FR-009); the configured tier overrides will be "
                 "ignored. Remove the block to silence this warning.",
+            ))
+
+    # 077 — persona_check_map depth lists need 074 tiering to supply a depth.
+    # When tiering is off, only the depth-agnostic `any` list applies. Warn if an
+    # operator scoped via depth keys alone without enabling tiering.
+    pcm = getattr(persona_scope, "persona_check_map", None) if persona_scope else None
+    if pcm is not None and not scope_enabled:
+        pcm_dict = pcm.model_dump() if hasattr(pcm, "model_dump") else dict(pcm)
+        depth_only = [
+            persona
+            for persona, slots in (pcm_dict or {}).items()
+            if isinstance(slots, dict)
+            and not (slots.get("any") or [])
+            and any(slots.get(d) for d in ("skim", "normal", "full"))
+        ]
+        if depth_only:
+            findings.append((
+                "info",
+                "persona_check_map depth lists "
+                f"{depth_only} are set but persona_scope.enabled=false, so no "
+                "depth is supplied to the resolver; these lists will not apply. "
+                "Use the depth-agnostic `any` list to scope the CI gate without "
+                "enabling 074 tiering.",
             ))
 
     return findings

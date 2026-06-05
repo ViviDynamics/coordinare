@@ -73,22 +73,26 @@ class TestClaudeCodeParamWiring:
         assert "claude-opus-4-7" in captured_args
 
     @pytest.mark.asyncio
-    async def test_max_tokens_passed_to_cli(self, tmp_path):
+    async def test_max_tokens_passed_via_env_not_unsupported_flag(self, tmp_path):
+        # 077: the Claude Code CLI has no --max-tokens flag (it aborts exit 1);
+        # the output cap is delivered via the CLAUDE_CODE_MAX_OUTPUT_TOKENS env var.
         backend = ClaudeCodeBackend()
         score = _make_score()
         stand = _make_stand(tmp_path)
 
         captured_args = []
+        captured_env = {}
 
         async def fake_exec(*args, **kwargs):
             captured_args.extend(args)
+            captured_env.update(kwargs.get("env") or {})
             return _fake_proc()
 
         with patch("performer.backends.claude_code.asyncio.create_subprocess_exec", side_effect=fake_exec):
             await backend.start(stand, score, max_tokens=4096)
 
-        assert "--max-tokens" in captured_args
-        assert "4096" in captured_args
+        assert "--max-tokens" not in captured_args
+        assert captured_env.get("CLAUDE_CODE_MAX_OUTPUT_TOKENS") == "4096"
 
     @pytest.mark.asyncio
     async def test_no_model_flag_when_omitted(self, tmp_path):

@@ -416,6 +416,29 @@ def _feedback_cycle_exhausted(
     return state
 
 
+_TRANSIENT_BACKEND_ERROR_MARKERS = (
+    "subprocess_exit",                 # backend CLI crashed / exited non-zero
+    "server disconnected",             # container HTTP server died mid-request
+    "readiness timeout",               # container slow/failed to come up
+    "unreachable",
+    "connection reset", "connectionreseterror", "econnreset",
+    "connection refused",
+    "transport error", "transporterror",
+    "container start failed",
+    "cannot write to closing transport",
+)
+
+
+def _is_transient_backend_error(reason: str) -> bool:
+    """True for SYSTEM/infrastructure failures (backend CLI crash, container
+    death, transport/readiness) that warrant an auto-retry rather than parking
+    the card in Blocked. These are NOT content verdicts — a flaky CLI or a
+    container hiccup shouldn't permanently block a card. The system_error path
+    (backoff + budget) still blocks after N consecutive failures."""
+    low = reason.lower()
+    return any(m in low for m in _TRANSIENT_BACKEND_ERROR_MARKERS)
+
+
 def _is_workflow_push_permission_error(reason: str) -> bool:
     """True when git push was rejected because workflow writes are disallowed."""
     lowered = reason.lower()
@@ -935,6 +958,10 @@ def _get_persona_check_map(state: CoordinareState) -> dict | None:
     out: dict[str, dict[str, list[str]]] = {}
     for persona, per_depth in root.items():
         out[persona] = {
+            # 077 FR-013: `any` is the depth-agnostic list the resolver uses
+            # when no 074 scope/depth is present. Must be flattened through here
+            # or the decoupled gate scoping silently no-ops (falls to layer 3).
+            "any": list(getattr(per_depth, "any", []) or []),
             "skim": list(getattr(per_depth, "skim", []) or []),
             "normal": list(getattr(per_depth, "normal", []) or []),
             "full": list(getattr(per_depth, "full", []) or []),
@@ -989,6 +1016,34 @@ def _warn_ci_gate_api_error(
         error=str(exc),
         fail_open=True,
     )
+
+
+def _implementer_session_gone(state: CoordinareState) -> bool:
+    """077: True when the implementer's performer session can no longer be polled.
+
+    Ephemeral performers tear down their one-shot container the moment a job
+    reaches a terminal state, so ``has_live_session`` returns False and re-polling
+    on the next cycle is impossible (it lookup-misses → false transport error).
+    Persistent performers keep a shared endpoint, so ``has_live_session`` stays
+    True and the existing re-poll-to-re-gate HOLD loop is preserved.
+
+    Conservative: returns True only when the session is demonstrably gone (no
+    session_id, or ``has_live_session`` explicitly False); on any ambiguity
+    (missing service / accessor / error) it returns False so existing behaviour
+    is unchanged.
+    """
+    session_id = (state.get("agent_dispatch") or {}).get("session_id")
+    if not session_id:
+        return True
+    services = state.get("performer_services") or {}
+    svc = services.get("implementing") if isinstance(services, dict) else None
+    check = getattr(svc, "has_live_session", None) if svc is not None else None
+    if check is None:
+        return False
+    try:
+        return not bool(check(str(session_id)))
+    except Exception:
+        return False
 
 
 async def _evaluate_ci_gate(
@@ -1172,16 +1227,26 @@ async def _evaluate_ci_gate(
             )
             dump = decision_obj.model_dump(mode="json")
             _stash(dump)
-            return (
-                {
-                    "phase": "monitoring_performer",
-                    "latest_ci_gate_decision": dump,
-                    # Clear any advisory failures from a prior PASS so stale
-                    # data is not misread by a future consumer.
-                    "ci_gate_advisory_failures": [],
-                },
-                True,
-            )
+            hold_updates: dict[str, Any] = {
+                "phase": "monitoring_performer",
+                "latest_ci_gate_decision": dump,
+                # Clear any advisory failures from a prior PASS so stale
+                # data is not misread by a future consumer.
+                "ci_gate_advisory_failures": [],
+            }
+            # 077: an ephemeral implementer's one-shot container is already torn
+            # down at this point (terminal success), so it cannot be re-polled
+            # next cycle. Clear the stale session reference (mirrors BOUNCE/
+            # ESCALATE) so (a) check_board._is_stale does not misclassify the
+            # completed session as restart-orphaned and re-dispatch, and (b)
+            # monitor_performer routes through the gate-only re-evaluation branch
+            # instead of polling a dead container (which lookup-misses → false
+            # transport-error block). Persistent performers keep agent_dispatch so
+            # their existing re-poll-to-re-gate HOLD loop is preserved untouched.
+            if _implementer_session_gone(state):
+                hold_updates["agent_dispatch"] = {}
+                hold_updates["agent_dispatch_at"] = None
+            return (hold_updates, True)
 
         # BOUNCE — increment counter and decide bounce vs escalate.
         bounce_counter[head_sha] = bounce_counter.get(head_sha, 0) + 1
@@ -1415,6 +1480,58 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
         state["phase"] = "idle"
         return state
     card_id = str(card.get("id", ""))
+
+    # 077: ephemeral-implementer CI-gate re-evaluation (no live session to poll).
+    # When the implementer ran on an ephemeral performer, succeeded, and the 075
+    # ci_gate HOLD cleared agent_dispatch (the one-shot container is already torn
+    # down), there is no live session to poll on the next cycle. Polling it would
+    # lookup-miss and cascade into a false transport-error block. Re-evaluate the
+    # gate directly against GitHub instead of polling a dead container, and
+    # advance on PASS using the card's persisted PR identifiers.
+    #
+    # The discriminator must be robust: gate keyed on the *live* session state
+    # (`_implementer_session_gone`) + an open PR + the gate being enabled — NOT
+    # on `latest_ci_gate_decision.verdict`, which does not reliably survive the
+    # multi-session state round-trip. Runs BEFORE slot acquisition — a gate-only
+    # wait holds no performer slot. Persistent implementers keep a live session
+    # (`_implementer_session_gone` is False), so this branch never fires for them.
+    if (
+        stage == "implementing"
+        and state.get("phase") == "monitoring_performer"
+        and _implementer_session_gone(state)
+    ):
+        _pr_url = card.get("pr_url") if isinstance(card, dict) else None
+        _gate_cfg = _get_ci_gate_config(state)
+        if _pr_url and _gate_cfg is not None and getattr(_gate_cfg, "enabled", False):
+            # Held/gone ephemeral implementer WITH an open PR: re-evaluate the
+            # gate directly against GitHub (no live session to poll) and advance
+            # on PASS using the card's persisted PR identifiers.
+            ci_updates, ci_stop = await _evaluate_ci_gate(state, card_id, _pr_url)
+            for _k, _v in ci_updates.items():
+                state[_k] = _v  # type: ignore[literal-required]
+            if ci_stop:
+                return state
+            advance_updates = _advance_stage(state, None)
+            for _k, _v in advance_updates.items():
+                state[_k] = _v  # type: ignore[literal-required]
+            return state
+        # Gone ephemeral implementer with nothing to gate on (no PR yet, or the
+        # gate is disabled): the one-shot container is already torn down, so
+        # polling it would lookup-miss into a false transport-error block. Re-
+        # dispatch cleanly instead — a fresh container redoes the turn — without
+        # burning the system-error retry budget (mirrors check_board's clean
+        # restart re-dispatch). Persistent implementers keep a live session, so
+        # this never fires for them.
+        logger.info(
+            "monitor_performer.ephemeral_implementer_redispatch",
+            card_id=card_id,
+            performer_stage=stage,
+            has_pr=bool(_pr_url),
+        )
+        state["phase"] = "dispatching"
+        state["agent_dispatch"] = {}
+        state["agent_dispatch_at"] = None
+        return state
 
     # 048: Resolve the card's specific service instance via SlotManager so
     # status polls go to the correct transport (not just the primary).
@@ -1764,6 +1881,90 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
                         exc_info=True,
                     )
 
+        # 077 stall watchdog: a still-"working" turn that has made NO forward
+        # progress (no new events this poll, no token growth) for
+        # ``stall_timeout_seconds`` is wedged — e.g. a hung upstream model read
+        # that the backend reports as "busy" (the 2-hour qwen/Ollama hang).
+        # Neither role_timeouts (opt-in, blocks) nor the backend's own
+        # idle_timeout fires for this case. Kill the wedged turn and route
+        # through the idle-timeout retry budget (retry → re-dispatch; budget
+        # exhausted → BLOCK for an operator). Disabled when stall_timeout_seconds
+        # is 0 (default).
+        if marker == "working":
+            _dd_cfg = getattr(state.get("coordinare_config"), "dispatcher_dedup", None)
+            _stall_secs = int(getattr(_dd_cfg, "stall_timeout_seconds", 0) or 0)
+            _now_w = datetime.now(UTC)
+            # Progress = the work actually CHANGED since the last poll. NOT
+            # ``bool(new_events)``: backends (e.g. codex) return their full
+            # accumulated events list (capped) on every poll, so it is non-empty
+            # and *stable* while the turn is wedged — using bool() there made the
+            # watchdog think every poll was progress and never trip. Fingerprint
+            # the event count + last event + token total; only a change counts.
+            _evs = new_events if isinstance(new_events, list) else []
+            _fp = f"{len(_evs)}|{repr(_evs[-1])[:160] if _evs else ''}|{state.get('card_tokens_total', 0)}"
+            _prev_fp = state.get("last_progress_fingerprint")
+            _made_progress = (_prev_fp is None) or (_fp != _prev_fp)
+            state["last_progress_fingerprint"] = _fp
+            _lp = state.get("last_progress_at")
+            if _made_progress or not isinstance(_lp, datetime):
+                state["last_progress_at"] = _now_w
+                _lp = _now_w
+            if _stall_secs > 0:
+                _stalled_for = (_now_w - _lp).total_seconds()
+                if _stalled_for > _stall_secs:
+                    logger.warning(
+                        "monitor_performer.stall_watchdog_tripped",
+                        card_id=card_id,
+                        performer_stage=stage,
+                        stalled_seconds=round(_stalled_for),
+                        threshold_seconds=_stall_secs,
+                    )
+                    # Kill the wedged turn first (best-effort) — it must not linger.
+                    try:
+                        from coordinare.services.dispatch_guard import drain_or_reap
+                        from coordinare.services.docker_executor import DockerExecutor
+                        if isinstance(session_id, str) and session_id:
+                            await drain_or_reap(
+                                session_id,
+                                service=service,
+                                docker_executor=DockerExecutor(),
+                                drain_budget=float(getattr(_dd_cfg, "drain_budget_seconds", 5.0)),
+                                reap_budget=float(getattr(_dd_cfg, "reap_budget_seconds", 5.0)),
+                            )
+                    except Exception:  # pragma: no cover — defensive: kill failure must not block the decision
+                        pass
+                    from coordinare.services.retry_counter import record_idle_timeout
+                    _budget = int(getattr(_dd_cfg, "idle_timeout_retries", 2))
+                    _window_h = int(getattr(_dd_cfg, "idle_timeout_window_hours", 24))
+                    decision = record_idle_timeout(
+                        state, card_id, stage, budget=_budget, window_hours=_window_h,
+                    )
+                    state["last_progress_at"] = None
+                    if decision == "retry":
+                        state["performer_stage"] = stage
+                        state["phase"] = "dispatching"
+                        state["agent_dispatch"] = {}
+                        state["agent_dispatch_at"] = None
+                        return state
+                    # budget exhausted → BLOCK for operator triage
+                    _sm = state.get("slot_manager")
+                    if _sm is not None and hasattr(_sm, "release"):
+                        _sm.release(stage, card_id)
+                    state["phase"] = "blocked"
+                    state["system_error_reason"] = (
+                        f"performer stage '{stage}' stalled (no progress for "
+                        f"{round(_stalled_for)}s) and exhausted {_budget} retries"
+                    )
+                    state["open_questions"] = [
+                        f"The `{stage}` performer made no forward progress for "
+                        f"{round(_stalled_for)}s (stall watchdog) and exhausted the "
+                        f"{_budget}-retry budget in {_window_h}h — likely a wedged "
+                        f"upstream model. Operator intervention required."
+                    ]
+                    state["agent_dispatch"] = {}
+                    state["agent_dispatch_at"] = None
+                    return state
+
         # 048: Release the performer slot on ANY terminal marker (success,
         # changes_requested, failed, error, blocked, session_expired) so
         # the next queued card can use the freed slot.  Must happen before
@@ -1785,6 +1986,16 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
             # before stage advancement.  If the gate stops (bounce/hold/
             # escalate), apply updates and return without advancing.
             if stage == "implementing":
+                # 077: persist the PR identifiers from the implementer's terminal
+                # status BEFORE evaluating the gate. A HOLD verdict skips
+                # _advance_stage (which is where artefacts are normally recorded),
+                # so without this the card would lose its pr_url and the ephemeral
+                # gate-only re-evaluation on the next cycle would have no PR to
+                # gate on. Idempotent: _advance_stage re-records on PASS.
+                _artefacts = _record_pr_artefacts(state, status)
+                if "current_card" in _artefacts:
+                    state["current_card"] = _artefacts["current_card"]
+                    card = _artefacts["current_card"]
                 pr_url_for_gate = status.get("pr_url") if status else None
                 if not pr_url_for_gate and isinstance(card, dict):
                     pr_url_for_gate = card.get("pr_url")
@@ -1920,28 +2131,54 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
             )
             # 065 Fix 4c: safety net — if performer reported changes_requested
             # but supplied neither structured comments nor a prose body, the
-            # implementer would have no information to act on. Block the card
-            # for operator triage instead of looping.
+            # implementer would have no information to act on.
+            #
+            # 077: weak-model reviewers can flip-flop and emit a bare
+            # changes_requested with no comments AND no body (observed: the same
+            # reviewer APPROVED this exact PR hours earlier, then rejected it with
+            # no rationale). Re-dispatch the reviewer ONCE before blocking — a
+            # transient empty verdict usually resolves on a re-review. Only block
+            # if it is STILL empty after the bounded retry, so the implementer is
+            # never spun on empty feedback (065 Fix 4c intent preserved).
             if not comments and not body:
+                _empty_retries = int(state.get("review_empty_retry_count", 0) or 0)
+                if stage == "reviewing" and _empty_retries < 1:
+                    state["review_empty_retry_count"] = _empty_retries + 1  # type: ignore[typeddict-unknown-key]
+                    logger.warning(
+                        "monitor_performer.changes_requested_empty_re_review",
+                        performer_stage=stage,
+                        card_id=card_id,
+                        attempt=_empty_retries + 1,
+                    )
+                    # Re-dispatch the SAME (reviewing) stage on the same PR.
+                    state["performer_stage"] = stage
+                    state["phase"] = "dispatching"
+                    state["agent_dispatch"] = {}
+                    state["agent_dispatch_at"] = None
+                    return state
                 logger.warning(
                     "monitor_performer.changes_requested_no_actionable_feedback",
                     performer_stage=stage,
                     card_id=card_id,
+                    empty_retries=_empty_retries,
                 )
+                state["review_empty_retry_count"] = 0  # type: ignore[typeddict-unknown-key]
                 state["phase"] = "blocked"
                 state["system_error_reason"] = (
                     f"performer reported changes_requested with no actionable "
-                    f"feedback (stage={stage})"
+                    f"feedback after {_empty_retries} re-review(s) (stage={stage})"
                 )
                 state["open_questions"] = [
                     f"The `{stage}` performer rejected this card "
                     f"(`status=changes_requested`) but returned no structured "
-                    f"comments and no prose body. Nothing to relay to the "
-                    f"implementer. Operator triage required."
+                    f"comments and no prose body, even after a re-review. "
+                    f"Nothing to relay to the implementer. Operator triage required."
                 ]
                 state["agent_dispatch"] = {}
                 state["agent_dispatch_at"] = None
                 return state
+            # Actionable feedback present — reset the empty-review retry counter.
+            state["review_empty_retry_count"] = 0  # type: ignore[typeddict-unknown-key]
             # 065 Fix 4b: synthesise a comment from the prose body when the
             # performer rejected with explanation but no structured comments.
             if not comments and body:
@@ -2181,9 +2418,13 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
         # --- Error status (FR-006) ---
         if marker == "error":
             reason = str(status.get("reason", ""))
-            if reason.startswith(_FORMAT_ERROR_PREFIX):
-                # Treat backend format-contract failures as retryable system
-                # errors first; handle_system_error controls backoff + budget.
+            if reason.startswith(_FORMAT_ERROR_PREFIX) or _is_transient_backend_error(reason):
+                # Treat backend format-contract failures AND transient backend/
+                # infrastructure crashes (subprocess_exit, server disconnected,
+                # readiness timeout, transport reset, container start failure) as
+                # retryable system errors — a flaky CLI or container hiccup must
+                # not permanently park the card in Blocked. handle_system_error
+                # controls backoff + budget and blocks after N consecutive fails.
                 if state.get("system_error_notified"):
                     state["system_error_count"] = 0
                     state["system_error_notified"] = False

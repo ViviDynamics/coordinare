@@ -329,7 +329,7 @@ which defaults `phase="idle"`, so the production path was never exercised.
 
 **Fix**: Invert the flow — the relay tells the model *which* checks failed and gives it a tool. The model decides what to fetch and how much.
 
-- New CLI shim `performer-fetch-ci-log` (`agent/performer/src/performer/cli.py::fetch_ci_log_cli`), installed via `pyproject.toml` `[project.scripts]`. End up on `$PATH` inside every performer Docker image; usable by any backend (claude_code, opencode, codex, junie, cursor) through its built-in shell tool — same pattern as `performer-upload-screenshot`.
+- New CLI shim `performer-fetch-ci-log` (`agent/performer/src/performer/cli.py::fetch_ci_log_cli`), installed via `pyproject.toml` `[project.scripts]`. End up on `$PATH` inside every performer Docker image; usable by any backend (claude_code, opencode, codex, junie) through its built-in shell tool — same pattern as `performer-upload-screenshot`.
 - Modes:
   - `performer-fetch-ci-log --list` — print one line per failing check: `<job_id>\t<conclusion>\t<name>`.
   - `performer-fetch-ci-log --check '<name>' [--lines N]` — print the Check Run summary plus the tail of the Actions job log (default 4 000 chars, cap 200 000).

@@ -762,56 +762,55 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
         )
         from coordinare.services.http_performer_service import HTTPPerformerService
 
-        # Gate consumer dispatches when no usable env cache exists on disk yet.
-        # The env_bootstrap role is exempt — it's the run that populates the
-        # cache, so it must proceed even with an empty cache_dir. Without this
-        # gate, consumer performers fan out before any toolchain is installed
-        # and burn tokens failing on missing `ruby`/`bundle`/`node`/etc.
+        # 077: Gate consumer dispatch on the env cache being CURRENT and VERIFIED
+        # for this symphony. A consumer must not run until the env_bootstrap phase
+        # has *successfully* completed for the CURRENT spec — otherwise it runs
+        # against a stale/incomplete toolchain (the bug that let cards sail through
+        # on a Chrome-less cache while a re-bootstrap was in flight or had failed).
+        # The env_bootstrap role itself is exempt — it's the run that populates the
+        # cache. "Current + verified" requires ALL of:
+        #   * cache_dir_ready             — at least one bootstrap succeeded
+        #   * last_bootstrap_succeeded    — the most recent one verified-passed
+        #     (the verify.sh gate defines "succeeded")
+        #   * not bootstrap_in_flight     — no bootstrap is mid-run
+        #   * activate.sh present on disk — the cache dir physically exists
+        #   * readme_sha == last_seen_spec_sha — the cache reflects the CURRENT
+        #     spec; check_and_trigger refreshes last_seen_spec_sha every cycle, so
+        #     a README/spec change holds consumers until a fresh bootstrap succeeds
+        #     for it (closes the stale-cache window).
+        # Held cards are DEFERRED (slot released), not failed — they retry on the
+        # next pickup cycle. (Supersedes the old activate.sh-only + opt-in
+        # serialize_env_bootstrap gates.)
         _ec_state_for_sym = _env_cache_for_ec.get(_symphony_name_for_ec)
         _is_bootstrap_dispatch = performer_stage == "env_bootstrap"
-        if (
-            not _is_bootstrap_dispatch
-            and isinstance(_ec_state_for_sym, EnvCacheState)
-            and not _cache_dir_has_activate(_ec_state_for_sym.cache_dir)
-        ):
-            logger.info(
-                "dispatch_performer.env_cache_not_ready",
-                card_id=card_id,
-                performer_stage=performer_stage,
-                symphony=_symphony_name_for_ec,
-                cache_dir=str(_ec_state_for_sym.cache_dir),
-                detail=(
-                    "Holding dispatch until env_bootstrap populates activate.sh. "
-                    "Card retries on the next pickup cycle."
-                ),
+        if not _is_bootstrap_dispatch and isinstance(_ec_state_for_sym, EnvCacheState):
+            _current_and_verified = (
+                _ec_state_for_sym.cache_dir_ready
+                and bool(_ec_state_for_sym.last_bootstrap_succeeded)
+                and not _ec_state_for_sym.bootstrap_in_flight
+                and _cache_dir_has_activate(_ec_state_for_sym.cache_dir)
+                and _ec_state_for_sym.last_seen_spec_sha is not None
+                and _ec_state_for_sym.readme_sha == _ec_state_for_sym.last_seen_spec_sha
             )
-            _release_slot_on_error()
-            return state
-
-        # 073 (drive-by) -- when serialize_env_bootstrap is enabled, also hold
-        # consumer dispatch until bootstrap has fully torn down (not just until
-        # activate.sh exists).  Prevents bootstrap and consumer performers from
-        # overlapping on a shared single-tenant LLM backend (e.g. one ollama
-        # server) during the bootstrap container teardown window.
-        _serialize_bootstrap = bool(getattr(state.get("config"), "serialize_env_bootstrap", False))
-        if (
-            _serialize_bootstrap
-            and not _is_bootstrap_dispatch
-            and isinstance(_ec_state_for_sym, EnvCacheState)
-            and _ec_state_for_sym.bootstrap_in_flight
-        ):
-            logger.info(
-                "dispatch_performer.env_bootstrap_in_flight",
-                card_id=card_id,
-                performer_stage=performer_stage,
-                symphony=_symphony_name_for_ec,
-                detail=(
-                    "Holding dispatch until env_bootstrap container finishes "
-                    "(serialize_env_bootstrap=true). Card retries on next pickup."
-                ),
-            )
-            _release_slot_on_error()
-            return state
+            if not _current_and_verified:
+                logger.info(
+                    "dispatch_performer.env_cache_not_current",
+                    card_id=card_id,
+                    performer_stage=performer_stage,
+                    symphony=_symphony_name_for_ec,
+                    cache_dir_ready=_ec_state_for_sym.cache_dir_ready,
+                    last_bootstrap_succeeded=_ec_state_for_sym.last_bootstrap_succeeded,
+                    bootstrap_in_flight=_ec_state_for_sym.bootstrap_in_flight,
+                    readme_sha=_ec_state_for_sym.readme_sha,
+                    last_seen_spec_sha=_ec_state_for_sym.last_seen_spec_sha,
+                    detail=(
+                        "Holding dispatch until env_bootstrap has SUCCESSFULLY "
+                        "completed for the current spec. Card retries on the next "
+                        "pickup cycle."
+                    ),
+                )
+                _release_slot_on_error()
+                return state
 
         _devenv_root = DEFAULT_DEVENV_ROOT
         if isinstance(service, HTTPPerformerService):

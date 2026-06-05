@@ -166,34 +166,6 @@ agent_executable: "/usr/local/bin/performer"  # path to the performer binary
 #     image: coordinare-performer:full
 
 #   # -------------------------------------------------------------------------
-#   # Cursor — authenticates via a persistent session directory on the host.
-#   #
-#   # Prerequisites:
-#   #   1. Log in to Cursor on the coordinare host: open Cursor and sign in once.
-#   #   2. Confirm ~/.cursor/session (or equivalent) exists and is non-empty.
-#   #   3. Build a Cursor-capable image that has the `cursor` CLI installed:
-#   #        docker build -t coordinare-performer:cursor \
-#   #          -f agent/performer/Dockerfile.cursor .
-#   #
-#   # Caveats:
-#   #   - Cursor encodes a device fingerprint in its auth token. If the Linux
-#   #     container presents a different machine ID than the host, the session
-#   #     may be rejected. Test with a one-off `docker run` first.
-#   #   - The session directory is mounted read-only; if the token expires mid-job
-#   #     the container cannot refresh it. Monitor session expiry and re-login on
-#   #     the host before it lapses.
-#   #   - Multiple concurrent Cursor containers safely share the same ro mount.
-#   # -------------------------------------------------------------------------
-#   - id: cursor-ephemeral
-#     mode: ephemeral
-#     roles: [implementer, reviewer]
-#     image: coordinare-performer:cursor
-#     volumes:
-#       - host_path: /home/youruser/.cursor   # adjust to your actual home dir
-#         container_path: /root/.cursor
-#         mode: ro
-
-#   # -------------------------------------------------------------------------
 #   # Junie (JetBrains) — authenticates via a persistent session directory.
 #   #
 #   # Prerequisites:
@@ -205,7 +177,7 @@ agent_executable: "/usr/local/bin/performer"  # path to the performer binary
 #   #          -f agent/performer/Dockerfile.junie .
 #   #
 #   # Caveats:
-#   #   - Same device-fingerprint risk as Cursor. JetBrains tokens are tied to
+#   #   - JetBrains tokens encode a device fingerprint and are tied to
 #   #     the device that completed the OAuth flow; test headless auth first.
 #   #   - Mount read-only; expired tokens cannot be refreshed inside the container.
 #   #   - If your JetBrains config lives elsewhere (e.g. XDG_CONFIG_HOME), adjust
@@ -302,13 +274,12 @@ human_reviewers:                    # Required. GitHub logins who can approve PR
 #   closer      — verifies all prior feedback was addressed; resolves open review threads
 #   advocate    — answers inbound GitHub issues from external users (separate from lifecycle)
 #
-# Available backends: codex | claude_code | opencode | opencode_compat | cursor | junie | hermes
+# Available backends: codex | claude_code | opencode | opencode_compat | junie | hermes
 #   codex            — OpenAI Codex CLI; needs OPENAI_API_KEY in coordinare environment
 #   claude_code      — Anthropic Claude Code CLI; needs ANTHROPIC_API_KEY in coordinare environment
 #   opencode         — OpenCode CLI; reads API keys from ~/.opencode/config.json in the container
 #   opencode_compat  — LCD /v1/chat/completions profile for self-hosted endpoints (LM Studio,
 #                      vLLM, Ollama, LiteLLM); see specs/067-compatibility-first-backend/quickstart.md
-#   cursor      — Cursor CLI; reads auth from ~/.cursor/ (mount via volumes, see above)
 #   junie       — JetBrains Junie CLI; reads auth from ~/.junie/ (mount via volumes, see above)
 #   hermes      — Hermes coding agent; non-interactive `hermes chat` CLI with isolated job-scoped
 #                 profile. Communication/scheduling toolsets are forbidden; only coding tools are

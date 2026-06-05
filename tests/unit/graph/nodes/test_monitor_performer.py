@@ -6,7 +6,10 @@ handling, session_expired routing, and TransportError handling.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -165,6 +168,25 @@ async def test_error_status_blocks_without_advancing_stage() -> None:
     assert result["phase"] == "blocked"
     assert result["performer_stage"] == "implementing"  # NOT advanced
     assert any("Compilation failed" in q for q in result["open_questions"])
+
+
+@pytest.mark.asyncio
+async def test_transient_backend_crash_retries_not_blocks() -> None:
+    """077: a transient backend/infra crash (e.g. openclaw subprocess_exit:1)
+    routes to system_error (retry budget) instead of permanently blocking the
+    card — a flaky CLI/container hiccup must not park the card in Blocked."""
+    service = _Performer({"status": "error", "reason": "subprocess_exit:1"})
+    state = _make_state(
+        service=service,
+        stage="reviewing",
+        sequence=["implementing", "reviewing"],
+    )
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "system_error"
+    assert result["system_error_count"] == 1
+    assert result["performer_stage"] == "reviewing"  # NOT advanced
 
 
 # ---------------------------------------------------------------------------
@@ -1034,6 +1056,74 @@ async def test_changes_requested_with_body_only_relays_body_as_comment() -> None
     assert len(relay) == 1
     assert relay[0]["body"] == "PR scope is too broad — split into two PRs."
     assert relay[0]["author_login"] == "coordinare"
+
+
+@pytest.mark.asyncio
+async def test_reviewing_empty_feedback_re_reviews_once_before_blocking() -> None:
+    """077: a reviewer that emits changes_requested with no comments/body
+    (weak-model flip-flop) triggers ONE bounded re-review (re-dispatch the
+    reviewer) rather than an immediate block."""
+    state = initial_state()
+    svc = _Performer(response={"status": "changes_requested", "comments": []})
+    state["performer_services"] = {"reviewing": svc}
+    state["performer_stage"] = "reviewing"
+    state["lifecycle_sequence"] = ["implementing", "reviewing"]
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_REVIEW"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+
+    result = await monitor_performer(state)
+
+    # Re-dispatched the SAME reviewing stage, not blocked, counter incremented.
+    assert result["phase"] == "dispatching"
+    assert result["performer_stage"] == "reviewing"
+    assert result.get("review_empty_retry_count") == 1
+    assert result["agent_dispatch"] == {}
+
+
+@pytest.mark.asyncio
+async def test_reviewing_empty_feedback_blocks_after_re_review() -> None:
+    """077: if the reviewer is STILL empty after the bounded re-review, block
+    for operator triage (065 Fix 4c intent preserved) and reset the counter."""
+    state = initial_state()
+    svc = _Performer(response={"status": "changes_requested", "comments": []})
+    state["performer_services"] = {"reviewing": svc}
+    state["performer_stage"] = "reviewing"
+    state["lifecycle_sequence"] = ["implementing", "reviewing"]
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_REVIEW"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["review_empty_retry_count"] = 1  # already re-reviewed once
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "blocked"
+    assert result.get("performer_stage") != "implementing"
+    assert "no actionable feedback" in (result.get("system_error_reason") or "")
+    assert result.get("review_empty_retry_count") == 0  # reset for next time
+
+
+@pytest.mark.asyncio
+async def test_reviewing_actionable_feedback_resets_empty_retry_counter() -> None:
+    """077: a non-empty review after a prior empty one relays normally and
+    resets the empty-review retry counter."""
+    state = initial_state()
+    svc = _Performer(response={
+        "status": "changes_requested", "comments": [],
+        "body": "Tighten the mobile breakpoint at 480px.",
+    })
+    state["performer_services"] = {"reviewing": svc}
+    state["performer_stage"] = "reviewing"
+    state["lifecycle_sequence"] = ["implementing", "reviewing"]
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_REVIEW"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["review_empty_retry_count"] = 1  # left over from a prior empty review
+
+    result = await monitor_performer(state)
+
+    assert result["performer_stage"] == "implementing"
+    assert result["phase"] == "dispatching"
+    assert result.get("review_empty_retry_count") == 0
+    relay = result.get("relay_feedback") or []
+    assert relay and "480px" in relay[0]["body"]
 
 
 @pytest.mark.asyncio
@@ -2759,3 +2849,96 @@ async def test_071_no_ci_repo_makes_zero_log_fetch_calls() -> None:
     await monitor_performer(state)
 
     assert gh.log_calls == []
+
+
+# ---------------------------------------------------------------------------
+# 077: stall watchdog — busy-but-no-progress turns get killed + retried
+# ---------------------------------------------------------------------------
+
+
+def _stall_cfg(*, stall=600, retries=2):
+    """coordinare_config stub exposing dispatcher_dedup tunables."""
+    return SimpleNamespace(dispatcher_dedup=SimpleNamespace(
+        stall_timeout_seconds=stall, idle_timeout_retries=retries,
+        idle_timeout_window_hours=24, drain_budget_seconds=5.0, reap_budget_seconds=5.0,
+    ))
+
+
+def _stalled_state(service, *, stall=600, retries=2):
+    # architecting stage so the implementing-only ephemeral branch never preempts
+    state = _make_state(service=service, stage="architecting")
+    state["coordinare_config"] = _stall_cfg(stall=stall, retries=retries)
+    state["last_progress_at"] = datetime.now(UTC) - timedelta(seconds=stall + 100)
+    # fingerprint matching a no-event poll ("0||0") so a no-progress poll reads as
+    # unchanged; a poll WITH events yields a different fp -> counts as progress.
+    state["last_progress_fingerprint"] = "0||0"
+    return state
+
+
+@pytest.mark.asyncio
+async def test_stall_watchdog_retries_on_no_progress() -> None:
+    """A still-working turn with no new events/tokens past the threshold is
+    killed and re-dispatched (retry budget not yet exhausted)."""
+    service = _Performer({"status": "working"})  # no events, no metrics
+    state = _stalled_state(service, stall=600, retries=2)
+    with patch("coordinare.services.dispatch_guard.drain_or_reap", new=AsyncMock()):
+        result = await monitor_performer(state)
+    assert result["phase"] == "dispatching"
+    assert result["performer_stage"] == "architecting"
+    assert result["agent_dispatch"] == {}
+    assert result.get("last_progress_at") is None
+
+
+@pytest.mark.asyncio
+async def test_stall_watchdog_blocks_when_budget_exhausted() -> None:
+    """When the idle-timeout retry budget is exhausted, a stall blocks for
+    operator triage instead of looping."""
+    service = _Performer({"status": "working"})
+    state = _stalled_state(service, stall=600, retries=0)  # 0 retries -> block now
+    with patch("coordinare.services.dispatch_guard.drain_or_reap", new=AsyncMock()):
+        result = await monitor_performer(state)
+    assert result["phase"] == "blocked"
+    assert "stalled" in (result.get("system_error_reason") or "")
+    assert any("stall watchdog" in q for q in (result.get("open_questions") or []))
+
+
+@pytest.mark.asyncio
+async def test_stall_watchdog_resets_on_progress() -> None:
+    """A working turn that produced new events this poll is NOT tripped; the
+    progress timestamp is refreshed."""
+    service = _Performer({"status": "working", "events": [{"type": "tool_call"}]})
+    state = _stalled_state(service, stall=600, retries=2)  # last_progress far in past
+    with patch("coordinare.services.dispatch_guard.drain_or_reap", new=AsyncMock()):
+        result = await monitor_performer(state)
+    assert result["phase"] == "monitoring_performer"  # still working, not tripped
+    assert isinstance(result.get("last_progress_at"), datetime)
+
+
+@pytest.mark.asyncio
+async def test_stall_watchdog_disabled_when_zero() -> None:
+    """stall_timeout_seconds=0 disables the watchdog — a stalled turn keeps
+    working (no kill/block)."""
+    service = _Performer({"status": "working"})
+    state = _stalled_state(service, stall=0, retries=2)
+    # last_progress_at far in past, but watchdog disabled
+    state["last_progress_at"] = datetime.now(UTC) - timedelta(hours=3)
+    with patch("coordinare.services.dispatch_guard.drain_or_reap", new=AsyncMock()):
+        result = await monitor_performer(state)
+    assert result["phase"] == "monitoring_performer"
+
+
+@pytest.mark.asyncio
+async def test_stall_watchdog_trips_on_stable_full_event_list() -> None:
+    """Regression for the live miss: a wedged backend (codex) re-returns its
+    full accumulated events list (capped) unchanged every poll. `bool(events)`
+    would read that as progress forever; the fingerprint must see it as a stall."""
+    events = [{"i": k} for k in range(200)]  # full, stable list (the codex case)
+    service = _Performer({"status": "working", "events": events})
+    state = _stalled_state(service, stall=600, retries=2)
+    # prior poll saw the SAME stable list -> fingerprint already matches it
+    state["last_progress_fingerprint"] = f"200|{repr(events[-1])[:160]}|0"
+    with patch("coordinare.services.dispatch_guard.drain_or_reap", new=AsyncMock()):
+        result = await monitor_performer(state)
+    assert result["phase"] == "dispatching"  # tripped -> kill + retry
+    assert result["performer_stage"] == "architecting"
+    assert result.get("last_progress_at") is None

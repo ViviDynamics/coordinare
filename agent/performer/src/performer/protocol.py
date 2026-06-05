@@ -36,6 +36,7 @@ PerformerStatusType = Literal[
     "docs_committed",
     "env_bootstrap_complete",
     "assessment_complete",
+    "diagnostic_complete",
     "partial_progress",
     "healthy",
     "unhealthy",

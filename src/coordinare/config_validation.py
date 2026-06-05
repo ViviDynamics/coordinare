@@ -350,6 +350,53 @@ def pre_validate_raw(
 # ---------------------------------------------------------------------------
 
 
+# 077 FR-007: canonical performer-backend names. MUST stay in sync with the
+# performer factory's ``supported_backends`` keys
+# (agent/performer/src/performer/backends/__init__.py:get_backend). There is NO
+# ``claude`` alias — the claude_code backend's canonical key is ``claude_code``
+# (a config using ``backend: claude`` fails get_backend at dispatch). Validating
+# this pre-dispatch turns a late in-container failure into an actionable config
+# error. (Add ``pi`` here when the Pi backend lands — 077 T015.)
+SUPPORTED_PERFORMER_BACKENDS: frozenset[str] = frozenset(
+    {"opencode", "opencode_compat", "junie", "claude_code", "codex", "hermes", "pi", "openclaw"}
+)
+
+
+def _validate_performer_backends(raw: dict) -> list[ConfigFieldError]:
+    """077 FR-007: reject an unknown ``performers.<role>.backend`` value before
+    dispatch (it is the authoritative ``get_backend`` argument via score.backend).
+
+    The endpoint ``env.BACKEND`` is intentionally NOT validated here — it is only
+    a container default that ``score.backend`` overrides, and proven configs set
+    it to non-canonical aliases (e.g. ``BACKEND: claude``) harmlessly.
+    """
+    errors: list[ConfigFieldError] = []
+    performers = raw.get("performers")
+    if not isinstance(performers, dict):
+        return errors
+    for role, cfg in performers.items():
+        if not isinstance(cfg, dict):
+            continue
+        backend = cfg.get("backend")
+        if backend is None:
+            continue
+        normalized = str(backend).replace("-", "_").lower()  # mirror performer normalization
+        if normalized not in SUPPORTED_PERFORMER_BACKENDS:
+            supported = ", ".join(sorted(SUPPORTED_PERFORMER_BACKENDS))
+            errors.append(
+                ConfigFieldError(
+                    field_path=f"performers.{role}.backend",
+                    error_type=ErrorType.invalid_value,
+                    fix_hint=(
+                        f"Unknown performer backend {backend!r}. Supported: {supported}. "
+                        f"(Note: the claude_code backend's canonical name is 'claude_code', not 'claude'.)"
+                    ),
+                    source="file",
+                )
+            )
+    return errors
+
+
 def validate_config(
     config_path: Path | None,
 ) -> ConfigValidationResult:
@@ -548,7 +595,10 @@ def validate_config(
                 )
             )
 
-    all_errors = pre_errors + pydantic_errors
+    # 077 FR-007: reject unknown performer-backend names pre-dispatch.
+    backend_errors = _validate_performer_backends(raw)
+
+    all_errors = pre_errors + pydantic_errors + backend_errors
     return ConfigValidationResult(
         errors=all_errors,
         warnings=pre_warnings,

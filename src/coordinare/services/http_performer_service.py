@@ -683,7 +683,7 @@ class HTTPPerformerService:
             secrets["GITHUB_TOKEN"] = workspace_info.github_token
         # Only inject the API key(s) required by the selected backend to avoid
         # leaking unrelated credentials into container environments.
-        # opencode/junie/cursor read provider keys from env natively (no special
+        # opencode/junie read provider keys from env natively (no special
         # CLI flag needed), but still need secrets injected here so they reach
         # the subprocess when operators use the HTTP-payload secret path instead
         # of Docker env vars.
@@ -705,7 +705,7 @@ class HTTPPerformerService:
             _inject_claude_code_secrets(
                 secrets, role_base_url, role_api_key_env, role_auth_token_env
             )
-        elif backend in {"opencode", "junie", "cursor"}:
+        elif backend in {"opencode", "junie"}:
             # These backends can use either Anthropic or OpenAI providers;
             # inject whichever keys are available so the subprocess can choose.
             for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
@@ -768,6 +768,9 @@ class HTTPPerformerService:
         env_spec_contents: dict[str, str] = dict(
             card_context.get("env_spec_contents") or {}
         )
+        # 077: coordinare-derived authoritative manifest artifacts.
+        dependency_checklist = str(card_context.get("dependency_checklist") or "").strip()
+        verify_provided = bool(card_context.get("verify_provided"))
 
         secrets: dict[str, str] = {}
         # Prefer the daemon-injected token (fresh App installation token or
@@ -802,8 +805,65 @@ class HTTPPerformerService:
             f"=== {path} ===\n{content}"
             for path, content in env_spec_contents.items()
         )
+        # 077: feedback-injection — if the previous bootstrap failed verification,
+        # put the exact failure FIRST so the agent fixes those specific checks
+        # instead of repeating the same miss (retries otherwise run blind).
+        last_failure = str(card_context.get("last_failure") or "").strip()
+        retry_block = ""
+        if last_failure:
+            retry_block = (
+                "⚠ RETRY — your PREVIOUS attempt FAILED verification. These are the "
+                "EXACT checks verify.sh re-runs; fix them specifically this time "
+                "(do not just repeat the same steps):\n"
+                f"{last_failure}\n\n"
+                "Frequent root cause: a spec-PINNED tool version (e.g. the Ruby "
+                "version in .ruby-version) was not actually installed (a different "
+                "version was used), so bundler and every gem cascaded to failure. "
+                "Install the EXACT pinned versions the spec/.tool-version files "
+                "require, then re-run your own verify.sh until it passes.\n\n"
+            )
+        # 077: the coordinare-derived checklist goes right after any retry failure
+        # so the agent has the authoritative, itemised list of what to install
+        # (with exact pinned versions) before the free-form spec files.
+        checklist_block = f"{dependency_checklist}\n\n" if dependency_checklist else ""
+        # 077: when coordinare has written an authoritative verify.sh from the
+        # manifest, the agent must RUN it (not author it) — coordinare owns the
+        # verification contract. Otherwise fall back to having the agent write one.
+        if verify_provided:
+            verify_block = (
+                "VERIFICATION (coordinare-owned): an authoritative verify.sh has "
+                f"ALREADY been written at {cache_mount_path}/verify.sh — it is the "
+                "contract that decides whether this bootstrap succeeded. Do NOT "
+                "create, overwrite, or delete it. After installing, RUN it yourself "
+                f"(`bash {cache_mount_path}/verify.sh`); if it exits non-zero, FIX "
+                "the missing/broken dependency it reports (especially a pinned "
+                "language-runtime version) and re-run until it passes. Do NOT end "
+                "your turn until verify.sh passes — confirm the installation before "
+                "exiting.\n\n"
+            )
+        else:
+            verify_block = (
+                "MANDATORY: also write an executable verification script at "
+                f"{cache_mount_path}/verify.sh that, AFTER sourcing "
+                f"{cache_mount_path}/activate.sh, asserts every dependency the spec "
+                "files require is actually present and runnable — e.g. "
+                "`command -v chromium >/dev/null && chromium --version`, "
+                "`command -v bundle && bundle -v`, a language/runtime version check, "
+                "etc. It MUST `exit 1` (loudly, to stderr) on the FIRST missing or "
+                "broken dependency, and `exit 0` only when ALL are verified. This "
+                "script is the contract: the bootstrap is considered successful ONLY "
+                "if verify.sh passes — a silent install failure here fails the whole "
+                "bootstrap and triggers a retry, so make the checks real (actually "
+                "invoke the tools, do not just test for file existence).\n\n"
+                "FINALLY, before you finish: run verify.sh yourself "
+                f"(`sh {cache_mount_path}/verify.sh`). If it exits non-zero, FIX the "
+                "missing/broken dependency and re-run it. Do NOT end your turn until "
+                "verify.sh passes — confirm the installation before exiting.\n\n"
+            )
         persona = (
-            "You are an environment bootstrap agent. Your job is to install "
+            retry_block
+            + checklist_block
+            + "You are an environment bootstrap agent. Your job is to install "
             f"all build/test/runtime dependencies for this project into "
             f"the directory {cache_mount_path!r}, which is a writable volume "
             "shared with later performer containers as a read-only devenv root.\n\n"
@@ -815,6 +875,51 @@ class HTTPPerformerService:
             "performer runs. Do NOT modify the cloned repo working tree, do "
             "NOT push commits, and do NOT open a PR — this job exists only to "
             "populate the cache directory.\n\n"
+            "This cache directory MAY already be partially populated by a "
+            "previous bootstrap. Do NOT skip installation just because a "
+            "toolchain, activate.sh, or some packages are already present — "
+            "RE-RUN the install/setup commands from the spec files every time. "
+            "Standard package managers (apt-get, bundle, npm/yarn, pip, etc.) "
+            "are idempotent and skip anything already installed at the correct "
+            "version, so re-running is cheap and installs ONLY missing or "
+            "newly-added dependencies (for example, a system package — like a "
+            "headless browser — that a spec file now documents but a prior "
+            "bootstrap predated). The spec files are the source of truth for "
+            "what MUST be present in the cache.\n\n"
+            "SYSTEM PACKAGES (apt) — CRITICAL: this image ships NO apt package "
+            "lists and consumer containers may have NO network egress, so a bare "
+            "`apt-get install <pkg>` (especially one placed in activate.sh that "
+            "runs at consumer activation) FAILS SILENTLY ('E: Unable to locate "
+            "package') and the binary never lands. Do NOT install system packages "
+            "that way. Instead make them self-contained in the cache, the SAME way "
+            "PostgreSQL/Redis are handled: during THIS bootstrap run `apt-get "
+            "update`, then download the package AND its full dependency closure as "
+            f".deb files into {cache_mount_path}/debs/ (e.g. `cd {cache_mount_path}/debs "
+            "&& apt-get download $(apt-cache depends --recurse --no-recommends "
+            "--no-suggests --no-conflicts --no-breaks --no-replaces --no-enhances "
+            "-i <pkg> | grep '^\\w' | sort -u)`), and in activate.sh install them "
+            f"from the LOCAL directory (`apt-get install -y --no-download "
+            f"{cache_mount_path}/debs/*.deb` or `dpkg -i {cache_mount_path}/debs/*.deb`), "
+            "never from the network. Apply this to EVERY system package the spec "
+            "files require (for example a headless browser such as chromium and its "
+            "chromedriver). The hard pass/fail assertion that the binary is on PATH "
+            "belongs in verify.sh (below) — NOT in activate.sh or the install "
+            "commands.\n\n"
+            "PINNED LANGUAGE RUNTIMES — CRITICAL: when a spec file pins an EXACT "
+            "language/runtime version (e.g. .ruby-version, .tool-versions, .nvmrc, "
+            ".python-version, or a Gemfile / package.json `engines` field), the "
+            "distro package manager almost NEVER provides that exact version — "
+            "`apt-get install ruby` yields the distro's Ruby (e.g. 3.3.x), NOT a "
+            "pinned 3.4.2, and every gem/bundler step then cascades to failure. You "
+            "MUST install the EXACT pinned version with a version manager or build "
+            "tool (rbenv + ruby-build, asdf, pyenv, nvm, or a ruby-build/source "
+            f"compile) INTO {cache_mount_path} (use it as the install prefix, e.g. "
+            f"RBENV_ROOT/ASDF_DATA_DIR under {cache_mount_path}), and prepend that "
+            "runtime's bin directory to PATH in activate.sh so consumers get the "
+            "pinned version. Do NOT accept the system/distro default — verify.sh "
+            "asserts the exact version (e.g. `ruby -v` matches .ruby-version) and a "
+            "mismatch FAILS the whole bootstrap. Install the pinned runtime FIRST, "
+            "before bundler/gems/node modules, since those build against it.\n\n"
             "MANDATORY: After installing, write a sourceable shell script at "
             f"{cache_mount_path}/activate.sh that consumer agents will source "
             "before running their tools. It MUST export PATH (prepending any "
@@ -823,7 +928,17 @@ class HTTPPerformerService:
             "installed tooling (VIRTUAL_ENV, NODE_PATH, etc.). Without this "
             "file the cache is unusable and downstream performers will reinstall. "
             "Make it idempotent and safe to source repeatedly.\n\n"
-            f"Spec files ({', '.join(env_spec_files) or 'none'}):\n\n"
+            "CRITICAL — activate.sh is SOURCED into EVERY shell in the container "
+            "(via BASH_ENV / /etc/profile.d), including the backend-CLI installer "
+            "and every tool call. It MUST therefore NEVER call `exit`, `return` "
+            "with a non-zero status, or `set -e`/`set -u` that aborts — doing so "
+            "TERMINATES the calling shell and breaks the whole container (a sourced "
+            "`exit 1` has knocked out CLI installs and deadlocked bootstraps). On "
+            "ANY failure inside activate.sh, print a warning to stderr and CONTINUE; "
+            "never abort. Hard assertions go ONLY in verify.sh, which is RUN "
+            "standalone (never sourced), so its `exit 1` is safe.\n\n"
+            + verify_block
+            + f"Spec files ({', '.join(env_spec_files) or 'none'}):\n\n"
             f"{spec_block}\n"
         )
 

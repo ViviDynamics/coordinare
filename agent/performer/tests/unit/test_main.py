@@ -296,6 +296,68 @@ class TestEnvBootstrapInferenceTimeout:
         assert perf.state == "env_bootstrap_complete"
 
 
+class TestEnvBootstrapVerifyGate:
+    """077 Tier 2: the bootstrap must confirm the install before reporting
+    success. The agent writes verify.sh; the performer runs it and FAILS the
+    bootstrap on a non-zero exit, so a silent install failure (the bug that left
+    Chromium uninstalled while the bootstrap reported success) now triggers a
+    retry instead of marking a broken cache ready.
+    """
+
+    async def test_verify_failure_fails_the_bootstrap(self, tmp_path) -> None:
+        perf = _make_perf(session_id="sid")
+        perf.role = "env_bootstrap"
+        perf.score.env_cache_path = str(tmp_path)
+        perf.backend.get_status.return_value = BackendStatus(state="done")
+        (tmp_path / "verify.sh").write_text(
+            "#!/bin/sh\necho 'chromium not found' >&2\nexit 1\n"
+        )
+        settings = Settings(AGENT_BACKEND="opencode", SERVICE_INFERENCE_TIMEOUT=60)
+        with (
+            patch("performer.main._run_service_inference", new=AsyncMock(return_value={})),
+            patch("performer.main.get_settings", return_value=settings),
+        ):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
+
+        assert resp.status == "error"
+        assert "verif" in (resp.reason or "").lower()
+        assert perf.state == "error"
+
+    async def test_verify_pass_completes_the_bootstrap(self, tmp_path) -> None:
+        perf = _make_perf(session_id="sid")
+        perf.role = "env_bootstrap"
+        perf.score.env_cache_path = str(tmp_path)
+        perf.backend.get_status.return_value = BackendStatus(state="done")
+        (tmp_path / "verify.sh").write_text("#!/bin/sh\nexit 0\n")
+        settings = Settings(AGENT_BACKEND="opencode", SERVICE_INFERENCE_TIMEOUT=60)
+        with (
+            patch(
+                "performer.main._run_service_inference",
+                new=AsyncMock(return_value={"inference_succeeded": True}),
+            ),
+            patch("performer.main.get_settings", return_value=settings),
+        ):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
+
+        assert resp.status == "env_bootstrap_complete"
+        assert perf.state == "env_bootstrap_complete"
+
+    async def test_verify_missing_is_degraded_not_fatal(self, tmp_path) -> None:
+        # No verify.sh written → legacy/degraded bootstrap: log + proceed, not fail.
+        perf = _make_perf(session_id="sid")
+        perf.role = "env_bootstrap"
+        perf.score.env_cache_path = str(tmp_path)
+        perf.backend.get_status.return_value = BackendStatus(state="done")
+        settings = Settings(AGENT_BACKEND="opencode", SERVICE_INFERENCE_TIMEOUT=60)
+        with (
+            patch("performer.main._run_service_inference", new=AsyncMock(return_value={})),
+            patch("performer.main.get_settings", return_value=settings),
+        ):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
+
+        assert resp.status == "env_bootstrap_complete"
+
+
 # ---------------------------------------------------------------------------
 # handle_relay_feedback
 # ---------------------------------------------------------------------------
@@ -435,12 +497,6 @@ class TestBackendFactory:
         from performer.backends.junie import JunieBackend
         adapter = get_backend("junie")
         assert isinstance(adapter, JunieBackend)
-
-    def test_cursor_returns_adapter(self) -> None:
-        from performer.backends import get_backend
-        from performer.backends.cursor import CursorBackend
-        adapter = get_backend("cursor")
-        assert isinstance(adapter, CursorBackend)
 
     def test_unknown_raises_unsupported(self) -> None:
         from performer.backends import UnsupportedBackendError, get_backend
@@ -1475,7 +1531,9 @@ class TestReviewerPerformer:
         posted_body = mock_post.call_args.kwargs.get("body", "")
         assert "Suggestions" not in posted_body
         assert "non-blocking" not in posted_body
-        assert posted_body == "**Bot Review: APPROVED**\n\nLooks good"
+        # 077: a standardized attribution header now precedes the verdict header.
+        assert "🤖 **Reviewer**" in posted_body and "harness" in posted_body
+        assert posted_body.endswith("**Bot Review: APPROVED**\n\nLooks good")
 
     @pytest.mark.asyncio
     async def test_reviewer_changes_requested_returns_comments(self) -> None:
@@ -1631,16 +1689,19 @@ class TestReviewerPerformer:
 
         mock_post.assert_called_once()
         posted_body = mock_post.call_args.kwargs.get("body", "")
-        assert posted_body.startswith("**Bot Closer Review:"), f"got: {posted_body!r}"
+        # 077: persona tag precedes the header; the closer header + Closer persona must both appear.
+        assert "**Bot Closer Review:" in posted_body, f"got: {posted_body!r}"
+        assert "**Closer**" in posted_body
 
-        # And confirm the reviewer role uses the original header
+        # And confirm the reviewer role uses the original header + Reviewer persona
         perf_rev = self._make_perf(role="reviewing")
         perf_rev.backend.get_status.return_value = BackendStatus(state="done", output=output)
         mock_post2 = AsyncMock(return_value={})
         with patch("performer.main.post_pull_request_review", new=mock_post2):
             await handle_status(_msg("status", session_id="sid"), perf_rev, settings)
         posted_body2 = mock_post2.call_args.kwargs.get("body", "")
-        assert posted_body2.startswith("**Bot Review:"), f"got: {posted_body2!r}"
+        assert "**Bot Review:" in posted_body2, f"got: {posted_body2!r}"
+        assert "**Reviewer**" in posted_body2
 
     @pytest.mark.asyncio
     async def test_changes_requested_is_terminal(self) -> None:
@@ -1981,18 +2042,27 @@ class TestQAPerformer:
         ):
             resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
 
-        assert resp.status == "qa_failed"
+        # 077 (pipeline-tolerant): a missing-screenshot (visual-capture) limitation
+        # is environmental → advisory. QA passes DEGRADED instead of qa_failed, but
+        # the evidence comment still records the capture steps/blockers for humans.
+        assert resp.status == "qa_passed"
+        assert (resp.report or {}).get("env_limited") is True
         posted_body = mock_comment.call_args.kwargs["body"]
         assert "Visual Capture Setup Steps" in posted_body
         assert "Visual Capture Commands Attempted" in posted_body
         assert "Capture blockers" in posted_body
         assert "No headless browser screenshot tooling was configured" in posted_body
-        assert "Remaining Failures" in posted_body
-        qa_report_markdown = mock_commit.call_args_list[-1][0][2]
+        qa_report_markdown = next(
+            c.args[2] for c in mock_commit.call_args_list
+            if len(c.args) > 2 and isinstance(c.args[1], str) and c.args[1].endswith("qa.md")
+        )
         assert "## Visual Capture Setup Steps" in qa_report_markdown
         assert "## Visual Capture Commands Attempted" in qa_report_markdown
         assert "### Capture blockers" in qa_report_markdown
-        assert resp.failures[0]["criterion"] == "Visual evidence artifacts captured"
+        # The missing-visual-evidence failure is environmental → advisory, so it is
+        # NOT returned as a blocking defect (resp.failures); it's recorded in the
+        # report/comment for humans instead.
+        assert not resp.failures
 
     @pytest.mark.asyncio
     async def test_qa_visual_required_fails_when_evidence_has_no_artifact_location(self) -> None:
@@ -2162,17 +2232,35 @@ class TestQAPerformer:
         assert resp.report["new_tests_added"] == 1
 
     @pytest.mark.asyncio
-    async def test_qa_environment_error_returns_blocked(self) -> None:
-        """Environment failure returns blocked, not qa_failed."""
+    async def test_qa_environment_error_is_advisory_not_blocking(self) -> None:
+        """077 (pipeline-tolerant): an environment_error with no real defects is
+        ADVISORY — QA passes DEGRADED rather than blocking the lifecycle (a
+        container that can't verify must not trap the card)."""
         import json
         perf = self._make_perf()
         output = json.dumps({"environment_error": "Missing runtime: node", "failures": []})
         perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
         with patch("performer.main.commit_file", new=AsyncMock()):
             resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
-        assert resp.status == "blocked"
-        assert "node" in resp.questions[0].lower()
-        assert perf.state == "blocked"
+        assert resp.status == "qa_passed"
+        assert perf.state == "qa_passed"
+        assert (resp.report or {}).get("env_limited") is True
+
+    @pytest.mark.asyncio
+    async def test_qa_real_defect_still_blocks(self) -> None:
+        """A genuine (non-environmental) acceptance-criterion failure must still
+        gate the lifecycle — tolerance applies ONLY to environmental limits."""
+        import json
+        perf = self._make_perf()
+        output = json.dumps({"failures": [{
+            "criterion": "margin is 0 on mobile", "expected": "0px",
+            "actual": "16px still present", "message": "assertion failed: margin not removed",
+        }]})
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+        with patch("performer.main.commit_file", new=AsyncMock()):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+        assert resp.status in ("qa_failed", "blocked")
+        assert perf.state in ("qa_failed", "blocked")
 
     @pytest.mark.asyncio
     async def test_qa_commits_empty_content_test_file(self) -> None:
@@ -2477,30 +2565,30 @@ class TestAssessorRole:
         assert perf.state == "error"
 
     @pytest.mark.asyncio
-    async def test_invalid_json_returns_error(self) -> None:
-        """Invalid JSON backend output returns error when retry budget is 0."""
+    async def test_invalid_json_lenient_sufficient(self) -> None:
+        """077: prose (non-JSON) assessor output, retries exhausted, falls back to
+        sufficient rather than hard-erroring (a correct prose assessment must not
+        park the card in the Blocked column)."""
         perf = self._make_perf()
         perf.backend.get_status.return_value = BackendStatus(state="done", output="not json")
         settings = Settings(AGENT_BACKEND="opencode", AGENT_TIMEOUT=1800, BACKEND_PARSE_RETRIES=0)
 
         resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
 
-        assert resp.status == "error"
-        assert "could not be parsed" in (resp.reason or "").lower()
-        assert perf.state == "error"
+        assert resp.status == "assessment_complete"
+        assert perf.state == "assessment_complete"
 
     @pytest.mark.asyncio
-    async def test_non_object_json_returns_error(self) -> None:
-        """JSON that's not an object returns error when retry budget is 0."""
+    async def test_non_object_json_lenient_sufficient(self) -> None:
+        """077: JSON that isn't an object also falls back to sufficient (lenient)."""
         perf = self._make_perf()
         perf.backend.get_status.return_value = BackendStatus(state="done", output="[1,2,3]")
         settings = Settings(AGENT_BACKEND="opencode", AGENT_TIMEOUT=1800, BACKEND_PARSE_RETRIES=0)
 
         resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
 
-        assert resp.status == "error"
-        assert "could not be parsed" in (resp.reason or "").lower()
-        assert perf.state == "error"
+        assert resp.status == "assessment_complete"
+        assert perf.state == "assessment_complete"
 
     @pytest.mark.asyncio
     async def test_invalid_json_retries_before_error(self) -> None:
@@ -2525,15 +2613,12 @@ class TestAssessorRole:
         assert perf.backend.relay_feedback.await_count == 1
         assert perf.backend.start.await_count == 0
 
-        # Second call: parse fails again, budget exhausted → error with preview.
+        # Second call: parse fails again, budget exhausted. 077: the assessor now
+        # falls back to sufficient (lenient) instead of a terminal format error —
+        # but only AFTER the JSON-repair retry was attempted above.
         resp2 = await handle_status(_msg("status", session_id="sid"), perf, settings)
-        assert resp2.status == "error"
-        reason = resp2.reason or ""
-        assert reason.startswith("BACKEND_FORMAT_ERROR:")
-        assert "after 2 attempts" in reason
-        assert "could not be parsed" in reason.lower()
-        assert "prose, not json" in reason  # preview carried into reason
-        assert perf.state == "error"
+        assert resp2.status == "assessment_complete"
+        assert perf.state == "assessment_complete"
 
     @pytest.mark.asyncio
     async def test_invalid_json_then_valid_json_recovers(self) -> None:
@@ -2559,14 +2644,14 @@ class TestAssessorRole:
         assert perf.state == "assessment_complete"
 
     @pytest.mark.asyncio
-    async def test_invalid_json_redacts_secrets_in_preview_and_reason(self) -> None:
-        """045 + Copilot round 4: the raw backend output is untrusted and may
-        contain credentials.  Both the ``output_preview`` log field and the
-        ``reason`` string embedded in ``PerformerResponse`` must be passed
-        through ``_redact_secrets`` before surfacing anywhere — coordinare-side
+    async def test_invalid_json_lenient_path_redacts_secrets(self) -> None:
+        """045 + Copilot round 4 (077): the raw backend output is untrusted and may
+        contain credentials. Redaction must hold on the NEW lenient path too — the
+        secret must be scrubbed from the committed assessment (the repo is a
+        surfaced artifact) and must never appear in the response. Coordinare-side
         redaction is key-based only and would pass arbitrary text through.
         """
-        from unittest.mock import AsyncMock
+        from unittest.mock import AsyncMock, patch
 
         # Use a concrete token that matches _SECRET_PATTERNS (classic PAT).
         fake_pat = "ghp_" + "A" * 36
@@ -2577,13 +2662,18 @@ class TestAssessorRole:
         perf.backend.start = AsyncMock()
         settings = Settings(AGENT_BACKEND="opencode", AGENT_TIMEOUT=1800, BACKEND_PARSE_RETRIES=0)
 
-        resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
-        reason = resp.reason or ""
+        with patch("performer.main.commit_file", new=AsyncMock()) as mock_commit:
+            resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
 
-        assert resp.status == "error"
-        assert reason.startswith("BACKEND_FORMAT_ERROR:")
-        assert fake_pat not in reason
-        assert "[REDACTED]" in reason
+        # Lenient fallback taken (no terminal format error).
+        assert resp.status == "assessment_complete"
+        # The committed assessment content (3rd positional arg) is redacted.
+        assert mock_commit.await_count == 1
+        committed_content = mock_commit.await_args.args[2]
+        assert fake_pat not in committed_content
+        assert "[REDACTED]" in committed_content
+        # And the secret never leaks into the response.
+        assert fake_pat not in (resp.reason or "")
 
     @pytest.mark.asyncio
     async def test_stable_response_for_assessment_complete_state(self) -> None:
@@ -2749,3 +2839,29 @@ class TestTechWriterExtractJson:
             resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
 
         assert resp.status == "docs_committed"
+
+
+class TestPersonaTag:
+    """077: bot comments must attribute which persona/backend/model produced them."""
+
+    def test_persona_tag_includes_role_backend_model(self) -> None:
+        from performer.main import _persona_tag
+        from performer.models import Score
+
+        score = Score(title="t", repo_url="https://github.com/o/r", branch="b", backend="opencode", model="gpt-oss:120b", role="qa")
+        tag = _persona_tag(score)
+        assert "QA" in tag and "opencode" in tag and "gpt-oss:120b" in tag
+
+    def test_persona_tag_role_override_wins(self) -> None:
+        from performer.main import _persona_tag
+        from performer.models import Score
+
+        # score.role stale ("implementing") but the running stage is closing_review.
+        score = Score(title="t", repo_url="https://github.com/o/r", branch="b", backend="openclaw", model="m", role="implementing")
+        assert "**Closer**" in _persona_tag(score, "closing_review")
+
+    def test_persona_tag_unknown_role_passthrough(self) -> None:
+        from performer.main import _persona_tag
+        from performer.models import Score
+
+        assert "weird" in _persona_tag(Score(title="t", repo_url="https://github.com/o/r", branch="b", role="weird"))

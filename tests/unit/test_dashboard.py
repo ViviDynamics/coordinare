@@ -1615,6 +1615,36 @@ def _make_symphony_app(tmp_path):
     return TestClient(app), daemon
 
 
+def test_symphonies_list_includes_bootstrap_status(tmp_path) -> None:
+    """077: the overview list payload carries per-symphony bootstrap status so the
+    dashboard shows an at-a-glance badge (and the failure reason on hover)."""
+    from pathlib import Path
+
+    from coordinare.models.env_cache import EnvCacheState
+
+    client, daemon = _make_symphony_app(tmp_path)
+    daemon.state["env_cache"] = {
+        "alpha": EnvCacheState(
+            symphony_name="alpha",
+            sanitised_name="alpha",
+            cache_dir=Path(tmp_path) / "alpha",
+            cache_dir_ready=True,
+            last_bootstrap_succeeded=False,
+            last_bootstrap_error="FAIL: Gem rails is not installed/available",
+            bootstrap_in_flight=False,
+        ),
+    }
+    res = client.get("/api/symphonies")
+    assert res.status_code == 200
+    syms = {s["name"]: s for s in res.json()["symphonies"]}
+    assert syms["alpha"]["last_bootstrap_succeeded"] is False
+    assert syms["alpha"]["last_bootstrap_error"] == "FAIL: Gem rails is not installed/available"
+    assert syms["alpha"]["cache_dir_ready"] is True
+    assert syms["alpha"]["bootstrap_in_flight"] is False
+    # A symphony with no env_cache entry gets safe defaults (no error).
+    assert syms["beta"]["last_bootstrap_error"] is None
+
+
 def test_post_symphony_creates_new_entry(tmp_path) -> None:
     """058 FR-008: POST /api/symphonies creates a new symphony and returns 201."""
     client, daemon = _make_symphony_app(tmp_path)

@@ -7,7 +7,7 @@
 
 Add `hermes` as a new backend identifier inside the performer container, implemented as a one-shot CLI adapter (`HermesBackend`) that conforms to the existing `BackendAdapter` Protocol in `agent/performer/src/performer/backends/base.py`. The adapter mirrors the `claude_code` / `junie` one-shot pattern (queue relay feedback and replay on next invocation, no persistent chat session), launches Hermes with an explicit job-scoped `HERMES_HOME`, disables messaging/gateway/cron/clarify/shared-memory toolsets via Hermes' `--toolsets` / `disabled_toolsets` mechanism, and translates Hermes lifecycle states into the shared `working` / `done` / `error` vocabulary. Coordinare's orchestration code is untouched: only the performer backends factory, the new `hermes.py` adapter, config example, and tests change. Session-level `settings.AGENT_TIMEOUT` (already applied to all backends in `agent/performer/src/performer/main.py`) bounds Hermes runs — no new timeout machinery.
 
-**Cross-backend persona routing (added 2026-05-21, see FR-015..FR-018)**: Where a backend exposes a job-isolated native identity slot, `score.persona_instructions` is routed there instead of being embedded as a `## Role Instructions` block in the task prompt body. Concretely: Hermes → write `$HERMES_HOME/SOUL.md` at `start()`; Claude Code → pass `--append-system-prompt <text>` on the CLI; Codex → already writes `developerInstructions` on the thread (the duplicate prompt-body block is dropped). Junie, opencode, opencode_compat, and cursor have no job-isolated slot (`AGENTS.md` / `.cursorrules` would live in the workspace and could land in commits), so they retain the existing prompt-body wiring unchanged.
+**Cross-backend persona routing (added 2026-05-21, see FR-015..FR-018)**: Where a backend exposes a job-isolated native identity slot, `score.persona_instructions` is routed there instead of being embedded as a `## Role Instructions` block in the task prompt body. Concretely: Hermes → write `$HERMES_HOME/SOUL.md` at `start()`; Claude Code → pass `--append-system-prompt <text>` on the CLI; Codex → already writes `developerInstructions` on the thread (the duplicate prompt-body block is dropped). Junie, opencode, and opencode_compat have no job-isolated slot (`AGENTS.md` would live in the workspace and could land in commits), so they retain the existing prompt-body wiring unchanged.
 
 ## Technical Context
 
@@ -72,7 +72,7 @@ agent/performer/
 
 config.example.yaml           # MODIFY: add `backend: hermes` example + env-var documentation
 config.example.hermes.yaml    # NEW:    focused per-backend example for hermes (primary)
-config.example.{codex,claude_code,opencode,opencode_compat,cursor,junie}.yaml  # NEW: parallel per-backend examples
+config.example.{codex,claude_code,opencode,opencode_compat,junie}.yaml  # NEW: parallel per-backend examples
 
 src/coordinare/                # UNCHANGED — FR-007 / SC-006: zero coordinare orchestration changes
 ```

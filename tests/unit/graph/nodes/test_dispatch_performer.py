@@ -1358,6 +1358,11 @@ def _ready_env_cache(tmp_path: Path, symphony_name: str = "my-project") -> dict:
         cache_dir=cache_dir,
         readme_sha="abc123",
         cache_dir_ready=True,
+        # 077: a "ready" cache for consumer dispatch must be current + verified —
+        # last bootstrap verified-succeeded and the cache reflects the current
+        # spec (readme_sha == last_seen_spec_sha).
+        last_bootstrap_succeeded=True,
+        last_seen_spec_sha="abc123",
     )
     return {symphony_name: state}
 
@@ -1517,11 +1522,13 @@ async def test_serialize_env_bootstrap_holds_consumer_while_bootstrap_in_flight(
 
 
 @pytest.mark.asyncio
-async def test_serialize_env_bootstrap_off_lets_consumer_dispatch_during_bootstrap(
+async def test_consumer_held_during_bootstrap_in_flight_regardless_of_serialize(
     tmp_path: Path,
 ) -> None:
-    """Default (serialize_env_bootstrap=False): once activate.sh exists, consumer
-    dispatch proceeds even while bootstrap_in_flight is still True.
+    """077: a consumer must NOT dispatch while a bootstrap is in flight, even with
+    serialize_env_bootstrap=False (the flag is now moot — the strict current+
+    verified gate always holds during an in-flight bootstrap). Previously the
+    default let consumers race the bootstrap against a stale cache.
     """
     from coordinare.config import ProjectConfiguration
     from coordinare.models.env_cache import EnvCacheState
@@ -1536,8 +1543,11 @@ async def test_serialize_env_bootstrap_off_lets_consumer_dispatch_during_bootstr
         symphony_name=symphony_name,
         sanitised_name=sanitised,
         cache_dir=cache_dir,
+        readme_sha="abc123",
+        last_seen_spec_sha="abc123",
+        last_bootstrap_succeeded=True,
         cache_dir_ready=True,
-        bootstrap_in_flight=True,
+        bootstrap_in_flight=True,  # a re-bootstrap is mid-run
     )
     env_cache = {symphony_name: ec_state}
 
@@ -1561,7 +1571,56 @@ async def test_serialize_env_bootstrap_off_lets_consumer_dispatch_during_bootstr
 
     await dispatch_performer(state)
 
-    assert svc.dispatch_card.called
+    # Held: in-flight bootstrap blocks the consumer even with serialize off.
+    assert not svc.dispatch_card.called
+
+
+@pytest.mark.asyncio
+async def test_consumer_held_when_cache_predates_current_spec(tmp_path: Path) -> None:
+    """077: even with a verified, ready, not-in-flight cache, a consumer is held
+    when the cache reflects an OLD spec (readme_sha != last_seen_spec_sha) — e.g.
+    the README just changed to add a dependency. Closes the stale-cache window
+    between a spec change and the re-bootstrap that satisfies it.
+    """
+    from coordinare.config import ProjectConfiguration
+    from coordinare.models.env_cache import EnvCacheState
+    from coordinare.services.env_cache import sanitise_symphony_name
+
+    symphony_name = "my-project"
+    sanitised = sanitise_symphony_name(symphony_name)
+    cache_dir = tmp_path / sanitised
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    (cache_dir / "activate.sh").touch()
+    ec_state = EnvCacheState(
+        symphony_name=symphony_name,
+        sanitised_name=sanitised,
+        cache_dir=cache_dir,
+        readme_sha="OLD",          # cache was built for the old spec
+        last_seen_spec_sha="NEW",  # current spec has since changed
+        last_bootstrap_succeeded=True,
+        cache_dir_ready=True,
+        bootstrap_in_flight=False,
+    )
+    config = ProjectConfiguration(
+        project_name="Test",
+        github_org="acme",
+        github_project_number=1,
+        github_token="tok",
+        human_reviewers=["alice"],
+    )
+    svc = _make_http_service(mode="ephemeral")
+    state = _base_state(
+        performer_services={"implementing": svc},
+        performer_stage="implementing",
+        lifecycle_sequence=["implementing"],
+        current_symphony=symphony_name,
+        env_cache={symphony_name: ec_state},
+        config=config,
+    )
+
+    await dispatch_performer(state)
+
+    assert not svc.dispatch_card.called
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,6 @@
 # Auto-source any mounted env-cache activate.sh.
 #
-# Agent CLI tool runners (codex, claude, opencode, cursor, junie) spawn shell
+# Agent CLI tool runners (codex, claude, opencode, junie) spawn shell
 # tool calls in different modes:
 #   - codex uses `bash -lc` (login)        → sources /etc/profile → /etc/profile.d/*
 #   - others may use `bash -c` or `sh -c`  → only BASH_ENV / ENV is honored

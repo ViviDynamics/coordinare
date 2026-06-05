@@ -38,7 +38,7 @@ import structlog
 
 from performer.backends._card_docs import card_doc_folder, card_docs_prompt_section
 from performer.backends.base import BackendStatus
-from performer.models import BackendEvent, BackendEventType, Score, Stand
+from performer.models import DIAGNOSTIC_ROLE, BackendEvent, BackendEventType, Score, Stand
 
 log = structlog.get_logger(__name__)
 
@@ -158,6 +158,7 @@ class HermesBackend:
         self._profile_dir = Path(tempfile.mkdtemp(prefix="hermes-job-"))
         self._write_profile_config(
             self._profile_dir, provider=provider, base_url=base_url,
+            model=resolved_model,
         )
         # FR-015: route persona to hermes-agent's canonical identity slot.
         # When persona_instructions is empty we leave SOUL.md absent so
@@ -165,10 +166,24 @@ class HermesBackend:
         if score.persona_instructions:
             (self._profile_dir / "SOUL.md").write_text(score.persona_instructions)
 
+        # 077: materialise the card context as CARD.md in the checkout so a
+        # persona that looks for "card documentation files" (same family as the
+        # openclaw reviewer) can read it. Hermes already runs in cwd=stand.path
+        # so no symlink is needed — but unlike openclaw it COMMITS, so the file
+        # is git-excluded to keep it out of the PR.
+        card_md = self._write_card_docs(Path(stand.path), score)
+
         # Build prompt; drain feedback queue into it.
         prompt = _build_task_prompt(
             score, list(self._feedback_queue), stand_path=stand.path,
         )
+        if card_md is not None:
+            prompt += (
+                "\n\n## Card Documentation\n\n"
+                "The card title, description, acceptance criteria, and any "
+                "clarifications are in `CARD.md` at the root of the repo checkout. "
+                "Read it before acting — it IS the card documentation."
+            )
         self._feedback_queue.clear()
         self._last_prompt = prompt
         self._job_log_id = f"{time.strftime('%Y%m%dT%H%M%S')}_{(score.role or 'job')}_{uuid.uuid4().hex[:8]}"
@@ -187,13 +202,18 @@ class HermesBackend:
         # out. The container itself is the security boundary here, paired
         # with our --toolsets allow-list. `approvals.mode: off` is also
         # written into the per-job config below as belt-and-suspenders.
+        # 077: when routed through an OpenAI-compatible base_url, the provider is
+        # hermes-agent's built-in ``custom`` (matching the ``model.provider``
+        # written to config.yaml). The HERMES_PROVIDER name (e.g. "litellm") is
+        # only a config label, not a provider hermes 0.15.2 recognises on --provider.
+        cli_provider = "custom" if base_url else provider
         args: list[str] = [
             self._executable, "chat",
             "-q", prompt,
             "--quiet",
             "--yolo",
             "--toolsets", ",".join(ALLOWED_TOOLSETS),
-            "--provider", provider,
+            "--provider", cli_provider,
             "--model", resolved_model,
         ]
 
@@ -303,6 +323,49 @@ class HermesBackend:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def _write_card_docs(self, workspace: Path, score: Score) -> Path | None:
+        """077: materialise the card context as ``CARD.md`` for a persona that
+        reads card-doc files (mirrors the openclaw reviewer fix).
+
+        Hermes runs in ``cwd=stand.path`` so no workspace symlink is needed — but
+        unlike the read-only reviewer, the tech_writer COMMITS, so the file is
+        added to ``.git/info/exclude`` (a local, never-committed ignore list) to
+        keep the scratch file out of the PR. Best-effort: failures are logged.
+        """
+        try:
+            parts: list[str] = [f"# Card: {score.title}".rstrip(), ""]
+            if score.description:
+                parts += ["## Description", "", score.description, ""]
+            if score.acceptance_criteria:
+                parts += ["## Acceptance Criteria", ""]
+                parts += [f"- {c}" for c in score.acceptance_criteria]
+                parts += [""]
+            if score.clarifications:
+                parts += ["## Clarification Q&A", ""]
+                for entry in score.clarifications:
+                    for q in entry.get("questions") or []:
+                        parts.append(f"- Q: {q}")
+                    answer = str(entry.get("answer", "")).strip()
+                    if answer:
+                        parts += [f"  A: {answer}", ""]
+            card_md = workspace / "CARD.md"
+            card_md.write_text("\n".join(parts) + "\n")
+            # Keep the scratch file out of any commit the tech_writer makes.
+            try:
+                exclude = workspace / ".git" / "info" / "exclude"
+                exclude.parent.mkdir(parents=True, exist_ok=True)
+                existing = exclude.read_text() if exclude.is_file() else ""
+                if "CARD.md" not in existing.split():
+                    with exclude.open("a") as fh:
+                        fh.write(("" if existing.endswith("\n") or not existing else "\n") + "CARD.md\n")
+            except OSError as exc:
+                log.warning("hermes.card_docs_exclude_failed", error=str(exc))
+            log.info("hermes.card_docs_written", path=str(card_md), chars=len("\n".join(parts)))
+            return card_md
+        except OSError as exc:
+            log.warning("hermes.card_docs_write_failed", error=str(exc))
+            return None
+
     def _build_subprocess_env(
         self, *, profile_dir: Path, api_key: str, base_url: str
     ) -> dict[str, str]:
@@ -330,16 +393,23 @@ class HermesBackend:
 
     def _write_profile_config(
         self, profile_dir: Path, *, provider: str = "", base_url: str = "",
+        model: str = "",
     ) -> None:
-        """Write ``hermes.config.yaml``.
+        """Write ``$HERMES_HOME/config.yaml``.
 
         Always emits the ``disabled_toolsets`` deny-list (belt-and-suspenders
-        for the CLI's ``--toolsets`` allow-list). When ``base_url`` is set, also
-        registers ``provider`` as a user-defined OpenAI-compatible endpoint
-        under ``providers:`` so ``hermes chat --provider <name>`` resolves to
-        ``base_url`` with ``HERMES_API_KEY`` as the credential. We reference
-        the key via ``key_env`` rather than embedding it so the secret never
-        lands on disk.
+        for the CLI's ``--toolsets`` allow-list).
+
+        077: hermes-agent 0.15.2 reads an OpenAI-compatible endpoint from the
+        ``model:`` block (``provider: custom`` + ``base_url`` + ``default``), NOT
+        the older ``providers: <name>: {base_url, key_env, api_mode}`` schema —
+        which 0.15.2 silently ignores, leaving the agent with "no API keys or
+        providers found" (verified against the installed CLI; would crash the
+        tech_writer stage before it could connect). The credential is referenced
+        via ``api_key_env`` so the secret never lands on disk: ``HERMES_API_KEY``
+        is injected into the subprocess env by ``_build_subprocess_env``.
+        ``provider`` is retained in the signature for back-compat but the
+        OpenAI-compat path always uses the built-in ``custom`` provider.
         """
         cfg_lines: list[str] = [
             "approvals:",
@@ -352,14 +422,15 @@ class HermesBackend:
             "disabled_toolsets:",
         ]
         cfg_lines += [f"  - {name}" for name in DISABLED_TOOLSETS]
-        if base_url and provider:
+        if base_url:
             cfg_lines += [
-                "providers:",
-                f"  {provider}:",
-                f"    base_url: {base_url}",
-                "    key_env: HERMES_API_KEY",
-                "    api_mode: chat_completions",
+                "model:",
+                "  provider: custom",
+                f"  base_url: {base_url}",
+                "  api_key_env: HERMES_API_KEY",
             ]
+            if model:
+                cfg_lines.append(f"  default: {model}")
         cfg_lines.append("")
         (profile_dir / "config.yaml").write_text("\n".join(cfg_lines))
 
@@ -682,6 +753,13 @@ def _build_task_prompt(
 
 def _role_output_block(role: str) -> list[str]:
     """Role-specific output requirements appended to the prompt (FR-001a)."""
+    if role == DIAGNOSTIC_ROLE:
+        return [
+            "## Role Output Requirements (diagnostic)",
+            "This is a one-off diagnostic/benchmark task. Use any tools at your "
+            "disposal to complete it. You do NOT need to commit, push, or open a "
+            "pull request — just perform the task and report what you did.",
+        ]
     if role in _JSON_ONLY_ROLES:
         return [
             f"## Role Output Requirements ({role})",

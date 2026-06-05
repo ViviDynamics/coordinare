@@ -31,7 +31,7 @@ import structlog
 from performer.backends._card_docs import card_docs_prompt_section
 from performer.backends.base import BackendStatus
 from performer.io_utils import iter_lines_chunked
-from performer.models import BackendEvent, BackendEventType, Score, Stand
+from performer.models import DIAGNOSTIC_ROLE, LOCAL_CAPTURE_RULE, BackendEvent, BackendEventType, Score, Stand
 
 log = structlog.get_logger(__name__)
 
@@ -637,7 +637,13 @@ def _build_task_prompt(
                 parts.append(f"- {item}")
 
     parts += ["", "---"]
-    if score.role in _JSON_ONLY_ROLES:
+    if score.role == DIAGNOSTIC_ROLE:
+        parts += [
+            "This is a one-off diagnostic/benchmark task. Use any tools at your "
+            "disposal to complete it. You do NOT need to commit, push, or open a "
+            "pull request — just perform the task and report what you did.",
+        ]
+    elif score.role in _JSON_ONLY_ROLES:
         parts += [
             "Return ONLY a valid JSON object for your role contract.",
             "Do not include markdown, prose, or code fences.",
@@ -649,6 +655,7 @@ def _build_task_prompt(
                 "Set `visual_validation_required=true` for UI/UX/visual changes and capture at least one artifact in `visual_evidence` for those tasks.",
                 "Include `visual_evidence` entries when screenshots/GIFs/videos/artifacts are available.",
                 "Include exact capture attempts in `visual_capture_commands` (commands/scripts you ran).",
+                LOCAL_CAPTURE_RULE,
                 "If visual evidence cannot be captured, include `demo_setup_steps` and `visual_capture_blockers` with concrete details.",
                 (
                     "Screenshot uploads: after capturing a screenshot to disk, run "
