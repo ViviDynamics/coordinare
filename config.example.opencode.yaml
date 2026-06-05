@@ -110,15 +110,25 @@ performer_endpoints:
 
 # --- Performers ---
 
+# --- 080: model catalogs (declare once, reference per performer by `mode`) ---
+endpoints:
+  - {name: anthropic-cloud, kind: anthropic, auth_env: ANTHROPIC_API_KEY}
+model_endpoints:
+  - {name: claude-sonnet-4-6, endpoint: anthropic-cloud, model: claude-sonnet-4-6}
+  - {name: claude-haiku-4-5-20251001, endpoint: anthropic-cloud, model: claude-haiku-4-5-20251001}
+modes:
+  - {name: single-claude-sonnet-4-6, strategy: single, tool: claude-sonnet-4-6}
+  - {name: single-claude-haiku-4-5-20251001, strategy: single, tool: claude-haiku-4-5-20251001}
+
 performers:
   default:
     backend: opencode
-    model: claude-sonnet-4-6           # any model id your ~/.opencode config serves
+    mode: single-claude-sonnet-4-6           # any model id your ~/.opencode config serves
     temperature: 0.2
     max_tokens: 8192
 
   assessor:
-    model: claude-haiku-4-5-20251001
+    mode: single-claude-haiku-4-5-20251001
     temperature: 0.0
     max_tokens: 2048
 
@@ -136,7 +146,7 @@ performers:
     temperature: 0.0
 
   closer:
-    model: claude-haiku-4-5-20251001
+    mode: single-claude-haiku-4-5-20251001
     temperature: 0.0
     max_tokens: 2048
 

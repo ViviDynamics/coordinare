@@ -65,31 +65,43 @@ performer_endpoints:
 
 # --- Performers ---
 
+# --- 080: model catalogs (declare once, reference per performer by `mode`) ---
+endpoints:
+  - {name: anthropic-cloud, kind: anthropic, auth_env: ANTHROPIC_API_KEY}
+model_endpoints:
+  - {name: claude-sonnet-4-6, endpoint: anthropic-cloud, model: claude-sonnet-4-6}
+  - {name: claude-haiku-4-5-20251001, endpoint: anthropic-cloud, model: claude-haiku-4-5-20251001}
+  - {name: claude-opus-4-7, endpoint: anthropic-cloud, model: claude-opus-4-7}
+modes:
+  - {name: single-claude-sonnet-4-6, strategy: single, tool: claude-sonnet-4-6}
+  - {name: single-claude-haiku-4-5-20251001, strategy: single, tool: claude-haiku-4-5-20251001}
+  - {name: single-claude-opus-4-7, strategy: single, tool: claude-opus-4-7}
+
 performers:
   default:
     backend: claude_code
-    model: claude-sonnet-4-6
+    mode: single-claude-sonnet-4-6
     temperature: 0.2
     max_tokens: 8192
 
   assessor:
-    model: claude-haiku-4-5-20251001
+    mode: single-claude-haiku-4-5-20251001
     temperature: 0.0
     max_tokens: 2048
 
   architect:
-    model: claude-opus-4-7
+    mode: single-claude-opus-4-7
     max_tokens: 12288
 
   implementer:
-    model: claude-opus-4-7
+    mode: single-claude-opus-4-7
     max_tokens: 16384
 
   reviewer:
     temperature: 0.0
 
   security:
-    model: claude-opus-4-7
+    mode: single-claude-opus-4-7
     temperature: 0.0
 
   qa:
@@ -97,7 +109,7 @@ performers:
     max_tokens: 12288
 
   closer:
-    model: claude-haiku-4-5-20251001
+    mode: single-claude-haiku-4-5-20251001
     temperature: 0.0
     max_tokens: 2048
 

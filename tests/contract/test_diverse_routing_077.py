@@ -71,16 +71,23 @@ performer_endpoints:
     env:
       BACKEND: junie
       JUNIE_PROVIDER_BASE_URL: https://litellm.example/v1
+# 080: model selection via catalogs — every role drives the single shared model.
+endpoints:
+  - {name: litellm, kind: litellm, base_url: https://litellm.example/v1, auth_env: LITELLM_PROXY_AUTH_TOKEN}
+model_endpoints:
+  - {name: qwen-shared, endpoint: litellm, model: spark/qwen3.6:35b}
+modes:
+  - {name: single-qwen, strategy: single, tool: qwen-shared}
 performers:
-  assessor: {backend: junie, model: spark/qwen3.6:35b}
-  architect: {backend: codex, model: spark/qwen3.6:35b}
-  implementer: {backend: codex, model: spark/qwen3.6:35b}
-  security: {backend: codex, model: spark/qwen3.6:35b}
-  reviewer: {backend: claude_code, model: spark/qwen3.6:35b}
-  qa: {backend: claude_code, model: spark/qwen3.6:35b}
-  tech_writer: {backend: hermes, model: spark/qwen3.6:35b}
-  closer: {backend: hermes, model: spark/qwen3.6:35b}
-  env_bootstrap: {backend: claude_code, model: spark/qwen3.6:35b}
+  assessor: {backend: junie, mode: single-qwen}
+  architect: {backend: codex, mode: single-qwen}
+  implementer: {backend: codex, mode: single-qwen}
+  security: {backend: codex, mode: single-qwen}
+  reviewer: {backend: claude_code, mode: single-qwen}
+  qa: {backend: claude_code, mode: single-qwen}
+  tech_writer: {backend: hermes, mode: single-qwen}
+  closer: {backend: hermes, mode: single-qwen}
+  env_bootstrap: {backend: claude_code, mode: single-qwen}
 """
 
 
@@ -103,8 +110,10 @@ def test_every_role_uses_the_shared_model(diverse_config: ProjectConfiguration) 
     """T005/FR-002: the variable under test is the backend — every role drives
     the single shared model."""
     for role in (*EXPECTED_ROLE_BACKEND, "closer", "env_bootstrap"):
-        cfg = getattr(diverse_config.performers, role)
-        assert cfg.model == SHARED_MODEL, f"{role} model {cfg.model!r} != {SHARED_MODEL!r}"
+        resolved = diverse_config.resolve_performer_dispatch_model(role)
+        assert resolved.get("model") == SHARED_MODEL, (
+            f"{role} model {resolved.get('model')!r} != {SHARED_MODEL!r}"
+        )
 
 
 def test_endpoints_carry_litellm_provider_routing_env(diverse_config: ProjectConfiguration) -> None:

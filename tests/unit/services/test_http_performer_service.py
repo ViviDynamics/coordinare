@@ -1011,6 +1011,37 @@ async def test_dispatch_codex_honors_role_api_key_env_and_base_url(monkeypatch) 
 
 
 @pytest.mark.asyncio
+async def test_dispatch_codex_honors_auth_token_env_for_self_hosted_mode(monkeypatch) -> None:
+    """080: a self-hosted single mode resolves to auth_token_env (proxy bearer);
+    codex must inject that key as OPENAI_API_KEY so it reaches the proxy."""
+    payloads: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json as _json
+        payloads.append(_json.loads(request.content))
+        return httpx.Response(
+            202, json={"accepted": True, "job_id": "job-cx2", "started_at": "2026-04-28T00:00:00Z"},
+        )
+
+    monkeypatch.setenv("LITELLM_PROXY_AUTH_TOKEN", "sk-litellm-bearer")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    card = {
+        **_card(),
+        "backend": "codex",
+        "auth_token_env": "LITELLM_PROXY_AUTH_TOKEN",  # as 080 dispatch emits for self-hosted
+        "base_url": "http://spark:4000",
+    }
+    svc = HTTPPerformerService(_persistent_config(), client=_client(handler))
+    await svc.dispatch_card(card, _workspace())
+
+    secrets = payloads[0].get("secrets", {})
+    assert secrets.get("OPENAI_API_KEY") == "sk-litellm-bearer"
+    assert secrets.get("OPENAI_BASE_URL") == "http://spark:4000"
+    await svc.aclose()
+
+
+@pytest.mark.asyncio
 async def test_dispatch_does_not_inject_api_keys_for_unknown_backends(monkeypatch) -> None:
     """Unknown backends receive no provider API keys."""
     payloads: list[dict] = []

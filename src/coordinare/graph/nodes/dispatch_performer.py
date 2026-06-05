@@ -706,14 +706,17 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
         if role_config is not None:
             from coordinare.services.performer_tuning import translate_tuning
             card_context["backend"] = role_config.backend
-            if role_config.model is not None:
-                card_context["model"] = role_config.model
-            if role_config.base_url is not None:
-                card_context["base_url"] = role_config.base_url
-            if role_config.api_key_env is not None:
-                card_context["api_key_env"] = role_config.api_key_env
-            if role_config.auth_token_env is not None:
-                card_context["auth_token_env"] = role_config.auth_token_env
+            # 080: model + endpoint come from the role's mode (modes → model_endpoints
+            # → endpoints), resolved against the root catalogs. Yields the same
+            # card_context keys the downstream payload builder already consumes.
+            card_context.update(config.resolve_performer_dispatch_model(role))
+            # 080: for non-`single` strategies, carry the full orchestration block
+            # (strategy + resolved upstream refs + params) so the performer can
+            # launch the DualModelProxy. Rides card_context → metadata, like the
+            # other per-role dispatch fields. Absent for single (no proxy).
+            _orch = config.resolve_performer_orchestration(role)
+            if _orch is not None:
+                card_context["orchestration"] = _orch
             card_context.update(translate_tuning(role_config))
 
     # Apply per-persona scope_behavior tier (FR-007, FR-009, FR-010).

@@ -78,14 +78,22 @@ performer_endpoints:
 # Pick `backend: openclaw` per role (or at `default:`). The per-role `model:`
 # is allowlisted + routed as `<OPENCLAW_PROVIDER_NAME>/<model>`.
 
+# --- 080: model catalogs (declare once, reference per performer by `mode`) ---
+endpoints:
+  - {name: litellm, kind: litellm, base_url: http://localhost:4000, auth_env: LITELLM_PROXY_AUTH_TOKEN}
+model_endpoints:
+  - {name: spark-qwen3-6-35b, endpoint: litellm, model: "spark/qwen3.6:35b"}
+modes:
+  - {name: single-spark-qwen3-6-35b, strategy: single, tool: spark-qwen3-6-35b}
+
 performers:
   default:
     backend: openclaw
-    model: spark/qwen3.6:35b
+    mode: single-spark-qwen3-6-35b
 
   reviewer:
     backend: openclaw
-    model: spark/qwen3.6:35b
+    mode: single-spark-qwen3-6-35b
     max_tokens: 24576
 
 

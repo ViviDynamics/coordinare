@@ -316,6 +316,140 @@ class StuckAlertConfig(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# 080 — Dual-model orchestration config catalogs
+#
+# Root-level, reference-by-name catalogs that unify all model selection:
+#   performer.mode -> modes[] -> model_endpoints[] -> endpoints[]
+# `endpoint.kind` splits native (vendor cloud, no override/proxy) from
+# self-hosted (provider override / proxy-eligible). `mode.strategy` decides
+# single-model vs the dual-model planner/executor proxy.
+# ---------------------------------------------------------------------------
+
+_NATIVE_ENDPOINT_KINDS = frozenset({"openai", "anthropic"})
+_SELF_HOSTED_ENDPOINT_KINDS = frozenset({"litellm", "ollama", "vllm"})
+
+# Default regex for the think_once "error marker" (FR-016); scans incoming
+# tool results only.
+DEFAULT_THINK_ONCE_ERROR_PATTERN = r"(?i)\b(error|exception|traceback|fatal|exit code [1-9])\b"
+
+
+class Endpoint(BaseModel):
+    """A model-serving location (080).
+
+    ``kind`` decides behavior: native vendor kinds (openai/anthropic) use the
+    harness's own client with no provider override and are never proxied;
+    self-hosted kinds (litellm/ollama/vllm) require a ``base_url`` and are
+    provider-override / proxy eligible.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    kind: Literal["litellm", "ollama", "vllm", "openai", "anthropic"]
+    base_url: str | None = None
+    auth_env: str | None = None  # NAME of the env var holding the token — never the secret
+
+    @model_validator(mode="after")
+    def _validate_kind_rules(self) -> Endpoint:
+        if self.kind in _SELF_HOSTED_ENDPOINT_KINDS and not self.base_url:
+            raise ValueError(
+                f"endpoint '{self.name}': kind '{self.kind}' is self-hosted and requires base_url"
+            )
+        if self.kind in _NATIVE_ENDPOINT_KINDS and self.base_url:
+            raise ValueError(
+                f"endpoint '{self.name}': kind '{self.kind}' is native and must not set base_url"
+            )
+        return self
+
+    @property
+    def is_native(self) -> bool:
+        return self.kind in _NATIVE_ENDPOINT_KINDS
+
+
+class ModelEndpoint(BaseModel):
+    """A named (model @ endpoint) pair — the unit of model selection (080)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    endpoint: str  # references Endpoint.name
+    model: str
+
+
+class Mode(BaseModel):
+    """A named orchestration behavior (080).
+
+    ``strategy: single`` reads only ``tool`` and reproduces single-model
+    behavior (no proxy). The multi-model strategies (always/conditional/
+    think_once) drive the in-container planner/executor proxy.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    strategy: Literal["single", "always", "conditional", "think_once"]
+    tool: str  # ModelEndpoint.name — executor / sole model (required for all strategies)
+    thinking: str | None = None  # ModelEndpoint.name — planner (multi-model strategies)
+    classifier: str | None = None  # ModelEndpoint.name (conditional only)
+    threshold: float | None = None  # conditional only
+    invalidate_after_turns: int | None = Field(default=None, ge=1)  # think_once only
+    invalidate_on_error: bool | None = None  # think_once only
+    error_pattern: str | None = None  # think_once only; default applied at use-site
+    expose_plan_as: Literal["thinking", "prepend_content", "drop"] = "thinking"
+    on_think_error: Literal["fall_back_to_act", "fail"] = "fall_back_to_act"
+
+    @model_validator(mode="after")
+    def _validate_strategy_fields(self) -> Mode:
+        think_once_params = {
+            "invalidate_after_turns": self.invalidate_after_turns,
+            "invalidate_on_error": self.invalidate_on_error,
+            "error_pattern": self.error_pattern,
+        }
+        conditional_params = {"classifier": self.classifier, "threshold": self.threshold}
+
+        if self.strategy == "single":
+            forbidden = [
+                k
+                for k, v in ({"thinking": self.thinking} | conditional_params | think_once_params).items()
+                if v is not None
+            ]
+            if forbidden:
+                raise ValueError(
+                    f"mode '{self.name}': strategy 'single' must not set {', '.join(sorted(forbidden))} "
+                    f"(single is one model via 'tool')"
+                )
+        else:
+            if self.thinking is None:
+                raise ValueError(
+                    f"mode '{self.name}': strategy '{self.strategy}' requires 'thinking'"
+                )
+            if self.strategy == "conditional":
+                missing = [k for k, v in conditional_params.items() if v is None]
+                if missing:
+                    raise ValueError(
+                        f"mode '{self.name}': strategy 'conditional' requires {', '.join(sorted(missing))}"
+                    )
+            else:
+                set_conditional = [k for k, v in conditional_params.items() if v is not None]
+                if set_conditional:
+                    raise ValueError(
+                        f"mode '{self.name}': strategy '{self.strategy}' must not set "
+                        f"{', '.join(sorted(set_conditional))} (conditional-only)"
+                    )
+            if self.strategy != "think_once":
+                set_think_once = [k for k, v in think_once_params.items() if v is not None]
+                if set_think_once:
+                    raise ValueError(
+                        f"mode '{self.name}': strategy '{self.strategy}' must not set "
+                        f"{', '.join(sorted(set_think_once))} (think_once-only)"
+                    )
+
+        if self.threshold is not None and not (0.0 <= self.threshold <= 1.0):
+            raise ValueError(f"mode '{self.name}': threshold must be between 0.0 and 1.0")
+        return self
+
+
+# ---------------------------------------------------------------------------
 # 019 — Performer Lifecycle config models
 # ---------------------------------------------------------------------------
 
@@ -328,7 +462,10 @@ class PerformerRoleConfig(BaseModel):
     """
 
     backend: str = "opencode"
-    model: str | None = None  # 037: specific model within backend (e.g. claude-sonnet-4-20250514)
+    # 080: model selection moved to the root-level catalogs. A role references a
+    # `mode` (modes → model_endpoints → endpoints); inline `model`/`base_url`/
+    # `api_key_env`/`auth_token_env` are removed (hard cut, see validator below).
+    mode: str | None = None  # references modes[].name
     transport: str | None = None
     image: str | None = None
     executable: str | None = None
@@ -348,19 +485,27 @@ class PerformerRoleConfig(BaseModel):
     effort: Literal["low", "medium", "high"] | None = None
     temperature: float | None = None
     max_tokens: int | None = None
-    # API endpoint overrides for backends that hit a Claude-compatible HTTP API
-    # (currently: claude_code). When set, the coordinare forwards them to the
-    # performer's job-init payload as ANTHROPIC_BASE_URL / ANTHROPIC_API_KEY so
-    # the per-role subprocess hits a proxy (e.g. LiteLLM) instead of api.anthropic.com.
-    # Other backends (opencode, codex, junie) read their provider keys from
-    # the container env directly and ignore these fields.
-    base_url: str | None = None
-    api_key_env: str | None = None
-    # When set, the coordinare injects ANTHROPIC_AUTH_TOKEN (Bearer) from this env
-    # var and SKIPS ANTHROPIC_API_KEY entirely. Use this for proxy-only auth (e.g.
-    # LiteLLM master key) — without it, claude CLI's x-api-key precedence forwards
-    # the real Anthropic key upstream through the proxy.
-    auth_token_env: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_removed_inline_model_fields(cls, data: Any) -> Any:
+        """080 hard cut (FR-006): inline model/endpoint fields are removed.
+
+        Their presence is a loud error directing the operator to the catalogs,
+        rather than being silently ignored.
+        """
+        if isinstance(data, dict):
+            present = [
+                k for k in ("model", "base_url", "api_key_env", "auth_token_env") if k in data
+            ]
+            if present:
+                raise ValueError(
+                    f"performer role sets removed inline field(s) {', '.join(present)} — "
+                    "080 moved all model selection to the root-level "
+                    "endpoints/model_endpoints/modes catalogs; reference a mode with "
+                    "`mode: <mode-name>` instead (see specs/080-dual-model-orchestration)."
+                )
+        return data
 
     @field_validator("temperature")
     @classmethod
@@ -666,6 +811,10 @@ class ProjectConfiguration(BaseSettings):
     advocate: AdvocateConfig = Field(default_factory=AdvocateConfig)
     personas: PersonasConfig = Field(default_factory=PersonasConfig)
     performers: PerformersConfig = Field(default_factory=PerformersConfig)
+    # 080 — dual-model orchestration catalogs (reference-by-name; see Endpoint/ModelEndpoint/Mode)
+    endpoints: list[Endpoint] = Field(default_factory=list)
+    model_endpoints: list[ModelEndpoint] = Field(default_factory=list)
+    modes: list[Mode] = Field(default_factory=list)
     priority: PriorityConfig = Field(default_factory=PriorityConfig)
     # 050 — Only dispatch cards assigned to this GitHub login. None = no filter.
     assignee_filter: str | None = Field(default=None)
@@ -791,6 +940,158 @@ class ProjectConfiguration(BaseSettings):
                 f"performer_endpoints contains duplicate endpoint URL(s): {dup_endpoints}"
             )
         return self
+
+    @model_validator(mode="after")
+    def _validate_orchestration_catalogs(self) -> ProjectConfiguration:
+        """080: validate endpoints/model_endpoints/modes references + unique names.
+
+        No-op when all three catalogs are empty (backwards compatible). Enforces
+        unique names within each catalog and that every reference resolves
+        (model_endpoint.endpoint -> endpoints; mode.{tool,thinking,classifier}
+        -> model_endpoints). The performer.mode -> modes check is added when the
+        performer config grows a `mode` field.
+        """
+        def _dups(names: list[str]) -> list[str]:
+            return sorted({n for n, c in Counter(names).items() if c > 1})
+
+        for label, items in (
+            ("endpoints", self.endpoints),
+            ("model_endpoints", self.model_endpoints),
+            ("modes", self.modes),
+        ):
+            dups = _dups([i.name for i in items])
+            if dups:
+                raise ValueError(f"{label} contains duplicate name(s): {dups}")
+
+        endpoint_names = {e.name for e in self.endpoints}
+        model_endpoint_names = {m.name for m in self.model_endpoints}
+
+        for me in self.model_endpoints:
+            if me.endpoint not in endpoint_names:
+                raise ValueError(
+                    f"model_endpoint '{me.name}' references unknown endpoint '{me.endpoint}'"
+                )
+
+        for mode in self.modes:
+            for field in ("tool", "thinking", "classifier"):
+                ref = getattr(mode, field)
+                if ref is not None and ref not in model_endpoint_names:
+                    raise ValueError(
+                        f"mode '{mode.name}' {field} references unknown model_endpoint '{ref}'"
+                    )
+
+        # performer.mode -> modes[] (FR-004/FR-005). Runs regardless of catalog
+        # contents so a stray mode reference is caught even with empty catalogs.
+        mode_names = {m.name for m in self.modes}
+        for role_name in (
+            "default", "advocate", "assessor", "architect", "implementer",
+            "reviewer", "security", "qa", "tech_writer", "closer", "env_bootstrap",
+        ):
+            role = getattr(self.performers, role_name, None)
+            if role is not None and role.mode is not None and role.mode not in mode_names:
+                raise ValueError(
+                    f"performers.{role_name} references unknown mode '{role.mode}'"
+                )
+        return self
+
+    def resolve_endpoint(self, name: str) -> Endpoint | None:
+        """080: return the Endpoint by name, or None."""
+        return next((e for e in self.endpoints if e.name == name), None)
+
+    def resolve_model_endpoint(self, name: str) -> ModelEndpoint | None:
+        """080: return the ModelEndpoint by name, or None."""
+        return next((m for m in self.model_endpoints if m.name == name), None)
+
+    def resolve_mode(self, name: str) -> Mode | None:
+        """080: return the Mode by name, or None."""
+        return next((m for m in self.modes if m.name == name), None)
+
+    def resolve_performer_dispatch_model(self, role_name: str) -> dict[str, str]:
+        """080: resolve a role's mode → model/endpoint into dispatch card_context.
+
+        Returns the subset of {model, base_url, api_key_env, auth_token_env} that
+        applies (empty when the role has no mode). Self-hosted endpoints map to
+        bearer auth (auth_token_env) + a base_url override; native endpoints map
+        to api_key_env with no override. Uses the mode's ``tool`` leg as the
+        primary model — correct for ``single`` and the executor leg for the
+        multi-model strategies (whose planner orchestration is layered on in 080
+        US2 via the dispatch ``orchestration`` block).
+        """
+        role = self.performers.resolved_role(role_name)
+        if role is None or role.mode is None:
+            return {}
+        mode = self.resolve_mode(role.mode)
+        if mode is None:
+            return {}
+        me = self.resolve_model_endpoint(mode.tool)
+        if me is None:
+            return {}
+        out: dict[str, str] = {"model": me.model}
+        ep = self.resolve_endpoint(me.endpoint)
+        if ep is None:
+            return out
+        if ep.is_native:
+            if ep.auth_env:
+                out["api_key_env"] = ep.auth_env
+        else:
+            if ep.base_url:
+                out["base_url"] = ep.base_url
+            if ep.auth_env:
+                out["auth_token_env"] = ep.auth_env
+        return out
+
+    def _upstream_ref(self, model_endpoint_name: str | None) -> dict[str, Any] | None:
+        """080: resolve a model_endpoint name into a proxy UpstreamRef dict.
+
+        ``wire_format`` follows the endpoint kind (anthropic → anthropic; openai/
+        litellm/ollama/vllm → openai-compatible); ``auth_style`` is x-api-key for
+        native anthropic, bearer otherwise. ``auth_env`` is the env-var NAME (the
+        token itself rides the existing secrets path), never the secret value.
+        """
+        if model_endpoint_name is None:
+            return None
+        me = self.resolve_model_endpoint(model_endpoint_name)
+        if me is None:
+            return None
+        ep = self.resolve_endpoint(me.endpoint)
+        kind = ep.kind if ep else "openai"
+        return {
+            "name": me.name,
+            "model": me.model,
+            "wire_format": "anthropic" if kind == "anthropic" else "openai",
+            "base_url": ep.base_url if ep else None,
+            "auth_env": ep.auth_env if ep else None,
+            "auth_style": "x-api-key" if kind == "anthropic" else "bearer",
+        }
+
+    def resolve_performer_orchestration(self, role_name: str) -> dict[str, Any] | None:
+        """080: resolve a role's mode into the dispatch ``orchestration`` block.
+
+        Returns None for ``single`` (no proxy) or an unmoded role. Otherwise a
+        dict the performer hands to ``DualModelProxy.build_strategy``: strategy +
+        resolved tool/thinking(/classifier) UpstreamRefs + strategy params.
+        """
+        role = self.performers.resolved_role(role_name)
+        if role is None or role.mode is None:
+            return None
+        mode = self.resolve_mode(role.mode)
+        if mode is None or mode.strategy == "single":
+            return None
+        out: dict[str, Any] = {
+            "strategy": mode.strategy,
+            "tool": self._upstream_ref(mode.tool),
+            "thinking": self._upstream_ref(mode.thinking),
+            "expose_plan_as": mode.expose_plan_as,
+            "on_think_error": mode.on_think_error,
+        }
+        if mode.strategy == "conditional":
+            out["classifier"] = self._upstream_ref(mode.classifier)
+            out["threshold"] = mode.threshold
+        if mode.strategy == "think_once":
+            out["invalidate_after_turns"] = mode.invalidate_after_turns
+            out["invalidate_on_error"] = mode.invalidate_on_error
+            out["error_pattern"] = mode.error_pattern
+        return out
 
     @classmethod
     def settings_customise_sources(

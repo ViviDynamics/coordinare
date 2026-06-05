@@ -1185,8 +1185,8 @@ async def test_dispatch_includes_backend_from_role_config() -> None:
 
 
 @pytest.mark.asyncio
-async def test_dispatch_includes_model_when_set() -> None:
-    """dispatch_performer includes model in payload when role config has it."""
+async def test_dispatch_includes_model_from_self_hosted_mode() -> None:
+    """080: dispatch resolves model + base_url + bearer auth from a self-hosted mode."""
     from coordinare.config import PerformerRoleConfig, PerformersConfig, ProjectConfiguration
 
     config = ProjectConfiguration(**{
@@ -1195,8 +1195,18 @@ async def test_dispatch_includes_model_when_set() -> None:
         "github_project_number": 1,
         "github_token": "tok",
         "human_reviewers": ["alice"],
+        "endpoints": [
+            {"name": "spark", "kind": "litellm", "base_url": "https://proxy.internal/v1",
+             "auth_env": "LITELLM_PROXY_KEY"},
+        ],
+        "model_endpoints": [
+            {"name": "sonnet-spark", "endpoint": "spark", "model": "claude-sonnet-4-20250514"},
+        ],
+        "modes": [
+            {"name": "single-sonnet", "strategy": "single", "tool": "sonnet-spark"},
+        ],
         "performers": PerformersConfig(
-            implementer=PerformerRoleConfig(backend="claude_code", model="claude-sonnet-4-20250514"),
+            implementer=PerformerRoleConfig(backend="claude_code", mode="single-sonnet"),
         ),
     })
 
@@ -1216,11 +1226,87 @@ async def test_dispatch_includes_model_when_set() -> None:
     card_context = svc.dispatched[0]
     assert card_context.get("backend") == "claude_code"
     assert card_context.get("model") == "claude-sonnet-4-20250514"
+    assert card_context.get("base_url") == "https://proxy.internal/v1"
+    # self-hosted endpoint → proxy bearer auth (auth_token_env), not api_key_env
+    assert card_context.get("auth_token_env") == "LITELLM_PROXY_KEY"
+    assert "api_key_env" not in card_context
 
 
 @pytest.mark.asyncio
-async def test_dispatch_includes_base_url_and_api_key_env_when_set() -> None:
-    """dispatch_performer plumbs role_config.base_url + api_key_env into card_context."""
+async def test_dispatch_includes_orchestration_block_for_multi_model_mode() -> None:
+    """080: a non-single mode plumbs the orchestration block into card_context."""
+    from coordinare.config import PerformerRoleConfig, PerformersConfig, ProjectConfiguration
+
+    config = ProjectConfiguration(**{
+        "project_name": "test", "github_org": "org", "github_project_number": 1,
+        "github_token": "tok", "human_reviewers": ["alice"],
+        "endpoints": [
+            {"name": "spark", "kind": "litellm", "base_url": "http://spark:4000",
+             "auth_env": "LITELLM_PROXY_AUTH_TOKEN"},
+        ],
+        "model_endpoints": [
+            {"name": "gptoss", "endpoint": "spark", "model": "spark/gpt-oss:120b"},
+            {"name": "qwen", "endpoint": "spark", "model": "spark/qwen3.6:35b"},
+        ],
+        "modes": [
+            {"name": "always-x", "strategy": "always", "thinking": "gptoss", "tool": "qwen"},
+        ],
+        "performers": PerformersConfig(
+            implementer=PerformerRoleConfig(backend="codex", mode="always-x"),
+        ),
+    })
+
+    svc = _Service()
+    state = initial_state()
+    state["performer_services"] = {"implementing": svc}
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing"]
+    state["current_card"] = {"id": "ITEM_1", "title": "Test", "status": "TODO"}
+    state["github_service"] = _GitHub()
+    state["config"] = config
+
+    await dispatch_performer(state)
+
+    orch = svc.dispatched[0].get("orchestration")
+    assert orch is not None
+    assert orch["strategy"] == "always"
+    assert orch["thinking"]["model"] == "spark/gpt-oss:120b"
+    assert orch["tool"]["model"] == "spark/qwen3.6:35b"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_single_mode_has_no_orchestration_block() -> None:
+    """080: single-strategy modes carry NO orchestration block (no proxy)."""
+    from coordinare.config import PerformerRoleConfig, PerformersConfig, ProjectConfiguration
+
+    config = ProjectConfiguration(**{
+        "project_name": "test", "github_org": "org", "github_project_number": 1,
+        "github_token": "tok", "human_reviewers": ["alice"],
+        "endpoints": [{"name": "anthropic-cloud", "kind": "anthropic", "auth_env": "ANTHROPIC_API_KEY"}],
+        "model_endpoints": [{"name": "sonnet", "endpoint": "anthropic-cloud", "model": "claude-sonnet-4-5"}],
+        "modes": [{"name": "single-sonnet", "strategy": "single", "tool": "sonnet"}],
+        "performers": PerformersConfig(
+            implementer=PerformerRoleConfig(backend="claude_code", mode="single-sonnet"),
+        ),
+    })
+
+    svc = _Service()
+    state = initial_state()
+    state["performer_services"] = {"implementing": svc}
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing"]
+    state["current_card"] = {"id": "ITEM_1", "title": "Test", "status": "TODO"}
+    state["github_service"] = _GitHub()
+    state["config"] = config
+
+    await dispatch_performer(state)
+
+    assert "orchestration" not in svc.dispatched[0]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_native_mode_sets_api_key_env_and_no_base_url() -> None:
+    """080: a native (frontier) mode yields model + api_key_env and NO base_url override."""
     from coordinare.config import PerformerRoleConfig, PerformersConfig, ProjectConfiguration
 
     config = ProjectConfiguration(**{
@@ -1229,12 +1315,17 @@ async def test_dispatch_includes_base_url_and_api_key_env_when_set() -> None:
         "github_project_number": 1,
         "github_token": "tok",
         "human_reviewers": ["alice"],
+        "endpoints": [
+            {"name": "anthropic-cloud", "kind": "anthropic", "auth_env": "ANTHROPIC_API_KEY"},
+        ],
+        "model_endpoints": [
+            {"name": "sonnet-native", "endpoint": "anthropic-cloud", "model": "claude-sonnet-4-5"},
+        ],
+        "modes": [
+            {"name": "native-sonnet", "strategy": "single", "tool": "sonnet-native"},
+        ],
         "performers": PerformersConfig(
-            implementer=PerformerRoleConfig(
-                backend="claude_code",
-                base_url="https://proxy.internal/v1",
-                api_key_env="LITELLM_PROXY_KEY",
-            ),
+            implementer=PerformerRoleConfig(backend="claude_code", mode="native-sonnet"),
         ),
     })
 
@@ -1252,8 +1343,10 @@ async def test_dispatch_includes_base_url_and_api_key_env_when_set() -> None:
     await dispatch_performer(state)
 
     card_context = svc.dispatched[0]
-    assert card_context.get("base_url") == "https://proxy.internal/v1"
-    assert card_context.get("api_key_env") == "LITELLM_PROXY_KEY"
+    assert card_context.get("model") == "claude-sonnet-4-5"
+    assert card_context.get("api_key_env") == "ANTHROPIC_API_KEY"
+    assert "base_url" not in card_context
+    assert "auth_token_env" not in card_context
 
 
 @pytest.mark.asyncio

@@ -53,6 +53,18 @@ Always `set -a && source .env && set +a` before launching the coordinare daemon 
 
 <!-- MANUAL ADDITIONS START -->
 
+## Model selection (080 — dual-model orchestration)
+
+Model selection is unified behind three root-level config catalogs, referenced by name:
+
+- **`endpoints`** — where models are served. `kind` splits **native** vendor clouds (`openai`/`anthropic`: harness uses its own client, no `base_url`, no proxy) from **self-hosted** (`litellm`/`ollama`/`vllm`: requires `base_url`, proxy-eligible).
+- **`model_endpoints`** — named `{model @ endpoint}` pairs (the unit of model selection).
+- **`modes`** — named orchestration behaviors: `strategy` ∈ `single | always | conditional | think_once`, plus `tool`/`thinking`/`classifier` model_endpoint refs and params.
+
+Each performer is `{ backend: <harness>, mode: <mode-name> }`. **Inline `performers.<role>.model` is removed (hard cut)** — its presence is a load-time error. Resolution chain: `performer.mode → modes → model_endpoints → endpoints`, validated at load (`ProjectConfiguration._validate_orchestration_catalogs`). Coordinare resolves the dispatch model via `resolve_performer_dispatch_model(role)` and, for non-`single` modes, the full block via `resolve_performer_orchestration(role)` (rides `card_context['orchestration']` → `metadata`).
+
+**Dual-model proxy** (`agent/performer/src/performer/proxy/`): for non-`single` modes the performer launches an in-container aiohttp reverse proxy (`DualModelProxy`, generalizing the 073 `ClaudeCodeShim` seam) and points the backend's provider base-URL env at it (`proxy/launch.py`). The proxy normalizes the CLI request to a canonical `LLMRequest`, runs the strategy (planner `think` with tools hidden → executor `act` with the plan injected as a system message), and assembles one wire-correct response. **Constraint: `hermes` has no provider-base-URL override → `strategy: single` only.** SSE streaming + the live Spark validation round are the remaining 080 follow-ups.
+
 ## Recent Changes
 
 - **075-implementer-ci-gate**: `_evaluate_ci_gate` in `src/coordinare/graph/nodes/monitor_performer.py` runs at the implementer→reviewer hand-off, emitting `pass | hold | bounce | escalate` per the spec. Required-checks resolver in `src/coordinare/services/required_checks_resolver.py` falls back through `persona_check_map` → `branch_protection` → `all_head_checks`. PR rollup comments in `notify.py` are deduped per `(head_sha, verdict, required, failed-names)` signature.

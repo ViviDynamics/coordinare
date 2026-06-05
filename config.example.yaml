@@ -289,16 +289,38 @@ human_reviewers:                    # Required. GitHub logins who can approve PR
 # max_tokens:         cap output tokens; 0 = unlimited (overrides any inherited default)
 # max_concurrency:    how many parallel instances of this role; default 1
 
+# --- 080: model catalogs ---------------------------------------------------
+# Declare WHERE models are served (endpoints), WHICH model lives where
+# (model_endpoints), and HOW a role runs (modes), then point each performer at
+# a mode by name. `kind` splits native vendor clouds (openai/anthropic — the
+# harness uses its own client, no base_url, no proxy) from self-hosted
+# (litellm/ollama/vllm — needs base_url, proxy-eligible). `strategy: single` is
+# one model, no orchestration (today's behavior).
+endpoints:
+  - name: openai                    # native vendor cloud
+    kind: openai
+    auth_env: OPENAI_API_KEY
+
+model_endpoints:
+  - {name: gpt54,      endpoint: openai, model: gpt-5.4}
+  - {name: gpt54-mini, endpoint: openai, model: gpt-5.4-mini}
+  - {name: gpt55,      endpoint: openai, model: gpt-5.5}
+
+modes:
+  - {name: single-gpt54,      strategy: single, tool: gpt54}
+  - {name: single-gpt54-mini, strategy: single, tool: gpt54-mini}
+  - {name: single-gpt55,      strategy: single, tool: gpt55}
+
 performers:
   default:
     backend: codex                  # inherited by all roles below unless overridden
-    model: gpt-5.4                  # specific model within the backend (optional)
+    mode: single-gpt54              # 080: model selection via a mode reference
     effort: medium                  # "low" | "medium" | "high"
     temperature: 0.2                # 0.0–1.0
     max_tokens: 8192                # per-role output token cap; 0 = unlimited
 
   assessor:
-    model: gpt-5.4-mini
+    mode: single-gpt54-mini
     effort: low
     temperature: 0.0
     max_tokens: 2048
@@ -316,7 +338,7 @@ performers:
     temperature: 0.0
 
   security:
-    model: gpt-5.5                  # upgrade model for security analysis if desired
+    mode: single-gpt55              # upgrade model for security analysis if desired
     effort: high
     temperature: 0.0
 
@@ -330,21 +352,26 @@ performers:
     max_tokens: 4096
 
   closer:
-    model: gpt-5.4-mini
+    mode: single-gpt54-mini
     effort: low
     temperature: 0.0
     max_tokens: 2048
 
 # --- Self-hosted backend example (opencode_compat) ---
-# Drop-in alternative for any role above. Points at an OpenAI-compatible
-# /v1/chat/completions endpoint (LM Studio, vLLM, Ollama, LiteLLM). See
-# specs/067-compatibility-first-backend/quickstart.md for the operator walk-through.
+# Drop-in alternative for any role above. Add a self-hosted endpoint + model
+# + mode to the catalogs, then point the role at it. The endpoint is an
+# OpenAI-compatible /v1/chat/completions server (LM Studio, vLLM, Ollama, LiteLLM).
 #
+# endpoints:
+#   - {name: lmstudio, kind: vllm, base_url: http://localhost:1234/v1}
+# model_endpoints:
+#   - {name: qwen-coder, endpoint: lmstudio, model: qwen3-coder-30b}
+# modes:
+#   - {name: single-qwen-coder, strategy: single, tool: qwen-coder}
 # performers:
 #   implementer:
 #     backend: opencode_compat
-#     base_url: http://localhost:1234/v1        # LM Studio default; OpenAI works too
-#     model: qwen3-coder-30b                    # endpoint must serve this model id
+#     mode: single-qwen-coder
 #     temperature: 0.2
 #     max_tokens: 8192
 #     # Optional safety net for prompts that still emit `developer` role messages.

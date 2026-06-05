@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -129,6 +129,7 @@ class Score(BaseModel):
     issue_url: str = ""  # GitHub issue URL for PR body reference
     latest_main_sha: str = ""  # 054: used by QA to verify branch freshness
     env_cache_path: str = ""  # 060: container path of mounted env-cache; sourced via activate.sh
+    orchestration: dict | None = None  # 080: dual-model proxy block (None = single, no proxy)
 
     model_config = {"extra": "ignore"}  # silently drop unknown fields from coordinare
 
@@ -245,6 +246,9 @@ class Performance:
     stand: Stand
     score: Score
     backend: "BackendAdapter"
+    # 080: in-container dual-model proxy for this job (None for single-mode); held
+    # so it shares the backend's lifecycle and is stopped at session teardown.
+    orchestration_proxy: Any = None
     state: PerformanceState = "accepted"
     role: str = "implementing"  # 020: performer role (e.g. "implementing", "architecting")
     pr_url: str | None = None
