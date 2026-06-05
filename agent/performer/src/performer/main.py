@@ -1048,6 +1048,16 @@ def handle_health(settings: Settings) -> PerformerResponse:
     return PerformerResponse(status="healthy")
 
 
+async def _stop_orchestration_proxy(perf: Performance) -> None:
+    """080: best-effort teardown of the per-job dual-model proxy (if any)."""
+    proxy = getattr(perf, "orchestration_proxy", None)
+    if proxy is not None:
+        try:
+            await proxy.stop()
+        except Exception:  # pragma: no cover — best-effort; container is ephemeral
+            pass
+
+
 async def handle_dispatch(
     msg: PerformerMessage,
     settings: Settings,
@@ -1089,6 +1099,18 @@ async def handle_dispatch(
                 log.warning("dispatch.invalid_github_api_url", reason="invalid_scheme_or_host", host=safe_host)
 
     stand: Stand = await clone_repository(score)
+    # 080: for a non-single mode, launch the in-container dual-model proxy and
+    # point this backend's provider base URL at it BEFORE the CLI starts. No-op
+    # (returns None) when the dispatch carries no orchestration block.
+    orchestration_proxy = None
+    try:
+        from performer.proxy.launch import maybe_launch_proxy
+
+        orchestration_proxy = await maybe_launch_proxy(score.orchestration, backend_name)
+    except Exception as exc:
+        log.warning("dual_model_proxy.launch_failed", error=str(exc))
+        cleanup_stand(stand)
+        raise
     try:
         backend = get_backend(backend_name)
         await backend.start(
@@ -1099,6 +1121,8 @@ async def handle_dispatch(
             max_tokens=score.max_tokens,
         )
     except BaseException:
+        if orchestration_proxy is not None:
+            await orchestration_proxy.stop()
         cleanup_stand(stand)
         raise
     session_id = str(uuid.uuid4())
@@ -1110,6 +1134,7 @@ async def handle_dispatch(
         stand=stand,
         score=score,
         backend=backend,
+        orchestration_proxy=orchestration_proxy,
         role=role,
         pr_url=pr_url,
         pr_node_id=pr_node_id,
@@ -2794,6 +2819,7 @@ async def run_loop() -> None:
             await perf.backend.stop()
         except Exception:  # pragma: no cover
             pass
+        await _stop_orchestration_proxy(perf)
         cleanup_stand(perf.stand)
 
 
@@ -2913,6 +2939,7 @@ async def _perform_job(payload: "JobInitPayload") -> "JobResult":  # pragma: no 
                 await perf.backend.stop()
             except Exception:
                 pass
+            await _stop_orchestration_proxy(perf)
             cleanup_stand(perf.stand)
 
         if resp is None:

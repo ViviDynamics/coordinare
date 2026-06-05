@@ -695,7 +695,10 @@ class HTTPPerformerService:
         role_api_key_env = card_context.get("api_key_env")
         role_auth_token_env = card_context.get("auth_token_env")
         if backend == "codex":
-            key_env_name = str(role_api_key_env) if role_api_key_env else "OPENAI_API_KEY"
+            # 080: a self-hosted mode resolves to auth_token_env (proxy bearer);
+            # prefer it so the catalog's endpoint key reaches codex, falling back
+            # to api_key_env then the default. Native modes set api_key_env only.
+            key_env_name = str(role_auth_token_env or role_api_key_env or "OPENAI_API_KEY")
             openai_key = os.environ.get(key_env_name, "")
             if openai_key:
                 secrets["OPENAI_API_KEY"] = openai_key
@@ -712,6 +715,14 @@ class HTTPPerformerService:
                 val = os.environ.get(key, "")
                 if val:
                     secrets[key] = val
+            # 080: a self-hosted mode's endpoint key (auth_token_env) — inject its
+            # value under both provider keys so the subprocess's provider config
+            # can authenticate against the proxy regardless of which it selects.
+            if role_auth_token_env:
+                token = os.environ.get(str(role_auth_token_env), "")
+                if token:
+                    secrets["ANTHROPIC_API_KEY"] = token
+                    secrets["OPENAI_API_KEY"] = token
 
         # Stash card_context as metadata so the performer has full access to
         # role/persona/relay_feedback/etc. without us forking the schema here.

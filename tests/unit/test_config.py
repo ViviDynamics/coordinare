@@ -589,20 +589,19 @@ class TestPerformerRoleConfig:
         assert cfg.image == "coordinare-performer:latest"
         assert cfg.timeout_seconds == 3600
 
-    def test_base_url_and_api_key_env(self) -> None:
-        """base_url + api_key_env let an operator route a role through a proxy."""
-        cfg = PerformerRoleConfig(
-            backend="claude-code",
-            base_url="https://proxy.internal/v1",
-            api_key_env="LITELLM_PROXY_KEY",
-        )
-        assert cfg.base_url == "https://proxy.internal/v1"
-        assert cfg.api_key_env == "LITELLM_PROXY_KEY"
+    def test_mode_reference(self) -> None:
+        """080: a role selects models via a `mode` reference (catalogs)."""
+        cfg = PerformerRoleConfig(backend="claude_code", mode="native-claude-sonnet")
+        assert cfg.mode == "native-claude-sonnet"
 
-    def test_base_url_and_api_key_env_default_none(self) -> None:
-        cfg = PerformerRoleConfig()
-        assert cfg.base_url is None
-        assert cfg.api_key_env is None
+    def test_mode_default_none(self) -> None:
+        assert PerformerRoleConfig().mode is None
+
+    @pytest.mark.parametrize("field", ["model", "base_url", "api_key_env", "auth_token_env"])
+    def test_removed_inline_model_fields_rejected(self, field: str) -> None:
+        """080 hard cut (FR-006): inline model/endpoint fields are a loud error."""
+        with pytest.raises(ValidationError, match="removed inline field"):
+            PerformerRoleConfig(backend="claude_code", **{field: "x"})
 
 
 class TestPerformersConfig:

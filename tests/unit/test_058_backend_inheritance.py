@@ -17,7 +17,7 @@ def _base_global_config(backend: str = "codex") -> ProjectConfiguration:
         github_token="token",
         human_reviewers=["alice"],
         performers=PerformersConfig(
-            default=PerformerRoleConfig(backend=backend, model="gpt-5.4"),
+            default=PerformerRoleConfig(backend=backend, effort="high"),
         ),
     )
 
@@ -42,7 +42,7 @@ class TestBackendInheritanceLegacy:
             human_reviewers=["alice"],
             performers=PerformersConfig(
                 default=PerformerRoleConfig(backend="codex"),
-                assessor=PerformerRoleConfig(model="gpt-4-mini"),
+                assessor=PerformerRoleConfig(effort="high"),
             ),
         )
         resolved = cfg.performers.resolved_role("assessor")
@@ -58,7 +58,7 @@ class TestBackendInheritanceLegacy:
             human_reviewers=["alice"],
             performers=PerformersConfig(
                 default=PerformerRoleConfig(backend="codex"),
-                assessor=PerformerRoleConfig(backend="opencode", model="gpt-4-mini"),
+                assessor=PerformerRoleConfig(backend="opencode", effort="high"),
             ),
         )
         resolved = cfg.performers.resolved_role("assessor")
@@ -78,7 +78,7 @@ class TestBackendInheritanceThroughEffectiveConfig:
             human_reviewers=["alice"],
             performers=PerformersConfig(
                 default=PerformerRoleConfig(backend="codex"),
-                assessor=PerformerRoleConfig(model="gpt-4-mini"),
+                assessor=PerformerRoleConfig(effort="high"),
             ),
         )
         effective = _symphony().effective_config(global_cfg)
@@ -98,7 +98,7 @@ class TestBackendInheritanceThroughEffectiveConfig:
             human_reviewers=["alice"],
             performers=PerformersConfig(
                 default=PerformerRoleConfig(backend="codex"),
-                assessor=PerformerRoleConfig(backend="opencode", model="gpt-4-mini"),
+                assessor=PerformerRoleConfig(backend="opencode", effort="high"),
             ),
         )
         effective = _symphony().effective_config(global_cfg)
@@ -108,9 +108,9 @@ class TestBackendInheritanceThroughEffectiveConfig:
 
     def test_all_roles_without_backend_inherit_default(self):
         roles_without_backend = {
-            "architect": PerformerRoleConfig(model="gpt-5.4"),
-            "implementer": PerformerRoleConfig(model="gpt-5.4"),
-            "reviewer": PerformerRoleConfig(model="gpt-5.4"),
+            "architect": PerformerRoleConfig(effort="high"),
+            "implementer": PerformerRoleConfig(effort="high"),
+            "reviewer": PerformerRoleConfig(effort="high"),
         }
         global_cfg = ProjectConfiguration(
             project_name="p",
@@ -142,7 +142,7 @@ class TestBackendInheritanceThroughEffectiveConfig:
             human_reviewers=["alice"],
             performers=PerformersConfig(
                 default=PerformerRoleConfig(backend="codex"),
-                assessor=PerformerRoleConfig(model="gpt-4-mini"),
+                assessor=PerformerRoleConfig(effort="high"),
             ),
         )
         effective = _symphony(overrides={"max_concurrent_cards": 3}).effective_config(global_cfg)
@@ -161,7 +161,7 @@ class TestBackendInheritanceThroughEffectiveConfig:
             human_reviewers=["alice"],
             performers=PerformersConfig(
                 default=PerformerRoleConfig(backend="codex"),
-                assessor=PerformerRoleConfig(model="gpt-4-mini"),
+                assessor=PerformerRoleConfig(effort="high"),
             ),
         )
         # Legacy path

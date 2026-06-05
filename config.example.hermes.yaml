@@ -116,16 +116,26 @@ performer_endpoints:
 # flag surface for these is not yet pinned down in the spec contracts. Set
 # them per-role if/when wiring lands; today they have no effect.
 
+# --- 080: model catalogs (declare once, reference per performer by `mode`) ---
+endpoints:
+  - {name: litellm, kind: litellm, base_url: http://localhost:4000, auth_env: LITELLM_PROXY_AUTH_TOKEN}
+model_endpoints:
+  - {name: qwen3-coder-30b, endpoint: litellm, model: qwen3-coder-30b}
+  - {name: qwen3-coder-7b, endpoint: litellm, model: qwen3-coder-7b}
+modes:
+  - {name: single-qwen3-coder-30b, strategy: single, tool: qwen3-coder-30b}
+  - {name: single-qwen3-coder-7b, strategy: single, tool: qwen3-coder-7b}
+
 performers:
   default:
     backend: hermes
-    model: qwen3-coder-30b           # forwarded as HERMES_MODEL
+    mode: single-qwen3-coder-30b           # forwarded as HERMES_MODEL
 
   assessor:
-    model: qwen3-coder-7b            # cheaper model for triage
+    mode: single-qwen3-coder-7b            # cheaper model for triage
 
   closer:
-    model: qwen3-coder-7b
+    mode: single-qwen3-coder-7b
 
 
 # --- Card Selection (optional) ---

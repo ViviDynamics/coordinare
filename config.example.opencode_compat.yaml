@@ -72,11 +72,20 @@ performer_endpoints:
 # `base_url` and `model` are required for opencode_compat. The endpoint must
 # already be serving the named model.
 
+# --- 080: model catalogs (declare once, reference per performer by `mode`) ---
+endpoints:
+  - {name: local-vllm, kind: vllm, base_url: http://localhost:1234/v1}
+model_endpoints:
+  - {name: qwen3-coder-30b, endpoint: local-vllm, model: qwen3-coder-30b}
+  - {name: qwen3-coder-7b, endpoint: local-vllm, model: qwen3-coder-7b}
+modes:
+  - {name: single-qwen3-coder-30b, strategy: single, tool: qwen3-coder-30b}
+  - {name: single-qwen3-coder-7b, strategy: single, tool: qwen3-coder-7b}
+
 performers:
   default:
     backend: opencode_compat
-    base_url: http://localhost:1234/v1     # LM Studio default; adjust per endpoint
-    model: qwen3-coder-30b                 # endpoint must serve this model id
+    mode: single-qwen3-coder-30b                 # endpoint must serve this model id
     temperature: 0.2
     max_tokens: 8192
     # Default true; remaps `developer` role messages to `user` for endpoints that
@@ -85,7 +94,7 @@ performers:
     compat_remap_developer_role: true
 
   assessor:
-    model: qwen3-coder-7b
+    mode: single-qwen3-coder-7b
     temperature: 0.0
     max_tokens: 2048
 
@@ -103,6 +112,6 @@ performers:
     temperature: 0.0
 
   closer:
-    model: qwen3-coder-7b
+    mode: single-qwen3-coder-7b
     temperature: 0.0
     max_tokens: 2048
