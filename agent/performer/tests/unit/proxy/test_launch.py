@@ -14,6 +14,7 @@ from performer.proxy.launch import (
     ProxyLaunchError,
     maybe_launch_proxy,
 )
+from performer.proxy.routing import RoutingEntry, RoutingTable, TargetDescriptor
 
 _ORCH = {
     "strategy": "always",
@@ -28,6 +29,123 @@ async def test_no_orchestration_is_noop():
     env: dict[str, str] = {}
     assert await maybe_launch_proxy(None, "codex", env) is None
     assert env == {}
+
+
+# --- 078: routing-table no-op (SC-003) -------------------------------------- #
+
+
+def _reroute_table(backend="openclaw", model="gpt-oss:120b", base_url="http://ollama:11434"):
+    return RoutingTable(
+        entries=[
+            RoutingEntry(
+                backend=backend,
+                model=model,
+                target=TargetDescriptor(
+                    base_url=base_url, wire_format="openai", strategy="reroute"
+                ),
+            )
+        ]
+    )
+
+
+@pytest.mark.asyncio
+async def test_no_routing_table_and_no_orchestration_is_noop():
+    """Neither a routing table nor orchestration → byte-for-byte no-op."""
+    env: dict[str, str] = {}
+    assert await maybe_launch_proxy(None, "codex", env) is None
+    assert env == {}
+
+
+@pytest.mark.asyncio
+async def test_routing_miss_is_noop():
+    """A routing table that does not resolve (backend, model) is a no-op (SC-003):
+    nothing launched, no provider-env override set."""
+    env: dict[str, str] = {}
+    table = _reroute_table()
+    # different backend → miss
+    assert await maybe_launch_proxy(None, "codex", env, routing_table=table, model="gpt-oss:120b") is None
+    assert env == {}
+    # different model → miss
+    assert await maybe_launch_proxy(None, "openclaw", env, routing_table=table, model="other") is None
+    assert env == {}
+
+
+@pytest.mark.asyncio
+async def test_routing_without_model_is_noop():
+    """A routing table but no model to resolve against cannot match → no-op."""
+    env: dict[str, str] = {}
+    table = _reroute_table()
+    assert await maybe_launch_proxy(None, "openclaw", env, routing_table=table) is None
+    assert env == {}
+
+
+@pytest.mark.asyncio
+async def test_routing_hit_reroute_sets_provider_env_directly():
+    """A reroute hit repoints the provider env straight at the clean upstream and
+    launches no shim runner (its env restore lifecycle is still uniform)."""
+    env: dict[str, str] = {}
+    table = _reroute_table(base_url="http://ollama:11434")
+    shim = await maybe_launch_proxy(None, "openclaw", env, routing_table=table, model="gpt-oss:120b")
+    try:
+        assert shim is not None
+        assert env["OPENCLAW_PROVIDER_BASE_URL"] == "http://ollama:11434"
+    finally:
+        await shim.stop()
+    # stop() restores env → no cross-job leak
+    assert "OPENCLAW_PROVIDER_BASE_URL" not in env
+
+
+@pytest.mark.asyncio
+async def test_reroute_launches_no_shim_and_no_normalizer(monkeypatch):
+    """T019/SC-004/FR-078-4: a reroute hit repoints the correct
+    PROVIDER_BASE_URL_ENV var at the clean upstream, launches NO shim runner,
+    applies NO normalizer, and restores the env after the job."""
+    monkeypatch.setenv("OPENCLAW_PROVIDER_BASE_URL", "http://litellm:4000")
+    env = {"OPENCLAW_PROVIDER_BASE_URL": "http://litellm:4000"}
+    table = _reroute_table(base_url="http://ollama:11434")
+    shim = await maybe_launch_proxy(
+        None, "openclaw", env, routing_table=table, model="gpt-oss:120b"
+    )
+    try:
+        assert shim is not None
+        # correct provider env var repointed straight at the clean upstream
+        assert env["OPENCLAW_PROVIDER_BASE_URL"] == "http://ollama:11434"
+        # no loopback shim runner started — reroute skips the middleware entirely
+        assert shim._runner is None
+        # no normalizer applied: reroute is a direct repoint, not a translation
+        assert shim.normalizers == []
+        # a body flows through byte-for-byte even though a normalizer registry exists
+        body = {"choices": [{"message": {"content": "untouched"}}]}
+        assert shim.normalize_json(body) == body
+    finally:
+        await shim.stop()
+    # env restored to its prior value after the job → no cross-job leak
+    assert env["OPENCLAW_PROVIDER_BASE_URL"] == "http://litellm:4000"
+
+
+@pytest.mark.asyncio
+async def test_routing_entry_for_unmappable_backend_raises():
+    """T020/FR-078-4 Edge Case: a backend with no PROVIDER_BASE_URL_ENV mapping
+    (hermes) appearing in a ROUTING ENTRY surfaces a clear cannot-route error
+    rather than silently no-opping into a broken path."""
+    table = _reroute_table(backend="hermes", model="some-model")
+    with pytest.raises(ProxyLaunchError, match="no provider-base-URL override"):
+        await maybe_launch_proxy(
+            None, "hermes", {}, routing_table=table, model="some-model"
+        )
+
+
+@pytest.mark.asyncio
+async def test_routing_takes_precedence_over_orchestration():
+    """An explicit routing entry pins the path regardless of an orchestration block."""
+    env: dict[str, str] = {}
+    table = _reroute_table(base_url="http://ollama:11434")
+    shim = await maybe_launch_proxy(_ORCH, "openclaw", env, routing_table=table, model="gpt-oss:120b")
+    try:
+        # routed straight at the clean upstream, NOT a 127.0.0.1 dual-model proxy
+        assert env["OPENCLAW_PROVIDER_BASE_URL"] == "http://ollama:11434"
+    finally:
+        await shim.stop()
 
 
 @pytest.mark.asyncio

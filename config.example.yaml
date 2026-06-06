@@ -379,6 +379,80 @@ performers:
 #     # See specs/067-compatibility-first-backend/research.md R4.
 #     compat_remap_developer_role: true
 
+# --- 078: self-hosted backend robustness layer (normalize / reroute / health-gate) ---
+# A PERFORMER-scoped layer that sits in the performer's reverse-proxy seam and
+# repairs the known failure shapes of self-hosted upstreams (LiteLLM/Ollama/vLLM):
+# harmony/reasoning leaks instead of structured tool_calls, lossy proxies, wedged
+# or unreachable runners. It activates ONLY when a `(backend, model)` pair resolves
+# to a routing-table entry; for every other pair it is a byte-for-byte no-op
+# (native vendor-cloud path is never touched).
+#
+# Two pieces wire it up:
+#
+#   1. A routing-table YAML file (schema below), authored separately and made
+#      available inside the performer container (baked into the image or mounted
+#      via this endpoint's `volumes:`).
+#   2. The env var SELFHOSTED_ROUTING_CONFIG, pointing at that file's in-container
+#      path. Empty / unset (the default) = no entries = layer disabled everywhere.
+#      A non-empty path that is missing or malformed FAILS FAST at job start rather
+#      than black-holing a card mid-lifecycle.
+#
+# Forward the env var into the performer the same way as any other (see the
+# env-bootstrap performer above): list it under the endpoint's `env:` dict so
+# ${VAR} expansion injects it — it is NOT inherited from the coordinare environment
+# automatically. Example performer endpoint that mounts a baked routing table and
+# enables the layer:
+#
+# performer_endpoints:
+#   - id: selfhosted-robust
+#     mode: ephemeral
+#     roles: [implementer]
+#     image: coordinare-performer:full
+#     volumes:
+#       - "${SELFHOSTED_ROUTING_CONFIG_HOST}:/etc/coordinare/routing.yaml:ro"
+#     env:
+#       SELFHOSTED_ROUTING_CONFIG: "/etc/coordinare/routing.yaml"
+#
+# Routing-table YAML schema (the file SELFHOSTED_ROUTING_CONFIG points at).
+# Top-level `selfhosted_routing:` is a list of entries keyed by (backend, model);
+# a pair with no matching entry is left untouched (native no-op). Validated by the
+# spec-078 pydantic models at job start. Full contract:
+# specs/078-selfhosted-backend-shim/contracts/routing-table.md
+#
+# selfhosted_routing:
+#   - backend: openclaw
+#     model: gpt-oss:120b
+#     target:
+#       base_url: http://spark:11434/v1     # Ollama-direct clean upstream
+#       wire_format: openai                 # openai | anthropic
+#       strategy: reroute                   # bypass the lossy proxy entirely
+#       reroute_upstream: null              # already the clean path
+#   - backend: codex
+#     model: gpt-oss:120b
+#     target:
+#       base_url: http://litellm:4000/v1
+#       wire_format: openai
+#       strategy: normalize                 # repair the response in-flight
+#       normalizers: [harmony_tool_calls]   # explicit; only these run, in order
+#       reroute_upstream: http://spark:11434/v1   # health-gate auto-reroute on probe failure
+#   - backend: claude_code
+#     model: qwen3-coder
+#     target:
+#       base_url: http://litellm:4000
+#       wire_format: anthropic
+#       strategy: normalize
+#       normalizers: [strip_reasoning]
+#       reroute_upstream: null
+#
+# Validation rules enforced at load (fail fast, not at runtime):
+#   - strategy: reroute   ⇒ normalizers MUST be empty/absent.
+#   - strategy: normalize ⇒ normalizers non-empty; every key MUST exist in the
+#                           performer's NORMALIZER_REGISTRY.
+#   - missing base_url, or wire_format not in {openai, anthropic} → load error.
+#   - reroute_upstream, when set, is the auto-reroute fallback the startup health
+#     probe uses when the primary target is unhealthy (else it fails closed —
+#     the card is not accepted, never black-holed).
+
 # --- Hermes backend example ---
 # Hermes is invoked non-interactively via the `hermes chat` CLI. Each job runs in
 # an isolated profile directory the adapter creates and removes; the operator's

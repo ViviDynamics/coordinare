@@ -71,6 +71,13 @@ performer_endpoints:
 #
 # `base_url` and `model` are required for opencode_compat. The endpoint must
 # already be serving the named model.
+#
+# Self-hosted robustness (spec 078): if this self-hosted endpoint leaks reasoning
+# text instead of structured tool_calls, or wedges/becomes unreachable mid-job,
+# enable the normalize/reroute/health-gate layer by pointing the performer's
+# SELFHOSTED_ROUTING_CONFIG at a routing-table YAML. See the "078: self-hosted
+# backend robustness layer" block in config.example.yaml and
+# specs/078-selfhosted-backend-shim/contracts/routing-table.md.
 
 # --- 080: model catalogs (declare once, reference per performer by `mode`) ---
 endpoints:

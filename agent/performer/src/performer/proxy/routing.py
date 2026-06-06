@@ -1,0 +1,152 @@
+"""Routing-table models for the self-hosted backend robustness layer (spec 078).
+
+The routing table is the *activation* surface for the layer. It maps a
+``(backend, model)`` pair to a :class:`TargetDescriptor` describing how the
+self-hosted upstream should be reached:
+
+* ``strategy == "normalize"`` — forward through the loopback shim and apply the
+  declared, format-keyed normalizers (e.g. ``harmony_tool_calls``).
+* ``strategy == "reroute"`` — repoint the backend's provider env directly at a
+  clean upstream and skip the shim entirely (no normalizer).
+
+A ``(backend, model)`` pair with **no entry** resolves to ``None`` — the layer
+is then a byte-for-byte no-op (native vendor cloud, FR-078-1/4).
+
+Validation is enforced at config-load time (pydantic), so a malformed target
+(e.g. ``reroute`` with normalizers, or an unknown normalizer key) fails fast
+rather than black-holing a card mid-lifecycle.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Literal
+
+import yaml
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+
+from .normalizers import NORMALIZER_REGISTRY
+
+WireFormat = Literal["openai", "anthropic"]
+Strategy = Literal["normalize", "reroute"]
+
+
+def _normalize_backend(backend: str) -> str:
+    """Normalize a backend id (kebab → snake, lowercased).
+
+    Mirrors 080's ``test_kebab_case_backend_normalized`` so a routing entry
+    written ``claude-code`` resolves a dispatch for ``claude_code``.
+    """
+    return backend.replace("-", "_").lower()
+
+
+class TargetDescriptor(BaseModel):
+    """A resolved self-hosted upstream a ``(backend, model)`` pair is routed at."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    base_url: str = Field(..., min_length=1)
+    wire_format: WireFormat
+    strategy: Strategy
+    normalizers: list[str] = Field(default_factory=list)
+    reroute_upstream: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_strategy(self) -> TargetDescriptor:
+        if self.strategy == "reroute":
+            if self.normalizers:
+                raise ValueError(
+                    "reroute strategy must declare no normalizers "
+                    f"(got {self.normalizers!r}); reroute is not a shim"
+                )
+            return self
+
+        # strategy == "normalize"
+        if not self.normalizers:
+            raise ValueError(
+                "normalize strategy requires at least one normalizer key"
+            )
+        unknown = [k for k in self.normalizers if k not in NORMALIZER_REGISTRY]
+        if unknown:
+            known = sorted(NORMALIZER_REGISTRY)
+            raise ValueError(
+                f"unknown normalizer key(s) {unknown!r}; "
+                f"registered normalizers are {known!r}"
+            )
+        return self
+
+
+class RoutingEntry(BaseModel):
+    """One row of the routing table: a ``(backend, model)`` → target mapping."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    backend: str = Field(..., min_length=1)
+    model: str = Field(..., min_length=1)
+    target: TargetDescriptor
+
+    @model_validator(mode="after")
+    def _normalize_backend_id(self) -> RoutingEntry:
+        object.__setattr__(self, "backend", _normalize_backend(self.backend))
+        return self
+
+
+class RoutingTable(BaseModel):
+    """The config surface mapping ``(backend, model)`` → self-hosted target."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    entries: list[RoutingEntry] = Field(default_factory=list)
+
+    @classmethod
+    def from_yaml_file(cls, path: str | Path) -> RoutingTable:
+        """Load and validate a routing table from a mounted/baked YAML file.
+
+        The file is the 078 activation surface (see ``SELFHOSTED_ROUTING_CONFIG``):
+        a YAML document whose top level is either a mapping with an ``entries``
+        key or a bare list of entries. Either shape is accepted::
+
+            entries:
+              - backend: openclaw
+                model: gpt-oss-120b
+                target: {base_url: "http://ollama:11434", wire_format: openai,
+                         strategy: reroute}
+
+        Fails fast (``FileNotFoundError`` / ``ValueError``) on a missing path,
+        non-mapping/list root, or a target that violates the strategy rules —
+        a broken table must surface at job start, not black-hole a card
+        mid-lifecycle (FR-078-5).
+        """
+        p = Path(path)
+        text = p.read_text(encoding="utf-8")  # FileNotFoundError propagates
+        try:
+            data = yaml.safe_load(text)
+        except yaml.YAMLError as exc:
+            raise ValueError(f"routing table {p} is not valid YAML: {exc}") from exc
+
+        if data is None:
+            return cls(entries=[])
+        if isinstance(data, list):
+            data = {"entries": data}
+        if not isinstance(data, dict):
+            raise ValueError(
+                f"routing table {p} must be a mapping or a list of entries, "
+                f"got {type(data).__name__}"
+            )
+        try:
+            return cls.model_validate(data)
+        except ValidationError as exc:
+            raise ValueError(f"routing table {p} is invalid: {exc}") from exc
+
+    def resolve(self, backend: str, model: str) -> TargetDescriptor | None:
+        """Return the target for ``(backend, model)`` or ``None`` if unrouted.
+
+        Backend id is normalized (kebab → snake) on both sides so dispatch and
+        config need not agree on punctuation. A missing entry returns ``None``,
+        which the launch seam treats as a byte-for-byte no-op (FR-078-1/4).
+        """
+        wanted_backend = _normalize_backend(backend)
+        for entry in self.entries:
+            if entry.backend == wanted_backend and entry.model == model:
+                return entry.target
+        return None

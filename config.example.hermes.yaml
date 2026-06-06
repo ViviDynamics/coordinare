@@ -115,6 +115,13 @@ performer_endpoints:
 # protocol but are NOT currently forwarded to the `hermes chat` CLI — Hermes'
 # flag surface for these is not yet pinned down in the spec contracts. Set
 # them per-role if/when wiring lands; today they have no effect.
+#
+# Self-hosted robustness (spec 078): when this self-hosted upstream leaks reasoning
+# text instead of structured tool_calls, or a lossy proxy mangles the response,
+# enable the normalize/reroute/health-gate layer by pointing the performer's
+# SELFHOSTED_ROUTING_CONFIG at a routing-table YAML. See the "078: self-hosted
+# backend robustness layer" block in config.example.yaml and
+# specs/078-selfhosted-backend-shim/contracts/routing-table.md.
 
 # --- 080: model catalogs (declare once, reference per performer by `mode`) ---
 endpoints:

@@ -77,6 +77,13 @@ performer_endpoints:
 #
 # Pick `backend: openclaw` per role (or at `default:`). The per-role `model:`
 # is allowlisted + routed as `<OPENCLAW_PROVIDER_NAME>/<model>`.
+#
+# Self-hosted robustness (spec 078): when a self-hosted upstream leaks harmony /
+# reasoning text instead of structured tool_calls, or a lossy proxy mangles the
+# response, enable the normalize/reroute/health-gate layer by pointing the
+# performer's SELFHOSTED_ROUTING_CONFIG at a routing-table YAML. See the
+# "078: self-hosted backend robustness layer" block in config.example.yaml and
+# specs/078-selfhosted-backend-shim/contracts/routing-table.md.
 
 # --- 080: model catalogs (declare once, reference per performer by `mode`) ---
 endpoints:
