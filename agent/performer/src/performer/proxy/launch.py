@@ -1,26 +1,46 @@
-"""080 — launch the DualModelProxy and redirect a backend at it.
+"""080 + 078 — launch a proxy/shim and redirect a backend at it.
 
-Backend-agnostic glue invoked at job start: when the dispatch carries an
-``orchestration`` block (strategy != single), start an in-container
-``DualModelProxy`` and set the backend's provider-base-URL env var to the
-proxy's loopback URL, so the agent CLI's model calls flow through the proxy.
+Backend-agnostic glue invoked at job start. Two activation surfaces share this
+seam:
 
-When there is no orchestration block (single mode), this is a complete no-op —
-the proxy is never started and no env is touched.
+* **080 (orchestration)** — when the dispatch carries an ``orchestration`` block
+  (strategy != single), start an in-container ``DualModelProxy`` and set the
+  backend's provider-base-URL env var to the proxy's loopback URL.
+* **078 (self-hosted robustness layer)** — when a routing table resolves the
+  ``(backend, model)`` pair to a :class:`~performer.proxy.routing.TargetDescriptor`,
+  dispatch on ``target.strategy``:
 
-The proxy speaks both wire formats on its front door (``/v1/messages`` and
-``/v1/chat/completions``), so the same proxy serves any backend; only the env
-var the backend reads differs.
+  - ``normalize`` — launch a loopback :class:`~performer.proxy.shim.SelfHostedShim`
+    (applying the target's declared normalizers) and point the provider env at it.
+  - ``reroute`` — repoint the provider env directly at ``target.base_url`` (a clean
+    upstream) and launch no shim at all.
+
+A ``(backend, model)`` pair with **no routing entry** AND no orchestration block
+is a byte-for-byte no-op: nothing is launched and no env is touched (FR-078-1/4).
+
+Both ``DualModelProxy`` and ``SelfHostedShim`` expose ``stop()`` (which also
+restores any env this seam mutated), so the caller tears either down uniformly.
 """
 
 from __future__ import annotations
 
+import json
 import os
-from typing import Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
 from performer.proxy.dual_model_proxy import DualModelProxy
+from performer.proxy.health import check_health
+from performer.proxy.normalizers import NORMALIZER_REGISTRY
+from performer.proxy.routing import TargetDescriptor, _normalize_backend
+from performer.proxy.shim import SelfHostedShim
+
+if TYPE_CHECKING:
+    import httpx
+
+    from performer.proxy.routing import RoutingTable
 
 log = structlog.get_logger(__name__)
 
@@ -45,19 +65,186 @@ class ProxyLaunchError(RuntimeError):
     """Raised when a backend cannot be routed through the dual-model proxy."""
 
 
+def _emit_health_decision(
+    capture_dir: str | Path | None, backend: str, model: str | None, result
+) -> None:
+    """Append the gating decision to ``capture_dir/health.jsonl`` (FR-078-10).
+
+    Only the decision summary is written — never tokens or request/response
+    bodies. Best-effort: an unwritable capture dir must not block startup.
+    """
+    if capture_dir is None:
+        return
+    record = {
+        "event": "proxy.health",
+        "backend": backend,
+        "model": model,
+        "base_url": result.target.base_url,
+        "wire_format": result.target.wire_format,
+        "strategy": result.target.strategy,
+        "status": result.status,
+        "resolved_action": result.resolved_action,
+        "reason": result.reason,
+    }
+    try:
+        path = Path(capture_dir)
+        path.mkdir(parents=True, exist_ok=True)
+        with (path / "health.jsonl").open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record) + "\n")
+    except OSError as exc:  # pragma: no cover - defensive, never blocks startup
+        log.warning("selfhosted_layer.health_capture_failed", error=repr(exc))
+
+
+def _suppress_double_proxy(
+    backend: str, mapping: dict[str, str], env_restores: list
+) -> None:
+    """claude_code would relaunch its own LiteLLM shim from ``LITELLM_PROXY_BASE_URL``
+    and double-proxy; suppress it (restorably) so it talks to our seam directly.
+    """
+    if backend == "claude_code":
+        env_restores.append(
+            (mapping, "LITELLM_PROXY_BASE_URL", mapping.get("LITELLM_PROXY_BASE_URL"))
+        )
+        mapping.pop("LITELLM_PROXY_BASE_URL", None)
+
+
+async def _launch_for_target(
+    target: "TargetDescriptor",
+    backend_name: str,
+    env: dict[str, str] | None,
+) -> SelfHostedShim:
+    """Dispatch the 078 self-hosted layer for a resolved routing target.
+
+    ``normalize`` launches a loopback shim and points the provider env at it;
+    ``reroute`` repoints the provider env straight at ``target.base_url`` and
+    launches no shim (a shim is not always the answer). Both return a
+    ``SelfHostedShim`` so the caller's ``stop()`` teardown — and env restore —
+    is uniform; the reroute shim simply never starts a runner.
+    """
+    backend = _normalize_backend(backend_name)
+    env_var = PROVIDER_BASE_URL_ENV.get(backend)
+    if env_var is None:
+        raise ProxyLaunchError(
+            f"backend '{backend}' has no provider-base-URL override; it cannot be "
+            f"routed at self-hosted target {target.base_url!r} (FR-078-4) — "
+            "no silent no-op into a broken path"
+        )
+    mapping = os.environ if env is None else env
+
+    if target.strategy == "reroute":
+        # Repoint the provider env directly at the clean upstream; no shim.
+        shim = SelfHostedShim(target=target)
+        shim.env_restores.append((mapping, env_var, mapping.get(env_var)))
+        mapping[env_var] = target.base_url
+        _suppress_double_proxy(backend, mapping, shim.env_restores)
+        log.info(
+            "selfhosted_layer.rerouted",
+            backend=backend, env_var=env_var, base_url=target.base_url,
+        )
+        return shim
+
+    # strategy == "normalize" — launch the loopback shim with declared normalizers.
+    normalizers = [NORMALIZER_REGISTRY[k] for k in target.normalizers]
+    shim = SelfHostedShim(target=target, normalizers=normalizers)
+    base = await shim.start()
+    shim.env_restores.append((mapping, env_var, mapping.get(env_var)))
+    mapping[env_var] = base
+    _suppress_double_proxy(backend, mapping, shim.env_restores)
+    log.info(
+        "selfhosted_layer.normalize_launched",
+        backend=backend, env_var=env_var, normalizers=[n.key for n in normalizers],
+    )
+    return shim
+
+
+async def _gate_target(
+    target: "TargetDescriptor",
+    backend_name: str,
+    model: str | None,
+    *,
+    client: "httpx.AsyncClient | None",
+    timeout: float,
+    capture_dir: str | Path | None,
+) -> "TargetDescriptor":
+    """Smoke-test ``target`` and resolve the FR-078-5 gate before launch.
+
+    * ``healthy`` / ``proceed`` → return ``target`` unchanged.
+    * ``unhealthy`` + ``reroute_upstream`` → auto-reroute: return a clean
+      ``reroute`` target pointed at ``reroute_upstream`` (the Ollama-direct fix).
+    * ``unhealthy`` + none → ``fail_closed``: raise ``ProxyLaunchError`` with the
+      probe's reason so the card is not accepted against a broken path.
+
+    The decision is emitted to ``capture_dir`` (decision summary only, never
+    tokens/bodies, FR-078-10).
+    """
+    result = await check_health(target, client=client, timeout=timeout)
+    _emit_health_decision(capture_dir, backend_name, model, result)
+
+    if result.resolved_action == "proceed":
+        return target
+    if result.resolved_action == "rerouted":
+        # The reroute target is intentionally TERMINAL: it carries no
+        # reroute_upstream of its own, so it is not re-probed or re-gated. The
+        # auto-reroute is a single hop to a known-clean upstream (the
+        # Ollama-direct fix); if that upstream is itself down the forwarded
+        # request fails at request time rather than chaining a second fallback.
+        return TargetDescriptor(
+            base_url=target.reroute_upstream,
+            wire_format=target.wire_format,
+            strategy="reroute",
+        )
+    # fail_closed
+    raise ProxyLaunchError(
+        f"self-hosted path for backend '{backend_name}' model '{model}' failed its "
+        f"startup health probe and has no reroute_upstream: {result.reason} "
+        "(FR-078-5) — card not accepted rather than black-holed"
+    )
+
+
 async def maybe_launch_proxy(
     orchestration: dict[str, Any] | None,
     backend_name: str,
     env: dict[str, str] | None = None,
-) -> DualModelProxy | None:
-    """Start the proxy and redirect ``backend_name`` at it, if orchestration set.
+    *,
+    routing_table: "RoutingTable | None" = None,
+    model: str | None = None,
+    health_check: bool = False,
+    health_client: "httpx.AsyncClient | None" = None,
+    health_timeout: float = 10.0,
+    capture_dir: str | Path | None = None,
+) -> DualModelProxy | SelfHostedShim | None:
+    """Start a proxy/shim and redirect ``backend_name`` at it, if activated.
+
+    Resolution order:
+
+    1. **078 routing** — if ``routing_table`` resolves ``(backend_name, model)``
+       to a target, dispatch on its strategy and return a ``SelfHostedShim``.
+    2. **080 orchestration** — else if ``orchestration`` is set, start the
+       ``DualModelProxy``.
+    3. **No-op** — else return ``None`` (byte-for-byte; no launch, no env touch).
 
     ``env`` is the mutable environment mapping to update (defaults to
-    ``os.environ``). Returns the started ``DualModelProxy`` (caller must
-    ``stop()`` it on job teardown) or ``None`` when there is nothing to do.
+    ``os.environ``). The returned object (if any) exposes ``stop()``, which the
+    caller MUST invoke on job teardown to restore env.
     """
+    # 078 takes precedence: an explicit routing entry pins how this backend
+    # reaches its self-hosted upstream regardless of orchestration mode.
+    if routing_table is not None and model is not None:
+        target = routing_table.resolve(backend_name, model)
+        if target is not None:
+            if health_check:
+                target = await _gate_target(
+                    target,
+                    backend_name,
+                    model,
+                    client=health_client,
+                    timeout=health_timeout,
+                    capture_dir=capture_dir,
+                )
+            return await _launch_for_target(target, backend_name, env)
+
     if not orchestration:
-        return None  # single mode / no orchestration → no proxy
+        return None  # no routing entry + single mode / no orchestration → no-op
     backend = backend_name.replace("-", "_").lower()
     if backend in UNSUPPORTED_BACKENDS:
         raise ProxyLaunchError(

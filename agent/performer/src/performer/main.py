@@ -1105,8 +1105,25 @@ async def handle_dispatch(
     orchestration_proxy = None
     try:
         from performer.proxy.launch import maybe_launch_proxy
+        from performer.proxy.routing import RoutingTable
 
-        orchestration_proxy = await maybe_launch_proxy(score.orchestration, backend_name)
+        # 078: load the self-hosted routing table from its mounted/baked YAML
+        # path (SELFHOSTED_ROUTING_CONFIG). When the path is empty (the default)
+        # no table is loaded, so the layer stays a byte-for-byte no-op for every
+        # backend. A non-empty-but-broken table fails fast here at job start.
+        routing_table = None
+        routing_config_path = (settings.SELFHOSTED_ROUTING_CONFIG or "").strip()
+        if routing_config_path:
+            routing_table = RoutingTable.from_yaml_file(routing_config_path)
+
+        orchestration_proxy = await maybe_launch_proxy(
+            score.orchestration,
+            backend_name,
+            routing_table=routing_table,
+            model=model_name,
+            health_check=routing_table is not None,
+            capture_dir=(settings.LITELLM_PROXY_CAPTURE_DIR or "").strip() or None,
+        )
     except Exception as exc:
         log.warning("dual_model_proxy.launch_failed", error=str(exc))
         cleanup_stand(stand)

@@ -88,6 +88,16 @@ class Settings(BaseSettings):
     # invocations don't trip it.
     CLAUDE_CODE_IDLE_TIMEOUT: int = 180
 
+    # 078 — Self-hosted backend robustness layer activation surface. Path to a
+    # mounted/baked YAML routing table (see RoutingTable.from_yaml_file) mapping
+    # (backend, model) -> self-hosted target. Loaded once at job start and passed
+    # to maybe_launch_proxy as routing_table=. Empty (the default) means no
+    # routing entries exist, so the layer is a byte-for-byte no-op for every
+    # backend (native vendor cloud path, FR-078-1/4). A non-empty path that is
+    # missing or malformed fails fast at job start rather than black-holing a
+    # card mid-lifecycle.
+    SELFHOSTED_ROUTING_CONFIG: str = ""
+
 
 @functools.lru_cache(maxsize=1)
 def get_settings() -> Settings:
