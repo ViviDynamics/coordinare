@@ -251,3 +251,6 @@ coordinare.state.json*
 .claude/scheduled_tasks.lock
 
 tmp/
+
+# superpowers brainstorm scratch (visual companion sessions)
+.superpowers/

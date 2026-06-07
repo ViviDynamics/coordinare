@@ -822,6 +822,11 @@ td { padding: 4px 8px; border-bottom: 1px solid var(--color-bg-elevated); }
 .perf-log-time { color: var(--color-text-muted); white-space: nowrap; font-size: 11px; padding-top: 2px; }
 .perf-log-text { word-break: break-word; color: var(--color-text-primary); }
 .jump-btn { background: var(--color-bg-elevated); border: 1px solid var(--color-border); color: var(--color-accent-blue); border-radius: 3px; padding: 2px 8px; cursor: pointer; font-size: 11px; font-family: monospace; }
+.cfg-btn { background: var(--color-bg-elevated); border: 1px solid var(--color-border); color: var(--color-accent-blue); border-radius: 4px; padding: 4px 12px; cursor: pointer; font-size: 12px; font-family: monospace; }
+.cfg-btn:hover:not(:disabled) { border-color: var(--color-accent-blue); }
+.cfg-btn:disabled { opacity: .45; cursor: not-allowed; }
+.cfg-btn-danger { color: var(--color-accent-red); }
+.cfg-btn-danger:hover:not(:disabled) { border-color: var(--color-accent-red); }
 .perf-list-row { display: flex; align-items: center; gap: 10px; padding: 10px; background: var(--color-bg-base); border: 1px solid var(--color-bg-elevated); border-radius: 4px; cursor: pointer; transition: border-color .15s; }
 .perf-list-row:hover { border-color: var(--color-accent-blue); }
 .perf-list-chevron { margin-left: auto; color: var(--color-text-muted); font-size: 14px; }
@@ -895,6 +900,7 @@ td { padding: 4px 8px; border-bottom: 1px solid var(--color-bg-elevated); }
     <a href="/history" class="nav-link" onclick="navigate(event,'/history')">History</a>
     <a href="/symphonies" class="nav-link" onclick="navigate(event,'/symphonies')">Symphonies</a>
     <a href="/admin/config" class="nav-link" onclick="navigate(event,'/admin/config')">Global Config</a>
+    <a href="/config" class="nav-link" onclick="navigate(event,'/config')">Config</a>
   </div>
   <span class="nav-spacer"></span>
   <span role="status" aria-live="polite"><span id="nav-sse-dot" class="nav-status-dot" title="SSE connected"></span><span id="project-link" style="font-size:12px;color:var(--color-text-muted)"></span></span>
@@ -1049,6 +1055,13 @@ td { padding: 4px 8px; border-bottom: 1px solid var(--color-bg-elevated); }
   <div class="card">
     <h2>Global Config</h2>
     <div id="admin-config-page-section"><span class="empty-state">Loading...</span></div>
+  </div>
+</div>
+
+<div id="config-page" style="display:none">
+  <div class="card">
+    <h2>Configuration</h2>
+    <div id="config-page-section" aria-live="polite"><span class="empty-state">Loading...</span></div>
   </div>
 </div>
 
@@ -1587,7 +1600,7 @@ var _performersDetailOpen = false;
 
 // 049: Client-side router
 function showPage(pageId) {
-  var pages = ['dashboard-page','performers-page','personas-page','history-page','symphonies-page','admin-config-page'];
+  var pages = ['dashboard-page','performers-page','personas-page','history-page','symphonies-page','admin-config-page','config-page'];
   pages.forEach(function(id) {
     var el = document.getElementById(id);
     if (el) el.style.display = id === pageId ? '' : 'none';
@@ -1607,7 +1620,7 @@ function setActiveNav(path) {
 
 function updateNavActive(path) {
   setActiveNav(path);
-  var titles = {'/':'Dashboard — Coordinare','/performers':'Performers — Coordinare','/personas':'Personas — Coordinare','/history':'History — Coordinare','/symphonies':'Symphonies — Coordinare','/admin/config':'Global Config — Coordinare'};
+  var titles = {'/':'Dashboard — Coordinare','/performers':'Performers — Coordinare','/personas':'Personas — Coordinare','/history':'History — Coordinare','/symphonies':'Symphonies — Coordinare','/admin/config':'Global Config — Coordinare','/config':'Configuration — Coordinare'};
   document.title = titles[path] || (path.startsWith('/symphonies/') ? 'Symphony — Coordinare' : 'Coordinare');
 }
 
@@ -2088,6 +2101,662 @@ async function loadGlobalConfigPage() {
   });
 }
 
+// spec 081-config-ui: full editable config surface (US1 read T018-T019, US2 edit T033).
+// Renders all sections, masking secrets and preserving ${VAR} placeholders as
+// delivered by /api/config/all. Scalar sections (global) and the orchestration
+// catalogs (endpoints / model_endpoints / modes) are editable in-place with
+// per-field validation, hot-reload-vs-restart feedback, optimistic-concurrency
+// (409) reload prompts, and catalog create/edit/delete with delete-protection.
+var CFG_CATALOGS = ['endpoints', 'model_endpoints', 'modes'];
+// --- Reference dropdowns (spec 081 UI affordance) -------------------------
+// Map a reference FIELD LABEL to the catalog whose entry names are valid
+// values, plus whether the field is nullable (offers a "— none —" option).
+// Labels are unique across reference fields (confirmed: setting label == key),
+// so a flat label-keyed map is sufficient.
+var _CFG_REFS = {
+  endpoint:   {catalog: 'endpoints',       nullable: false},
+  tool:       {catalog: 'model_endpoints', nullable: false},
+  thinking:   {catalog: 'model_endpoints', nullable: true},
+  classifier: {catalog: 'model_endpoints', nullable: true},
+  mode:       {catalog: 'modes',           nullable: true}
+};
+// Option lists for each referenceable catalog, rebuilt on every config load
+// from the /api/config/all payload already in hand (no extra fetch).
+var _cfgOptions = {endpoints: [], model_endpoints: [], modes: []};
+var _cfgTab = null;   // active config section id (tab)
+function cfgTabId(secId)   { return 'cfg-tab-' + secId; }
+function cfgPanelId(secId) { return 'cfg-panel-' + secId; }
+var CFG_HINT = 'font-size:11px;color:var(--color-text-muted);margin-top:2px';
+var CFG_INPUT = 'width:100%;box-sizing:border-box;background:var(--color-bg-base);border:1px solid var(--color-border);'
+  + 'border-radius:4px;color:var(--color-text-primary);font-family:var(--font-mono,monospace);font-size:12px;padding:5px 7px';
+var _cfgHash = null;      // optimistic-concurrency baseline (content_hashes.config_yaml)
+var _cfgVersion = null;
+var _cfgRoutingHash = null;     // optimistic-concurrency baseline (routing.yaml, spec-078)
+var _cfgRoutingAvail = false;   // whether a routing table is mounted+present on this host
+var CFG_WIRE = ['openai', 'anthropic'];
+var CFG_STRATEGY = ['normalize', 'reroute'];
+
+function cfgFmtValue(v) {
+  if (v === null || v === undefined) return '<span style="color:var(--color-text-muted)">(unset)</span>';
+  if (Array.isArray(v)) return v.length ? esc(v.join(', ')) : '<span style="color:var(--color-text-muted)">(empty)</span>';
+  if (typeof v === 'boolean') return v ? 'true' : 'false';
+  return esc(String(v));
+}
+
+function cfgBadge(text, color) {
+  return '<span style="display:inline-block;font-size:10px;padding:1px 6px;border-radius:8px;margin-left:6px;'
+    + 'background:var(--color-bg-base);border:1px solid ' + color + ';color:' + color + '">' + esc(text) + '</span>';
+}
+
+function cfgFlash(el, text, kind) {
+  if (!el) return;
+  var c = {green: 'var(--color-accent-green)', red: 'var(--color-accent-red)',
+    orange: 'var(--color-accent-orange,#d29922)', blue: 'var(--color-accent-blue)',
+    muted: 'var(--color-text-muted)'}[kind] || 'var(--color-text-muted)';
+  el.innerHTML = '';
+  el.textContent = text;
+  el.style.color = c;
+}
+
+// Build the {endpoints, model_endpoints, modes} option index from the loaded
+// sections. Each option is {value, hint}; only referenceable catalogs are kept.
+function cfgBuildOptions(sections) {
+  var idx = {endpoints: [], model_endpoints: [], modes: []};
+  (sections || []).forEach(function(sec) {
+    if (idx[sec.id] === undefined) return;
+    idx[sec.id] = (sec.items || []).map(function(it) {
+      return {value: it.id, hint: cfgOptHint(sec.id, it)};
+    });
+  });
+  return idx;
+}
+
+// A short, self-documenting hint for one catalog option, derived only from
+// fields known to exist on the schema (no invented field names): modes show
+// their `tool`, model_endpoints show their `endpoint`.
+function cfgOptHint(catalog, item) {
+  // Key off the stable schema key (last dotted component), falling back to the
+  // user-facing label only when s.key is absent — labels can be humanized
+  // independently of the schema, so a label-keyed map would silently break.
+  var byKey = {};
+  (item.settings || []).forEach(function(s) {
+    var k = s.key ? String(s.key).split('.').pop() : s.label;
+    byKey[k] = s.current_value;
+  });
+  if (catalog === 'modes' && byKey.tool) return 'tool=' + byKey.tool;
+  if (catalog === 'model_endpoints' && byKey.endpoint) return 'endpoint=' + byKey.endpoint;
+  return '';
+}
+
+// Build a <select> for a reference field. Honors nullability with a "— none —"
+// option, and PRESERVES + FLAGS a stored value that is not in the catalog so a
+// save of unrelated fields never silently discards it.
+function cfgRefSelect(s, refSpec, base) {
+  var cur = (s.current_value === null || s.current_value === undefined) ? '' : String(s.current_value);
+  var opts = _cfgOptions[refSpec.catalog] || [];
+  var html = '';
+  if (refSpec.nullable) {
+    html += '<option value=""' + (cur === '' ? ' selected' : '') + '>— none —</option>';
+  }
+  var known = false;
+  opts.forEach(function(o) {
+    if (cur === o.value) known = true;
+    var label = o.hint ? (o.value + ' — ' + o.hint) : o.value;
+    html += '<option value="' + esc(o.value) + '"' + (cur === o.value ? ' selected' : '') + '>'
+      + esc(label) + '</option>';
+  });
+  if (cur !== '' && !known) {
+    html = '<option value="' + esc(cur) + '" selected>' + esc(cur) + '  ⚠ not in catalog</option>' + html;
+  }
+  return '<select ' + base + ' data-ref="' + esc(refSpec.catalog) + '" style="' + CFG_INPUT + '">'
+    + html + '</select>';
+}
+
+// Build one editable control for a setting. data-orig carries the JSON of the
+// loaded value so change detection can skip unchanged fields (a masked, unchanged
+// secret therefore never round-trips — the server treats the mask as a no-op too).
+function cfgInput(s) {
+  var orig = (s.current_value === undefined) ? null : s.current_value;
+  // The payload/error identifier is the bare field name. Source it from the
+  // stable dotted `key` (e.g. "global.poll_interval_seconds" → "poll_interval_seconds"),
+  // not the display `label`, so a future label change can never break saves.
+  var field = s.key ? String(s.key).split('.').pop() : s.label;
+  var base = 'data-field="' + esc(field) + '" data-type="' + esc(s.type) + '"'
+    + ' data-orig="' + esc(JSON.stringify(orig)) + '"';
+  var refSpec = _CFG_REFS[field];
+  if (refSpec) {
+    return cfgRefSelect(s, refSpec, base);
+  }
+  if (s.type === 'bool') {
+    return '<input type="checkbox" ' + base + (s.current_value ? ' checked' : '') + '>';
+  }
+  if (s.type === 'enum' && s.enum) {
+    var opts = s.enum.map(function(o) {
+      return '<option' + (String(s.current_value) === String(o) ? ' selected' : '') + '>' + esc(o) + '</option>';
+    }).join('');
+    return '<select ' + base + ' style="' + CFG_INPUT + '">' + opts + '</select>';
+  }
+  var scalar = (s.current_value === null || s.current_value === undefined) ? '' : String(s.current_value);
+  if (s.type === 'int' || s.type === 'float') {
+    var step = s.type === 'float' ? ' step="any"' : '';
+    return '<input type="number"' + step + ' ' + base + ' value="' + esc(scalar) + '" style="' + CFG_INPUT + '">';
+  }
+  if (s.type === 'list') {
+    var lv = Array.isArray(s.current_value) ? s.current_value.join(', ') : '';
+    return '<input type="text" ' + base + ' value="' + esc(lv) + '" placeholder="comma, separated" style="' + CFG_INPUT + '">';
+  }
+  if (s.type === 'text') {
+    return '<textarea ' + base + ' rows="2" style="' + CFG_INPUT + '">' + esc(scalar) + '</textarea>';
+  }
+  var ph = s.secret ? ' placeholder="leave masked to keep current"' : '';
+  return '<input type="text" ' + base + ph + ' value="' + esc(scalar) + '" style="' + CFG_INPUT + '">';
+}
+
+// Coerce a control's value back to its typed form for the JSON payload.
+function cfgCoerce(el) {
+  var t = el.getAttribute('data-type');
+  if (t === 'bool') return el.checked;
+  var v = el.value;
+  // A nullable reference left at "— none —" serializes as null (field omitted),
+  // matching the prior free-text-empty-means-unset behavior.
+  if (el.getAttribute('data-ref') && v === '') return null;
+  if (t === 'int') return v.trim() === '' ? null : parseInt(v, 10);
+  if (t === 'float') return v.trim() === '' ? null : parseFloat(v);
+  if (t === 'list') return v.split(',').map(function(x) { return x.trim(); }).filter(function(x) { return x.length; });
+  return v;
+}
+
+// Gather only the fields whose value differs from data-orig, scoped to a container.
+function cfgCollectChanges(container) {
+  var changes = {};
+  container.querySelectorAll('[data-field]').forEach(function(el) {
+    var coerced = cfgCoerce(el);
+    if (JSON.stringify(coerced) !== el.getAttribute('data-orig')) {
+      changes[el.getAttribute('data-field')] = coerced;
+    }
+  });
+  return changes;
+}
+
+function cfgClearErrors(container) {
+  container.querySelectorAll('[data-err]').forEach(function(slot) {
+    slot.textContent = '';
+    slot.style.display = 'none';
+  });
+}
+
+function cfgApplyErrors(container, errs) {
+  (errs || []).forEach(function(e) {
+    if (!e.key) return;
+    var f = container.querySelector('[data-field="' + e.key + '"]');
+    var holder = f ? f.closest('[data-fieldrow]') : null;
+    var slot = holder ? holder.querySelector('[data-err]') : null;
+    if (slot) { slot.textContent = e.message; slot.style.display = ''; }
+  });
+}
+
+// Optimistic-concurrency conflict: the file changed under us. Offer a reload so
+// the operator picks up the latest baseline before re-applying their edit.
+function cfgConflict(statusEl) {
+  if (!statusEl) return;
+  statusEl.innerHTML = '<span style="color:var(--color-accent-orange,#d29922)">'
+    + 'Config changed on disk since you loaded it. </span>'
+    + '<button type="button" class="cfg-btn" onclick="loadConfigPage()">Reload latest</button>';
+}
+
+// Map a save response onto field errors + a status badge. Returns true on success.
+// `store` selects which optimistic-concurrency baseline the returned new_hash
+// refreshes: 'routing_yaml' → _cfgRoutingHash, otherwise the config.yaml baseline.
+function cfgHandleSave(status, body, container, statusEl, store) {
+  cfgClearErrors(container);
+  if (status === 200 && body.ok) {
+    if (body.new_hash) {
+      if (store === 'routing_yaml') _cfgRoutingHash = body.new_hash;
+      else _cfgHash = body.new_hash;
+    }
+    if (body.applied === 'hot_reloaded') cfgFlash(statusEl, 'Saved · applied live', 'green');
+    else if (body.applied === 'staged_restart') cfgFlash(statusEl, body.message || 'Saved · restart required to apply', 'orange');
+    else if (body.applied === 'staged_next_job') cfgFlash(statusEl, 'Saved · applies on next job', 'blue');
+    else cfgFlash(statusEl, 'Saved', 'green');
+    setTimeout(loadConfigPage, 1000);
+    return true;
+  }
+  if (status === 409) { cfgConflict(statusEl); return false; }
+  var errs = body.errors || [];
+  cfgApplyErrors(container, errs);
+  var general = errs.filter(function(e) { return !e.key; }).map(function(e) { return e.message; }).join('; ');
+  cfgFlash(statusEl, general || body.message || ('Error ' + status), 'red');
+  return false;
+}
+
+async function cfgPut(url, payload, container, statusEl, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    var r = await fetch(url, {method: payload._method || 'PUT', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload.body)});
+    var body = await r.json();
+    cfgHandleSave(r.status, body, container, statusEl, payload.store);
+  } catch(e) {
+    cfgFlash(statusEl, 'Network error', 'red');
+  }
+  if (btn) btn.disabled = false;
+}
+
+function cfgSaveSection(btn, sectionId) {
+  var container = btn.closest('[data-section]');
+  var statusEl = container.querySelector('[data-status]');
+  var changes = cfgCollectChanges(container);
+  cfgClearErrors(container);
+  if (!Object.keys(changes).length) { cfgFlash(statusEl, 'No changes to save', 'muted'); return; }
+  cfgPut('/api/config/section/' + encodeURIComponent(sectionId),
+    {body: {store: 'config_yaml', section: sectionId, changes: changes, base_hash: _cfgHash}},
+    container, statusEl, btn);
+}
+
+function cfgSaveItem(btn, catalog, itemId) {
+  var container = btn.closest('[data-item]');
+  var statusEl = container.querySelector('[data-status]');
+  var changes = cfgCollectChanges(container);
+  cfgClearErrors(container);
+  if (!Object.keys(changes).length) { cfgFlash(statusEl, 'No changes to save', 'muted'); return; }
+  cfgPut('/api/config/catalog/' + encodeURIComponent(catalog) + '/' + encodeURIComponent(itemId),
+    {body: {changes: changes, base_hash: _cfgHash}}, container, statusEl, btn);
+}
+
+function cfgDeleteItem(btn, catalog, itemId) {
+  var container = btn.closest('[data-item]');
+  var statusEl = container.querySelector('[data-status]');
+  cfgPut('/api/config/catalog/' + encodeURIComponent(catalog) + '/' + encodeURIComponent(itemId),
+    {_method: 'DELETE', body: {base_hash: _cfgHash}}, container, statusEl, btn);
+}
+
+function cfgToggleAdd(catalog) {
+  var form = document.getElementById('cfg-add-' + catalog);
+  if (form) form.style.display = (form.style.display === 'none' || !form.style.display) ? '' : 'none';
+}
+
+function cfgCreateItem(btn, catalog) {
+  var container = btn.closest('[data-item]');
+  var statusEl = container.querySelector('[data-status]');
+  var item = {};
+  container.querySelectorAll('[data-field]').forEach(function(el) {
+    var v = cfgCoerce(el);
+    if (v !== null && v !== '' && !(Array.isArray(v) && !v.length)) item[el.getAttribute('data-field')] = v;
+  });
+  cfgClearErrors(container);
+  if (!item.name) { cfgFlash(statusEl, 'A name is required', 'red'); return; }
+  cfgPut('/api/config/catalog/' + encodeURIComponent(catalog),
+    {_method: 'POST', body: {item: item, base_hash: _cfgHash}}, container, statusEl, btn);
+}
+
+// spec 081-config-ui US3 (T041): routing-table CRUD wired to /api/config/routing
+// (NOT the catalog endpoints). Routing entries carry a nested `target`; edits are
+// staged for the next performer job (no live reload) — surfaced as a blue label.
+function cfgROrig(value, type) {
+  if (type === 'list') return JSON.stringify(Array.isArray(value) ? value : []);
+  return JSON.stringify(value == null ? '' : String(value));
+}
+function cfgRText(rkey, value, type, ph) {
+  var v = (value == null) ? '' : (Array.isArray(value) ? value.join(', ') : String(value));
+  return '<input type="text" data-rkey="' + esc(rkey) + '" data-rtype="' + esc(type) + '"'
+    + ' data-rorig="' + esc(cfgROrig(value, type)) + '" value="' + esc(v) + '"'
+    + (ph ? ' placeholder="' + esc(ph) + '"' : '') + ' style="' + CFG_INPUT + '">';
+}
+function cfgRSelect(rkey, value, opts) {
+  var o = opts.map(function(x) {
+    return '<option' + (String(value) === String(x) ? ' selected' : '') + '>' + esc(x) + '</option>';
+  }).join('');
+  return '<select data-rkey="' + esc(rkey) + '" data-rtype="enum" data-rorig="' + esc(cfgROrig(value, 'enum'))
+    + '" style="' + CFG_INPUT + '">' + o + '</select>';
+}
+function cfgRCoerce(el) {
+  var v = el.value;
+  if (el.getAttribute('data-rtype') === 'list')
+    return v.split(',').map(function(x) { return x.trim(); }).filter(function(x) { return x.length; });
+  return v;
+}
+function cfgRRow(label, control) {
+  return '<div data-fieldrow style="padding:5px 0">'
+    + '<label style="font-size:11px;color:var(--color-text-muted);display:block;margin-bottom:2px">' + esc(label) + '</label>'
+    + control + '</div>';
+}
+function cfgRoutingFields(e) {
+  var t = e.target || {};
+  return cfgRRow('backend', cfgRText('backend', e.backend, 'string'))
+    + cfgRRow('model', cfgRText('model', e.model, 'string'))
+    + cfgRRow('target.base_url', cfgRText('target.base_url', t.base_url, 'string'))
+    + cfgRRow('target.wire_format', cfgRSelect('target.wire_format', t.wire_format || 'openai', CFG_WIRE))
+    + cfgRRow('target.strategy', cfgRSelect('target.strategy', t.strategy || 'normalize', CFG_STRATEGY))
+    + cfgRRow('target.normalizers', cfgRText('target.normalizers', t.normalizers || [], 'list', 'harmony_tool_calls, strip_reasoning'))
+    + cfgRRow('target.reroute_upstream', cfgRText('target.reroute_upstream', t.reroute_upstream, 'string', 'only for reroute strategy'));
+}
+function cfgRoutingEntryBlock(entry, index) {
+  return '<div data-rentry style="background:var(--color-bg-base);border:1px solid var(--color-border);border-radius:6px;padding:10px;margin-bottom:10px">'
+    + '<div style="font-weight:bold;color:var(--color-text-primary);font-size:13px;margin-bottom:4px">'
+    + esc(entry.backend || '') + ' / ' + esc(entry.model || '') + '</div>'
+    + cfgRoutingFields(entry)
+    + '<div style="display:flex;gap:8px;align-items:center;margin-top:8px">'
+    + '<button type="button" class="cfg-btn" onclick="cfgSaveRoutingEntry(this,' + index + ')">Save</button>'
+    + '<button type="button" class="cfg-btn cfg-btn-danger" onclick="cfgDeleteRoutingEntry(this,' + index + ')">Delete</button>'
+    + '<span data-status style="font-size:11px;margin-left:6px"></span></div></div>';
+}
+function cfgRoutingAddBlock() {
+  return '<div id="cfg-add-routing" data-rentry style="display:none;background:var(--color-bg-base);'
+    + 'border:1px dashed var(--color-accent-blue);border-radius:6px;padding:10px;margin-bottom:10px">'
+    + '<div style="font-weight:bold;color:var(--color-accent-blue);font-size:13px;margin-bottom:4px">New routing entry</div>'
+    + cfgRoutingFields({})
+    + '<div style="display:flex;gap:8px;align-items:center;margin-top:8px">'
+    + '<button type="button" class="cfg-btn" onclick="cfgCreateRoutingEntry(this)">Create</button>'
+    + '<span data-status style="font-size:11px;margin-left:6px"></span></div></div>';
+}
+function cfgCollectRoutingChanges(container, all) {
+  var changes = {}, target = {};
+  container.querySelectorAll('[data-rkey]').forEach(function(el) {
+    var v = cfgRCoerce(el);
+    if (!all && JSON.stringify(v) === el.getAttribute('data-rorig')) return;
+    if (all && (v === '' || (Array.isArray(v) && !v.length))) return;
+    var key = el.getAttribute('data-rkey');
+    if (key.indexOf('target.') === 0) target[key.slice(7)] = v;
+    else changes[key] = v;
+  });
+  if (Object.keys(target).length) changes.target = target;
+  return changes;
+}
+function cfgSaveRoutingEntry(btn, index) {
+  var container = btn.closest('[data-rentry]');
+  var statusEl = container.querySelector('[data-status]');
+  var changes = cfgCollectRoutingChanges(container, false);
+  if (!Object.keys(changes).length) { cfgFlash(statusEl, 'No changes to save', 'muted'); return; }
+  cfgPut('/api/config/routing/entry/' + index,
+    {store: 'routing_yaml', body: {changes: changes, base_hash: _cfgRoutingHash}}, container, statusEl, btn);
+}
+function cfgDeleteRoutingEntry(btn, index) {
+  var container = btn.closest('[data-rentry]');
+  var statusEl = container.querySelector('[data-status]');
+  cfgPut('/api/config/routing/entry/' + index,
+    {store: 'routing_yaml', _method: 'DELETE', body: {base_hash: _cfgRoutingHash}}, container, statusEl, btn);
+}
+function cfgCreateRoutingEntry(btn) {
+  var container = btn.closest('[data-rentry]');
+  var statusEl = container.querySelector('[data-status]');
+  var entry = cfgCollectRoutingChanges(container, true);
+  if (!entry.backend || !entry.model) { cfgFlash(statusEl, 'backend and model are required', 'red'); return; }
+  cfgPut('/api/config/routing/entry',
+    {store: 'routing_yaml', _method: 'POST', body: {entry: entry, base_hash: _cfgRoutingHash}}, container, statusEl, btn);
+}
+function cfgRoutingSection(sec, banner) {
+  var body;
+  if (_cfgRoutingAvail) {
+    body = '<div style="font-size:11px;color:var(--color-accent-blue);margin-bottom:8px">'
+      + 'Routing edits apply to the next performer job (not live).</div>'
+      + '<div id="cfg-routing-entries"><span class="empty-state">Loading routing…</span></div>'
+      + cfgRoutingAddBlock()
+      + '<div style="margin-top:6px"><button type="button" class="cfg-btn" onclick="cfgToggleAdd(&quot;routing&quot;)">+ Add routing entry</button></div>';
+  } else {
+    body = '<div class="empty-state">Routing is read-only on this host.</div>';
+  }
+  var desc = sec.description ? '<div style="font-size:12px;color:var(--color-text-muted);margin-bottom:8px">' + esc(sec.description) + '</div>' : '';
+  return '<section data-section="routing" aria-label="' + esc(sec.title)
+    + '" style="background:var(--color-bg-surface);border:1px solid var(--color-border);border-radius:6px;padding:14px;margin-bottom:14px">'
+    + '<h3 style="margin:0 0 8px 0;font-size:14px;color:var(--color-text-primary)">' + esc(sec.title) + '</h3>'
+    + desc + banner + body + '</section>';
+}
+async function loadRoutingEntries() {
+  var host = document.getElementById('cfg-routing-entries');
+  if (!host) return;
+  try {
+    var r = await fetch('/api/config/routing');
+    var d = await r.json();
+    _cfgRoutingHash = d.content_hash || null;
+    var entries = d.entries || [];
+    host.innerHTML = entries.length
+      ? entries.map(function(e, i) { return cfgRoutingEntryBlock(e, i); }).join('')
+      : '<div class="empty-state">No routing entries yet.</div>';
+  } catch(e) {
+    host.innerHTML = '<div class="empty-state">Failed to load routing entries</div>';
+  }
+}
+
+function cfgFieldRow(s) {
+  var meta = [];
+  meta.push(cfgBadge(s.type, 'var(--color-border)'));
+  if (s.secret) meta.push(cfgBadge('secret', 'var(--color-accent-orange,#d29922)'));
+  if (s.is_env_placeholder) meta.push(cfgBadge('env', 'var(--color-accent-blue)'));
+  if (s.restart_required) meta.push(cfgBadge('restart required', 'var(--color-accent-orange,#d29922)'));
+  if (!s.editable) meta.push(cfgBadge('read-only', 'var(--color-text-muted)'));
+  if (s.invalid) meta.push(cfgBadge('invalid on disk', 'var(--color-accent-red)'));
+  var control = s.editable ? cfgInput(s)
+    : '<div style="font-family:var(--font-mono,monospace);font-size:12px;color:'
+      + (s.invalid ? 'var(--color-accent-red)' : 'var(--color-text-primary)') + '">' + cfgFmtValue(s.current_value) + '</div>';
+  var constraint = '';
+  if (s.enum && s.enum.length) constraint = 'one of: ' + esc(s.enum.join(', '));
+  else if (s.range) {
+    // The descriptor layer emits either {min,max} (numbers) or
+    // {min_length,max_length} (strings/collections). Handle both shapes, plus
+    // partial bounds (only-min or only-max), so we never render `undefined`.
+    var r = s.range;
+    var hasLen = (r.min_length !== null && r.min_length !== undefined)
+              || (r.max_length !== null && r.max_length !== undefined);
+    var noun = hasLen ? 'length' : 'range';
+    var lo = hasLen ? r.min_length : r.min;
+    var hi = hasLen ? r.max_length : r.max;
+    var hasLo = (lo !== null && lo !== undefined);
+    var hasHi = (hi !== null && hi !== undefined);
+    // gt/lt are exclusive — render > / < instead of ≥ / ≤ so the displayed range
+    // matches server validation. Length bounds are always inclusive.
+    var loSym = (!hasLen && r.min_exclusive) ? '> ' : '≥ ';
+    var hiSym = (!hasLen && r.max_exclusive) ? '< ' : '≤ ';
+    if (hasLo && hasHi) {
+      if (!hasLen && (r.min_exclusive || r.max_exclusive))
+        constraint = noun + ': ' + loSym + esc(String(lo)) + ' to ' + hiSym + esc(String(hi));
+      else
+        constraint = noun + ': ' + esc(String(lo)) + ' to ' + esc(String(hi));
+    }
+    else if (hasLo) constraint = noun + ': ' + loSym + esc(String(lo));
+    else if (hasHi) constraint = noun + ': ' + hiSym + esc(String(hi));
+  }
+  var help = s.help ? '<div style="' + CFG_HINT + '">' + esc(s.help) + '</div>' : '';
+  var ch = constraint ? '<div style="' + CFG_HINT + '">' + constraint + '</div>' : '';
+  var def = (s.default !== null && s.default !== undefined)
+    ? '<div style="' + CFG_HINT + '">default: ' + cfgFmtValue(s.default) + '</div>' : '';
+  return '<div data-fieldrow style="padding:8px 0;border-bottom:1px solid var(--color-bg-elevated)">'
+    + '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap">'
+    + '<label style="font-size:12px;color:var(--color-text-primary);font-weight:600">' + esc(s.label || s.key) + '</label>'
+    + '<div style="text-align:right">' + meta.join('') + '</div></div>'
+    + '<div style="margin-top:3px">' + control + '</div>'
+    + help + ch + def
+    + '<div data-err style="display:none;font-size:11px;color:var(--color-accent-red);margin-top:3px"></div>'
+    + '</div>';
+}
+
+// Keep the legacy name as an alias so existing callers/tests resolve.
+function cfgSettingRow(s) { return cfgFieldRow(s); }
+
+function cfgItemBlock(item, catalog, editable) {
+  var ref = item.referenced_by && item.referenced_by.length
+    ? cfgBadge('referenced by: ' + item.referenced_by.join(', '), 'var(--color-accent-blue)')
+    : '';
+  // A view-only section (editable=false, e.g. personas/symphonies) has no Save
+  // action, so it must never offer an edit affordance — force every field
+  // read-only, even individually-editable ones, before delegating to cfgFieldRow.
+  // Use a shallow copy so the source setting object is never mutated.
+  var rows = (item.settings || []).map(function(s) {
+    return cfgFieldRow(editable ? s : Object.assign({}, s, {editable: false}));
+  }).join('');
+  var footer = '';
+  if (editable) {
+    var iid = esc(item.id);
+    var cat = esc(catalog);
+    var delTitle = item.deletable ? ''
+      : ' title="Protected: remove the references first — ' + esc((item.referenced_by || []).join(', ')) + '"';
+    var delBtn = '<button type="button" class="cfg-btn cfg-btn-danger"' + (item.deletable ? '' : ' disabled')
+      + delTitle + ' onclick="cfgDeleteItem(this, &quot;' + cat + '&quot;, &quot;' + iid + '&quot;)">Delete</button>';
+    footer = '<div style="display:flex;gap:8px;align-items:center;margin-top:8px">'
+      + '<button type="button" class="cfg-btn" onclick="cfgSaveItem(this, &quot;' + cat + '&quot;, &quot;' + iid + '&quot;)">Save</button>'
+      + delBtn
+      + '<span data-status style="font-size:11px;margin-left:6px"></span></div>';
+  } else if (!item.deletable) {
+    footer = cfgBadge('protected', 'var(--color-text-muted)');
+  }
+  return '<div data-item style="background:var(--color-bg-base);border:1px solid var(--color-border);border-radius:6px;padding:10px;margin-bottom:10px">'
+    + '<div style="font-weight:bold;color:var(--color-text-primary);font-size:13px;margin-bottom:4px">' + esc(item.id) + ref + '</div>'
+    + (rows || '<div class="empty-state">No editable fields.</div>')
+    + footer
+    + '</div>';
+}
+
+// A blank create form for a catalog, seeded from the field shape of an existing
+// item (or an empty name field when the catalog has no entries yet).
+function cfgAddBlock(sec) {
+  var template = (sec.items && sec.items.length) ? sec.items[0].settings || [] : [];
+  var blanks = template.map(function(s) {
+    var b = {key: s.key, label: s.label, help: s.help, type: s.type, enum: s.enum, range: s.range,
+      secret: s.secret, editable: true, current_value: null};
+    return cfgFieldRow(b);
+  }).join('');
+  if (!blanks) {
+    blanks = cfgFieldRow({key: 'name', label: 'name', type: 'string', editable: true, current_value: null});
+  }
+  return '<div id="cfg-add-' + esc(sec.id) + '" data-item style="display:none;background:var(--color-bg-base);'
+    + 'border:1px dashed var(--color-accent-blue);border-radius:6px;padding:10px;margin-bottom:10px">'
+    + '<div style="font-weight:bold;color:var(--color-accent-blue);font-size:13px;margin-bottom:4px">New ' + esc(sec.id) + ' entry</div>'
+    + blanks
+    + '<div style="display:flex;gap:8px;align-items:center;margin-top:8px">'
+    + '<button type="button" class="cfg-btn" onclick="cfgCreateItem(this, &quot;' + esc(sec.id) + '&quot;)">Create</button>'
+    + '<span data-status style="font-size:11px;margin-left:6px"></span></div>'
+    + '</div>';
+}
+
+function cfgSectionBlock(sec) {
+  var editable = (sec.kind === 'scalar_group') || (sec.kind === 'collection' && CFG_CATALOGS.indexOf(sec.id) !== -1);
+  var banner = sec.invalid_banner
+    ? '<div role="status" style="background:var(--color-bg-base);border:1px solid var(--color-accent-orange,#d29922);'
+      + 'border-radius:4px;padding:8px 10px;margin-bottom:10px;font-size:12px;color:var(--color-accent-orange,#d29922)">'
+      + esc(sec.invalid_banner) + '</div>'
+    : '';
+  if (sec.id === 'routing') return cfgRoutingSection(sec, banner);
+  var body, footer = '';
+  if (sec.kind === 'scalar_group') {
+    body = (sec.settings || []).map(cfgFieldRow).join('') || '<div class="empty-state">No settings.</div>';
+    if (editable) {
+      footer = '<div style="display:flex;gap:8px;align-items:center;margin-top:10px">'
+        + '<button type="button" class="cfg-btn" onclick="cfgSaveSection(this, &quot;' + esc(sec.id) + '&quot;)">Save changes</button>'
+        + '<span data-status style="font-size:11px;margin-left:6px"></span></div>';
+    }
+  } else {
+    body = (sec.items && sec.items.length)
+      ? sec.items.map(function(it) { return cfgItemBlock(it, sec.id, editable); }).join('')
+      : '<div class="empty-state">No entries.</div>';
+    if (editable) {
+      body += cfgAddBlock(sec);
+      footer = '<div style="margin-top:6px"><button type="button" class="cfg-btn" onclick="cfgToggleAdd(&quot;'
+        + esc(sec.id) + '&quot;)">+ Add entry</button></div>';
+    }
+  }
+  var desc = sec.description ? '<div style="font-size:12px;color:var(--color-text-muted);margin-bottom:8px">' + esc(sec.description) + '</div>' : '';
+  return '<section data-section="' + esc(sec.id) + '" aria-label="' + esc(sec.title)
+    + '" style="background:var(--color-bg-surface);border:1px solid var(--color-border);border-radius:6px;padding:14px;margin-bottom:14px">'
+    + '<h3 style="margin:0 0 8px 0;font-size:14px;color:var(--color-text-primary)">' + esc(sec.title) + '</h3>'
+    + desc + banner + body + footer
+    + '</section>';
+}
+
+// Render the horizontal tab strip. Reuses .swimlane-tab styling. WAI-ARIA tabs
+// pattern: roving tabindex, aria-selected/aria-controls on each tab.
+function cfgTabBar(sections, active) {
+  var tabs = (sections || []).map(function(sec) {
+    var on = sec.id === active;
+    return '<button type="button" role="tab" id="' + cfgTabId(sec.id) + '"'
+      + ' aria-selected="' + (on ? 'true' : 'false') + '"'
+      + ' aria-controls="' + cfgPanelId(sec.id) + '"'
+      + ' tabindex="' + (on ? '0' : '-1') + '"'
+      + ' class="swimlane-tab' + (on ? ' active' : '') + '"'
+      + ' onclick="cfgSelectTab(&quot;' + esc(sec.id) + '&quot;)"'
+      + ' onkeydown="cfgTabKey(event, &quot;' + esc(sec.id) + '&quot;)">'
+      + esc(sec.title) + '</button>';
+  }).join('');
+  return '<div class="swimlane-tabs" role="tablist" aria-label="Configuration sections">'
+    + tabs + '</div>';
+}
+
+// Switch the visible panel. pushState so the browser Back button moves between
+// tabs (the existing popstate -> router() -> loadConfigPage() re-derives state).
+function cfgSelectTab(secId) {
+  _cfgTab = secId;
+  document.querySelectorAll('#config-page-section [role="tab"]').forEach(function(t) {
+    var on = t.id === cfgTabId(secId);
+    t.classList.toggle('active', on);
+    t.setAttribute('aria-selected', on ? 'true' : 'false');
+    t.setAttribute('tabindex', on ? '0' : '-1');
+  });
+  document.querySelectorAll('#config-page-section [role="tabpanel"]').forEach(function(p) {
+    p.hidden = (p.id !== cfgPanelId(secId));
+  });
+  if (location.hash !== '#' + secId) {
+    history.pushState(null, '', '/config#' + secId);
+  }
+}
+
+// Arrow/Home/End keyboard navigation across the tab strip (WAI-ARIA tabs).
+function cfgTabKey(event, secId) {
+  var key = event.key;
+  if (key !== 'ArrowRight' && key !== 'ArrowLeft' && key !== 'Home' && key !== 'End') return;
+  event.preventDefault();
+  var tabs = Array.prototype.slice.call(
+    document.querySelectorAll('#config-page-section [role="tab"]'));
+  if (!tabs.length) return;
+  var i = tabs.findIndex(function(t) { return t.id === cfgTabId(secId); });
+  var next;
+  if (key === 'Home') next = 0;
+  else if (key === 'End') next = tabs.length - 1;
+  else if (key === 'ArrowRight') next = (i + 1) % tabs.length;
+  else next = (i - 1 + tabs.length) % tabs.length;
+  var target = tabs[next];
+  if (!target) return;
+  var targetSec = target.id.replace('cfg-tab-', '');
+  cfgSelectTab(targetSec);
+  target.focus();
+}
+
+async function loadConfigPage() {
+  var el = document.getElementById('config-page-section');
+  el.innerHTML = '<span class="empty-state">Loading...</span>';
+  var res, data;
+  try {
+    res = await fetch('/api/config/all');
+    data = await res.json();
+  } catch(e) {
+    el.innerHTML = '<div class="empty-state">Failed to load configuration</div>';
+    return;
+  }
+  if (!res.ok) {
+    el.innerHTML = '<div class="empty-state">' + esc(data.error || 'Error loading configuration') + '</div>';
+    return;
+  }
+  _cfgHash = (data.content_hashes || {}).config_yaml || null;
+  _cfgVersion = data.config_version;
+  _cfgRoutingAvail = !!data.routing_available;
+  _cfgOptions = cfgBuildOptions(data.sections);
+  var header = '<div style="font-size:11px;color:var(--color-text-muted);margin-bottom:12px">'
+    + 'Config version ' + esc(String(data.config_version))
+    + (data.routing_available ? ' · routing available' : ' · routing unavailable')
+    + '</div>';
+  var sections = data.sections || [];
+  var hash = (location.hash || '').replace(/^#/, '');
+  var active = sections.some(function(s) { return s.id === hash; })
+    ? hash
+    : (sections[0] ? sections[0].id : null);
+  _cfgTab = active;
+  var panels = sections.map(function(sec) {
+    return '<div role="tabpanel" id="' + cfgPanelId(sec.id) + '"'
+      + ' aria-labelledby="' + cfgTabId(sec.id) + '"'
+      + (sec.id === active ? '' : ' hidden') + '>'
+      + cfgSectionBlock(sec) + '</div>';
+  }).join('');
+  el.innerHTML = header + cfgTabBar(sections, active) + panels;
+  if (_cfgRoutingAvail) loadRoutingEntries();
+}
+
 function router() {
   var path = location.pathname;
   updateNavActive(path);
@@ -2106,6 +2775,9 @@ function router() {
   } else if (path === '/admin/config') {
     showPage('admin-config-page');
     loadGlobalConfigPage();
+  } else if (path === '/config') {
+    showPage('config-page');
+    loadConfigPage();
   } else {
     showPage('dashboard-page');
     if (_lastState) renderDashboardExtras(_lastState);
@@ -2893,6 +3565,11 @@ def create_dashboard_app(
         """Display the admin configuration page (Task 11)."""
         return HTMLResponse(_DASHBOARD_HTML)
 
+    @app.get("/config", response_class=HTMLResponse)
+    async def dashboard_config() -> HTMLResponse:
+        """Display the full live-config view (spec 081-config-ui)."""
+        return HTMLResponse(_DASHBOARD_HTML)
+
     @app.get("/api/performer-logs")
     async def performer_logs_stream() -> StreamingResponse:
         """Stream the active performer's stderr log buffer, then tail new lines.
@@ -3548,6 +4225,110 @@ def create_dashboard_app(
             status_code=202,
         )
 
+    def _build_config_snapshot_inputs() -> tuple[Any, dict[str, str | None], dict[str, Any], bool, bool]:
+        """Gather the shared inputs for ``build_snapshot`` / ``build_section`` (T016/T017).
+
+        Returns ``(coordinare_cfg, content_hashes, raw_values, routing_avail,
+        routing_mounted)``. ``routing_mounted`` is true whenever a performer
+        endpoint mounts a routing path (even if its host file is missing), so the
+        empty-state banner can distinguish "unmounted" from "mounted-but-broken".
+        Display values (``raw_values``) come from the raw on-disk YAML so ``${VAR}``
+        literals are preserved verbatim (research D3); the validated config object
+        can never hold an unresolved placeholder for the pat ``github_token``.
+        """
+        from coordinare import routing_config_service
+        from coordinare.services.config_write_service import compute_content_hash
+
+        coordinare_cfg = daemon.state.get("coordinare_config")
+
+        content_hashes: dict[str, str | None] = {}
+        raw_values: dict[str, Any] = {}
+        if config_path is not None and config_path.is_file():
+            import yaml as _yaml
+
+            # Tolerant read: an out-of-band edit / mount glitch can leave the file
+            # temporarily unreadable or YAML-malformed. The descriptor layer can
+            # still render from the in-memory validated config, so degrade only the
+            # raw "${VAR}" display values rather than 500 the whole display fetch.
+            try:
+                content_hashes["config_yaml"] = compute_content_hash(config_path)
+                loaded = _yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, _yaml.YAMLError):
+                content_hashes.setdefault("config_yaml", None)
+                loaded = None
+            if isinstance(loaded, dict):
+                for fname, fval in loaded.items():
+                    if not isinstance(fval, (dict, list)):
+                        raw_values[f"global.{fname}"] = fval
+
+        routing_avail = False
+        routing_mounted = False
+        if coordinare_cfg is not None:
+            endpoints = coordinare_cfg.global_config.performer_endpoints
+            routing_avail = routing_config_service.routing_available(endpoints)
+            location = routing_config_service.locate_routing_file(endpoints)
+            routing_mounted = location is not None
+            if location is not None and location.host_path.is_file():
+                content_hashes["routing_yaml"] = compute_content_hash(location.host_path)
+            else:
+                content_hashes["routing_yaml"] = None
+
+        return coordinare_cfg, content_hashes, raw_values, routing_avail, routing_mounted
+
+    @app.get("/api/config/all")
+    async def get_config_all() -> JSONResponse:
+        """Return the full editable config surface as a ``ConfigSnapshot`` (T016).
+
+        Descriptors + content_hashes + config_version + routing_available. Secrets
+        are masked and ``${VAR}`` placeholders preserved by the descriptor layer.
+        """
+        from coordinare import config_descriptors as cd
+
+        coordinare_cfg, content_hashes, raw_values, routing_avail, routing_mounted = (
+            _build_config_snapshot_inputs()
+        )
+        if coordinare_cfg is None:
+            return JSONResponse({"error": "Config not available"}, status_code=500)
+
+        config_version = daemon.state.get("config_version", 0)
+        snapshot = cd.build_snapshot(
+            coordinare_cfg,
+            config_version=config_version,
+            routing_available=routing_avail,
+            routing_mounted=routing_mounted,
+            content_hashes=content_hashes,
+            raw_values=raw_values,
+        )
+        return JSONResponse(snapshot.model_dump(mode="json"))
+
+    @app.get("/api/config/section/{section_id}")
+    async def get_config_section(section_id: str) -> JSONResponse:
+        """Return a single config section by id; 404 on unknown id (T017)."""
+        from fastapi import HTTPException
+
+        from coordinare import config_descriptors as cd
+
+        coordinare_cfg, content_hashes, raw_values, routing_avail, routing_mounted = (
+            _build_config_snapshot_inputs()
+        )
+        if coordinare_cfg is None:
+            return JSONResponse({"error": "Config not available"}, status_code=500)
+
+        try:
+            section = cd.build_section(
+                coordinare_cfg,
+                section_id,
+                routing_available=routing_avail,
+                routing_mounted=routing_mounted,
+                content_hashes=content_hashes,
+                raw_values=raw_values,
+            )
+        except KeyError as err:
+            raise HTTPException(
+                status_code=404, detail=f"Unknown section: {section_id}"
+            ) from err
+        return JSONResponse(section.model_dump(mode="json"))
+
     @app.get("/api/config/effective")
     async def get_effective_config(symphony: str | None = None) -> JSONResponse:
         """Get effective configuration, optionally scoped to a symphony (Task 9)."""
@@ -3705,6 +4486,349 @@ def create_dashboard_app(
                 daemon._webhook_trigger.set()
 
         return JSONResponse({"status": "saved", "reload_triggered": hasattr(daemon, "_config_reload_trigger")})
+
+    # -----------------------------------------------------------------------
+    # 081 — Live config editing: section save + spec-080 catalog CRUD
+    # -----------------------------------------------------------------------
+
+    def _save_status_code(result: Any) -> int:
+        """Map a ``SaveResult`` to an HTTP status (T032).
+
+        ok → 200; otherwise the first error's code decides:
+        conflict/referenced → 409, validation → 422, forbidden → 403.
+        Messages are already secret-free and stack-trace-free at the service layer.
+        """
+        if result.ok:
+            return 200
+        code = result.errors[0].code if result.errors else "validation"
+        return {
+            "conflict": 409,
+            "referenced": 409,
+            "validation": 422,
+            "forbidden": 403,
+        }.get(code, 422)
+
+    def _trigger_reload() -> None:
+        """Fire the daemon's hot-reload trigger (and wake the loop). May raise."""
+        daemon._config_reload_trigger.set()
+        if hasattr(daemon, "_webhook_trigger"):
+            daemon._webhook_trigger.set()
+
+    def _apply_reload_or_stage(result: Any, what: str) -> None:
+        """Fire the hot-reload trigger for a successful write, enforcing FR-015.
+
+        On a successful ``hot_reloaded`` write the daemon reload trigger is fired.
+        If the trigger raises after the atomic write, the change stays on disk but
+        the live config is NOT swapped — downgrade the result to ``staged_restart``
+        with an operator-readable, secret-free advisory (mirroring
+        ``put_config_section``) rather than falsely reporting the change as live.
+        """
+        if not (result.ok and result.applied == "hot_reloaded"):
+            return
+        if not hasattr(daemon, "_config_reload_trigger"):
+            return
+        try:
+            _trigger_reload()
+        except Exception:
+            _log.warning("config_reload_failed", what=what)
+            result.applied = "staged_restart"
+            result.message = (
+                "Saved to disk, but the live reload failed; restart the "
+                "coordinare to apply this change."
+            )
+
+    @app.put("/api/config/section/{section_id}")
+    async def put_config_section(section_id: str, request: Request) -> JSONResponse:
+        """Validate + persist a scalar-group section edit (T027).
+
+        On a ``hot_reloaded`` result the daemon reload trigger is fired. FR-015
+        (T047): if the trigger raises after the successful atomic write, the
+        change stays on disk but the live config is NOT swapped — we downgrade
+        the result to ``staged_restart`` with an operator-readable, secret-free
+        advisory rather than reporting a failure.
+        """
+        from pydantic import ValidationError
+
+        from coordinare.services.config_write_service import SaveRequest, save_section
+
+        if config_path is None:
+            return JSONResponse(
+                {"ok": False, "errors": [{"key": None, "code": "forbidden",
+                 "message": "Config file not available; changes cannot be persisted."}]},
+                status_code=403,
+            )
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"ok": False, "errors": [{"key": None,
+                "code": "validation", "message": "Invalid JSON body."}]}, status_code=422)
+        if not isinstance(body, dict):
+            return JSONResponse({"ok": False, "errors": [{"key": None,
+                "code": "validation", "message": "Request body must be a JSON object."}]},
+                status_code=422)
+
+        # The URL is authoritative: this route only ever writes the named scalar
+        # section in config.yaml. Any `store`/`section` in the body is ignored so a
+        # mismatched payload can't redirect the write to a different target.
+        try:
+            save_req = SaveRequest(
+                store="config_yaml",
+                section=section_id,
+                changes=body.get("changes", {}),
+                base_hash=body.get("base_hash", ""),
+            )
+        except ValidationError:
+            return JSONResponse({"ok": False, "errors": [{"key": None,
+                "code": "validation", "message": "Invalid request payload."}]},
+                status_code=422)
+        result = save_section(save_req, config_path)
+
+        if result.ok and result.applied == "hot_reloaded" and hasattr(daemon, "_config_reload_trigger"):
+            try:
+                _trigger_reload()
+            except Exception:
+                _log.warning("config_section_reload_failed", section=section_id)
+                result.applied = "staged_restart"
+                result.message = (
+                    "Saved to disk, but the live reload failed; restart the "
+                    "coordinare to apply this change."
+                )
+
+        return JSONResponse(result.model_dump(mode="json"), status_code=_save_status_code(result))
+
+    @app.get("/api/config/catalog/{catalog}")
+    async def get_config_catalog(catalog: str) -> JSONResponse:
+        """Return a single spec-080 catalog with referential-integrity flags (T028)."""
+        from fastapi import HTTPException
+
+        from coordinare import config_descriptors as cd
+        from coordinare.services.config_write_service import (
+            CATALOG_KEYS,
+            compute_content_hash,
+        )
+
+        if catalog not in CATALOG_KEYS:
+            raise HTTPException(status_code=404, detail=f"Unknown catalog: {catalog}")
+
+        coordinare_cfg = daemon.state.get("coordinare_config")
+        if coordinare_cfg is None:
+            return JSONResponse({"error": "Config not available"}, status_code=500)
+
+        section = next(
+            (s for s in cd._build_catalog_sections(coordinare_cfg) if s.id == catalog),
+            None,
+        )
+        if section is None:
+            raise HTTPException(status_code=404, detail=f"Unknown catalog: {catalog}")
+
+        content_hash = (
+            compute_content_hash(config_path)
+            if config_path is not None and config_path.is_file()
+            else None
+        )
+        return JSONResponse({
+            "id": catalog,
+            "content_hash": content_hash,
+            "items": [i.model_dump(mode="json") for i in section.items],
+        })
+
+    @app.post("/api/config/catalog/{catalog}")
+    async def post_config_catalog(catalog: str, request: Request) -> JSONResponse:
+        """Create a new item in a spec-080 catalog (T029)."""
+        from coordinare.services.config_write_service import (
+            CATALOG_KEYS,
+            create_catalog_item,
+        )
+
+        if catalog not in CATALOG_KEYS:
+            return JSONResponse({"ok": False, "errors": [{"key": None,
+                "code": "validation", "message": f"Unknown catalog: {catalog}"}]},
+                status_code=422)
+        if config_path is None:
+            return JSONResponse({"ok": False, "errors": [{"key": None,
+                "code": "forbidden", "message": "Config file not available."}]},
+                status_code=403)
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"ok": False, "errors": [{"key": None,
+                "code": "validation", "message": "Invalid JSON body."}]}, status_code=422)
+        if not isinstance(body, dict):
+            return JSONResponse({"ok": False, "errors": [{"key": None,
+                "code": "validation", "message": "Request body must be a JSON object."}]},
+                status_code=422)
+
+        result = create_catalog_item(
+            catalog, body.get("item", {}), body.get("base_hash", ""), config_path
+        )
+        _apply_reload_or_stage(result, f"catalog POST {catalog}")
+        return JSONResponse(result.model_dump(mode="json"), status_code=_save_status_code(result))
+
+    @app.put("/api/config/catalog/{catalog}/{item_id}")
+    async def put_config_catalog_item(catalog: str, item_id: str, request: Request) -> JSONResponse:
+        """Update an existing item in a spec-080 catalog (T030)."""
+        from coordinare.services.config_write_service import (
+            CATALOG_KEYS,
+            update_catalog_item,
+        )
+
+        if catalog not in CATALOG_KEYS:
+            return JSONResponse({"ok": False, "errors": [{"key": None,
+                "code": "validation", "message": f"Unknown catalog: {catalog}"}]},
+                status_code=422)
+        if config_path is None:
+            return JSONResponse({"ok": False, "errors": [{"key": None,
+                "code": "forbidden", "message": "Config file not available."}]},
+                status_code=403)
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"ok": False, "errors": [{"key": None,
+                "code": "validation", "message": "Invalid JSON body."}]}, status_code=422)
+        if not isinstance(body, dict):
+            return JSONResponse({"ok": False, "errors": [{"key": None,
+                "code": "validation", "message": "Request body must be a JSON object."}]},
+                status_code=422)
+
+        result = update_catalog_item(
+            catalog, item_id, body.get("changes", {}), body.get("base_hash", ""), config_path
+        )
+        _apply_reload_or_stage(result, f"catalog PUT {catalog}/{item_id}")
+        return JSONResponse(result.model_dump(mode="json"), status_code=_save_status_code(result))
+
+    @app.delete("/api/config/catalog/{catalog}/{item_id}")
+    async def delete_config_catalog_item(catalog: str, item_id: str, request: Request) -> JSONResponse:
+        """Delete a catalog item unless referenced (T031, delete-protection)."""
+        from coordinare.services.config_write_service import (
+            CATALOG_KEYS,
+            delete_catalog_item,
+        )
+
+        if catalog not in CATALOG_KEYS:
+            return JSONResponse({"ok": False, "errors": [{"key": None,
+                "code": "validation", "message": f"Unknown catalog: {catalog}"}]},
+                status_code=422)
+        if config_path is None:
+            return JSONResponse({"ok": False, "errors": [{"key": None,
+                "code": "forbidden", "message": "Config file not available."}]},
+                status_code=403)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+
+        result = delete_catalog_item(
+            catalog, item_id, body.get("base_hash", ""), config_path
+        )
+        _apply_reload_or_stage(result, f"catalog DELETE {catalog}/{item_id}")
+        return JSONResponse(result.model_dump(mode="json"), status_code=_save_status_code(result))
+
+    # -----------------------------------------------------------------------
+    # 081 — Routing-table CRUD (spec-078 self-hosted backend)
+    # -----------------------------------------------------------------------
+
+    def _routing_location() -> Any:
+        """Resolve the host-side routing-table location from the live config, or None.
+
+        Returns the :class:`RoutingLocation` whenever a performer endpoint mounts a
+        routing path — *even when the host-side file is missing or not a regular
+        file*. The writability decision (and its accurate operator-facing message)
+        belongs to ``routing_config_service._readonly_guard()``: collapsing a
+        mounted-but-missing location to ``None`` here would lose the actionable
+        "endpoint X mounts a path that isn't a file" diagnostic and emit the
+        generic "no endpoint mounts a routing table" message instead. ``None`` is
+        returned only when no endpoint mounts a routing table at all.
+        """
+        from coordinare import routing_config_service
+
+        coordinare_cfg = daemon.state.get("coordinare_config")
+        if coordinare_cfg is None:
+            return None
+        endpoints = coordinare_cfg.global_config.performer_endpoints
+        return routing_config_service.locate_routing_file(endpoints)
+
+    @app.get("/api/config/routing")
+    async def get_config_routing() -> JSONResponse:
+        """Return the routing table (entries + content_hash) or read-only empty state (T037)."""
+        from coordinare import routing_config_service
+
+        location = _routing_location()
+        view = routing_config_service.read_routing(location)
+        return JSONResponse(view.model_dump(mode="json"))
+
+    @app.post("/api/config/routing/entry")
+    async def post_config_routing_entry(request: Request) -> JSONResponse:
+        """Create a routing entry → ``applied: staged_next_job`` (T038)."""
+        from coordinare import routing_config_service
+
+        location = _routing_location()
+        guard = routing_config_service._readonly_guard(location)
+        if guard is not None:
+            return JSONResponse(guard.model_dump(mode="json"),
+                                status_code=_save_status_code(guard))
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"ok": False, "errors": [{"key": None,
+                "code": "validation", "message": "Invalid JSON body."}]}, status_code=422)
+        if not isinstance(body, dict):
+            return JSONResponse({"ok": False, "errors": [{"key": None,
+                "code": "validation", "message": "Request body must be a JSON object."}]},
+                status_code=422)
+
+        result = routing_config_service.create_routing_entry(
+            location, body.get("entry", {}), body.get("base_hash", "")
+        )
+        return JSONResponse(result.model_dump(mode="json"), status_code=_save_status_code(result))
+
+    @app.put("/api/config/routing/entry/{index}")
+    async def put_config_routing_entry(index: int, request: Request) -> JSONResponse:
+        """Update the routing entry at ``index`` → ``staged_next_job`` (T039)."""
+        from coordinare import routing_config_service
+
+        location = _routing_location()
+        guard = routing_config_service._readonly_guard(location)
+        if guard is not None:
+            return JSONResponse(guard.model_dump(mode="json"),
+                                status_code=_save_status_code(guard))
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"ok": False, "errors": [{"key": None,
+                "code": "validation", "message": "Invalid JSON body."}]}, status_code=422)
+        if not isinstance(body, dict):
+            return JSONResponse({"ok": False, "errors": [{"key": None,
+                "code": "validation", "message": "Request body must be a JSON object."}]},
+                status_code=422)
+
+        result = routing_config_service.update_routing_entry(
+            location, index, body.get("changes", {}), body.get("base_hash", "")
+        )
+        return JSONResponse(result.model_dump(mode="json"), status_code=_save_status_code(result))
+
+    @app.delete("/api/config/routing/entry/{index}")
+    async def delete_config_routing_entry(index: int, request: Request) -> JSONResponse:
+        """Delete the routing entry at ``index`` → ``staged_next_job`` (T040)."""
+        from coordinare import routing_config_service
+
+        location = _routing_location()
+        guard = routing_config_service._readonly_guard(location)
+        if guard is not None:
+            return JSONResponse(guard.model_dump(mode="json"),
+                                status_code=_save_status_code(guard))
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+
+        result = routing_config_service.delete_routing_entry(
+            location, index, body.get("base_hash", "")
+        )
+        return JSONResponse(result.model_dump(mode="json"), status_code=_save_status_code(result))
 
     # -----------------------------------------------------------------------
     # 018 — Personas API endpoints
