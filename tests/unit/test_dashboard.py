@@ -125,20 +125,82 @@ def test_dashboard_multi_page_routes_return_html_shell() -> None:
     """049 T007: /performers, /personas, /history all return 200 with the same HTML shell as /."""
     client = _make_app()
     root_html = client.get("/").text
-    for path in ["/performers", "/personas", "/history"]:
+    for path in ["/performers", "/personas", "/history", "/config"]:
         res = client.get(path)
         assert res.status_code == 200, f"{path} returned {res.status_code}"
         assert res.headers["content-type"].startswith("text/html"), f"{path} wrong content-type"
         assert res.text == root_html, f"{path} returned different HTML than /"
 
 
-def test_dashboard_html_under_116kb() -> None:
-    """T036: _DASHBOARD_HTML must not exceed the 116 KB size budget (raised to accommodate
+def test_config_view_page_containers_present() -> None:
+    """081 T018: the live-config view ships its page container and loader hook."""
+    assert 'id="config-page"' in _DASHBOARD_HTML
+    assert 'id="config-page-section"' in _DASHBOARD_HTML
+    assert "loadConfigPage" in _DASHBOARD_HTML
+    # T019: routing read-only empty state renders the section's guidance banner,
+    # not an error — the renderer surfaces invalid_banner as a status region.
+    assert "cfgSectionBlock" in _DASHBOARD_HTML
+    # T041 (US3): routing-table CRUD wired to /api/config/routing with a
+    # "applies to next performer job" label, distinct from the catalog endpoints.
+    assert "cfgRoutingEntryBlock" in _DASHBOARD_HTML
+    assert "loadRoutingEntries" in _DASHBOARD_HTML
+    assert "/api/config/routing/entry" in _DASHBOARD_HTML
+    assert "next performer job" in _DASHBOARD_HTML
+
+
+def test_config_stale_reference_is_preserved_and_flagged() -> None:
+    """A stored reference not in the catalog is kept as a selected, flagged option."""
+    # cfgRefSelect injects the unknown current value as a selected option ...
+    assert "not in catalog" in _DASHBOARD_HTML
+    # ... and only when it is non-empty and unmatched (preserve, never drop).
+    assert "if (cur !== '' && !known)" in _DASHBOARD_HTML
+
+
+def test_cfg_opt_hint_keys_off_stable_schema_key() -> None:
+    """cfgOptHint derives its lookup from the stable schema key (last dotted
+    component), falling back to the user-facing label only when key is absent —
+    so humanizing labels never breaks the modes/model_endpoints hints."""
+    # Stable-key derivation: last dotted component of s.key.
+    assert "String(s.key).split('.').pop()" in _DASHBOARD_HTML
+    # Label is only a fallback when s.key is absent.
+    assert "s.key ? String(s.key).split('.').pop() : s.label" in _DASHBOARD_HTML
+    # The brittle label-only map is gone.
+    assert "byLabel[s.label] = s.current_value" not in _DASHBOARD_HTML
+
+
+def test_cfg_field_row_renders_length_constraints() -> None:
+    """cfgFieldRow handles both {min,max} and {min_length,max_length} range
+    shapes, plus partial bounds, so string/collection length constraints render
+    real numbers instead of `undefined`."""
+    # The length shape is detected and labeled "length".
+    assert "min_length" in _DASHBOARD_HTML
+    assert "max_length" in _DASHBOARD_HTML
+    # Partial bounds render with comparison operators rather than "X to undefined".
+    assert "\\u2265" in _DASHBOARD_HTML or "≥" in _DASHBOARD_HTML
+
+
+def test_cfg_item_block_forces_readonly_when_section_not_editable() -> None:
+    """Copilot round 26: a view-only catalog section (personas/symphonies passes
+    editable=false into cfgItemBlock) must not render interactive inputs for
+    individually-editable settings — there is no Save action, so an edit affordance
+    is confusing and violates the read-only requirement. cfgItemBlock forces every
+    field read-only (a shallow copy with editable:false) before delegating to
+    cfgFieldRow when the section itself is not editable."""
+    assert "Object.assign({}, s, {editable: false})" in _DASHBOARD_HTML
+    # It must NOT pass cfgFieldRow the raw settings unconditionally any more.
+    assert "(item.settings || []).map(cfgFieldRow)" not in _DASHBOARD_HTML
+
+
+def test_dashboard_html_under_144kb() -> None:
+    """T036: _DASHBOARD_HTML must not exceed the 144 KB size budget (raised to accommodate
     multi-page layout, navbar, active-performer tiles, performers/personas/history pages — 049,
-    Global Config edit page — 058, CSS design tokens + phase-label + health widget — 059, and
-    env-bootstrap card + symphonies-list bootstrap button — 060)."""
+    Global Config edit page — 058, CSS design tokens + phase-label + health widget — 059,
+    env-bootstrap card + symphonies-list bootstrap button — 060, the 081 live-config
+    edit UI: per-field inputs, save/validation feedback, catalog create/edit/delete — 081, the
+    081 US3 routing-table CRUD surface: nested target editors + create/edit/delete — T041, and
+    the 081 Copilot-review hardening: store-aware save payloads + stable-key field derivation)."""
     size = len(_DASHBOARD_HTML.encode())
-    assert size < 116 * 1024, f"_DASHBOARD_HTML is {size} bytes (limit: {116 * 1024})"
+    assert size < 144 * 1024, f"_DASHBOARD_HTML is {size} bytes (limit: {144 * 1024})"
 
 
 def test_history_page_is_live_container_not_coming_soon_stub() -> None:
@@ -2087,3 +2149,63 @@ def test_build_snapshot_preserves_fields_under_session_mirror() -> None:
     assert row["feedback_cycle_count"] == 2
     assert row["total_feedback_cycles"] == 5
     assert row["container_id"] == "abc123"
+
+
+# --- 081 T001: Config reference fields render as dropdowns ---
+
+
+def test_config_reference_fields_render_as_dropdowns() -> None:
+    """The five catalog-reference fields are wired to render as <select> dropdowns."""
+    # Static label -> catalog map drives which fields become dropdowns.
+    assert "_CFG_REFS" in _DASHBOARD_HTML
+    assert "cfgRefSelect" in _DASHBOARD_HTML
+    assert "_cfgOptions" in _DASHBOARD_HTML
+    # Every reference field label and its target catalog is declared.
+    for pair in (
+        "endpoint:", "tool:", "thinking:", "classifier:", "mode:",
+    ):
+        assert pair in _DASHBOARD_HTML, f"missing _CFG_REFS entry {pair}"
+    # Nullable references offer an explicit none option.
+    assert "\\u2014 none \\u2014" in _DASHBOARD_HTML or "— none —" in _DASHBOARD_HTML
+    # Selects carry data-ref so coercion and option-source are discoverable in the DOM.
+    assert 'data-ref="' in _DASHBOARD_HTML
+
+
+def test_config_options_index_built_from_payload() -> None:
+    """loadConfigPage rebuilds the dropdown option index from the fetched sections."""
+    assert "cfgBuildOptions" in _DASHBOARD_HTML
+    # The builder is invoked during load (before sections are rendered).
+    assert "_cfgOptions = cfgBuildOptions(" in _DASHBOARD_HTML
+    # Options carry both the stored value and a display hint.
+    assert "cfgOptHint(" in _DASHBOARD_HTML
+
+
+def test_config_empty_reference_coerces_to_null() -> None:
+    """An empty reference <select> (— none —) coerces to null, not an empty string."""
+    # cfgCoerce special-cases controls carrying data-ref with an empty value.
+    assert "getAttribute('data-ref')" in _DASHBOARD_HTML
+    # The null branch appears in the coercion path.
+    assert "return null" in _DASHBOARD_HTML
+
+
+def test_config_page_renders_tabbed_layout() -> None:
+    """The config page renders a tablist + one tabpanel per section, not a long scroll."""
+    assert "cfgTabBar" in _DASHBOARD_HTML
+    assert "cfgSelectTab" in _DASHBOARD_HTML
+    assert 'role="tablist"' in _DASHBOARD_HTML
+    assert 'role="tab"' in _DASHBOARD_HTML
+    assert 'role="tabpanel"' in _DASHBOARD_HTML
+    # Tabs reuse the existing swimlane tab styling — no new visual language.
+    assert "swimlane-tabs" in _DASHBOARD_HTML
+    # Each section is wrapped in a panel and the active tab is hash-derived.
+    assert "cfgPanelId(" in _DASHBOARD_HTML
+    assert "location.hash" in _DASHBOARD_HTML
+
+
+def test_config_tabs_support_keyboard_navigation() -> None:
+    """Tab strip supports Arrow/Home/End keyboard navigation (WAI-ARIA tabs)."""
+    assert "function cfgTabKey(" in _DASHBOARD_HTML
+    assert "ArrowRight" in _DASHBOARD_HTML
+    assert "ArrowLeft" in _DASHBOARD_HTML
+    assert "Home" in _DASHBOARD_HTML
+    assert "End" in _DASHBOARD_HTML
