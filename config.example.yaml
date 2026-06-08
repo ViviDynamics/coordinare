@@ -409,7 +409,12 @@ performers:
 #     roles: [implementer]
 #     image: coordinare-performer:full
 #     volumes:
-#       - "${SELFHOSTED_ROUTING_CONFIG_HOST}:/etc/coordinare/routing.yaml:ro"
+#       # VolumeMount is a structured mapping (host_path/container_path/mode),
+#       # NOT Docker's "host:container:ro" string form — extra="forbid" rejects
+#       # the string. container_path must match SELFHOSTED_ROUTING_CONFIG below.
+#       - host_path: "${SELFHOSTED_ROUTING_CONFIG_HOST}"
+#         container_path: /etc/coordinare/routing.yaml
+#         mode: ro
 #     env:
 #       SELFHOSTED_ROUTING_CONFIG: "/etc/coordinare/routing.yaml"
 #
