@@ -1,0 +1,21 @@
+[
+  {
+    "role": "architect",
+    "endpoint": "codex-ephemeral",
+    "backend": "codex",
+    "model": "spark/qwen3.6:35b",
+    "strategy": "always",
+    "category": "PASS",
+    "status": "plan_committed",
+    "markers": [
+      "plan_file"
+    ],
+    "detail": "plan=y src_files_changed=0\n0",
+    "judge_correct": true,
+    "judge_quality": 4,
+    "judge_reason": "The agent delivered a written design plan and made no source code changes, meeting the architect role requirements.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  }
+]

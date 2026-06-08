@@ -1,0 +1,41 @@
+[
+  {
+    "role": "closer",
+    "endpoint": "pi-ephemeral",
+    "backend": "pi",
+    "model": "spark/qwen3.6:35b",
+    "strategy": "always",
+    "category": "PASS",
+    "status": "approved",
+    "markers": [
+      "approved"
+    ],
+    "detail": "status=approved",
+    "judge_correct": true,
+    "judge_quality": 5,
+    "judge_reason": "The agent returned a clear approved verdict as required.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null
+  },
+  {
+    "role": "security",
+    "endpoint": "pi-ephemeral",
+    "backend": "pi",
+    "model": "spark/qwen3.6:35b",
+    "strategy": "always",
+    "category": "FAIL_HARNESS",
+    "status": "error",
+    "markers": [
+      "sql injection",
+      "injection"
+    ],
+    "detail": "status=error | harness:BACKEND_FORMAT_ERROR",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "error",
+    "state": "failed",
+    "log_file": "cells/security__pi-ephemeral.json"
+  }
+]

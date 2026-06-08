@@ -1,0 +1,24 @@
+{
+  "row": {
+    "role": "reviewer",
+    "endpoint": "claude-ephemeral",
+    "backend": "claude_code",
+    "model": "spark/qwen3.6:35b",
+    "strategy": "always",
+    "category": "FAIL_MODEL",
+    "status": "changes_requested",
+    "markers": [],
+    "detail": "status=changes_requested",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "changes_requested",
+    "state": "failed",
+    "log_file": null
+  },
+  "state": "failed",
+  "error_code": "changes_requested",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"changes_requested\",\"session_id\":\"798e6cea-7743-4c8d-a34c-95b657eae76b\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "Setting up Claude Code...\n\nChecking installation status...\nInstalling Claude Code native build latest...\nSetting up launcher and shell integration...\n\u2714 Claude Code successfully installed!\n\n  Version: 2.1.168\n\n  Location: ~/.local/bin/claude\n\n\n  Next: Run claude --help to get started\n\n\u2705 Installation complete!\n\nINFO:     172.66.0.243:46272 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-07 14:08:20 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\n2026-06-07 14:08:20 [warning  ] secret_missing                 name=ANTHROPIC_API_KEY\n2026-06-07 14:08:20 [info     ] secret_resolved                name=ANTHROPIC_AUTH_TOKEN source=init_payload\nINFO:     172.66.0.243:49175 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:56452 - \"GET /jobs/a50ea559dc8548b886a885702316bb32 HTTP/1.1\" 200 OK\n2026-06-07 14:08:21 [info     ] clone_repository.existing_branch branch=fix/reviewer-offbyone\n2026-06-07 14:08:21 [info     ] cloned repository              branch=fix/reviewer-offbyone repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-07 14:08:21 [info     ] dual_model_proxy.launched      backend=claude_code env_var=ANTHROPIC_BASE_URL strategy=always\n2026-06-07 14:08:21 [info     ] claude_code shim listening     port=42031\n2026-06-07 14:08:21 [info     ] claude code started            pid=101 resume=False\n2026-06-07 14:08:21 [info     ] dispatch accepted              session_id=798e6cea-7743-4c8d-a34c-95b657eae76b\n2026-06-07 14:08:21 [info     ] claude_code shim request       latency_ms=3 method=HEAD path=/ status=404\n2026-06-07 14:08:22 [debug    ] claude code session captured   session_id=96b4b1df-4205-418e-bb91-da699cf7aeb9\nINFO:     172.66.0.243:23785 - \"GET /jobs/a50ea559dc8548b886a885702316bb32 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:38155 - \"GET /jobs/a50ea559dc8548b886a885702316bb32 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:47173 - \"GET /jobs/a50ea559dc8548b886a885702316bb32 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:48793 - \"GET /jobs/a50ea559dc8548b886a885702316bb32 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:45608 - \"GET /jobs/a50ea559dc8548b886a885702316bb32 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:35083 - \"GET /jobs/a50ea559dc8548b886a885702316bb32 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:44458 - \"GET /jobs/a50ea559dc8548b886a885702316bb32 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:46469 - \"GET /jobs/a50ea559dc8548b886a885702316bb32 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:27906 - \"GET /jobs/a50ea559dc8548b886a885702316bb32 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:63622 - \"GET /jobs/a50ea559dc8548b886a885702316bb32 HTTP/1.1\" 200 OK\n2026-06-07 14:09:11 [info     ] dual_model_proxy.request       latency_ms=49424.3 path=/v1/messages status=200\n2026-06-07 14:09:11 [info     ] claude_code shim request       latency_ms=49427 method=POST path=/v1/messages status=200\nINFO:     172.66.0.243:19396 - \"GET /jobs/a50ea559dc8548b886a885702316bb32 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:17681 - \"GET /jobs/a50ea559dc8548b886a885702316bb32 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:34132 - \"GET /jobs/a50ea559dc8548b886a885702316bb32 HTTP/1.1\" 200 OK\n2026-06-07 14:09:27 [info     ] dual_model_proxy.request       latency_ms=65551.3 path=/v1/messages status=200\n2026-06-07 14:09:27 [info     ] claude_code shim request       latency_ms=65554 method=POST path=/v1/messages status=200\n2026-06-07 14:09:28 [info     ] review posted                  owner=ViviDynamics pr_number=1 repo=conductor-bench review_event=COMMENT\n2026-06-07 14:09:28 [info     ] claude code stopped\n2026-06-07 14:09:28 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-ok4_wm6z\nINFO:     172.66.0.243:20576 - \"GET /jobs/a50ea559dc8548b886a885702316bb32 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

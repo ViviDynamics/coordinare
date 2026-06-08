@@ -1,0 +1,20 @@
+[
+  {
+    "role": "assessor",
+    "endpoint": "junie-ephemeral",
+    "backend": "junie",
+    "model": "gpt-oss:120b",
+    "strategy": "single",
+    "category": "FAIL_MODEL",
+    "status": "assessment_complete",
+    "markers": [],
+    "detail": "questions=0 sufficient=None",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent failed to judge the request insufficient and did not ask clarifying questions.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": "cells/assessor__junie-ephemeral.json",
+    "reconciled": null
+  }
+]

@@ -1,0 +1,26 @@
+{
+  "row": {
+    "role": "tech_writer",
+    "endpoint": "hermes-ephemeral",
+    "backend": "hermes",
+    "model": "spark/qwen3.6:35b",
+    "strategy": "single",
+    "category": "FAIL_MODEL",
+    "status": "error",
+    "markers": [
+      "docs_reference_coupon"
+    ],
+    "detail": "status=error doc_hits=True",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "error",
+    "state": "failed",
+    "log_file": null
+  },
+  "state": "failed",
+  "error_code": "error",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"error\",\"session_id\":\"698c0ddf-32b2-4b1e-8dd2-65bed9f45ec0\",\"reason\":\"BACKEND_FORMAT_ERROR: Backend docs output could not be parsed as a JSON object after 2 attempts. Last output: '\u26a0 tirith security scanner enabled but not available \u2014 command scanning will use pattern matching only\\\\r\\\\n  \u250a review diff\\\\r\\\\na//tmp/performer-s7bhwih7/src/bench/cart.py \u2192 b//tmp/performer-s7bhwih7/src/bench/cart.py\\\\r\\\\n@@ -14,7 +14,35 @@\\\\r\\\\n     return amount * (1 - pct / 100)\\\\r\\\\n \\\\r\\\\n \\\\r\\\\n-def apply_coupon(amount,'\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.\n\n[notice] A new release of pip is available: 25.0.1 -> 26.1.2\n[notice] To update, run: pip install --upgrade pip\nINFO:     172.66.0.243:56706 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-07 16:35:12 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:16263 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:59195 - \"GET /jobs/325e92f16c314f45bf9bcb53711d29b5 HTTP/1.1\" 200 OK\n2026-06-07 16:35:13 [info     ] clone_repository.existing_branch branch=feat/techwriter-nodoc\n2026-06-07 16:35:13 [info     ] cloned repository              branch=feat/techwriter-nodoc repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-07 16:35:13 [info     ] hermes.card_docs_written       chars=199 path=/tmp/performer-s7bhwih7/CARD.md\n2026-06-07 16:35:13 [info     ] hermes starting                base_url=https://litellm.vividynamics.com/v1 hermes_home=/tmp/hermes-job-vypto4jo model=spark/qwen3.6:35b provider=litellm\n2026-06-07 16:35:13 [info     ] hermes started                 model=spark/qwen3.6:35b pid=42\n2026-06-07 16:35:13 [info     ] dispatch accepted              session_id=698c0ddf-32b2-4b1e-8dd2-65bed9f45ec0\nINFO:     172.66.0.243:25388 - \"GET /jobs/325e92f16c314f45bf9bcb53711d29b5 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:29245 - \"GET /jobs/325e92f16c314f45bf9bcb53711d29b5 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:59545 - \"GET /jobs/325e92f16c314f45bf9bcb53711d29b5 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:57638 - \"GET /jobs/325e92f16c314f45bf9bcb53711d29b5 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:29154 - \"GET /jobs/325e92f16c314f45bf9bcb53711d29b5 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:59153 - \"GET /jobs/325e92f16c314f45bf9bcb53711d29b5 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:43731 - \"GET /jobs/325e92f16c314f45bf9bcb53711d29b5 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:28832 - \"GET /jobs/325e92f16c314f45bf9bcb53711d29b5 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:54481 - \"GET /jobs/325e92f16c314f45bf9bcb53711d29b5 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:30967 - \"GET /jobs/325e92f16c314f45bf9bcb53711d29b5 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:57840 - \"GET /jobs/325e92f16c314f45bf9bcb53711d29b5 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:41214 - \"GET /jobs/325e92f16c314f45bf9bcb53711d29b5 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:20929 - \"GET /jobs/325e92f16c314f45bf9bcb53711d29b5 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:31510 - \"GET /jobs/325e92f16c314f45bf9bcb53711d29b5 HTTP/1.1\" 200 OK\n2026-06-07 16:36:26 [info     ] hermes finalized               removed=/tmp/hermes-job-vypto4jo\n2026-06-07 16:36:27 [warning  ] backend.invalid_output.retrying attempt=1 failure_reason='could not be parsed as a JSON object' max_retries=1 output_preview='\u26a0 tirith security scanner enabled but not available \u2014 command scanning will use pattern matching only\\r\\n  \u250a review diff\\r\\na//tmp/performer-s7bhwih7/src/bench/cart.py \u2192 b//tmp/performer-s7bhwih7/src/benc' stage=docs\nINFO:     172.66.0.243:17509 - \"GET /jobs/325e92f16c314f45bf9bcb53711d29b5 HTTP/1.1\" 200 OK\n2026-06-07 16:36:29 [info     ] hermes stopped\n2026-06-07 16:36:29 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-s7bhwih7\nINFO:     172.66.0.243:30438 - \"GET /jobs/325e92f16c314f45bf9bcb53711d29b5 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

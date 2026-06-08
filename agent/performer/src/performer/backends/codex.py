@@ -22,6 +22,7 @@ import re
 import signal
 import socket
 from collections import deque
+from collections.abc import Mapping
 from typing import Any
 
 import aiohttp
@@ -62,6 +63,48 @@ def _validate_toml_bare_key(value: str) -> None:
     """Reject values that are unsafe as a TOML bare key or `-c key=val` arg."""
     if not _TOML_BARE_KEY_RE.match(value):
         raise ValueError(f"unsafe codex provider name (must match [A-Za-z0-9_-]+): {value!r}")
+
+
+def _build_provider_config_toml(env: Mapping[str, str]) -> str | None:
+    """Build codex's ``config.toml`` model-provider block from ``CODEX_PROVIDER_*``.
+
+    Returns ``None`` when ``CODEX_PROVIDER_BASE_URL`` is unset (no override active —
+    the caller falls back to OpenAI/auth.json mode).
+
+    ``wire_api`` handling (FR-011): codex 0.137.0 rejects every chat-flavoured
+    ``wire_api`` string ("chat", "chat_completions", "completions", …) as an invalid
+    enum variant — it swallows the config error, falls back to a default config that
+    lacks this provider, and dies with a misleading "Model provider not found". The
+    only accepted explicit value is ``responses``. So when ``CODEX_PROVIDER_WIRE_API``
+    is unset we OMIT the ``wire_api`` line entirely, letting codex fall back to its
+    chat-completions default, instead of writing the invalid literal ``"chat"`` the
+    old default produced.
+    """
+    provider_base_url = env.get("CODEX_PROVIDER_BASE_URL", "")
+    if not provider_base_url:
+        return None
+    provider_name = env.get("CODEX_PROVIDER_NAME", "custom")
+    provider_env_key = env.get("CODEX_PROVIDER_ENV_KEY", "OPENAI_API_KEY")
+    provider_wire_api = env.get("CODEX_PROVIDER_WIRE_API")  # None → omit line (default)
+    # provider_name is a TOML bare key and a `-c model_provider=<name>` CLI arg, so it
+    # needs the stricter bare-key set; the other values just need to survive quoting.
+    _validate_toml_bare_key(provider_name)
+    to_quote = [provider_base_url, provider_env_key]
+    if provider_wire_api is not None:
+        to_quote.append(provider_wire_api)
+    for _val in to_quote:
+        _toml_quote(_val)  # raises ValueError on unsafe chars
+    lines = [
+        f"model_provider = {_toml_quote(provider_name)}",
+        "",
+        f"[model_providers.{provider_name}]",
+        f"name = {_toml_quote(provider_name)}",
+        f"base_url = {_toml_quote(provider_base_url)}",
+        f"env_key = {_toml_quote(provider_env_key)}",
+    ]
+    if provider_wire_api is not None:
+        lines.append(f"wire_api = {_toml_quote(provider_wire_api)}")
+    return "\n".join(lines) + "\n"
 
 
 _JSON_ONLY_ROLES = {
@@ -153,33 +196,17 @@ class CodexBackend:
         #   CODEX_PROVIDER_BASE_URL   — provider base URL (presence = override active)
         #   CODEX_PROVIDER_NAME       — model_provider id (default: "custom")
         #   CODEX_PROVIDER_ENV_KEY    — env var holding the API key (default: "OPENAI_API_KEY")
-        #   CODEX_PROVIDER_WIRE_API   — "chat" or "responses" (default: "chat")
-        provider_base_url = env.get("CODEX_PROVIDER_BASE_URL", "")
-        if provider_base_url:
-            provider_name = env.get("CODEX_PROVIDER_NAME", "custom")
-            provider_env_key = env.get("CODEX_PROVIDER_ENV_KEY", "OPENAI_API_KEY")
-            provider_wire_api = env.get("CODEX_PROVIDER_WIRE_API", "chat")
-            # provider_name is used as a TOML bare key in
-            # [model_providers.<name>] and as a `-c model_provider=<name>`
-            # CLI arg, so it needs the stricter bare-key character set.
-            # The other three values just need to survive the quoted string.
-            _validate_toml_bare_key(provider_name)
-            for _val in (provider_base_url, provider_env_key, provider_wire_api):
-                _toml_quote(_val)  # raises ValueError on unsafe chars
+        #   CODEX_PROVIDER_WIRE_API   — "responses" (or unset → codex's chat-completions
+        #                               default; codex 0.137.0 rejects explicit "chat")
+        config_toml = _build_provider_config_toml(env)
+        if config_toml is not None:
             config_path = codex_dir / "config.toml"
-            config_path.write_text(
-                f"model_provider = {_toml_quote(provider_name)}\n"
-                "\n"
-                f"[model_providers.{provider_name}]\n"
-                f"name = {_toml_quote(provider_name)}\n"
-                f"base_url = {_toml_quote(provider_base_url)}\n"
-                f"env_key = {_toml_quote(provider_env_key)}\n"
-                f"wire_api = {_toml_quote(provider_wire_api)}\n"
-            )
+            config_path.write_text(config_toml)
             try:
                 os.chmod(config_path, 0o600)
             except OSError:
                 pass
+            provider_name = env.get("CODEX_PROVIDER_NAME", "custom")
             cmd += ["-c", f"model_provider={provider_name}"]
         else:
             # Codex stores auth state in ~/.codex/auth.json.  In a fresh

@@ -22,7 +22,10 @@ from typing import Any, Literal
 from performer.proxy.llm_turn import LLMResponse
 
 ExposePlanAs = Literal["thinking", "prepend_content", "drop"]
-WireFormat = Literal["openai", "anthropic"]
+WireFormat = Literal["openai", "anthropic", "responses"]
+
+_RESPONSE_ID = "resp_dualproxy"
+_CHAT_COMPLETION_ID = "chatcmpl-dualproxy"
 
 
 def assemble_json(
@@ -32,6 +35,8 @@ def assemble_json(
     plan = response.reasoning
     if wire_format == "anthropic":
         return _assemble_anthropic(response, plan, expose_plan_as)
+    if wire_format == "responses":
+        return _assemble_responses(response, plan, expose_plan_as)
     return _assemble_openai(response, plan, expose_plan_as)
 
 
@@ -58,7 +63,20 @@ def _assemble_openai(resp: LLMResponse, plan: str | None, expose: ExposePlanAs) 
             for tc in resp.tool_calls
         ]
     finish = "tool_calls" if resp.tool_calls else "stop"
-    return {"choices": [{"index": 0, "message": message, "finish_reason": finish}]}
+    # 082 FR-013: emit a COMPLETE ChatCompletion envelope. A bare
+    # {"choices": [...]} body is rejected by strict OpenAI clients (junie's
+    # OpenAICompletion deserializer → "Failed to build 'issue.md.junie_standalone'"
+    # after a successful 200), even though lenient clients tolerate it. Echo the
+    # upstream exec response's real id/model/created when preserved in ``raw``;
+    # fall back to stable proxy constants otherwise.
+    raw = resp.raw or {}
+    return {
+        "id": raw.get("id") or _CHAT_COMPLETION_ID,
+        "object": "chat.completion",
+        "created": raw.get("created") if isinstance(raw.get("created"), int) else 0,
+        "model": raw.get("model", ""),
+        "choices": [{"index": 0, "message": message, "finish_reason": finish}],
+    }
 
 
 def _assemble_anthropic(resp: LLMResponse, plan: str | None, expose: ExposePlanAs) -> dict[str, Any]:
@@ -72,6 +90,35 @@ def _assemble_anthropic(resp: LLMResponse, plan: str | None, expose: ExposePlanA
         blocks.append({"type": "tool_use", "id": tc.id, "name": tc.name, "input": tc.arguments})
     stop = "tool_use" if resp.tool_calls else "end_turn"
     return {"role": "assistant", "content": blocks, "stop_reason": stop}
+
+
+def _assemble_responses(resp: LLMResponse, plan: str | None, expose: ExposePlanAs) -> dict[str, Any]:
+    """Render to an OpenAI Responses ``object: "response"`` body.
+
+    Output items, in order: an optional ``reasoning`` item (plan as
+    ``summary_text`` when ``expose == thinking``), a ``message`` item carrying the
+    answer as an ``output_text`` content block, then one ``function_call`` item per
+    tool call (arguments JSON-encoded to a string, as the Responses API requires).
+    """
+    output: list[dict[str, Any]] = []
+    if plan and expose == "thinking":
+        output.append({"type": "reasoning", "summary": [{"type": "summary_text", "text": plan}]})
+    text = _content_with_plan(resp.content, plan, expose)
+    if text:
+        output.append({
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": text, "annotations": []}],
+        })
+    for tc in resp.tool_calls:
+        output.append({
+            "type": "function_call",
+            "call_id": tc.id,
+            "name": tc.name,
+            "arguments": json.dumps(tc.arguments),
+            "status": "completed",
+        })
+    return {"id": _RESPONSE_ID, "object": "response", "status": "completed", "output": output}
 
 
 # --- SSE rendering ---------------------------------------------------------
@@ -88,6 +135,8 @@ def assemble_sse(
     """Render a merged ``LLMResponse`` to an ordered list of SSE event blocks."""
     if wire_format == "anthropic":
         return _sse_anthropic(response, response.reasoning, expose_plan_as)
+    if wire_format == "responses":
+        return _sse_responses(response, response.reasoning, expose_plan_as)
     return _sse_openai(response, response.reasoning, expose_plan_as)
 
 
@@ -97,7 +146,17 @@ def _sse_data(payload: dict[str, Any], event: str | None = None) -> str:
 
 
 def _sse_openai(resp: LLMResponse, plan: str | None, expose: ExposePlanAs) -> list[str]:
-    chunk = {"object": "chat.completion.chunk", "choices": [{"index": 0, "delta": {}, "finish_reason": None}]}
+    # 082 FR-013 (SSE sibling): carry the full chunk envelope (id/object/
+    # created/model), echoing the upstream exec response when preserved in
+    # ``raw``, so strict streaming clients accept the synthesized stream.
+    raw = resp.raw or {}
+    chunk = {
+        "id": raw.get("id") or _CHAT_COMPLETION_ID,
+        "object": "chat.completion.chunk",
+        "created": raw.get("created") if isinstance(raw.get("created"), int) else 0,
+        "model": raw.get("model", ""),
+        "choices": [{"index": 0, "delta": {}, "finish_reason": None}],
+    }
 
     def delta(d: dict[str, Any], finish: str | None = None) -> str:
         c = json.loads(json.dumps(chunk))
@@ -145,4 +204,91 @@ def _sse_anthropic(resp: LLMResponse, plan: str | None, expose: ExposePlanAs) ->
     stop = "tool_use" if resp.tool_calls else "end_turn"
     events.append(_sse_data({"type": "message_delta", "delta": {"stop_reason": stop}}, "message_delta"))
     events.append(_sse_data({"type": "message_stop"}, "message_stop"))
+    return events
+
+
+def _sse_responses(resp: LLMResponse, plan: str | None, expose: ExposePlanAs) -> list[str]:
+    """Synthesize the documented Responses SSE event stream from the final body.
+
+    Bracketed by ``response.created``/``response.completed`` (the terminal event
+    carries the fully-populated ``response`` so a delta-ignoring client still
+    reads the final output). Each output item is announced (``output_item.added``),
+    streamed (``output_text.delta`` for messages, ``function_call_arguments.delta``
+    for tool calls), and closed (``output_item.done``). Every event carries a
+    monotonic ``sequence_number``.
+    """
+    final = _assemble_responses(resp, plan, expose)
+    events: list[str] = []
+    seq = 0
+
+    def emit(payload: dict[str, Any]) -> None:
+        nonlocal seq
+        events.append(_sse_data({**payload, "sequence_number": seq}))
+        seq += 1
+
+    head = {"id": final["id"], "object": "response", "status": "in_progress", "output": []}
+    emit({"type": "response.created", "response": head})
+    emit({"type": "response.in_progress", "response": head})
+
+    for out_index, item in enumerate(final["output"]):
+        if item["type"] == "reasoning":
+            emit({"type": "response.output_item.added", "output_index": out_index, "item": item})
+            emit({"type": "response.output_item.done", "output_index": out_index, "item": item})
+        elif item["type"] == "message":
+            text = item["content"][0]["text"]
+            emit({
+                "type": "response.output_item.added",
+                "output_index": out_index,
+                "item": {"type": "message", "role": "assistant", "content": []},
+            })
+            emit({
+                "type": "response.content_part.added",
+                "output_index": out_index,
+                "content_index": 0,
+                "part": {"type": "output_text", "text": "", "annotations": []},
+            })
+            emit({
+                "type": "response.output_text.delta",
+                "output_index": out_index,
+                "content_index": 0,
+                "delta": text,
+            })
+            emit({
+                "type": "response.output_text.done",
+                "output_index": out_index,
+                "content_index": 0,
+                "text": text,
+            })
+            emit({
+                "type": "response.content_part.done",
+                "output_index": out_index,
+                "content_index": 0,
+                "part": {"type": "output_text", "text": text, "annotations": []},
+            })
+            emit({"type": "response.output_item.done", "output_index": out_index, "item": item})
+        elif item["type"] == "function_call":
+            args = item["arguments"]
+            emit({
+                "type": "response.output_item.added",
+                "output_index": out_index,
+                "item": {
+                    "type": "function_call",
+                    "call_id": item["call_id"],
+                    "name": item["name"],
+                    "arguments": "",
+                },
+            })
+            emit({
+                "type": "response.function_call_arguments.delta",
+                "output_index": out_index,
+                "delta": args,
+            })
+            emit({
+                "type": "response.function_call_arguments.done",
+                "output_index": out_index,
+                "arguments": args,
+            })
+            emit({"type": "response.output_item.done", "output_index": out_index, "item": item})
+
+    emit({"type": "response.completed", "response": final})
     return events

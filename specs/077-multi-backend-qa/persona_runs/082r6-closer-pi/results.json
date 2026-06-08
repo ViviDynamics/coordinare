@@ -1,0 +1,21 @@
+[
+  {
+    "role": "closer",
+    "endpoint": "pi-ephemeral",
+    "backend": "pi",
+    "model": "spark/qwen3.6:35b",
+    "strategy": "always",
+    "category": "PASS",
+    "status": "changes_requested",
+    "markers": [
+      "changes_requested"
+    ],
+    "detail": "status=changes_requested",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "changes_requested",
+    "state": "failed",
+    "log_file": null
+  }
+]

@@ -1,0 +1,21 @@
+[
+  {
+    "role": "security",
+    "endpoint": "claude-ephemeral",
+    "backend": "claude_code",
+    "model": "spark/qwen3.6:35b",
+    "strategy": "always",
+    "category": "FAIL_MODEL",
+    "status": "security_passed",
+    "markers": [
+      "PASSED_VULN_PR"
+    ],
+    "detail": "status=security_passed",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "Agent missed the SQL injection and eval vulnerabilities and incorrectly marked the PR as passing security.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": "cells/security__claude-ephemeral.json"
+  }
+]

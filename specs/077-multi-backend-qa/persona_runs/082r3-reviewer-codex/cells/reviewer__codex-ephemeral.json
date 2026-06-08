@@ -1,0 +1,24 @@
+{
+  "row": {
+    "role": "reviewer",
+    "endpoint": "codex-ephemeral",
+    "backend": "codex",
+    "model": "spark/qwen3.6:35b",
+    "strategy": "always",
+    "category": "FAIL_HARNESS",
+    "status": "dispatch_error",
+    "markers": [],
+    "detail": "status=dispatch_error | harness:dispatch_error",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "dispatch_error",
+    "state": "failed",
+    "log_file": null
+  },
+  "state": "failed",
+  "error_code": "dispatch_error",
+  "logs_excerpt": null,
+  "summary": "dispatch failed: RuntimeError: codex app-server exited before becoming ready (rc=1): WARNING: proceeding, even though we could not update PATH: Refusing to create helper binaries under temporary dir \"/tmp\" (codex_home: AbsolutePathBuf(\"/tmp/performer-s39in1ba/.codex\")) | Error: error loading default config after config error: Model provider `vivi` not found",
+  "container_logs": "\nadded 2 packages in 4s\nINFO:     172.66.0.243:32584 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-07 14:30:56 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\n2026-06-07 14:30:56 [info     ] secret_resolved                name=OPENAI_API_KEY source=init_payload\nINFO:     172.66.0.243:31884 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:58593 - \"GET /jobs/e3c03632bb604ac28998eec2b47e4025 HTTP/1.1\" 200 OK\n2026-06-07 14:30:57 [info     ] clone_repository.existing_branch branch=fix/reviewer-offbyone\n2026-06-07 14:30:57 [info     ] cloned repository              branch=fix/reviewer-offbyone repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-07 14:30:57 [info     ] dual_model_proxy.launched      backend=codex env_var=CODEX_PROVIDER_BASE_URL strategy=always\n2026-06-07 14:30:57 [error    ] codex.app_server_exited        returncode=1 tail='WARNING: proceeding, even though we could not update PATH: Refusing to create helper binaries under temporary dir \"/tmp\" (codex_home: AbsolutePathBuf(\"/tmp/performer-s39in1ba/.codex\")) | Error: error loading default config after config error: Model provider `vivi` not found'\n2026-06-07 14:30:57 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-s39in1ba\n2026-06-07 14:30:57 [error    ] perform_job.dispatch_failed    exc_type=RuntimeError\nTraceback (most recent call last):\n  File \"/usr/local/lib/python3.12/site-packages/performer/main.py\", line 2901, in _perform_job\n    _accepted_resp, perf = await handle_dispatch(dispatch_msg, settings)\n                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/site-packages/performer/main.py\", line 1133, in handle_dispatch\n    await backend.start(\n  File \"/usr/local/lib/python3.12/site-packages/performer/backends/codex.py\", line 215, in start\n    await self._wait_for_ready()\n  File \"/usr/local/lib/python3.12/site-packages/performer/backends/codex.py\", line 355, in _wait_for_ready\n    raise RuntimeError(\nRuntimeError: codex app-server exited before becoming ready (rc=1): WARNING: proceeding, even though we could not update PATH: Refusing to create helper binaries under temporary dir \"/tmp\" (codex_home: AbsolutePathBuf(\"/tmp/performer-s39in1ba/.codex\")) | Error: error loading default config after config error: Model provider `vivi` not found\nINFO:     172.66.0.243:26942 - \"GET /jobs/e3c03632bb604ac28998eec2b47e4025 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

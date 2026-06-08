@@ -116,3 +116,153 @@ class TestCategorize:
         # no judge: PASS needs contract_ok AND markers
         assert categorize("succeeded", "ok", True, ["m"], None)[0] == "PASS"
         assert categorize("succeeded", "ok", True, [], None)[0] == "FAIL_MODEL"
+
+    # 082 finding — BACKEND_FORMAT_ERROR disambiguation. The performer emits this
+    # code ONLY after the transport delivered output that the model would not
+    # shape into the JSON contract (`Last output: <repr>`). A NON-EMPTY last
+    # output means the model spoke but ignored the contract → model-quality miss
+    # (FAIL_MODEL), NOT plumbing. Only an EMPTY last output (swallowed / transport
+    # wall) stays FAIL_HARNESS. Pre-fix this was a blanket harness marker, so a
+    # model that rubber-stamped prose got mislabelled as a fixable harness bug.
+    def test_backend_format_error_with_output_is_model(self):
+        blob = (
+            '{"status":"error","reason":"BACKEND_FORMAT_ERROR: Backend security '
+            "output could not be parsed as a JSON object after 2 attempts. "
+            "Last output: \"It looks like you haven't specified what you'd like "
+            'help with yet.\""} error error'
+        )
+        cat, _ = categorize("failed", blob, False, [], None)
+        assert cat == "FAIL_MODEL"
+
+    def test_backend_format_error_empty_output_is_harness(self):
+        blob = (
+            '{"status":"error","reason":"BACKEND_FORMAT_ERROR: Backend architecting '
+            "output could not be parsed as a JSON object after 2 attempts. "
+            "Last output: ''\"} error error"
+        )
+        cat, hit = categorize("failed", blob, False, [], None)
+        assert cat == "FAIL_HARNESS"
+        assert any("BACKEND_FORMAT_ERROR" in h for h in hit)
+
+
+# --------------------------------------------------------------------------
+# 082 finding (082r7 implementer/codex) — FR-009 mandates that a failed/error
+# job state reconciled to PASS be EXPLICIT and DOCUMENTED. categorize() can
+# legitimately route state=failed / error_code=error → PASS when the contract
+# artifact holds (e.g. a real in-workspace pytest "4 passed"). When that
+# override happens it must surface a reconciliation note so the discrepancy is
+# never silent. reconciliation_note() is that pure signal.
+# --------------------------------------------------------------------------
+reconciliation_note = persona_bench.reconciliation_note
+
+
+class TestReconciliationNote:
+    def test_failed_state_passed_is_flagged(self):
+        note = reconciliation_note("failed", "error", "PASS")
+        assert note is not None
+        assert "failed" in note and "error" in note
+
+    def test_error_code_with_clean_state_is_flagged(self):
+        # state succeeded but the result still carried error_code=error.
+        note = reconciliation_note("succeeded", "error", "PASS")
+        assert note is not None
+        assert "error" in note
+
+    def test_cancelled_state_passed_is_flagged(self):
+        assert reconciliation_note("cancelled", None, "PASS") is not None
+
+    def test_clean_pass_is_not_flagged(self):
+        assert reconciliation_note("succeeded", None, "PASS") is None
+
+    def test_non_pass_never_flagged(self):
+        # A failed cell that stays FAIL_* / ERROR is already self-evident.
+        assert reconciliation_note("failed", "error", "FAIL_MODEL") is None
+        assert reconciliation_note("failed", "error", "ERROR") is None
+        assert reconciliation_note("failed", "error", "FAIL_HARNESS") is None
+
+
+# --------------------------------------------------------------------------
+# 082 finding #1/#2 — the dispatch payload must be 080-aware: resolve the model
+# from the role's mode (modes → model_endpoints → endpoints) and carry the
+# planner/executor `orchestration` block for non-single strategies, exactly as
+# the live coordinare does. Pre-080 the harness read performers.<role>.model and
+# never injected orchestration, so dual-model never actually ran under bench.
+# --------------------------------------------------------------------------
+_DUAL_CONFIG = """
+github_org: example-org
+human_reviewers: [alice]
+github_auth: pat
+github_token: ghp_test_token
+endpoints:
+  - {name: ep-ollama, kind: ollama, base_url: "http://192.168.3.30:11434"}
+  - {name: ep-litellm, kind: litellm, base_url: "https://litellm.example", auth_env: LITELLM_MASTER_KEY}
+model_endpoints:
+  - {name: plan-gptoss, endpoint: ep-ollama, model: "gpt-oss:120b"}
+  - {name: exec-qwen, endpoint: ep-litellm, model: "spark/qwen3.6:35b"}
+  - {name: solo-qwen, endpoint: ep-litellm, model: "spark/qwen3.6:35b"}
+modes:
+  - {name: plan-exec, strategy: always, thinking: plan-gptoss, tool: exec-qwen, expose_plan_as: thinking}
+  - {name: solo, strategy: single, tool: solo-qwen}
+performers:
+  default: {backend: claude_code, mode: solo}
+  architect: {backend: codex, mode: plan-exec}
+  closer: {backend: pi, mode: solo}
+"""
+
+
+def _write_config(tmp_path):
+    p = tmp_path / "config.yaml"
+    p.write_text(_DUAL_CONFIG)
+    return str(p)
+
+
+class TestResolveRoleDispatch:
+    def test_dual_model_role_yields_orchestration(self, tmp_path):
+        cfg_path = _write_config(tmp_path)
+        out = persona_bench.resolve_role_dispatch(cfg_path, "architect")
+        # executor leg is the dispatch model (mirrors live dispatch)
+        assert out["model"] == "spark/qwen3.6:35b"
+        orch = out["orchestration"]
+        assert orch is not None
+        assert orch["strategy"] == "always"
+        assert orch["tool"]["model"] == "spark/qwen3.6:35b"
+        assert orch["thinking"]["model"] == "gpt-oss:120b"
+
+    def test_single_model_role_has_no_orchestration(self, tmp_path):
+        cfg_path = _write_config(tmp_path)
+        out = persona_bench.resolve_role_dispatch(cfg_path, "closer")
+        assert out["model"] == "spark/qwen3.6:35b"
+        assert out["orchestration"] is None
+
+
+class TestBuildJobPayload:
+    def _task(self):
+        return persona_bench.RoleTask(
+            "architect", "architecting", "", None,
+            "T", "D", ["ac"], "persona", persona_bench.grade_architect, "rubric")
+
+    def test_injects_orchestration_into_metadata(self):
+        orch = {"strategy": "always", "tool": {"model": "x"}, "thinking": {"model": "y"}}
+        payload = persona_bench.build_job_payload(
+            self._task(), backend="codex", repo_url="r", branch="b",
+            job_id="j", gh_token="t", extra_secrets={}, model="x",
+            orchestration=orch, pr_url=None)
+        assert payload["metadata"]["model"] == "x"
+        assert payload["metadata"]["orchestration"] == orch
+        assert payload["role"] == "architecting"
+        assert payload["secrets"]["GITHUB_TOKEN"] == "t"
+
+    def test_single_model_omits_orchestration(self):
+        payload = persona_bench.build_job_payload(
+            self._task(), backend="codex", repo_url="r", branch="b",
+            job_id="j", gh_token="t", extra_secrets={}, model="x",
+            orchestration=None, pr_url=None)
+        assert "orchestration" not in payload["metadata"]
+
+    def test_pr_url_attached_when_present(self):
+        payload = persona_bench.build_job_payload(
+            self._task(), backend="codex", repo_url="r", branch="b",
+            job_id="j", gh_token="t", extra_secrets={}, model="x",
+            orchestration=None, pr_url="https://example/pr/1")
+        assert payload["pr_url"] == "https://example/pr/1"
+        assert payload["metadata"]["pr_url"] == "https://example/pr/1"

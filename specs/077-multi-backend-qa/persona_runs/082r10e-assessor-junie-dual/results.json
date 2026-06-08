@@ -1,0 +1,22 @@
+[
+  {
+    "role": "assessor",
+    "endpoint": "junie-ephemeral",
+    "backend": "junie",
+    "model": "spark/qwen3.6:35b",
+    "strategy": "always",
+    "category": "PASS",
+    "status": "blocked",
+    "markers": [
+      "9_questions"
+    ],
+    "detail": "questions=9 sufficient=None | reconciled-to-PASS: contract artifact satisfied despite state=failed (see container_logs for the post-success failure)",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "blocked",
+    "state": "failed",
+    "log_file": "cells/assessor__junie-ephemeral.json",
+    "reconciled": "reconciled-to-PASS: contract artifact satisfied despite state=failed (see container_logs for the post-success failure)"
+  }
+]

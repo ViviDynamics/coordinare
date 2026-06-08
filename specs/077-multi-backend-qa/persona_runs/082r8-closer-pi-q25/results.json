@@ -1,0 +1,22 @@
+[
+  {
+    "role": "closer",
+    "endpoint": "pi-ephemeral",
+    "backend": "pi",
+    "model": "spark/qwen2.5:14b-instruct-q6_K",
+    "strategy": "always",
+    "category": "PASS",
+    "status": "changes_requested",
+    "markers": [
+      "changes_requested"
+    ],
+    "detail": "status=changes_requested | reconciled-to-PASS: contract artifact satisfied despite state=failed (see container_logs for the post-success failure)",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "changes_requested",
+    "state": "failed",
+    "log_file": "cells/closer__pi-ephemeral.json",
+    "reconciled": "reconciled-to-PASS: contract artifact satisfied despite state=failed (see container_logs for the post-success failure)"
+  }
+]

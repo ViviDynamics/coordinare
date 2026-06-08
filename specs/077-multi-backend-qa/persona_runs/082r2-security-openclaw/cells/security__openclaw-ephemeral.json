@@ -1,0 +1,24 @@
+{
+  "row": {
+    "role": "security",
+    "endpoint": "openclaw-ephemeral",
+    "backend": "openclaw",
+    "model": "spark/qwen3.6:35b",
+    "strategy": "always",
+    "category": "FAIL_HARNESS",
+    "status": "error",
+    "markers": [],
+    "detail": "status=error | harness:subprocess_exit",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "error",
+    "state": "failed",
+    "log_file": null
+  },
+  "state": "failed",
+  "error_code": "error",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"error\",\"session_id\":\"4f0ce312-2093-4616-b48f-a7bc055fbe9f\",\"reason\":\"subprocess_exit:1\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "\nadded 285 packages in 12s\nINFO:     172.66.0.243:39843 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-07 14:13:50 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:24688 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:50019 - \"GET /jobs/be3fd27eac2b42d5a7ffab76fca78f31 HTTP/1.1\" 200 OK\n2026-06-07 14:13:51 [info     ] clone_repository.existing_branch branch=feat/security-sqli\n2026-06-07 14:13:51 [info     ] cloned repository              branch=feat/security-sqli repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-07 14:13:51 [info     ] dual_model_proxy.launched      backend=openclaw env_var=OPENCLAW_PROVIDER_BASE_URL strategy=always\n2026-06-07 14:13:51 [info     ] openclaw.provider_config_written base_url=http://127.0.0.1:33615 path=/root/.openclaw/openclaw.json provider=sparkollama\n2026-06-07 14:13:51 [info     ] openclaw.workspace_linked      workspace=/tmp/performer-w5agwilh\n2026-06-07 14:13:51 [info     ] openclaw.persona_to_soul       chars=83\n2026-06-07 14:13:51 [info     ] openclaw.card_docs_written     chars=181 path=/tmp/performer-w5agwilh/CARD.md\n2026-06-07 14:13:51 [info     ] openclaw starting              model=sparkollama/spark/qwen3.6:35b provider_routed=True session_key=coordinare-security-22e3631f\n2026-06-07 14:13:51 [info     ] openclaw started               model=sparkollama/spark/qwen3.6:35b pid=96\n2026-06-07 14:13:52 [info     ] dispatch accepted              session_id=4f0ce312-2093-4616-b48f-a7bc055fbe9f\nINFO:     172.66.0.243:30728 - \"GET /jobs/be3fd27eac2b42d5a7ffab76fca78f31 HTTP/1.1\" 200 OK\n2026-06-07 14:13:56 [warning  ] openclaw failed                rc=1 stderr='[agent/embedded] embedded run agent end: runId=d5473a81-9675-4ce6-914f-25b6d275215d isError=true model=spark/qwen3.6:35b provider=sparkollama error=LLM request failed. rawError=404 404: Not Found\\n[agent/embedded] embedded run failover decision: runId=d5473a81-9675-4ce6-914f-25b6d275215d stage=assistant decision=surface_error reason=model_not_found from=sparkollama/spark/qwen3.6:35b profile=- rawError=404 404: Not Found\\n[diagnostic] lane task error: lane=main durationMs=1826 error=\"FailoverError: HTTP 404: 404: Not Found\"\\n[diagnostic] lane task error: lane=session:agent:main:coordinare-security-22e3631f durationMs=1828 error=\"FailoverError: HTTP 404: 404: Not Found\"\\n[model-fallback/decision] model fallback decision: decision=candidate_failed requested=sparkollama/spark/qwen3.6:35b candidate=sparkollama/spark/qwen3.6:35b reason=model_not_found next=none detail=404 404: Not Found\\nFailoverError: HTTP 404: 404: Not Found\\n'\n2026-06-07 14:13:58 [info     ] openclaw stopped\n2026-06-07 14:13:58 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-w5agwilh\nINFO:     172.66.0.243:47288 - \"GET /jobs/be3fd27eac2b42d5a7ffab76fca78f31 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

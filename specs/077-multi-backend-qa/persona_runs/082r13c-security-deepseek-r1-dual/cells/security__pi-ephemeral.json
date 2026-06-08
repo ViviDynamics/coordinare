@@ -1,0 +1,25 @@
+{
+  "row": {
+    "role": "security",
+    "endpoint": "pi-ephemeral",
+    "backend": "pi",
+    "model": "spark/deepseek-r1:32b",
+    "strategy": "always",
+    "category": "FAIL_HARNESS",
+    "status": "error",
+    "markers": [],
+    "detail": "status=error | harness:BACKEND_FORMAT_ERROR(empty)",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "error",
+    "state": "failed",
+    "log_file": null,
+    "reconciled": null
+  },
+  "state": "failed",
+  "error_code": "error",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"error\",\"session_id\":\"2a7d5e0e-1d4f-4ad9-a2f5-f001f7ed9c16\",\"reason\":\"BACKEND_FORMAT_ERROR: Backend security output was empty after 2 attempts. Last output: ''\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "npm warn deprecated node-domexception@1.0.0: Use your platform's native DOMException instead\nnpm warn deprecated @mariozechner/pi-agent-core@0.73.1: please use @earendil-works/pi-agent-core instead going forward\nnpm warn deprecated @mariozechner/pi-tui@0.73.1: please use @earendil-works/pi-tui instead going forward\nnpm warn deprecated @mariozechner/pi-ai@0.73.1: please use @earendil-works/pi-ai instead going forward\nnpm warn deprecated @mariozechner/pi-coding-agent@0.73.1: please use @earendil-works/pi-coding-agent instead going forward\n\nadded 202 packages in 9s\nINFO:     172.66.0.243:38737 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-07 22:11:51 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:25673 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:38836 - \"GET /jobs/c34f17cf2ea442feab00082ef039e38b HTTP/1.1\" 200 OK\n2026-06-07 22:11:52 [info     ] clone_repository.existing_branch branch=feat/security-sqli\n2026-06-07 22:11:52 [info     ] cloned repository              branch=feat/security-sqli repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-07 22:11:52 [info     ] dual_model_proxy.launched      backend=pi env_var=PI_PROVIDER_BASE_URL strategy=always\n2026-06-07 22:11:52 [info     ] pi started                     model=spark/deepseek-r1:32b provider=litellm\n2026-06-07 22:11:53 [info     ] dispatch accepted              session_id=2a7d5e0e-1d4f-4ad9-a2f5-f001f7ed9c16\n2026-06-07 22:11:56 [info     ] dual_model_proxy.request       latency_ms=3178.3 path=/chat/completions status=502\nINFO:     172.66.0.243:49491 - \"GET /jobs/c34f17cf2ea442feab00082ef039e38b HTTP/1.1\" 200 OK\n2026-06-07 22:11:58 [info     ] dual_model_proxy.request       latency_ms=1763.5 path=/chat/completions status=502\n2026-06-07 22:12:01 [info     ] dual_model_proxy.request       latency_ms=1426.3 path=/chat/completions status=502\nINFO:     172.66.0.243:51182 - \"GET /jobs/c34f17cf2ea442feab00082ef039e38b HTTP/1.1\" 200 OK\n2026-06-07 22:12:03 [warning  ] backend.invalid_output.retrying attempt=1 failure_reason='was empty' max_retries=1 output_preview= stage=security\n2026-06-07 22:12:03 [info     ] pi stopped\nINFO:     172.66.0.243:43895 - \"GET /jobs/c34f17cf2ea442feab00082ef039e38b HTTP/1.1\" 200 OK\n2026-06-07 22:12:08 [info     ] dual_model_proxy.request       latency_ms=4323.9 path=/chat/completions status=502\nINFO:     172.66.0.243:64448 - \"GET /jobs/c34f17cf2ea442feab00082ef039e38b HTTP/1.1\" 200 OK\n2026-06-07 22:12:12 [info     ] dual_model_proxy.request       latency_ms=3571.5 path=/chat/completions status=502\nINFO:     172.66.0.243:25436 - \"GET /jobs/c34f17cf2ea442feab00082ef039e38b HTTP/1.1\" 200 OK\n2026-06-07 22:12:17 [info     ] dual_model_proxy.request       latency_ms=4659.2 path=/chat/completions status=502\n2026-06-07 22:12:19 [info     ] pi stopped\n2026-06-07 22:12:19 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-1vvv_oa8\nINFO:     172.66.0.243:55413 - \"GET /jobs/c34f17cf2ea442feab00082ef039e38b HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

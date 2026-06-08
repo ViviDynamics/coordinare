@@ -1,0 +1,21 @@
+[
+  {
+    "role": "tech_writer",
+    "endpoint": "hermes-ephemeral",
+    "backend": "hermes",
+    "model": "spark/qwen3.6:35b",
+    "strategy": "single",
+    "category": "FAIL_MODEL",
+    "status": "error",
+    "markers": [
+      "docs_reference_coupon"
+    ],
+    "detail": "status=error doc_hits=True",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "error",
+    "state": "failed",
+    "log_file": "cells/tech_writer__hermes-ephemeral.json"
+  }
+]

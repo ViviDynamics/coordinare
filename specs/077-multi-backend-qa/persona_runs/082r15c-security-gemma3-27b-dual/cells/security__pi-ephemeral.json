@@ -1,0 +1,25 @@
+{
+  "row": {
+    "role": "security",
+    "endpoint": "pi-ephemeral",
+    "backend": "pi",
+    "model": "spark/gemma3:27b",
+    "strategy": "always",
+    "category": "FAIL_HARNESS",
+    "status": "error",
+    "markers": [],
+    "detail": "status=error | harness:BACKEND_FORMAT_ERROR(empty)",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "error",
+    "state": "failed",
+    "log_file": null,
+    "reconciled": null
+  },
+  "state": "failed",
+  "error_code": "error",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"error\",\"session_id\":\"ba2452e2-513d-4313-85a8-f8259bd4ffe6\",\"reason\":\"BACKEND_FORMAT_ERROR: Backend security output was empty after 2 attempts. Last output: ''\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "npm warn deprecated node-domexception@1.0.0: Use your platform's native DOMException instead\nnpm warn deprecated @mariozechner/pi-agent-core@0.73.1: please use @earendil-works/pi-agent-core instead going forward\nnpm warn deprecated @mariozechner/pi-tui@0.73.1: please use @earendil-works/pi-tui instead going forward\nnpm warn deprecated @mariozechner/pi-ai@0.73.1: please use @earendil-works/pi-ai instead going forward\nnpm warn deprecated @mariozechner/pi-coding-agent@0.73.1: please use @earendil-works/pi-coding-agent instead going forward\n\nadded 202 packages in 10s\nINFO:     172.66.0.243:55226 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-07 23:07:09 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:25251 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:43311 - \"GET /jobs/4ed406202e1c4b9ba9d69f5f9430a0e9 HTTP/1.1\" 200 OK\n2026-06-07 23:07:10 [info     ] clone_repository.existing_branch branch=feat/security-sqli\n2026-06-07 23:07:10 [info     ] cloned repository              branch=feat/security-sqli repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-07 23:07:11 [info     ] dual_model_proxy.launched      backend=pi env_var=PI_PROVIDER_BASE_URL strategy=always\n2026-06-07 23:07:11 [info     ] pi started                     model=spark/gemma3:27b provider=litellm\n2026-06-07 23:07:11 [info     ] dispatch accepted              session_id=ba2452e2-513d-4313-85a8-f8259bd4ffe6\n2026-06-07 23:07:14 [info     ] dual_model_proxy.request       latency_ms=3073.2 path=/chat/completions status=502\nINFO:     172.66.0.243:38938 - \"GET /jobs/4ed406202e1c4b9ba9d69f5f9430a0e9 HTTP/1.1\" 200 OK\n2026-06-07 23:07:16 [info     ] dual_model_proxy.request       latency_ms=1306.3 path=/chat/completions status=502\n2026-06-07 23:07:19 [info     ] dual_model_proxy.request       latency_ms=1677.3 path=/chat/completions status=502\n2026-06-07 23:07:19 [warning  ] backend.invalid_output.retrying attempt=1 failure_reason='was empty' max_retries=1 output_preview= stage=security\n2026-06-07 23:07:19 [info     ] pi stopped\nINFO:     172.66.0.243:63325 - \"GET /jobs/4ed406202e1c4b9ba9d69f5f9430a0e9 HTTP/1.1\" 200 OK\n2026-06-07 23:07:23 [info     ] dual_model_proxy.request       latency_ms=3953.0 path=/chat/completions status=502\nINFO:     172.66.0.243:50254 - \"GET /jobs/4ed406202e1c4b9ba9d69f5f9430a0e9 HTTP/1.1\" 200 OK\n2026-06-07 23:07:27 [info     ] dual_model_proxy.request       latency_ms=3119.8 path=/chat/completions status=502\nINFO:     172.66.0.243:26213 - \"GET /jobs/4ed406202e1c4b9ba9d69f5f9430a0e9 HTTP/1.1\" 200 OK\n2026-06-07 23:07:32 [info     ] dual_model_proxy.request       latency_ms=4562.9 path=/chat/completions status=502\n2026-06-07 23:07:33 [info     ] pi stopped\n2026-06-07 23:07:33 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-tovs4z2h\nINFO:     172.66.0.243:51233 - \"GET /jobs/4ed406202e1c4b9ba9d69f5f9430a0e9 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

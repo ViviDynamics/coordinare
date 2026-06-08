@@ -1,0 +1,20 @@
+[
+  {
+    "role": "security",
+    "endpoint": "pi-ephemeral",
+    "backend": "pi",
+    "model": "spark/qwen2.5:14b-instruct-q6_K",
+    "strategy": "always",
+    "category": "FAIL_MODEL",
+    "status": "error",
+    "markers": [],
+    "detail": "status=error",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "error",
+    "state": "failed",
+    "log_file": "cells/security__pi-ephemeral.json",
+    "reconciled": null
+  }
+]

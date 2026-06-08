@@ -1,0 +1,22 @@
+[
+  {
+    "role": "qa",
+    "endpoint": "claude-ephemeral",
+    "backend": "claude_code",
+    "model": "spark/qwen3.6:35b",
+    "strategy": "always",
+    "category": "FAIL_MODEL",
+    "status": "qa_passed",
+    "markers": [
+      "3_steps",
+      "found_behavior_bug"
+    ],
+    "detail": "status=qa_passed steps=3 found_bug=True",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent incorrectly reported qa_passed and all tests passing, ignoring the known KeyError bug when 'discount' is absent.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": "cells/qa__claude-ephemeral.json"
+  }
+]

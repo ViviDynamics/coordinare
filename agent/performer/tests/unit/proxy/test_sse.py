@@ -45,6 +45,21 @@ def test_openai_sse_drop_omits_plan():
     assert "PLAN" not in "".join(events)
 
 
+def test_openai_sse_chunks_carry_full_envelope():
+    """082 FR-013 (SSE sibling): every chat.completion.chunk MUST carry the
+    id/object/created/model envelope, echoing upstream raw when present, so a
+    strict streaming client accepts the synthesized stream."""
+    raw = {"id": "chatcmpl-up", "created": 111, "model": "spark/qwen3.6:35b"}
+    resp = LLMResponse(content="answer", reasoning="PLAN", raw=raw)
+    payloads = _data_payloads(assemble_sse(resp, expose_plan_as="drop", wire_format="openai"))
+    assert payloads, "expected at least one chunk"
+    for p in payloads:
+        assert p["object"] == "chat.completion.chunk"
+        assert p["id"] == "chatcmpl-up"
+        assert p["created"] == 111
+        assert p["model"] == "spark/qwen3.6:35b"
+
+
 # --- anthropic SSE ---------------------------------------------------------
 
 

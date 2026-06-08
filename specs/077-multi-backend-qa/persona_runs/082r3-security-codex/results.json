@@ -1,0 +1,19 @@
+[
+  {
+    "role": "security",
+    "endpoint": "codex-ephemeral",
+    "backend": "codex",
+    "model": "spark/qwen3.6:35b",
+    "strategy": "always",
+    "category": "FAIL_HARNESS",
+    "status": "dispatch_error",
+    "markers": [],
+    "detail": "status=dispatch_error | harness:dispatch_error",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "dispatch_error",
+    "state": "failed",
+    "log_file": "cells/security__codex-ephemeral.json"
+  }
+]

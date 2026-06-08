@@ -143,6 +143,21 @@ def render_anthropic(request: LLMRequest, model: str, *, tools_enabled: bool) ->
 # --- inbound request parsing (CLI body -> LLMRequest) ----------------------
 
 
+def _openai_content_text(content: Any) -> str:
+    """Plain text from an OpenAI chat-completions message ``content`` — either a
+    string, or a list of content-parts (``[{"type": "text", "text": "..."}]``).
+
+    Agent SDKs (e.g. pi, which stores the user turn as ``content: [{type: text,
+    text}]`` internally and serializes it verbatim) commonly send the array form.
+    Dropping it to "" empties the user task and the exec model replies with a bare
+    greeting — the 082 dual-mode greeting root cause."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text")
+    return ""
+
+
 def to_llm_request_openai(body: dict[str, Any]) -> LLMRequest:
     """Parse an OpenAI chat-completions request body into an LLMRequest."""
     messages = []
@@ -158,7 +173,7 @@ def to_llm_request_openai(body: dict[str, Any]) -> LLMRequest:
         messages.append(
             Message(
                 role=m.get("role", "user"),
-                content=m.get("content") or "" if isinstance(m.get("content"), str) else "",
+                content=_openai_content_text(m.get("content")),
                 tool_calls=tcs,
                 tool_call_id=m.get("tool_call_id"),
             )
@@ -209,6 +224,79 @@ def to_llm_request_anthropic(body: dict[str, Any]) -> LLMRequest:
     tools = tuple(
         ToolSchema(name=t.get("name", ""), description=t.get("description", ""), parameters=t.get("input_schema") or {})
         for t in (body.get("tools") or [])
+    )
+    return LLMRequest(messages=tuple(messages), tools=tools, stream=bool(body.get("stream")))
+
+
+def _responses_content_text(content: Any) -> str:
+    """Plain text from a Responses message ``content`` — a string, or a list of
+    ``input_text``/``output_text`` blocks."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(b.get("text", "") for b in content if isinstance(b, dict))
+    return ""
+
+
+def _responses_input_item_to_messages(item: dict[str, Any]) -> list[Message]:
+    """Convert one Responses ``input`` array item into canonical Message(s)."""
+    itype = item.get("type", "message")
+    if itype == "message":
+        return [Message(role=item.get("role", "user"), content=_responses_content_text(item.get("content")))]
+    if itype == "function_call":
+        return [
+            Message(
+                role="assistant",
+                content="",
+                tool_calls=(
+                    ToolCall(
+                        id=item.get("call_id", ""),
+                        name=item.get("name", ""),
+                        arguments=_loads(item.get("arguments")),
+                    ),
+                ),
+            )
+        ]
+    if itype == "function_call_output":
+        return [
+            Message(
+                role="tool",
+                content=_block_text(item.get("output")),
+                tool_call_id=item.get("call_id"),
+            )
+        ]
+    return []
+
+
+def to_llm_request_responses(body: dict[str, Any]) -> LLMRequest:
+    """Parse an OpenAI Responses-API request body into an LLMRequest.
+
+    codex 0.137.0 is hard-locked to this wire at request time (it POSTs to
+    ``/responses`` regardless of provider ``wire_api`` config), so the proxy must
+    accept it as a third front-door format alongside openai/anthropic. Shape:
+    ``instructions`` (system text), ``input`` (string OR an array of message /
+    function_call / function_call_output items), flat ``tools``
+    (``{type, name, description, parameters}`` — not nested under ``function``).
+    """
+    messages: list[Message] = []
+    instructions = body.get("instructions")
+    if isinstance(instructions, str) and instructions:
+        messages.append(Message.system(instructions))
+    inp = body.get("input")
+    if isinstance(inp, str):
+        messages.append(Message.user(inp))
+    elif isinstance(inp, list):
+        for item in inp:
+            if isinstance(item, dict):
+                messages.extend(_responses_input_item_to_messages(item))
+    tools = tuple(
+        ToolSchema(
+            name=t.get("name", ""),
+            description=t.get("description", ""),
+            parameters=t.get("parameters") or {},
+        )
+        for t in (body.get("tools") or [])
+        if t.get("type") == "function"
     )
     return LLMRequest(messages=tuple(messages), tools=tools, stream=bool(body.get("stream")))
 

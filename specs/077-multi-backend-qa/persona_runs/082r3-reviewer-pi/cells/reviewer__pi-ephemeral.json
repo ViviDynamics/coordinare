@@ -1,0 +1,24 @@
+{
+  "row": {
+    "role": "reviewer",
+    "endpoint": "pi-ephemeral",
+    "backend": "pi",
+    "model": "spark/qwen3.6:35b",
+    "strategy": "always",
+    "category": "FAIL_MODEL",
+    "status": "changes_requested",
+    "markers": [],
+    "detail": "status=changes_requested",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "changes_requested",
+    "state": "failed",
+    "log_file": null
+  },
+  "state": "failed",
+  "error_code": "changes_requested",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"changes_requested\",\"session_id\":\"bd0376fb-6f9a-4ead-ac00-a55128daa9a9\",\"questions\":[],\"comments\":[],\"body\":\"I'm here and ready to help! It looks like your message was blank. Could you let me know what you'd like to do? I can:\\n\\n- **Read** files on your system\\n- **Edit** code in existing files\\n- **Create** new files\\n- **Execute** shell commands\\n\\nJust provide the paths and details of what you need, and I'll get started.\",\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "npm warn deprecated @mariozechner/pi-agent-core@0.73.1: please use @earendil-works/pi-agent-core instead going forward\nnpm warn deprecated node-domexception@1.0.0: Use your platform's native DOMException instead\nnpm warn deprecated @mariozechner/pi-tui@0.73.1: please use @earendil-works/pi-tui instead going forward\nnpm warn deprecated @mariozechner/pi-ai@0.73.1: please use @earendil-works/pi-ai instead going forward\nnpm warn deprecated @mariozechner/pi-coding-agent@0.73.1: please use @earendil-works/pi-coding-agent instead going forward\n\nadded 202 packages in 9s\nINFO:     172.66.0.243:28744 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-07 14:31:15 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:41369 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:52933 - \"GET /jobs/7f7e2e070fc1479c9db2afa3ada42a81 HTTP/1.1\" 200 OK\n2026-06-07 14:31:15 [info     ] clone_repository.existing_branch branch=fix/reviewer-offbyone\n2026-06-07 14:31:15 [info     ] cloned repository              branch=fix/reviewer-offbyone repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-07 14:31:16 [info     ] dual_model_proxy.launched      backend=pi env_var=PI_PROVIDER_BASE_URL strategy=always\n2026-06-07 14:31:16 [info     ] pi started                     model=spark/qwen3.6:35b provider=litellm\n2026-06-07 14:31:16 [info     ] dispatch accepted              session_id=bd0376fb-6f9a-4ead-ac00-a55128daa9a9\nINFO:     172.66.0.243:17424 - \"GET /jobs/7f7e2e070fc1479c9db2afa3ada42a81 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:40080 - \"GET /jobs/7f7e2e070fc1479c9db2afa3ada42a81 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:49014 - \"GET /jobs/7f7e2e070fc1479c9db2afa3ada42a81 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:38298 - \"GET /jobs/7f7e2e070fc1479c9db2afa3ada42a81 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:63495 - \"GET /jobs/7f7e2e070fc1479c9db2afa3ada42a81 HTTP/1.1\" 200 OK\n2026-06-07 14:31:41 [info     ] dual_model_proxy.request       latency_ms=24653.0 path=/chat/completions status=200\n2026-06-07 14:31:42 [warning  ] backend.invalid_output.retrying attempt=1 failure_reason='could not be parsed as a JSON object' max_retries=1 output_preview='Hello! How can I help you with your code today?' stage=review\nINFO:     172.66.0.243:39948 - \"GET /jobs/7f7e2e070fc1479c9db2afa3ada42a81 HTTP/1.1\" 200 OK\n2026-06-07 14:31:48 [info     ] dual_model_proxy.request       latency_ms=5059.7 path=/chat/completions status=200\n2026-06-07 14:31:48 [warning  ] backend.parse_lenient_fallback failure_reason='could not be parsed as a JSON object' output_preview=\"I'm here and ready to help! It looks like your message was blank. Could you let me know what you'd like to do? I can:\\n\\n- **Read** files on your system\\n- **Edit** code in existing files\\n- **Create** ne\" role=reviewing stage=review\n2026-06-07 14:31:49 [info     ] review posted                  owner=ViviDynamics pr_number=1 repo=conductor-bench review_event=COMMENT\n2026-06-07 14:31:49 [info     ] pi stopped\n2026-06-07 14:31:49 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-svtu2s6y\nINFO:     172.66.0.243:41362 - \"GET /jobs/7f7e2e070fc1479c9db2afa3ada42a81 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

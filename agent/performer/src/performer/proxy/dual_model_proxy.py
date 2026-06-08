@@ -39,12 +39,27 @@ from performer.proxy.upstreams import (
     HttpUpstream,
     to_llm_request_anthropic,
     to_llm_request_openai,
+    to_llm_request_responses,
 )
 
 log = structlog.get_logger(__name__)
 
-# CLI front-door paths → wire format (FR-010).
-_PATH_WIRE = {"/v1/messages": "anthropic", "/v1/chat/completions": "openai"}
+# CLI front-door paths → wire format (FR-010, FR-011). Both the ``/v1``-prefixed and
+# bare forms are served: LiteLLM/OpenAI clients use ``/v1/chat/completions`` but
+# several CLIs (opencode/openclaw) call ``/chat/completions`` directly, and
+# Anthropic-style clients likewise split on ``/v1/messages`` vs ``/messages``. codex
+# 0.137.0 is hard-locked to the OpenAI **Responses** API at request time — it POSTs
+# to ``/responses`` regardless of provider ``wire_api`` config — so that path is
+# served as a third wire format. The body shape is identical across the prefix
+# variants, so each pair maps to the same wire format.
+_PATH_WIRE = {
+    "/v1/messages": "anthropic",
+    "/messages": "anthropic",
+    "/v1/chat/completions": "openai",
+    "/chat/completions": "openai",
+    "/v1/responses": "responses",
+    "/responses": "responses",
+}
 
 
 def build_upstream(ref: dict[str, Any], *, client=None) -> HttpUpstream:
@@ -97,6 +112,8 @@ def build_strategy(orchestration: dict[str, Any], *, client=None) -> Orchestrati
 def _parse_request(body: dict[str, Any], wire_format: str) -> LLMRequest:
     if wire_format == "anthropic":
         return to_llm_request_anthropic(body)
+    if wire_format == "responses":
+        return to_llm_request_responses(body)
     return to_llm_request_openai(body)
 
 

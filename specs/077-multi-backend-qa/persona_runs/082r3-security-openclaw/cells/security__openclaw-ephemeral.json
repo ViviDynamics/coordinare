@@ -1,0 +1,24 @@
+{
+  "row": {
+    "role": "security",
+    "endpoint": "openclaw-ephemeral",
+    "backend": "openclaw",
+    "model": "spark/qwen3.6:35b",
+    "strategy": "always",
+    "category": "FAIL_HARNESS",
+    "status": "error",
+    "markers": [],
+    "detail": "status=error | harness:BACKEND_FORMAT_ERROR",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "error",
+    "state": "failed",
+    "log_file": null
+  },
+  "state": "failed",
+  "error_code": "error",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"error\",\"session_id\":\"59104a2b-3bb4-4b44-9c2c-272aa0e15acb\",\"reason\":\"BACKEND_FORMAT_ERROR: Backend security output could not be parsed as a JSON object after 2 attempts. Last output: 'NO_REPLY'\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "\nadded 285 packages in 14s\nINFO:     172.66.0.243:36324 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-07 14:51:40 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:50846 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:60579 - \"GET /jobs/2d52fdfbaf6f43c781c112a85fa82012 HTTP/1.1\" 200 OK\n2026-06-07 14:51:41 [info     ] clone_repository.existing_branch branch=feat/security-sqli\n2026-06-07 14:51:41 [info     ] cloned repository              branch=feat/security-sqli repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-07 14:51:41 [info     ] dual_model_proxy.launched      backend=openclaw env_var=OPENCLAW_PROVIDER_BASE_URL strategy=always\n2026-06-07 14:51:41 [info     ] openclaw.provider_config_written base_url=http://127.0.0.1:43181 path=/root/.openclaw/openclaw.json provider=sparkollama\n2026-06-07 14:51:41 [info     ] openclaw.workspace_linked      workspace=/tmp/performer-anws2yxx\n2026-06-07 14:51:41 [info     ] openclaw.persona_to_soul       chars=83\n2026-06-07 14:51:41 [info     ] openclaw.card_docs_written     chars=181 path=/tmp/performer-anws2yxx/CARD.md\n2026-06-07 14:51:41 [info     ] openclaw starting              model=sparkollama/spark/qwen3.6:35b provider_routed=True session_key=coordinare-security-de6ed818\n2026-06-07 14:51:41 [info     ] openclaw started               model=sparkollama/spark/qwen3.6:35b pid=96\n2026-06-07 14:51:41 [info     ] dispatch accepted              session_id=59104a2b-3bb4-4b44-9c2c-272aa0e15acb\nINFO:     172.66.0.243:25962 - \"GET /jobs/2d52fdfbaf6f43c781c112a85fa82012 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:25989 - \"GET /jobs/2d52fdfbaf6f43c781c112a85fa82012 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:40284 - \"GET /jobs/2d52fdfbaf6f43c781c112a85fa82012 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:21648 - \"GET /jobs/2d52fdfbaf6f43c781c112a85fa82012 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:31148 - \"GET /jobs/2d52fdfbaf6f43c781c112a85fa82012 HTTP/1.1\" 200 OK\n2026-06-07 14:52:08 [info     ] dual_model_proxy.request       latency_ms=21741.7 path=/chat/completions status=200\n2026-06-07 14:52:09 [warning  ] backend.invalid_output.retrying attempt=1 failure_reason='could not be parsed as a JSON object' max_retries=1 output_preview=NO_REPLY stage=security\nINFO:     172.66.0.243:19470 - \"GET /jobs/2d52fdfbaf6f43c781c112a85fa82012 HTTP/1.1\" 200 OK\n2026-06-07 14:52:11 [info     ] openclaw stopped\n2026-06-07 14:52:11 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-anws2yxx\nINFO:     172.66.0.243:17449 - \"GET /jobs/2d52fdfbaf6f43c781c112a85fa82012 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}
