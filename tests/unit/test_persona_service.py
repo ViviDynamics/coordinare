@@ -73,6 +73,36 @@ def test_qa_default_mentions_verification_and_visual_evidence() -> None:
     assert "reproduction steps" in qa_text.lower()
 
 
+def test_security_default_uses_taint_to_sink_checklist() -> None:
+    """US2 (083): the security persona must drive a CWE taint→sink review.
+
+    The model should trace untrusted sources to dangerous sinks across a
+    fixed CWE checklist, and still emit the {passed, findings[]} contract
+    with per-finding routing.
+    """
+    personas = PersonasConfig()
+    text = get_effective_instructions("security", personas)
+    lower = text.lower()
+
+    # Taint-analysis framing: untrusted source -> dangerous sink.
+    assert "untrusted" in lower
+    assert "source" in lower
+    assert "sink" in lower
+
+    # Fixed CWE checklist (the six categories US2 mandates).
+    assert "injection" in lower
+    assert "authoriz" in lower  # broken authorization / authz
+    assert "secret" in lower  # hardcoded secrets
+    assert "deserializ" in lower  # insecure deserialization
+    assert "path traversal" in lower
+    assert "ssrf" in lower
+
+    # Contract preserved: {passed, findings[]} JSON output + routing.
+    assert "passed" in text
+    assert "findings" in text
+    assert "routing" in text
+
+
 # ---------------------------------------------------------------------------
 # save_persona / reset_persona
 # ---------------------------------------------------------------------------

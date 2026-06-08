@@ -1,0 +1,24 @@
+[
+  {
+    "role": "qa",
+    "endpoint": "claude-ephemeral",
+    "backend": "claude_code",
+    "model": "spark/gpt-oss:120b",
+    "strategy": "single",
+    "category": "FAIL_MODEL",
+    "status": "qa_passed",
+    "markers": [
+      "4_steps",
+      "found_behavior_bug"
+    ],
+    "detail": "status=qa_passed steps=4 found_bug=True",
+    "judge_correct": false,
+    "judge_quality": 2,
+    "judge_reason": "The QA incorrectly reported all tests passing and marked the review as qa_passed, despite the known KeyError bug that should cause a failure.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": "cells/qa__claude-ephemeral.json",
+    "reconciled": null,
+    "persona_source": "production"
+  }
+]

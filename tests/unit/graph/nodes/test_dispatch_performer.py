@@ -1800,3 +1800,280 @@ async def test_env_cache_non_http_service_no_extra_volumes(tmp_path: Path) -> No
     # _Service.dispatch_card doesn't accept extra_volumes and must not be called with it
     # (the node guards with isinstance(service, HTTPPerformerService) before passing extra_volumes)
     assert svc.last_workspace_info is not None  # workspace was still prepared
+
+
+# ---------------------------------------------------------------------------
+# 083 US1: security-role static-analysis floor at dispatch (T010)
+# ---------------------------------------------------------------------------
+
+
+class _GitHubWithDiff(_GitHub):
+    """_GitHub plus the 083 ``get_pr_diff`` contract."""
+
+    def __init__(
+        self,
+        *,
+        diff_files: list[str] | None = None,
+        diff_raw: str = "diff --git a/x b/x",
+        raise_exc: Exception | None = None,
+        **kw: Any,
+    ) -> None:
+        super().__init__(**kw)
+        self._diff_files = diff_files if diff_files is not None else ["src/app/vuln.py"]
+        self._diff_raw = diff_raw
+        self._raise_exc = raise_exc
+        self.get_pr_diff_calls: list[str] = []
+
+    async def get_pr_diff(self, pr_url: str) -> tuple[str, list[str]]:
+        self.get_pr_diff_calls.append(pr_url)
+        if self._raise_exc is not None:
+            raise self._raise_exc
+        return self._diff_raw, list(self._diff_files)
+
+
+_SEC_CARD = {
+    "id": "ITEM_1",
+    "status": "TODO",
+    "pr_url": "https://github.com/acme/repo/pull/42",
+    "pr_node_id": "PR_node_1",
+}
+
+_SAMPLE_FINDINGS = [
+    {
+        "severity": "high",
+        "category": "78",
+        "description": "semgrep:dangerous-system-call",
+        "file": "src/app/vuln.py",
+        "line": 3,
+        "routing": "implementer",
+    }
+]
+
+
+@pytest.mark.asyncio
+async def test_security_role_scans_once_and_stashes_findings(monkeypatch) -> None:
+    """security role → get_pr_diff once + scan_diff once + findings stashed/injected."""
+    security_svc = _Service()
+    github = _GitHubWithDiff()
+    state = _base_state(
+        github_service=github,
+        performer_services={"security": security_svc},
+        performer_stage="security",
+        lifecycle_sequence=["security"],
+        current_card=dict(_SEC_CARD),
+    )
+
+    calls: list[tuple[list[str], str]] = []
+
+    def fake_scan(changed_files, repo_root):
+        calls.append((list(changed_files), str(repo_root)))
+        return list(_SAMPLE_FINDINGS)
+
+    monkeypatch.setattr(
+        "coordinare.graph.nodes.dispatch_performer.scan_diff", fake_scan
+    )
+
+    result = await dispatch_performer(state)
+
+    assert github.get_pr_diff_calls == ["https://github.com/acme/repo/pull/42"]
+    assert len(calls) == 1
+    assert calls[0][0] == ["src/app/vuln.py"]
+    assert result["scanner_findings"] == _SAMPLE_FINDINGS
+    assert security_svc.dispatched[0]["scanner_findings"] == _SAMPLE_FINDINGS
+
+
+@pytest.mark.asyncio
+async def test_non_security_role_does_not_scan(monkeypatch) -> None:
+    """Non-security role → scan_diff NOT called, no scanner_findings state key."""
+    impl_svc = _Service()
+    github = _GitHubWithDiff()
+    state = _base_state(
+        github_service=github,
+        performer_services={"implementing": impl_svc},
+        performer_stage="implementing",
+        lifecycle_sequence=["implementing"],
+        current_card=dict(_SEC_CARD),
+    )
+
+    called: list[int] = []
+
+    def fake_scan(*a, **k):
+        called.append(1)
+        return []
+
+    monkeypatch.setattr(
+        "coordinare.graph.nodes.dispatch_performer.scan_diff", fake_scan
+    )
+
+    result = await dispatch_performer(state)
+
+    assert called == []
+    assert "scanner_findings" not in result
+    assert "scanner_findings" not in impl_svc.dispatched[0]
+
+
+@pytest.mark.asyncio
+async def test_scan_error_fails_closed_with_synthetic_finding(monkeypatch) -> None:
+    """scan_diff raises ScannerError → fail-closed synthetic critical finding."""
+    from coordinare.services.security_scanner import ScannerError
+
+    security_svc = _Service()
+    github = _GitHubWithDiff()
+    state = _base_state(
+        github_service=github,
+        performer_services={"security": security_svc},
+        performer_stage="security",
+        lifecycle_sequence=["security"],
+        current_card=dict(_SEC_CARD),
+    )
+
+    def boom(*a, **k):
+        raise ScannerError("semgrep binary not found")
+
+    monkeypatch.setattr(
+        "coordinare.graph.nodes.dispatch_performer.scan_diff", boom
+    )
+
+    result = await dispatch_performer(state)
+
+    findings = result["scanner_findings"]
+    assert len(findings) == 1
+    f = findings[0]
+    assert f["severity"] == "critical"
+    assert f["category"] == "scanner_unavailable"
+    assert f["routing"] == "halt"
+    assert security_svc.dispatched[0]["scanner_findings"] == findings
+
+
+@pytest.mark.asyncio
+async def test_diff_fetch_error_fails_closed(monkeypatch) -> None:
+    """get_pr_diff raises → fail-closed synthetic finding; scan_diff never reached."""
+    security_svc = _Service()
+    github = _GitHubWithDiff(raise_exc=RuntimeError("fetch failed (status 503)"))
+    state = _base_state(
+        github_service=github,
+        performer_services={"security": security_svc},
+        performer_stage="security",
+        lifecycle_sequence=["security"],
+        current_card=dict(_SEC_CARD),
+    )
+
+    def must_not_scan(*a, **k):
+        raise AssertionError("scan_diff must not run when diff fetch fails")
+
+    monkeypatch.setattr(
+        "coordinare.graph.nodes.dispatch_performer.scan_diff", must_not_scan
+    )
+
+    result = await dispatch_performer(state)
+
+    findings = result["scanner_findings"]
+    assert len(findings) == 1
+    assert findings[0]["severity"] == "critical"
+    assert findings[0]["category"] == "scanner_unavailable"
+    assert findings[0]["routing"] == "halt"
+
+
+# ---------------------------------------------------------------------------
+# Reviewer-diff injection: review roles receive the PR diff inline so a model
+# that does not proactively fetch it cannot report "no code changes".
+# (Drive-by fix bundled on 083: bot rejected PR #154 with "no code changes".)
+# ---------------------------------------------------------------------------
+
+_REVIEW_CARD = {
+    "id": "ITEM_REVIEW",
+    "status": "TODO",
+    "pr_url": "https://github.com/acme/repo/pull/42",
+    "pr_node_id": "PR_node_1",
+}
+
+_REVIEW_DIFF = "diff --git a/src/app.py b/src/app.py\n+    margin = base * 0.9\n"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stage", "role_key"),
+    [
+        ("reviewing", "reviewing"),
+        ("closing_review", "closing_review"),
+        ("qa", "qa"),
+        ("documenting", "documenting"),
+    ],
+)
+async def test_review_roles_receive_pr_diff(stage, role_key) -> None:
+    """Review roles get the raw PR diff injected as card_context['pr_diff']."""
+    svc = _Service()
+    github = _GitHubWithDiff(diff_raw=_REVIEW_DIFF, diff_files=["src/app.py"])
+    state = _base_state(
+        github_service=github,
+        performer_services={role_key: svc},
+        performer_stage=stage,
+        lifecycle_sequence=[stage],
+        current_card=dict(_REVIEW_CARD),
+    )
+
+    await dispatch_performer(state)
+
+    assert github.get_pr_diff_calls == ["https://github.com/acme/repo/pull/42"]
+    assert svc.dispatched[0].get("pr_diff") == _REVIEW_DIFF
+
+
+@pytest.mark.asyncio
+async def test_implementing_role_does_not_receive_pr_diff() -> None:
+    """The implementer is not a review role → no pr_diff fetch/injection."""
+    svc = _Service()
+    github = _GitHubWithDiff(diff_raw=_REVIEW_DIFF)
+    state = _base_state(
+        github_service=github,
+        performer_services={"implementing": svc},
+        performer_stage="implementing",
+        lifecycle_sequence=["implementing"],
+        current_card=dict(_REVIEW_CARD),
+    )
+
+    await dispatch_performer(state)
+
+    assert github.get_pr_diff_calls == []
+    assert "pr_diff" not in svc.dispatched[0]
+
+
+@pytest.mark.asyncio
+async def test_review_role_diff_fetch_failure_is_graceful() -> None:
+    """A diff-fetch failure does NOT block dispatch and injects no pr_diff key.
+
+    The persona-hardening fallback (instructing the model to fetch the diff
+    itself) covers this path, so the dispatch must proceed normally.
+    """
+    svc = _Service()
+    github = _GitHubWithDiff(raise_exc=RuntimeError("fetch failed (status 503)"))
+    state = _base_state(
+        github_service=github,
+        performer_services={"reviewing": svc},
+        performer_stage="reviewing",
+        lifecycle_sequence=["reviewing"],
+        current_card=dict(_REVIEW_CARD),
+    )
+
+    await dispatch_performer(state)
+
+    # dispatch still happened, just without an injected diff
+    assert len(svc.dispatched) == 1
+    assert "pr_diff" not in svc.dispatched[0]
+
+
+@pytest.mark.asyncio
+async def test_review_role_empty_diff_not_injected() -> None:
+    """An empty diff string is not injected (no misleading empty 'pr_diff')."""
+    svc = _Service()
+    github = _GitHubWithDiff(diff_raw="", diff_files=[])
+    state = _base_state(
+        github_service=github,
+        performer_services={"reviewing": svc},
+        performer_stage="reviewing",
+        lifecycle_sequence=["reviewing"],
+        current_card=dict(_REVIEW_CARD),
+    )
+
+    await dispatch_performer(state)
+
+    assert "pr_diff" not in svc.dispatched[0]

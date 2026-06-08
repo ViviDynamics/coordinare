@@ -2,7 +2,8 @@
 
 Asserts (against a representative diverse-backend config fixture):
 - T005: each lifecycle role resolves to its expected backend, and every role's
-  model is the single shared `spark/qwen3.6:35b` (FR-001, FR-002).
+  model is the single shared `spark/gpt-oss:120b` (FR-001, FR-002). The shared
+  model must be capable enough to gate the `security` role (spec 083 denylist).
 - T006: each backend endpoint carries the LiteLLM provider-routing env its
   backend needs, so no backend can default to a vendor-hosted model
   (contracts/backend-provider-routing.md C-5).
@@ -15,7 +16,9 @@ import pytest
 
 from coordinare.config import ProjectConfiguration
 
-SHARED_MODEL = "spark/qwen3.6:35b"
+# Capable shared model: NOT on the spec-083 security denylist, so the `security`
+# role may bind to it (the prior `spark/qwen3.6:35b` is now denylisted).
+SHARED_MODEL = "spark/gpt-oss:120b"
 
 # Expected role → backend mapping for the round (the 4 already-working backends;
 # pi/opencode land in US2/US4; openclaw in US6).
@@ -75,19 +78,19 @@ performer_endpoints:
 endpoints:
   - {name: litellm, kind: litellm, base_url: https://litellm.example/v1, auth_env: LITELLM_PROXY_AUTH_TOKEN}
 model_endpoints:
-  - {name: qwen-shared, endpoint: litellm, model: spark/qwen3.6:35b}
+  - {name: shared-model, endpoint: litellm, model: spark/gpt-oss:120b}
 modes:
-  - {name: single-qwen, strategy: single, tool: qwen-shared}
+  - {name: single-shared, strategy: single, tool: shared-model}
 performers:
-  assessor: {backend: junie, mode: single-qwen}
-  architect: {backend: codex, mode: single-qwen}
-  implementer: {backend: codex, mode: single-qwen}
-  security: {backend: codex, mode: single-qwen}
-  reviewer: {backend: claude_code, mode: single-qwen}
-  qa: {backend: claude_code, mode: single-qwen}
-  tech_writer: {backend: hermes, mode: single-qwen}
-  closer: {backend: hermes, mode: single-qwen}
-  env_bootstrap: {backend: claude_code, mode: single-qwen}
+  assessor: {backend: junie, mode: single-shared}
+  architect: {backend: codex, mode: single-shared}
+  implementer: {backend: codex, mode: single-shared}
+  security: {backend: codex, mode: single-shared}
+  reviewer: {backend: claude_code, mode: single-shared}
+  qa: {backend: claude_code, mode: single-shared}
+  tech_writer: {backend: hermes, mode: single-shared}
+  closer: {backend: hermes, mode: single-shared}
+  env_bootstrap: {backend: claude_code, mode: single-shared}
 """
 
 

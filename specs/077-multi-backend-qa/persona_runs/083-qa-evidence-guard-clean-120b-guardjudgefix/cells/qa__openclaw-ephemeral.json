@@ -1,0 +1,26 @@
+{
+  "row": {
+    "role": "qa",
+    "endpoint": "openclaw-ephemeral",
+    "backend": "openclaw",
+    "model": "spark/gpt-oss:120b",
+    "strategy": "single",
+    "category": "FAIL_HARNESS",
+    "status": "error",
+    "markers": [],
+    "detail": "status=error steps=0 found_bug=False | harness:subprocess_exit",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent did not run checkout_total or capture the KeyError, providing only an error status with no verification steps.",
+    "error_code": "error",
+    "state": "failed",
+    "log_file": null,
+    "reconciled": null,
+    "persona_source": "production"
+  },
+  "state": "failed",
+  "error_code": "error",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"error\",\"session_id\":\"4a2064e4-34e2-4c62-8efc-77078cbd1eb9\",\"reason\":\"subprocess_exit:1\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "\nadded 285 packages in 15s\nINFO:     172.66.0.243:48449 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-08 17:35:37 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:45894 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:61943 - \"GET /jobs/84bbee9f9d264a7596a72918d5542b3c HTTP/1.1\" 200 OK\n2026-06-08 17:35:38 [info     ] clone_repository.existing_branch branch=bench-ro-qa-e434f9e6\n2026-06-08 17:35:38 [info     ] cloned repository              branch=bench-ro-qa-e434f9e6 repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-08 17:35:38 [info     ] openclaw.provider_config_written base_url=http://192.168.3.30:11434/v1 path=/root/.openclaw/openclaw.json provider=sparkollama\n2026-06-08 17:35:38 [info     ] openclaw.workspace_linked      workspace=/tmp/performer-rclrizju\n2026-06-08 17:35:38 [info     ] openclaw.persona_to_soul       chars=4341\n2026-06-08 17:35:38 [info     ] openclaw.card_docs_written     chars=161 path=/tmp/performer-rclrizju/CARD.md\n2026-06-08 17:35:38 [info     ] openclaw starting              model=sparkollama/spark/gpt-oss:120b provider_routed=True session_key=coordinare-qa-551b140d\n2026-06-08 17:35:38 [info     ] openclaw started               model=sparkollama/spark/gpt-oss:120b pid=92\n2026-06-08 17:35:38 [info     ] dispatch accepted              session_id=4a2064e4-34e2-4c62-8efc-77078cbd1eb9\nINFO:     172.66.0.243:38818 - \"GET /jobs/84bbee9f9d264a7596a72918d5542b3c HTTP/1.1\" 200 OK\n2026-06-08 17:35:43 [warning  ] openclaw failed                rc=1 stderr='8-4765-8dda-b6a00dd0e785 isError=true model=spark/gpt-oss:120b provider=sparkollama error=LLM request failed. rawError=404 model \\'spark/gpt-oss:120b\\' not found\\n[agent/embedded] embedded run failover decision: runId=ad23076b-a018-4765-8dda-b6a00dd0e785 stage=assistant decision=surface_error reason=model_not_found from=sparkollama/spark/gpt-oss:120b profile=- rawError=404 model \\'spark/gpt-oss:120b\\' not found\\n[diagnostic] lane task error: lane=main durationMs=2039 error=\"FailoverError: HTTP 404: model \\'spark/gpt-oss:120b\\' not found\"\\n[diagnostic] lane task error: lane=session:agent:main:coordinare-qa-551b140d durationMs=2041 error=\"FailoverError: HTTP 404: model \\'spark/gpt-oss:120b\\' not found\"\\n[model-fallback/decision] model fallback decision: decision=candidate_failed requested=sparkollama/spark/gpt-oss:120b candidate=sparkollama/spark/gpt-oss:120b reason=model_not_found next=none detail=404 model \\'spark/gpt-oss:120b\\' not found\\nFailoverError: HTTP 404: model \\'spark/gpt-oss:120b\\' not found\\n'\n2026-06-08 17:35:44 [info     ] openclaw stopped\n2026-06-08 17:35:44 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-rclrizju\nINFO:     172.66.0.243:47147 - \"GET /jobs/84bbee9f9d264a7596a72918d5542b3c HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

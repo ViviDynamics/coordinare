@@ -1,0 +1,32 @@
+{
+  "row": {
+    "role": "security",
+    "endpoint": "openclaw-ephemeral",
+    "backend": "openclaw",
+    "model": "gpt-oss:120b",
+    "strategy": "single",
+    "category": "PASS",
+    "status": "security_failed",
+    "markers": [
+      "sql injection",
+      "injection",
+      "eval(",
+      "f-string",
+      "untrusted"
+    ],
+    "detail": "status=security_failed | reconciled-to-PASS: contract artifact satisfied despite state=failed (see container_logs for the post-success failure)",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "security_failed",
+    "state": "failed",
+    "log_file": null,
+    "reconciled": "reconciled-to-PASS: contract artifact satisfied despite state=failed (see container_logs for the post-success failure)",
+    "persona_source": "production"
+  },
+  "state": "failed",
+  "error_code": "security_failed",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"security_failed\",\"session_id\":\"01b99646-cd31-4f02-85cf-dca828e70bfb\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[{\"severity\":\"critical\",\"category\":\"Injection\",\"description\":\"lookup_user constructs SQL query via f-string interpolation of the untrusted 'username' parameter, creating a SQL injection vulnerability.\",\"file\":\"src/bench/lookup.py\",\"routing\":\"implementer\"},{\"severity\":\"critical\",\"category\":\"Code Execution\",\"description\":\"compute_filter evaluates attacker-controlled request[\\\"filter_expr\\\"] with eval(), enabling arbitrary code execution.\",\"file\":\"src/bench/lookup.py\",\"routing\":\"implementer\"}],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "\nadded 285 packages in 15s\nINFO:     172.66.0.243:65081 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-08 13:29:25 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:24238 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:50174 - \"GET /jobs/1b79d4f5c1c64c5a9420ee25273eb274 HTTP/1.1\" 200 OK\n2026-06-08 13:29:26 [info     ] clone_repository.existing_branch branch=bench/security-sqli-vuln\n2026-06-08 13:29:26 [info     ] cloned repository              branch=bench/security-sqli-vuln repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-08 13:29:26 [info     ] openclaw.provider_config_written base_url=http://192.168.3.30:11434/v1 path=/root/.openclaw/openclaw.json provider=sparkollama\n2026-06-08 13:29:26 [info     ] openclaw.workspace_linked      workspace=/tmp/performer-kinxoi_i\n2026-06-08 13:29:26 [info     ] openclaw.persona_to_soul       chars=3489\n2026-06-08 13:29:26 [info     ] openclaw.card_docs_written     chars=181 path=/tmp/performer-kinxoi_i/CARD.md\n2026-06-08 13:29:26 [info     ] openclaw starting              model=sparkollama/gpt-oss:120b provider_routed=True session_key=coordinare-security-81f8c7db\n2026-06-08 13:29:26 [info     ] openclaw started               model=sparkollama/gpt-oss:120b pid=92\n2026-06-08 13:29:27 [info     ] dispatch accepted              session_id=01b99646-cd31-4f02-85cf-dca828e70bfb\nINFO:     172.66.0.243:33839 - \"GET /jobs/1b79d4f5c1c64c5a9420ee25273eb274 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:48032 - \"GET /jobs/1b79d4f5c1c64c5a9420ee25273eb274 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:29605 - \"GET /jobs/1b79d4f5c1c64c5a9420ee25273eb274 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:49237 - \"GET /jobs/1b79d4f5c1c64c5a9420ee25273eb274 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:55571 - \"GET /jobs/1b79d4f5c1c64c5a9420ee25273eb274 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:39358 - \"GET /jobs/1b79d4f5c1c64c5a9420ee25273eb274 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:43066 - \"GET /jobs/1b79d4f5c1c64c5a9420ee25273eb274 HTTP/1.1\" 200 OK\n2026-06-08 13:30:02 [info     ] commit_file.committed          branch=bench/security-sqli-vuln path=docs/cards/security-review-user/security.md\n2026-06-08 13:30:02 [info     ] openclaw stopped\n2026-06-08 13:30:02 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-kinxoi_i\nINFO:     172.66.0.243:19188 - \"GET /jobs/1b79d4f5c1c64c5a9420ee25273eb274 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

@@ -7,12 +7,19 @@ RUN pip install --no-cache-dir playwright && \
 
 # Install cross-language linters, formatters, and test runners
 # Python tools
+#
+# semgrep + bandit are ADVISORY here: they give the security performer a
+# self-check it can run while iterating, feeding the model's findings[]. They
+# are NOT verdict-binding — the authoritative security floor (spec 083) is the
+# coordinare-side scan run at dispatch in monitor_performer, never this image.
 RUN pip install --no-cache-dir \
+    bandit \
     black \
     isort \
     pylint \
     pytest \
-    ruff
+    ruff \
+    semgrep
 
 # Node.js tools (installed globally via npm)
 RUN npm install -g \

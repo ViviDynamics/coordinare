@@ -344,6 +344,13 @@ def _build_task_prompt(score: Score, *, stand_path: pathlib.Path | None = None) 
     if score.acceptance_criteria:
         parts += ["## Acceptance Criteria", ""]
         parts.extend(f"- {c}" for c in score.acceptance_criteria)
+    if score.pr_diff:
+        parts += [
+            "", "## PR Diff Under Review", "",
+            "The unified diff below is the complete set of changes on this PR. "
+            "Review it directly — do NOT report that no changes were supplied.",
+            "", "```diff", score.pr_diff.rstrip("\n"), "```", "",
+        ]
     if score.relay_feedback:
         parts += ["", "## Human Feedback (address ALL of these)", ""]
         for item in score.relay_feedback:

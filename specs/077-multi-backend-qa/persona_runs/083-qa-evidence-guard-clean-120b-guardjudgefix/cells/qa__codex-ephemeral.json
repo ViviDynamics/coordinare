@@ -1,0 +1,26 @@
+{
+  "row": {
+    "role": "qa",
+    "endpoint": "codex-ephemeral",
+    "backend": "codex",
+    "model": "spark/gpt-oss:120b",
+    "strategy": "single",
+    "category": "FAIL_MODEL",
+    "status": "qa_failed",
+    "markers": [],
+    "detail": "status=qa_failed steps=0 found_bug=False",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The QA flagged a failure but provided no execution evidence or verification steps, which does not meet the rubric's requirement for a proper failure report.",
+    "error_code": "qa_failed",
+    "state": "failed",
+    "log_file": null,
+    "reconciled": null,
+    "persona_source": "production"
+  },
+  "state": "failed",
+  "error_code": "qa_failed",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"qa_failed\",\"session_id\":\"d24e6738-6baf-4b2f-ada4-f529ee8f73b2\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[{\"type\":\"unsubstantiated_pass\",\"criterion\":\"Execution evidence required for a QA pass\",\"expected\":\"Verification checks actually executed with commands and exit codes recorded, committed tests, or captured proof.\",\"actual\":\"Model reported criteria as passing but supplied zero execution evidence (zero checks executed, zero tests committed, zero captured proof). Unsubstantiated pass refused.\"}],\"report\":{\"qa_freshness_check\":{\"latest_main_sha\":null,\"branch_head_sha\":null,\"up_to_date\":null,\"detail\":\"freshness_check_indeterminate\"}},\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "\nadded 2 packages in 4s\nINFO:     172.66.0.243:30862 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-08 17:18:58 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\n2026-06-08 17:18:58 [info     ] secret_resolved                name=OPENAI_API_KEY source=init_payload\nINFO:     172.66.0.243:55764 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:16697 - \"GET /jobs/6d4ba8b79dca47e1a879b50e1163179f HTTP/1.1\" 200 OK\n2026-06-08 17:18:59 [info     ] clone_repository.existing_branch branch=bench-ro-qa-68c254a7\n2026-06-08 17:18:59 [info     ] cloned repository              branch=bench-ro-qa-68c254a7 repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-08 17:18:59 [debug    ] codex app-server ready         port=43091\n2026-06-08 17:18:59 [info     ] codex thread started           port=43091 thread_id=019ea83e-ab65-7123-baa6-09955bdacac2\n2026-06-08 17:18:59 [info     ] codex turn started             turn_id=019ea83e-ab8c-7fc1-94cb-ba18b3d542e4\n2026-06-08 17:19:00 [info     ] dispatch accepted              session_id=d24e6738-6baf-4b2f-ada4-f529ee8f73b2\nINFO:     172.66.0.243:55201 - \"GET /jobs/6d4ba8b79dca47e1a879b50e1163179f HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:57951 - \"GET /jobs/6d4ba8b79dca47e1a879b50e1163179f HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:39374 - \"GET /jobs/6d4ba8b79dca47e1a879b50e1163179f HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:31891 - \"GET /jobs/6d4ba8b79dca47e1a879b50e1163179f HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:35722 - \"GET /jobs/6d4ba8b79dca47e1a879b50e1163179f HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:59516 - \"GET /jobs/6d4ba8b79dca47e1a879b50e1163179f HTTP/1.1\" 200 OK\n2026-06-08 17:19:30 [warning  ] qa.unsubstantiated_pass_refused criteria_passed=0 session_id=d24e6738-6baf-4b2f-ada4-f529ee8f73b2\n2026-06-08 17:19:31 [info     ] commit_file.committed          branch=bench-ro-qa-68c254a7 path=docs/cards/qa-checkout-total/qa.md\n2026-06-08 17:19:31 [info     ] pr comment posted              owner=ViviDynamics pr_number=3 repo=conductor-bench\n2026-06-08 17:19:31 [info     ] codex app-server stopped\n2026-06-08 17:19:31 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-h6nj0m42\nINFO:     172.66.0.243:56071 - \"GET /jobs/6d4ba8b79dca47e1a879b50e1163179f HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

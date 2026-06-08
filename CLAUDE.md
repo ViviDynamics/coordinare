@@ -11,6 +11,8 @@ See AGENTS.md for all development guidelines.
 - N/A — no new persisted coordinare state. Routing table is a config surface; orchestration observability (normalizer/strategy/health decisions) is written to the job's existing `capture_dir` (same mechanism `ClaudeCodeShim`/`DualModelProxy` already use). (078-selfhosted-backend-shim)
 - Python 3.14 (project minimum 3.12; prod 3.14.5 via uv) + pydantic 2.x (config models + validation — reused, not modified), aiohttp/FastAPI (dashboard server), structlog (observability) (081-config-ui)
 - `config.yaml` (coordinare config + spec-080 catalogs) and the performer routing-table YAML written atomically via `config_write_service.atomic_write_yaml` (`tempfile.mkstemp` → `yaml.safe_dump` → `fsync` → `os.chmod` → `os.replace`), guarded by SHA-256 content-hash optimistic concurrency (081-config-ui)
+- Python 3.14 (project minimum 3.12; prod on 3.14.5 via uv) + pydantic 2.x (config + finding models, reused unchanged), langgraph (083-security-scan-gate)
+- N/A — no new persisted state. Scanner findings live in transient graph state (083-security-scan-gate)
 
 ## Recent Changes
 - 076-qa-cycle: Added Python 3.14 (project minimum: 3.12; production currently on 3.14.5 via uv) + pydantic 2.x, langgraph, structlog, docker SDK (or subprocess to `docker` CLI), fastapi (dashboard SSE), httpx (performer HTTP transport), pyyaml (config)

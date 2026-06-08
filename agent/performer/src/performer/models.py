@@ -118,6 +118,7 @@ class Score(BaseModel):
     role: str = "implementing"  # performer stage (implementing, reviewing, security, etc.)
     pr_url: str = ""  # existing PR URL (for reviewer/security/QA roles)
     pr_node_id: str = ""  # existing PR node ID (for terminal status)
+    pr_diff: str = ""  # raw unified PR diff injected for review roles (reviewer/closer/qa/tech_writer)
     backend: str = ""  # AI backend override (037)
     model: str = ""  # AI model override (037)
     effort: str = ""  # 055: low/medium/high effort hint for backend

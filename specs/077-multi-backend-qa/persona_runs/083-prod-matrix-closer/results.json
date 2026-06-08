@@ -1,0 +1,22 @@
+[
+  {
+    "role": "closer",
+    "endpoint": "pi-ephemeral",
+    "backend": "pi",
+    "model": "spark/qwen3.6:35b",
+    "strategy": "single",
+    "category": "PASS",
+    "status": "approved",
+    "markers": [
+      "approved"
+    ],
+    "detail": "status=approved",
+    "judge_correct": true,
+    "judge_quality": 5,
+    "judge_reason": "The agent returned a clear approved verdict as required.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null,
+    "reconciled": null
+  }
+]

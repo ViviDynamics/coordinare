@@ -1,0 +1,21 @@
+[
+  {
+    "role": "qa",
+    "endpoint": "claude-ephemeral",
+    "backend": "claude_code",
+    "model": "local/qwen3-14b",
+    "strategy": "single",
+    "category": "FAIL_MODEL",
+    "status": "qa_failed",
+    "markers": [],
+    "detail": "status=qa_failed steps=0 found_bug=False",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "qa_failed",
+    "state": "failed",
+    "log_file": "cells/qa__claude-ephemeral.json",
+    "reconciled": null,
+    "persona_source": "production"
+  }
+]

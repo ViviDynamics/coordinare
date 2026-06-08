@@ -328,6 +328,19 @@ class StuckAlertConfig(BaseModel):
 _NATIVE_ENDPOINT_KINDS = frozenset({"openai", "anthropic"})
 _SELF_HOSTED_ENDPOINT_KINDS = frozenset({"litellm", "ollama", "vllm"})
 
+# 083 US3 — weak-judge denylist. The `security` role is the authoritative review
+# lever; binding it to one of these models is a load-time error (fail-closed).
+# These models fail contract-bound roles across coding agents (MEMORY.md
+# project_qwen_coder_limitations) and must never gate security. Matched against
+# the bare model name (provider prefixes like "spark/" are stripped first).
+_SECURITY_MODEL_DENYLIST = frozenset({
+    "qwen3.6:35b",
+    "qwq:32b",
+    "qwen2.5:14b-instruct",
+    "qwen2.5:32b",
+    "qwen3-coder:30b",
+})
+
 # Default regex for the think_once "error marker" (FR-016); scans incoming
 # tool results only.
 DEFAULT_THINK_ONCE_ERROR_PATTERN = r"(?i)\b(error|exception|traceback|fatal|exit code [1-9])\b"
@@ -992,6 +1005,27 @@ class ProjectConfiguration(BaseSettings):
                 raise ValueError(
                     f"performers.{role_name} references unknown mode '{role.mode}'"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_security_model_not_denylisted(self) -> ProjectConfiguration:
+        """083 US3: reject a `security` role bound to a weak-judge model (fail-closed).
+
+        Scope is the `security` role ONLY — it is the authoritative review lever,
+        so its model must not come from the known weak-judge denylist. Resolves
+        through the role's mode → tool leg → model_endpoint.model (reuse of the
+        dispatch resolver), strips any provider prefix, and raises at load on a
+        denylist hit. Logs nothing (no `auth_env` values, FR-011)."""
+        dispatch = self.resolve_performer_dispatch_model("security")
+        model = dispatch.get("model")
+        if not model:
+            return self
+        bare = model.rsplit("/", 1)[-1]
+        if bare in _SECURITY_MODEL_DENYLIST:
+            raise ValueError(
+                f"performers.security model '{model}' is on the weak-judge denylist "
+                f"and may not gate security review (spec 083); choose a capable model"
+            )
         return self
 
     def resolve_endpoint(self, name: str) -> Endpoint | None:

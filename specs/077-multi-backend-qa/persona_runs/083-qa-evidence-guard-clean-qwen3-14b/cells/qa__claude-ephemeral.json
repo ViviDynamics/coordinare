@@ -1,0 +1,29 @@
+{
+  "row": {
+    "role": "qa",
+    "endpoint": "claude-ephemeral",
+    "backend": "claude_code",
+    "model": "local/qwen3-14b",
+    "strategy": "single",
+    "category": "FAIL_MODEL",
+    "status": "qa_passed",
+    "markers": [
+      "1_steps",
+      "RUBBER_STAMP"
+    ],
+    "detail": "status=qa_passed steps=1 found_bug=False",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent marked qa_passed without actually running checkout_total or detecting the expected KeyError, indicating a rubber\u2011stamp assessment.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null,
+    "reconciled": null,
+    "persona_source": "production"
+  },
+  "state": "succeeded",
+  "error_code": null,
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"qa_passed\",\"session_id\":\"29393cf6-850f-4d82-ba31-a82c64a03f0f\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"report\":{\"criteria_checked\":0,\"criteria_passed\":0,\"executed_checks\":[],\"env_limited\":false,\"environment_error\":null,\"new_tests_added\":0,\"verification_steps\":[\"Verify acceptance criterion: checkout_total behaves correctly for typical carts\"],\"pre_fix_repro_steps\":[],\"demo_setup_steps\":[],\"visual_capture_commands\":[],\"visual_capture_blockers\":[],\"visual_evidence\":[],\"visual_validation_required\":false,\"qa_freshness_check\":{\"latest_main_sha\":null,\"branch_head_sha\":null,\"up_to_date\":null,\"detail\":\"freshness_check_indeterminate\"}},\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "Setting up Claude Code...\n\nChecking installation status...\nInstalling Claude Code native build latest...\nSetting up launcher and shell integration...\n\u2714 Claude Code successfully installed!\n\n  Version: 2.1.168\n\n  Location: ~/.local/bin/claude\n\n\n  Next: Run claude --help to get started\n\n\u2705 Installation complete!\n\nINFO:     172.66.0.243:61751 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-08 15:57:59 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\n2026-06-08 15:57:59 [warning  ] secret_missing                 name=ANTHROPIC_API_KEY\n2026-06-08 15:57:59 [info     ] secret_resolved                name=ANTHROPIC_AUTH_TOKEN source=init_payload\nINFO:     172.66.0.243:39196 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:63379 - \"GET /jobs/3b7dc699934d4c63ae64673b9a0a8e5c HTTP/1.1\" 200 OK\n2026-06-08 15:58:00 [info     ] clone_repository.existing_branch branch=bench-ro-qa-9f5e2d18\n2026-06-08 15:58:00 [info     ] cloned repository              branch=bench-ro-qa-9f5e2d18 repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-08 15:58:01 [info     ] claude_code shim listening     port=41215\n2026-06-08 15:58:01 [info     ] claude code started            pid=101 resume=False\n2026-06-08 15:58:01 [info     ] claude_code shim request       latency_ms=33 method=HEAD path=/ status=200\n2026-06-08 15:58:01 [info     ] dispatch accepted              session_id=29393cf6-850f-4d82-ba31-a82c64a03f0f\n2026-06-08 15:58:01 [debug    ] claude code session captured   session_id=182f385c-307c-48fd-98c8-35147def8998\n2026-06-08 15:58:01 [info     ] claude_code shim request       latency_ms=94 method=POST path=/v1/messages status=400\n2026-06-08 15:58:01 [info     ] claude_code shim request       latency_ms=110 method=POST path=/v1/messages status=400\n2026-06-08 15:58:04 [info     ] commit_file.committed          branch=bench-ro-qa-9f5e2d18 path=docs/cards/qa-checkout-total/qa.md\nINFO:     172.66.0.243:34209 - \"GET /jobs/3b7dc699934d4c63ae64673b9a0a8e5c HTTP/1.1\" 200 OK\n2026-06-08 15:58:05 [info     ] pr comment posted              owner=ViviDynamics pr_number=3 repo=conductor-bench\n2026-06-08 15:58:05 [info     ] claude code stopped\n2026-06-08 15:58:05 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-3ll3sikj\nINFO:     172.66.0.243:65060 - \"GET /jobs/3b7dc699934d4c63ae64673b9a0a8e5c HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

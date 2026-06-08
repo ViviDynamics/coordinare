@@ -1,0 +1,26 @@
+{
+  "row": {
+    "role": "qa",
+    "endpoint": "claude-ephemeral",
+    "backend": "claude_code",
+    "model": "local/qwen3-14b",
+    "strategy": "single",
+    "category": "FAIL_MODEL",
+    "status": "qa_failed",
+    "markers": [],
+    "detail": "status=qa_failed steps=0 found_bug=False",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "qa_failed",
+    "state": "failed",
+    "log_file": null,
+    "reconciled": null,
+    "persona_source": "production"
+  },
+  "state": "failed",
+  "error_code": "qa_failed",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"qa_failed\",\"session_id\":\"a8e67b67-c52a-4667-b3d2-0918e576eabf\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[{\"type\":\"unsubstantiated_pass\",\"criterion\":\"Execution evidence required for a QA pass\",\"expected\":\"Verification checks actually executed with commands and exit codes recorded, committed tests, or captured proof.\",\"actual\":\"Model reported criteria as passing but supplied zero execution evidence (zero checks executed, zero tests committed, zero captured proof). Unsubstantiated pass refused.\"}],\"report\":{\"qa_freshness_check\":{\"latest_main_sha\":null,\"branch_head_sha\":null,\"up_to_date\":null,\"detail\":\"freshness_check_indeterminate\"}},\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "Setting up Claude Code...\n\nChecking installation status...\nInstalling Claude Code native build latest...\nSetting up launcher and shell integration...\n\u2714 Claude Code successfully installed!\n\n  Version: 2.1.168\n\n  Location: ~/.local/bin/claude\n\n\n  Next: Run claude --help to get started\n\n\u2705 Installation complete!\n\nINFO:     172.66.0.243:63367 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-08 16:05:39 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\n2026-06-08 16:05:39 [warning  ] secret_missing                 name=ANTHROPIC_API_KEY\n2026-06-08 16:05:39 [info     ] secret_resolved                name=ANTHROPIC_AUTH_TOKEN source=init_payload\nINFO:     172.66.0.243:37837 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:35897 - \"GET /jobs/8a4f77ac309f4ad79caca0ffca4d6cb3 HTTP/1.1\" 200 OK\n2026-06-08 16:05:40 [info     ] clone_repository.existing_branch branch=bench-ro-qa-3ad31a70\n2026-06-08 16:05:40 [info     ] cloned repository              branch=bench-ro-qa-3ad31a70 repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-08 16:05:40 [info     ] claude_code shim listening     port=39301\n2026-06-08 16:05:40 [info     ] claude code started            pid=101 resume=False\n2026-06-08 16:05:40 [info     ] claude_code shim request       latency_ms=27 method=HEAD path=/ status=200\n2026-06-08 16:05:40 [info     ] dispatch accepted              session_id=a8e67b67-c52a-4667-b3d2-0918e576eabf\n2026-06-08 16:05:40 [debug    ] claude code session captured   session_id=9c3fd335-8b9b-410d-b057-223af6a19666\n2026-06-08 16:05:40 [info     ] claude_code shim request       latency_ms=81 method=POST path=/v1/messages status=400\n2026-06-08 16:05:41 [info     ] claude_code shim request       latency_ms=91 method=POST path=/v1/messages status=400\n2026-06-08 16:05:42 [warning  ] qa.unsubstantiated_pass_refused criteria_passed=0 session_id=a8e67b67-c52a-4667-b3d2-0918e576eabf\n2026-06-08 16:05:43 [info     ] commit_file.committed          branch=bench-ro-qa-3ad31a70 path=docs/cards/qa-checkout-total/qa.md\nINFO:     172.66.0.243:16351 - \"GET /jobs/8a4f77ac309f4ad79caca0ffca4d6cb3 HTTP/1.1\" 200 OK\n2026-06-08 16:05:44 [info     ] pr comment posted              owner=ViviDynamics pr_number=3 repo=conductor-bench\n2026-06-08 16:05:44 [info     ] claude code stopped\n2026-06-08 16:05:44 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-2almiizz\nINFO:     172.66.0.243:28836 - \"GET /jobs/8a4f77ac309f4ad79caca0ffca4d6cb3 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import fnmatch
 import inspect
+import re
 from typing import Any, ClassVar
 from urllib.parse import quote
 
@@ -1096,6 +1097,65 @@ class GitHubService:
         result["files"] = files
         result["truncated"] = truncated
         return result
+
+    async def get_pr_diff(self, pr_url: str) -> tuple[str, list[str]]:
+        """083 — Fetch a PR's unified diff + changed-file list (Contract 2).
+
+        Returns ``(raw_unified_diff, changed_files)`` where ``changed_files`` is
+        the list of post-image paths parsed from the diff's ``diff --git`` headers.
+
+        Uses the coordinare's existing GH auth (REST API with the
+        ``application/vnd.github.diff`` media type — no ``gh`` CLI dependency).
+
+        Raises on any fetch failure (malformed URL, auth, network, non-2xx) so the
+        dispatch layer applies fail-closed handling. Never logs the token or the
+        raw diff at INFO (FR-011).
+        """
+        m = re.match(r"https?://[^/]+/([^/]+)/([^/]+)/pull/(\d+)", pr_url)
+        if not m:
+            raise ValueError("get_pr_diff: unrecognized PR URL")
+        owner, repo, number = m.group(1), m.group(2), int(m.group(3))
+
+        token = await self._current_token()
+        if not token.strip():
+            raise RuntimeError("get_pr_diff: no GH token available")
+
+        base = self._rest_api_base()
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github.diff",
+        }
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(
+                f"{base}/repos/{owner}/{repo}/pulls/{number}",
+                headers=headers,
+            )
+        if not resp.is_success:
+            logger.warning("get_pr_diff.fetch_failed", pr=number, status=resp.status_code)
+            raise RuntimeError(f"get_pr_diff: fetch failed (status {resp.status_code})")
+
+        raw = resp.text or ""
+        changed_files = self._parse_diff_paths(raw)
+        logger.info(
+            "get_pr_diff.complete",
+            pr=number,
+            file_count=len(changed_files),
+            diff_bytes=len(raw),
+        )
+        return raw, changed_files
+
+    @staticmethod
+    def _parse_diff_paths(raw_diff: str) -> list[str]:
+        """Extract post-image (``b/``) paths from a unified diff's git headers."""
+        paths: list[str] = []
+        for line in raw_diff.splitlines():
+            if not line.startswith("diff --git "):
+                continue
+            # "diff --git a/<path> b/<path>" — take the b-side path.
+            dm = re.match(r"diff --git a/(.+?) b/(.+)$", line)
+            if dm:
+                paths.append(dm.group(2))
+        return paths
 
     async def branch_exists(self, branch_name: str) -> bool:
         """Return True if a remote branch exists, False if 404.

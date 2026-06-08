@@ -760,6 +760,74 @@ def _qa_failure_is_environmental(f: dict) -> bool:
     return bool(_QA_ENV_FAILURE_PATTERNS.search(blob))
 
 
+def _qa_execution_evidence(qa_output: dict) -> list[dict]:
+    """083: normalise the model's self-reported executed checks. Each entry must
+    carry a non-empty command AND a recorded exit_code; entries lacking either
+    are dropped so a model can't manufacture evidence with empty objects.
+
+    Returns the cleaned list (possibly empty). This is the primary signal the
+    unsubstantiated-pass guard uses to tell a real verification from a
+    rubber-stamp."""
+    raw = qa_output.get("executed_checks", [])
+    if not isinstance(raw, list):
+        return []
+    cleaned: list[dict] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        command = str(entry.get("command", "")).strip()
+        exit_code = entry.get("exit_code")
+        if command and exit_code is not None:
+            cleaned.append(
+                {
+                    "command": command,
+                    "exit_code": exit_code,
+                    "output": str(entry.get("output", "")).strip(),
+                }
+            )
+    return cleaned
+
+
+def _qa_unsubstantiated_pass(
+    *,
+    qa_passed_flag: bool,
+    env_limited: bool,
+    criteria_passed: object,
+    executed_checks: list[dict],
+    new_tests: list[str],
+    visual_evidence: list[dict],
+) -> bool:
+    """083: a claimed QA pass must rest on OBSERVED evidence, not self-report.
+
+    gpt-oss:120b was caught emitting ``criteria_passed=N/N`` with ``failures: []``
+    while never running a single check — a rubber-stamp that slipped a known bug
+    through the gate. local/qwen3-14b then exploited the mirror loophole: it
+    claimed ``qa_passed`` with ``criteria_passed=0`` and an empty ``executed_checks``
+    (verifying nothing at all), which the original ``criteria_passed<=0`` exemption
+    let through. Both are the same failure — a confident pass that rests on no
+    OBSERVED evidence — so refuse a non-environment-limited pass whenever there is
+    no execution evidence (no executed_checks, no committed tests, no captured
+    proof), regardless of the self-reported criteria count.
+
+    'Couldn't verify' (env_limited) is an honest, advisory outcome and is exempt —
+    only a confident-but-unsubstantiated pass is refused.
+
+    ``criteria_passed`` is accepted but no longer gates the check: a pass that
+    asserted nothing positive yet still claimed success is the purest rubber-stamp,
+    not an exemption."""
+    del criteria_passed  # retained for signature/observability; no longer gates
+    if not qa_passed_flag:
+        return False  # already failing on a real defect
+    if env_limited:
+        return False  # honest "couldn't verify" → advisory pass, not a rubber-stamp
+    has_evidence = (
+        bool(executed_checks)
+        or bool(new_tests)
+        or any(ev.get("path_or_url") for ev in visual_evidence)
+    )
+    return not has_evidence
+
+
 def _build_qa_pr_comment(
     *,
     score: Score,
@@ -2149,11 +2217,49 @@ async def handle_status(
             env_limited = bool(env_error) or len(defect_failures) < len(failures)
             qa_passed_flag = not defect_failures
 
+            criteria_checked = qa_output.get("criteria_checked", 0)
+            criteria_passed = qa_output.get("criteria_passed", 0)
+
+            # 083: refuse a claimed pass that rests on self-report alone. A model
+            # that asserts criteria_passed>0 with failures=[] but ran nothing
+            # (no executed_checks, no committed tests, no captured proof) and is
+            # not env-limited is rubber-stamping — synthesise a real defect so the
+            # gate FAILs instead of waving the PR through. Phrase the failure to
+            # avoid the environmental regex so it counts as a defect, not advisory.
+            executed_checks = _qa_execution_evidence(qa_output)
+            if _qa_unsubstantiated_pass(
+                qa_passed_flag=qa_passed_flag,
+                env_limited=env_limited,
+                criteria_passed=criteria_passed,
+                executed_checks=executed_checks,
+                new_tests=perf.qa_new_tests,
+                visual_evidence=visual_evidence,
+            ):
+                unsubstantiated = {
+                    "type": "unsubstantiated_pass",
+                    "criterion": "Execution evidence required for a QA pass",
+                    "expected": (
+                        "Verification checks actually executed with commands and "
+                        "exit codes recorded, committed tests, or captured proof."
+                    ),
+                    "actual": (
+                        "Model reported criteria as passing but supplied zero "
+                        "execution evidence (zero checks executed, zero tests "
+                        "committed, zero captured proof). Unsubstantiated pass refused."
+                    ),
+                }
+                failures.append(unsubstantiated)
+                defect_failures.append(unsubstantiated)
+                qa_passed_flag = False
+                log.warning(
+                    "qa.unsubstantiated_pass_refused",
+                    session_id=perf.session_id,
+                    criteria_passed=criteria_passed,
+                )
+
             # Commit QA report to the architecture folder
             folder = _doc_folder(perf.score)
             qa_report_content = f"# QA Report: {perf.score.title}\n\n"
-            criteria_checked = qa_output.get("criteria_checked", 0)
-            criteria_passed = qa_output.get("criteria_passed", 0)
             qa_report_content += f"**Result: {'PASSED' if qa_passed_flag else 'FAILED'}**\n\n"
             qa_report_content += f"- Criteria checked: {criteria_checked}\n"
             qa_report_content += f"- Criteria passed: {criteria_passed}\n"
@@ -2285,6 +2391,7 @@ async def handle_status(
                 perf.qa_report = {
                     "criteria_checked": qa_output.get("criteria_checked", 0),
                     "criteria_passed": qa_output.get("criteria_passed", 0),
+                    "executed_checks": executed_checks,
                     "env_limited": env_limited,
                     "environment_error": env_error or None,
                     "new_tests_added": len(perf.qa_new_tests),

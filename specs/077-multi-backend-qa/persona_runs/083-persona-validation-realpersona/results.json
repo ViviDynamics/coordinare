@@ -1,0 +1,23 @@
+[
+  {
+    "role": "security",
+    "endpoint": "pi-ephemeral",
+    "backend": "pi",
+    "model": "spark/gpt-oss:120b",
+    "strategy": "single",
+    "category": "FAIL_MODEL",
+    "status": "security_passed",
+    "markers": [
+      "PASSED_VULN_PR"
+    ],
+    "detail": "status=security_passed",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent incorrectly marked the PR as passing security despite the known SQL injection and eval vulnerabilities.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": "cells/security__pi-ephemeral.json",
+    "reconciled": null,
+    "persona_source": "production"
+  }
+]

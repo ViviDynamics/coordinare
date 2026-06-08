@@ -1,0 +1,30 @@
+{
+  "row": {
+    "role": "reviewer",
+    "endpoint": "openclaw-ephemeral",
+    "backend": "openclaw",
+    "model": "gpt-oss:120b",
+    "strategy": "single",
+    "category": "PASS",
+    "status": "changes_requested",
+    "markers": [
+      "off-by-one",
+      "range(len",
+      "skips",
+      "len(items) - 1"
+    ],
+    "detail": "status=changes_requested | reconciled-to-PASS: contract artifact satisfied despite state=failed (see container_logs for the post-success failure)",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "changes_requested",
+    "state": "failed",
+    "log_file": null,
+    "reconciled": "reconciled-to-PASS: contract artifact satisfied despite state=failed (see container_logs for the post-success failure)"
+  },
+  "state": "failed",
+  "error_code": "changes_requested",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"changes_requested\",\"session_id\":\"93c7f3ce-164a-49ed-8b41-128d680927bd\",\"questions\":[],\"comments\":[{\"line\":14,\"issue\":\"Off-by-one error in loop: `for i in range(len(items) - 1)` skips the last cart item, so the discount is not applied to every item as intended.\",\"suggestion\":\"Iterate over all items, e.g., `for i in range(len(items)):` or simply `for it in items:` and copy each dict before applying discount.\"}],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "\nadded 285 packages in 14s\nINFO:     172.66.0.243:39866 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-08 13:33:44 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:47257 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:45827 - \"GET /jobs/c6475b70602f4594ab0144a9a2ef6d0f HTTP/1.1\" 200 OK\n2026-06-08 13:33:45 [info     ] clone_repository.existing_branch branch=fix/reviewer-offbyone\n2026-06-08 13:33:45 [info     ] cloned repository              branch=fix/reviewer-offbyone repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-08 13:33:45 [info     ] openclaw.provider_config_written base_url=http://192.168.3.30:11434/v1 path=/root/.openclaw/openclaw.json provider=sparkollama\n2026-06-08 13:33:45 [info     ] openclaw.workspace_linked      workspace=/tmp/performer-85ze51rh\n2026-06-08 13:33:45 [info     ] openclaw.persona_to_soul       chars=134\n2026-06-08 13:33:45 [info     ] openclaw.card_docs_written     chars=178 path=/tmp/performer-85ze51rh/CARD.md\n2026-06-08 13:33:45 [info     ] openclaw starting              model=sparkollama/gpt-oss:120b provider_routed=True session_key=coordinare-reviewing-1363d79f\n2026-06-08 13:33:45 [info     ] openclaw started               model=sparkollama/gpt-oss:120b pid=92\n2026-06-08 13:33:45 [info     ] dispatch accepted              session_id=93c7f3ce-164a-49ed-8b41-128d680927bd\nINFO:     172.66.0.243:49683 - \"GET /jobs/c6475b70602f4594ab0144a9a2ef6d0f HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:24712 - \"GET /jobs/c6475b70602f4594ab0144a9a2ef6d0f HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:62334 - \"GET /jobs/c6475b70602f4594ab0144a9a2ef6d0f HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:55724 - \"GET /jobs/c6475b70602f4594ab0144a9a2ef6d0f HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:36538 - \"GET /jobs/c6475b70602f4594ab0144a9a2ef6d0f HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:57215 - \"GET /jobs/c6475b70602f4594ab0144a9a2ef6d0f HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:18598 - \"GET /jobs/c6475b70602f4594ab0144a9a2ef6d0f HTTP/1.1\" 200 OK\n2026-06-08 13:34:20 [info     ] review posted                  owner=ViviDynamics pr_number=1 repo=conductor-bench review_event=COMMENT\n2026-06-08 13:34:20 [info     ] openclaw stopped\n2026-06-08 13:34:20 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-85ze51rh\nINFO:     172.66.0.243:58236 - \"GET /jobs/c6475b70602f4594ab0144a9a2ef6d0f HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

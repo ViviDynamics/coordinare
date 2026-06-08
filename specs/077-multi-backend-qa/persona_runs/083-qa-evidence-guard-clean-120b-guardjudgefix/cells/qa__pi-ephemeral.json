@@ -1,0 +1,26 @@
+{
+  "row": {
+    "role": "qa",
+    "endpoint": "pi-ephemeral",
+    "backend": "pi",
+    "model": "spark/gpt-oss:120b",
+    "strategy": "single",
+    "category": "FAIL_MODEL",
+    "status": "qa_failed",
+    "markers": [],
+    "detail": "status=qa_failed steps=0 found_bug=False",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The QA reported a failure but gave zero verification steps, lacking required execution evidence.",
+    "error_code": "qa_failed",
+    "state": "failed",
+    "log_file": null,
+    "reconciled": null,
+    "persona_source": "production"
+  },
+  "state": "failed",
+  "error_code": "qa_failed",
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"qa_failed\",\"session_id\":\"552c7852-240c-447b-83ff-c6cb6b6b5277\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[{\"type\":\"unsubstantiated_pass\",\"criterion\":\"Execution evidence required for a QA pass\",\"expected\":\"Verification checks actually executed with commands and exit codes recorded, committed tests, or captured proof.\",\"actual\":\"Model reported criteria as passing but supplied zero execution evidence (zero checks executed, zero tests committed, zero captured proof). Unsubstantiated pass refused.\"}],\"report\":{\"qa_freshness_check\":{\"latest_main_sha\":null,\"branch_head_sha\":null,\"up_to_date\":null,\"detail\":\"freshness_check_indeterminate\"}},\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "npm warn deprecated node-domexception@1.0.0: Use your platform's native DOMException instead\nnpm warn deprecated @mariozechner/pi-agent-core@0.73.1: please use @earendil-works/pi-agent-core instead going forward\nnpm warn deprecated @mariozechner/pi-tui@0.73.1: please use @earendil-works/pi-tui instead going forward\nnpm warn deprecated @mariozechner/pi-ai@0.73.1: please use @earendil-works/pi-ai instead going forward\nnpm warn deprecated @mariozechner/pi-coding-agent@0.73.1: please use @earendil-works/pi-coding-agent instead going forward\n\nadded 202 packages in 9s\nINFO:     172.66.0.243:43168 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-08 17:36:09 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:34106 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:50884 - \"GET /jobs/dae5caceaf584f268a1c0f54498cd23f HTTP/1.1\" 200 OK\n2026-06-08 17:36:10 [info     ] clone_repository.existing_branch branch=bench-ro-qa-7de3f9d7\n2026-06-08 17:36:10 [info     ] cloned repository              branch=bench-ro-qa-7de3f9d7 repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-08 17:36:10 [info     ] pi started                     model=spark/gpt-oss:120b provider=litellm\n2026-06-08 17:36:10 [info     ] dispatch accepted              session_id=552c7852-240c-447b-83ff-c6cb6b6b5277\nINFO:     172.66.0.243:58748 - \"GET /jobs/dae5caceaf584f268a1c0f54498cd23f HTTP/1.1\" 200 OK\n2026-06-08 17:36:18 [warning  ] backend.invalid_output.retrying attempt=1 failure_reason='was empty' max_retries=1 output_preview= stage=QA\nINFO:     172.66.0.243:29159 - \"GET /jobs/dae5caceaf584f268a1c0f54498cd23f HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:48956 - \"GET /jobs/dae5caceaf584f268a1c0f54498cd23f HTTP/1.1\" 200 OK\n2026-06-08 17:36:24 [warning  ] qa.unsubstantiated_pass_refused criteria_passed=0 session_id=552c7852-240c-447b-83ff-c6cb6b6b5277\n2026-06-08 17:36:25 [info     ] commit_file.committed          branch=bench-ro-qa-7de3f9d7 path=docs/cards/qa-checkout-total/qa.md\n2026-06-08 17:36:26 [info     ] pr comment posted              owner=ViviDynamics pr_number=3 repo=conductor-bench\n2026-06-08 17:36:26 [info     ] pi stopped\n2026-06-08 17:36:26 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-fxxek3b8\nINFO:     172.66.0.243:48295 - \"GET /jobs/dae5caceaf584f268a1c0f54498cd23f HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

@@ -50,6 +50,7 @@ def _full_card_context() -> dict[str, Any]:
         "relay_feedback": [{"body": "Please fix the rubocop violations"}],
         "pr_url": "https://github.com/org/repo/pull/99",
         "pr_node_id": "PR_kwDO123456",
+        "pr_diff": "diff --git a/src/app.py b/src/app.py\n+    margin = base * 0.9\n",
         "architecture_plan_path": "docs/coordinare-architecture.md",
         "clarifications": [{"questions": ["What framework?"], "answer": "Rails 7"}],
         # Backend selection (037)
@@ -145,6 +146,22 @@ class TestDispatchPayloadContract:
         assert transport.captured_payload["pr_node_id"] == "PR_kwDO123"
 
     @pytest.mark.asyncio
+    async def test_pr_diff_is_not_dropped(self) -> None:
+        """pr_diff (injected for review roles) must reach the performer wire."""
+        transport = _CaptureTransport()
+        service = AgentService(transport)
+
+        diff = "diff --git a/src/app.py b/src/app.py\n+    margin = base * 0.9\n"
+        await service.dispatch_card({
+            "pr_url": "https://github.com/org/repo/pull/99",
+            "pr_diff": diff,
+            "title": "test",
+            "id": "X",
+        })
+
+        assert transport.captured_payload["pr_diff"] == diff
+
+    @pytest.mark.asyncio
     async def test_backend_and_model_are_not_dropped(self) -> None:
         """Per-role backend/model selection (037) must survive."""
         transport = _CaptureTransport()
@@ -204,6 +221,9 @@ class TestScoreModelContract:
         assert score.relay_feedback == [{"body": "Please fix the rubocop violations"}]
         assert score.pr_url == "https://github.com/org/repo/pull/99"
         assert score.pr_node_id == "PR_kwDO123456"
+        assert score.pr_diff == (
+            "diff --git a/src/app.py b/src/app.py\n+    margin = base * 0.9\n"
+        )
         assert score.backend == "claude_code"
         assert score.model == "claude-sonnet-4-20250514"
         assert score.github_api_url == "https://github.example.com/api/v3"
@@ -224,6 +244,7 @@ class TestScoreModelContract:
         assert score.relay_feedback == []
         assert score.pr_url == ""
         assert score.pr_node_id == ""
+        assert score.pr_diff == ""
         assert score.backend == ""
         assert score.model == ""
         assert score.github_api_url == ""

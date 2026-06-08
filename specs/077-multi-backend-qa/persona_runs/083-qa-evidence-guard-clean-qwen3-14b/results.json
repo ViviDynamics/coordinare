@@ -1,0 +1,24 @@
+[
+  {
+    "role": "qa",
+    "endpoint": "claude-ephemeral",
+    "backend": "claude_code",
+    "model": "local/qwen3-14b",
+    "strategy": "single",
+    "category": "FAIL_MODEL",
+    "status": "qa_passed",
+    "markers": [
+      "1_steps",
+      "RUBBER_STAMP"
+    ],
+    "detail": "status=qa_passed steps=1 found_bug=False",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent marked qa_passed without actually running checkout_total or detecting the expected KeyError, indicating a rubber\u2011stamp assessment.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": "cells/qa__claude-ephemeral.json",
+    "reconciled": null,
+    "persona_source": "production"
+  }
+]

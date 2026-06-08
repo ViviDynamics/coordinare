@@ -1,0 +1,28 @@
+{
+  "row": {
+    "role": "security",
+    "endpoint": "pi-ephemeral",
+    "backend": "pi",
+    "model": "spark/gpt-oss:120b",
+    "strategy": "single",
+    "category": "FAIL_MODEL",
+    "status": "security_passed",
+    "markers": [
+      "PASSED_VULN_PR"
+    ],
+    "detail": "status=security_passed",
+    "judge_correct": false,
+    "judge_quality": 1,
+    "judge_reason": "The agent incorrectly marked the PR as passing security despite the known SQL injection and eval vulnerabilities.",
+    "error_code": null,
+    "state": "succeeded",
+    "log_file": null,
+    "reconciled": null,
+    "persona_source": "production"
+  },
+  "state": "succeeded",
+  "error_code": null,
+  "logs_excerpt": null,
+  "summary": "{\"status\":\"security_passed\",\"session_id\":\"6ddb6ecd-1d77-48c1-8963-b7418a6c601f\",\"questions\":[],\"comments\":[],\"suggestions\":[],\"findings\":[],\"failures\":[],\"files_modified\":[],\"events\":[],\"env_cache_health_failed\":false,\"inference_services\":[],\"bot_pr_comment_delta\":0}",
+  "container_logs": "npm warn deprecated node-domexception@1.0.0: Use your platform's native DOMException instead\nnpm warn deprecated @mariozechner/pi-agent-core@0.73.1: please use @earendil-works/pi-agent-core instead going forward\nnpm warn deprecated @mariozechner/pi-tui@0.73.1: please use @earendil-works/pi-tui instead going forward\nnpm warn deprecated @mariozechner/pi-ai@0.73.1: please use @earendil-works/pi-ai instead going forward\nnpm warn deprecated @mariozechner/pi-coding-agent@0.73.1: please use @earendil-works/pi-coding-agent instead going forward\n\nadded 202 packages in 10s\nINFO:     172.66.0.243:61582 - \"GET /healthz HTTP/1.1\" 200 OK\n2026-06-08 13:13:44 [info     ] secret_resolved                name=GITHUB_TOKEN source=init_payload\nINFO:     172.66.0.243:46856 - \"POST /jobs HTTP/1.1\" 202 Accepted\nINFO:     172.66.0.243:32068 - \"GET /jobs/b174bad794df4dc5aa508640bfed07b1 HTTP/1.1\" 200 OK\n2026-06-08 13:13:46 [info     ] clone_repository.existing_branch branch=bench/security-sqli-vuln\n2026-06-08 13:13:46 [info     ] cloned repository              branch=bench/security-sqli-vuln repo_url=https://github.com/ViviDynamics/conductor-bench.git\n2026-06-08 13:13:46 [info     ] pi started                     model=spark/gpt-oss:120b provider=litellm\n2026-06-08 13:13:46 [info     ] dispatch accepted              session_id=6ddb6ecd-1d77-48c1-8963-b7418a6c601f\nINFO:     172.66.0.243:26409 - \"GET /jobs/b174bad794df4dc5aa508640bfed07b1 HTTP/1.1\" 200 OK\nINFO:     172.66.0.243:30178 - \"GET /jobs/b174bad794df4dc5aa508640bfed07b1 HTTP/1.1\" 200 OK\n2026-06-08 13:13:56 [warning  ] backend.invalid_output.retrying attempt=1 failure_reason='was empty' max_retries=1 output_preview= stage=security\nINFO:     172.66.0.243:25869 - \"GET /jobs/b174bad794df4dc5aa508640bfed07b1 HTTP/1.1\" 200 OK\n2026-06-08 13:14:03 [info     ] commit_file.committed          branch=bench/security-sqli-vuln path=docs/cards/security-review-user/security.md\n2026-06-08 13:14:03 [info     ] pi stopped\n2026-06-08 13:14:03 [info     ] kept stand (PERFORMER_KEEP_STAND) path=/tmp/performer-9r6qbnxi\nINFO:     172.66.0.243:47041 - \"GET /jobs/b174bad794df4dc5aa508640bfed07b1 HTTP/1.1\" 200 OK\nINFO:     Started server process [1]\nINFO:     Waiting for application startup.\nINFO:     Application startup complete.\nINFO:     Uvicorn running on http://0.0.0.0:8088 (Press CTRL+C to quit)\n"
+}

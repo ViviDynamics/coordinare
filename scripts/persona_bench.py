@@ -369,7 +369,7 @@ TASKS: list[RoleTask] = [
         "changes and identify that the last item is skipped. WRONG = approve.",
     ),
     RoleTask(
-        "security", "security", "feat/security-sqli", "security",
+        "security", "security", "bench/security-sqli-vuln", "security",
         "Security review: user lookup + filter",
         "Security-review the PR adding lookup_user and compute_filter.",
         ["No injection vulnerabilities"],
@@ -434,6 +434,21 @@ TASKS: list[RoleTask] = [
 # ---------------------------------------------------------------------------
 # LLM judge (over the LiteLLM proxy).
 # ---------------------------------------------------------------------------
+def _judge_eligible(ctx: GradeCtx) -> bool:
+    """Whether a cell has gradeable agent output for the LLM judge.
+
+    A job that reached terminal 'succeeded' always qualifies. A gate-refused
+    cell ends ``state='failed'`` yet still carries a full structured terminal
+    report (``ctx.parsed`` — e.g. the qwen3-14b rubber-stamp that the evidence
+    guard flipped to ``qa_failed``); that must be judged too, so the refusal is
+    behaviourally confirmed instead of falling through to the deterministic-only
+    category. A genuinely crashed/cancelled job (no structured report) has
+    nothing to grade and is skipped."""
+    if ctx.state == "succeeded":
+        return True
+    return bool(ctx.parsed)
+
+
 def judge(task: RoleTask, ctx: GradeCtx, det_detail: str, base_url: str,
           api_key: str, model: str) -> tuple[bool | None, int | None, str]:
     """Ask an LLM whether the model's output is behaviourally CORRECT for the
@@ -495,16 +510,44 @@ def resolve_role_dispatch(config_path: str, role: str,
     return {"model": model, "orchestration": orchestration}
 
 
+def _prod_persona(role: str, config_path: str | None) -> str | None:
+    """Resolve the REAL production persona for ``role`` from config (the
+    effective per-role instructions, e.g. spec-083's CWE taint→sink checklist
+    for ``security``). Returns None if it cannot be resolved, so callers fall
+    back to the task's inline persona. This is what makes the bench actually
+    exercise the shipped persona instead of a generic one-liner."""
+    if not config_path:
+        return None
+    try:
+        from coordinare.config import ProjectConfiguration
+        from coordinare.services.persona_service import (
+            VALID_ROLES,
+            get_effective_instructions,
+        )
+        if role not in VALID_ROLES:
+            return None
+        pc = ProjectConfiguration.from_yaml(config_path)
+        return get_effective_instructions(role, pc.personas)
+    except Exception:
+        return None
+
+
 def build_job_payload(task: RoleTask, *, backend: str, repo_url: str,
                       branch: str, job_id: str, gh_token: str,
                       extra_secrets: dict, model: str,
-                      orchestration: dict | None, pr_url: str | None) -> dict:
+                      orchestration: dict | None, pr_url: str | None,
+                      persona: str | None = None) -> dict:
     """Assemble the performer ``/jobs`` payload. Injects ``metadata.model`` and,
     for non-single strategies, ``metadata.orchestration`` (the DualModelProxy
-    spec), exactly as the live dispatch carries them via card_context."""
+    spec), exactly as the live dispatch carries them via card_context.
+
+    ``persona`` overrides ``task.persona`` when provided — used to deliver the
+    real production persona (so the bench tests the shipped behavior, not a
+    bench-local one-liner)."""
     payload = {
         "job_id": job_id, "card_id": f"bench-{task.label}", "role": task.role,
-        "backend": backend, "persona": task.persona, "repo_url": repo_url,
+        "backend": backend, "persona": persona or task.persona,
+        "repo_url": repo_url,
         "branch": branch,
         "secrets": {"GITHUB_TOKEN": gh_token, **extra_secrets},
         "metadata": {"title": task.title, "description": task.description,
@@ -516,6 +559,67 @@ def build_job_payload(task: RoleTask, *, backend: str, repo_url: str,
         payload["metadata"]["pr_url"] = pr_url
         payload["pr_url"] = pr_url
     return payload
+
+
+# ---------------------------------------------------------------------------
+# Read-only fixture isolation. A performer commits + pushes a work/QA report
+# to whatever branch it is dispatched onto (it holds GITHUB_TOKEN). For tasks
+# pinned to a shared fixture branch (e.g. feat/qa-behavior) that would mutate
+# the fixture and corrupt the signal across runs. So we fork a per-run
+# throwaway branch from the fixture HEAD, dispatch the performer there, and
+# delete it afterwards — the fixture branch stays pristine.
+# ---------------------------------------------------------------------------
+def _parse_owner_repo(repo_url: str) -> tuple[str, str] | None:
+    """Extract (owner, repo) from a GitHub https/ssh/token-embedded URL."""
+    m = re.search(r"github\.com[:/]+([^/]+)/([^/]+?)(?:\.git)?/?$", repo_url.strip())
+    return (m.group(1), m.group(2)) if m else None
+
+
+def _gh_api(method: str, path: str, token: str, *, json_body: dict | None = None):
+    """Issue a GitHub REST API call and return the httpx response."""
+    return httpx.request(
+        method,
+        f"https://api.github.com{path}",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+        json=json_body,
+        timeout=20,
+    )
+
+
+def _fork_throwaway_branch(repo_url: str, base_branch: str, new_branch: str,
+                           token: str) -> bool:
+    """Create ``new_branch`` on the remote at ``base_branch``'s HEAD sha.
+
+    Returns True only when the throwaway ref was created — callers must treat
+    a False as "do not dispatch" so a contaminated fixture is never risked."""
+    parsed = _parse_owner_repo(repo_url)
+    if not parsed:
+        return False
+    owner, repo = parsed
+    try:
+        r = _gh_api("GET", f"/repos/{owner}/{repo}/git/ref/heads/{base_branch}", token)
+        if r.status_code != 200:
+            return False
+        sha = r.json()["object"]["sha"]
+        c = _gh_api("POST", f"/repos/{owner}/{repo}/git/refs", token,
+                    json_body={"ref": f"refs/heads/{new_branch}", "sha": sha})
+        return c.status_code in (200, 201)
+    except Exception:
+        return False
+
+
+def _delete_remote_branch(repo_url: str, branch: str, token: str) -> None:
+    """Best-effort delete of a remote ref (used to tear down a throwaway)."""
+    parsed = _parse_owner_repo(repo_url)
+    if not parsed:
+        return
+    owner, repo = parsed
+    with contextlib.suppress(Exception):
+        _gh_api("DELETE", f"/repos/{owner}/{repo}/git/refs/heads/{branch}", token)
 
 
 # ---------------------------------------------------------------------------
@@ -540,6 +644,7 @@ def run_cell(task: RoleTask, endpoint: dict, cfg: dict, dotenv: dict,
     status: dict = {}
     result: dict = {}
     summary = ""
+    throwaway_branch: str | None = None
     port = _free_port()
     name = f"bench-{task.label}-{uuid.uuid4().hex[:6]}"
     cenv = {k: _expand(str(v), dotenv) for k, v in (endpoint.get("env", {}) or {}).items()}
@@ -583,7 +688,21 @@ def run_cell(task: RoleTask, endpoint: dict, cfg: dict, dotenv: dict,
             res["detail"] = "container never ready"
             return res
         job_id = uuid.uuid4().hex
-        branch = task.branch or f"bench-{task.label}-{uuid.uuid4().hex[:8]}"
+        if task.branch:
+            # Fixture-pinned task: never dispatch onto the shared fixture branch
+            # (the performer would push its report back and corrupt it). Fork a
+            # per-run throwaway branch from the fixture HEAD and dispatch there.
+            throwaway_branch = f"bench-ro-{task.label}-{uuid.uuid4().hex[:8]}"
+            if not _fork_throwaway_branch(repo_url, task.branch, throwaway_branch, gh_token):
+                throwaway_branch = None
+                res["detail"] = (
+                    f"could not fork throwaway branch from '{task.branch}' "
+                    "(refusing to dispatch onto the shared fixture)")
+                res["category"] = "FAIL_HARNESS"
+                return res
+            branch = throwaway_branch
+        else:
+            branch = f"bench-{task.label}-{uuid.uuid4().hex[:8]}"
         pr_url = None
         if task.pr_key:
             pr_url = (prs or {}).get(task.pr_key)
@@ -591,10 +710,14 @@ def run_cell(task: RoleTask, endpoint: dict, cfg: dict, dotenv: dict,
                 res["detail"] = f"no pr_url for '{task.pr_key}' in --prs"
                 res["category"] = "FAIL_HARNESS"
                 return res
+        prod_persona = _prod_persona(task.role, config_path)
+        if prod_persona:
+            res["persona_source"] = "production"
         payload = build_job_payload(
             task, backend=backend, repo_url=repo_url, branch=branch,
             job_id=job_id, gh_token=gh_token, extra_secrets=extra_secrets,
-            model=model, orchestration=orchestration, pr_url=pr_url)
+            model=model, orchestration=orchestration, pr_url=pr_url,
+            persona=prod_persona)
         pr = httpx.post(f"{base}/jobs", json=payload, timeout=15)
         if pr.status_code != 202:
             res["detail"] = f"POST /jobs -> {pr.status_code}: {pr.text[:120]}"
@@ -634,7 +757,7 @@ def run_cell(task: RoleTask, endpoint: dict, cfg: dict, dotenv: dict,
         blob = f"{summary} {result.get('error_code','')} {ctx.status}"
         jc = jq = None
         jr_reason = ""
-        if judge_cfg and ctx.state == "succeeded":
+        if judge_cfg and _judge_eligible(ctx):
             jc, jq, jr_reason = judge(task, ctx, detail, **judge_cfg)
             res.update(judge_correct=jc, judge_quality=jq, judge_reason=jr_reason)
         category, harness_hit = categorize(ctx.state, blob, contract_ok, markers, jc)
@@ -653,6 +776,10 @@ def run_cell(task: RoleTask, endpoint: dict, cfg: dict, dotenv: dict,
         res["detail"] = f"{type(exc).__name__}: {exc}"[:160]
         return res
     finally:
+        # Tear down the per-run throwaway branch so the fixture stays pristine
+        # and stale bench-ro-* refs don't accumulate on the remote.
+        if throwaway_branch:
+            _delete_remote_branch(repo_url, throwaway_branch, gh_token)
         if cid:
             # Persist full failure context for every non-PASS cell so we can tell
             # WHAT needs fixing: the job result (agent progress/error), the
