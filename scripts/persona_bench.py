@@ -38,6 +38,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import re
 import subprocess
 import sys
 import time
@@ -73,8 +74,16 @@ HARNESS_MARKERS = (
     "server disconnected", "readiness timeout", "container start failed",
     "connection reset", "connection refused", "transport error", "unreachable",
     "subprocess_exit", "no status response", "internal_error", "cannot write to",
-    "WorkspaceSetupError", "auth_failed", "BACKEND_FORMAT_ERROR", "empty output",
+    "WorkspaceSetupError", "auth_failed", "empty output",
 )
+
+# A JSON-contract parse failure (BACKEND_FORMAT_ERROR) is NOT, by itself, a
+# harness signature: the coordinare emits it only after the transport delivered
+# the model's bytes and the model refused to shape them into the contract. The
+# performer appends `Last output: <repr>` — a NON-EMPTY repr means the model
+# spoke (model-quality miss → FAIL_MODEL); an EMPTY repr ('' / "") means nothing
+# came back (swallowed / transport wall → FAIL_HARNESS).
+_FORMAT_ERR_EMPTY_RE = re.compile(r"Last output:\s*(?:''|\"\")")
 
 
 # ---------------------------------------------------------------------------
@@ -132,12 +141,47 @@ def categorize(state: str | None, blob: str, contract_ok: bool, markers: list[st
     """
     harness_hit = _has_marker(blob, *HARNESS_MARKERS)
     failed = state in ("failed", "cancelled")
+    # BACKEND_FORMAT_ERROR disambiguation (precedes the generic harness rule):
+    # the model emitting non-empty-but-non-contract output is a model-quality
+    # miss, not plumbing. Only an empty last output is a transport/swallowed wall.
+    if "BACKEND_FORMAT_ERROR" in blob:
+        if _FORMAT_ERR_EMPTY_RE.search(blob):
+            return "FAIL_HARNESS", [*harness_hit, "BACKEND_FORMAT_ERROR(empty)"]
+        return "FAIL_MODEL", harness_hit
     if harness_hit and (failed or not contract_ok):
         return "FAIL_HARNESS", harness_hit
     if failed and not contract_ok:
         return "ERROR", harness_hit
     correct = judge_correct if judge_correct is not None else (contract_ok and bool(markers))
     return ("PASS" if (contract_ok and correct) else "FAIL_MODEL"), harness_hit
+
+
+def reconciliation_note(state: str | None, error_code: str | None,
+                        category: str) -> str | None:
+    """FR-009 reconciliation witness.
+
+    categorize() can legitimately route a job that reported a terminal failure
+    (state in failed/cancelled) or carried error_code=="error" up to PASS when
+    the contract artifact genuinely holds (e.g. a real in-workspace pytest
+    "4 passed" satisfies the implementer contract even though a post-success
+    CI/PR-handoff step flipped the job to error). That override is correct but
+    MUST NOT be silent — FR-009 requires it be explicit and documented.
+
+    Returns a human-readable note when a PASS verdict masks a failed/cancelled
+    state or an error_code; None otherwise (clean PASS, or any non-PASS cell
+    whose failure is already self-evident in its own category).
+    """
+    if category != "PASS":
+        return None
+    flags = []
+    if state in ("failed", "cancelled"):
+        flags.append(f"state={state}")
+    if error_code == "error":
+        flags.append("error_code=error")
+    if not flags:
+        return None
+    return ("reconciled-to-PASS: contract artifact satisfied despite "
+            + ", ".join(flags) + " (see container_logs for the post-success failure)")
 
 
 # ---------------------------------------------------------------------------
@@ -419,17 +463,79 @@ def judge(task: RoleTask, ctx: GradeCtx, det_detail: str, base_url: str,
 
 
 # ---------------------------------------------------------------------------
+# 080-aware dispatch resolution + payload assembly.
+#
+# The live coordinare resolves a role's dispatch model from its mode (modes →
+# model_endpoints → endpoints) and, for non-`single` strategies, carries a full
+# `orchestration` block so the in-container DualModelProxy launches the
+# planner/executor pair (dispatch_performer.py). Pre-080 this harness read the
+# legacy inline `performers.<role>.model` and never injected `orchestration`, so
+# dual-model modes silently degraded to single-model. These helpers mirror the
+# live wiring so the bench actually validates the planner+executor combo.
+# ---------------------------------------------------------------------------
+def resolve_role_dispatch(config_path: str, role: str,
+                          cfg: dict | None = None) -> dict:
+    """Resolve a role's dispatch model + orchestration block from the coordinare
+    config catalogs, mirroring ``dispatch_performer``. ``role`` is the performer
+    key (e.g. ``architect``). Falls back to the pre-080 inline
+    ``performers.<role>.model`` when the config has no mode for the role."""
+    model = ""
+    orchestration = None
+    try:
+        from coordinare.config import ProjectConfiguration
+        pc = ProjectConfiguration.from_yaml(config_path)
+        model = (pc.resolve_performer_dispatch_model(role) or {}).get("model", "") or ""
+        orchestration = pc.resolve_performer_orchestration(role)
+    except Exception:
+        pass
+    if not model and cfg is not None:
+        rc = (cfg.get("performers", {}) or {}).get(role)
+        if isinstance(rc, dict) and rc.get("model"):
+            model = str(rc["model"])
+    return {"model": model, "orchestration": orchestration}
+
+
+def build_job_payload(task: RoleTask, *, backend: str, repo_url: str,
+                      branch: str, job_id: str, gh_token: str,
+                      extra_secrets: dict, model: str,
+                      orchestration: dict | None, pr_url: str | None) -> dict:
+    """Assemble the performer ``/jobs`` payload. Injects ``metadata.model`` and,
+    for non-single strategies, ``metadata.orchestration`` (the DualModelProxy
+    spec), exactly as the live dispatch carries them via card_context."""
+    payload = {
+        "job_id": job_id, "card_id": f"bench-{task.label}", "role": task.role,
+        "backend": backend, "persona": task.persona, "repo_url": repo_url,
+        "branch": branch,
+        "secrets": {"GITHUB_TOKEN": gh_token, **extra_secrets},
+        "metadata": {"title": task.title, "description": task.description,
+                     "acceptance_criteria": task.acceptance, "model": model},
+    }
+    if orchestration is not None:
+        payload["metadata"]["orchestration"] = orchestration
+    if pr_url:
+        payload["metadata"]["pr_url"] = pr_url
+        payload["pr_url"] = pr_url
+    return payload
+
+
+# ---------------------------------------------------------------------------
 # Dispatch one (task, endpoint) and grade it.
 # ---------------------------------------------------------------------------
 def run_cell(task: RoleTask, endpoint: dict, cfg: dict, dotenv: dict,
-             repo_url: str, prs: dict, judge_cfg: dict | None, outdir: Path) -> dict:
+             repo_url: str, prs: dict, judge_cfg: dict | None, outdir: Path,
+             config_path: str | None = None) -> dict:
     eid = endpoint["id"]
     backend = (endpoint.get("env", {}) or {}).get("BACKEND", "")
-    model = _backend_model(cfg, endpoint)
+    # 080: resolve the dispatch model + orchestration from the role's mode,
+    # falling back to the legacy inline model for pre-080 configs.
+    _dispatch = resolve_role_dispatch(config_path or "", task.label, cfg=cfg)
+    model = _dispatch["model"] or _backend_model(cfg, endpoint)
+    orchestration = _dispatch["orchestration"]
     res = {"role": task.label, "endpoint": eid, "backend": backend, "model": model,
+           "strategy": (orchestration or {}).get("strategy", "single"),
            "category": "ERROR", "status": None, "markers": [], "detail": "",
            "judge_correct": None, "judge_quality": None, "judge_reason": "",
-           "error_code": None, "state": None, "log_file": None}
+           "error_code": None, "state": None, "log_file": None, "reconciled": None}
     # Hoisted so the finally block can persist the full failure context.
     status: dict = {}
     result: dict = {}
@@ -478,22 +584,17 @@ def run_cell(task: RoleTask, endpoint: dict, cfg: dict, dotenv: dict,
             return res
         job_id = uuid.uuid4().hex
         branch = task.branch or f"bench-{task.label}-{uuid.uuid4().hex[:8]}"
-        payload = {
-            "job_id": job_id, "card_id": f"bench-{task.label}", "role": task.role,
-            "backend": backend, "persona": task.persona, "repo_url": repo_url,
-            "branch": branch,
-            "secrets": {"GITHUB_TOKEN": gh_token, **extra_secrets},
-            "metadata": {"title": task.title, "description": task.description,
-                         "acceptance_criteria": task.acceptance, "model": model},
-        }
+        pr_url = None
         if task.pr_key:
             pr_url = (prs or {}).get(task.pr_key)
             if not pr_url:
                 res["detail"] = f"no pr_url for '{task.pr_key}' in --prs"
                 res["category"] = "FAIL_HARNESS"
                 return res
-            payload["metadata"]["pr_url"] = pr_url
-            payload["pr_url"] = pr_url
+        payload = build_job_payload(
+            task, backend=backend, repo_url=repo_url, branch=branch,
+            job_id=job_id, gh_token=gh_token, extra_secrets=extra_secrets,
+            model=model, orchestration=orchestration, pr_url=pr_url)
         pr = httpx.post(f"{base}/jobs", json=payload, timeout=15)
         if pr.status_code != 202:
             res["detail"] = f"POST /jobs -> {pr.status_code}: {pr.text[:120]}"
@@ -542,6 +643,11 @@ def run_cell(task: RoleTask, endpoint: dict, cfg: dict, dotenv: dict,
         res["error_code"] = result.get("error_code")
         if harness_hit:
             res["detail"] = f"{detail} | harness:{','.join(harness_hit)}"
+        # FR-009: surface (never swallow) a failed/error → PASS reconciliation.
+        note = reconciliation_note(ctx.state, result.get("error_code"), category)
+        if note:
+            res["reconciled"] = note
+            res["detail"] = f"{res['detail']} | {note}"
         return res
     except Exception as exc:
         res["detail"] = f"{type(exc).__name__}: {exc}"[:160]
@@ -552,7 +658,9 @@ def run_cell(task: RoleTask, endpoint: dict, cfg: dict, dotenv: dict,
             # WHAT needs fixing: the job result (agent progress/error), the
             # performer's logs_excerpt, and the container's stderr (where crashes
             # / tracebacks actually surface — not in the job summary).
-            if res["category"] != "PASS":
+            # FR-009: also capture for a reconciled-to-PASS cell — the very logs
+            # that explain WHY a passing run still errored would otherwise be lost.
+            if res["category"] != "PASS" or res.get("reconciled"):
                 clogs = subprocess.run(["docker", "logs", "--tail", "400", cid],
                                        capture_output=True, text=True, timeout=20)
                 container_logs = ((clogs.stdout or "") + (clogs.stderr or ""))[-8000:]
@@ -633,7 +741,8 @@ def main() -> int:
           f"judge={'on' if judge_cfg else 'off'}\n")
     for t, e in pairs:
         print(f"  -> {t.label:<13} on {e['id']:<20} ...", flush=True)
-        r = run_cell(t, e, cfg, dotenv, args.repo, prs, judge_cfg, outdir)
+        r = run_cell(t, e, cfg, dotenv, args.repo, prs, judge_cfg, outdir,
+                     config_path=args.config)
         merged[(t.label, e["id"])] = r
         jr = f" judge={r['judge_correct']}({r['judge_quality']})" if r["judge_correct"] is not None else ""
         print(f"     {r['category']:<13} status={r['status']} "

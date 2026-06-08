@@ -842,7 +842,7 @@ td { padding: 4px 8px; border-bottom: 1px solid var(--color-bg-elevated); }
 #navbar .nav-status-dot.disconnected { background: var(--color-accent-red); }
 #navbar-hamburger { display: none; background: none; border: none; color: var(--color-text-muted); cursor: pointer; font-size: 20px; padding: 10px; margin-left: auto; }
 #navbar-menu { display: flex; align-items: center; gap: 0; }
-@media (max-width: 767px) {
+@media (max-width: 899px) {
   #navbar { flex-wrap: wrap; }
   #navbar-hamburger { display: block; }
   #navbar-menu { display: none; width: 100%; flex-direction: column; align-items: flex-start; padding: 8px 0; }

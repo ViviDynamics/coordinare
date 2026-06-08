@@ -60,6 +60,18 @@ PROVIDER_BASE_URL_ENV: dict[str, str] = {
 # Backends with no provider-base-URL override cannot be proxied (080 constraint).
 UNSUPPORTED_BACKENDS = frozenset({"hermes"})
 
+# Backends that POST *verbatim* to their provider-base-URL env var — i.e. the CLI
+# appends NO path of its own (junie.py requires the FULL endpoint URL and POSTs it
+# as-is). For these, the bare DualModelProxy root (``http://host:port``) is wrong:
+# the proxy serves only pathed front doors (see ``_PATH_WIRE``), so a verbatim POST
+# to ``/`` misses every served path and the CLI's standalone build fails before any
+# inference (082r10 regression). Append the backend's wire-format endpoint path so the
+# env var carries a complete, served URL. CLIs that append their own path (codex,
+# opencode, openclaw, pi, claude_code) are absent here and keep the bare root.
+VERBATIM_POST_WIRE_PATH: dict[str, str] = {
+    "junie": "/v1/chat/completions",  # junie speaks the OpenAI chat wire format
+}
+
 
 class ProxyLaunchError(RuntimeError):
     """Raised when a backend cannot be routed through the dual-model proxy."""
@@ -265,12 +277,32 @@ async def maybe_launch_proxy(
     # otherwise a long-lived performer process leaks this (now-dead) proxy URL
     # into a later single-mode job for the same backend (review finding).
     proxy.env_restores.append((target, env_var, target.get(env_var)))
-    target[env_var] = base
+    # Verbatim-POST backends (junie) need the full served wire path appended; CLIs
+    # that build their own path off the base get the bare proxy root unchanged.
+    target[env_var] = base + VERBATIM_POST_WIRE_PATH.get(backend, "")
     # claude_code would otherwise launch its own LiteLLM shim from this var and
     # double-proxy; suppress it so it talks to the dual-model proxy directly.
     if backend == "claude_code":
         proxy.env_restores.append((target, "LITELLM_PROXY_BASE_URL", target.get("LITELLM_PROXY_BASE_URL")))
         target.pop("LITELLM_PROXY_BASE_URL", None)
+    # codex is configured with wire_api=responses for direct LiteLLM runs. codex
+    # 0.137.0 rejects every explicit chat-flavoured wire_api string ("chat",
+    # "chat_completions", "completions", …) as an invalid enum variant — it swallows
+    # the config error, falls back to a default config lacking the custom provider,
+    # and dies with a misleading "Model provider not found". Only "responses" or
+    # OMITTING wire_api lets the app-server START. So REMOVE the var (restorably):
+    # codex.py omits the wire_api line and the app-server boots.
+    #
+    # IMPORTANT (FR-011, rebuilt-image evidence 2026-06-07): omitting wire_api does
+    # NOT make codex default to chat-completions — codex 0.137.0 is hard-locked to the
+    # OpenAI Responses API at request time and still POSTs to /responses. This removal
+    # is NECESSARY (fixes startup) but INSUFFICIENT: until the DualModelProxy serves a
+    # /responses front door, proxied codex still 404s at /responses. Do not assume this
+    # alone makes codex work dual-model. Direct/non-proxy codex runs keep their
+    # configured wire_api=responses — this override fires only here and reverts on stop().
+    if backend == "codex":
+        proxy.env_restores.append((target, "CODEX_PROVIDER_WIRE_API", target.get("CODEX_PROVIDER_WIRE_API")))
+        target.pop("CODEX_PROVIDER_WIRE_API", None)
     log.info(
         "dual_model_proxy.launched",
         backend=backend, env_var=env_var, strategy=orchestration.get("strategy"),

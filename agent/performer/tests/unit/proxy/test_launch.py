@@ -11,6 +11,7 @@ import pytest
 
 from performer.proxy.launch import (
     PROVIDER_BASE_URL_ENV,
+    VERBATIM_POST_WIRE_PATH,
     ProxyLaunchError,
     maybe_launch_proxy,
 )
@@ -168,6 +169,38 @@ async def test_sets_provider_base_url_to_loopback(backend, env_var):
         assert env[env_var].startswith("http://127.0.0.1:")
     finally:
         await proxy.stop()
+
+
+@pytest.mark.asyncio
+async def test_junie_provider_base_url_carries_full_wire_path():
+    """082r10 regression: junie POSTs verbatim to JUNIE_PROVIDER_BASE_URL (junie.py
+    requires the FULL endpoint URL, not a /v1 base — it appends no path of its own).
+    The DualModelProxy serves pathed front doors (/v1/chat/completions, …) but NOT a
+    bare root, so handing junie the bare proxy root makes its standalone build POST to
+    `/` → miss every served path → "Failed to build 'issue.md.junie_standalone'" before
+    any inference. The proxy base for junie must therefore carry the openai wire path."""
+    env: dict[str, str] = {}
+    proxy = await maybe_launch_proxy(_ORCH, "junie", env)
+    try:
+        assert proxy is not None
+        base = env["JUNIE_PROVIDER_BASE_URL"]
+        assert base.startswith("http://127.0.0.1:")
+        # full verbatim-POST endpoint, NOT the bare proxy root
+        assert base.endswith("/v1/chat/completions"), base
+    finally:
+        await proxy.stop()
+    # stop() still restores cleanly even with the suffix applied
+    assert "JUNIE_PROVIDER_BASE_URL" not in env
+
+
+def test_verbatim_post_backends_use_a_served_proxy_path():
+    """Every verbatim-POST suffix must be a path the DualModelProxy actually serves,
+    else the appended URL would 404 just like the bare root did."""
+    from performer.proxy.dual_model_proxy import _PATH_WIRE
+
+    for backend, suffix in VERBATIM_POST_WIRE_PATH.items():
+        assert backend in PROVIDER_BASE_URL_ENV, backend
+        assert suffix in _PATH_WIRE, (backend, suffix)
 
 
 @pytest.mark.asyncio

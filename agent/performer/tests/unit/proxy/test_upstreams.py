@@ -15,6 +15,7 @@ from performer.proxy.upstreams import (
     parse_openai,
     render_anthropic,
     render_openai,
+    to_llm_request_openai,
 )
 
 
@@ -82,6 +83,42 @@ def test_parse_openai_tool_calls():
     }
     resp = parse_openai(body)
     assert resp.tool_calls[0] == ToolCall("c1", "read", {"p": "x"})
+
+
+def test_inbound_openai_array_form_user_content_extracts_text():
+    """pi (and most agent SDKs) serialize the OpenAI user turn as content-parts:
+    ``content: [{"type": "text", "text": "..."}]``. The inbound parser must
+    extract the text — dropping it to "" empties the user task and the exec model
+    replies with a bare greeting (082 dual-mode greeting root cause)."""
+    body = {
+        "messages": [
+            {"role": "user", "content": [{"type": "text", "text": "review this PR"}]},
+        ]
+    }
+    req = to_llm_request_openai(body)
+    assert req.messages[0].content == "review this PR"
+
+
+def test_inbound_openai_array_form_multipart_content_joined():
+    body = {
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "line one\n"},
+                    {"type": "text", "text": "line two"},
+                ],
+            }
+        ]
+    }
+    req = to_llm_request_openai(body)
+    assert req.messages[0].content == "line one\nline two"
+
+
+def test_inbound_openai_string_content_unchanged():
+    body = {"messages": [{"role": "user", "content": "plain string"}]}
+    req = to_llm_request_openai(body)
+    assert req.messages[0].content == "plain string"
 
 
 def test_parse_anthropic_text_thinking_tooluse():
