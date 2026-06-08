@@ -1,0 +1,44 @@
+[
+  {
+    "role": "reviewer",
+    "endpoint": "openclaw-ephemeral",
+    "backend": "openclaw",
+    "model": "gpt-oss:120b",
+    "strategy": "single",
+    "category": "PASS",
+    "status": "changes_requested",
+    "markers": [
+      "off-by-one",
+      "range(len",
+      "skips",
+      "len(items) - 1"
+    ],
+    "detail": "status=changes_requested | reconciled-to-PASS: contract artifact satisfied despite state=failed (see container_logs for the post-success failure)",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "changes_requested",
+    "state": "failed",
+    "log_file": "cells/reviewer__openclaw-ephemeral.json",
+    "reconciled": "reconciled-to-PASS: contract artifact satisfied despite state=failed (see container_logs for the post-success failure)"
+  },
+  {
+    "role": "security",
+    "endpoint": "openclaw-ephemeral",
+    "backend": "openclaw",
+    "model": "gpt-oss:120b",
+    "strategy": "single",
+    "category": "FAIL_MODEL",
+    "status": "error",
+    "markers": [],
+    "detail": "status=error",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "error",
+    "state": "failed",
+    "log_file": "cells/security__openclaw-ephemeral.json",
+    "reconciled": null,
+    "persona_source": "production"
+  }
+]

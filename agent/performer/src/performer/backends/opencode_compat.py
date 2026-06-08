@@ -652,6 +652,13 @@ def _build_task_prompt(
                 parts.extend(f"- {q}" for q in questions)
             if answer:
                 parts += [f"**Answer:** {answer}", ""]
+    if score.pr_diff:
+        parts += [
+            "", "## PR Diff Under Review", "",
+            "The unified diff below is the complete set of changes on this PR. "
+            "Review it directly — do NOT report that no changes were supplied.",
+            "", "```diff", score.pr_diff.rstrip("\n"), "```", "",
+        ]
     if score.relay_feedback:
         parts += [
             "", "## Human Feedback (address ALL of these issues)", "",

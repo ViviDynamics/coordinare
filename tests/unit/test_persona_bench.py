@@ -266,3 +266,130 @@ class TestBuildJobPayload:
             orchestration=None, pr_url="https://example/pr/1")
         assert payload["pr_url"] == "https://example/pr/1"
         assert payload["metadata"]["pr_url"] == "https://example/pr/1"
+
+
+# --------------------------------------------------------------------------
+# Read-only fixture isolation: a performer must never push to the shared
+# fixture branch (it commits a QA/work report). The bench forks a per-run
+# throwaway branch from the fixture HEAD, dispatches there, and deletes it.
+# --------------------------------------------------------------------------
+class _FakeResp:
+    def __init__(self, status_code, payload=None):
+        self.status_code = status_code
+        self._payload = payload or {}
+
+    def json(self):
+        return self._payload
+
+
+class TestParseOwnerRepo:
+    def test_https_url_with_git_suffix(self):
+        assert persona_bench._parse_owner_repo(
+            "https://github.com/ViviDynamics/conductor-bench.git"
+        ) == ("ViviDynamics", "conductor-bench")
+
+    def test_https_url_without_git_suffix(self):
+        assert persona_bench._parse_owner_repo(
+            "https://github.com/ViviDynamics/conductor-bench"
+        ) == ("ViviDynamics", "conductor-bench")
+
+    def test_ssh_url(self):
+        assert persona_bench._parse_owner_repo(
+            "git@github.com:ViviDynamics/conductor-bench.git"
+        ) == ("ViviDynamics", "conductor-bench")
+
+    def test_token_embedded_https(self):
+        assert persona_bench._parse_owner_repo(
+            "https://x-access-token:abc@github.com/Owner/repo.git"
+        ) == ("Owner", "repo")
+
+    def test_non_github_url_returns_none(self):
+        assert persona_bench._parse_owner_repo("https://example.com/foo") is None
+
+
+class TestForkThrowawayBranch:
+    def test_creates_ref_at_fixture_head(self, monkeypatch):
+        calls = []
+
+        def fake_api(method, path, token, json_body=None):
+            calls.append((method, path, json_body))
+            if method == "GET":
+                return _FakeResp(200, {"object": {"sha": "deadbeef"}})
+            return _FakeResp(201, {})
+
+        monkeypatch.setattr(persona_bench, "_gh_api", fake_api)
+        ok = persona_bench._fork_throwaway_branch(
+            "https://github.com/O/r.git", "feat/qa-behavior", "bench-ro-qa-1", "t")
+        assert ok is True
+        # Resolved the fixture HEAD, then created the throwaway ref at that sha.
+        assert calls[0] == ("GET", "/repos/O/r/git/ref/heads/feat/qa-behavior", None)
+        assert calls[1] == ("POST", "/repos/O/r/git/refs",
+                            {"ref": "refs/heads/bench-ro-qa-1", "sha": "deadbeef"})
+
+    def test_returns_false_when_fixture_missing(self, monkeypatch):
+        monkeypatch.setattr(persona_bench, "_gh_api",
+                            lambda *a, **k: _FakeResp(404, {}))
+        assert persona_bench._fork_throwaway_branch(
+            "https://github.com/O/r.git", "nope", "bench-ro-x", "t") is False
+
+    def test_returns_false_on_unparseable_repo(self, monkeypatch):
+        monkeypatch.setattr(persona_bench, "_gh_api",
+                            lambda *a, **k: _FakeResp(200, {"object": {"sha": "x"}}))
+        assert persona_bench._fork_throwaway_branch(
+            "https://example.com/foo", "b", "bench-ro-x", "t") is False
+
+
+class TestDeleteRemoteBranch:
+    def test_issues_delete_on_ref(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            persona_bench, "_gh_api",
+            lambda method, path, token, json_body=None: calls.append((method, path))
+            or _FakeResp(204, {}))
+        persona_bench._delete_remote_branch(
+            "https://github.com/O/r.git", "bench-ro-qa-1", "t")
+        assert calls == [("DELETE", "/repos/O/r/git/refs/heads/bench-ro-qa-1")]
+
+    def test_noop_on_unparseable_repo(self, monkeypatch):
+        called = []
+        monkeypatch.setattr(
+            persona_bench, "_gh_api",
+            lambda *a, **k: called.append(1) or _FakeResp(204, {}))
+        persona_bench._delete_remote_branch("https://example.com/foo", "b", "t")
+        assert called == []
+
+
+# --------------------------------------------------------------------------
+# Judge eligibility: the LLM judge needs gradeable agent output. A job that
+# reached terminal 'succeeded' always qualifies. A gate-refused cell ends
+# state='failed' yet still carries a full structured QA report (ctx.parsed) —
+# that must be scored too, so a refusal is behaviourally confirmed rather than
+# falling through to the deterministic-only category. A genuinely crashed or
+# cancelled job (no parsed report) has nothing to grade and stays skipped.
+# --------------------------------------------------------------------------
+class TestJudgeEligible:
+    def test_succeeded_job_is_eligible(self):
+        assert persona_bench._judge_eligible(
+            _ctx(status="qa_passed", state="succeeded")) is True
+
+    def test_succeeded_job_with_no_parsed_still_eligible(self):
+        assert persona_bench._judge_eligible(
+            _ctx(status="done", parsed={}, state="succeeded")) is True
+
+    def test_gate_refused_failed_job_with_report_is_eligible(self):
+        # The qwen3-14b guardfix case: state='failed', but the performer emitted
+        # a structured qa_failed report — the judge should score it.
+        ctx = _ctx(status="qa_failed", state="failed",
+                   parsed={"status": "qa_failed", "failures": []},
+                   summary='{"status":"qa_failed","failures":[]}')
+        assert persona_bench._judge_eligible(ctx) is True
+
+    def test_crashed_job_without_report_is_skipped(self):
+        # No structured report (parsed empty) and not succeeded → nothing to grade.
+        ctx = _ctx(status="", state="failed", parsed={},
+                   summary="Traceback (most recent call last): ...")
+        assert persona_bench._judge_eligible(ctx) is False
+
+    def test_cancelled_job_without_report_is_skipped(self):
+        assert persona_bench._judge_eligible(
+            _ctx(status="", state="cancelled", parsed={})) is False

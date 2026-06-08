@@ -1808,6 +1808,53 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
 
         marker = status.get("status", "working")
 
+        # --- 083 security-scan-gate: coordinare-authoritative floor ---
+        # At the security stage the coordinare ran semgrep/bandit ONCE at
+        # dispatch and stashed the findings in state["scanner_findings"]. Those
+        # findings are authoritative: any critical/high finding forces
+        # security_failed regardless of the model's self-reported verdict, and
+        # a synthetic scanner_unavailable finding (routing=halt) blocks the card
+        # fail-closed. Reuse the dispatch findings — never re-scan here. This
+        # MUST run before the terminal-success handling below so an overridden
+        # security_passed never advances the stage.
+        if stage == "security" and marker != "working":
+            raw_scanner = state.get("scanner_findings") or []
+            scanner_findings = [f for f in raw_scanner if isinstance(f, dict)]
+            gating = [
+                f for f in scanner_findings
+                if str(f.get("severity", "")).lower() in ("critical", "high")
+            ]
+            if gating:
+                if marker != "security_failed":
+                    logger.warning(
+                        "monitor_performer.security_floor_override",
+                        performer_stage=stage,
+                        card_id=card_id,
+                        model_marker=marker,
+                        gating_count=len(gating),
+                        severities=sorted(
+                            {str(f.get("severity")) for f in gating}
+                        ),
+                    )
+                    marker = "security_failed"
+                # Merge scanner findings into the response findings, deduped by
+                # (file, line, category). Copy status so we never mutate the
+                # performer service's response object.
+                existing_raw = status.get("findings", [])
+                existing = list(existing_raw) if isinstance(existing_raw, list) else []
+                seen = {
+                    (f.get("file"), f.get("line"), f.get("category"))
+                    for f in existing
+                    if isinstance(f, dict)
+                }
+                merged = list(existing)
+                for f in scanner_findings:
+                    key = (f.get("file"), f.get("line"), f.get("category"))
+                    if key not in seen:
+                        merged.append(f)
+                        seen.add(key)
+                status = {**status, "findings": merged}
+
         # 072 FR-072-8..11: head-delta audit trail. Capture head_at_dispatch
         # the first time we see a non-empty head_before for this card's
         # current pass, and overwrite head_at_last_turn on every terminal
@@ -2198,6 +2245,35 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
         if marker == "security_failed":
             raw_findings = status.get("findings", [])
             findings = raw_findings if isinstance(raw_findings, list) else []
+
+            # 083 fail-closed: a scanner_unavailable / routing=halt finding means
+            # the security floor could not be established (diff fetch or scanner
+            # failure). Block the card for operator triage rather than routing it
+            # to a performer — never let an unscanned change proceed.
+            halt_findings = [
+                f for f in findings
+                if isinstance(f, dict) and f.get("routing") == "halt"
+            ]
+            if halt_findings:
+                logger.warning(
+                    "monitor_performer.security_halt",
+                    performer_stage=stage,
+                    card_id=card_id,
+                    halt_count=len(halt_findings),
+                )
+                state["relay_feedback"] = findings  # type: ignore[typeddict-unknown-key]
+                state["phase"] = "blocked"
+                state["system_error_reason"] = (
+                    "security scan floor unavailable — fail-closed halt"
+                )
+                state["open_questions"] = [
+                    str(f.get("description", "security scanner unavailable"))
+                    for f in halt_findings
+                ]
+                state["agent_dispatch"] = {}
+                state["agent_dispatch_at"] = None
+                return state
+
             lifecycle = state.get("lifecycle_sequence") or []
             # Determine earliest routing target from findings
             targets = set()

@@ -17,6 +17,7 @@ import structlog
 from coordinare.graph.state import _set_current_card
 from coordinare.services.github import PermanentGitHubError
 from coordinare.services.persona_service import get_effective_instructions, load_personas_hot
+from coordinare.services.security_scanner import ScannerError, scan_diff
 from coordinare.transport.base import TransportError
 from coordinare.transport.http_transport import PerformerAuthError
 from coordinare.workspace import WorkspaceSetupError
@@ -90,6 +91,130 @@ def _resolve_persona_slice_and_behavior(
         getattr(persona_cfg, "scope_behavior", None) if persona_cfg is not None else None
     )
     return slice_dict, scope_behavior
+
+
+def _scanner_unavailable_finding(reason: str) -> dict[str, Any]:
+    """083 — Synthetic fail-closed finding for a broken/unavailable scanner.
+
+    ``reason`` is a short, payload-free phrase (no diff text, no token, no raw
+    tool output) — it only describes *which* stage failed, never *what* the
+    scanner saw.
+    """
+    return {
+        "severity": "critical",
+        "category": "scanner_unavailable",
+        "description": f"security scanner unavailable: {reason}",
+        "file": "",
+        "line": 0,
+        "routing": "halt",
+    }
+
+
+async def _run_security_floor(
+    state: CoordinareState, card: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """083 US1 — Fetch the PR diff and run the scanner once (Contract 3).
+
+    Returns the normalized findings list. On *any* diff-fetch or scanner error
+    returns a single synthetic ``scanner_unavailable`` critical finding so the
+    gate fails closed (FR-008). INFO logging is summary-only (counts), never raw
+    diff text or finding messages (FR-011).
+    """
+    github = state.get("github_service")
+    pr_url = str(card.get("pr_url") or "").strip()
+    card_id = str(card.get("id", ""))
+
+    if github is None or not hasattr(github, "get_pr_diff") or not pr_url:
+        logger.error(
+            "security_floor.diff_unavailable",
+            card_id=card_id,
+            has_github=github is not None,
+            has_pr_url=bool(pr_url),
+        )
+        return [_scanner_unavailable_finding("PR diff source unavailable")]
+
+    try:
+        _raw_diff, changed_files = await github.get_pr_diff(pr_url)
+    except Exception as exc:
+        logger.error(
+            "security_floor.diff_fetch_failed",
+            card_id=card_id,
+            error_type=type(exc).__name__,
+        )
+        return [_scanner_unavailable_finding("diff fetch failed")]
+
+    repo_root = state.get("workspace_path")
+    try:
+        findings = scan_diff(changed_files, repo_root)
+    except ScannerError as exc:
+        logger.error(
+            "security_floor.scan_failed",
+            card_id=card_id,
+            error_type=type(exc).__name__,
+        )
+        return [_scanner_unavailable_finding("scanner failed")]
+
+    gating = sum(1 for f in findings if f.get("severity") in ("critical", "high"))
+    logger.info(
+        "security_floor.complete",
+        card_id=card_id,
+        file_count=len(changed_files),
+        finding_count=len(findings),
+        gating_count=gating,
+    )
+    return findings
+
+
+# Persona roles that issue a verdict on an *existing* PR's code and therefore
+# need the raw diff to assess it. The diff is injected into card_context so a
+# model that does not proactively fetch it (observed: gpt-oss:120b rejecting a
+# PR with "no code changes were supplied for review") still sees the changes.
+# ``security`` is excluded: it runs its own diff fetch via the scanner floor.
+_DIFF_REVIEW_ROLES: frozenset[str] = frozenset(
+    {"reviewer", "closer", "qa", "tech_writer"}
+)
+
+
+async def _fetch_pr_diff_text(
+    state: CoordinareState, card: dict[str, Any]
+) -> str | None:
+    """Fetch the raw unified PR diff for a review role, or None on any failure.
+
+    Best-effort: a missing github service, missing ``pr_url``, or a fetch error
+    returns ``None`` so the caller simply omits the inline diff — the hardened
+    review persona instructs the model to fetch the diff itself as a fallback,
+    so dispatch must never be blocked by this.
+
+    FR-011: the raw diff text is NEVER logged (only a length summary on
+    success and an error type on failure).
+    """
+    github = state.get("github_service")
+    pr_url = str(card.get("pr_url") or "").strip()
+    card_id = str(card.get("id", ""))
+
+    if github is None or not hasattr(github, "get_pr_diff") or not pr_url:
+        return None
+
+    try:
+        raw_diff, _changed_files = await github.get_pr_diff(pr_url)
+    except Exception as exc:
+        logger.warning(
+            "dispatch_performer.review_diff_fetch_failed",
+            card_id=card_id,
+            error_type=type(exc).__name__,
+        )
+        return None
+
+    raw_diff = raw_diff or ""
+    if not raw_diff.strip():
+        return None
+
+    logger.info(
+        "dispatch_performer.review_diff_injected",
+        card_id=card_id,
+        diff_length=len(raw_diff),
+    )
+    return raw_diff
 
 
 async def dispatch_performer(state: CoordinareState) -> CoordinareState:
@@ -689,6 +814,27 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
 
     # Pass the performer role so the performer can gate behavior on it.
     card_context["role"] = performer_stage
+
+    # 083 US1: coordinare-authoritative static-analysis floor. For the security
+    # role ONLY, fetch the PR diff and run the scanner exactly once here at
+    # dispatch. Findings are stashed on state (consumed by the monitor floor,
+    # no re-scan) and injected into card_context as an advisory ceiling. Any
+    # diff-fetch or scanner failure is fail-closed: a synthetic critical
+    # ``scanner_unavailable`` finding (routing: halt) is stashed instead, so the
+    # gate never silently passes on a broken scanner (FR-008).
+    if role == "security":
+        scanner_findings = await _run_security_floor(state, card)
+        state["scanner_findings"] = scanner_findings
+        card_context["scanner_findings"] = scanner_findings
+
+    # Inject the raw PR diff for review roles so a model that does not fetch the
+    # diff itself still has the changes to assess (drive-by fix: reviewer was
+    # rejecting PRs with "no code changes were supplied for review"). Best-effort:
+    # on any fetch failure the diff is omitted and the persona fallback applies.
+    if role in _DIFF_REVIEW_ROLES:
+        pr_diff_text = await _fetch_pr_diff_text(state, card)
+        if pr_diff_text:
+            card_context["pr_diff"] = pr_diff_text
 
     if performer_stage == "qa":
         latest_main_sha = state.get("last_known_main_sha")

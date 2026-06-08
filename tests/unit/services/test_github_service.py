@@ -471,3 +471,106 @@ class TestGetPrFiles:
             result = await svc.get_pr_files("acme", "repo", 42)
         assert result["truncated"] is False
         assert len(result["files"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# 083 — get_pr_diff (Contract 2): raw unified diff + changed-file list
+# ---------------------------------------------------------------------------
+
+
+def _diff_resp(status: int, text: str) -> MagicMock:
+    r = MagicMock()
+    r.status_code = status
+    r.is_success = 200 <= status < 300
+    r.text = text
+    return r
+
+
+_SAMPLE_DIFF = """diff --git a/src/app/vuln.py b/src/app/vuln.py
+index 1111111..2222222 100644
+--- a/src/app/vuln.py
++++ b/src/app/vuln.py
+@@ -1,3 +1,5 @@
+ import os
++def run(cmd):
++    os.system(cmd)
+diff --git a/docs/readme.md b/docs/readme.md
+index 3333333..4444444 100644
+--- a/docs/readme.md
++++ b/docs/readme.md
+@@ -1 +1,2 @@
+ hello
++world
+"""
+
+_PR_URL = "https://github.com/acme/myrepo/pull/42"
+
+
+class TestGetPrDiff:
+    @pytest.mark.asyncio
+    async def test_success_returns_diff_and_changed_files(self) -> None:
+        svc = _make_branch_service()
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client.get = AsyncMock(return_value=_diff_resp(200, _SAMPLE_DIFF))
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            raw, files = await svc.get_pr_diff(_PR_URL)
+        assert raw == _SAMPLE_DIFF
+        assert files == ["src/app/vuln.py", "docs/readme.md"]
+
+    @pytest.mark.asyncio
+    async def test_empty_diff_returns_empty_file_list(self) -> None:
+        svc = _make_branch_service()
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client.get = AsyncMock(return_value=_diff_resp(200, ""))
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            raw, files = await svc.get_pr_diff(_PR_URL)
+        assert raw == ""
+        assert files == []
+
+    @pytest.mark.asyncio
+    async def test_fetch_failure_raises(self) -> None:
+        svc = _make_branch_service()
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client.get = AsyncMock(return_value=_diff_resp(503, ""))
+        with patch("httpx.AsyncClient", return_value=mock_client), pytest.raises(RuntimeError):
+            await svc.get_pr_diff(_PR_URL)
+
+    @pytest.mark.asyncio
+    async def test_request_exception_raises(self) -> None:
+        svc = _make_branch_service()
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client.get = AsyncMock(side_effect=RuntimeError("boom"))
+        with patch("httpx.AsyncClient", return_value=mock_client), pytest.raises(RuntimeError):
+            await svc.get_pr_diff(_PR_URL)
+
+    @pytest.mark.asyncio
+    async def test_malformed_pr_url_raises(self) -> None:
+        svc = _make_branch_service()
+        with pytest.raises(ValueError):
+            await svc.get_pr_diff("https://example.com/not/a/pr")
+
+    @pytest.mark.asyncio
+    async def test_token_and_raw_diff_not_logged_at_info(self) -> None:
+        from structlog.testing import capture_logs
+
+        svc = _make_branch_service()
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client.get = AsyncMock(return_value=_diff_resp(200, _SAMPLE_DIFF))
+        with (
+            capture_logs() as cap,
+            patch("httpx.AsyncClient", return_value=mock_client),
+        ):
+            await svc.get_pr_diff(_PR_URL)
+        blob = " ".join(str(v) for e in cap for v in e.values())
+        assert "tok" not in blob
+        assert "os.system" not in blob

@@ -1911,12 +1911,101 @@ class TestQAPerformer:
     async def test_qa_passed_no_failures(self) -> None:
         import json
         perf = self._make_perf()
-        output = json.dumps({"failures": [], "criteria_checked": 5, "criteria_passed": 5})
+        output = json.dumps({
+            "failures": [],
+            "criteria_checked": 5,
+            "criteria_passed": 5,
+            "executed_checks": [
+                {"command": "pytest -q", "exit_code": 0, "output": "5 passed"},
+            ],
+        })
         perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
         with patch("performer.main.commit_file", new=AsyncMock()):
             resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
         assert resp.status == "qa_passed"
         assert resp.report["criteria_checked"] == 5
+
+    @pytest.mark.asyncio
+    async def test_qa_unsubstantiated_pass_refused(self) -> None:
+        """083: a claimed pass with positive criteria but ZERO execution evidence
+        (no executed_checks, no committed tests, no visual proof) and no
+        environment_error is the gpt-oss:120b rubber-stamp. It must be refused —
+        not honored — and surface a non-environmental defect failure."""
+        import json
+        perf = self._make_perf()
+        output = json.dumps({
+            "failures": [],
+            "criteria_checked": 10,
+            "criteria_passed": 10,
+            "verification_steps": ["Run the app and click the button."],
+        })
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+        with patch("performer.main.commit_file", new=AsyncMock()):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+        assert resp.status in ("qa_failed", "blocked")
+        assert resp.status != "qa_passed"
+
+    @pytest.mark.asyncio
+    async def test_qa_zero_criteria_pass_refused(self) -> None:
+        """083 follow-up: a claimed pass that checked NOTHING (criteria_passed=0,
+        criteria_checked=0), ran nothing (executed_checks=[]), committed no tests
+        and is NOT environment-limited is the purest rubber-stamp — observed from
+        local/qwen3-14b on the clean fixture. The original guard exempted
+        criteria_passed<=0 ('asserted nothing positive') and let this slip through.
+        A confident pass resting on zero observed evidence must be refused
+        regardless of the criteria count."""
+        import json
+        perf = self._make_perf()
+        output = json.dumps({
+            "failures": [],
+            "criteria_checked": 0,
+            "criteria_passed": 0,
+            "executed_checks": [],
+            "verification_steps": ["Verify checkout_total behaves correctly for typical carts"],
+        })
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+        with patch("performer.main.commit_file", new=AsyncMock()):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+        assert resp.status in ("qa_failed", "blocked")
+        assert resp.status != "qa_passed"
+
+    @pytest.mark.asyncio
+    async def test_qa_pass_with_executed_checks_is_honored(self) -> None:
+        """083: the SAME claimed pass becomes legitimate once the model supplies
+        real execution evidence (a command + exit code)."""
+        import json
+        perf = self._make_perf()
+        output = json.dumps({
+            "failures": [],
+            "criteria_checked": 10,
+            "criteria_passed": 10,
+            "executed_checks": [
+                {"command": "pytest -q tests/", "exit_code": 0, "output": "10 passed"},
+            ],
+        })
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+        with patch("performer.main.commit_file", new=AsyncMock()):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+        assert resp.status == "qa_passed"
+
+    @pytest.mark.asyncio
+    async def test_qa_env_limited_pass_not_refused(self) -> None:
+        """083: 'couldn't verify' is honest, not a rubber-stamp. A claimed pass
+        with no execution evidence but a genuine environment_error stays an
+        advisory DEGRADED pass — the unsubstantiated-pass guard must not fire."""
+        import json
+        perf = self._make_perf()
+        output = json.dumps({
+            "failures": [],
+            "criteria_checked": 4,
+            "criteria_passed": 4,
+            "environment_error": "could not connect to postgres at localhost:5432",
+        })
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+        with patch("performer.main.commit_file", new=AsyncMock()):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+        assert resp.status == "qa_passed"
+        assert resp.report["env_limited"] is True
 
     @pytest.mark.asyncio
     async def test_qa_posts_pr_comment_with_verification_and_evidence(self) -> None:
@@ -2106,6 +2195,7 @@ class TestQAPerformer:
             "criteria_passed": 2,
             "visual_validation_required": False,
             "verification_steps": ["Run unit tests and verify backoff timings in logs."],
+            "executed_checks": [{"command": "pytest -q", "exit_code": 0, "output": "2 passed"}],
             "visual_evidence": [],
         })
         perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
@@ -2125,6 +2215,7 @@ class TestQAPerformer:
             "criteria_checked": 1,
             "criteria_passed": 1,
             "verification_steps": ["Run CI and verify retries are bounded."],
+            "executed_checks": [{"command": "pytest -q", "exit_code": 0, "output": "1 passed"}],
             "visual_evidence": [],
         })
         perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
@@ -2143,6 +2234,7 @@ class TestQAPerformer:
             "criteria_checked": 1,
             "criteria_passed": 1,
             "verification_steps": ["Open page and verify copied text."],
+            "executed_checks": [{"command": "pytest -q", "exit_code": 0, "output": "1 passed"}],
         })
         perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
 
@@ -2171,7 +2263,10 @@ class TestQAPerformer:
         perf.score.title = "Fix API retry bug"
         perf.score.acceptance_criteria = ["Retries stop after configured max attempts."]
         perf.pr_url = "https://github.com/acme/repo/pull/42"
-        output = json.dumps({"failures": [], "criteria_checked": 1, "criteria_passed": 1})
+        output = json.dumps({
+            "failures": [], "criteria_checked": 1, "criteria_passed": 1,
+            "executed_checks": [{"command": "pytest -q", "exit_code": 0, "output": "1 passed"}],
+        })
         perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
 
         mock_commit = AsyncMock()
@@ -2306,7 +2401,10 @@ class TestQAPerformer:
 
         perf = self._make_perf()
         perf.score.latest_main_sha = "abc1234567890000000000000000000000000000"
-        output = json.dumps({"failures": [], "criteria_checked": 2, "criteria_passed": 2})
+        output = json.dumps({
+            "failures": [], "criteria_checked": 2, "criteria_passed": 2,
+            "executed_checks": [{"command": "pytest -q", "exit_code": 0, "output": "2 passed"}],
+        })
         perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
 
         mock_proc = MagicMock()
@@ -2381,7 +2479,10 @@ class TestQAPerformer:
 
         perf = self._make_perf()
         perf.score.latest_main_sha = ""  # not provided
-        output = json.dumps({"failures": [], "criteria_checked": 2, "criteria_passed": 2})
+        output = json.dumps({
+            "failures": [], "criteria_checked": 2, "criteria_passed": 2,
+            "executed_checks": [{"command": "pytest -q", "exit_code": 0, "output": "2 passed"}],
+        })
         perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
 
         mock_subprocess = AsyncMock()

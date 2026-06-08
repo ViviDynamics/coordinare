@@ -1,0 +1,29 @@
+[
+  {
+    "role": "security",
+    "endpoint": "openclaw-ephemeral",
+    "backend": "openclaw",
+    "model": "gpt-oss:120b",
+    "strategy": "single",
+    "category": "PASS",
+    "status": "security_failed",
+    "markers": [
+      "sql injection",
+      "injection",
+      "eval(",
+      "eval ",
+      "f-string",
+      "parameteri",
+      "untrusted"
+    ],
+    "detail": "status=security_failed | reconciled-to-PASS: contract artifact satisfied despite state=failed (see container_logs for the post-success failure)",
+    "judge_correct": null,
+    "judge_quality": null,
+    "judge_reason": "",
+    "error_code": "security_failed",
+    "state": "failed",
+    "log_file": "cells/security__openclaw-ephemeral.json",
+    "reconciled": "reconciled-to-PASS: contract artifact satisfied despite state=failed (see container_logs for the post-success failure)",
+    "persona_source": "production"
+  }
+]

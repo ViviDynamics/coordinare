@@ -1274,6 +1274,128 @@ async def test_security_failed_routes_architecture_findings_to_architect() -> No
 
 
 # ---------------------------------------------------------------------------
+# 083 — coordinare-authoritative static-analysis floor (security stage)
+# ---------------------------------------------------------------------------
+
+
+def _sec_state(*, response: dict, scanner_findings: list[dict] | None) -> dict:
+    """Build a security-stage monitor state with dispatch-stashed scanner findings."""
+    state = initial_state()
+    svc = _Performer(response=response)
+    state["performer_services"] = {"security": svc}
+    state["performer_stage"] = "security"
+    # A stage AFTER security so a clean pass visibly *advances* (to "qa"),
+    # distinguishing "verdict stands" from a floor override (-> "implementing").
+    state["lifecycle_sequence"] = ["implementing", "security", "qa"]
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    if scanner_findings is not None:
+        state["scanner_findings"] = scanner_findings  # type: ignore[typeddict-unknown-key]
+    return state
+
+
+@pytest.mark.asyncio
+async def test_scanner_critical_overrides_model_pass() -> None:
+    """082 regression: a critical scanner finding forces security_failed even
+    when the model reported security_passed; the finding is relayed."""
+    scanner = [{
+        "severity": "critical", "category": "78",
+        "description": "semgrep:dangerous-system-call",
+        "file": "src/app/vuln.py", "line": 3, "routing": "implementer",
+    }]
+    state = _sec_state(
+        response={"status": "security_passed", "findings": []},
+        scanner_findings=scanner,
+    )
+
+    result = await monitor_performer(state)
+
+    # Overridden: routed back to the implementer, NOT advanced to qa.
+    assert result["performer_stage"] == "implementing"
+    assert result["phase"] == "dispatching"
+    assert scanner[0] in (result.get("relay_feedback") or [])
+
+
+@pytest.mark.asyncio
+async def test_scanner_medium_does_not_override_model_pass() -> None:
+    """A medium/low scanner finding is below the gating floor: the model's
+    security_passed verdict stands and the stage advances."""
+    scanner = [{
+        "severity": "medium", "category": "hashlib",
+        "description": "bandit:B324", "file": "src/app/h.py",
+        "line": 9, "routing": "implementer",
+    }]
+    state = _sec_state(
+        response={"status": "security_passed", "findings": []},
+        scanner_findings=scanner,
+    )
+
+    result = await monitor_performer(state)
+
+    assert result["performer_stage"] == "qa"
+
+
+@pytest.mark.asyncio
+async def test_clean_scanner_lets_model_pass_stand() -> None:
+    """No scanner findings → security_passed stands and the stage advances."""
+    state = _sec_state(
+        response={"status": "security_passed", "findings": []},
+        scanner_findings=[],
+    )
+
+    result = await monitor_performer(state)
+
+    assert result["performer_stage"] == "qa"
+
+
+@pytest.mark.asyncio
+async def test_scanner_unavailable_fails_closed_to_halt() -> None:
+    """A synthetic scanner_unavailable (routing=halt) critical finding forces
+    security_failed and blocks the card fail-closed instead of routing."""
+    scanner = [{
+        "severity": "critical", "category": "scanner_unavailable",
+        "description": "security scanner unavailable: scanner failed",
+        "file": "", "line": 0, "routing": "halt",
+    }]
+    state = _sec_state(
+        response={"status": "security_passed", "findings": []},
+        scanner_findings=scanner,
+    )
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "blocked"
+    assert result["performer_stage"] != "qa"
+    assert scanner[0] in (result.get("relay_feedback") or [])
+
+
+@pytest.mark.asyncio
+async def test_scanner_findings_merge_with_model_findings() -> None:
+    """When the model itself reports security_failed, the dispatch-stashed
+    scanner findings are merged into relay_feedback (no re-scan)."""
+    model_finding = {
+        "severity": "high", "category": "injection",
+        "description": "model-found", "file": "src/app/m.py",
+        "line": 1, "routing": "implementer",
+    }
+    scanner = [{
+        "severity": "critical", "category": "78",
+        "description": "semgrep:dangerous-system-call",
+        "file": "src/app/vuln.py", "line": 3, "routing": "implementer",
+    }]
+    state = _sec_state(
+        response={"status": "security_failed", "findings": [model_finding]},
+        scanner_findings=scanner,
+    )
+
+    result = await monitor_performer(state)
+
+    relayed = result.get("relay_feedback") or []
+    assert model_finding in relayed
+    assert scanner[0] in relayed
+
+
+# ---------------------------------------------------------------------------
 # 023 — qa_failed handling
 # ---------------------------------------------------------------------------
 
