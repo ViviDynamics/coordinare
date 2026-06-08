@@ -103,22 +103,42 @@ class RoutingTable(BaseModel):
         """Load and validate a routing table from a mounted/baked YAML file.
 
         The file is the 078 activation surface (see ``SELFHOSTED_ROUTING_CONFIG``):
-        a YAML document whose top level is either a mapping with an ``entries``
-        key or a bare list of entries. Either shape is accepted::
+        a YAML document whose top level is either a mapping keyed by
+        ``selfhosted_routing`` (the canonical key used by the contract and
+        ``config.example.yaml``) or ``entries``, or a bare list of entries. All
+        three shapes are accepted::
 
-            entries:
+            selfhosted_routing:
               - backend: openclaw
                 model: gpt-oss-120b
                 target: {base_url: "http://ollama:11434", wire_format: openai,
                          strategy: reroute}
 
-        Fails fast (``FileNotFoundError`` / ``ValueError``) on a missing path,
-        non-mapping/list root, or a target that violates the strategy rules —
-        a broken table must surface at job start, not black-hole a card
-        mid-lifecycle (FR-078-5).
+        Declaring **both** ``selfhosted_routing`` and ``entries`` is ambiguous
+        and fails fast naming both keys.
+
+        Fails fast (``ValueError``) on an unreadable path (missing, a directory,
+        permission-denied), a non-mapping/list root, malformed YAML, or a target
+        that violates the strategy rules — a broken table must surface at job
+        start with an actionable, operator-facing message, not black-hole a card
+        mid-lifecycle behind a raw ``OSError`` (FR-078-5).
         """
         p = Path(path)
-        text = p.read_text(encoding="utf-8")  # FileNotFoundError propagates
+        try:
+            text = p.read_text(encoding="utf-8")
+        except OSError as exc:
+            # A missing/unreadable mount is the single most common 078
+            # misconfiguration. Convert the raw OSError (FileNotFoundError,
+            # IsADirectoryError, PermissionError, ...) into a clear message that
+            # names the path and the env var that points at it, and says how to
+            # recover — instead of surfacing "dispatch failed: FileNotFoundError:
+            # [Errno 2] ..." which gives an operator nothing to act on.
+            raise ValueError(
+                f"routing table {p} (from SELFHOSTED_ROUTING_CONFIG) could not "
+                f"be read: {type(exc).__name__}: {exc}. Mount the routing-table "
+                f"YAML into the performer container, or unset "
+                f"SELFHOSTED_ROUTING_CONFIG to disable self-hosted routing."
+            ) from exc
         try:
             data = yaml.safe_load(text)
         except yaml.YAMLError as exc:
@@ -133,6 +153,20 @@ class RoutingTable(BaseModel):
                 f"routing table {p} must be a mapping or a list of entries, "
                 f"got {type(data).__name__}"
             )
+        # The contract and config.example.yaml key the table under
+        # ``selfhosted_routing``; the model field is ``entries``. Accept the
+        # canonical key by remapping it, but reject a file that declares both
+        # (ambiguous — we will not silently drop one).
+        if "selfhosted_routing" in data:
+            if "entries" in data:
+                raise ValueError(
+                    f"routing table {p} declares both 'selfhosted_routing' and "
+                    f"'entries'; use exactly one (prefer 'selfhosted_routing')"
+                )
+            data = {
+                **{k: v for k, v in data.items() if k != "selfhosted_routing"},
+                "entries": data["selfhosted_routing"],
+            }
         try:
             return cls.model_validate(data)
         except ValidationError as exc:

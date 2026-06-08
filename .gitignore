@@ -230,6 +230,11 @@ config.yaml
 config.*.yaml
 !config.example.yaml
 !config.example.*
+# 078 self-hosted routing table — live file is environment-specific (host paths);
+# routing.example.yaml is the committed template operators copy from.
+routing.yaml
+routing.*.yaml
+!routing.example.yaml
 
 # Backup snapshots created during ops (config/state/env)
 *.bak

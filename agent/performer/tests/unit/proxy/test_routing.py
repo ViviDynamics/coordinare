@@ -183,6 +183,54 @@ def test_from_yaml_file_loads_reroute_entry(tmp_path):
     assert target.strategy == "reroute"
 
 
+def test_from_yaml_file_accepts_selfhosted_routing_key(tmp_path):
+    """The contract's canonical top-level key ``selfhosted_routing:`` is accepted.
+
+    ``specs/078-selfhosted-backend-shim/contracts/routing-table.md`` and
+    ``config.example.yaml`` both document the table under ``selfhosted_routing:``.
+    The loader must accept that key (mapped onto ``entries``) so the documented
+    wiring is not a footgun that silently fails ``extra="forbid"`` validation.
+    """
+    cfg = tmp_path / "routing.yaml"
+    cfg.write_text(
+        "selfhosted_routing:\n"
+        "  - backend: openclaw\n"
+        "    model: gpt-oss-120b\n"
+        "    target:\n"
+        "      base_url: http://ollama:11434\n"
+        "      wire_format: openai\n"
+        "      strategy: reroute\n",
+        encoding="utf-8",
+    )
+    table = RoutingTable.from_yaml_file(cfg)
+    target = table.resolve("openclaw", "gpt-oss-120b")
+    assert target is not None
+    assert target.base_url == "http://ollama:11434"
+    assert target.strategy == "reroute"
+
+
+def test_from_yaml_file_both_keys_rejected(tmp_path):
+    """A file declaring BOTH ``selfhosted_routing:`` and ``entries:`` is ambiguous
+    and must fail fast naming both keys, rather than silently dropping one."""
+    cfg = tmp_path / "routing.yaml"
+    cfg.write_text(
+        "selfhosted_routing:\n"
+        "  - backend: openclaw\n"
+        "    model: gpt-oss-120b\n"
+        "    target:\n"
+        "      base_url: http://ollama:11434\n"
+        "      wire_format: openai\n"
+        "      strategy: reroute\n"
+        "entries: []\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError) as excinfo:
+        RoutingTable.from_yaml_file(cfg)
+    message = str(excinfo.value)
+    assert "selfhosted_routing" in message
+    assert "entries" in message
+
+
 def test_from_yaml_file_accepts_bare_list_root(tmp_path):
     """A top-level list of entries is accepted as shorthand for {entries: [...]}."""
     cfg = tmp_path / "routing.yaml"
@@ -209,9 +257,30 @@ def test_from_yaml_file_empty_doc_is_empty_table(tmp_path):
 
 
 def test_from_yaml_file_missing_path_raises(tmp_path):
-    """A non-empty-but-missing path fails fast rather than silently no-op'ing."""
-    with pytest.raises(FileNotFoundError):
-        RoutingTable.from_yaml_file(tmp_path / "does-not-exist.yaml")
+    """A non-empty-but-missing path fails fast rather than silently no-op'ing.
+
+    The error must be actionable for an operator reading a blocked card: it
+    names the offending path and the ``SELFHOSTED_ROUTING_CONFIG`` env var that
+    points at it, instead of leaking a raw ``FileNotFoundError`` (FR-078-5).
+    """
+    missing = tmp_path / "does-not-exist.yaml"
+    with pytest.raises(ValueError) as excinfo:
+        RoutingTable.from_yaml_file(missing)
+    message = str(excinfo.value)
+    assert str(missing) in message
+    assert "SELFHOSTED_ROUTING_CONFIG" in message
+    assert "could not be read" in message
+
+
+def test_from_yaml_file_directory_path_rejected(tmp_path):
+    """A path that exists but is a directory (e.g. a bad mount) fails closed with
+    the same actionable message rather than a raw IsADirectoryError."""
+    with pytest.raises(ValueError) as excinfo:
+        RoutingTable.from_yaml_file(tmp_path)
+    message = str(excinfo.value)
+    assert str(tmp_path) in message
+    assert "SELFHOSTED_ROUTING_CONFIG" in message
+    assert "could not be read" in message
 
 
 def test_from_yaml_file_malformed_yaml_raises(tmp_path):
