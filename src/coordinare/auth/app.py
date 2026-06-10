@@ -147,3 +147,14 @@ class AppAuth:
             self._cached_token = token
             self._token_expires_at = expires_at
             return token
+
+    async def invalidate(self) -> None:
+        """Force-discard the cached installation token.
+
+        The next ``get_token()`` re-mints a fresh credential. Acquires the
+        same lock as ``get_token`` so a concurrent refresh observes a
+        consistent cache state.
+        """
+        async with self._lock:
+            self._cached_token = None
+            self._token_expires_at = None

@@ -25,3 +25,17 @@ class GitHubAuth(Protocol):
             ValueError: misconfigured credentials (programming error).
         """
         ...
+
+    async def invalidate(self) -> None:
+        """Force-discard any cached credential.
+
+        After this call, the next ``get_token()`` must produce a freshly
+        minted credential rather than a stale cached one.
+
+        For App mode: clears the cached installation token so the next
+        ``get_token()`` re-mints.
+        For PAT mode: a safe no-op — static providers have nothing to
+        discard and ``get_token()`` keeps returning the same token (this is
+        how the service detects a credential that cannot be refreshed).
+        """
+        ...

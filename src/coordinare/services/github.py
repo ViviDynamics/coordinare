@@ -31,6 +31,17 @@ class TransientGitHubError(GitHubError): ...
 class PermanentGitHubError(GitHubError): ...
 
 
+class AuthGitHubError(PermanentGitHubError):
+    """A recognized GitHub authorization failure (e.g. HTTP 401 / UNAUTHORIZED).
+
+    Subclasses ``PermanentGitHubError`` so that, if it escapes the internal
+    refresh-and-retry path, it is treated as permanent: not retried by stamina
+    (``on=TransientGitHubError``) and ignored by the circuit breaker
+    (``ignore=PermanentGitHubError``). Messages must stay secret-free — never
+    embed a token, ``Authorization`` header value, or response body.
+    """
+
+
 class RateLimitedGitHubError(TransientGitHubError):
     def __init__(self, retry_after: float, message: str = "") -> None:
         super().__init__(message or f"rate-limited; Retry-After={retry_after}s")
@@ -488,7 +499,34 @@ class GitHubService:
             if self._client is None or token != self._last_token:
                 self._client = self._build_client(token)
                 self._last_token = token
-            return await self._execute_request(self._client, query, variables)
+            try:
+                return await self._execute_request(self._client, query, variables)
+            except AuthGitHubError:
+                # 085: a recognized auth failure (401 / UNAUTHORIZED). The
+                # cached credential may be stale — discard it, mint a fresh
+                # one, and retry exactly once. Bounded to ≤1 invalidate,
+                # ≤1 re-mint, ≤1 retry; never logs token material.
+                old_token = self._last_token
+                await self._auth.invalidate()
+                fresh_token = await self._current_token()
+                if fresh_token == old_token:
+                    # Credential is static/unchanged (e.g. PAT) — a refresh
+                    # cannot help, so don't retry. Surface as permanent.
+                    logger.info("github.auth.refresh_retry", outcome="failed")
+                    raise PermanentGitHubError(
+                        "GitHub auth failed and the credential could not be refreshed"
+                    ) from None
+                self._client = self._build_client(fresh_token)
+                self._last_token = fresh_token
+                try:
+                    result = await self._execute_request(self._client, query, variables)
+                except AuthGitHubError as exc:
+                    logger.info("github.auth.refresh_retry", outcome="failed")
+                    raise PermanentGitHubError(
+                        "GitHub auth failed again after credential refresh"
+                    ) from exc
+                logger.info("github.auth.refresh_retry", outcome="recovered")
+                return result
 
     async def _execute_request(self, client: Any, query: str, variables: dict[str, Any]) -> dict[str, Any]:
         document = gql(query)
@@ -510,6 +548,8 @@ class GitHubService:
                     retry_after = 60.0
                 await asyncio.sleep(retry_after)
                 raise RateLimitedGitHubError(retry_after=retry_after) from exc
+            if exc.status == 401:
+                raise AuthGitHubError(str(exc)) from exc
             if exc.status >= 500:
                 raise TransientGitHubError(str(exc)) from exc
             raise PermanentGitHubError(str(exc)) from exc
@@ -526,11 +566,16 @@ class GitHubService:
                     t = e.get("type")
                     if t:
                         err_types.add(str(t))
+            # 085: UNAUTHORIZED is a recognized auth failure — route it to
+            # AuthGitHubError so _execute can refresh-and-retry once. It is
+            # still permanent (AuthGitHubError subclasses PermanentGitHubError)
+            # so the breaker/stamina behavior is unchanged.
+            if "UNAUTHORIZED" in err_types:
+                raise AuthGitHubError(str(exc)) from exc
             permanent_types = {
                 "UNPROCESSABLE",   # branch protection / ruleset rejection
                 "FORBIDDEN",       # missing scope / installation perms
                 "NOT_FOUND",       # bad node id (e.g. stale pr_node_id)
-                "UNAUTHORIZED",    # bad token
             }
             if err_types & permanent_types:
                 raise PermanentGitHubError(str(exc)) from exc
@@ -541,6 +586,11 @@ class GitHubService:
             # GitHub upstream incidents).  Surface as a transient error so
             # callers log a clean warning instead of an unhandled traceback.
             code = getattr(exc, "code", None)
+            if code == 401:
+                # 085: a 401 is an auth failure, not a transient server
+                # error — route it to AuthGitHubError so _execute can
+                # refresh-and-retry once with a freshly minted credential.
+                raise AuthGitHubError(f"GraphQL HTTP {code}: {exc}") from exc
             raise TransientGitHubError(f"GraphQL HTTP {code}: {exc}") from exc
         except (TimeoutError, aiohttp.ClientError, OSError) as exc:
             raise TransientGitHubError(str(exc)) from exc

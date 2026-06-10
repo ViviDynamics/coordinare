@@ -9,6 +9,39 @@ import pytest
 from coordinare.auth import build_auth, validate_auth_config
 from coordinare.auth.app import AppAuth
 from coordinare.auth.pat import PatAuth
+from coordinare.auth.protocol import GitHubAuth
+
+# ---------------------------------------------------------------------------
+# GitHubAuth protocol surface (085 — Contract A signature)
+# ---------------------------------------------------------------------------
+
+
+def test_github_auth_protocol_declares_invalidate() -> None:
+    """The protocol must declare an async invalidate() member (085 Contract A)."""
+    import inspect
+
+    assert hasattr(GitHubAuth, "invalidate")
+    assert "invalidate" in getattr(GitHubAuth, "__protocol_attrs__", set())
+    assert inspect.iscoroutinefunction(GitHubAuth.invalidate)
+
+
+def test_github_auth_protocol_is_runtime_checkable() -> None:
+    """Protocol stays @runtime_checkable; a class missing invalidate is NOT a GitHubAuth."""
+
+    class _OnlyGetToken:
+        async def get_token(self) -> str:
+            return "x"
+
+    assert not isinstance(_OnlyGetToken(), GitHubAuth)
+
+    class _FullImpl:
+        async def get_token(self) -> str:
+            return "x"
+
+        async def invalidate(self) -> None:
+            return None
+
+    assert isinstance(_FullImpl(), GitHubAuth)
 
 # ---------------------------------------------------------------------------
 # build_auth helpers
