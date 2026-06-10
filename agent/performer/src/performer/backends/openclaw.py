@@ -53,6 +53,27 @@ log = structlog.get_logger(__name__)
 _MAX_TEXT = 200
 
 
+def _env_int(name: str, default: int) -> int:
+    """Read a positive int from the environment, falling back on absent/invalid.
+
+    A blank, non-numeric, or non-positive value yields ``default`` (and logs a
+    warning) so a typo in the performer env never declares a 0/negative budget
+    that would itself trip OpenClaw's context-overflow guard.
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        log.warning("openclaw.invalid_env_int", name=name, value=raw, fallback=default)
+        return default
+    if value <= 0:
+        log.warning("openclaw.invalid_env_int", name=name, value=raw, fallback=default)
+        return default
+    return value
+
+
 def _extract_final_text(parsed: dict) -> str:
     """Pull the assistant's final reply from an ``openclaw agent --json`` object.
 
@@ -383,6 +404,17 @@ class OpenClawBackend:
         }
         allowlist: dict = {}
         if model:
+            # OpenClaw enforces ``contextWindow`` client-side: when the prompt
+            # (diff + accumulated review feedback) exceeds it, the embedded agent
+            # refuses with "Context overflow: prompt too large for the model … use
+            # a larger-context model" instead of returning a verdict — which then
+            # records as CHANGES REQUESTED and exhausts the reviewer feedback-cycle
+            # budget. The 32768/8192 defaults suit qwen-on-spark, but a large model
+            # (e.g. gpt-oss:120b served at 131072) must declare its true window or
+            # it gets gated below its real capacity. Per-performer env overrides
+            # keep the budget matched to whatever model the container routes.
+            context_window = _env_int("OPENCLAW_CONTEXT_WINDOW", 32768)
+            max_tokens = _env_int("OPENCLAW_MAX_TOKENS", 8192)
             provider["models"] = [
                 {
                     "id": model,
@@ -390,8 +422,8 @@ class OpenClawBackend:
                     "reasoning": False,
                     "input": ["text"],
                     "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-                    "contextWindow": 32768,
-                    "maxTokens": 8192,
+                    "contextWindow": context_window,
+                    "maxTokens": max_tokens,
                 }
             ]
             allowlist[f"{name}/{model}"] = {"alias": model}

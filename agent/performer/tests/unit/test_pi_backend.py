@@ -154,3 +154,53 @@ async def test_provider_override_routes_to_litellm(tmp_path: Path, monkeypatch) 
     assert prov["apiKey"] == "${LITELLM_MASTER_KEY}"  # env interpolation, not a literal/Pi-hosted key
     assert prov["compat"] == {"supportsDeveloperRole": False, "supportsReasoningEffort": False}
     assert any(m["id"] == "spark/qwen3.6:35b" for m in prov["models"])
+
+
+@pytest.mark.asyncio
+async def test_cli_env_excludes_cache_path_keeps_other_cache_vars(tmp_path: Path, monkeypatch) -> None:
+    """The pi CLI must launch under the IMAGE's node (22), not the env-cache's
+    project-pinned node (e.g. 18.12.1).
+
+    The coordinare env-cache builds a project's `.nvmrc` toolchain and prepends
+    it to PATH via activate.sh (sourced into every shell by BASH_ENV). pi-tui
+    uses the `v` (unicodeSets) regex flag, which crashes on Node < 20 with
+    `SyntaxError: Invalid regular expression flags` → pi exits 1 → the card is
+    blocked. So strip PATH from the env-cache vars for the CLI launch (the
+    agent's own `bash -lc` shells re-source activate.sh and still get the
+    project toolchain). Every OTHER cache var must survive. Mirrors
+    openclaw.py's fix.
+    """
+    captured: dict = {}
+
+    class _FakeProc:
+        returncode = 0
+        pid = 4321
+        stdout = None
+
+        async def wait(self):
+            return 0
+
+    async def _fake_exec(*argv, **kwargs):
+        captured["env"] = kwargs.get("env")
+        return _FakeProc()
+
+    async def _noop_reader(self):
+        return None
+
+    import performer.backends.pi as pi_mod
+    monkeypatch.setattr(pi_mod.asyncio, "create_subprocess_exec", _fake_exec)
+    monkeypatch.setattr(PiBackend, "_read_loop", _noop_reader)
+
+    stand = Stand(path=tmp_path, branch="main")
+    stand.cache_env = {
+        "PATH": "/devenv/website-3ab3e0/node-v18.12.1/bin:/usr/bin:/bin",
+        "RBENV_ROOT": "/devenv/website-3ab3e0/rbenv",
+    }
+    score = Score(title="Close it", repo_url="https://github.com/x/y", branch="main", github_token="t")
+
+    await PiBackend().start(stand, score)
+
+    env = captured["env"]
+    assert "node-v18.12.1" not in env.get("PATH", "")
+    assert env["PATH"] != stand.cache_env["PATH"]
+    assert env.get("RBENV_ROOT") == "/devenv/website-3ab3e0/rbenv"

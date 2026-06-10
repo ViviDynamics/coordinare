@@ -132,22 +132,95 @@ class SelfHostedShim:
     def _normalizer_keys(self) -> list[str]:
         return [n.key for n in self.normalizers]
 
+    @property
+    def _translate(self) -> bool:
+        """True when this shim must translate Anthropic↔OpenAI wire (spec 084)."""
+        return getattr(self.target, "strategy", None) == "translate"
+
     def _upstream_url(self, path_qs: str) -> str:
-        """Join the target origin with the CLI's request path (transparent forward)."""
-        return self.target.base_url.rstrip("/") + path_qs
+        """Join the target origin with the request path (transparent forward).
+
+        In translate mode the Anthropic front door ``/v1/messages`` is rewritten
+        to the OpenAI upstream path ``/v1/chat/completions`` (Decision 4); query
+        string, if any, is preserved.
+
+        084 / Ollama-compat: when ``base_url`` already ends with ``/v1`` (e.g.
+        ``http://192.168.3.30:11434/v1``) the translated path ``/v1/chat/completions``
+        must NOT be appended verbatim — that would produce the double-prefix
+        ``…/v1/v1/chat/completions`` (Ollama 404). Strip the leading ``/v1``
+        from the path when the base already carries it, matching the same
+        Ollama-compat logic in ``health._probe_url``.
+        """
+        base = self.target.base_url.rstrip("/")
+        if self._translate:
+            path, sep, query = path_qs.partition("?")
+            if path == "/v1/messages":
+                path = "/v1/chat/completions"
+            # Avoid double-/v1 when base already ends with it.
+            if base.endswith("/v1") and path.startswith("/v1/"):
+                path = path[3:]  # strip leading /v1
+            path_qs = path + sep + query
+        return base + path_qs
+
+    def _translate_request_bytes(self, raw: bytes) -> bytes:
+        """Translate an inbound Anthropic ``/v1/messages`` body to OpenAI wire.
+
+        Returns the re-serialized OpenAI body. A non-JSON / unparseable body is
+        forwarded verbatim (the upstream will reject it) rather than dropped.
+        Pure translation — no body content is logged (FR-011).
+        """
+        import json as _json
+
+        from .translate import translate_request
+
+        try:
+            anthropic_body = _json.loads(raw or b"{}")
+        except (ValueError, TypeError):
+            return raw
+        if not isinstance(anthropic_body, dict):
+            return raw
+        openai_body = translate_request(anthropic_body)
+        # 084: if the routing entry declares an ``upstream_model``, rewrite the
+        # model name in the translated request so the OpenAI-wire upstream
+        # (e.g. Ollama) receives its own model name rather than the Anthropic
+        # model name the CLI was started with (which would be unknown to Ollama).
+        upstream_model = getattr(self.target, "upstream_model", None)
+        if upstream_model:
+            openai_body["model"] = upstream_model
+        return _json.dumps(openai_body).encode("utf-8")
 
     def _forward_headers(self, headers: Any) -> dict[str, str]:
         return {k: v for k, v in headers.items() if k.lower() not in _HOP_BY_HOP}
 
     def normalize_json(self, body: dict[str, Any]) -> dict[str, Any]:
-        """Run every declared normalizer's JSON path in order (fail-open)."""
+        """Run every declared normalizer's JSON path in order (fail-open).
+
+        In translate mode the already-normalized OpenAI body is then wire-format
+        translated to an Anthropic ``/v1/messages`` response as the OUTERMOST step
+        (Decision 4: normalizers → wire translation).
+        """
         for n in self.normalizers:
             body = n.normalize_json(body)
+        if self._translate:
+            from .translate import translate_response
+
+            body = translate_response(body)
         return body
 
     def sse_chain(self) -> _FilterChain:
-        """A fresh filter chain for one SSE response stream."""
-        return _FilterChain([n.sse_filter() for n in self.normalizers])
+        """A fresh filter chain for one SSE response stream.
+
+        In translate mode the OpenAI→Anthropic SSE translator is appended as the
+        OUTERMOST filter, after the normalizers (Decision 4) — it consumes an
+        already-reassembled OpenAI chunk stream and restructures it into the
+        Anthropic event protocol.
+        """
+        filters = [n.sse_filter() for n in self.normalizers]
+        if self._translate:
+            from .translate import TranslatingSSEFilter
+
+            filters.append(TranslatingSSEFilter())
+        return _FilterChain(filters)
 
     async def start(self) -> str:
         from aiohttp import web
@@ -170,7 +243,9 @@ class SelfHostedShim:
                 upstream_url = self._upstream_url(request.path_qs)
                 fwd_headers = self._forward_headers(request.headers)
 
-                # Detect streaming the same way 080 does — inspect the request body.
+                # Detect streaming the same way 080 does — inspect the request
+                # body. ``stream`` is a passthrough field in both wires, so the
+                # original (pre-translation) body is authoritative.
                 want_stream = False
                 try:
                     import json as _json
@@ -178,6 +253,11 @@ class SelfHostedShim:
                     want_stream = bool(_json.loads(raw or b"{}").get("stream"))
                 except (ValueError, TypeError):
                     want_stream = False
+
+                # Translate the inbound Anthropic body to OpenAI wire before
+                # forwarding (translate strategy only; no-op otherwise).
+                if self._translate:
+                    raw = self._translate_request_bytes(raw)
 
                 if want_stream:
                     status, resp = await self._proxy_sse(
@@ -192,14 +272,17 @@ class SelfHostedShim:
                     {"error": {"message": "self-hosted shim proxy failed"}}, status=502
                 )
             finally:
-                # method/path/status/latency + which normalizers ran — never
-                # tokens or bodies (FR-078-10).
+                # method/path/status/latency + which translator + which
+                # normalizers ran — never tokens, bodies, or auth (FR-078-10 /
+                # 084 FR-011). ``translate`` records that the wire translator ran;
+                # the secret lives only in the env-var NAME elsewhere, never here.
                 log.info(
                     "selfhosted_shim.request",
                     method=request.method,
                     path=request.path,
                     status=status,
                     latency_ms=round((time.monotonic() - t0) * 1000, 1),
+                    translate=self._translate,
                     normalizers=self._normalizer_keys,
                 )
 
@@ -220,6 +303,16 @@ class SelfHostedShim:
 
         resp = await self.client.post(upstream_url, content=raw, headers=headers)
         status = resp.status_code
+        # FR-012: a non-2xx upstream is surfaced verbatim and the translator is
+        # NOT invoked — translating an OpenAI error envelope into a fake Anthropic
+        # message would mask the real failure. (Normalizers are fail-open and
+        # only meaningful on a success body, so they are skipped too.)
+        if self._translate and not (200 <= status < 300):
+            return status, web.Response(
+                body=resp.content,
+                status=status,
+                content_type=resp.headers.get("content-type", "application/json"),
+            )
         try:
             body = resp.json()
         except ValueError:

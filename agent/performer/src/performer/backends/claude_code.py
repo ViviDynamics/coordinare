@@ -314,9 +314,16 @@ class ClaudeCodeBackend:
         # boot-time Settings) provides defaults only — per-job values injected
         # into os.environ by _perform_job from JobInitPayload.secrets must win,
         # so operators can override the proxy auth/base URL per dispatch.
+        # 084: strip the env-cache PATH for the CLI launch. The env-cache prepends
+        # the project's .nvmrc node (e.g. 18.12.1) to PATH; a modern Node-based
+        # agent CLI crashes at startup under an older node (pi-tui's `v`/unicodeSets
+        # regex flag requires Node >= 20). The CLI must run on the IMAGE's node; the
+        # agent's own shell commands still get the project toolchain because they run
+        # as `bash -lc`, which re-sources activate.sh per command. Mirrors openclaw.py.
+        _cache_env_for_cli = {k: v for k, v in self._cache_env.items() if k != "PATH"}
         subproc_env = {
             **os.environ,
-            **self._cache_env,
+            **_cache_env_for_cli,
             **self._git_env,
             **self._tool_env,
             # Claude Code refuses --dangerously-skip-permissions when running as
@@ -339,7 +346,15 @@ class ClaudeCodeBackend:
         #
         # Fail-closed (FR-010): if ``shim.start()`` raises, propagate — no
         # subprocess spawn, no silent fallback to direct-Anthropic.
-        if self._proxy_env:
+        #
+        # 084 guard: the 078/084 self-hosted layer (_suppress_double_proxy in
+        # launch.py) removes LITELLM_PROXY_BASE_URL from os.environ BEFORE
+        # _launch is called so that the 084 translate shim (SelfHostedShim) can
+        # own ANTHROPIC_BASE_URL without ClaudeCodeShim double-proxying on top.
+        # ``self._proxy_env`` was loaded at __init__ time and remains non-empty
+        # even after the suppression, so we re-check the live subprocess env
+        # rather than relying on the stale snapshot.
+        if self._proxy_env and subproc_env.get("LITELLM_PROXY_BASE_URL"):
             upstream_url = subproc_env.get("ANTHROPIC_BASE_URL", "").strip()
             upstream_token = subproc_env.get("ANTHROPIC_AUTH_TOKEN", "")
             self._shim = ClaudeCodeShim(

@@ -8,6 +8,12 @@ self-hosted upstream should be reached:
   declared, format-keyed normalizers (e.g. ``harmony_tool_calls``).
 * ``strategy == "reroute"`` — repoint the backend's provider env directly at a
   clean upstream and skip the shim entirely (no normalizer).
+* ``strategy == "translate"`` — forward through the loopback shim, translating
+  the inbound Anthropic ``/v1/messages`` request to an OpenAI
+  ``/v1/chat/completions`` request and the OpenAI reply back to Anthropic wire
+  (JSON + SSE), optionally composing the declared response normalizers. The
+  upstream must be OpenAI-wire (``wire_format == "openai"``); normalizers are
+  optional (translation alone is a valid target). (spec 084.)
 
 A ``(backend, model)`` pair with **no entry** resolves to ``None`` — the layer
 is then a byte-for-byte no-op (native vendor cloud, FR-078-1/4).
@@ -28,7 +34,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from .normalizers import NORMALIZER_REGISTRY
 
 WireFormat = Literal["openai", "anthropic"]
-Strategy = Literal["normalize", "reroute"]
+Strategy = Literal["normalize", "reroute", "translate"]
 
 
 def _normalize_backend(backend: str) -> str:
@@ -50,6 +56,7 @@ class TargetDescriptor(BaseModel):
     strategy: Strategy
     normalizers: list[str] = Field(default_factory=list)
     reroute_upstream: str | None = None
+    upstream_model: str | None = None
 
     @model_validator(mode="after")
     def _validate_strategy(self) -> TargetDescriptor:
@@ -59,6 +66,29 @@ class TargetDescriptor(BaseModel):
                     "reroute strategy must declare no normalizers "
                     f"(got {self.normalizers!r}); reroute is not a shim"
                 )
+            return self
+
+        if self.strategy == "translate":
+            # Rule T1 (FR-008): the translator emits OpenAI-wire requests, so an
+            # anthropic-wire upstream is contradictory and must be rejected at
+            # load rather than black-holing a card mid-lifecycle.
+            if self.wire_format != "openai":
+                raise ValueError(
+                    "translate strategy requires wire_format == 'openai' "
+                    f"(got {self.wire_format!r}); the translator converts the "
+                    "Anthropic request to OpenAI wire, so an anthropic-wire "
+                    "upstream is contradictory"
+                )
+            # Rule T2: normalizers are OPTIONAL for translate (translation alone
+            # is a valid target), but any declared key must be registered.
+            unknown = [k for k in self.normalizers if k not in NORMALIZER_REGISTRY]
+            if unknown:
+                known = sorted(NORMALIZER_REGISTRY)
+                raise ValueError(
+                    f"unknown normalizer key(s) {unknown!r}; "
+                    f"registered normalizers are {known!r}"
+                )
+            # Rule T3: base_url is already enforced non-empty via Field(min_length=1).
             return self
 
         # strategy == "normalize"

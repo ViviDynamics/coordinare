@@ -111,8 +111,16 @@ class TestOpenCodeAdapterStart:
         assert call_kwargs["cwd"] == str(tmp_path)
 
     @respx.mock
-    async def test_start_merges_cache_env_into_subprocess_env(self, tmp_path: Path) -> None:
-        """060: cache_env from activate.sh must be visible to the opencode subprocess."""
+    async def test_start_merges_cache_env_but_excludes_cache_path(self, tmp_path: Path) -> None:
+        """084: every cache_env var EXCEPT PATH reaches the opencode subprocess.
+
+        060 originally passed the cache PATH through. But the env-cache prepends
+        the project's .nvmrc node (e.g. 18.12.1) to PATH, and a modern Node-based
+        agent CLI crashes at startup under an older node (pi-tui's unicodeSets
+        regex flag needs Node >=20). The CLI must launch on the IMAGE's node;
+        strip PATH from the cache env for the launch. The agent's own `bash -lc`
+        shells re-source activate.sh and still get the project toolchain. Mirrors
+        openclaw.py / pi.py. Other cache vars (VIRTUAL_ENV, etc.) still flow."""
         proc = _fake_proc()
         port = 19907
 
@@ -133,7 +141,7 @@ class TestOpenCodeAdapterStart:
             path=tmp_path,
             branch="main",
             git_env={"GIT_AUTHOR_NAME": "performer"},
-            cache_env={"PATH": "/devenv/foo/bin:/usr/bin", "VIRTUAL_ENV": "/devenv/foo/.venv"},
+            cache_env={"PATH": "/devenv/foo/node-v18.12.1/bin:/usr/bin", "VIRTUAL_ENV": "/devenv/foo/.venv"},
         )
 
         with patch(
@@ -146,7 +154,8 @@ class TestOpenCodeAdapterStart:
 
         env = mock_exec.call_args[1]["env"]
         assert env["VIRTUAL_ENV"] == "/devenv/foo/.venv"
-        assert env["PATH"] == "/devenv/foo/bin:/usr/bin"
+        assert "node-v18.12.1" not in env["PATH"]
+        assert env["PATH"] != "/devenv/foo/node-v18.12.1/bin:/usr/bin"
         assert env["GIT_AUTHOR_NAME"] == "performer"
 
     @respx.mock

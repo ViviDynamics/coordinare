@@ -94,7 +94,19 @@ case "${BACKEND:-}" in
     # OpenAI-compatible provider routing → LiteLLM is configured per-job by
     # PiBackend (writes ~/.pi/agent/models.json). 077 POC: verified against
     # spark/qwen3.6:35b.
-    npm install -g @mariozechner/pi-coding-agent --no-fund --no-audit 2>&1 \
+    #
+    # Pinned for REPRODUCIBILITY: an unpinned `@latest`-style install drifts the
+    # pi version at container start. Pin to a known-good release so the version
+    # is decoupled from whatever the registry serves today; bump deliberately.
+    #
+    # NOTE: the pin does NOT protect against the Node-version crash. newer
+    # pi-tui builds use the `v` (unicodeSets) regex flag, which crashes on
+    # Node < 20. That crash is caused by the env-cache's project-pinned node
+    # (e.g. .nvmrc 18.12.1) shadowing the image's node 22 on PATH — and is fixed
+    # in PiBackend.start() (spec 084), which strips the cache PATH so the CLI
+    # always launches on the image's node. See backends/pi.py.
+    PI_VERSION="${PI_VERSION:-0.73.1}"
+    npm install -g "@mariozechner/pi-coding-agent@${PI_VERSION}" --no-fund --no-audit 2>&1 \
       || echo "WARNING: pi install/upgrade failed, continuing with installed version" >&2
     ;;
   openclaw)
@@ -173,6 +185,16 @@ if [ "${RTK_ENABLED:-0}" = "1" ]; then
       echo "WARNING: RTK_ENABLED=1 but backend '${BACKEND}' has no supported rtk hook — skipping" >&2
       ;;
   esac
+fi
+
+# If an explicit command was passed (e.g. a one-shot validation/diagnostic
+# probe like `docker run coordinare-performer:full bash -lc "claude --version"`),
+# honor it instead of starting the long-running server. Without this guard the
+# passed command is silently dropped, the server starts anyway, and a
+# foreground `docker run --rm` probe blocks forever — the container never
+# exits and never auto-removes, leaking a server process per probe.
+if [ "$#" -gt 0 ]; then
+  exec "$@"
 fi
 
 exec python -m performer --serve --port 8088

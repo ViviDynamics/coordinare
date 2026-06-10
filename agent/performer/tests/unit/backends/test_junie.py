@@ -14,6 +14,7 @@ from performer.backends.junie import (
     _maybe_write_custom_profile,
 )
 from performer.backends.opencode_compat import (
+    OpenCodeCompatAdapter,
     _build_task_prompt as _compat_build_task_prompt,
 )
 from performer.models import Score, Stand
@@ -129,6 +130,51 @@ class TestJunieLaunchFailureCleanup:
 
         # The json_output tempfile should not leak to /tmp after a failed launch.
         assert backend._json_output_path is None
+
+
+class TestOpenCodeCompatStartEnv:
+    @pytest.mark.asyncio
+    async def test_start_excludes_cache_path_keeps_other_cache_vars(self, tmp_path) -> None:
+        """084: the opencode_compat CLI must launch on the IMAGE's node, not the
+        env-cache's project-pinned node.
+
+        The env-cache prepends the project's .nvmrc node (e.g. 18.12.1) to PATH;
+        a modern Node-based agent CLI crashes at startup under an older node. So
+        strip PATH from the cache env for the launch — the agent's own `bash -lc`
+        shells re-source activate.sh and still get the project toolchain. Every
+        other cache var must survive. Mirrors openclaw.py / pi.py / opencode.py.
+        """
+        adapter = OpenCodeCompatAdapter(base_url="https://litellm.example/v1", api_key="sk")
+        stand = Stand(
+            path=tmp_path,
+            branch="main",
+            git_env={"GIT_AUTHOR_NAME": "performer"},
+            cache_env={"PATH": "/devenv/foo/node-v18.12.1/bin:/usr/bin", "VIRTUAL_ENV": "/devenv/foo/.venv"},
+        )
+        score = Score(title="t", repo_url="https://github.com/o/r", branch="main", github_token="tok")
+
+        proc = AsyncMock()
+        # Short-circuit after launch so we only exercise env construction.
+        with patch(
+            "performer.backends.opencode_compat.asyncio.create_subprocess_exec",
+            AsyncMock(return_value=proc),
+        ) as mock_exec, patch(
+            "performer.backends.opencode_compat._find_free_port", return_value=12345
+        ), patch.object(
+            OpenCodeCompatAdapter, "_wait_for_ready", AsyncMock(side_effect=RuntimeError("stop"))
+        ), patch.object(
+            OpenCodeCompatAdapter, "_drain_logs", AsyncMock(return_value=None)
+        ):
+            with pytest.raises(RuntimeError):
+                await adapter.start(stand, score)
+
+        env = mock_exec.call_args[1]["env"]
+        assert "node-v18.12.1" not in env["PATH"]
+        assert env["PATH"] != stand.cache_env["PATH"]
+        assert env["VIRTUAL_ENV"] == "/devenv/foo/.venv"
+        assert env["GIT_AUTHOR_NAME"] == "performer"
+        # compat env still pinned
+        assert env["OPENAI_BASE_URL"] == "https://litellm.example/v1"
 
 
 # ---------------------------------------------------------------------------

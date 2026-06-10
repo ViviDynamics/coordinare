@@ -78,7 +78,17 @@ class PiBackend:
         max_tokens: int | None = None,
     ) -> None:
         """Write provider config and launch ``pi -p --mode json``."""
-        env = {**os.environ, **stand.cache_env, **stand.git_env, **score.tool_env}
+        # 084: do NOT let the env-cache's PATH (the project's pinned node, e.g.
+        # 18.12.1 from a repo's .nvmrc) become the interpreter the pi CLI
+        # launches under. pi-tui uses the `v` (unicodeSets) regex flag, which
+        # crashes on Node < 20 ("Invalid regular expression flags") and exits 1
+        # at startup — blocking the card. The CLI must run on the IMAGE's node
+        # (22); the agent's own shell commands still get the project toolchain
+        # because pi runs them as `bash -lc`, which sources the env-cache's
+        # activate.sh (BASH_ENV). So keep every env-cache var EXCEPT PATH for
+        # the CLI launch itself. Mirrors openclaw.py's fix.
+        _cache_env_for_cli = {k: v for k, v in stand.cache_env.items() if k != "PATH"}
+        env = {**os.environ, **_cache_env_for_cli, **stand.git_env, **score.tool_env}
         self._cwd = str(stand.path)
         self._model = model
         self._env = env

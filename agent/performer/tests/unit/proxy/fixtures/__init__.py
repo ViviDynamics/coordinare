@@ -158,6 +158,105 @@ REASONING_OPENAI_SSE_CHUNKS: list[bytes] = [
     b"data: [DONE]\n\n",
 ]
 
+# --------------------------------------------------------------------------- #
+# 3. Stub OpenAI-wire upstream (spec 084 translate strategy)
+# --------------------------------------------------------------------------- #
+#
+# Deterministic canned replies an OpenAI-wire upstream (Ollama-direct gpt-oss)
+# would return to a translated ``/v1/chat/completions`` request. Used by the
+# translate-strategy tests so the full request-translate -> forward ->
+# response-translate round trip runs with NO live network (Constitution II).
+# The harmony-leak case the translate path must survive already exists above as
+# ``HARMONY_LEAKED_JSON`` / ``HARMONY_LEAKED_SSE_CHUNKS`` (the LiteLLM #17246
+# failure shape) — these add the clean text-completion shapes plus a usage block
+# so response translation can assert the ``prompt_tokens``->``input_tokens`` /
+# ``completion_tokens``->``output_tokens`` rename and ``finish_reason`` mapping.
+
+# Canned non-streaming chat.completion: a plain assistant text turn with a usage
+# block. ``finish_reason: "stop"`` must translate to Anthropic ``end_turn``.
+STUB_OPENAI_NONSTREAM_JSON: dict = {
+    "id": "chatcmpl-stub-nonstream",
+    "object": "chat.completion",
+    "model": "gpt-oss:120b",
+    "choices": [
+        {
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": "The README documents the build steps.",
+            },
+            "finish_reason": "stop",
+        }
+    ],
+    "usage": {
+        "prompt_tokens": 27,
+        "completion_tokens": 9,
+        "total_tokens": 36,
+    },
+}
+
+# Canned streaming chat.completion.chunk SSE for the same plain text turn: a role
+# delta, two content deltas (the second split across a chunk boundary to exercise
+# the stateful cross-chunk buffer), a terminal ``finish_reason: "stop"`` chunk,
+# and the ``[DONE]`` sentinel. The translate SSE filter must emit the Anthropic
+# ``message_start`` -> ``content_block_start``/``_delta``/``_stop`` ->
+# ``message_delta`` -> ``message_stop`` sequence from this.
+STUB_OPENAI_STREAM_SSE_CHUNKS: list[bytes] = [
+    b'data: {"id":"chatcmpl-stub","object":"chat.completion.chunk","choices":'
+    b'[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}\n\n'
+    b'data: {"id":"chatcmpl-stub","object":"chat.completion.chunk","choices":'
+    b'[{"index":0,"delta":{"content":"The README "},"finish_reason":null}]}\n\n'
+    b'data: {"id":"chatcmpl-stub","object":"chat.completion.chunk","choices":'
+    b'[{"index":0,"delta":{"content":"documents the bu',
+    b'ild steps."},"finish_reason":null}]}\n\n'
+    b'data: {"id":"chatcmpl-stub","object":"chat.completion.chunk","choices":'
+    b'[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n'
+    b"data: [DONE]\n\n",
+]
+
+# Canned non-streaming chat.completion with a STRUCTURED tool call (the shape an
+# OpenAI-wire upstream emits when tools work correctly — contrast with the
+# harmony-leak fixtures). ``finish_reason: "tool_calls"`` must translate to
+# Anthropic ``tool_use``; ``function.arguments`` is a JSON string the response
+# translator parses into the ``tool_use`` block ``input``.
+STUB_OPENAI_TOOLCALL_JSON: dict = {
+    "id": "chatcmpl-stub-toolcall",
+    "object": "chat.completion",
+    "model": "gpt-oss:120b",
+    "choices": [
+        {
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_stub_0",
+                        "type": "function",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": '{"path": "README.md"}',
+                        },
+                    }
+                ],
+            },
+            "finish_reason": "tool_calls",
+        }
+    ],
+    "usage": {
+        "prompt_tokens": 31,
+        "completion_tokens": 12,
+        "total_tokens": 43,
+    },
+}
+
+# Canned non-2xx upstream reply (status + body) for FR-012: the shim surfaces it
+# verbatim to the CLI and the response translator is NOT invoked.
+STUB_OPENAI_ERROR_STATUS = 503
+STUB_OPENAI_ERROR_BODY: bytes = (
+    b'{"error":{"message":"model gpt-oss:120b is loading","type":"server_error"}}'
+)
+
 __all__ = [
     "HARMONY_LEAKED_JSON",
     "HARMONY_CLEAN_JSON",
@@ -168,4 +267,9 @@ __all__ = [
     "REASONING_ANTHROPIC_SSE_CHUNKS",
     "REASONING_OPENAI_JSON",
     "REASONING_OPENAI_SSE_CHUNKS",
+    "STUB_OPENAI_NONSTREAM_JSON",
+    "STUB_OPENAI_STREAM_SSE_CHUNKS",
+    "STUB_OPENAI_TOOLCALL_JSON",
+    "STUB_OPENAI_ERROR_STATUS",
+    "STUB_OPENAI_ERROR_BODY",
 ]

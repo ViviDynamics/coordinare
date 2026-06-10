@@ -531,6 +531,129 @@ async def test_does_not_repost_when_session_watermark_within_window() -> None:
 
 
 @pytest.mark.asyncio
+async def test_handle_blocked_breaks_reask_loop_after_human_answer() -> None:
+    """Forgetfulness guard: the assessor re-asks (rephrased) questions the
+    human already answered, then the bot re-posts the same clarification
+    several times.  Once a human has answered AND the bot has re-asked at
+    least once *after* that answer, coordinare must stop re-blocking — it is
+    looping on already-answered questions.  Re-queue for dispatch instead.
+
+    Reproduces live card #153 (contact-form margins): Jason answered on
+    06-08; the bot re-posted the rephrased margin questions three times on
+    06-09 with no new human reply.
+    """
+    github = _GitHubRequeue()
+    state = initial_state()
+    state["github_service"] = github
+    state["current_card"] = {"id": "ITEM_1", "issue_id": "ISSUE_1", "title": "Reduce card margins"}
+    # The assessor regenerated (rephrased) margin questions Jason already answered.
+    state["open_questions"] = [
+        "What specific margins are you referring to on the contact form card?",
+        "Should the card be removed entirely from mobile view, or just have reduced margins?",
+    ]
+    # Comment-shaped clarification history (as recorded from issue ingestion):
+    # a bot question, the human's answer, then repeated bot re-asks.
+    state["card_clarifications"] = [
+        {
+            "source": "issue",
+            "author": "vivi-coordinare[bot]",
+            "classification": "clarification",
+            "body": "**🔍 Assessor** — Needs input:\n- Remove card or reduce margins?",
+            "created_at": "2026-06-08T18:11:46Z",
+        },
+        {
+            "source": "issue",
+            "author": "Jason733i",
+            "classification": "clarification",
+            "body": "Reduce its margins. Smaller.",
+            "created_at": "2026-06-08T18:33:28Z",
+        },
+        {
+            "source": "issue",
+            "author": "vivi-coordinare[bot]",
+            "classification": "clarification",
+            "body": "**🔍 Assessor** — Needs input:\n- What specific margins?",
+            "created_at": "2026-06-09T20:21:53Z",
+        },
+        {
+            "source": "issue",
+            "author": "vivi-coordinare[bot]",
+            "classification": "clarification",
+            "body": "**🔍 Assessor** — Needs input:\n- What specific margins?",
+            "created_at": "2026-06-09T21:26:40Z",
+        },
+    ]
+
+    result = await handle_blocked(state)
+
+    # The loop is broken: do NOT re-block; re-queue for dispatch.
+    assert result["phase"] == "idle"
+    assert "TODO" in github.moved_to
+    assert "BLOCKED" not in github.moved_to
+    assert result["open_questions"] == []
+    assert result["last_blocked_notified_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_handle_blocked_still_blocks_on_first_clarification_round() -> None:
+    """Guard must NOT over-fire: a genuine first-round clarification (no prior
+    human answer) still blocks normally."""
+    github = _GitHubFallback()
+    state = initial_state()
+    state["github_service"] = github
+    state["current_card"] = {"id": "ITEM_1", "issue_id": "ISSUE_1", "title": "Reduce card margins"}
+    state["open_questions"] = ["What specific margins?"]
+    state["card_clarifications"] = [
+        {
+            "source": "issue",
+            "author": "vivi-coordinare[bot]",
+            "classification": "clarification",
+            "body": "**🔍 Assessor** — Needs input:\n- What specific margins?",
+            "created_at": "2026-06-09T20:21:53Z",
+        },
+    ]
+
+    result = await handle_blocked(state)
+
+    assert result["phase"] == "blocked"
+    assert github.moved_to == "BLOCKED"
+
+
+@pytest.mark.asyncio
+async def test_handle_blocked_blocks_when_bot_reask_precedes_human_answer() -> None:
+    """Guard must NOT over-fire: if the latest clarification activity is the
+    human's answer (bot has not re-asked since), this is a fresh answer that
+    check_board will consume — handle_blocked should still block/remind this
+    pass rather than pre-emptively re-queuing."""
+    github = _GitHubFallback()
+    state = initial_state()
+    state["github_service"] = github
+    state["current_card"] = {"id": "ITEM_1", "issue_id": "ISSUE_1", "title": "Reduce card margins"}
+    state["open_questions"] = ["What specific margins?"]
+    state["card_clarifications"] = [
+        {
+            "source": "issue",
+            "author": "vivi-coordinare[bot]",
+            "classification": "clarification",
+            "body": "**🔍 Assessor** — Needs input:\n- What specific margins?",
+            "created_at": "2026-06-08T18:11:46Z",
+        },
+        {
+            "source": "issue",
+            "author": "Jason733i",
+            "classification": "clarification",
+            "body": "Reduce its margins. Smaller.",
+            "created_at": "2026-06-08T18:33:28Z",
+        },
+    ]
+
+    result = await handle_blocked(state)
+
+    assert result["phase"] == "blocked"
+    assert github.moved_to == "BLOCKED"
+
+
+@pytest.mark.asyncio
 async def test_reposts_when_session_watermark_older_than_window() -> None:
     """069 US1: when the session-level watermark is older than the reminder
     window, the comment IS re-posted (preserving the legitimate 24h cadence)."""

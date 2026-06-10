@@ -290,6 +290,14 @@ class OpenCodeCompatAdapter:
             compat_env["OPENAI_API_KEY"] = self._api_key
         compat_env["OPENCODE_DISABLE_HOSTED_TOOLS"] = "1"
 
+        # 084: strip the env-cache PATH for the CLI launch. The env-cache
+        # prepends the project's .nvmrc node (e.g. 18.12.1) to PATH; a modern
+        # Node-based agent CLI crashes at startup under an older node. The CLI
+        # must run on the IMAGE's node; the agent's own `bash -lc` shells
+        # re-source activate.sh and still get the project toolchain. Keep every
+        # cache var EXCEPT PATH. Mirrors openclaw.py / pi.py / opencode.py.
+        _cache_env_for_cli = {k: v for k, v in stand.cache_env.items() if k != "PATH"}
+
         self._proc = await asyncio.create_subprocess_exec(
             self._executable, "serve",
             "--port", str(port),
@@ -298,7 +306,7 @@ class OpenCodeCompatAdapter:
             stderr=asyncio.subprocess.STDOUT,
             cwd=str(stand.path),
             start_new_session=True,
-            env={**os.environ, **stand.cache_env, **stand.git_env, **score.tool_env, **compat_env},
+            env={**os.environ, **_cache_env_for_cli, **stand.git_env, **score.tool_env, **compat_env},
         )
         self._log_drain_task = asyncio.create_task(
             self._drain_logs(), name=f"{self._adapter_name}-log-drain"

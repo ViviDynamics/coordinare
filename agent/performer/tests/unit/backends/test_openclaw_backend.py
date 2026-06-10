@@ -199,6 +199,46 @@ async def test_provider_override_writes_config_and_prefixes_model(
     assert any(m["id"] == "spark/qwen3.6:35b" for m in prov["models"])
     # model allowlisted (OpenClaw rejects non-allowlisted models)
     assert "litellm/spark/qwen3.6:35b" in cfg["agents"]["defaults"]["models"]
+    # default budget preserved when no override env is set (qwen-on-spark baseline).
+    model_entry = next(m for m in prov["models"] if m["id"] == "spark/qwen3.6:35b")
+    assert model_entry["contextWindow"] == 32768
+    assert model_entry["maxTokens"] == 8192
+
+
+@pytest.mark.asyncio
+async def test_context_window_and_max_tokens_overridable_via_env(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The declared provider budget must be raisable per-model via env so a
+    large-context model (e.g. gpt-oss:120b served at 131072) isn't gated by the
+    hardcoded 32768 default — OpenClaw enforces ``contextWindow`` client-side and
+    emits "Context overflow: prompt too large for the model" when the reviewing
+    prompt (diff + accumulated feedback) exceeds it."""
+    monkeypatch.setenv("OPENCLAW_PROVIDER_BASE_URL", "https://litellm.example/v1")
+    monkeypatch.setenv("OPENCLAW_PROVIDER_ENV_KEY", "LITELLM_MASTER_KEY")
+    monkeypatch.setenv("LITELLM_MASTER_KEY", "secret-key")
+    monkeypatch.setenv("OPENCLAW_CONTEXT_WINDOW", "131072")
+    monkeypatch.setenv("OPENCLAW_MAX_TOKENS", "32768")
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    async def _fake_exec(*argv, **kwargs):
+        return _fake_proc(b'{"payloads":[{"text":"ok"}],"meta":{"stopReason":"stop"}}')
+
+    async def _noop_reader(self):
+        return None
+
+    import performer.backends.openclaw as oc_mod
+    monkeypatch.setattr(oc_mod.asyncio, "create_subprocess_exec", _fake_exec)
+    monkeypatch.setattr(OpenClawBackend, "_wait_and_parse", _noop_reader)
+
+    stand = Stand(path=tmp_path, branch="main")
+    await OpenClawBackend().start(stand, _score(), model="gpt-oss:120b")
+
+    cfg = json.loads((tmp_path / ".openclaw" / "openclaw.json").read_text())
+    prov = cfg["models"]["providers"]["litellm"]
+    model_entry = next(m for m in prov["models"] if m["id"] == "gpt-oss:120b")
+    assert model_entry["contextWindow"] == 131072
+    assert model_entry["maxTokens"] == 32768
 
 
 @pytest.mark.asyncio

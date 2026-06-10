@@ -233,6 +233,81 @@ async def test_non_200_probe_is_unhealthy():
 
 
 @pytest.mark.asyncio
+async def test_probe_body_carries_routed_model_not_placeholder():
+    """The probe must address the REAL routed model, not a ``"probe"`` placeholder.
+
+    Ollama-direct (and most OpenAI-compatible servers) validate the ``model``
+    field and answer an unknown model with HTTP 404, which would gate every
+    routed path unhealthy at startup. ``check_health`` therefore sends the model
+    it is gating (``gpt-oss:120b``) so the probe reaches a model that exists.
+    """
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = __import__("json").loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "tool_calls": [
+                                {
+                                    "id": "call_0",
+                                    "type": "function",
+                                    "function": {"name": "ping", "arguments": "{}"},
+                                }
+                            ],
+                        }
+                    }
+                ]
+            },
+        )
+
+    target = _target(strategy="reroute", wire_format="openai")
+    async with _client(handler) as client:
+        result = await check_health(target, model="gpt-oss:120b", client=client)
+    assert result.status == "healthy"
+    assert seen["body"]["model"] == "gpt-oss:120b"
+
+
+@pytest.mark.asyncio
+async def test_translate_probe_body_carries_routed_model():
+    """The translate path routes the Anthropic probe through ``translate_request``;
+    the routed model must survive into the OpenAI body the upstream sees."""
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = __import__("json").loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "tool_calls": [
+                                {
+                                    "id": "call_0",
+                                    "type": "function",
+                                    "function": {"name": "ping", "arguments": "{}"},
+                                }
+                            ],
+                        }
+                    }
+                ]
+            },
+        )
+
+    target = _target(strategy="translate", wire_format="openai", normalizers=[])
+    async with _client(handler) as client:
+        result = await check_health(target, model="gpt-oss:120b", client=client)
+    assert result.status == "healthy"
+    assert seen["body"]["model"] == "gpt-oss:120b"
+
+
+@pytest.mark.asyncio
 async def test_anthropic_tool_use_probe_is_healthy():
     """An anthropic-wire target is healthy when the probe returns a tool_use
     content block."""

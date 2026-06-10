@@ -33,7 +33,9 @@ from typing import Any, Literal
 import httpx
 import structlog
 
+from .normalizers import NORMALIZER_REGISTRY
 from .routing import TargetDescriptor
+from .translate import translate_request, translate_response
 
 _log = structlog.get_logger(__name__)
 
@@ -93,33 +95,100 @@ def gate(
     )
 
 
+#: A representative Anthropic ``/v1/messages`` probe body. For the ``translate``
+#: strategy this is routed THROUGH :func:`translate_request` so the probe
+#: exercises the exact request-translation path a real card would (quickstart S6).
+_ANTHROPIC_PROBE_BODY = {
+    "model": "probe",
+    "max_tokens": 64,
+    "messages": [{"role": "user", "content": "Call the ping tool."}],
+    "tools": [
+        {
+            "name": "ping",
+            "description": "Health probe. Call this with no arguments.",
+            "input_schema": {"type": "object", "properties": {}},
+        }
+    ],
+}
+
+
 def _probe_url(target: TargetDescriptor) -> str:
     base = target.base_url.rstrip("/")
+    if target.strategy == "translate":
+        # The translate shim rewrites the Anthropic ``/v1/messages`` front door
+        # to the OpenAI ``/v1/chat/completions`` upstream; the probe forwards to
+        # the same upstream path the live request-translation path would.
+        # base_url may already end with ``/v1`` (e.g. Ollama-direct configs);
+        # avoid double-appending it.
+        if base.endswith("/v1"):
+            return f"{base}/chat/completions"
+        return f"{base}/v1/chat/completions"
     if target.wire_format == "anthropic":
         return f"{base}/v1/messages"
     return f"{base}/chat/completions"
 
 
-def _probe_body(target: TargetDescriptor) -> dict[str, Any]:
+def _probe_body(target: TargetDescriptor, model: str | None) -> dict[str, Any]:
+    # The probe MUST address the real routed model: Ollama-direct (and most
+    # OpenAI-compatible servers) validate the ``model`` field and answer an
+    # unknown name with HTTP 404, which would gate every routed path unhealthy at
+    # startup. ``model`` is the ``(backend, model)`` routing key being gated; fall
+    # back to the placeholder only when a caller does not supply one.
+    model_name = model or "probe"
+    # 084: if the target declares an upstream_model, the routing key (model_name)
+    # is a valid Anthropic name (e.g. claude-sonnet-4-5) that the client CLI
+    # accepts, but the upstream (e.g. Ollama) only knows the real model name.
+    # Use upstream_model for the probe body so the upstream doesn't 404.
+    upstream_model_name = target.upstream_model or model_name
+    if target.strategy == "translate":
+        # Route a representative Anthropic body through the real request
+        # translator, then ensure the tools survive so the upstream is actually
+        # asked to emit a structured call. ``translate_request`` does not yet map
+        # ``tools`` (US2/T016), so ``setdefault`` injects the probe tool now and
+        # becomes a no-op once tool translation lands — keeping the probe honest
+        # either way.
+        body = translate_request({**_ANTHROPIC_PROBE_BODY, "model": model_name})
+        body["model"] = upstream_model_name
+        body.setdefault("tools", [_PROBE_TOOL])
+        body.setdefault("tool_choice", "auto")
+        return body
     if target.wire_format == "anthropic":
-        return {
-            "model": "probe",
-            "max_tokens": 64,
-            "messages": [{"role": "user", "content": "Call the ping tool."}],
-            "tools": [
-                {
-                    "name": "ping",
-                    "description": "Health probe. Call this with no arguments.",
-                    "input_schema": {"type": "object", "properties": {}},
-                }
-            ],
-        }
+        return {**_ANTHROPIC_PROBE_BODY, "model": model_name}
     return {
-        "model": "probe",
+        "model": model_name,
         "messages": [{"role": "user", "content": "Call the ping tool."}],
         "tools": [_PROBE_TOOL],
         "tool_choice": "auto",
     }
+
+
+def _has_anthropic_tool_use(body: dict[str, Any]) -> bool:
+    """True iff an Anthropic ``/v1/messages`` body carries a ``tool_use`` block."""
+    content = body.get("content")
+    return isinstance(content, list) and any(
+        isinstance(b, dict) and b.get("type") == "tool_use" for b in content
+    )
+
+
+def _translate_round_trip_has_tool_use(
+    target: TargetDescriptor, openai_body: dict[str, Any]
+) -> bool:
+    """Run the upstream OpenAI reply through the full response path and check it.
+
+    Mirrors the live translate response path (Decision 4): the upstream OpenAI
+    bytes are first passed through the declared, format-keyed normalizers (e.g.
+    ``harmony_tool_calls`` reassembles a leaked call), THEN wire-format translated
+    to an Anthropic body, and finally checked for a structured ``tool_use`` block.
+    A harmony/reasoning leak with no matching normalizer keeps the call in
+    free-text ``content`` → no ``tool_use`` survives → gates unhealthy.
+    """
+    body = openai_body
+    for key in target.normalizers:
+        normalizer = NORMALIZER_REGISTRY.get(key)
+        if normalizer is not None:
+            body = normalizer.normalize_json(body)
+    anthropic_body = translate_response(body)
+    return _has_anthropic_tool_use(anthropic_body)
 
 
 def _has_structured_tool_call(target: TargetDescriptor, body: dict[str, Any]) -> bool:
@@ -129,11 +198,10 @@ def _has_structured_tool_call(target: TargetDescriptor, body: dict[str, Any]) ->
     free-text ``content`` and emits no structured ``tool_calls`` / ``tool_use``
     block — that reads as no structured call and gates unhealthy.
     """
+    if target.strategy == "translate":
+        return _translate_round_trip_has_tool_use(target, body)
     if target.wire_format == "anthropic":
-        content = body.get("content")
-        return isinstance(content, list) and any(
-            isinstance(b, dict) and b.get("type") == "tool_use" for b in content
-        )
+        return _has_anthropic_tool_use(body)
     choices = body.get("choices")
     if not isinstance(choices, list) or not choices:
         return False
@@ -147,6 +215,7 @@ def _has_structured_tool_call(target: TargetDescriptor, body: dict[str, Any]) ->
 async def check_health(
     target: TargetDescriptor,
     *,
+    model: str | None = None,
     client: httpx.AsyncClient | None = None,
     timeout: float = _DEFAULT_TIMEOUT,
 ) -> HealthResult:
@@ -168,7 +237,7 @@ async def check_health(
     try:
         try:
             response = await client.post(
-                _probe_url(target), json=_probe_body(target), timeout=timeout
+                _probe_url(target), json=_probe_body(target, model), timeout=timeout
             )
         except httpx.TimeoutException:
             status, reason = "unhealthy", f"probe timed out after {timeout}s"

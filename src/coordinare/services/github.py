@@ -195,7 +195,7 @@ GET_PR_REVIEWS_QUERY = """
 query GetPRReviews($prId: ID!) {
   node(id: $prId) {
     ... on PullRequest {
-      reviews(first: 50) {
+      reviews(last: 50) {
         nodes {
           id
           author { __typename login }

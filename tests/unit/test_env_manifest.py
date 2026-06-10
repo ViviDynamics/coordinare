@@ -135,3 +135,29 @@ class TestVerifyRenderer:
     def test_runtimes_rendered_before_gems(self) -> None:
         sh = render_verify_sh(self._manifest(), cache_mount_path="/devenv/sym")
         assert sh.index("RUBY_VERSION") < sh.index("rails")
+
+    def test_rails_boot_smoke_test_emitted_when_rails_present(self) -> None:
+        """When a ``rails`` gem is present, verify.sh must boot Rails to catch
+        native-extension failures (e.g. psych without libyaml-dev) that pass a
+        gem-presence check but fail at ``require`` time. The block hard-fails."""
+        sh = render_verify_sh(self._manifest(), cache_mount_path="/devenv/sym")
+        assert "Rails boot smoke-test" in sh
+        assert "require 'rails'; require 'psych'" in sh
+        # the smoke-test is a hard failure (sets FAILED), gated on the repo mount
+        boot_line = next(ln for ln in sh.splitlines() if "require 'rails'" in ln)
+        assert "FAILED=1" in boot_line
+        assert 'if [ -d "/repo" ]; then' in sh
+
+    def test_rails_boot_smoke_test_absent_when_no_rails(self) -> None:
+        """A manifest with no ``rails`` gem must NOT emit the Rails-boot block —
+        the smoke-test is Rails-specific and would fail spuriously elsewhere."""
+        manifest = EnvManifest(
+            symphony_name="sym",
+            items=[
+                ManifestItem(name="ruby", kind="runtime", version="3.4.2", source=".ruby-version"),
+                ManifestItem(name="pg", kind="gem", source="Gemfile"),
+            ],
+        )
+        sh = render_verify_sh(manifest, cache_mount_path="/devenv/sym")
+        assert "Rails boot smoke-test" not in sh
+        assert "require 'rails'" not in sh

@@ -733,8 +733,17 @@ class TestStart:
         call_kwargs = mock_exec.call_args[1]
         assert call_kwargs["cwd"] == str(tmp_path)
 
-    async def test_start_merges_cache_env_into_subprocess_env(self, tmp_path: Path) -> None:
-        """060: cache_env from activate.sh must be visible to the codex subprocess."""
+    async def test_start_merges_cache_env_but_excludes_cache_path(self, tmp_path: Path) -> None:
+        """084: every cache_env var EXCEPT PATH reaches the codex subprocess.
+
+        060 originally passed the cache PATH through so codex saw the project
+        toolchain. But codex is itself a Node CLI (@openai/codex), and the
+        env-cache PATH prepends the project's .nvmrc node (e.g. 18.12.1), which
+        can crash modern Node CLIs at startup (pi-tui's unicodeSets regex flag
+        needs Node >=20). So the CLI must launch on the IMAGE's node; strip PATH
+        from the cache env for the launch. The agent's own `bash -lc` shells
+        re-source activate.sh and still get the project toolchain. Mirrors
+        openclaw.py / pi.py. Other cache vars (NODE_PATH, etc.) still flow."""
         proc = _fake_proc()
         proc.stdout.readline = AsyncMock(side_effect=[
             b"  listening on: ws://127.0.0.1:4040\n",
@@ -747,7 +756,7 @@ class TestStart:
             path=tmp_path,
             branch="main",
             git_env={"GIT_AUTHOR_NAME": "performer"},
-            cache_env={"PATH": "/devenv/foo/bin:/usr/bin", "NODE_PATH": "/devenv/foo/node_modules"},
+            cache_env={"PATH": "/devenv/foo/node-v18.12.1/bin:/usr/bin", "NODE_PATH": "/devenv/foo/node_modules"},
         )
 
         with patch(
@@ -768,7 +777,8 @@ class TestStart:
 
         env = mock_exec.call_args[1]["env"]
         assert env["NODE_PATH"] == "/devenv/foo/node_modules"
-        assert env["PATH"] == "/devenv/foo/bin:/usr/bin"
+        assert "node-v18.12.1" not in env["PATH"]
+        assert env["PATH"] != "/devenv/foo/node-v18.12.1/bin:/usr/bin"
         assert env["GIT_AUTHOR_NAME"] == "performer"
 
     async def test_start_git_env_overrides_cache_env_on_conflict(self, tmp_path: Path) -> None:

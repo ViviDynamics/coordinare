@@ -274,8 +274,21 @@ def render_verify_sh(manifest: EnvManifest, *, cache_mount_path: str) -> str:
     ]
     # Runtimes first (everything else depends on them), then gems, then system.
     order = {"runtime": 0, "gem": 1, "node_pkg": 2, "system": 3}
+    has_rails = any(item.kind == "gem" and item.name == "rails" for item in manifest.items)
     for item in sorted(manifest.items, key=lambda i: order.get(i.kind, 9)):
         lines.append(item.check or _default_check(item))
+    # If Rails is present, boot the app to catch native-extension failures (e.g. psych/libyaml)
+    # that pass gem-presence checks but fail at require time.
+    if has_rails:
+        lines += [
+            "",
+            "# Rails boot smoke-test: catches native extension failures (e.g. psych without libyaml-dev)",
+            'if [ -d "/repo" ]; then',
+            "  BUNDLE_GEMFILE=/repo/Gemfile bundle exec ruby -e \"require 'rails'; require 'psych'\" "
+            '2>/dev/null && echo "OK: rails/psych native extensions load" || '
+            '{ echo "FAIL: rails/psych failed to load (native extension or config error)" >&2; FAILED=1; }',
+            "fi",
+        ]
     lines += [
         "",
         'if [ "$FAILED" -ne 0 ]; then',
