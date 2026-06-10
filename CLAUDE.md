@@ -15,6 +15,8 @@ See AGENTS.md for all development guidelines.
 - N/A — no new persisted state. Scanner findings live in transient graph state (083-security-scan-gate)
 - Python 3.14 (project minimum 3.12; production on 3.14.5 via uv) + pydantic 2.x (routing-table + target-descriptor models + load-time validation, reused from 078); aiohttp (the `SelfHostedShim` loopback reverse-proxy server, reused from 073/078/080); httpx (upstream client + health-probe client); structlog (observability). No new external dependencies anticipated. (084-anthropic-openai-translate)
 - N/A — no new persisted coordinare state. The routing table is a config surface (the `SELFHOSTED_ROUTING_CONFIG`-pointed YAML); translator/normalizer decisions are emitted as observability records to the job's existing `capture_dir`, the same mechanism `ClaudeCodeShim`/`SelfHostedShim` already use. (084-anthropic-openai-translate)
+- Python 3.14 (project minimum 3.12; prod on 3.14.5 via uv) + gql (+ `gql.transport.aiohttp.AIOHTTPTransport`), aiohttp, httpx (AppAuth token mint), stamina (transient retry), structlog (observability), pydantic 2.x (unaffected) (085-github-token-refresh)
+- N/A — no persisted state; credential cache is in-memory in `AppAuth` (085-github-token-refresh)
 
 ## Recent Changes
 - 076-qa-cycle: Added Python 3.14 (project minimum: 3.12; production currently on 3.14.5 via uv) + pydantic 2.x, langgraph, structlog, docker SDK (or subprocess to `docker` CLI), fastapi (dashboard SSE), httpx (performer HTTP transport), pyyaml (config)

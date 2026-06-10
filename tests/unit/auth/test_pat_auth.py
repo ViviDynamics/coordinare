@@ -52,3 +52,23 @@ async def test_pat_auth_satisfies_github_auth_protocol() -> None:
     from coordinare.auth.protocol import GitHubAuth
     auth = PatAuth("tok")
     assert isinstance(auth, GitHubAuth)
+
+
+# --- 085 T014: invalidate() is a safe no-op (Contract A2) ------------------
+
+
+@pytest.mark.asyncio
+async def test_invalidate_is_noop_and_returns_none() -> None:
+    auth = PatAuth("ghp_static")
+    result = await auth.invalidate()
+    assert result is None
+    # Static credential is unchanged: the same token is still returned.
+    assert await auth.get_token() == "ghp_static"
+
+
+@pytest.mark.asyncio
+async def test_invalidate_repeatable_without_error() -> None:
+    auth = PatAuth("ghp_static")
+    await auth.invalidate()
+    await auth.invalidate()
+    assert await auth.get_token() == "ghp_static"

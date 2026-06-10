@@ -162,6 +162,34 @@ class TestTokenCaching:
         # The fetch should only be called once (lock prevents redundant fetches)
         assert fetch_count == 1
 
+    @pytest.mark.asyncio
+    async def test_invalidate_clears_cache_and_forces_remint(self, app_auth: AppAuth) -> None:
+        """085 Contract A1: invalidate() clears the cache so the next get_token re-mints."""
+        app_auth._cached_token = "stale-tok"
+        app_auth._token_expires_at = time.monotonic() + 3600  # otherwise-valid
+
+        result = await app_auth.invalidate()
+        assert result is None
+        assert app_auth._cached_token is None
+        assert app_auth._token_expires_at is None
+
+        async def fake_fetch():
+            return "fresh-tok", time.monotonic() + 3600
+
+        with patch.object(app_auth, "_fetch_installation_token", side_effect=fake_fetch):
+            assert await app_auth.get_token() == "fresh-tok"
+
+    @pytest.mark.asyncio
+    async def test_invalidate_is_safe_under_concurrency(self, app_auth: AppAuth) -> None:
+        """085 Contract A3: concurrent invalidate() calls are safe and return None."""
+        app_auth._cached_token = "tok"
+        app_auth._token_expires_at = time.monotonic() + 3600
+
+        results = await asyncio.gather(*[app_auth.invalidate() for _ in range(5)])
+        assert results == [None] * 5
+        assert app_auth._cached_token is None
+        assert app_auth._token_expires_at is None
+
     def test_load_key_raises_value_error_on_missing_file(self, tmp_path: Path) -> None:
         missing = tmp_path / "nonexistent.pem"
         with pytest.raises(ValueError, match="does not exist or is not readable"):
