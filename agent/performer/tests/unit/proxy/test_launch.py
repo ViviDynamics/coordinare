@@ -267,3 +267,38 @@ def test_all_supported_backends_have_env_mapping():
     # every backend coordinare can route a multi-model mode to must have a mapping
     for b in ("codex", "opencode", "junie", "pi", "openclaw", "claude_code"):
         assert b in PROVIDER_BASE_URL_ENV
+
+
+@pytest.mark.asyncio
+async def test_health_timeout_threads_through_to_probe(monkeypatch):
+    """The caller-supplied ``health_timeout`` must reach ``check_health`` so a
+    big self-hosted model (gpt-oss:120b) gets a cold-load-tolerant probe budget
+    rather than the 10s default that times out during VRAM load (FR-078-5)."""
+    from performer.proxy.health import HealthResult
+
+    seen: dict = {}
+
+    async def fake_check_health(target, *, model=None, client=None, timeout=10.0):
+        seen["timeout"] = timeout
+        seen["model"] = model
+        return HealthResult(
+            target=target, status="healthy", reason=None, resolved_action="proceed"
+        )
+
+    monkeypatch.setattr("performer.proxy.launch.check_health", fake_check_health)
+    env: dict[str, str] = {}
+    table = _reroute_table(base_url="http://ollama:11434")
+    shim = await maybe_launch_proxy(
+        None,
+        "openclaw",
+        env,
+        routing_table=table,
+        model="gpt-oss:120b",
+        health_check=True,
+        health_timeout=120.0,
+    )
+    try:
+        assert seen["timeout"] == 120.0
+        assert seen["model"] == "gpt-oss:120b"
+    finally:
+        await shim.stop()

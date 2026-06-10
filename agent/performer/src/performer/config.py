@@ -98,6 +98,16 @@ class Settings(BaseSettings):
     # card mid-lifecycle.
     SELFHOSTED_ROUTING_CONFIG: str = ""
 
+    # 078 — Startup health-probe budget (seconds) for a routed self-hosted
+    # target. The probe is the layer's only fail-CLOSED surface, so it stays
+    # bounded (a truly wedged upstream still surfaces unhealthy and the card is
+    # not black-holed). The default is generous because a large self-hosted
+    # model (e.g. gpt-oss:120b on Ollama-direct) cold-loads into VRAM on the
+    # first request, which routinely exceeds the original 10s probe ceiling and
+    # gated every reviewing-stage card fail_closed even though the model was
+    # healthy once warm. Threaded into maybe_launch_proxy as health_timeout=.
+    SELFHOSTED_HEALTH_TIMEOUT: float = 120.0
+
 
 @functools.lru_cache(maxsize=1)
 def get_settings() -> Settings:

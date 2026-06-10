@@ -105,7 +105,14 @@ class OpenCodeAdapter:
         self._port = port
         self._workspace_dir = str(stand.path)
 
-        env = {**os.environ, **stand.cache_env, **stand.git_env, **score.tool_env}
+        # 084: strip the env-cache PATH for the CLI launch. The env-cache
+        # prepends the project's .nvmrc node (e.g. 18.12.1) to PATH; a modern
+        # Node-based agent CLI crashes at startup under an older node. The CLI
+        # must run on the IMAGE's node; the agent's own `bash -lc` shells
+        # re-source activate.sh and still get the project toolchain. Keep every
+        # cache var EXCEPT PATH. Mirrors openclaw.py / pi.py.
+        _cache_env_for_cli = {k: v for k, v in stand.cache_env.items() if k != "PATH"}
+        env = {**os.environ, **_cache_env_for_cli, **stand.git_env, **score.tool_env}
 
         # 077: opt-in custom OpenAI-compatible provider → LiteLLM. When
         # ``OPENCODE_PROVIDER_BASE_URL`` is set (the env prefix is keyed off

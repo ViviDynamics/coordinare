@@ -1571,6 +1571,60 @@ class TestReviewerPerformer:
         assert any("cycle limit" in q.lower() for q in resp.questions)
 
     @pytest.mark.asyncio
+    async def test_reviewer_empty_rejection_retries_backend(self) -> None:
+        """153: a parsed ``{"approved": false}`` with no comments and no body is
+        not actionable — it must trigger a JSON-repair retry (status=working)
+        against the same warm backend, NOT a contentless changes_requested that
+        the coordinare can only re-review-then-block on."""
+        import json
+        perf = self._make_perf()
+        perf.backend.relay_feedback = AsyncMock()
+        output = json.dumps({"approved": False, "comments": [], "body": ""})
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+        settings = Settings(
+            AGENT_BACKEND="opencode", AGENT_TIMEOUT=1800,
+            REVIEWER_MAX_CYCLES=3, BACKEND_PARSE_RETRIES=1,
+        )
+
+        mock_post = AsyncMock(return_value={})
+        with patch("performer.main.post_pull_request_review", new=mock_post):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
+
+        # Retry scheduled — backend nudged for a real verdict, nothing posted.
+        assert resp.status == "working"
+        assert perf.parse_retry_count == 1
+        perf.backend.relay_feedback.assert_called_once()
+        mock_post.assert_not_called()
+        # NEVER auto-approve on ambiguity.
+        assert perf.state != "approved"
+
+    @pytest.mark.asyncio
+    async def test_reviewer_empty_rejection_blocks_after_retries(self) -> None:
+        """153: when the reviewer STILL rejects with no comments/body after the
+        parse-retry budget is spent, block for operator triage with an explicit
+        reason — never park the card on a contentless changes_requested and
+        never auto-approve."""
+        import json
+        perf = self._make_perf()
+        perf.backend.relay_feedback = AsyncMock()
+        perf.parse_retry_count = 1  # budget already spent
+        output = json.dumps({"approved": False, "comments": [], "body": "   "})
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+        settings = Settings(
+            AGENT_BACKEND="opencode", AGENT_TIMEOUT=1800,
+            REVIEWER_MAX_CYCLES=3, BACKEND_PARSE_RETRIES=1,
+        )
+
+        mock_post = AsyncMock(return_value={})
+        with patch("performer.main.post_pull_request_review", new=mock_post):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
+
+        assert resp.status == "blocked"
+        assert perf.state == "blocked"
+        assert any("no actionable feedback" in q.lower() for q in resp.questions)
+        mock_post.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_reviewer_posts_comment_for_changes_requested(self) -> None:
         """Reviewer always posts as COMMENT even when requesting changes."""
         import json

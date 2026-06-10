@@ -20,6 +20,50 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
+def _parse_clarification_ts(raw: object) -> datetime | None:
+    """Best-effort parse of a clarification ``created_at`` ISO timestamp."""
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+
+
+def _is_bot_author(author: str) -> bool:
+    return author.endswith("[bot]") or author == "vivi-coordinare"
+
+
+def _reask_loop_detected(clarifications: list) -> bool:
+    """Detect an assessor re-ask loop on already-answered questions.
+
+    The forgetfulness failure mode (live card #153): the human answers a
+    clarification round, but the assessor regenerates the same questions
+    (often rephrased, so exact-text matching is unreliable) and the bot
+    re-posts them. We detect the loop *structurally / temporally* instead of
+    by text: a human has answered at least one round, AND the bot has posted
+    a clarification *after* that latest human answer with no newer human
+    reply. That means we are re-asking questions the human already addressed
+    — re-blocking again would loop forever.
+    """
+    latest_human: datetime | None = None
+    bot_times: list[datetime] = []
+    for c in clarifications:
+        if not isinstance(c, dict):
+            continue
+        author = str(c.get("author", ""))
+        ts = _parse_clarification_ts(c.get("created_at"))
+        if _is_bot_author(author):
+            if ts is not None:
+                bot_times.append(ts)
+        elif author and ts is not None and (latest_human is None or ts > latest_human):
+            # human-authored clarification == an answer
+            latest_human = ts
+    if latest_human is None:
+        return False
+    return any(t > latest_human for t in bot_times)
+
+
 def _questions_from_card(title: str, description: str) -> list[str]:
     """Generate targeted clarification questions without an LLM.
 
@@ -51,6 +95,28 @@ async def handle_blocked(state: CoordinareState) -> CoordinareState:
     questions = [str(item) for item in raw_questions] if isinstance(raw_questions, list) else []
     clarifications = state.get("card_clarifications") or []
     answered_rounds = [c for c in clarifications if isinstance(c, dict) and c.get("answer", "").strip()]
+
+    # Forgetfulness guard: if the assessor is re-asking questions the human
+    # already answered (human answered, then the bot re-posted the same
+    # clarification with no newer human reply), stop re-blocking and re-queue
+    # for dispatch. Re-blocking again would loop indefinitely on questions
+    # that have effectively been answered. See _reask_loop_detected.
+    if questions and _reask_loop_detected(clarifications):
+        logger.info(
+            "handle_blocked_clarification_loop_broken",
+            card_id=card_id,
+            open_questions=len(questions),
+            answered_rounds=len(answered_rounds),
+            msg="Assessor re-asking already-answered questions — re-queuing for dispatch",
+        )
+        try:
+            await github.move_card(card_id, "TODO")
+        except Exception as exc:
+            logger.warning("handle_blocked.move_card_todo_failed", card_id=card_id, error=str(exc))
+        state["open_questions"] = []
+        state["phase"] = "idle"
+        state["last_blocked_notified_at"] = None
+        return state
 
     if not questions:
         logger.info("handle_blocked_no_open_questions", card_id=card_id,

@@ -194,15 +194,23 @@ class TestClaudeCodeBackendStart:
         args = list(mock_exec.call_args[0])
         assert "--append-system-prompt" not in args
 
-    async def test_start_merges_cache_env_into_subprocess_env(self, tmp_path: Path) -> None:
-        """060: cache_env from activate.sh must be visible to the agent subprocess."""
+    async def test_start_merges_cache_env_but_excludes_cache_path(self, tmp_path: Path) -> None:
+        """084: the claude_code CLI must launch on the IMAGE's node, not the
+        env-cache's project-pinned node.
+
+        The env-cache prepends the project's .nvmrc node (e.g. 18.12.1) to PATH;
+        a modern Node-based agent CLI crashes at startup under an older node. So
+        strip PATH from the cache env for the launch — the agent's own `bash -lc`
+        shells re-source activate.sh and still get the project toolchain. Every
+        other cache var must survive. Mirrors openclaw.py / pi.py / opencode.py.
+        """
         proc = _fake_proc()
         adapter = ClaudeCodeBackend()
         stand = Stand(
             path=tmp_path,
             branch="main",
             git_env={"GIT_AUTHOR_NAME": "performer"},
-            cache_env={"PATH": "/devenv/foo/bin:/usr/bin", "VIRTUAL_ENV": "/devenv/foo/.venv"},
+            cache_env={"PATH": "/devenv/foo/node-v18.12.1/bin:/usr/bin", "VIRTUAL_ENV": "/devenv/foo/.venv"},
         )
 
         with patch(
@@ -213,7 +221,8 @@ class TestClaudeCodeBackendStart:
 
         env = mock_exec.call_args[1]["env"]
         assert env["VIRTUAL_ENV"] == "/devenv/foo/.venv"
-        assert env["PATH"] == "/devenv/foo/bin:/usr/bin"
+        assert "node-v18.12.1" not in env["PATH"]
+        assert env["PATH"] != stand.cache_env["PATH"]
         assert env["GIT_AUTHOR_NAME"] == "performer"
 
     async def test_start_git_env_overrides_cache_env_on_conflict(self, tmp_path: Path) -> None:

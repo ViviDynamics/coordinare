@@ -1190,6 +1190,7 @@ async def handle_dispatch(
             routing_table=routing_table,
             model=model_name,
             health_check=routing_table is not None,
+            health_timeout=settings.SELFHOSTED_HEALTH_TIMEOUT,
             capture_dir=(settings.LITELLM_PROXY_CAPTURE_DIR or "").strip() or None,
         )
     except Exception as exc:
@@ -1872,6 +1873,45 @@ async def handle_status(
             raw_suggestions = review_output.get("suggestions", [])
             suggestions = raw_suggestions if isinstance(raw_suggestions, list) else []
             review_body = str(review_output.get("body", ""))
+
+            # 153: a parsed verdict that REJECTS (approved is not True) but
+            # carries neither structured comments nor a prose body is not
+            # actionable — the implementer would have nothing to act on. Weak
+            # reviewer models (observed: gpt-oss:120b) emit a bare
+            # ``{"approved": false}`` with no rationale; the coordinare can only
+            # re-review-once-then-block on it (monitor_performer
+            # changes_requested_empty_re_review → no_actionable_feedback),
+            # parking the card in Blocked. Treat it exactly like an unparseable
+            # verdict: retry the SAME warm backend with a JSON-repair nudge
+            # (_handle_backend_parse_failure) to elicit a real rationale, and on
+            # exhaustion block with an explicit reason. NEVER auto-approve on
+            # ambiguity (safety) — a contentless rejection must not become an
+            # approval. Do this BEFORE posting to GitHub so an empty CHANGES
+            # REQUESTED review is never published mid-retry.
+            if not is_approved and not comments and not review_body.strip():
+                async def _reviewer_empty_rejection() -> PerformerResponse:
+                    summary = (
+                        f"The `{perf.role}` reviewer rejected this PR "
+                        f"(`approved=false`) but returned no structured comments "
+                        f"and no prose body across "
+                        f"{perf.parse_retry_count + 1} attempt(s) — there is no "
+                        f"actionable feedback to relay to the implementer. "
+                        f"Operator triage required."
+                    )
+                    perf.state = "blocked"
+                    perf.open_questions = [summary]
+                    return PerformerResponse(
+                        status="blocked",
+                        session_id=perf.session_id,
+                        questions=[summary],
+                    )
+
+                return await _handle_backend_parse_failure(
+                    perf, review_raw, "review", settings,
+                    "was a changes_requested verdict with no comments and no body",
+                    lenient_fallback=_reviewer_empty_rejection,
+                )
+
             # Always post as COMMENT — the human reviewer handles formal
             # approval.  Bot reviews provide feedback for the implementer.
             verdict = "APPROVED" if is_approved else "CHANGES REQUESTED"

@@ -155,6 +155,27 @@ async def _launch_for_target(
         )
         return shim
 
+    if target.strategy == "translate":
+        # Launch the loopback shim in translate mode (the shim reads
+        # target.strategy) and point the Anthropic provider env at it, so the
+        # claude_code CLI's /v1/messages traffic is translated to the OpenAI-wire
+        # upstream with no LiteLLM in the path (spec 084, FR-006). Normalizers are
+        # OPTIONAL for translate and compose beneath the wire translation
+        # (Decision 4); an empty list is a pure-translation shim.
+        normalizers = [NORMALIZER_REGISTRY[k] for k in target.normalizers]
+        shim = SelfHostedShim(target=target, normalizers=normalizers)
+        base = await shim.start()
+        shim.env_restores.append((mapping, env_var, mapping.get(env_var)))
+        mapping[env_var] = base
+        _suppress_double_proxy(backend, mapping, shim.env_restores)
+        log.info(
+            "selfhosted_layer.translate_launched",
+            backend=backend,
+            env_var=env_var,
+            normalizers=[n.key for n in normalizers],
+        )
+        return shim
+
     # strategy == "normalize" — launch the loopback shim with declared normalizers.
     normalizers = [NORMALIZER_REGISTRY[k] for k in target.normalizers]
     shim = SelfHostedShim(target=target, normalizers=normalizers)
@@ -189,7 +210,7 @@ async def _gate_target(
     The decision is emitted to ``capture_dir`` (decision summary only, never
     tokens/bodies, FR-078-10).
     """
-    result = await check_health(target, client=client, timeout=timeout)
+    result = await check_health(target, model=model, client=client, timeout=timeout)
     _emit_health_decision(capture_dir, backend_name, model, result)
 
     if result.resolved_action == "proceed":
