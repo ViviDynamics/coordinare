@@ -626,7 +626,19 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
         # the GitHub move to IN_PROGRESS failed and the card is still in
         # IN_REVIEW.  The dispatch will move it on the next attempt.
         # Also preserve blocked phase from veto override (031).
-        if state.get("phase") in ("dispatching", "blocked"):
+        #
+        # 087 (sticky-blocked-phase trap): this early-return must be
+        # slot-aware, exactly like the IN_PROGRESS guard below.  A stale
+        # global phase of "dispatching"/"blocked" persisted from an earlier
+        # cycle (e.g. set when a BLOCKED card was handled) would otherwise
+        # short-circuit TODO pickup forever while concurrency slots sit free.
+        # Only short-circuit when there are no open slots; otherwise fall
+        # through so the IN_REVIEW card is re-adopted as a passive
+        # monitoring_pr session and free slots are filled from TODO.
+        if (
+            state.get("phase") in ("dispatching", "blocked")
+            and _count_slot_consuming_sessions(state) >= max_cards
+        ):
             return state
 
         # 066 T013/FR-002/FR-009: Re-adopt orphaned IN_REVIEW cards into

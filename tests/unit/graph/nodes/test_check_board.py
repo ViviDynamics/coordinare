@@ -760,6 +760,45 @@ async def test_check_board_multicard_readopts_in_review_and_picks_up_todo() -> N
 
 
 @pytest.mark.asyncio
+async def test_check_board_in_review_with_stale_blocked_phase_still_picks_up_todo() -> None:
+    """087 regression (sticky-blocked-phase trap): if a prior cycle left the
+    global ``phase`` at "blocked" (set when a BLOCKED card was handled) and an
+    IN_REVIEW card is present, the IN_REVIEW early-return must NOT short-circuit
+    TODO pickup while concurrency slots are free.
+
+    Observed in production: symphony "website" sat at ``phase=blocked`` with 0
+    sessions and 3 free slots forever; TODO cards #124/#125 were never
+    dispatched because the IN_REVIEW branch returned early (it was not
+    slot-aware, unlike the IN_PROGRESS branch).
+    """
+    from types import SimpleNamespace
+
+    state = initial_state()
+    state["github_service"] = _GitHubInReviewWithTodo()
+    state["config"] = SimpleNamespace(
+        github_org="acme",
+        project_name="repo",
+        max_concurrent_cards=3,
+        priority=SimpleNamespace(field_name="", priority_order=[]),
+        github_api_url="",
+        assignee_filter=None,
+    )
+    state["active_sessions"] = {}
+    # The trap trigger: a stale global phase persisted from an earlier cycle.
+    state["phase"] = "blocked"
+
+    result = await check_board(state)
+
+    sessions = result.get("active_sessions") or {}
+    assert "ITEM_R" in sessions, "IN_REVIEW card should be re-adopted into active_sessions"
+    assert "ITEM_T" in sessions, (
+        "TODO card must be picked up despite stale phase=blocked and a free slot; "
+        f"got sessions={list(sessions)}"
+    )
+    assert sessions["ITEM_T"]["phase"] == "dispatching"
+
+
+@pytest.mark.asyncio
 async def test_check_board_multicard_per_session_in_review_preserves_monitoring_pr() -> None:
     """Bug 16.1 regression: a per-session invocation whose current_card
     is in IN_REVIEW (already tracked in active_sessions) must keep
