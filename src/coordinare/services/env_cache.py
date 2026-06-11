@@ -20,6 +20,7 @@ from coordinare.models.env_cache import BootstrapJobPayload, EnvCacheState
 from coordinare.services.env_manifest import (
     STRUCTURED_SPEC_FILES,
     derive_manifest,
+    render_activate_sh,
     render_checklist,
     render_verify_sh,
 )
@@ -401,6 +402,40 @@ class EnvCacheService:
                         last_error=cache_state.last_bootstrap_error,
                     )
 
+        # 087: break the phantom-success deadlock. A persisted snapshot can claim
+        # last_bootstrap_succeeded=True with readme_sha == current_sha while the
+        # cache dir on disk has lost activate.sh (wiped between runs, or the
+        # snapshot outlived the cache). The consumer gate checks activate.sh on
+        # disk and holds every card; if the trigger trusts the persisted success
+        # it never re-fires → permanent deadlock recoverable only by hand. Mirror
+        # the consumer gate: when the cache claims success but activate.sh is
+        # absent, force a re-bootstrap (honouring the same cooldown as the
+        # failed-bootstrap retry so we don't relaunch a container every cycle).
+        if (
+            not needs_bootstrap
+            and cache_state.last_bootstrap_succeeded is True
+            and not _cache_dir_has_activate(cache_state.cache_dir)
+        ):
+            last_at = cache_state.last_bootstrap_at
+            cooldown_elapsed = (
+                last_at is None
+                or (datetime.now(UTC) - last_at).total_seconds()
+                >= BOOTSTRAP_RETRY_COOLDOWN_S
+            )
+            if cooldown_elapsed:
+                needs_bootstrap = True
+                if not cache_state.bootstrap_in_flight:
+                    logger.warning(
+                        "env_cache.bootstrap_retry_activate_missing",
+                        symphony=symphony_name,
+                        sha=current_sha,
+                        cache_dir=str(cache_state.cache_dir),
+                        detail=(
+                            "cache claims last_bootstrap_succeeded but activate.sh "
+                            "is absent on disk — re-bootstrapping to repopulate."
+                        ),
+                    )
+
         if not needs_bootstrap:
             return
 
@@ -466,7 +501,7 @@ class EnvCacheService:
         # The manifest drives BOTH the install checklist (persona) and the
         # verification (coordinare-written verify.sh) so a pinned tool version
         # can't be silently missed by a free-forming agent.
-        dependency_checklist, verify_provided = await self._build_manifest_artifacts(
+        dependency_checklist, verify_provided, activate_provided = await self._build_manifest_artifacts(
             symphony_name=symphony_name,
             repo=repo,
             github_org=eff_config.github_org,
@@ -490,6 +525,7 @@ class EnvCacheService:
             last_failure=cache_state.last_bootstrap_error,
             dependency_checklist=dependency_checklist,
             verify_provided=verify_provided,
+            activate_provided=activate_provided,
         )
 
         # Mark in-flight BEFORE dispatching. dispatch_fn may fail SYNCHRONOUSLY
@@ -536,12 +572,13 @@ class EnvCacheService:
         cache_mount_path: str,
         llm_chat: ChatJson | None,
     ) -> tuple[str | None, bool]:
-        """Derive the manifest, write an authoritative verify.sh into the cache,
-        and return ``(dependency_checklist, verify_provided)``.
+        """Derive the manifest, write an authoritative verify.sh AND activate.sh
+        into the cache, and return ``(dependency_checklist, verify_provided,
+        activate_provided)``.
 
         Best-effort throughout: any failure (no parseable deps, fetch/IO error)
-        returns ``(None, False)`` so the bootstrap falls back to the prior
-        agent-writes-verify behaviour rather than blocking.
+        returns ``(None, False, False)`` so the bootstrap falls back to the prior
+        agent-writes-verify/activate behaviour rather than blocking.
         """
         # Fetch structured project files (missing files are normal — skip them).
         struct_contents: dict[str, str] = {}
@@ -563,21 +600,29 @@ class EnvCacheService:
 
         if not manifest.items:
             logger.info("env_cache.manifest_empty", symphony=symphony_name)
-            return None, False
+            return None, False, False
 
-        # Write the authoritative verify.sh + manifest.json into the host cache
-        # dir (it appears at cache_mount_path inside consumer containers).
+        # Write the authoritative verify.sh + activate.sh + manifest.json into the
+        # host cache dir (they appear at cache_mount_path inside consumer
+        # containers). 087: coordinare owns activate.sh too — an auto-discovering
+        # activation that verify.sh sources, so the agent installs the toolchain
+        # but no longer hand-writes the (fumbled) activation paths.
         try:
             cache_dir.mkdir(parents=True, exist_ok=True)
             verify_path = cache_dir / "verify.sh"
             verify_path.write_text(render_verify_sh(manifest, cache_mount_path=cache_mount_path))
             verify_path.chmod(0o755)
+            activate_path = cache_dir / "activate.sh"
+            activate_path.write_text(
+                render_activate_sh(manifest, cache_mount_path=cache_mount_path)
+            )
+            activate_path.chmod(0o755)
             (cache_dir / "manifest.json").write_text(manifest.model_dump_json(indent=2))
         except OSError as exc:
             logger.warning(
                 "env_cache.manifest_write_failed", symphony=symphony_name, error=str(exc)
             )
-            return render_checklist(manifest), False
+            return render_checklist(manifest), False, False
 
         logger.info(
             "env_cache.manifest_derived",
@@ -586,7 +631,7 @@ class EnvCacheService:
             runtimes=[f"{i.name}=={i.version}" for i in manifest.runtime_pins()],
             llm_derived=manifest.llm_derived,
         )
-        return render_checklist(manifest), True
+        return render_checklist(manifest), True, True
 
     def mark_runtime_health_failed(
         self,

@@ -363,6 +363,42 @@ class TestEnvCacheServiceCheckAndTrigger:
         dispatch_fn.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_retriggers_when_success_persisted_but_activate_missing(
+        self, tmp_path: Path
+    ) -> None:
+        """087: a persisted snapshot can claim last_bootstrap_succeeded=True with
+        readme_sha == current_sha, yet the cache dir on disk has lost activate.sh
+        (wiped between runs, or the snapshot outlived the cache). Without a
+        disk-presence check the trigger computes needs_bootstrap=False and never
+        re-fires, while the consumer gate (which DOES check activate.sh) holds
+        every card forever — a permanent deadlock. The trigger must mirror the
+        consumer gate and re-bootstrap when activate.sh is absent."""
+        svc, _ = self._make_service()
+        cache_dir = tmp_path / "env"
+        cache_dir.mkdir()  # exists, but NO activate.sh inside (hollow cache)
+        cache_state = EnvCacheState(
+            symphony_name="sym",
+            sanitised_name="sym-abc",
+            cache_dir=cache_dir,
+            readme_sha=_combined_sha({"README.md": "same_sha"}),
+            last_bootstrap_succeeded=True,
+            cache_dir_ready=True,
+            last_bootstrap_at=datetime.now(UTC)
+            - timedelta(seconds=BOOTSTRAP_RETRY_COOLDOWN_S + 5),
+        )
+        sym_cfg = self._make_symphony_config()
+        sym_cfg.effective_config = MagicMock(return_value=self._make_eff_config())
+        github = AsyncMock()
+        github.get_file_blob_sha = AsyncMock(return_value="same_sha")
+        github.get_file_content = AsyncMock(return_value="# README content")
+        dispatch_fn = AsyncMock()
+
+        state: dict = {"env_cache": {"sym": cache_state}, "config": MagicMock()}
+        await svc.check_and_trigger("sym", sym_cfg, github, state, dispatch_fn)
+
+        dispatch_fn.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_no_retry_when_prior_failure_within_cooldown(
         self, tmp_path: Path
     ) -> None:
@@ -1105,6 +1141,109 @@ class TestDaemonEnvCacheBootstrapLoop:
         mock_ec_svc.on_bootstrap_complete.assert_called_once_with(sym_name, False, ANY, error=ANY)
 
     @pytest.mark.asyncio
+    async def test_bootstrap_dispatch_resolves_model_from_role_mode(
+        self, tmp_path: Path
+    ) -> None:
+        """The bootstrap dispatch must carry the role's mode-resolved model.
+
+        Regression for the card-vs-bootstrap dispatch asymmetry: the card path
+        runs mode → model_endpoint → endpoint resolution
+        (resolve_performer_dispatch_model), but the bootstrap path historically
+        read only the role's (now schema-forbidden) inline ``model`` field, so
+        the dispatch carried model=None. With model=None the self-hosted routing
+        table — which keys on (backend, model) — cannot match, and claude_code
+        falls back to the LiteLLM shim. This asserts the bootstrap dispatch
+        resolves the model (and self-hosted base_url / auth_token_env) the same
+        way the card path does.
+        """
+        import yaml
+
+        from coordinare.config import ProjectConfiguration
+
+        sym_name = "my-project"
+        sanitised = sanitise_symphony_name(sym_name)
+        cache_dir = tmp_path / sanitised
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
+        raw_cfg = {
+            "project_name": "t", "github_org": "o", "github_project_number": 1,
+            "github_token": "ghp_realtokenvalue1234567890", "human_reviewers": ["a"],
+            "endpoints": [
+                {"name": "ollama-direct", "kind": "ollama",
+                 "base_url": "http://192.168.3.30:11434/v1",
+                 "auth_env": "OLLAMA_AUTH_TOKEN"},
+            ],
+            "model_endpoints": [
+                {"name": "qwen25coder", "endpoint": "ollama-direct",
+                 "model": "spark/qwen2.5-coder:14b-instruct-q6_K"},
+            ],
+            "modes": [
+                {"name": "single-qwen25coder", "strategy": "single", "tool": "qwen25coder"},
+            ],
+            "performers": {
+                "env_bootstrap": {"backend": "claude_code", "mode": "single-qwen25coder"},
+            },
+        }
+        cfg_path = tmp_path / "config.yaml"
+        cfg_path.write_text(yaml.safe_dump(raw_cfg))
+        real_cfg = ProjectConfiguration.from_yaml(cfg_path)
+        expected = real_cfg.resolve_performer_dispatch_model("env_bootstrap")
+        assert expected.get("model"), "test precondition: role mode resolves a model"
+
+        daemon = _make_daemon_for_env_cache()
+        cache_state = EnvCacheState(
+            symphony_name=sym_name,
+            sanitised_name=sanitised,
+            cache_dir=cache_dir,
+            readme_sha="abc123",
+            cache_dir_ready=True,
+        )
+        daemon._state["env_cache"] = {sym_name: cache_state}
+        daemon._state["config"] = real_cfg
+
+        performer_svc = MagicMock()
+        performer_svc.dispatch_card = AsyncMock(
+            return_value={"status": "accepted", "session_id": None}
+        )
+        performer_svc._config = MagicMock()
+        performer_svc._config.container_devenv_root = "/devenv"
+
+        sym_cfg = _make_symphony_config(sym_name, performer_id="bp-1")
+        mock_gh = AsyncMock()
+
+        async def _fake_check_and_trigger(**kwargs):
+            payload = BootstrapJobPayload(
+                symphony_name=sym_name,
+                symphony_org="org",
+                symphony_repo="repo",
+                env_spec_contents={"README.md": "content"},
+                cache_mount_path=f"/devenv/{sanitised}",
+            )
+            await kwargs["dispatch_fn"]("bp-1", payload)
+
+        mock_ec_svc = MagicMock()
+        mock_ec_svc.check_and_trigger = _fake_check_and_trigger
+
+        daemon._state["symphony_configs"] = {sym_name: sym_cfg}
+        daemon._state["symphony_states"] = {}
+        daemon._state["env_cache_service"] = mock_ec_svc
+        daemon._state["symphony_github_services"] = {sym_name: mock_gh}
+        daemon._state["performer_services_by_id"] = {"bp-1": performer_svc}
+        daemon._poll_bootstrap_completion = AsyncMock()
+
+        await daemon.start()
+
+        performer_svc.dispatch_card.assert_called_once()
+        dispatched = performer_svc.dispatch_card.call_args.args[0]
+        assert dispatched["backend"] == "claude_code"
+        assert dispatched["model"] == expected["model"]
+        # self-hosted endpoint → base_url override + bearer auth env propagate too
+        if expected.get("base_url"):
+            assert dispatched["base_url"] == expected["base_url"]
+        if expected.get("auth_token_env"):
+            assert dispatched["auth_token_env"] == expected["auth_token_env"]
+
+    @pytest.mark.asyncio
     async def test_bootstrap_dispatch_fn_missing_performer_logs_warning(
         self, tmp_path: Path, caplog
     ) -> None:
@@ -1690,6 +1829,40 @@ def test_env_bootstrap_persona_mandates_idempotent_reinstall() -> None:
     assert "never `dpkg -i`" in persona
 
 
+def test_env_bootstrap_persona_defers_activation_when_coordinare_owns_it() -> None:
+    """087: when coordinare has written an authoritative activate.sh
+    (activate_provided=True), the persona MUST tell the agent NOT to
+    create/overwrite it and that activation is auto-discovered — the durable fix
+    for the .rbenv-vs-rbenv / .nvm-vs-nvm path the agent fumbled every run,
+    leaving a fully-built cache that verify.sh couldn't see."""
+    from coordinare.services.http_performer_service import HTTPPerformerService
+
+    card_context = {
+        "symphony_org": "ViviDynamics",
+        "symphony_repo": "website",
+        "cache_mount_path": "/devenv/website",
+        "env_spec_files": [".ruby-version"],
+        "env_spec_contents": {".ruby-version": "3.4.2\n"},
+        "backend": "opencode",
+        "activate_provided": True,
+        "verify_provided": True,
+    }
+    payload = HTTPPerformerService._build_env_bootstrap_payload(None, card_context)
+    persona = payload.persona
+    low = persona.lower()
+
+    # Coordinare owns activate.sh; the agent must not author it.
+    assert "do not create, overwrite, or delete" in low
+    assert "activate.sh" in persona
+    assert "coordinare" in low
+    assert "auto-discover" in low or "discovers" in low
+    # It must NOT carry the fallback "write your own activate.sh" mandate, which is
+    # exactly what produced the broken hand-written activation paths.
+    assert "write a sourceable shell script" not in low
+    # The agent still installs the pinned runtime into the cache (discoverable).
+    assert "ruby-build" in low or "version manager" in low
+
+
 def _bootstrap_card_context(**extra) -> dict:
     ctx = {
         "symphony_org": "ViviDynamics",
@@ -1722,7 +1895,7 @@ class TestManifestArtifacts:
         github.get_file_content = fake_get
         cache_dir = tmp_path / "cache"
 
-        checklist, verify_provided = await svc._build_manifest_artifacts(
+        checklist, verify_provided, activate_provided = await svc._build_manifest_artifacts(
             symphony_name="website",
             repo="website",
             github_org="ViviDynamics",
@@ -1741,6 +1914,13 @@ class TestManifestArtifacts:
         assert (cache_dir / "verify.sh").stat().st_mode & 0o100  # executable
         manifest = (cache_dir / "manifest.json").read_text()
         assert "rails" in manifest and "2.5.6" in manifest
+        # 087: coordinare also owns activate.sh — the auto-discovering activation
+        # that verify.sh sources (so the agent no longer hand-writes the paths).
+        assert activate_provided is True
+        activate = (cache_dir / "activate.sh").read_text()
+        assert "$DEVENV/.rbenv/versions/3.4.2" in activate
+        assert "$DEVENV/rbenv/versions/3.4.2" in activate  # both dot + no-dot probed
+        assert (cache_dir / "activate.sh").stat().st_mode & 0o100  # executable
 
     @pytest.mark.asyncio
     async def test_no_deps_returns_none_false(self, tmp_path: Path) -> None:
@@ -1754,7 +1934,7 @@ class TestManifestArtifacts:
         github.get_file_content = fake_get
         cache_dir = tmp_path / "cache"
 
-        checklist, verify_provided = await svc._build_manifest_artifacts(
+        checklist, verify_provided, activate_provided = await svc._build_manifest_artifacts(
             symphony_name="sym",
             repo="sym",
             github_org="org",
@@ -1767,7 +1947,9 @@ class TestManifestArtifacts:
         )
         assert checklist is None
         assert verify_provided is False
+        assert activate_provided is False
         assert not (cache_dir / "verify.sh").exists()
+        assert not (cache_dir / "activate.sh").exists()
 
 
 def test_env_bootstrap_persona_injects_previous_failure_on_retry() -> None:
