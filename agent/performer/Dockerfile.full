@@ -1,9 +1,16 @@
 ARG BASE_IMAGE=coordinare-performer:base
 FROM $BASE_IMAGE
 
-# Install Playwright + Chromium for browser automation
+# Install Playwright + Chromium for browser automation.
+# Retry the browser download: cdn.playwright.dev intermittently times out
+# ("Download failure, code=1") and would otherwise fail the whole image build —
+# a transient CDN flake, not a code error. Retry up to 5x, then fail loudly.
 RUN pip install --no-cache-dir playwright && \
-    playwright install --with-deps chromium
+    n=0; until playwright install --with-deps chromium; do \
+      n=$((n+1)); \
+      if [ "$n" -ge 5 ]; then echo "playwright install failed after $n attempts" >&2; exit 1; fi; \
+      echo "playwright download failed (attempt $n/5); retrying in 15s..." >&2; sleep 15; \
+    done
 
 # Install cross-language linters, formatters, and test runners
 # Python tools
