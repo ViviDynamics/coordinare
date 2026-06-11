@@ -2395,6 +2395,57 @@ class TestQAPerformer:
         assert perf.state == "qa_passed"
         assert (resp.report or {}).get("env_limited") is True
 
+    def test_qa_natural_environmental_phrasings_classified_as_environmental(self) -> None:
+        """077 regression: the verbatim 'couldn't check' phrasings real models emit
+        (captured from PR ViviDynamics/website#159) MUST classify as environmental so
+        they stay advisory instead of blocking the card. A FAILED verdict must mean
+        'checked and broken', not 'couldn't check'."""
+        from performer.main import _qa_failure_is_environmental
+        environmental = [
+            {"criterion": "Run rubocop", "actual": "Rubocop could not be executed (bundle missing)"},
+            {"criterion": "Run rspec", "actual": "RSpec could not be executed (bundle missing)"},
+            {"criterion": "Run full test suite", "expected": "All tests pass",
+             "actual": "Tests fail to start due to missing libyaml/psych library"},
+            {"criterion": "Verify",
+             "actual": "Cannot verify automatically in this environment (Ruby and Docker are unavailable)"},
+            {"criterion": "Lint", "actual": "Cannot run rubocop in this environment"},
+            {"criterion": "Tests", "actual": "Cannot execute test suite here"},
+            {"criterion": "Toolchain", "message": "Ruby and Docker are not available"},
+        ]
+        for f in environmental:
+            assert _qa_failure_is_environmental(f) is True, f
+
+    def test_qa_real_defect_not_misclassified_as_environmental(self) -> None:
+        """The broadened environmental detection must NOT swallow genuine defects:
+        a concrete assertion failure stays a blocking defect."""
+        from performer.main import _qa_failure_is_environmental
+        assert _qa_failure_is_environmental({
+            "criterion": "margin is 0 on mobile", "expected": "0px",
+            "actual": "16px still present", "message": "assertion failed: margin not removed",
+        }) is False
+
+    @pytest.mark.asyncio
+    async def test_qa_couldnt_check_failures_are_advisory_not_blocking(self) -> None:
+        """End-to-end: a QA run whose failures are all 'couldn't check' (PR #159
+        cycle D shape) must pass DEGRADED, not loop the card into qa_failed."""
+        import json
+        perf = self._make_perf()
+        output = json.dumps({
+            "environment_error": "Ruby and related tooling (bundle, rails) are not installed in the sandbox.",
+            "failures": [
+                {"criterion": "Run rubocop", "expected": "rubocop clean",
+                 "actual": "Rubocop could not be executed (bundle missing)"},
+                {"criterion": "Run rspec", "expected": "all specs pass",
+                 "actual": "RSpec could not be executed (bundle missing)"},
+            ],
+        })
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+        with patch("performer.main.commit_file", new=AsyncMock()):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+        assert resp.status == "qa_passed"
+        assert perf.state == "qa_passed"
+        assert (resp.report or {}).get("env_limited") is True
+
     @pytest.mark.asyncio
     async def test_qa_real_defect_still_blocks(self) -> None:
         """A genuine (non-environmental) acceptance-criterion failure must still
