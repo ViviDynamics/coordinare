@@ -314,16 +314,21 @@ class ClaudeCodeBackend:
         # boot-time Settings) provides defaults only — per-job values injected
         # into os.environ by _perform_job from JobInitPayload.secrets must win,
         # so operators can override the proxy auth/base URL per dispatch.
-        # 084: strip the env-cache PATH for the CLI launch. The env-cache prepends
-        # the project's .nvmrc node (e.g. 18.12.1) to PATH; a modern Node-based
-        # agent CLI crashes at startup under an older node (pi-tui's `v`/unicodeSets
-        # regex flag requires Node >= 20). The CLI must run on the IMAGE's node; the
-        # agent's own shell commands still get the project toolchain because they run
-        # as `bash -lc`, which re-sources activate.sh per command. Mirrors openclaw.py.
-        _cache_env_for_cli = {k: v for k, v in self._cache_env.items() if k != "PATH"}
+        # 087: APPEND the env-cache PATH after the image PATH (do NOT strip it).
+        # The env-cache prepends the project's .nvmrc node (e.g. 18.12.1); a modern
+        # Node-based agent CLI crashes at startup under an older node, so the IMAGE's
+        # node must win — hence image dirs FIRST. But the prior 084 behavior STRIPPED
+        # the cache PATH entirely, which left the agent with no project toolchain:
+        # unlike openclaw/pi/codex (whose shells re-source activate.sh via BASH_ENV
+        # per command), Claude Code snapshots the launch PATH for its Bash tool and
+        # does NOT re-source per command, so `ruby`/`bundle` were missing and qa
+        # couldn't boot the app to take screenshots. Appending the cache-only dirs
+        # keeps the CLI on the image's node while exposing ruby/bundle (absent from
+        # the image) to the agent's snapshotted shell.
+        _cache_env_no_path = {k: v for k, v in self._cache_env.items() if k != "PATH"}
         subproc_env = {
             **os.environ,
-            **_cache_env_for_cli,
+            **_cache_env_no_path,
             **self._git_env,
             **self._tool_env,
             # Claude Code refuses --dangerously-skip-permissions when running as
@@ -331,6 +336,23 @@ class ClaudeCodeBackend:
             # sandbox boundary, so opt into the documented escape hatch.
             "IS_SANDBOX": "1",
         }
+        # Fall back to the standard system dirs if the container has no PATH —
+        # a cache-only PATH would put the project's pinned old node first and
+        # resurrect the CLI startup crash the append policy exists to prevent.
+        _image_path = (
+            os.environ.get("PATH")
+            or "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        )
+        _cache_path = self._cache_env.get("PATH", "")
+        if _cache_path:
+            _seen = set(_image_path.split(os.pathsep))
+            _extra: list[str] = []
+            for _d in _cache_path.split(os.pathsep):
+                if _d and _d not in _seen:
+                    _extra.append(_d)
+                    _seen.add(_d)
+            if _extra:
+                subproc_env["PATH"] = os.pathsep.join([_image_path, *_extra])
         # 077: cap output tokens via the env var the CLI actually honours
         # (there is no --max-tokens flag). Caller-provided value wins over any
         # ambient setting.

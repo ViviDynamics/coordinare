@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -194,15 +195,21 @@ class TestClaudeCodeBackendStart:
         args = list(mock_exec.call_args[0])
         assert "--append-system-prompt" not in args
 
-    async def test_start_merges_cache_env_but_excludes_cache_path(self, tmp_path: Path) -> None:
-        """084: the claude_code CLI must launch on the IMAGE's node, not the
-        env-cache's project-pinned node.
+    async def test_start_appends_cache_path_after_image_path(self, tmp_path: Path) -> None:
+        """087: the claude_code CLI must launch on the IMAGE's node, but the
+        env-cache toolchain (ruby/bundle) MUST still be reachable by the agent.
 
         The env-cache prepends the project's .nvmrc node (e.g. 18.12.1) to PATH;
-        a modern Node-based agent CLI crashes at startup under an older node. So
-        strip PATH from the cache env for the launch — the agent's own `bash -lc`
-        shells re-source activate.sh and still get the project toolchain. Every
-        other cache var must survive. Mirrors openclaw.py / pi.py / opencode.py.
+        a modern Node-based agent CLI crashes at startup under an older node — so
+        the IMAGE's node must win. But fully STRIPPING the cache PATH (the prior
+        084 behavior) left the agent with no project toolchain: Claude Code
+        snapshots the launch PATH for its Bash tool and does NOT re-source
+        activate.sh per command (unlike openclaw/pi/codex), so `ruby`/`bundle`
+        were missing and qa couldn't boot the app to take screenshots. Fix:
+        APPEND the cache-only dirs AFTER the image PATH — the CLI still resolves
+        node/claude to the image's modern node (image dirs first), while ruby and
+        bundle (absent from the image) resolve from the cache for the agent's
+        snapshotted shell. Every other cache var must survive.
         """
         proc = _fake_proc()
         adapter = ClaudeCodeBackend()
@@ -210,7 +217,13 @@ class TestClaudeCodeBackendStart:
             path=tmp_path,
             branch="main",
             git_env={"GIT_AUTHOR_NAME": "performer"},
-            cache_env={"PATH": "/devenv/foo/node-v18.12.1/bin:/usr/bin", "VIRTUAL_ENV": "/devenv/foo/.venv"},
+            cache_env={
+                "PATH": (
+                    "/devenv/foo/.rbenv/versions/3.4.2/bin:"
+                    "/devenv/foo/node-v18.12.1/bin:/usr/bin"
+                ),
+                "VIRTUAL_ENV": "/devenv/foo/.venv",
+            },
         )
 
         with patch(
@@ -220,10 +233,47 @@ class TestClaudeCodeBackendStart:
             await adapter.start(stand, _score())
 
         env = mock_exec.call_args[1]["env"]
+        image_path = os.environ["PATH"]
+        # The IMAGE PATH comes first, so the CLI runs on the image's modern node.
+        assert env["PATH"].startswith(image_path)
+        # The cache toolchain is APPENDED (reachable) — ruby/bundle for the agent.
+        assert "/devenv/foo/.rbenv/versions/3.4.2/bin" in env["PATH"]
+        # ...and the project node dir, if present, must NOT precede the image dirs.
+        assert env["PATH"].index(image_path) < env["PATH"].index("/devenv/foo/node-v18.12.1/bin")
+        # Every other cache var survives.
         assert env["VIRTUAL_ENV"] == "/devenv/foo/.venv"
-        assert "node-v18.12.1" not in env["PATH"]
-        assert env["PATH"] != stand.cache_env["PATH"]
         assert env["GIT_AUTHOR_NAME"] == "performer"
+
+    async def test_start_empty_image_path_falls_back_to_system_default(
+        self, tmp_path: Path
+    ) -> None:
+        """087 edge: if the container somehow has no PATH, the launch PATH must
+        fall back to the standard system dirs BEFORE the cache dirs — a
+        cache-only PATH would put the project's pinned old node first and
+        resurrect the CLI startup crash the append policy exists to prevent."""
+        proc = _fake_proc()
+        adapter = ClaudeCodeBackend()
+        stand = Stand(
+            path=tmp_path,
+            branch="main",
+            git_env={},
+            cache_env={"PATH": "/devenv/foo/node-v18.12.1/bin"},
+        )
+
+        env_without_path = {k: v for k, v in os.environ.items() if k != "PATH"}
+        with (
+            patch.dict("performer.backends.claude_code.os.environ", env_without_path, clear=True),
+            patch(
+                "performer.backends.claude_code.asyncio.create_subprocess_exec",
+                new=AsyncMock(return_value=proc),
+            ) as mock_exec,
+        ):
+            await adapter.start(stand, _score())
+
+        env = mock_exec.call_args[1]["env"]
+        # System dirs first (CLI gets a sane baseline), cache appended after.
+        assert env["PATH"].startswith("/usr/local/sbin:/usr/local/bin")
+        assert env["PATH"].index("/usr/bin") < env["PATH"].index("/devenv/foo/node-v18.12.1/bin")
 
     async def test_start_git_env_overrides_cache_env_on_conflict(self, tmp_path: Path) -> None:
         """060: precedence is os.environ < cache_env < git_env — git auth must win."""
