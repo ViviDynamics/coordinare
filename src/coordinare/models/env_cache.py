@@ -108,3 +108,13 @@ class BootstrapJobPayload(BaseModel):
             "NOT create/overwrite it (coordinare owns the verification contract)."
         ),
     )
+    activate_provided: bool = Field(
+        default=False,
+        description=(
+            "087: True when coordinare has written an authoritative, auto-discovering "
+            "activate.sh into the cache from the manifest. The agent installs the pinned "
+            "toolchain but must NOT create/overwrite activate.sh — coordinare owns the "
+            "activation contract. Hand-written activation paths (.rbenv vs rbenv, .nvm "
+            "vs nvm) were fumbled every run, leaving a built cache verify.sh couldn't see."
+        ),
+    )

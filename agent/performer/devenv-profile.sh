@@ -56,6 +56,10 @@ else
     _devenv_slug=${_devenv_cache%/}
     _devenv_slug=${_devenv_slug##*/}
     _devenv_libdir="$_devenv_lib_base/$_devenv_slug/lib"
+    # Persistent prefix root holding the FULL extracted deb tree, so captured
+    # executables (e.g. chromium) and their absolute-path data dirs can be
+    # shallow-symlinked onto the sysroot (see the symlink step below).
+    _devenv_root="$_devenv_lib_base/$_devenv_slug/root"
 
     # --- Deterministic deb extraction (one-time, before activate.sh) --------
     _devenv_marker="$_devenv_lib_base/$_devenv_slug/.extracted"
@@ -125,6 +129,18 @@ else
               [ -d "$_devenv_libdir.old" ] && mv "$_devenv_libdir.old" "$_devenv_libdir" 2>/dev/null
             fi
             rm -rf "$_devenv_libdir.old" 2>/dev/null
+            # Also publish the FULL extracted tree as a persistent prefix root
+            # (same atomic-ish swap discipline) so the symlink step below can
+            # expose captured executables and absolute-path data dirs. The .so
+            # originals remain in the stage tree, so the root carries them too.
+            rm -rf "$_devenv_root.old" 2>/dev/null
+            [ -d "$_devenv_root" ] && mv "$_devenv_root" "$_devenv_root.old" 2>/dev/null
+            if mv "$_devenv_stage" "$_devenv_root" 2>/dev/null; then
+              :
+            else
+              [ -d "$_devenv_root.old" ] && mv "$_devenv_root.old" "$_devenv_root" 2>/dev/null
+            fi
+            rm -rf "$_devenv_root.old" 2>/dev/null
           fi
         fi
         rm -rf "$_devenv_tmp" 2>/dev/null
@@ -150,6 +166,34 @@ else
       export LD_LIBRARY_PATH
     fi
 
+    # --- Expose captured executables (and absolute-path data dirs) on PATH ---
+    # The deb tree captures CLI tools the toolchain needs at runtime (e.g.
+    # chromium for QA screenshots), but .so→LD_LIBRARY_PATH alone never puts
+    # them where a shell can exec them. Shallow-symlink each immediate child of
+    # the prefix root's FHS subtrees into the sysroot, ONLY when the target is
+    # absent — never clobbering an image-provided file. The real sysroot is "/"
+    # (whose usr/bin is already on PATH, and where /usr/lib/<app> and
+    # /etc/<app>.d resolve because they don't pre-exist); tests redirect it via
+    # _DEVENV_SYSROOT. Nested standard-path libs (e.g. usr/lib/<triplet>/*) are
+    # NOT linked (those dirs pre-exist in the image) — they are covered by the
+    # LD_LIBRARY_PATH step above instead. Runs on every source, like that step.
+    if [ -d "$_devenv_root" ]; then
+      _devenv_sysroot="${_DEVENV_SYSROOT:-}"
+      for _devenv_sub in usr/bin usr/sbin usr/lib usr/libexec usr/share etc bin sbin lib; do
+        [ -d "$_devenv_root/$_devenv_sub" ] || continue
+        mkdir -p "$_devenv_sysroot/$_devenv_sub" 2>/dev/null || continue
+        for _devenv_entry in "$_devenv_root/$_devenv_sub"/*; do
+          [ -e "$_devenv_entry" ] || continue
+          _devenv_name=${_devenv_entry##*/}
+          _devenv_target="$_devenv_sysroot/$_devenv_sub/$_devenv_name"
+          if [ -e "$_devenv_target" ] || [ -L "$_devenv_target" ]; then
+            continue
+          fi
+          ln -s "$_devenv_entry" "$_devenv_target" 2>/dev/null || true
+        done
+      done
+    fi
+
     # --- Source the LLM-authored activation AFTER the deterministic step ----
     _devenv_activate="${_devenv_cache}activate.sh"
     [ -r "$_devenv_activate" ] && . "$_devenv_activate"
@@ -158,5 +202,7 @@ else
   unset _devenv_activate _devenv_cache _devenv_slug _devenv_libdir \
     _devenv_lib_base _devenv_d _devenv_tmp _devenv_stage _devenv_stagelib \
     _devenv_marker _devenv_lock _devenv_socount _devenv_so _devenv_member \
+    _devenv_root _devenv_sysroot _devenv_sub _devenv_entry _devenv_name \
+    _devenv_target \
     2>/dev/null || true
 fi

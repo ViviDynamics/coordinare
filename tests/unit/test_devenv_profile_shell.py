@@ -57,6 +57,7 @@ def _build_synthetic_deb(
     corrupt: bool = False,
     symlink: str | None = None,
     extra_file: str | None = None,
+    binary: str | None = None,
 ) -> None:
     """Build a minimal valid .deb at *deb_path* carrying one fake shared object.
 
@@ -72,6 +73,10 @@ def _build_synthetic_deb(
       used to assert the extractor follows symlinked shared objects.
     - *extra_file* (e.g. ``usr/share/doc/libfake/README``) adds a non-``.so``
       regular file, so a deb can carry payload without any shared object.
+    - *binary* (e.g. ``usr/bin/foo``) adds an executable regular file (mode
+      0o755), mirroring a deb that ships a CLI tool the runtime expects on
+      PATH (e.g. chromium); used to assert the profile exposes captured
+      executables, not just shared objects.
 
     When *corrupt* is set, the file is just garbage bytes (no valid ar archive),
     to assert the profile never aborts the shell on an unreadable package.
@@ -109,6 +114,12 @@ def _build_synthetic_deb(
                 info = tarfile.TarInfo(extra_file)
                 info.size = len(content)
                 info.mode = 0o644
+                tf.addfile(info, io.BytesIO(content))
+            if binary is not None:
+                content = b"#!/bin/sh\necho fake-binary \"$@\"\n"
+                info = tarfile.TarInfo(binary)
+                info.size = len(content)
+                info.mode = 0o755
                 tf.addfile(info, io.BytesIO(content))
         return buf.getvalue()
 
@@ -742,4 +753,91 @@ def test_profile_warns_when_lock_held_and_no_libdir(
     stderr_low = result.stderr.lower()
     assert "devenv" in stderr_low and fake_cache.slug in result.stderr, (
         f"expected a stderr warning naming the slug; got: {result.stderr!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# User Story 4: captured executables are exposed on PATH (deb binaries, not
+# just .so files). Symmetric to the LD_LIBRARY_PATH handling: the profile
+# extracts the full deb tree to a persistent per-cache prefix root and
+# shallow-symlinks captured FHS subtrees (usr/bin, usr/lib, etc) into a
+# sysroot (real `/` in production, a tmp dir under test via _DEVENV_SYSROOT),
+# only when the target does not already exist (never clobbering image files).
+# This is what puts e.g. chromium on PATH so QA screenshots work.
+# ---------------------------------------------------------------------------
+
+
+@requires_deb_tools
+def test_profile_symlinks_captured_executable_into_sysroot(
+    tmp_path: Path, fake_cache: SimpleNamespace
+) -> None:
+    """A deb that ships an executable (``usr/bin/foo``) must have that binary
+    exposed under the sysroot at ``<sysroot>/usr/bin/foo`` as a symlink into the
+    published per-cache prefix root, so the runtime finds it on PATH (the real
+    sysroot is ``/`` whose ``usr/bin`` is already on PATH). Symmetric to the
+    existing ``.so`` → LD_LIBRARY_PATH handling."""
+    for deb in fake_cache.debs.glob("*.deb"):
+        deb.unlink()
+    _build_synthetic_deb(
+        fake_cache.debs / "footool_1.0_arm64.deb",
+        soname="libfake.so.1",
+        triplet=fake_cache.triplet,
+        binary="usr/bin/footool",
+    )
+    sysroot = tmp_path / "sysroot"
+    (sysroot / "usr" / "bin").mkdir(parents=True)
+    profile = _patched_profile(tmp_path, fake_cache.devenv)
+
+    env = {**fake_cache.env, "_DEVENV_SYSROOT": str(sysroot)}
+    result = _run(
+        ["bash", "-c", f". {profile} && echo OK"],
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    exposed = sysroot / "usr" / "bin" / "footool"
+    assert exposed.is_symlink(), (
+        f"expected {exposed} to be a symlink into the prefix root; tree:\n"
+        + "\n".join(str(p) for p in sysroot.rglob("*"))
+        + "\n--- lib_base:\n"
+        + "\n".join(str(p) for p in fake_cache.lib_base.rglob("*"))
+    )
+    # The symlink must resolve to a real, executable file (the captured deb
+    # binary in the persistent prefix root), so exec'ing it actually works.
+    assert exposed.resolve().is_file(), "symlink target is not a real file"
+    assert os.access(exposed.resolve(), os.X_OK), "exposed binary is not executable"
+
+
+@requires_deb_tools
+def test_profile_does_not_clobber_existing_sysroot_entry(
+    tmp_path: Path, fake_cache: SimpleNamespace
+) -> None:
+    """The shallow-symlink step must NEVER overwrite a path that already exists
+    in the sysroot (image-provided files win). A pre-existing
+    ``<sysroot>/usr/bin/footool`` is left exactly as-is."""
+    for deb in fake_cache.debs.glob("*.deb"):
+        deb.unlink()
+    _build_synthetic_deb(
+        fake_cache.debs / "footool_1.0_arm64.deb",
+        soname="libfake.so.1",
+        triplet=fake_cache.triplet,
+        binary="usr/bin/footool",
+    )
+    sysroot = tmp_path / "sysroot"
+    (sysroot / "usr" / "bin").mkdir(parents=True)
+    preexisting = sysroot / "usr" / "bin" / "footool"
+    preexisting.write_text("#!/bin/sh\necho IMAGE_PROVIDED\n")
+    preexisting.chmod(0o755)
+    profile = _patched_profile(tmp_path, fake_cache.devenv)
+
+    env = {**fake_cache.env, "_DEVENV_SYSROOT": str(sysroot)}
+    result = _run(
+        ["bash", "-c", f". {profile} && echo OK"],
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not preexisting.is_symlink(), "pre-existing image file was clobbered"
+    assert "IMAGE_PROVIDED" in preexisting.read_text(), (
+        "pre-existing image file content was overwritten"
     )

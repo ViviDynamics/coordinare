@@ -6,6 +6,7 @@ from coordinare.models.env_manifest import EnvManifest, ManifestItem
 from coordinare.services.env_manifest import (
     STRUCTURED_SPEC_FILES,
     derive_manifest,
+    render_activate_sh,
     render_verify_sh,
 )
 
@@ -161,3 +162,85 @@ class TestVerifyRenderer:
         sh = render_verify_sh(manifest, cache_mount_path="/devenv/sym")
         assert "Rails boot smoke-test" not in sh
         assert "require 'rails'" not in sh
+
+
+class TestActivateRenderer:
+    """render_activate_sh: coordinare owns activate.sh (like verify.sh), generating
+    an auto-discovering, POSIX-safe activation from the manifest's runtime pins —
+    so a forgetful agent can't fumble the activation paths (the .rbenv-vs-rbenv
+    dot-prefix bug that broke every bootstrap)."""
+
+    def _manifest(self) -> EnvManifest:
+        return EnvManifest(
+            symphony_name="sym",
+            items=[
+                ManifestItem(name="ruby", kind="runtime", version="3.4.2", source=".ruby-version"),
+                ManifestItem(name="node", kind="runtime", version="18.12.1", source=".nvmrc"),
+                ManifestItem(name="rails", kind="gem", source="Gemfile"),
+                ManifestItem(name="chromium", kind="system", source="README.md"),
+            ],
+        )
+
+    def test_sets_devenv_to_cache_mount_path(self) -> None:
+        sh = render_activate_sh(self._manifest(), cache_mount_path="/devenv/sym")
+        assert 'DEVENV="/devenv/sym"' in sh
+        assert "export DEVENV" in sh
+
+    def test_is_posix_safe_for_sourced_shells(self) -> None:
+        """activate.sh is sourced into EVERY shell (bash AND dash) via BASH_ENV /
+        profile.d, so it must never abort the calling shell."""
+        sh = render_activate_sh(self._manifest(), cache_mount_path="/devenv/sym")
+        assert "set -e" not in sh
+        assert "set -u" not in sh
+        # No bare `exit`/`return` that would kill a sourcing shell.
+        for line in sh.splitlines():
+            stripped = line.strip()
+            assert not stripped.startswith("exit ")
+            assert not stripped.startswith("return ")
+        # rbenv init emits shell-specific code and has deadlocked sourced dash
+        # shells — discovery must be plain PATH prepends, not `eval "$(rbenv init)"`.
+        assert "rbenv init" not in sh
+
+    def test_ruby_discovery_covers_dot_and_nondot_rbenv(self) -> None:
+        """The bug: agent built Ruby under .rbenv (dot) but pointed RBENV_ROOT at
+        rbenv (no dot). Discovery must probe BOTH layouts (+ asdf) for the pinned
+        version and guard on the real ruby binary."""
+        sh = render_activate_sh(self._manifest(), cache_mount_path="/devenv/sym")
+        assert "$DEVENV/.rbenv/versions/3.4.2" in sh
+        assert "$DEVENV/rbenv/versions/3.4.2" in sh
+        assert "$DEVENV/.asdf/installs/ruby/3.4.2" in sh
+        assert '-x "$_r/bin/ruby"' in sh
+        assert "RBENV_ROOT=" in sh
+
+    def test_node_discovery_covers_nvm_and_tarball(self) -> None:
+        sh = render_activate_sh(self._manifest(), cache_mount_path="/devenv/sym")
+        assert "$DEVENV/.nvm/versions/node/v18.12.1/bin" in sh
+        assert "$DEVENV/nvm/versions/node/v18.12.1/bin" in sh
+        assert "node-v18.12.1-" in sh  # extracted-tarball glob fallback
+        assert '-x "$_n/node"' in sh
+
+    def test_non_exact_versions_skipped(self) -> None:
+        """package.json engines are ranges (^20, >=18) with no deterministic
+        install path — emitting `v^20` paths is useless. Skip non-exact pins."""
+        manifest = EnvManifest(
+            symphony_name="sym",
+            items=[ManifestItem(name="node", kind="runtime", version="^20", source="package.json")],
+        )
+        sh = render_activate_sh(manifest, cache_mount_path="/devenv/sym")
+        assert "^20" not in sh
+        assert "node/v^20" not in sh
+
+    def test_no_runtime_pins_still_valid_script(self) -> None:
+        """A manifest with no pinned runtimes still yields a sourceable script
+        (DEVENV + deb-bin glob), never a crash or empty file."""
+        manifest = EnvManifest(
+            symphony_name="sym",
+            items=[ManifestItem(name="rails", kind="gem", source="Gemfile")],
+        )
+        sh = render_activate_sh(manifest, cache_mount_path="/devenv/sym")
+        assert 'DEVENV="/devenv/sym"' in sh
+        assert "/usr/bin" in sh  # extracted-deb best-effort prepend
+
+    def test_extracted_deb_bins_best_effort(self) -> None:
+        sh = render_activate_sh(self._manifest(), cache_mount_path="/devenv/sym")
+        assert '"$DEVENV"/*/usr/bin' in sh

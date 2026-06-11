@@ -2075,12 +2075,26 @@ class CoordinareDaemon:
                 rc = cfg.performers.resolved_role(_probe_role)
                 if rc is not None and getattr(rc, "backend", None):
                     bootstrap_backend = rc.backend
-                    bootstrap_model = getattr(rc, "model", None)
                     bootstrap_effort = getattr(rc, "effort", None)
                     bootstrap_temperature = getattr(rc, "temperature", None)
-                    bootstrap_base_url = getattr(rc, "base_url", None)
-                    bootstrap_api_key_env = getattr(rc, "api_key_env", None)
-                    bootstrap_auth_token_env = getattr(rc, "auth_token_env", None)
+                    # 080 moved all model selection to the mode → model_endpoint →
+                    # endpoint catalogs; inline performer model/base_url/auth fields
+                    # are schema-forbidden. The card-dispatch path resolves the model
+                    # via resolve_performer_dispatch_model; the bootstrap path must do
+                    # the SAME, otherwise the dispatch carries model=None and the
+                    # self-hosted routing table (keyed on (backend, model)) can't match
+                    # → claude_code silently falls back to the LiteLLM shim.
+                    resolved = {}
+                    if hasattr(cfg, "resolve_performer_dispatch_model"):
+                        resolved = cfg.resolve_performer_dispatch_model(_probe_role) or {}
+                    bootstrap_model = resolved.get("model") or getattr(rc, "model", None)
+                    bootstrap_base_url = resolved.get("base_url") or getattr(rc, "base_url", None)
+                    bootstrap_api_key_env = (
+                        resolved.get("api_key_env") or getattr(rc, "api_key_env", None)
+                    )
+                    bootstrap_auth_token_env = (
+                        resolved.get("auth_token_env") or getattr(rc, "auth_token_env", None)
+                    )
                     break
         dispatch_dict["backend"] = bootstrap_backend
         if bootstrap_model:

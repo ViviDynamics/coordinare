@@ -782,6 +782,7 @@ class HTTPPerformerService:
         # 077: coordinare-derived authoritative manifest artifacts.
         dependency_checklist = str(card_context.get("dependency_checklist") or "").strip()
         verify_provided = bool(card_context.get("verify_provided"))
+        activate_provided = bool(card_context.get("activate_provided"))
 
         secrets: dict[str, str] = {}
         # Prefer the daemon-injected token (fresh App installation token or
@@ -871,6 +872,49 @@ class HTTPPerformerService:
                 "missing/broken dependency and re-run it. Do NOT end your turn until "
                 "verify.sh passes — confirm the installation before exiting.\n\n"
             )
+        # 087: coordinare owns activate.sh too (like verify.sh) — an auto-discovering
+        # activation rendered from the manifest. The agent installs the pinned
+        # toolchain into the cache but must NOT hand-write the activation paths: a
+        # forgetful model fumbled the .rbenv-vs-rbenv / .nvm-vs-nvm dot-prefix every
+        # run, leaving a fully-built cache that verify.sh couldn't see. Fallback (no
+        # manifest → activate_provided False): the agent writes activate.sh itself.
+        if activate_provided:
+            activate_block = (
+                "ACTIVATION (coordinare-owned): an authoritative activate.sh has "
+                f"ALREADY been written at {cache_mount_path}/activate.sh. It "
+                "AUTO-DISCOVERS the toolchain you install — it probes BOTH dotted and "
+                "non-dotted version-manager roots under the cache (.rbenv/rbenv "
+                "versions/<ver>, .nvm/nvm node versions, asdf, pyenv) and any "
+                "extracted-deb */usr/bin directories, and puts them on PATH. So just "
+                "install the pinned runtimes with a standard version manager / build "
+                "tool (rbenv+ruby-build, nvm, asdf, pyenv) INTO "
+                f"{cache_mount_path} (use it as the install prefix, e.g. RBENV_ROOT="
+                f"{cache_mount_path}/.rbenv) and extract any deb binaries INTO "
+                f"{cache_mount_path} — coordinare's activate.sh will find them. Do NOT "
+                f"create, overwrite, or delete {cache_mount_path}/activate.sh — "
+                "coordinare owns the activation contract and editing it would clobber "
+                "the auto-discovery.\n\n"
+            )
+        else:
+            activate_block = (
+                "MANDATORY: After installing, write a sourceable shell script at "
+                f"{cache_mount_path}/activate.sh that consumer agents will source "
+                "before running their tools. It MUST export PATH (prepending any "
+                "bin directories you created, e.g. virtualenv bin, node_modules/.bin, "
+                "language toolchain bin), and any other env vars needed to use the "
+                "installed tooling (VIRTUAL_ENV, NODE_PATH, etc.). Without this "
+                "file the cache is unusable and downstream performers will reinstall. "
+                "Make it idempotent and safe to source repeatedly.\n\n"
+                "CRITICAL — activate.sh is SOURCED into EVERY shell in the container "
+                "(via BASH_ENV / /etc/profile.d), including the backend-CLI installer "
+                "and every tool call. It MUST therefore NEVER call `exit`, `return` "
+                "with a non-zero status, or `set -e`/`set -u` that aborts — doing so "
+                "TERMINATES the calling shell and breaks the whole container (a sourced "
+                "`exit 1` has knocked out CLI installs and deadlocked bootstraps). On "
+                "ANY failure inside activate.sh, print a warning to stderr and CONTINUE; "
+                "never abort. Hard assertions go ONLY in verify.sh, which is RUN "
+                "standalone (never sourced), so its `exit 1` is safe.\n\n"
+            )
         persona = (
             retry_block
             + checklist_block
@@ -917,18 +961,18 @@ class HTTPPerformerService:
             "BINARY must be on PATH (for example a headless browser such as chromium "
             "and its chromedriver), extract the deb into the cache without touching "
             f"the system (`dpkg-deb -x {cache_mount_path}/debs/<pkg>.deb "
-            f"{cache_mount_path}/<prefix>`) and prepend the EXTRACTED binary's "
-            "directory to PATH in activate.sh. NOTE: `dpkg-deb -x` recreates the "
+            f"{cache_mount_path}/<prefix>`). NOTE: `dpkg-deb -x` recreates the "
             "deb's absolute layout under <prefix>, so the binaries land in "
             f"{cache_mount_path}/<prefix>/usr/bin (and sometimes "
             f"{cache_mount_path}/<prefix>/usr/lib/<pkg>/), NOT {cache_mount_path}/"
             "<prefix>/bin — confirm the real path with `find "
-            f"{cache_mount_path}/<prefix> -name <binary> -type f` and prepend THAT "
-            "directory (e.g. PATH=\"$DEVENV/<prefix>/usr/bin:$PATH\"). Never "
+            f"{cache_mount_path}/<prefix> -name <binary> -type f`. Putting that "
+            "extracted bin dir on PATH is handled per the ACTIVATION section below "
+            "(coordinare's activate.sh auto-discovers */usr/bin dirs under the cache); "
+            "do NOT bake PATH edits into the install commands. Never "
             "`dpkg -i` (it needs root and mutates the "
             "container) and never install from the network. The hard pass/fail "
-            "assertion that the binary is on PATH belongs in verify.sh (below) — NOT "
-            "in activate.sh or the install commands.\n\n"
+            "assertion that the binary is on PATH belongs in verify.sh (below).\n\n"
             "PINNED LANGUAGE RUNTIMES — CRITICAL: when a spec file pins an EXACT "
             "language/runtime version (e.g. .ruby-version, .tool-versions, .nvmrc, "
             ".python-version, or a Gemfile / package.json `engines` field), the "
@@ -938,29 +982,14 @@ class HTTPPerformerService:
             "MUST install the EXACT pinned version with a version manager or build "
             "tool (rbenv + ruby-build, asdf, pyenv, nvm, or a ruby-build/source "
             f"compile) INTO {cache_mount_path} (use it as the install prefix, e.g. "
-            f"RBENV_ROOT/ASDF_DATA_DIR under {cache_mount_path}), and prepend that "
-            "runtime's bin directory to PATH in activate.sh so consumers get the "
-            "pinned version. Do NOT accept the system/distro default — verify.sh "
+            f"RBENV_ROOT={cache_mount_path}/.rbenv, or asdf/nvm/pyenv under "
+            f"{cache_mount_path}). Putting that runtime's bin on PATH is handled per "
+            "the ACTIVATION section below (coordinare's activate.sh auto-discovers the "
+            "pinned runtime under the cache). Do NOT accept the system/distro default — verify.sh "
             "asserts the exact version (e.g. `ruby -v` matches .ruby-version) and a "
             "mismatch FAILS the whole bootstrap. Install the pinned runtime FIRST, "
             "before bundler/gems/node modules, since those build against it.\n\n"
-            "MANDATORY: After installing, write a sourceable shell script at "
-            f"{cache_mount_path}/activate.sh that consumer agents will source "
-            "before running their tools. It MUST export PATH (prepending any "
-            "bin directories you created, e.g. virtualenv bin, node_modules/.bin, "
-            "language toolchain bin), and any other env vars needed to use the "
-            "installed tooling (VIRTUAL_ENV, NODE_PATH, etc.). Without this "
-            "file the cache is unusable and downstream performers will reinstall. "
-            "Make it idempotent and safe to source repeatedly.\n\n"
-            "CRITICAL — activate.sh is SOURCED into EVERY shell in the container "
-            "(via BASH_ENV / /etc/profile.d), including the backend-CLI installer "
-            "and every tool call. It MUST therefore NEVER call `exit`, `return` "
-            "with a non-zero status, or `set -e`/`set -u` that aborts — doing so "
-            "TERMINATES the calling shell and breaks the whole container (a sourced "
-            "`exit 1` has knocked out CLI installs and deadlocked bootstraps). On "
-            "ANY failure inside activate.sh, print a warning to stderr and CONTINUE; "
-            "never abort. Hard assertions go ONLY in verify.sh, which is RUN "
-            "standalone (never sourced), so its `exit 1` is safe.\n\n"
+            + activate_block
             + verify_block
             + f"Spec files ({', '.join(env_spec_files) or 'none'}):\n\n"
             f"{spec_block}\n"
