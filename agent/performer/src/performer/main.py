@@ -742,7 +742,19 @@ _QA_ENV_FAILURE_PATTERNS = re.compile(
     r"read-?only file system|sqlite3|not on \$?path|command not found|not installed|"
     r"no such file|headless|chromium|chrome|browser|display|selenium|webdriver|"
     r"postgres|pg_ctl|initdb|database (is )?(unavailable|not running|down)|"
-    r"no screenshot|no artifacts|visual artifacts|could not (start|launch|run)",
+    r"no screenshot|no artifacts|visual artifacts|could not (start|launch|run)|"
+    # Natural "couldn't check" phrasings real models emit (captured verbatim from
+    # PR ViviDynamics/website#159). Without these, an honest "I couldn't run it"
+    # slips past the regex, counts as a defect, and wrongly blocks the card —
+    # the opposite of 077's intent ("FAILED" = checked and broken, not couldn't check).
+    r"could not be (executed|run|started|verified|completed|built|installed)|"
+    r"can(not|'?t)\s+(be\s+)?(verif|execut|run|start|launch|test|complet|build|install)|"
+    r"unable to (verify|execute|run|start|launch|test|complete|build|install)|"
+    r"fails? to start|failed to start|"
+    r"bundle missing|missing (lib|bundle|gem|runtime|dependenc|interpreter|binary|psych|libyaml)|"
+    r"libyaml|psych|"
+    r"(is|are|was|were)? ?(not|un)\s?available|"
+    r"in (this|the) (environment|sandbox)|in the sandbox",
     re.IGNORECASE,
 )
 
@@ -752,8 +764,15 @@ def _qa_failure_is_environmental(f: dict) -> bool:
     (no DB/browser/binary on PATH, read-only fs, capture blocked) rather than a
     real code defect. Environmental limits are advisory — they must not block the
     lifecycle; only genuine defects do."""
-    if str(f.get("type", "")).lower() in {"visual-capture", "environment", "env"}:
+    ftype = str(f.get("type", "")).lower()
+    if ftype in {"visual-capture", "environment", "env"}:
         return True
+    # 054: the branch-freshness gate is a deliberate hard block — an indeterminate
+    # freshness state ("could not be verified") must NOT pass, even though its
+    # phrasing looks environmental. Exclude it before the regex so the broadened
+    # "couldn't check" patterns can't accidentally wave a stale branch through.
+    if ftype == "freshness_indeterminate":
+        return False
     blob = " ".join(
         str(f.get(k, "")) for k in ("message", "actual", "expected", "criterion", "test")
     )
