@@ -1672,6 +1672,22 @@ def test_env_bootstrap_persona_mandates_idempotent_reinstall() -> None:
     assert "pinned" in persona
     assert ".ruby-version" in persona
     assert "ruby-build" in persona
+    # 087: captured-deb SHARED LIBRARIES are now activated deterministically by the
+    # coordinare-owned profile (it extracts the *.so files and prepends them to
+    # LD_LIBRARY_PATH before activate.sh is sourced). So activate.sh no longer needs
+    # to `dpkg -i` / `apt-get install` the debs just to make libraries loadable —
+    # that is the coordinare's job now (Guardrails for Forgetful Models). A package
+    # whose BINARY must be on PATH is extracted with `dpkg-deb -x` and its bin dir
+    # prepended to PATH, never `dpkg -i` (needs root, mutates the system).
+    assert "ld_library_path" in persona
+    assert "dpkg-deb -x" in persona
+    # Guard the binary-on-PATH guidance against regression (adversarial review):
+    # `dpkg-deb -x` recreates the deb's absolute layout, so binaries land under
+    # <prefix>/usr/bin, NOT <prefix>/bin — the persona must say so explicitly or
+    # an agent prepends the wrong dir and the binary is never found.
+    assert "usr/bin" in persona
+    # And it must forbid `dpkg -i` (needs root, mutates the container).
+    assert "never `dpkg -i`" in persona
 
 
 def _bootstrap_card_context(**extra) -> dict:
