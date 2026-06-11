@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -111,16 +112,15 @@ class TestOpenCodeAdapterStart:
         assert call_kwargs["cwd"] == str(tmp_path)
 
     @respx.mock
-    async def test_start_merges_cache_env_but_excludes_cache_path(self, tmp_path: Path) -> None:
-        """084: every cache_env var EXCEPT PATH reaches the opencode subprocess.
+    async def test_start_appends_cache_path_after_image_path(self, tmp_path: Path) -> None:
+        """088 B1: shared env policy — image PATH first, cache PATH appended.
 
-        060 originally passed the cache PATH through. But the env-cache prepends
-        the project's .nvmrc node (e.g. 18.12.1) to PATH, and a modern Node-based
-        agent CLI crashes at startup under an older node (pi-tui's unicodeSets
-        regex flag needs Node >=20). The CLI must launch on the IMAGE's node;
-        strip PATH from the cache env for the launch. The agent's own `bash -lc`
-        shells re-source activate.sh and still get the project toolchain. Mirrors
-        openclaw.py / pi.py. Other cache vars (VIRTUAL_ENV, etc.) still flow."""
+        The env-cache prepends the project's .nvmrc node (e.g. 18.12.1) to
+        PATH, and a modern Node-based agent CLI crashes at startup under an
+        older node. The CLI must launch on the IMAGE's node, but the cache
+        toolchain dirs must stay REACHABLE for snapshot-env agents: image PATH
+        first, cache dirs appended deduplicated. Other cache vars
+        (VIRTUAL_ENV, etc.) still flow."""
         proc = _fake_proc()
         port = 19907
 
@@ -154,8 +154,11 @@ class TestOpenCodeAdapterStart:
 
         env = mock_exec.call_args[1]["env"]
         assert env["VIRTUAL_ENV"] == "/devenv/foo/.venv"
-        assert "node-v18.12.1" not in env["PATH"]
-        assert env["PATH"] != "/devenv/foo/node-v18.12.1/bin:/usr/bin"
+        image_path = os.environ["PATH"]
+        # Image dirs FIRST — the CLI's interpreter resolves to the image's node.
+        assert env["PATH"].startswith(image_path)
+        # Cache toolchain dirs APPENDED — reachable, never shadowing the image.
+        assert env["PATH"].index(image_path) < env["PATH"].index("node-v18.12.1")
         assert env["GIT_AUTHOR_NAME"] == "performer"
 
     @respx.mock

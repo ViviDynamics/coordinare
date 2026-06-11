@@ -37,6 +37,7 @@ import psutil
 import structlog
 
 from performer.backends._card_docs import card_doc_folder, card_docs_prompt_section
+from performer.backends._env_policy import build_subprocess_env
 from performer.backends.base import BackendStatus
 from performer.models import DIAGNOSTIC_ROLE, BackendEvent, BackendEventType, Score, Stand
 
@@ -369,13 +370,20 @@ class HermesBackend:
     def _build_subprocess_env(
         self, *, profile_dir: Path, api_key: str, base_url: str
     ) -> dict[str, str]:
-        env = {
+        base = {
             k: v for k, v in os.environ.items()
             if not any(k.startswith(p) for p in _FORBIDDEN_ENV_PREFIXES)
         }
-        env.update(self._cache_env)
-        env.update(self._git_env)
-        env.update(self._tool_env)
+        # 088 B1 shared env policy: hermes-agent is a Node CLI — it must
+        # launch on the IMAGE's node, never the env-cache's project-pinned
+        # node (e.g. 18.12.1 → startup crash). Image PATH first, cache
+        # toolchain dirs appended; every other cache var flows through.
+        env = build_subprocess_env(
+            cache_env=self._cache_env,
+            git_env=self._git_env,
+            tool_env=self._tool_env,
+            base_env=base,
+        )
         # FR-005: operator's HERMES_HOME is never honoured. The pop is
         # belt-and-suspenders — the assignment below overwrites either way,
         # but the explicit drop makes the intent survive future refactors.

@@ -9,6 +9,7 @@ needed. The JSON shapes are taken verbatim from the live POC (R-07).
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -242,13 +243,12 @@ async def test_context_window_and_max_tokens_overridable_via_env(
 
 
 @pytest.mark.asyncio
-async def test_cli_env_excludes_cache_path_keeps_other_cache_vars(tmp_path, monkeypatch) -> None:
-    """077: the env-cache PATH (project's pinned node, e.g. 18.12.1) must NOT be
-    the interpreter the openclaw CLI launches under — openclaw needs Node >=22.19
-    and exits 1 at startup under an older node. So PATH is excluded from the CLI
-    launch env (CLI runs on image node 22); the agent's own bash -lc commands get
-    the project node via login-shell activate.sh sourcing. Non-PATH cache vars are
-    still passed through."""
+async def test_cli_env_appends_cache_path_after_image_path(tmp_path, monkeypatch) -> None:
+    """088 B1: shared env policy — the env-cache PATH (project's pinned node,
+    e.g. 18.12.1) must NOT shadow the interpreter the openclaw CLI launches
+    under (openclaw needs Node >=22.19), but the cache toolchain dirs must
+    still be REACHABLE: image PATH first, cache dirs appended deduplicated.
+    Non-PATH cache vars pass through unchanged."""
     monkeypatch.setenv("HOME", str(tmp_path))
     captured: dict = {}
 
@@ -271,10 +271,12 @@ async def test_cli_env_excludes_cache_path_keeps_other_cache_vars(tmp_path, monk
     await OpenClawBackend().start(stand, _score())
 
     env = captured["env"]
-    # The project node-18 PATH must NOT shadow the CLI's interpreter.
-    assert "node-v18.12.1" not in env.get("PATH", "")
-    assert env["PATH"] != stand.cache_env["PATH"]
-    # ...but other env-cache vars are still passed to the CLI.
+    image_path = os.environ["PATH"]
+    # Image dirs FIRST — the CLI's interpreter resolves to the image's node.
+    assert env["PATH"].startswith(image_path)
+    # Cache toolchain dirs APPENDED — reachable, but never shadowing the image.
+    assert env["PATH"].index(image_path) < env["PATH"].index("node-v18.12.1")
+    # ...and other env-cache vars are still passed to the CLI.
     assert env.get("RBENV_ROOT") == "/devenv/x/rbenv"
 
 

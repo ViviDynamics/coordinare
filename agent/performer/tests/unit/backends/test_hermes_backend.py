@@ -816,3 +816,55 @@ async def test_card_docs_exclude_no_duplicate_on_existing_entry(tmp_path, hermes
         assert lines.count("CARD.md") == 1
     finally:
         await adapter.stop()
+
+
+class TestSubprocessEnvPolicy:
+    """088 B1: hermes must follow the shared image-PATH-first append policy.
+
+    Pre-fix, hermes passed the FULL cache_env into the subprocess — the
+    project's pinned old node shadowed the image's node, the startup-crash
+    class #110 fixed for claude_code.
+    """
+
+    def _adapter_with_envs(self, *, cache_env, git_env=None, tool_env=None):
+        adapter = HermesBackend()
+        adapter._cache_env = cache_env
+        adapter._git_env = git_env or {}
+        adapter._tool_env = tool_env or {}
+        return adapter
+
+    def test_cache_path_appended_after_image_path(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setenv("PATH", "/usr/local/bin:/usr/bin")
+        adapter = self._adapter_with_envs(
+            cache_env={
+                "PATH": "/devenv/x/node-v18.12.1/bin:/usr/bin",
+                "RBENV_ROOT": "/devenv/x/rbenv",
+            },
+        )
+        env = adapter._build_subprocess_env(
+            profile_dir=tmp_path, api_key="sk", base_url=""
+        )
+        # Image dirs FIRST — the CLI's interpreter resolves to the image's node.
+        assert env["PATH"].startswith("/usr/local/bin:/usr/bin")
+        # Cache toolchain dirs APPENDED — reachable, never shadowing the image.
+        assert env["PATH"].index("/usr/local/bin") < env["PATH"].index("node-v18.12.1")
+        # Non-PATH cache vars still flow.
+        assert env["RBENV_ROOT"] == "/devenv/x/rbenv"
+
+    def test_forbidden_prefixes_still_filtered(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setenv("HERMES_GATEWAY_URL", "http://evil")
+        adapter = self._adapter_with_envs(cache_env={})
+        env = adapter._build_subprocess_env(
+            profile_dir=tmp_path, api_key="sk", base_url=""
+        )
+        assert "HERMES_GATEWAY_URL" not in env
+
+    def test_hermes_home_still_forced_to_profile_dir(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setenv("HERMES_HOME", "/operator/home")
+        adapter = self._adapter_with_envs(cache_env={})
+        env = adapter._build_subprocess_env(
+            profile_dir=tmp_path, api_key="sk", base_url="http://litellm/v1"
+        )
+        assert env["HERMES_HOME"] == str(tmp_path)
+        assert env["HERMES_API_KEY"] == "sk"
+        assert env["HERMES_BASE_URL"] == "http://litellm/v1"

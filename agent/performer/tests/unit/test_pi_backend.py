@@ -8,6 +8,7 @@ subprocess is mocked (no real `pi` CLI needed).
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -157,18 +158,15 @@ async def test_provider_override_routes_to_litellm(tmp_path: Path, monkeypatch) 
 
 
 @pytest.mark.asyncio
-async def test_cli_env_excludes_cache_path_keeps_other_cache_vars(tmp_path: Path, monkeypatch) -> None:
-    """The pi CLI must launch under the IMAGE's node (22), not the env-cache's
-    project-pinned node (e.g. 18.12.1).
+async def test_cli_env_appends_cache_path_after_image_path(tmp_path: Path, monkeypatch) -> None:
+    """088 B1: shared env policy — the pi CLI must launch under the IMAGE's
+    node (22), not the env-cache's project-pinned node (e.g. 18.12.1).
 
-    The coordinare env-cache builds a project's `.nvmrc` toolchain and prepends
-    it to PATH via activate.sh (sourced into every shell by BASH_ENV). pi-tui
-    uses the `v` (unicodeSets) regex flag, which crashes on Node < 20 with
-    `SyntaxError: Invalid regular expression flags` → pi exits 1 → the card is
-    blocked. So strip PATH from the env-cache vars for the CLI launch (the
-    agent's own `bash -lc` shells re-source activate.sh and still get the
-    project toolchain). Every OTHER cache var must survive. Mirrors
-    openclaw.py's fix.
+    pi-tui uses the `v` (unicodeSets) regex flag, which crashes on Node < 20
+    with `SyntaxError: Invalid regular expression flags` → pi exits 1 → the
+    card is blocked. The CLI must launch on the IMAGE's node, but the cache
+    toolchain dirs must stay REACHABLE: image PATH first, cache dirs appended
+    deduplicated. Every OTHER cache var must survive.
     """
     captured: dict = {}
 
@@ -201,6 +199,9 @@ async def test_cli_env_excludes_cache_path_keeps_other_cache_vars(tmp_path: Path
     await PiBackend().start(stand, score)
 
     env = captured["env"]
-    assert "node-v18.12.1" not in env.get("PATH", "")
-    assert env["PATH"] != stand.cache_env["PATH"]
+    image_path = os.environ["PATH"]
+    # Image dirs FIRST — the CLI's interpreter resolves to the image's node.
+    assert env["PATH"].startswith(image_path)
+    # Cache toolchain dirs APPENDED — reachable, never shadowing the image.
+    assert env["PATH"].index(image_path) < env["PATH"].index("node-v18.12.1")
     assert env.get("RBENV_ROOT") == "/devenv/website-3ab3e0/rbenv"
