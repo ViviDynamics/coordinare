@@ -735,6 +735,43 @@ class TestActivateEnvCache:
         # Empty script → empty delta (PWD/SHLVL match the reference shell)
         assert result == {}
 
+    @pytest.mark.asyncio
+    async def test_bash_env_profile_vars_survive_the_delta(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The container sets BASH_ENV to the devenv profile, which exports
+        LD_LIBRARY_PATH (captured-deb native libs, spec 087) before sourcing
+        activate.sh. Because BOTH the sourced run and the reference run paid
+        BASH_ENV, profile-set vars cancelled out of the delta — so cache_env
+        lacked LD_LIBRARY_PATH and snapshot-style agents (claude_code) couldn't
+        load native extensions (psych/libyaml: Rails wouldn't boot, QA couldn't
+        screenshot — observed live on website PR #173). The reference run must
+        NOT source the profile, and the profile's re-entry guard
+        (_DEVENV_SOURCED) plus BASH_ENV/ENV themselves must be filtered: leaking
+        _DEVENV_SOURCED=1 into agent shells would suppress profile sourcing for
+        the backends that re-source per command (openclaw/pi/codex)."""
+        from performer.workspace import _activate_env_cache
+
+        profile = tmp_path / "profile.sh"
+        profile.write_text(
+            'export LD_LIBRARY_PATH="/var/lib/devenv/foo/lib'
+            '${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"\n'
+            "export _DEVENV_SOURCED=1\n"
+        )
+        activate = tmp_path / "activate.sh"
+        activate.write_text('export TEST_CACHE_TOKEN="abc123"\n')
+        monkeypatch.setenv("BASH_ENV", str(profile))
+
+        result = await _activate_env_cache(str(tmp_path))
+
+        # Profile-set vars must survive into cache_env...
+        assert result.get("LD_LIBRARY_PATH") == "/var/lib/devenv/foo/lib"
+        assert result.get("TEST_CACHE_TOKEN") == "abc123"
+        # ...but the re-entry guard and shell-bootstrap vars must never leak.
+        assert "_DEVENV_SOURCED" not in result
+        assert "BASH_ENV" not in result
+        assert "ENV" not in result
+
 
 class TestStartEnvCacheServices:
     """Tests for _start_env_cache_services (spec 063 Phase 1)."""

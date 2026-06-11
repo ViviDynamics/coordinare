@@ -132,17 +132,64 @@ class TestJunieLaunchFailureCleanup:
         assert backend._json_output_path is None
 
 
+class TestJunieLaunchEnv:
+    @pytest.mark.asyncio
+    async def test_launch_appends_cache_path_after_image_path(self, tmp_path) -> None:
+        """088 B1: shared env policy — junie is a Node CLI, so launching it
+        under the env-cache's project-pinned node (e.g. 18.12.1) crashes at
+        startup. The CLI must launch on the IMAGE's node, but the cache
+        toolchain dirs must stay REACHABLE: image PATH first, cache dirs
+        appended deduplicated. Every other cache var must survive.
+        """
+        backend = JunieBackend()
+        backend._stand = Stand(path=tmp_path, branch="main")
+        backend._stand.cache_env = {
+            "PATH": "/devenv/foo/node-v18.12.1/bin:/usr/bin:/bin",
+            "RBENV_ROOT": "/devenv/foo/rbenv",
+        }
+        backend._cache_env = backend._stand.cache_env
+        backend._git_env = {"GIT_AUTHOR_NAME": "performer"}
+        backend._score = Score(title="t", repo_url="https://github.com/o/r", branch="main")
+        backend._original_prompt = "prompt"
+
+        captured: dict = {}
+
+        async def _fake_exec(*argv, **kwargs):
+            captured["env"] = kwargs.get("env")
+            proc = AsyncMock()
+            proc.pid = 4321
+            proc.returncode = 0
+            return proc
+
+        with patch(
+            "performer.backends.junie.asyncio.create_subprocess_exec",
+            _fake_exec,
+        ), patch(
+            "performer.backends.junie._maybe_write_custom_profile",
+            return_value=None,
+        ), patch.object(
+            JunieBackend, "_wait_and_parse", AsyncMock(return_value=None)
+        ):
+            await backend._launch("prompt")
+
+        env = captured["env"]
+        image_path = os.environ["PATH"]
+        # Image dirs FIRST — the CLI's interpreter resolves to the image's node.
+        assert env["PATH"].startswith(image_path)
+        # Cache toolchain dirs APPENDED — reachable, never shadowing the image.
+        assert env["PATH"].index(image_path) < env["PATH"].index("node-v18.12.1")
+        assert env.get("RBENV_ROOT") == "/devenv/foo/rbenv"
+        assert env["GIT_AUTHOR_NAME"] == "performer"
+
+
 class TestOpenCodeCompatStartEnv:
     @pytest.mark.asyncio
-    async def test_start_excludes_cache_path_keeps_other_cache_vars(self, tmp_path) -> None:
-        """084: the opencode_compat CLI must launch on the IMAGE's node, not the
-        env-cache's project-pinned node.
-
-        The env-cache prepends the project's .nvmrc node (e.g. 18.12.1) to PATH;
-        a modern Node-based agent CLI crashes at startup under an older node. So
-        strip PATH from the cache env for the launch — the agent's own `bash -lc`
-        shells re-source activate.sh and still get the project toolchain. Every
-        other cache var must survive. Mirrors openclaw.py / pi.py / opencode.py.
+    async def test_start_appends_cache_path_after_image_path(self, tmp_path) -> None:
+        """088 B1: shared env policy — the opencode_compat CLI must launch on
+        the IMAGE's node, not the env-cache's project-pinned node (e.g.
+        18.12.1, which crashes modern Node CLIs at startup), but the cache
+        toolchain dirs must stay REACHABLE: image PATH first, cache dirs
+        appended deduplicated. Every other cache var must survive.
         """
         adapter = OpenCodeCompatAdapter(base_url="https://litellm.example/v1", api_key="sk")
         stand = Stand(
@@ -169,8 +216,11 @@ class TestOpenCodeCompatStartEnv:
                 await adapter.start(stand, score)
 
         env = mock_exec.call_args[1]["env"]
-        assert "node-v18.12.1" not in env["PATH"]
-        assert env["PATH"] != stand.cache_env["PATH"]
+        image_path = os.environ["PATH"]
+        # Image dirs FIRST — the CLI's interpreter resolves to the image's node.
+        assert env["PATH"].startswith(image_path)
+        # Cache toolchain dirs APPENDED — reachable, never shadowing the image.
+        assert env["PATH"].index(image_path) < env["PATH"].index("node-v18.12.1")
         assert env["VIRTUAL_ENV"] == "/devenv/foo/.venv"
         assert env["GIT_AUTHOR_NAME"] == "performer"
         # compat env still pinned

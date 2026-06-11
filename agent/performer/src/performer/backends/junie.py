@@ -46,6 +46,7 @@ import psutil
 import structlog
 
 from performer.backends._card_docs import card_docs_prompt_section
+from performer.backends._env_policy import build_subprocess_env
 from performer.backends.base import BackendStatus
 from performer.models import DIAGNOSTIC_ROLE, LOCAL_CAPTURE_RULE, BackendEvent, BackendEventType, Score, Stand
 
@@ -300,6 +301,15 @@ class JunieBackend:
         # Pass the task last as positional argument (per docs).
         args += ["--task", prompt]
 
+        # 088 B1 shared env policy: junie is a Node CLI — it must launch on
+        # the IMAGE's node, never the env-cache's project-pinned node (e.g.
+        # 18.12.1 → startup crash). Image PATH first, cache toolchain dirs
+        # appended; every other cache var flows through.
+        env = build_subprocess_env(
+            cache_env=self._cache_env,
+            git_env=self._git_env,
+            tool_env=self._tool_env,
+        )
         try:
             self._proc = await asyncio.create_subprocess_exec(
                 *args,
@@ -308,7 +318,7 @@ class JunieBackend:
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(self._stand.path),
                 start_new_session=True,
-                env={**os.environ, **self._cache_env, **self._git_env, **self._tool_env},
+                env=env,
             )
         except Exception:
             self._cleanup_json_output()

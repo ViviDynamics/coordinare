@@ -24,6 +24,7 @@ import structlog
 from pathlib import Path
 
 from performer.backends._card_docs import card_docs_prompt_section
+from performer.backends._env_policy import build_subprocess_env
 from performer.backends.base import BackendStatus
 from performer.io_utils import iter_lines_chunked
 from performer.models import DIAGNOSTIC_ROLE, LOCAL_CAPTURE_RULE, BackendEvent, BackendEventType, Score, Stand
@@ -105,14 +106,15 @@ class OpenCodeAdapter:
         self._port = port
         self._workspace_dir = str(stand.path)
 
-        # 084: strip the env-cache PATH for the CLI launch. The env-cache
-        # prepends the project's .nvmrc node (e.g. 18.12.1) to PATH; a modern
-        # Node-based agent CLI crashes at startup under an older node. The CLI
-        # must run on the IMAGE's node; the agent's own `bash -lc` shells
-        # re-source activate.sh and still get the project toolchain. Keep every
-        # cache var EXCEPT PATH. Mirrors openclaw.py / pi.py.
-        _cache_env_for_cli = {k: v for k, v in stand.cache_env.items() if k != "PATH"}
-        env = {**os.environ, **_cache_env_for_cli, **stand.git_env, **score.tool_env}
+        # 088 B1 shared env policy: the CLI must launch on the IMAGE's node
+        # (the env-cache pins the project's .nvmrc node, e.g. 18.12.1, which
+        # crashes modern Node CLIs at startup). Image PATH first, cache
+        # toolchain dirs appended; every other cache var flows through.
+        env = build_subprocess_env(
+            cache_env=stand.cache_env,
+            git_env=stand.git_env,
+            tool_env=score.tool_env,
+        )
 
         # 077: opt-in custom OpenAI-compatible provider → LiteLLM. When
         # ``OPENCODE_PROVIDER_BASE_URL`` is set (the env prefix is keyed off

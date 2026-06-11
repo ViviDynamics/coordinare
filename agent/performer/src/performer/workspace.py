@@ -285,11 +285,22 @@ async def _activate_env_cache(env_cache_path: str) -> dict[str, str]:
 
     # Reference env: the same bash invocation without sourcing. Anything
     # unchanged between the two is a bash default we should NOT propagate.
+    #
+    # 087: the reference must NOT pay BASH_ENV/ENV. The container points
+    # BASH_ENV at the devenv profile, which exports LD_LIBRARY_PATH (captured-deb
+    # native libs) before sourcing activate.sh — in BOTH subprocesses. With the
+    # profile on both sides, everything it set cancelled out of the delta, so
+    # cache_env lacked LD_LIBRARY_PATH and snapshot-style agents (claude_code,
+    # which does not re-source per command) couldn't load native extensions
+    # (psych/libyaml → Rails wouldn't boot → no QA screenshots). Stripping
+    # BASH_ENV/ENV from the reference keeps profile-set vars in the delta.
+    ref_env = {k: v for k, v in os.environ.items() if k not in ("BASH_ENV", "ENV")}
     try:
         ref_proc = await asyncio.create_subprocess_exec(
             "bash", "-c", "env -0",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
+            env=ref_env,
         )
         ref_stdout, _ = await asyncio.wait_for(ref_proc.communicate(), timeout=10.0)
     except (OSError, asyncio.TimeoutError):
@@ -309,8 +320,16 @@ async def _activate_env_cache(env_cache_path: str) -> dict[str, str]:
 
     sourced = _parse(stdout)
     reference = _parse(ref_stdout)
+    # Never propagate: the profile's re-entry guard (injecting _DEVENV_SOURCED=1
+    # into an agent subprocess would SUPPRESS profile sourcing in backends whose
+    # shells re-source per command — openclaw/pi/codex would lose the toolchain),
+    # and the shell-bootstrap pointers themselves (only in the delta as an
+    # artifact of stripping them from the reference).
+    _never_propagate = {"_DEVENV_SOURCED", "BASH_ENV", "ENV"}
     delta: dict[str, str] = {}
     for k, v in sourced.items():
+        if k in _never_propagate:
+            continue
         if reference.get(k) != v:
             delta[k] = v
     log.info(

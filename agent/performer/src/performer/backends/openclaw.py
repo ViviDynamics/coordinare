@@ -44,6 +44,7 @@ from pathlib import Path
 import psutil
 import structlog
 
+from performer.backends._env_policy import build_subprocess_env
 from performer.backends.base import BackendStatus
 from performer.backends.opencode import _build_task_prompt
 from performer.models import BackendEvent, BackendEventType, Score, Stand
@@ -139,17 +140,16 @@ class OpenClawBackend:
         self._tool_env = score.tool_env
         self._model = (model or os.environ.get("OPENCLAW_MODEL", "")).strip() or None
 
-        # 077: do NOT let the env-cache's PATH (the project's pinned node, e.g.
-        # 18.12.1) become the interpreter the openclaw CLI launches under. openclaw
-        # is itself a Node app requiring Node >=22.19 and exits 1 at startup under
-        # an older node ("Node.js v22.19+ is required (current: v18.12.1)"). The CLI
-        # must run on the IMAGE's node (22); the agent's own shell commands still
-        # get the project toolchain because openclaw runs them as `bash -lc`, which
-        # sources /etc/profile.d/zz-devenv.sh -> activate.sh (+ BASH_ENV for
-        # non-login shells), re-prepending the project node per-command. So keep
-        # every env-cache var EXCEPT PATH for the CLI launch itself.
-        _cache_env_for_cli = {k: v for k, v in self._cache_env.items() if k != "PATH"}
-        env = {**os.environ, **_cache_env_for_cli, **self._git_env, **self._tool_env}
+        # 088 B1 shared env policy: the openclaw CLI is a Node app requiring
+        # Node >=22.19 — it must launch under the IMAGE's node, never the
+        # env-cache's project-pinned node (e.g. 18.12.1 → exits 1 at startup).
+        # Image PATH first, cache toolchain dirs appended (reachable, never
+        # shadowing); every other cache var flows through.
+        env = build_subprocess_env(
+            cache_env=self._cache_env,
+            git_env=self._git_env,
+            tool_env=self._tool_env,
+        )
 
         # 077 US6: opt-in custom OpenAI-compatible provider → LiteLLM. When
         # OPENCLAW_PROVIDER_BASE_URL is set, write ~/.openclaw/openclaw.json and

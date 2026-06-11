@@ -38,6 +38,7 @@ import psutil
 import structlog
 
 from performer.backends._card_docs import card_docs_prompt_section
+from performer.backends._env_policy import build_subprocess_env
 from performer.backends.base import BackendStatus
 from performer.io_utils import iter_lines_chunked
 from performer.models import DIAGNOSTIC_ROLE, BackendEvent, BackendEventType, Score, Stand
@@ -78,17 +79,16 @@ class PiBackend:
         max_tokens: int | None = None,
     ) -> None:
         """Write provider config and launch ``pi -p --mode json``."""
-        # 084: do NOT let the env-cache's PATH (the project's pinned node, e.g.
-        # 18.12.1 from a repo's .nvmrc) become the interpreter the pi CLI
-        # launches under. pi-tui uses the `v` (unicodeSets) regex flag, which
-        # crashes on Node < 20 ("Invalid regular expression flags") and exits 1
-        # at startup — blocking the card. The CLI must run on the IMAGE's node
-        # (22); the agent's own shell commands still get the project toolchain
-        # because pi runs them as `bash -lc`, which sources the env-cache's
-        # activate.sh (BASH_ENV). So keep every env-cache var EXCEPT PATH for
-        # the CLI launch itself. Mirrors openclaw.py's fix.
-        _cache_env_for_cli = {k: v for k, v in stand.cache_env.items() if k != "PATH"}
-        env = {**os.environ, **_cache_env_for_cli, **stand.git_env, **score.tool_env}
+        # 088 B1 shared env policy: pi-tui uses the `v` (unicodeSets) regex
+        # flag, which crashes on Node < 20 — the CLI must launch on the
+        # IMAGE's node (22), never the env-cache's project-pinned node (e.g.
+        # 18.12.1 from a repo's .nvmrc). Image PATH first, cache toolchain
+        # dirs appended; every other cache var flows through.
+        env = build_subprocess_env(
+            cache_env=stand.cache_env,
+            git_env=stand.git_env,
+            tool_env=score.tool_env,
+        )
         self._cwd = str(stand.path)
         self._model = model
         self._env = env
