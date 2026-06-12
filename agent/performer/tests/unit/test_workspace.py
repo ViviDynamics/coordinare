@@ -1026,30 +1026,56 @@ class TestServicesStartFailureVisibility:
         from performer.workspace import consume_services_start_failure
         consume_services_start_failure()  # drain any stored failure
 
+    @staticmethod
+    def _capture_error_events(
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> list[dict[str, object]]:
+        """Record ``log.error`` calls on the workspace module logger.
+
+        Monkeypatching the module-level logger directly (rather than using
+        ``structlog.testing.capture_logs``) keeps these assertions independent
+        of the process-global structlog configuration, which other test
+        modules reconfigure to a stdlib ``LoggerFactory`` — that reconfigure
+        otherwise leaks across collection order and silently breaks
+        ``capture_logs`` here.
+        """
+        import performer.workspace as ws
+
+        events: list[dict[str, object]] = []
+
+        class _RecordingLogger:
+            def error(self, event: str, **kwargs: object) -> None:
+                events.append({"event": event, "log_level": "error", **kwargs})
+
+            def __getattr__(self, _name: str):  # info/warning/debug -> no-op
+                return lambda *a, **k: None
+
+        monkeypatch.setattr(ws, "log", _RecordingLogger())
+        return events
+
     @pytest.mark.asyncio
     async def test_nonzero_exit_emits_error_event_and_stores_failure(
-        self, tmp_path: Path
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        import structlog.testing
         from performer.workspace import (
             _start_env_cache_services,
             consume_services_start_failure,
         )
         self._clear()
+        events = self._capture_error_events(monkeypatch)
         services = tmp_path / "services"
         services.mkdir()
         start = services / "services-start.sh"
         start.write_text("#!/usr/bin/env bash\necho boom >&2\nexit 17\n")
         start.chmod(0o755)
 
-        with structlog.testing.capture_logs() as cap_logs:
-            await _start_env_cache_services(str(tmp_path), {})
+        await _start_env_cache_services(str(tmp_path), {})
 
-        events = [
-            e for e in cap_logs if e["event"] == "env_cache.services_start_failed"
+        failed = [
+            e for e in events if e["event"] == "env_cache.services_start_failed"
         ]
-        assert len(events) == 1, f"expected one failed event, got {cap_logs}"
-        ev = events[0]
+        assert len(failed) == 1, f"expected one failed event, got {events}"
+        ev = failed[0]
         assert ev["log_level"] == "error"
         assert ev["script"] == str(start)
         assert ev["returncode"] == 17
@@ -1066,12 +1092,12 @@ class TestServicesStartFailureVisibility:
     async def test_timeout_emits_error_event_and_stores_failure(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        import structlog.testing
         from performer.workspace import (
             _start_env_cache_services,
             consume_services_start_failure,
         )
         self._clear()
+        events = self._capture_error_events(monkeypatch)
         services = tmp_path / "services"
         services.mkdir()
         start = services / "services-start.sh"
@@ -1085,14 +1111,13 @@ class TestServicesStartFailureVisibility:
 
         monkeypatch.setattr("performer.workspace.asyncio.wait_for", fake_wait_for)
 
-        with structlog.testing.capture_logs() as cap_logs:
-            await _start_env_cache_services(str(tmp_path), {})
+        await _start_env_cache_services(str(tmp_path), {})
 
-        events = [
-            e for e in cap_logs if e["event"] == "env_cache.services_start_failed"
+        failed = [
+            e for e in events if e["event"] == "env_cache.services_start_failed"
         ]
-        assert len(events) == 1, f"expected one failed event, got {cap_logs}"
-        ev = events[0]
+        assert len(failed) == 1, f"expected one failed event, got {events}"
+        ev = failed[0]
         assert ev["log_level"] == "error"
         assert ev["script"] == str(start)
         assert ev["returncode"] == "timeout"
