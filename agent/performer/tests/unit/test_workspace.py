@@ -1012,3 +1012,106 @@ class TestEnvCacheHealthCheck:
         # No services-health.sh present.
         await _start_env_cache_services(str(tmp_path), {})
         assert consume_env_cache_health_failure() is False
+
+
+class TestServicesStartFailureVisibility:
+    """088 US6 (FR-013): services-start failures are error-level structured
+    events (`env_cache.services_start_failed`) carrying script path,
+    returncode|timeout, output_tail — and the failure string is stored so the
+    QA flow can cite it as an environment blocker (joins environment_error)."""
+
+    def _clear(self) -> None:
+        import performer.workspace as ws
+        ws._ACTIVE_SERVICE_CACHES.clear()
+        from performer.workspace import consume_services_start_failure
+        consume_services_start_failure()  # drain any stored failure
+
+    @pytest.mark.asyncio
+    async def test_nonzero_exit_emits_error_event_and_stores_failure(
+        self, tmp_path: Path
+    ) -> None:
+        import structlog.testing
+        from performer.workspace import (
+            _start_env_cache_services,
+            consume_services_start_failure,
+        )
+        self._clear()
+        services = tmp_path / "services"
+        services.mkdir()
+        start = services / "services-start.sh"
+        start.write_text("#!/usr/bin/env bash\necho boom >&2\nexit 17\n")
+        start.chmod(0o755)
+
+        with structlog.testing.capture_logs() as cap_logs:
+            await _start_env_cache_services(str(tmp_path), {})
+
+        events = [
+            e for e in cap_logs if e["event"] == "env_cache.services_start_failed"
+        ]
+        assert len(events) == 1, f"expected one failed event, got {cap_logs}"
+        ev = events[0]
+        assert ev["log_level"] == "error"
+        assert ev["script"] == str(start)
+        assert ev["returncode"] == 17
+        assert "boom" in ev["output_tail"]
+
+        failure = consume_services_start_failure()
+        assert failure is not None
+        assert "services-start.sh" in failure
+        assert "17" in failure
+        # Single-shot: drained after consumption.
+        assert consume_services_start_failure() is None
+
+    @pytest.mark.asyncio
+    async def test_timeout_emits_error_event_and_stores_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import structlog.testing
+        from performer.workspace import (
+            _start_env_cache_services,
+            consume_services_start_failure,
+        )
+        self._clear()
+        services = tmp_path / "services"
+        services.mkdir()
+        start = services / "services-start.sh"
+        start.write_text("#!/usr/bin/env bash\nexit 0\n")
+        start.chmod(0o755)
+
+        async def fake_wait_for(awaitable: object, timeout: float) -> None:
+            if hasattr(awaitable, "close"):
+                awaitable.close()
+            raise TimeoutError()
+
+        monkeypatch.setattr("performer.workspace.asyncio.wait_for", fake_wait_for)
+
+        with structlog.testing.capture_logs() as cap_logs:
+            await _start_env_cache_services(str(tmp_path), {})
+
+        events = [
+            e for e in cap_logs if e["event"] == "env_cache.services_start_failed"
+        ]
+        assert len(events) == 1, f"expected one failed event, got {cap_logs}"
+        ev = events[0]
+        assert ev["log_level"] == "error"
+        assert ev["script"] == str(start)
+        assert ev["returncode"] == "timeout"
+
+        failure = consume_services_start_failure()
+        assert failure is not None
+        assert "timeout" in failure.lower()
+
+    @pytest.mark.asyncio
+    async def test_successful_start_stores_no_failure(self, tmp_path: Path) -> None:
+        from performer.workspace import (
+            _start_env_cache_services,
+            consume_services_start_failure,
+        )
+        self._clear()
+        services = tmp_path / "services"
+        services.mkdir()
+        start = services / "services-start.sh"
+        start.write_text("#!/usr/bin/env bash\nexit 0\n")
+        start.chmod(0o755)
+        await _start_env_cache_services(str(tmp_path), {})
+        assert consume_services_start_failure() is None

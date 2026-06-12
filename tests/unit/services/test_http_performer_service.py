@@ -551,6 +551,84 @@ async def test_check_status_terminal_with_mismatched_job_id() -> None:
     await svc.aclose()
 
 
+# ------------------- 088 US6 (FR-014): malformed job-result JSON -------------
+
+
+@pytest.mark.asyncio
+async def test_check_status_malformed_result_json_logs_parse_error() -> None:
+    """Unparseable job-result JSON emits
+    ``http_performer.job_result_malformed_json`` (warning) carrying the
+    performer id, the parse error, and summary[:200] — before falling back to
+    the existing generic-error mapping."""
+    import structlog.testing
+
+    bad_summary = '{"status": "qa_passed", "evidence": [truncated' + "x" * 300
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "job_id": "job-M",
+                "state": "failed",
+                "started_at": "2026-06-11T00:00:00Z",
+                "finished_at": "2026-06-11T00:01:00Z",
+                "result": {"success": False, "summary": bad_summary},
+            },
+        )
+
+    svc = HTTPPerformerService(_persistent_config(), client=_client(handler))
+    with structlog.testing.capture_logs() as cap_logs:
+        result = await svc.check_status("job-M")
+
+    events = [
+        e for e in cap_logs
+        if e["event"] == "http_performer.job_result_malformed_json"
+    ]
+    assert len(events) == 1, f"expected one malformed-json event, got {cap_logs}"
+    ev = events[0]
+    assert ev["log_level"] == "warning"
+    assert ev["performer_id"] == "perf-p1"
+    assert ev["parse_error"], "parse error detail must be carried"
+    assert ev["summary"] == bad_summary[:200]
+
+    # Existing generic-error mapping is unchanged.
+    assert result["status"] == "error"
+    assert result["reason"] == bad_summary
+    await svc.aclose()
+
+
+@pytest.mark.asyncio
+async def test_check_status_valid_result_json_does_not_log_malformed() -> None:
+    """A well-formed JSON summary must not trigger the malformed-json event."""
+    import structlog.testing
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "job_id": "job-V",
+                "state": "succeeded",
+                "started_at": "2026-06-11T00:00:00Z",
+                "finished_at": "2026-06-11T00:01:00Z",
+                "result": {
+                    "success": True,
+                    "summary": '{"status": "pr_opened", "pr_url": "https://x/pr/1"}',
+                },
+            },
+        )
+
+    svc = HTTPPerformerService(_persistent_config(), client=_client(handler))
+    with structlog.testing.capture_logs() as cap_logs:
+        result = await svc.check_status("job-V")
+
+    assert not [
+        e for e in cap_logs
+        if e["event"] == "http_performer.job_result_malformed_json"
+    ]
+    assert result["status"] == "pr_opened"
+    await svc.aclose()
+
+
 # ---------------------------- workspace with github_token --------------------
 
 

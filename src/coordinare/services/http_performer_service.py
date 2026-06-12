@@ -23,6 +23,7 @@ import contextlib
 import json
 import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -118,6 +119,9 @@ class HTTPPerformerService:
         # Serialise concurrent dispatch_card calls: a performer registered in
         # multiple stage pools (multi-role config) must not accept two jobs at once.
         self._dispatch_lock = asyncio.Lock()
+        # 088 US6 (FR-012): sessions whose secret refresh degraded (PATCH
+        # failed twice in a row) — session_id → time of the second failure.
+        self._secret_refresh_failed: dict[str, datetime] = {}
         # Rolling buffer of container stdout+stderr lines for the active job,
         # refreshed every ~5 s by _poll_container_logs(). Readable via get_agent_logs().
         self._log_buffer: list[str] = []
@@ -391,6 +395,14 @@ class HTTPPerformerService:
             "container_id": ephemeral_job.container_id if ephemeral_job is not None else None,
         }
 
+    def secret_refresh_failed_at(self, session_id: str) -> datetime | None:
+        """088 US6 (FR-012): when a refreshed-secret PATCH failed twice in a
+        row for this session, return the time of the second failure so
+        monitor_performer can attribute a later auth failure to stale
+        credentials. ``None`` means the session's secrets are not degraded.
+        """
+        return self._secret_refresh_failed.get(session_id)
+
     async def check_status(
         self,
         session_id: str,
@@ -418,17 +430,33 @@ class HTTPPerformerService:
         if payload:
             refreshed_token = payload.get("github_token")
             if refreshed_token:
-                try:
-                    await client.update_job_secrets(
-                        url_job_id, {"github_token": refreshed_token}
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "http_performer.secret_refresh_failed",
-                        performer_id=self._config.id,
-                        session_id=session_id,
-                        exc_type=type(exc).__name__,
-                    )
+                # 088 US6 (FR-012): retry once immediately on failure; a
+                # second failure marks the session degraded so
+                # monitor_performer can attribute later auth failures to
+                # stale credentials instead of a generic system error.
+                for attempt in (1, 2):
+                    try:
+                        await client.update_job_secrets(
+                            url_job_id, {"github_token": refreshed_token}
+                        )
+                        self._secret_refresh_failed.pop(session_id, None)
+                        break
+                    except Exception as exc:
+                        if attempt == 1:
+                            logger.warning(
+                                "http_performer.secret_refresh_failed",
+                                performer_id=self._config.id,
+                                session_id=session_id,
+                                exc_type=type(exc).__name__,
+                            )
+                            continue
+                        self._secret_refresh_failed[session_id] = datetime.now(UTC)
+                        logger.error(
+                            "http_performer.secret_refresh_degraded",
+                            performer_id=self._config.id,
+                            session_id=session_id,
+                            exc_type=type(exc).__name__,
+                        )
         try:
             status = await client.get_job(url_job_id)
         except (PerformerAuthError, PerformerUnreachableError, TransportError):
@@ -475,8 +503,17 @@ class HTTPPerformerService:
                     parsed["state"] = status.state
                 self._log_upstream_http_error(parsed)
                 return parsed
-            except (json.JSONDecodeError, ValueError):
-                pass
+            except (json.JSONDecodeError, ValueError) as exc:
+                # 088 US6 (FR-014): surface the parse failure before mapping
+                # to a generic error so operators can see why the verdict
+                # could not be read from the performer's summary.
+                logger.warning(
+                    "http_performer.job_result_malformed_json",
+                    performer_id=self._config.id,
+                    session_id=session_id,
+                    parse_error=str(exc),
+                    summary=status.result.summary[:200],
+                )
             # Plain-text summary fallback: always "error" so monitor_performer can
             # terminate the session (it doesn't recognise plain-text responses).
             return {"status": "error", "reason": status.result.summary, "state": status.state}

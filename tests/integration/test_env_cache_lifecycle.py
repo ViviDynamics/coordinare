@@ -10,7 +10,7 @@ operations (tmp_path) and mocked GitHub/dispatch. Covers:
   5. get_env_volume_for_symphony() — ro mount for regular performers
   6. get_env_volume_for_symphony() — rw mount for bootstrap performers
   7. Pending-SHA queueing — second change while in-flight is queued, not lost
-  8. Bootstrap failure — SHA cleared so next cycle retries
+  8. Bootstrap failure — SHA retained (088 FR-009); retry gated by cooldown
   9. Dashboard global config API — env_cache_root exposed and editable
 """
 
@@ -45,6 +45,7 @@ def _make_coordinare_config(symphony_name: str, cache_root: Path, performer_id: 
     global_cfg = MagicMock()
     global_cfg.env_cache_root = cache_root
     global_cfg.github_org = "myorg"
+    global_cfg.env_bootstrap_max_attempts = 3
 
     sym = MagicMock()
     sym.name = symphony_name
@@ -213,13 +214,15 @@ async def test_pending_sha_queued_while_bootstrap_in_flight(tmp_path: Path) -> N
 
 
 # ---------------------------------------------------------------------------
-# Scenario 8: Bootstrap failure clears SHA for retry
+# Scenario 8: Bootstrap failure keeps SHA; retry gated by cooldown (088 FR-009)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_bootstrap_failure_clears_sha_for_retry(tmp_path: Path) -> None:
-    """A failed bootstrap clears readme_sha so the next cycle retries."""
+async def test_bootstrap_failure_keeps_sha_and_gates_retry(tmp_path: Path) -> None:
+    """088 FR-009: a failed bootstrap keeps readme_sha (no re-fetch hammering);
+    the retry is tracked via bootstrap_attempts and gated by the escalating
+    cooldown, so an immediate next cycle does NOT redispatch."""
     sym_name = "failing-project"
     coordinare_cfg, sym_cfg = _make_coordinare_config(sym_name, tmp_path)
     svc = EnvCacheService(coordinare_cfg)
@@ -241,17 +244,23 @@ async def test_bootstrap_failure_clears_sha_for_retry(tmp_path: Path) -> None:
     dispatch_fn.reset_mock()
     await svc.check_and_trigger(sym_name, sym_cfg, github, full_state, dispatch_fn)
     assert state.bootstrap_in_flight is True
+    sha_v2 = state.readme_sha
+    assert sha_v2 is not None
 
     svc.on_bootstrap_complete(sym_name, success=False, state=full_state)
     assert state.bootstrap_in_flight is False
     assert state.last_bootstrap_succeeded is False
-    # SHA cleared so next cycle fetches fresh and retries.
-    assert state.readme_sha is None
+    # 088 FR-009: SHA retained — failure no longer clears it.
+    assert state.readme_sha == sha_v2
+    # Attempt budget tracked; one failure does not exhaust the breaker.
+    assert state.bootstrap_attempts == 1
+    assert state.bootstrap_exhausted is False
 
-    # Next cycle: same sha-v2 still different from None → dispatches again.
+    # Immediate next cycle: retry cooldown has not elapsed → no redispatch.
     dispatch_fn.reset_mock()
     await svc.check_and_trigger(sym_name, sym_cfg, github, full_state, dispatch_fn)
-    dispatch_fn.assert_called_once()
+    dispatch_fn.assert_not_called()
+    assert state.bootstrap_in_flight is False
 
 
 # ---------------------------------------------------------------------------

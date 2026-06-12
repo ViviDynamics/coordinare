@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import re
@@ -61,6 +62,26 @@ def sanitise_symphony_name(name: str) -> str:
         slug = "symphony"
     suffix = hashlib.sha1(name.encode()).hexdigest()[:6]
     return f"{slug}-{suffix}"
+
+
+def bootstrap_hold_detail(cache_state: EnvCacheState) -> str:
+    """088 (FR-010): human-readable reason a consumer dispatch is held.
+
+    Names the exhausted circuit breaker explicitly (with the attempt count and
+    last error) so an operator reading the hold log knows the system has
+    STOPPED retrying and why — instead of a generic 'waiting for bootstrap'."""
+    if cache_state.bootstrap_exhausted:
+        last_error = (cache_state.last_bootstrap_error or "unknown failure").strip()
+        return (
+            f"Env bootstrap budget exhausted after {cache_state.bootstrap_attempts} "
+            f"failed attempt(s) — no further bootstraps will be dispatched for this "
+            f"spec. Last failure: {last_error}. Fix the env spec files (a SHA change "
+            f"resets the budget) or repair the cache and restart."
+        )
+    return (
+        "Holding dispatch until env_bootstrap has SUCCESSFULLY completed for "
+        "the current spec. Card retries on the next pickup cycle."
+    )
 
 
 def _cache_dir_has_activate(cache_dir: Path) -> bool:
@@ -157,6 +178,15 @@ class EnvCacheService:
 
     def __init__(self, coordinare_config: Any) -> None:
         self._coordinare_config = coordinare_config
+        # 088: strong refs to in-flight exhaustion-notification tasks (prevents GC).
+        self._notify_tasks: set[asyncio.Task[Any]] = set()
+        # 088 (US5): symphonies whose cache has been verified (or freshly
+        # bootstrapped) IN THIS PROCESS.  Per-process by design: an empty set
+        # means a fresh coordinare boot, which is exactly when a persisted
+        # last_bootstrap_succeeded=True must be re-verified (clean-room
+        # verify.sh) instead of blindly trusted — trusting the snapshot alone
+        # would re-open the phantom-success hole 23dd839 closed.
+        self._restart_verified: set[str] = set()
 
     async def initialise(
         self,
@@ -293,6 +323,8 @@ class EnvCacheService:
         dispatch_fn: Callable[[str, BootstrapJobPayload], Coroutine[Any, Any, None]],
         container_devenv_root: str = DEFAULT_DEVENV_ROOT,
         llm_chat: ChatJson | None = None,
+        clean_verify_fn: Callable[[str], Coroutine[Any, Any, tuple[bool | None, str]]]
+        | None = None,
     ) -> None:
         """Check for README SHA changes and dispatch bootstrap if needed.
 
@@ -301,6 +333,13 @@ class EnvCacheService:
         ``llm_chat`` (optional) is wired by the daemon to the coordinare's LLM and
         used for the best-effort README pass that augments the deterministic
         manifest with system packages described only in prose.
+
+        ``clean_verify_fn`` (optional, 088 US5) runs the cache's verify.sh in a
+        clean consumer-context container and returns ``(passed, detail)`` —
+        ``None`` when un-runnable.  On the first cycle after a coordinare
+        restart, a persisted successful bootstrap with an unchanged spec SHA is
+        re-verified through it instead of re-bootstrapped (SC-004: ready in
+        <2 min) or blindly trusted.
         """
         if symphony_config.env_bootstrap_performer_id is None:
             return
@@ -319,7 +358,13 @@ class EnvCacheService:
         # 063 Phase 4 (T024): runtime health failure flag → forced regen.
         # Bypass the cache_inputs key entirely so the next bootstrap rebuilds
         # the cache and re-runs inference against a fresh agent pass.
-        if cache_state.runtime_health_failed and not cache_state.bootstrap_in_flight:
+        # 088 (FR-009): the circuit breaker gates forced regens too — a broken
+        # runtime that keeps failing its bootstrap must not bypass the budget.
+        if (
+            cache_state.runtime_health_failed
+            and not cache_state.bootstrap_in_flight
+            and not cache_state.bootstrap_exhausted
+        ):
             prior = load_prior_manifest(cache_state.cache_dir)
             agent_version = prior.agent_version if prior is not None else "no-prior-manifest"
             forced_sha = forced_regen_cache_key(agent_version)
@@ -374,20 +419,50 @@ class EnvCacheService:
         # needed) so consumer dispatch can gate on "cache matches current spec".
         cache_state.last_seen_spec_sha = current_sha
 
+        # 088 (FR-010): a spec change resets the circuit-breaker budget — fixing
+        # the README/Gemfile is the designed self-healing path. The budget is
+        # keyed by readme_sha (the SHA the attempts accumulated under).
+        if (
+            (cache_state.bootstrap_attempts or cache_state.bootstrap_exhausted)
+            and cache_state.readme_sha is not None
+            and current_sha != cache_state.readme_sha
+        ):
+            logger.info(
+                "env_cache.bootstrap_budget_reset",
+                symphony=symphony_name,
+                previous_attempts=cache_state.bootstrap_attempts,
+                was_exhausted=cache_state.bootstrap_exhausted,
+                new_sha=current_sha,
+            )
+            cache_state.bootstrap_attempts = 0
+            cache_state.bootstrap_exhausted = False
+
+        # 088 (FR-009): tripped breaker — no further dispatch for this spec SHA.
+        # The (rate-limited implicit) exhaustion was announced once when the
+        # breaker tripped; staying silent here avoids a log line per poll cycle.
+        if cache_state.bootstrap_exhausted:
+            return
+
         needs_bootstrap = cache_state.readme_sha is None or current_sha != cache_state.readme_sha
 
         # 077: break the failed-bootstrap deadlock.  readme_sha is set
         # optimistically at dispatch time (and persisted in the snapshot), so a
-        # bootstrap that FAILED can leave readme_sha == current_sha while
+        # bootstrap that FAILED leaves readme_sha == current_sha while
         # last_bootstrap_succeeded is False.  Without this, needs_bootstrap stays
         # False forever, the consumer-gate holds indefinitely, and the only way
         # to recover is a manual trigger.  Retry on failure, but honour a
         # cooldown so we don't relaunch a container every poll cycle.
+        # 088 (FR-009): the cooldown escalates with the attempt count
+        # (base x 2^attempts) so consecutive failures back off instead of
+        # hammering a fresh container every ~cooldown.
         if not needs_bootstrap and cache_state.last_bootstrap_succeeded is False:
             last_at = cache_state.last_bootstrap_at
+            retry_cooldown = BOOTSTRAP_RETRY_COOLDOWN_S * (
+                2 ** cache_state.bootstrap_attempts
+            )
             cooldown_elapsed = (
                 last_at is None
-                or (datetime.now(UTC) - last_at).total_seconds() >= BOOTSTRAP_RETRY_COOLDOWN_S
+                or (datetime.now(UTC) - last_at).total_seconds() >= retry_cooldown
             )
             if cooldown_elapsed:
                 needs_bootstrap = True
@@ -435,6 +510,42 @@ class EnvCacheService:
                             "is absent on disk — re-bootstrapping to repopulate."
                         ),
                     )
+
+        # 088 (US5): restart honor path — a persisted successful bootstrap with
+        # an unchanged spec SHA is re-VERIFIED (clean-room verify.sh) on the
+        # first cycle of a fresh boot, not re-bootstrapped and not blindly
+        # trusted.  Verify pass ⇒ ready; fail ⇒ full bootstrap immediately (no
+        # cooldown — the failure is fresh evidence, not a flaky retry); verify
+        # un-runnable (None) ⇒ trust the persisted success (degraded).
+        if (
+            not needs_bootstrap
+            and cache_state.last_bootstrap_succeeded is True
+            and clean_verify_fn is not None
+            and symphony_name not in self._restart_verified
+        ):
+            self._restart_verified.add(symphony_name)
+            passed, detail = await clean_verify_fn(symphony_name)
+            if passed is True:
+                cache_state.cache_dir_ready = True
+                logger.info(
+                    "env_cache.restart_verify_passed", symphony=symphony_name
+                )
+            elif passed is False:
+                logger.warning(
+                    "env_cache.restart_verify_failed",
+                    symphony=symphony_name,
+                    detail=detail,
+                )
+                cache_state.last_bootstrap_succeeded = False
+                cache_state.cache_dir_ready = False
+                cache_state.last_bootstrap_error = f"restart verify failed: {detail}"
+                needs_bootstrap = True
+            else:
+                logger.info(
+                    "env_cache.restart_verify_degraded",
+                    symphony=symphony_name,
+                    detail=detail,
+                )
 
         if not needs_bootstrap:
             return
@@ -698,6 +809,58 @@ class EnvCacheService:
             services=services,
         )
 
+    def _notify_bootstrap_exhausted(
+        self,
+        symphony_name: str,
+        cache_state: EnvCacheState,
+        state: dict[str, Any],
+    ) -> None:
+        """088 (FR-009): fire exactly one circuit_breaker_trip notification when
+        the bootstrap budget is exhausted.
+
+        Called only on the False→True ``bootstrap_exhausted`` transition (the
+        caller guards it), so 'exactly once' per exhaustion event holds; the
+        flag is persisted, so a restart does not re-notify. Dispatch is
+        scheduled as a task because this runs inside the daemon's event loop
+        from a sync completion handler."""
+        notification_service = state.get("notification_service")
+        if notification_service is None:
+            return
+        from coordinare.models.notification import (
+            EventType,
+            NotificationEvent,
+            NotificationSeverity,
+        )
+
+        event = NotificationEvent(
+            event_type=EventType.circuit_breaker_trip,
+            severity=NotificationSeverity.warning,
+            payload={
+                "summary": (
+                    f"🔌 Env bootstrap for '{symphony_name}' exhausted its "
+                    f"{cache_state.bootstrap_attempts}-attempt budget — no further "
+                    f"bootstraps until the env spec changes."
+                ),
+                "symphony": symphony_name,
+                "attempts": str(cache_state.bootstrap_attempts),
+                "last_error": str(cache_state.last_bootstrap_error or ""),
+            },
+            source="env_cache",
+            dedup_key=f"bootstrap_exhausted:{symphony_name}:{cache_state.readme_sha}",
+        )
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            logger.warning(
+                "env_cache.bootstrap_exhausted_notify_skipped",
+                symphony=symphony_name,
+                detail="no running event loop to dispatch the notification",
+            )
+            return
+        task = loop.create_task(notification_service.dispatch(event))
+        self._notify_tasks.add(task)
+        task.add_done_callback(self._notify_tasks.discard)
+
     def on_bootstrap_complete(
         self,
         symphony_name: str,
@@ -727,14 +890,42 @@ class EnvCacheService:
         # which prevents performers from mounting an unpopulated cache dir.
         if success:
             cache_state.cache_dir_ready = True
+            # 088 (FR-009): success re-arms the circuit breaker.
+            cache_state.bootstrap_attempts = 0
+            cache_state.bootstrap_exhausted = False
+            # 088 (US5): an in-process success was already clean-verified by the
+            # completion path — the restart honor verify must not re-fire.
+            self._restart_verified.add(symphony_name)
 
-        # On failure, clear the recorded SHA so the next cycle sees a mismatch
-        # and retries the bootstrap rather than leaving the cache poisoned.
-        # cache_dir_ready is intentionally NOT cleared on failure: if a prior
-        # bootstrap succeeded, the existing cache is still usable by consumers
-        # while we retry. Only an explicit success flips the gate on.
+        # 088 (FR-009): on failure, KEEP the recorded SHA. Clearing it (the
+        # pre-088 behaviour) made the next cycle recompute needs_bootstrap=True
+        # and redispatch immediately — the observed unbounded ~100s hammering.
+        # With the SHA retained, retries flow through check_and_trigger's
+        # escalating-cooldown branch (readme_sha == current ∧ succeeded=False),
+        # and the consumer gate still holds (last_bootstrap_succeeded=False).
         if not success:
-            cache_state.readme_sha = None
+            cache_state.bootstrap_attempts += 1
+            max_attempts = int(
+                getattr(
+                    getattr(self._coordinare_config, "global_config", None),
+                    "env_bootstrap_max_attempts",
+                    3,
+                )
+                or 3
+            )
+            if (
+                cache_state.bootstrap_attempts >= max_attempts
+                and not cache_state.bootstrap_exhausted
+            ):
+                cache_state.bootstrap_exhausted = True
+                logger.warning(
+                    "env_cache.bootstrap_exhausted",
+                    symphony=symphony_name,
+                    attempts=cache_state.bootstrap_attempts,
+                    max_attempts=max_attempts,
+                    last_error=cache_state.last_bootstrap_error,
+                )
+                self._notify_bootstrap_exhausted(symphony_name, cache_state, state)
 
         logger.info(
             "env_cache.bootstrap_complete",
@@ -756,3 +947,19 @@ class EnvCacheService:
                     symphony=symphony_name,
                     pending_sha=pending,
                 )
+
+        # 088 (US5): flush the completion to disk NOW — it moves no lifecycle
+        # signature, so the daemon's signature-gated save would defer it to the
+        # next stage transition and a restart in that window would rewind it.
+        save_fn = state.get("snapshot_save_fn")
+        if callable(save_fn):
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                logger.warning(
+                    "env_cache.snapshot_flush_skipped", symphony=symphony_name
+                )
+            else:
+                task = loop.create_task(save_fn())
+                self._notify_tasks.add(task)
+                task.add_done_callback(self._notify_tasks.discard)

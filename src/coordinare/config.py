@@ -931,6 +931,11 @@ class ProjectConfiguration(BaseSettings):
     # effective_config() — there is no architectural need for another indirection.
     env_cache_root: Path = Path("~/.coordinare/env-caches/")
 
+    # 088 (FR-009): bootstrap circuit breaker — consecutive failed bootstrap
+    # attempts allowed per spec SHA before the breaker trips
+    # (bootstrap_exhausted) and dispatch stops until the spec changes.
+    env_bootstrap_max_attempts: int = Field(default=3, ge=1, le=20)
+
     # 063 — LLM-driven service inference for env-cache bootstrap.
     env_cache: EnvCacheConfig = Field(default_factory=lambda: EnvCacheConfig())
 

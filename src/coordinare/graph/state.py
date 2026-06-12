@@ -230,6 +230,12 @@ class CoordinareState(TypedDict, total=False):
     # EnvCacheService instance — declared here so LangGraph preserves it across
     # graph.ainvoke() cycles (unknown keys are dropped during state merge).
     env_cache_service: Any
+    # 088 (US5): async callable the daemon wires to an immediate state-store
+    # save.  Bootstrap completion changes no lifecycle signature, so without an
+    # explicit flush a recorded success only reaches disk on the NEXT stage
+    # transition — a restart in that window loads last_bootstrap_succeeded=False
+    # and re-runs a full bootstrap for nothing.
+    snapshot_save_fn: Any
     # Performer service registry, keyed by performer id — same reason as above.
     performer_services_by_id: dict[str, Any]
 

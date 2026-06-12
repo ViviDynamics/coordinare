@@ -33,6 +33,7 @@ PerformerStatusType = Literal[
     "security_failed",
     "qa_passed",
     "qa_failed",
+    "qa_env_blocked",
     "docs_committed",
     "env_bootstrap_complete",
     "assessment_complete",
@@ -59,6 +60,9 @@ FAILURE_STATUSES: frozenset[str] = frozenset({
     "changes_requested",
     "security_failed",
     "qa_failed",
+    # 088: env-blocked QA is terminal non-success — the job did not verify
+    # anything; coordinare holds the card and repairs the environment.
+    "qa_env_blocked",
 })
 
 

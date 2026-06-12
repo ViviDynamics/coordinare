@@ -149,3 +149,41 @@ async def test_clean_verify_fails_on_nonzero_exit(tmp_path, monkeypatch) -> None
     _res, _detail = await daemon._verify_env_cache_clean("sym", svc)
     assert _res is False
     assert isinstance(_detail, str)
+
+
+# ---------------------------------------------------------------------------
+# 088 US5 (T027): bootstrap completion must flush the snapshot to disk
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_bootstrap_completion_flushes_snapshot_to_disk(tmp_path) -> None:
+    """088 US5: the daemon only saves when `_lifecycle_signature()` changes, and
+    a bootstrap completing changes no phase/card/stage — so a success recorded
+    in memory never reached disk and a restart loaded
+    last_bootstrap_succeeded=False (observed: success 16:16:52, restart 17:55).
+    `on_bootstrap_complete` must trigger an immediate state-store save."""
+    import asyncio
+    from unittest.mock import MagicMock
+
+    from coordinare.services.env_cache import EnvCacheService
+    from coordinare.state_store import StateStore
+
+    store = StateStore(tmp_path / "state.json", MagicMock())
+    daemon = CoordinareDaemon(
+        AsyncMock(), max_cycles=1, sleep_func=AsyncMock(), state_store=store
+    )
+    cache = tmp_path / "sym"
+    cache.mkdir()
+    daemon._state["env_cache"] = {"sym": _ec_state(cache)}
+
+    svc = EnvCacheService(
+        SimpleNamespace(global_config=SimpleNamespace(env_bootstrap_max_attempts=3))
+    )
+    svc.on_bootstrap_complete("sym", success=True, state=daemon._state)
+    # Drain the flush task scheduled by the completion handler.
+    pending = set(svc._notify_tasks)
+    if pending:
+        await asyncio.gather(*pending)
+
+    snap = await store.load()
+    assert snap is not None, "completion handler never flushed a snapshot to disk"
+    assert snap.env_cache["sym"].last_bootstrap_succeeded is True

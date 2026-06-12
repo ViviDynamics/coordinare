@@ -26,6 +26,7 @@ from coordinare.services.pr_checks_policy import decide
 from coordinare.services.pr_checks_service import PrChecksService
 from coordinare.services.required_checks_resolver import resolve
 from coordinare.transport.base import TransportError
+from coordinare.transport.http_transport import PerformerAuthError
 
 if TYPE_CHECKING:
     from coordinare.graph.state import CoordinareState
@@ -65,7 +66,7 @@ ZERO_PROGRESS_REVIEW_STAGES: frozenset[str] = frozenset(
 # recording on ``head_at_last_turn``. Mirrors the slot-release allowlist so
 # new non-terminal markers cannot accidentally trip the audit-trail write.
 _TERMINAL_MARKERS_FOR_HEAD: frozenset[str] = TERMINAL_SUCCESS_STATES | frozenset({
-    "changes_requested", "security_failed", "qa_failed",
+    "changes_requested", "security_failed", "qa_failed", "qa_env_blocked",
     "error", "blocked", "session_expired", "token_limit",
     "partial_progress",
 })
@@ -1646,6 +1647,45 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
         try:
             status = await service.check_status(str(session_id), payload=status_payload)
         except (TransportError, ConnectionError, TimeoutError) as exc:
+            # 088 US6 (FR-012): an auth-class failure on a session whose
+            # secret refresh already degraded is attributable — the performer
+            # is rejecting stale credentials, not flaking. Route to blocked
+            # with the structured reason instead of burning the generic
+            # system-error retry budget.
+            if isinstance(exc, PerformerAuthError):
+                _refresh_failed_at = getattr(service, "secret_refresh_failed_at", None)
+                failed_at = (
+                    _refresh_failed_at(str(session_id))
+                    if callable(_refresh_failed_at)
+                    else None
+                )
+                if failed_at is not None:
+                    reason = (
+                        f"Performer auth failure attributed to stale credentials "
+                        f"(refresh failed at {failed_at.isoformat()}): {exc}"
+                    )
+                    logger.error(
+                        "monitor_performer.stale_credentials_blocked",
+                        card_id=card_id,
+                        performer_stage=stage,
+                        secret_refresh_failed_at=failed_at.isoformat(),
+                        error=str(exc),
+                    )
+                    if github is not None:
+                        try:
+                            await github.move_card(card_id, "BLOCKED")
+                        except Exception:
+                            logger.warning(
+                                "move_card_to_blocked_failed", card_id=card_id
+                            )
+                    state["phase"] = "blocked"
+                    state["open_questions"] = [reason]
+                    state["agent_dispatch"] = {}
+                    state["agent_dispatch_at"] = None
+                    _sm = state.get("slot_manager")
+                    if _sm is not None and hasattr(_sm, "release"):
+                        _sm.release(stage, card_id)
+                    return state
             # Network / transport failure — transient, route through retry logic.
             # ResilientAgentService re-raises TransportError after exhausting
             # retries; ConnectionError/TimeoutError cover bare transport errors.
@@ -2018,7 +2058,7 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
         # any branching because non-success paths (changes_requested,
         # security_failed, qa_failed, error) return early.
         _terminal_markers = TERMINAL_SUCCESS_STATES | {
-            "changes_requested", "security_failed", "qa_failed",
+            "changes_requested", "security_failed", "qa_failed", "qa_env_blocked",
             "error", "blocked", "session_expired", "token_limit",
             "partial_progress",
         }
@@ -2027,8 +2067,60 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
             if _slot_mgr is not None and hasattr(_slot_mgr, "release"):
                 _slot_mgr.release(stage, card_id)
 
+        # --- 088 (FR-002/FR-003): QA environment-blocked — terminal non-success ---
+        # The QA run claimed a pass it could not evidence because the container
+        # environment was broken. There is no code defect to fix, so the card
+        # must neither advance nor enter the fix-feedback cycle: hold it on the
+        # SAME stage (the env-cache dispatch gate defers it until the cache is
+        # repaired) and route the symphony to the forced re-verify machinery.
+        if marker == "qa_env_blocked":
+            _reason = str(status.get("reason") or "").strip() or (
+                "QA reported an environment blocker with zero execution evidence"
+            )
+            logger.warning(
+                "monitor_performer.qa_env_blocked",
+                performer_stage=stage,
+                card_id=card_id,
+                reason=_reason,
+            )
+            _env_cache_svc = state.get("env_cache_service")
+            _sym_name = state.get("current_symphony")
+            if _env_cache_svc is not None and _sym_name:
+                try:
+                    _env_cache_svc.mark_runtime_health_failed(_sym_name, state)
+                except Exception as _exc:
+                    logger.warning(
+                        "monitor_performer.qa_env_blocked_mark_failed",
+                        card_id=card_id,
+                        symphony=_sym_name,
+                        error=str(_exc),
+                    )
+            state["env_health_hold_reason"] = f"qa_env_blocked: {_reason}"  # type: ignore[typeddict-unknown-key]
+            state["phase"] = "dispatching"
+            state["agent_dispatch"] = {}
+            state["agent_dispatch_at"] = None
+            return state
+
         # --- Terminal success states ---
         if marker in TERMINAL_SUCCESS_STATES:
+            # 088 (FR-004): a terminal success whose own status payload carries
+            # env_cache_health_failed is tainted — the services health check
+            # failed in the very environment that produced the "success". The
+            # flag already routed mark_runtime_health_failed above (063 wiring);
+            # here it must also stop the advancement so the stage re-runs once
+            # the cache is repaired.
+            if status.get("env_cache_health_failed"):
+                logger.warning(
+                    "monitor_performer.terminal_success_env_health_failed",
+                    performer_stage=stage,
+                    card_id=card_id,
+                    marker=marker,
+                )
+                state["env_health_hold_reason"] = "terminal_success_env_health_failed"  # type: ignore[typeddict-unknown-key]
+                state["phase"] = "dispatching"
+                state["agent_dispatch"] = {}
+                state["agent_dispatch_at"] = None
+                return state
             # 075: implementer CI gate runs at implementer→reviewer boundary
             # before stage advancement.  If the gate stops (bounce/hold/
             # escalate), apply updates and return without advancing.
