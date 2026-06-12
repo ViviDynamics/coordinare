@@ -174,7 +174,7 @@
 - [X] T041 [P] Verify contract registries match the implementation: every field/status in specs/088-qa-verdict-integrity/contracts/qa-evidence-result.md and contracts/env-cache-state.md exists with the documented type/default at the listed sites (main.py, monitor_performer.py, state_store.py)
 - [X] T042 [P] Run full CI-mirror gates: `.venv/bin/ruff check src tests agent`; `.venv/bin/pytest --cov=coordinare --cov-report=term-missing --cov-fail-under=90 -q`; `.venv/bin/pytest agent/performer/tests/ -q --ignore=agent/performer/tests/integration` — coverage must not regress vs the T001 baseline
 - [X] T043 Execute quickstart.md unit-level validation blocks (Cluster A `-k` selections incl. `pr159_replay`, Cluster B conformance, coordinare-side suite) from specs/088-qa-verdict-integrity/quickstart.md
-- [ ] T044 Deployment per quickstart.md order: merge + restart coordinare FIRST (qa_env_blocked handling, circuit breaker, restart-resume), then rebuild performer images (`coordinare-performer:base` then `:full`) so new spawns pick up the verdict changes
+- [X] T044 Deployment per quickstart.md order: merge + restart coordinare FIRST (qa_env_blocked handling, circuit breaker, restart-resume), then rebuild performer images (`coordinare-performer:base` then `:full`) so new spawns pick up the verdict changes
 
 ---
 
