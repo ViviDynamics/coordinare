@@ -33,6 +33,15 @@ class EnvCacheState(BaseModel):
     last_bootstrap_error: str | None = None
     cache_dir_ready: bool = False
 
+    # 088 (FR-009/FR-010): bootstrap circuit breaker. ``bootstrap_attempts``
+    # counts consecutive failures for the current spec SHA; reset on success
+    # and on SHA change. ``bootstrap_exhausted`` is the terminal breaker state:
+    # dispatch stops, consumer holds name the exhaustion, and only a SHA change
+    # (spec fix) or a successful bootstrap re-arms it. Both persist in the
+    # snapshot so a restart does not hand out a fresh budget.
+    bootstrap_attempts: int = 0
+    bootstrap_exhausted: bool = False
+
     # 063 Phase 4 (T024): set by EnvCacheService.mark_runtime_health_failed when
     # a performer reports a non-zero services-health.sh exit. Causes the next
     # check_and_trigger cycle to dispatch a forced regeneration that bypasses

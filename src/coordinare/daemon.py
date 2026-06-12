@@ -198,6 +198,8 @@ def _persist_env_cache(env_cache: dict[str, Any]) -> dict[str, EnvCacheStateSnap
             last_bootstrap_at=get("last_bootstrap_at"),
             last_bootstrap_succeeded=get("last_bootstrap_succeeded"),
             cache_dir_ready=bool(get("cache_dir_ready") or False),
+            bootstrap_attempts=int(get("bootstrap_attempts") or 0),
+            bootstrap_exhausted=bool(get("bootstrap_exhausted") or False),
         )
     return out
 
@@ -448,6 +450,12 @@ class CoordinareDaemon:
         self._config_reload_trigger: asyncio.Event = asyncio.Event()
         # 060: References to in-flight bootstrap poll tasks (prevents GC).
         self._bootstrap_poll_tasks: set[asyncio.Task[None]] = set()
+        # 088 (US5): completion handlers (env-cache bootstrap) flush the
+        # snapshot immediately — a bootstrap finishing moves no lifecycle
+        # signature, so the signature-gated save above would otherwise defer
+        # the success to the NEXT stage transition and a restart in that
+        # window would rewind it.
+        self._state["snapshot_save_fn"] = self._flush_snapshot
 
     @property
     def running(self) -> bool:
@@ -488,6 +496,19 @@ class CoordinareDaemon:
             str(self._state.get("performer_stage") or ""),
             session_stages,
         )
+
+    async def _flush_snapshot(self) -> None:
+        """088 (US5): save the snapshot NOW, bypassing the lifecycle-signature
+        gate. Wired into state as ``snapshot_save_fn`` for completion handlers
+        whose updates (e.g. ``last_bootstrap_succeeded``) don't move the
+        signature. Defensive: runs as a fire-and-forget task, must not raise.
+        """
+        if self._state_store is None:
+            return
+        try:
+            await self._state_store.save(self._build_snapshot())
+        except Exception as exc:
+            logger.warning("daemon.snapshot_flush_failed", error=str(exc))
 
     def _build_snapshot(self) -> WorkflowSnapshot:
         card = self._state.get("current_card")
@@ -683,6 +704,9 @@ class CoordinareDaemon:
                         live.last_bootstrap_succeeded = persisted.last_bootstrap_succeeded
                         live.last_bootstrap_error = persisted.last_bootstrap_error
                         live.cache_dir_ready = persisted.cache_dir_ready
+                        # 088 (FR-009): the breaker budget survives restarts.
+                        live.bootstrap_attempts = persisted.bootstrap_attempts
+                        live.bootstrap_exhausted = persisted.bootstrap_exhausted
                     except Exception as exc:  # pragma: no cover — defensive
                         logger.warning(
                             "state_store.env_cache_rehydrate_failed",
@@ -2365,6 +2389,18 @@ class CoordinareDaemon:
                                 )
                                 if isinstance(_bootstrap_svc, HTTPPerformerService):
                                     _bootstrap_devenv_root = _bootstrap_svc.devenv_root
+
+                            # 088 (US5): restart honor path — hand the service a
+                            # clean-room verifier so a persisted success is
+                            # re-verified (not re-bootstrapped) on fresh boot.
+                            async def _clean_verify_fn(
+                                _sym_name: str,
+                                _svc: Any = _bootstrap_svc,
+                            ) -> tuple[bool | None, str]:
+                                return await self._verify_env_cache_clean(
+                                    _sym_name, _svc
+                                )
+
                             await _env_cache_svc.check_and_trigger(
                                 symphony_name=_ec_sym_name,
                                 symphony_config=_ec_sym_cfg,
@@ -2373,6 +2409,7 @@ class CoordinareDaemon:
                                 dispatch_fn=_bootstrap_dispatch_fn,
                                 container_devenv_root=_bootstrap_devenv_root,
                                 llm_chat=self._get_manifest_llm_chat(),
+                                clean_verify_fn=_clean_verify_fn,
                             )
 
                     logger.info(

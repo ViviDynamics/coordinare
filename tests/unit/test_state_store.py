@@ -854,3 +854,65 @@ async def test_v5_snapshot_roundtrips_bounce_counter(tmp_path: Path) -> None:
 
     assert loaded is not None
     assert loaded.active_sessions["PVT_75"].bounce_counter == {"sha-abc": 2, "sha-def": 1}
+
+
+@pytest.mark.asyncio
+async def test_env_cache_roundtrips_bootstrap_budget_fields(tmp_path: Path) -> None:
+    """088 (FR-009): the bootstrap circuit-breaker budget — ``bootstrap_attempts``
+    and ``bootstrap_exhausted`` — persists across save → load so a restart does
+    not hand a failing bootstrap a fresh unlimited budget."""
+    metrics = CoordinareMetrics()
+    store = StateStore(path=tmp_path / "state.json", metrics=metrics)
+    snapshot = _make_snapshot(
+        env_cache={
+            "sym-one": EnvCacheStateSnapshot(
+                symphony_name="sym-one",
+                sanitised_name="sym-one-a1b2c3",
+                cache_dir="/devenv/sym-one",
+                readme_sha="deadbeef",
+                last_bootstrap_succeeded=False,
+                bootstrap_attempts=2,
+                bootstrap_exhausted=True,
+            ),
+        },
+    )
+
+    await store.save(snapshot)
+    loaded = await store.load()
+
+    assert loaded is not None
+    entry = loaded.env_cache["sym-one"]
+    assert entry.bootstrap_attempts == 2
+    assert entry.bootstrap_exhausted is True
+
+
+@pytest.mark.asyncio
+async def test_old_env_cache_snapshot_defaults_bootstrap_budget(tmp_path: Path) -> None:
+    """088 (FR-009): an old (pre-088) snapshot without the budget fields loads
+    with safe defaults (0 attempts, not exhausted) — no migration step."""
+    import json
+
+    metrics = CoordinareMetrics()
+    path = tmp_path / "state.json"
+    store = StateStore(path=path, metrics=metrics)
+    snapshot = _make_snapshot(
+        env_cache={
+            "sym-one": EnvCacheStateSnapshot(
+                symphony_name="sym-one",
+                sanitised_name="sym-one-a1b2c3",
+                cache_dir="/devenv/sym-one",
+            ),
+        },
+    )
+    await store.save(snapshot)
+
+    data = json.loads(path.read_text())
+    data["env_cache"]["sym-one"].pop("bootstrap_attempts", None)
+    data["env_cache"]["sym-one"].pop("bootstrap_exhausted", None)
+    path.write_text(json.dumps(data))
+
+    loaded = await store.load()
+    assert loaded is not None
+    entry = loaded.env_cache["sym-one"]
+    assert entry.bootstrap_attempts == 0
+    assert entry.bootstrap_exhausted is False

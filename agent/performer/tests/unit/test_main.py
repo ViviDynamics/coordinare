@@ -2043,10 +2043,11 @@ class TestQAPerformer:
         assert resp.status == "qa_passed"
 
     @pytest.mark.asyncio
-    async def test_qa_env_limited_pass_not_refused(self) -> None:
-        """083: 'couldn't verify' is honest, not a rubber-stamp. A claimed pass
-        with no execution evidence but a genuine environment_error stays an
-        advisory DEGRADED pass — the unsubstantiated-pass guard must not fire."""
+    async def test_qa_env_limited_zero_evidence_is_env_blocked(self) -> None:
+        """088 (supersedes the 083 env-limited exemption): 'couldn't verify' is
+        honest, but it is NOT a pass. A claimed pass with zero execution
+        evidence and a genuine environment_error is the PR #159 shape — it
+        classifies as the terminal status qa_env_blocked, never qa_passed."""
         import json
         perf = self._make_perf()
         output = json.dumps({
@@ -2058,8 +2059,9 @@ class TestQAPerformer:
         perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
         with patch("performer.main.commit_file", new=AsyncMock()):
             resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
-        assert resp.status == "qa_passed"
+        assert resp.status == "qa_env_blocked"
         assert resp.report["env_limited"] is True
+        assert resp.report["evidence_count"] == 0
 
     @pytest.mark.asyncio
     async def test_qa_posts_pr_comment_with_verification_and_evidence(self) -> None:
@@ -2073,6 +2075,12 @@ class TestQAPerformer:
             "criteria_passed": 2,
             "visual_validation_required": True,
             "verification_steps": ["Open the blog post.", "Click copy and confirm clipboard text."],
+            # 088 (FR-005): visual criteria need app-boot proof referenced in
+            # executed_checks for the pass to stand.
+            "executed_checks": [
+                {"command": "curl -fsS http://localhost:3000/", "exit_code": 0, "output": "ok"},
+            ],
+            "app_boot_check": {"command": "curl -fsS http://localhost:3000/", "exit_code": 0},
             "visual_evidence": [
                 {
                     "label": "After fix",
@@ -2185,10 +2193,12 @@ class TestQAPerformer:
         ):
             resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
 
-        # 077 (pipeline-tolerant): a missing-screenshot (visual-capture) limitation
-        # is environmental → advisory. QA passes DEGRADED instead of qa_failed, but
-        # the evidence comment still records the capture steps/blockers for humans.
-        assert resp.status == "qa_passed"
+        # 077 classified a missing-screenshot limitation as environmental →
+        # advisory; 088 goes further: a pass claim with ZERO evidence behind it
+        # under an environmental limit is qa_env_blocked (couldn't verify ≠
+        # verified). The evidence comment still records the capture
+        # steps/blockers for humans.
+        assert resp.status == "qa_env_blocked"
         assert (resp.report or {}).get("env_limited") is True
         posted_body = mock_comment.call_args.kwargs["body"]
         assert "Visual Capture Setup Steps" in posted_body
@@ -2381,13 +2391,23 @@ class TestQAPerformer:
         assert resp.report["new_tests_added"] == 1
 
     @pytest.mark.asyncio
-    async def test_qa_environment_error_is_advisory_not_blocking(self) -> None:
+    async def test_qa_environment_error_is_advisory_when_evidence_backed(self) -> None:
         """077 (pipeline-tolerant): an environment_error with no real defects is
-        ADVISORY — QA passes DEGRADED rather than blocking the lifecycle (a
-        container that can't verify must not trap the card)."""
+        ADVISORY — QA passes DEGRADED rather than blocking the lifecycle —
+        088: PROVIDED the run still produced execution evidence. (The
+        zero-evidence variant is qa_env_blocked; see
+        test_qa_env_limited_zero_evidence_is_env_blocked.)"""
         import json
         perf = self._make_perf()
-        output = json.dumps({"environment_error": "Missing runtime: node", "failures": []})
+        output = json.dumps({
+            "environment_error": "Missing runtime: node — frontend checks skipped",
+            "failures": [],
+            "criteria_checked": 2,
+            "criteria_passed": 1,
+            "executed_checks": [
+                {"command": "pytest -q tests/backend", "exit_code": 0, "output": "12 passed"},
+            ],
+        })
         perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
         with patch("performer.main.commit_file", new=AsyncMock()):
             resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
@@ -2425,9 +2445,11 @@ class TestQAPerformer:
         }) is False
 
     @pytest.mark.asyncio
-    async def test_qa_couldnt_check_failures_are_advisory_not_blocking(self) -> None:
+    async def test_qa_couldnt_check_failures_route_to_env_blocked_not_qa_failed(self) -> None:
         """End-to-end: a QA run whose failures are all 'couldn't check' (PR #159
-        cycle D shape) must pass DEGRADED, not loop the card into qa_failed."""
+        cycle D shape) must not loop the card into qa_failed — and since 088 it
+        must not pass either: with zero execution evidence it is qa_env_blocked
+        so the environment gets repaired instead of the code 'fixed'."""
         import json
         perf = self._make_perf()
         output = json.dumps({
@@ -2442,8 +2464,8 @@ class TestQAPerformer:
         perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
         with patch("performer.main.commit_file", new=AsyncMock()):
             resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
-        assert resp.status == "qa_passed"
-        assert perf.state == "qa_passed"
+        assert resp.status == "qa_env_blocked"
+        assert perf.state == "qa_env_blocked"
         assert (resp.report or {}).get("env_limited") is True
 
     @pytest.mark.asyncio
@@ -2605,6 +2627,391 @@ class TestQAPerformer:
         freshness = (resp.report or {}).get("qa_freshness_check", {})
         assert freshness.get("up_to_date") is None
         assert freshness.get("detail") == "freshness_check_indeterminate"
+
+
+# ---------------------------------------------------------------------------
+# 088 US1 — QA verdict integrity (qa_env_blocked, evidence gate, app-boot proof,
+# visual-evidence render filtering)
+# ---------------------------------------------------------------------------
+
+
+class TestQAVerdictIntegrity088:
+    """A QA pass must always rest on evidence; env-limited zero-evidence pass
+    claims become the terminal status ``qa_env_blocked`` (never an unflagged
+    clean PASS — the website PR #159 false-pass)."""
+
+    def _make_perf(self) -> Performance:
+        stand = Stand(path=Path("/tmp/fake"), branch="feat/test")
+        stand.git_env = {}
+        score = Score(title="Test", repo_url="https://github.com/acme/repo", branch="feat/test")
+        return Performance(session_id="sid", stand=stand, score=score, backend=MagicMock(), role="qa")
+
+    # --- T002: PR #159 replay — the canonical SC-001 regression fixture ---
+
+    @pytest.mark.asyncio
+    async def test_qa_pr159_replay_env_blocked_never_passes(self) -> None:
+        """SC-001: the exact PR #159 payload shape — criteria_passed=4 with ALL
+        evidence channels empty and environment_error set — must classify as
+        ``qa_env_blocked``, never ``qa_passed``, and the PR comment must lead
+        with the blocker instead of an unflagged clean PASS."""
+        perf = self._make_perf()
+        perf.pr_url = "https://github.com/acme/repo/pull/159"
+        output = json.dumps({
+            "failures": [],
+            "criteria_checked": 4,
+            "criteria_passed": 4,
+            "executed_checks": [],
+            "new_test_files": [],
+            "visual_evidence": [],
+            "environment_error": (
+                "Ruby toolchain unavailable: bundler/rails not on PATH in this container"
+            ),
+        })
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+        mock_comment = AsyncMock(return_value={})
+        with (
+            patch("performer.main.commit_file", new=AsyncMock()),
+            patch("performer.main.post_pr_comment", new=mock_comment),
+        ):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+
+        assert resp.status == "qa_env_blocked"
+        assert perf.state == "qa_env_blocked"
+        assert "bundler/rails" in (resp.reason or "")
+        assert (resp.report or {}).get("environment_error", "").startswith("Ruby toolchain")
+        posted_body = mock_comment.call_args.kwargs["body"]
+        assert "ENVIRONMENT-BLOCKED" in posted_body
+        assert "bundler/rails not on PATH" in posted_body
+        assert "**Result:** PASSED" not in posted_body
+
+    @pytest.mark.asyncio
+    async def test_qa_env_blocked_is_terminal_on_subsequent_polls(self) -> None:
+        perf = self._make_perf()
+        perf.state = "qa_env_blocked"
+        perf.qa_report = {"environment_error": "no toolchain"}
+        resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+        assert resp.status == "qa_env_blocked"
+        assert resp.report == {"environment_error": "no toolchain"}
+
+    # --- T003: the evidence check always runs (no env_limited early-return) ---
+
+    def test_unsubstantiated_pass_check_has_no_env_limited_exemption(self) -> None:
+        """FR-001: a pass claim with zero evidence is unsubstantiated regardless
+        of environment_error — the env_limited early-return is gone (the caller
+        decides the *classification*, never the *exemption*)."""
+        from performer.main import _qa_unsubstantiated_pass
+        assert _qa_unsubstantiated_pass(
+            qa_passed_flag=True,
+            criteria_passed=4,
+            executed_checks=[],
+            new_tests=[],
+            visual_evidence=[],
+        ) is True
+
+    # --- T004: cross-validation of claimed counts vs evidence ---
+
+    @pytest.mark.asyncio
+    async def test_qa_zero_evidence_no_env_error_refused_not_env_blocked(self) -> None:
+        """Pass claim + zero evidence + NO environment_error stays the existing
+        unsubstantiated refusal — qa_env_blocked is reserved for env-limited runs."""
+        perf = self._make_perf()
+        output = json.dumps({
+            "failures": [],
+            "criteria_checked": 3,
+            "criteria_passed": 3,
+            "executed_checks": [],
+        })
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+        with patch("performer.main.commit_file", new=AsyncMock()):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+        assert resp.status in ("qa_failed", "blocked")
+        assert resp.status != "qa_env_blocked"
+
+    @pytest.mark.asyncio
+    async def test_qa_pass_with_evidence_unchanged(self) -> None:
+        """SC-006: an ordinary evidence-backed pass is unchanged."""
+        perf = self._make_perf()
+        output = json.dumps({
+            "failures": [],
+            "criteria_checked": 2,
+            "criteria_passed": 2,
+            "executed_checks": [
+                {"command": "pytest -q", "exit_code": 0, "output": "2 passed"},
+                {"command": "ruff check src", "exit_code": 0, "output": "clean"},
+            ],
+        })
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+        with patch("performer.main.commit_file", new=AsyncMock()):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+        assert resp.status == "qa_passed"
+
+    @pytest.mark.asyncio
+    async def test_qa_divergent_criteria_counts_annotated_in_comment(self) -> None:
+        """FR-007: criteria_passed greater than the evidence count renders the
+        'N claimed / M evidence-backed' annotation in the PR comment."""
+        perf = self._make_perf()
+        perf.pr_url = "https://github.com/acme/repo/pull/42"
+        output = json.dumps({
+            "failures": [],
+            "criteria_checked": 4,
+            "criteria_passed": 4,
+            "executed_checks": [
+                {"command": "pytest -q tests/a.py", "exit_code": 0, "output": "1 passed"},
+                {"command": "pytest -q tests/b.py", "exit_code": 0, "output": "1 passed"},
+            ],
+        })
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+        mock_comment = AsyncMock(return_value={})
+        with (
+            patch("performer.main.commit_file", new=AsyncMock()),
+            patch("performer.main.post_pr_comment", new=mock_comment),
+        ):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+        assert resp.status == "qa_passed"
+        posted_body = mock_comment.call_args.kwargs["body"]
+        assert "4 claimed / 2 evidence-backed" in posted_body
+
+    @pytest.mark.asyncio
+    async def test_qa_matching_criteria_counts_not_annotated(self) -> None:
+        """No divergence → the plain criteria line is unchanged (SC-006)."""
+        perf = self._make_perf()
+        perf.pr_url = "https://github.com/acme/repo/pull/42"
+        output = json.dumps({
+            "failures": [],
+            "criteria_checked": 2,
+            "criteria_passed": 2,
+            "executed_checks": [
+                {"command": "pytest -q tests/a.py", "exit_code": 0, "output": "1 passed"},
+                {"command": "pytest -q tests/b.py", "exit_code": 0, "output": "1 passed"},
+            ],
+        })
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+        mock_comment = AsyncMock(return_value={})
+        with (
+            patch("performer.main.commit_file", new=AsyncMock()),
+            patch("performer.main.post_pr_comment", new=mock_comment),
+        ):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+        assert resp.status == "qa_passed"
+        posted_body = mock_comment.call_args.kwargs["body"]
+        assert "- Criteria passed: 2" in posted_body
+        assert "evidence-backed" not in posted_body
+
+    # --- T005: app-boot proof gates visual/UI criteria ---
+
+    @pytest.mark.asyncio
+    async def test_qa_visual_criteria_without_app_boot_proof_not_passed(self) -> None:
+        """FR-005: a visual card whose only 'evidence' is a screenshot URL but
+        no app-boot proof (no app_boot_check, no executed_checks) counts those
+        criteria unverified — the pass claim is refused, not honored."""
+        perf = self._make_perf()
+        output = json.dumps({
+            "failures": [],
+            "criteria_checked": 2,
+            "criteria_passed": 2,
+            "visual_validation_required": True,
+            "executed_checks": [],
+            "visual_evidence": [
+                {"label": "After", "kind": "screenshot",
+                 "path_or_url": "https://example.com/after.png"},
+            ],
+        })
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+        with patch("performer.main.commit_file", new=AsyncMock()):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+        assert resp.status != "qa_passed"
+
+    @pytest.mark.asyncio
+    async def test_qa_visual_criteria_with_app_boot_proof_passes(self) -> None:
+        """The same visual card passes once app_boot_check references a
+        zero-exit executed check (boot proof) alongside the screenshot."""
+        perf = self._make_perf()
+        output = json.dumps({
+            "failures": [],
+            "criteria_checked": 2,
+            "criteria_passed": 2,
+            "visual_validation_required": True,
+            "executed_checks": [
+                {"command": "curl -fsS http://localhost:3000/healthz", "exit_code": 0, "output": "ok"},
+            ],
+            "app_boot_check": {"command": "curl -fsS http://localhost:3000/healthz", "exit_code": 0},
+            "visual_evidence": [
+                {"label": "After", "kind": "screenshot",
+                 "path_or_url": "https://example.com/after.png"},
+            ],
+        })
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+        with patch("performer.main.commit_file", new=AsyncMock()):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+        assert resp.status == "qa_passed"
+
+    @pytest.mark.asyncio
+    async def test_qa_app_boot_check_must_reference_executed_checks(self) -> None:
+        """An app_boot_check that does not correspond to any executed_checks
+        entry is not boot proof — the visual pass claim is still refused."""
+        perf = self._make_perf()
+        output = json.dumps({
+            "failures": [],
+            "criteria_checked": 2,
+            "criteria_passed": 2,
+            "visual_validation_required": True,
+            "executed_checks": [],
+            "app_boot_check": {"command": "curl -fsS http://localhost:3000/healthz", "exit_code": 0},
+            "visual_evidence": [
+                {"label": "After", "kind": "screenshot",
+                 "path_or_url": "https://example.com/after.png"},
+            ],
+        })
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+        with patch("performer.main.commit_file", new=AsyncMock()):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+        assert resp.status != "qa_passed"
+
+    @pytest.mark.asyncio
+    async def test_qa_nonzero_app_boot_exit_discounts_visual_evidence(self) -> None:
+        """A non-zero-exit boot check means the app never came up: the screenshot
+        cannot back the visual criteria, so the claimed count is annotated down
+        to the executed-check evidence only."""
+        perf = self._make_perf()
+        perf.pr_url = "https://github.com/acme/repo/pull/42"
+        output = json.dumps({
+            "failures": [],
+            "criteria_checked": 2,
+            "criteria_passed": 2,
+            "visual_validation_required": True,
+            "executed_checks": [
+                {"command": "curl -fsS http://localhost:3000/healthz", "exit_code": 7, "output": "connection refused"},
+            ],
+            "app_boot_check": {"command": "curl -fsS http://localhost:3000/healthz", "exit_code": 7},
+            "visual_evidence": [
+                {"label": "After", "kind": "screenshot",
+                 "path_or_url": "https://example.com/after.png"},
+            ],
+        })
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+        mock_comment = AsyncMock(return_value={})
+        with (
+            patch("performer.main.commit_file", new=AsyncMock()),
+            patch("performer.main.post_pr_comment", new=mock_comment),
+        ):
+            await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+        posted_body = mock_comment.call_args.kwargs["body"]
+        assert "2 claimed / 1 evidence-backed" in posted_body
+
+    @pytest.mark.asyncio
+    async def test_qa_null_app_boot_check_ignored_without_visual_criteria(self) -> None:
+        """Cards without visual criteria are unaffected by a null app_boot_check."""
+        perf = self._make_perf()
+        perf.score.title = "Harden GitHub retry backoff"
+        perf.score.description = "Improve retry handling for API outages."
+        output = json.dumps({
+            "failures": [],
+            "criteria_checked": 1,
+            "criteria_passed": 1,
+            "visual_validation_required": False,
+            "app_boot_check": None,
+            "executed_checks": [{"command": "pytest -q", "exit_code": 0, "output": "1 passed"}],
+        })
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+        with patch("performer.main.commit_file", new=AsyncMock()):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+        assert resp.status == "qa_passed"
+
+    # --- T006: visual-evidence render filtering (FR-006) ---
+
+    @pytest.mark.asyncio
+    async def test_qa_unpublished_visual_evidence_moves_to_capture_blockers(self) -> None:
+        """Only upload-validated (CDN URL) entries render as links; a local path
+        whose upload failed moves to the capture-blockers list with the reason,
+        never rendering a dead link."""
+        perf = self._make_perf()
+        perf.pr_url = "https://github.com/acme/repo/pull/42"
+        perf.score.issue_number = 99
+        output = json.dumps({
+            "failures": [],
+            "criteria_checked": 2,
+            "criteria_passed": 2,
+            "visual_validation_required": False,
+            "executed_checks": [
+                {"command": "pytest -q", "exit_code": 0, "output": "2 passed"},
+                {"command": "bin/screenshot", "exit_code": 0, "output": "saved"},
+            ],
+            "visual_evidence": [
+                {"label": "Published", "kind": "screenshot",
+                 "path_or_url": "https://github.com/user-attachments/assets/ok.png"},
+                {"label": "Unpublished", "kind": "screenshot",
+                 "path_or_url": "/tmp/screenshots/broken.png"},
+            ],
+        })
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+
+        async def fake_resolve(evidence, **kwargs):
+            out = []
+            for ev in evidence:
+                ev2 = dict(ev)
+                if ev2["path_or_url"].startswith("/tmp/"):
+                    ev2["upload_error"] = "CDN upload failed: HTTP 403"
+                out.append(ev2)
+            return out
+
+        mock_comment = AsyncMock(return_value={})
+        with (
+            patch("performer.main.commit_file", new=AsyncMock()),
+            patch("performer.main.post_pr_comment", new=mock_comment),
+            patch("performer.main.post_issue_comment", new=AsyncMock(return_value={})),
+            patch("performer.main.resolve_visual_evidence_urls", new=fake_resolve),
+        ):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+
+        assert resp.status == "qa_passed"
+        posted_body = mock_comment.call_args.kwargs["body"]
+        # The published artifact renders as a link.
+        assert "[https://github.com/user-attachments/assets/ok.png]" in posted_body
+        # The unpublished one never renders as a link/image…
+        assert "](/tmp/screenshots/broken.png)" not in posted_body
+        assert "![Unpublished]" not in posted_body
+        # …it is listed under capture blockers with the failure reason.
+        assert "Capture blockers" in posted_body
+        assert "/tmp/screenshots/broken.png" in posted_body
+        assert "CDN upload failed: HTTP 403" in posted_body
+
+    @pytest.mark.asyncio
+    async def test_qa_all_uploads_failed_renders_no_links(self) -> None:
+        """When every artifact failed to publish, the Visual Evidence section
+        renders no links at all — only the capture-blockers list."""
+        perf = self._make_perf()
+        perf.pr_url = "https://github.com/acme/repo/pull/42"
+        perf.score.issue_number = 99
+        output = json.dumps({
+            "failures": [],
+            "criteria_checked": 1,
+            "criteria_passed": 1,
+            "visual_validation_required": False,
+            "executed_checks": [{"command": "pytest -q", "exit_code": 0, "output": "1 passed"}],
+            "visual_evidence": [
+                {"label": "Only", "kind": "screenshot", "path_or_url": "/tmp/only.png"},
+            ],
+        })
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+
+        async def fake_resolve(evidence, **kwargs):
+            return [dict(ev, upload_error="upload timed out") for ev in evidence]
+
+        mock_comment = AsyncMock(return_value={})
+        with (
+            patch("performer.main.commit_file", new=AsyncMock()),
+            patch("performer.main.post_pr_comment", new=mock_comment),
+            patch("performer.main.post_issue_comment", new=AsyncMock(return_value={})),
+            patch("performer.main.resolve_visual_evidence_urls", new=fake_resolve),
+        ):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+
+        assert resp.status == "qa_passed"
+        posted_body = mock_comment.call_args.kwargs["body"]
+        assert "](/tmp/only.png)" not in posted_body
+        assert "![Only]" not in posted_body
+        assert "Capture blockers" in posted_body
+        assert "upload timed out" in posted_body
 
 
 # ---------------------------------------------------------------------------

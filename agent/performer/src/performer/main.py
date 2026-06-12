@@ -810,7 +810,6 @@ def _qa_execution_evidence(qa_output: dict) -> list[dict]:
 def _qa_unsubstantiated_pass(
     *,
     qa_passed_flag: bool,
-    env_limited: bool,
     criteria_passed: object,
     executed_checks: list[dict],
     new_tests: list[str],
@@ -824,12 +823,15 @@ def _qa_unsubstantiated_pass(
     claimed ``qa_passed`` with ``criteria_passed=0`` and an empty ``executed_checks``
     (verifying nothing at all), which the original ``criteria_passed<=0`` exemption
     let through. Both are the same failure — a confident pass that rests on no
-    OBSERVED evidence — so refuse a non-environment-limited pass whenever there is
-    no execution evidence (no executed_checks, no committed tests, no captured
-    proof), regardless of the self-reported criteria count.
+    OBSERVED evidence — so refuse a pass whenever there is no execution evidence
+    (no executed_checks, no committed tests, no captured proof), regardless of
+    the self-reported criteria count.
 
-    'Couldn't verify' (env_limited) is an honest, advisory outcome and is exempt —
-    only a confident-but-unsubstantiated pass is refused.
+    088 (FR-001): the env_limited exemption is gone. Website PR #159 exploited
+    it — "couldn't verify" plus a claimed 4/4 pass posted an unflagged clean
+    PASS. A zero-evidence pass claim is unsubstantiated regardless of
+    environment_error; the CALLER decides the classification (env-limited →
+    ``qa_env_blocked``, otherwise the malformed/unsubstantiated refusal).
 
     ``criteria_passed`` is accepted but no longer gates the check: a pass that
     asserted nothing positive yet still claimed success is the purest rubber-stamp,
@@ -837,14 +839,35 @@ def _qa_unsubstantiated_pass(
     del criteria_passed  # retained for signature/observability; no longer gates
     if not qa_passed_flag:
         return False  # already failing on a real defect
-    if env_limited:
-        return False  # honest "couldn't verify" → advisory pass, not a rubber-stamp
     has_evidence = (
         bool(executed_checks)
         or bool(new_tests)
         or any(ev.get("path_or_url") for ev in visual_evidence)
     )
     return not has_evidence
+
+
+def _qa_app_boot_evidence(
+    qa_output: dict,
+    executed_checks: list[dict],
+) -> tuple[dict | None, bool]:
+    """088 (FR-005): parse the model-reported ``app_boot_check`` and decide
+    whether it constitutes boot proof for visual/UI criteria.
+
+    Boot proof requires a non-empty command with exit_code 0 that references an
+    entry in ``executed_checks`` — the model must have actually RUN the health
+    check, not merely asserted it. Returns ``(parsed, ok)``; ``parsed`` is
+    ``{"command", "exit_code"}`` or None when the field is absent/malformed."""
+    raw = qa_output.get("app_boot_check")
+    if not isinstance(raw, dict):
+        return None, False
+    command = str(raw.get("command", "")).strip()
+    exit_code = raw.get("exit_code")
+    if not command or exit_code is None:
+        return None, False
+    parsed = {"command": command, "exit_code": exit_code}
+    referenced = any(check.get("command") == command for check in executed_checks)
+    return parsed, bool(referenced and exit_code == 0)
 
 
 def _build_qa_pr_comment(
@@ -861,21 +884,47 @@ def _build_qa_pr_comment(
     visual_capture_blockers: list[str],
     visual_evidence: list[dict[str, str]],
     environment_error: str,
+    evidence_count: int | None = None,
+    env_blocked: bool = False,
 ) -> str:
     """Render a human-facing QA evidence comment for the PR thread."""
     bug_like = _is_bug_like_ticket(score)
     verify_heading = "Fix Verification Steps" if bug_like else "Demo / Verification Steps"
+    if env_blocked:
+        result_label = "ENVIRONMENT-BLOCKED — UNVERIFIED"
+    else:
+        result_label = "PASSED" if passed else "FAILED"
+    # 088 (FR-007): cross-validate the claimed count against the evidence the
+    # run actually produced; surplus claims are annotated, not hidden.
+    criteria_passed_line = f"- Criteria passed: {criteria_passed}"
+    if evidence_count is not None and criteria_passed > evidence_count:
+        criteria_passed_line = (
+            f"- Criteria passed: {criteria_passed} claimed / "
+            f"{evidence_count} evidence-backed"
+        )
     lines = [
         _persona_tag(score),
         "",
         "## QA Evidence",
         "",
-        f"**Result:** {'PASSED' if passed else 'FAILED'}",
-        f"- Criteria checked: {criteria_checked}",
-        f"- Criteria passed: {criteria_passed}",
+        f"**Result:** {result_label}",
     ]
 
-    if environment_error:
+    # 088 (FR-002): an environment-blocked verdict leads with the blocker.
+    if env_blocked and environment_error:
+        lines += [
+            "",
+            "### Environment Blocker",
+            f"- {environment_error}",
+            "",
+        ]
+
+    lines += [
+        f"- Criteria checked: {criteria_checked}",
+        criteria_passed_line,
+    ]
+
+    if environment_error and not env_blocked:
         lines += [
             "",
             "### Environment Blocker",
@@ -897,33 +946,49 @@ def _build_qa_pr_comment(
     lines += ["", f"### {verify_heading}"]
     lines.extend(f"{idx}. {step}" for idx, step in enumerate(verification_steps, start=1))
 
+    # 088 (FR-006): only upload-validated entries (CDN/http URLs after
+    # resolve_visual_evidence_urls) render as links; entries still carrying a
+    # local path failed to publish and are listed as capture blockers with the
+    # reason — a dead link implies an artifact that does not exist.
+    published: list[dict[str, str]] = []
+    capture_blockers = list(visual_capture_blockers)
+    for ev in visual_evidence:
+        loc = str(ev.get("path_or_url", "")).strip()
+        if not loc:
+            continue
+        if _looks_like_url(loc):
+            published.append(ev)
+        else:
+            reason = str(ev.get("upload_error", "")).strip() or (
+                "artifact not published (upload failed or container-local path)"
+            )
+            capture_blockers.append(
+                f"`{loc}` ({ev.get('label', 'Evidence')}) — {reason}"
+            )
+
     lines += ["", "### Visual Evidence"]
-    if visual_evidence:
-        for ev in visual_evidence:
+    if published:
+        for ev in published:
             label = ev.get("label", "Evidence")
             kind = ev.get("kind", "artifact")
             loc = ev.get("path_or_url", "")
             note = ev.get("note", "")
-            is_url = loc.lower().startswith(("http://", "https://"))
             is_image = kind == "screenshot" or Path(loc).suffix.lower() in {
                 ".png", ".jpg", ".jpeg", ".gif", ".webp",
             }
             line = f"- **{label}** ({kind})"
-            if loc:
-                if is_url and is_image:
-                    line += f": [{loc}]({loc})\n\n  ![{label}]({loc})"
-                elif is_url:
-                    line += f": [{loc}]({loc})"
-                else:
-                    line += f": `{loc}`"
+            if is_image:
+                line += f": [{loc}]({loc})\n\n  ![{label}]({loc})"
+            else:
+                line += f": [{loc}]({loc})"
             if note:
                 line += f" — {note}"
             lines.append(line)
     else:
         lines.append("- No visual artifacts captured in this QA run.")
-        if visual_capture_blockers:
-            lines.append("- Capture blockers:")
-            lines.extend(f"  - {blocker}" for blocker in visual_capture_blockers)
+    if capture_blockers:
+        lines.append("- Capture blockers:")
+        lines.extend(f"  - {blocker}" for blocker in capture_blockers)
 
     if failures:
         lines += ["", "### Remaining Failures"]
@@ -1584,6 +1649,13 @@ async def handle_status(
             status="qa_failed",
             session_id=perf.session_id,
             failures=perf.qa_failures,
+        )
+    if perf.state == "qa_env_blocked":
+        return PerformerResponse(
+            status="qa_env_blocked",
+            session_id=perf.session_id,
+            reason=(perf.qa_report or {}).get("environment_error"),
+            report=perf.qa_report,
         )
     if perf.state == "docs_committed":
         return PerformerResponse(
@@ -2281,45 +2353,75 @@ async def handle_status(
 
             # 083: refuse a claimed pass that rests on self-report alone. A model
             # that asserts criteria_passed>0 with failures=[] but ran nothing
-            # (no executed_checks, no committed tests, no captured proof) and is
-            # not env-limited is rubber-stamping — synthesise a real defect so the
-            # gate FAILs instead of waving the PR through. Phrase the failure to
-            # avoid the environmental regex so it counts as a defect, not advisory.
+            # (no executed_checks, no committed tests, no captured proof) is
+            # rubber-stamping — synthesise a real defect so the gate FAILs
+            # instead of waving the PR through. Phrase the failure to avoid the
+            # environmental regex so it counts as a defect, not advisory.
+            # 088 (FR-001/FR-002): env-limited runs are no longer EXEMPT from the
+            # evidence check — a zero-evidence pass claim under an environment
+            # blocker classifies as the terminal status qa_env_blocked instead
+            # (the PR #159 false-pass), never an unflagged clean PASS.
             executed_checks = _qa_execution_evidence(qa_output)
+            # 088 (FR-005): visual/UI criteria need app-boot proof. Without a
+            # zero-exit boot check referenced in executed_checks, the model's
+            # screenshots cannot back the claim — they drop out of the evidence
+            # count, folding into the unsubstantiated/cross-validation gates.
+            app_boot_check, app_boot_ok = _qa_app_boot_evidence(qa_output, executed_checks)
+            evidence_visual = [ev for ev in visual_evidence if ev.get("path_or_url")]
+            if visual_validation_required and not app_boot_ok:
+                evidence_visual = []
+            evidence_count = (
+                len(executed_checks) + len(perf.qa_new_tests) + len(evidence_visual)
+            )
+            qa_env_blocked = False
             if _qa_unsubstantiated_pass(
                 qa_passed_flag=qa_passed_flag,
-                env_limited=env_limited,
                 criteria_passed=criteria_passed,
                 executed_checks=executed_checks,
                 new_tests=perf.qa_new_tests,
-                visual_evidence=visual_evidence,
+                visual_evidence=evidence_visual,
             ):
-                unsubstantiated = {
-                    "type": "unsubstantiated_pass",
-                    "criterion": "Execution evidence required for a QA pass",
-                    "expected": (
-                        "Verification checks actually executed with commands and "
-                        "exit codes recorded, committed tests, or captured proof."
-                    ),
-                    "actual": (
-                        "Model reported criteria as passing but supplied zero "
-                        "execution evidence (zero checks executed, zero tests "
-                        "committed, zero captured proof). Unsubstantiated pass refused."
-                    ),
-                }
-                failures.append(unsubstantiated)
-                defect_failures.append(unsubstantiated)
-                qa_passed_flag = False
-                log.warning(
-                    "qa.unsubstantiated_pass_refused",
-                    session_id=perf.session_id,
-                    criteria_passed=criteria_passed,
-                )
+                if env_limited:
+                    # 'Couldn't verify' stays honest — but it is a distinct
+                    # terminal outcome now, not a pass.
+                    qa_env_blocked = True
+                    log.warning(
+                        "qa.env_blocked_zero_evidence",
+                        session_id=perf.session_id,
+                        criteria_passed=criteria_passed,
+                        env_error=(env_error or "")[:200],
+                    )
+                else:
+                    unsubstantiated = {
+                        "type": "unsubstantiated_pass",
+                        "criterion": "Execution evidence required for a QA pass",
+                        "expected": (
+                            "Verification checks actually executed with commands and "
+                            "exit codes recorded, committed tests, or captured proof."
+                        ),
+                        "actual": (
+                            "Model reported criteria as passing but supplied zero "
+                            "execution evidence (zero checks executed, zero tests "
+                            "committed, zero captured proof). Unsubstantiated pass refused."
+                        ),
+                    }
+                    failures.append(unsubstantiated)
+                    defect_failures.append(unsubstantiated)
+                    qa_passed_flag = False
+                    log.warning(
+                        "qa.unsubstantiated_pass_refused",
+                        session_id=perf.session_id,
+                        criteria_passed=criteria_passed,
+                    )
 
             # Commit QA report to the architecture folder
             folder = _doc_folder(perf.score)
             qa_report_content = f"# QA Report: {perf.score.title}\n\n"
-            qa_report_content += f"**Result: {'PASSED' if qa_passed_flag else 'FAILED'}**\n\n"
+            if qa_env_blocked:
+                _result_text = "ENVIRONMENT-BLOCKED — UNVERIFIED"
+            else:
+                _result_text = "PASSED" if qa_passed_flag else "FAILED"
+            qa_report_content += f"**Result: {_result_text}**\n\n"
             qa_report_content += f"- Criteria checked: {criteria_checked}\n"
             qa_report_content += f"- Criteria passed: {criteria_passed}\n"
             if perf.qa_new_tests:
@@ -2406,6 +2508,8 @@ async def handle_status(
                 visual_capture_blockers=visual_capture_blockers,
                 visual_evidence=visual_evidence,
                 environment_error=env_error,
+                evidence_count=evidence_count,
+                env_blocked=qa_env_blocked,
             )
 
             # Post QA evidence to the PR so humans can quickly validate behavior.
@@ -2437,20 +2541,16 @@ async def handle_status(
             # 077: env_error and environmental failures are ADVISORY — they no
             # longer hard-block QA. The lifecycle only stops for real defects
             # (defect_failures). If QA couldn't verify due to the container's
-            # limits, it passes DEGRADED with the limitation recorded.
+            # limits, it passes DEGRADED with the limitation recorded —
+            # 088: UNLESS the run produced zero evidence behind its pass claim,
+            # in which case it is qa_env_blocked (couldn't verify ≠ verified).
             if not defect_failures:
-                if env_limited:
-                    log.warning(
-                        "qa.env_limited_advisory_pass",
-                        session_id=perf.session_id,
-                        env_error=(env_error or "")[:200],
-                        env_failure_count=len(failures) - len(defect_failures),
-                    )
-                perf.state = "qa_passed"
                 perf.qa_report = {
                     "criteria_checked": qa_output.get("criteria_checked", 0),
                     "criteria_passed": qa_output.get("criteria_passed", 0),
                     "executed_checks": executed_checks,
+                    "evidence_count": evidence_count,
+                    "app_boot_check": app_boot_check,
                     "env_limited": env_limited,
                     "environment_error": env_error or None,
                     "new_tests_added": len(perf.qa_new_tests),
@@ -2464,6 +2564,24 @@ async def handle_status(
                 }
                 if qa_freshness_check:
                     perf.qa_report["qa_freshness_check"] = qa_freshness_check
+                if qa_env_blocked:
+                    perf.state = "qa_env_blocked"
+                    return PerformerResponse(
+                        status="qa_env_blocked",
+                        session_id=perf.session_id,
+                        reason=env_error or (
+                            "environment-blocked: pass claim with zero execution evidence"
+                        ),
+                        report=perf.qa_report,
+                    )
+                if env_limited:
+                    log.warning(
+                        "qa.env_limited_advisory_pass",
+                        session_id=perf.session_id,
+                        env_error=(env_error or "")[:200],
+                        env_failure_count=len(failures) - len(defect_failures),
+                    )
+                perf.state = "qa_passed"
                 return PerformerResponse(
                     status="qa_passed",
                     session_id=perf.session_id,
@@ -2886,7 +3004,7 @@ async def run_loop() -> None:
         except asyncio.TimeoutError:
             log.warning("session watchdog fired — stopping backend",
                         session_id=perf.session_id if perf else "")
-            if perf is not None and perf.state not in ("pr_opened", "plan_committed", "approved", "changes_requested", "security_passed", "security_failed", "qa_passed", "qa_failed", "docs_committed", "error"):
+            if perf is not None and perf.state not in ("pr_opened", "plan_committed", "approved", "changes_requested", "security_passed", "security_failed", "qa_passed", "qa_failed", "qa_env_blocked", "docs_committed", "error"):
                 perf.state = "error"
                 perf.error_reason = (
                     f"watchdog: session exceeded {settings.AGENT_TIMEOUT:.0f}s"
@@ -2990,7 +3108,7 @@ async def run_loop() -> None:
         _write_response(resp)
 
         # Terminal states exit the loop
-        if resp.status in ("pr_opened", "plan_committed", "approved", "changes_requested", "security_passed", "security_failed", "qa_passed", "qa_failed", "docs_committed", "error") and msg.action != "health":
+        if resp.status in ("pr_opened", "plan_committed", "approved", "changes_requested", "security_passed", "security_failed", "qa_passed", "qa_failed", "qa_env_blocked", "docs_committed", "error") and msg.action != "health":
             break
         # session_expired with no active session means nothing will ever start
         if resp.status == "session_expired" and perf is None:

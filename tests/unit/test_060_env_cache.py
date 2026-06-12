@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from datetime import UTC, datetime, timedelta
@@ -667,6 +668,9 @@ class TestOnBootstrapComplete:
     def _make_service(self) -> EnvCacheService:
         coordinare_config = MagicMock()
         coordinare_config.symphonies = []
+        # 088: a real budget so MagicMock's int-coercion (1) doesn't trip the
+        # circuit breaker on the first simulated failure in these tests.
+        coordinare_config.global_config.env_bootstrap_max_attempts = 3
         return EnvCacheService(coordinare_config)
 
     def test_noop_when_symphony_not_in_cache(self) -> None:
@@ -737,7 +741,13 @@ class TestOnBootstrapComplete:
         # Same SHA — no forced recheck needed
         assert cache_state.readme_sha == "sha1"
 
-    def test_clears_sha_on_failure_to_force_retry(self, tmp_path: Path) -> None:
+    def test_keeps_sha_on_failure_so_retry_honours_cooldown(self, tmp_path: Path) -> None:
+        """088 (supersedes the pre-088 clearing): the SHA is RETAINED on failure
+        so the retry flows through check_and_trigger's escalating-cooldown
+        branch (readme_sha == current ∧ succeeded=False) instead of an
+        immediate needs_bootstrap redispatch every ~100s. The consumer gate
+        still holds (last_bootstrap_succeeded=False), so the cache is not
+        treated as usable."""
         svc = self._make_service()
         cache_state = EnvCacheState(
             symphony_name="sym",
@@ -750,9 +760,8 @@ class TestOnBootstrapComplete:
         svc.on_bootstrap_complete("sym", False, state)
         assert cache_state.last_bootstrap_succeeded is False
         assert cache_state.bootstrap_in_flight is False
-        # SHA must be cleared so next cycle re-triggers rather than leaving
-        # cache poisoned (bootstrap failed — env was never installed).
-        assert cache_state.readme_sha is None
+        assert cache_state.readme_sha == "sha1"
+        assert cache_state.bootstrap_attempts == 1
 
     def test_preserves_sha_on_success(self, tmp_path: Path) -> None:
         svc = self._make_service()
@@ -830,7 +839,10 @@ class TestOnBootstrapComplete:
         # Simulate what the daemon does when _job_id is None.
         svc.on_bootstrap_complete("sym", False, state)
         assert cache_state.bootstrap_in_flight is False
-        assert cache_state.readme_sha is None  # cleared so next cycle retries
+        # 088: SHA retained; the next cycle retries via the cooldown branch
+        # (readme_sha == current ∧ succeeded=False), not an immediate redispatch.
+        assert cache_state.readme_sha == "sha1"
+        assert cache_state.last_bootstrap_succeeded is False
 
 
 # ---------------------------------------------------------------------------
@@ -2012,3 +2024,399 @@ def test_env_bootstrap_persona_agent_writes_verify_when_not_provided() -> None:
     persona = payload.persona.lower()
     assert "also write an executable verification script" in persona
     assert "authoritative dependency checklist" not in persona
+
+
+# ---------------------------------------------------------------------------
+# 088 US4 — bootstrap circuit breaker (FR-009/FR-010)
+# ---------------------------------------------------------------------------
+
+
+class TestBootstrapCircuitBreaker:
+    def _make_service(self, max_attempts: int = 3) -> EnvCacheService:
+        coordinare_config = MagicMock()
+        coordinare_config.symphonies = []
+        coordinare_config.global_config.env_bootstrap_max_attempts = max_attempts
+        return EnvCacheService(coordinare_config)
+
+    def _make_cache_state(self, tmp_path: Path, **overrides) -> EnvCacheState:
+        defaults = dict(
+            symphony_name="sym",
+            sanitised_name="sym-abc",
+            cache_dir=tmp_path,
+        )
+        defaults.update(overrides)
+        return EnvCacheState(**defaults)
+
+    def _make_symphony_config(self) -> MagicMock:
+        cfg = MagicMock()
+        cfg.env_bootstrap_performer_id = "bootstrap"
+        cfg.env_spec_files = ["README.md"]
+        cfg.name = "test-symphony"
+        eff = MagicMock()
+        eff.github_org = "org"
+        eff.project_name = "repo"
+        cfg.effective_config = MagicMock(return_value=eff)
+        return cfg
+
+    def test_failure_increments_attempts(self, tmp_path: Path) -> None:
+        svc = self._make_service()
+        cache_state = self._make_cache_state(tmp_path)
+        state = {"env_cache": {"sym": cache_state}}
+        svc.on_bootstrap_complete("sym", False, state, error="boom")
+        assert cache_state.bootstrap_attempts == 1
+        svc.on_bootstrap_complete("sym", False, state, error="boom")
+        assert cache_state.bootstrap_attempts == 2
+        assert cache_state.bootstrap_exhausted is False
+
+    def test_failure_keeps_readme_sha_for_cooldown_retry(self, tmp_path: Path) -> None:
+        """088: a failure must NOT clear readme_sha — clearing it made the next
+        cycle recompute needs_bootstrap=True and redispatch immediately, which
+        is the observed unbounded ~100s hammering. Retries flow through the
+        escalating-cooldown branch instead."""
+        svc = self._make_service()
+        cache_state = self._make_cache_state(
+            tmp_path, readme_sha="sha-under-attempt", bootstrap_in_flight=True,
+        )
+        state = {"env_cache": {"sym": cache_state}}
+        svc.on_bootstrap_complete("sym", False, state, error="boom")
+        assert cache_state.readme_sha == "sha-under-attempt"
+        assert cache_state.last_bootstrap_succeeded is False
+
+    def test_success_resets_budget(self, tmp_path: Path) -> None:
+        svc = self._make_service()
+        cache_state = self._make_cache_state(
+            tmp_path, bootstrap_attempts=2, bootstrap_exhausted=True,
+        )
+        state = {"env_cache": {"sym": cache_state}}
+        svc.on_bootstrap_complete("sym", True, state)
+        assert cache_state.bootstrap_attempts == 0
+        assert cache_state.bootstrap_exhausted is False
+
+    @pytest.mark.asyncio
+    async def test_exhaustion_at_max_attempts_notifies_exactly_once(
+        self, tmp_path: Path
+    ) -> None:
+        """attempts >= env_bootstrap_max_attempts flips bootstrap_exhausted and
+        fires exactly ONE circuit_breaker_trip notification — further failures
+        do not re-notify."""
+        from coordinare.models.notification import EventType
+
+        svc = self._make_service(max_attempts=3)
+        cache_state = self._make_cache_state(tmp_path)
+        notify = MagicMock()
+        notify.dispatch = AsyncMock()
+        state = {"env_cache": {"sym": cache_state}, "notification_service": notify}
+
+        for _ in range(3):
+            svc.on_bootstrap_complete("sym", False, state, error="ruby 9.9.9 unavailable")
+            await asyncio.sleep(0)
+
+        assert cache_state.bootstrap_attempts == 3
+        assert cache_state.bootstrap_exhausted is True
+        await asyncio.sleep(0)
+        notify.dispatch.assert_awaited_once()
+        event = notify.dispatch.await_args.args[0]
+        assert event.event_type == EventType.circuit_breaker_trip
+
+        # A further failure (e.g. in-flight race) must not re-notify.
+        svc.on_bootstrap_complete("sym", False, state, error="still broken")
+        await asyncio.sleep(0)
+        notify.dispatch.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_cooldown_escalates_with_attempts(self, tmp_path: Path) -> None:
+        """Retry cooldown is BOOTSTRAP_RETRY_COOLDOWN_S * 2**attempts: after one
+        failure the base cooldown is no longer enough."""
+        svc = self._make_service()
+        sym_cfg = self._make_symphony_config()
+        github = AsyncMock()
+        github.get_file_blob_sha = AsyncMock(return_value="same_sha")
+        github.get_file_content = AsyncMock(return_value="# README")
+        dispatch_fn = AsyncMock()
+
+        cache_state = self._make_cache_state(
+            tmp_path,
+            readme_sha=_combined_sha({"README.md": "same_sha"}),
+            last_bootstrap_succeeded=False,
+            bootstrap_attempts=1,
+            last_bootstrap_at=datetime.now(UTC)
+            - timedelta(seconds=BOOTSTRAP_RETRY_COOLDOWN_S + 5),
+        )
+        state: dict = {"env_cache": {"sym": cache_state}, "config": MagicMock()}
+        await svc.check_and_trigger("sym", sym_cfg, github, state, dispatch_fn)
+        dispatch_fn.assert_not_called()  # 1 attempt → cooldown doubled to 2x base
+
+        cache_state.last_bootstrap_at = datetime.now(UTC) - timedelta(
+            seconds=BOOTSTRAP_RETRY_COOLDOWN_S * 2 + 5
+        )
+        await svc.check_and_trigger("sym", sym_cfg, github, state, dispatch_fn)
+        dispatch_fn.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_exhausted_blocks_dispatch(self, tmp_path: Path) -> None:
+        """Once exhausted, no further bootstrap dispatch for the same spec SHA —
+        no matter how much time passes."""
+        svc = self._make_service()
+        sym_cfg = self._make_symphony_config()
+        github = AsyncMock()
+        github.get_file_blob_sha = AsyncMock(return_value="same_sha")
+        github.get_file_content = AsyncMock(return_value="# README")
+        dispatch_fn = AsyncMock()
+
+        cache_state = self._make_cache_state(
+            tmp_path,
+            readme_sha=_combined_sha({"README.md": "same_sha"}),
+            last_bootstrap_succeeded=False,
+            bootstrap_attempts=3,
+            bootstrap_exhausted=True,
+            last_bootstrap_at=datetime.now(UTC) - timedelta(days=2),
+        )
+        state: dict = {"env_cache": {"sym": cache_state}, "config": MagicMock()}
+        await svc.check_and_trigger("sym", sym_cfg, github, state, dispatch_fn)
+        dispatch_fn.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_sha_change_resets_budget_and_redispatches(self, tmp_path: Path) -> None:
+        """FR-010: a spec-file change (new SHA) resets the budget and re-enables
+        dispatch — fixing the README is the self-healing path."""
+        svc = self._make_service()
+        sym_cfg = self._make_symphony_config()
+        github = AsyncMock()
+        github.get_file_blob_sha = AsyncMock(return_value="brand_new_sha")
+        github.get_file_content = AsyncMock(return_value="# README v2")
+        dispatch_fn = AsyncMock()
+
+        cache_state = self._make_cache_state(
+            tmp_path,
+            readme_sha=_combined_sha({"README.md": "old_sha"}),
+            last_bootstrap_succeeded=False,
+            bootstrap_attempts=3,
+            bootstrap_exhausted=True,
+            last_bootstrap_at=datetime.now(UTC) - timedelta(days=1),
+        )
+        state: dict = {"env_cache": {"sym": cache_state}, "config": MagicMock()}
+        await svc.check_and_trigger("sym", sym_cfg, github, state, dispatch_fn)
+
+        dispatch_fn.assert_awaited_once()
+        assert cache_state.bootstrap_attempts == 0
+        assert cache_state.bootstrap_exhausted is False
+
+    def test_consumer_hold_detail_names_exhaustion(self, tmp_path: Path) -> None:
+        """FR-010: consumer holds must say WHY — an exhausted bootstrap budget is
+        named (with the attempt count), not reported as a generic wait."""
+        from coordinare.services.env_cache import bootstrap_hold_detail
+
+        exhausted = self._make_cache_state(
+            tmp_path, bootstrap_attempts=3, bootstrap_exhausted=True,
+            last_bootstrap_error="ruby 9.9.9 unavailable",
+        )
+        detail = bootstrap_hold_detail(exhausted)
+        assert "exhausted" in detail.lower()
+        assert "3" in detail
+
+        pending = self._make_cache_state(tmp_path)
+        generic = bootstrap_hold_detail(pending)
+        assert "exhausted" not in generic.lower()
+
+
+# ---------------------------------------------------------------------------
+# 088 US5 (T028): restart honor path — persisted success is re-verified, not
+# blindly re-bootstrapped (and not blindly trusted either).
+# ---------------------------------------------------------------------------
+
+
+class TestRestartHonorPath:
+    """A fresh coordinare boot with a persisted successful bootstrap and an
+    unchanged spec SHA must run the cheap clean-room verify instead of a full
+    bootstrap (SC-004: ready in <2 min). Verify pass ⇒ ready; fail ⇒ full
+    bootstrap; un-runnable (None) ⇒ degraded, trust the persisted success."""
+
+    def _make_service(self) -> EnvCacheService:
+        coordinare_config = MagicMock()
+        coordinare_config.symphonies = []
+        coordinare_config.global_config.env_bootstrap_max_attempts = 3
+        return EnvCacheService(coordinare_config)
+
+    def _make_symphony_config(self) -> MagicMock:
+        cfg = MagicMock()
+        cfg.env_bootstrap_performer_id = "bootstrap"
+        cfg.env_spec_files = ["README.md"]
+        cfg.name = "test-symphony"
+        eff = MagicMock()
+        eff.github_org = "org"
+        eff.project_name = "repo"
+        cfg.effective_config = MagicMock(return_value=eff)
+        return cfg
+
+    def _make_cache_state(
+        self, tmp_path: Path, *, with_activate: bool = True, **overrides
+    ) -> EnvCacheState:
+        cache_dir = tmp_path / "env"
+        cache_dir.mkdir(exist_ok=True)
+        if with_activate:
+            (cache_dir / "activate.sh").write_text("#!/bin/sh\n")
+        defaults = dict(
+            symphony_name="sym",
+            sanitised_name="sym-abc",
+            cache_dir=cache_dir,
+            readme_sha=_combined_sha({"README.md": "same_sha"}),
+            last_bootstrap_succeeded=True,
+            last_bootstrap_at=datetime.now(UTC),
+            cache_dir_ready=True,
+        )
+        defaults.update(overrides)
+        return EnvCacheState(**defaults)
+
+    def _make_github(self, sha: str = "same_sha") -> AsyncMock:
+        github = AsyncMock()
+        github.get_file_blob_sha = AsyncMock(return_value=sha)
+        github.get_file_content = AsyncMock(return_value="# README")
+        return github
+
+    @pytest.mark.asyncio
+    async def test_verify_pass_marks_ready_without_bootstrap(self, tmp_path: Path) -> None:
+        """Persisted success + SHA match on a fresh boot → clean verify runs,
+        no bootstrap dispatch, and the cache is usable."""
+        svc = self._make_service()
+        cache_state = self._make_cache_state(tmp_path, cache_dir_ready=False)
+        state: dict = {"env_cache": {"sym": cache_state}, "config": MagicMock()}
+        dispatch_fn = AsyncMock()
+        verify_fn = AsyncMock(return_value=(True, "verify ok"))
+
+        await svc.check_and_trigger(
+            "sym", self._make_symphony_config(), self._make_github(), state,
+            dispatch_fn, clean_verify_fn=verify_fn,
+        )
+
+        verify_fn.assert_awaited_once_with("sym")
+        dispatch_fn.assert_not_called()
+        assert cache_state.cache_dir_ready is True
+        assert cache_state.last_bootstrap_succeeded is True
+
+    @pytest.mark.asyncio
+    async def test_verify_failure_triggers_full_bootstrap_immediately(
+        self, tmp_path: Path
+    ) -> None:
+        """Verify fail ⇒ the persisted success was phantom — downgrade it and
+        dispatch a full bootstrap NOW (no retry-cooldown wait: last_bootstrap_at
+        is recent here, and the dispatch must still fire)."""
+        svc = self._make_service()
+        cache_state = self._make_cache_state(
+            tmp_path, last_bootstrap_at=datetime.now(UTC)
+        )
+        state: dict = {"env_cache": {"sym": cache_state}, "config": MagicMock()}
+        dispatch_fn = AsyncMock()
+        verify_fn = AsyncMock(return_value=(False, "chromium: not found"))
+
+        await svc.check_and_trigger(
+            "sym", self._make_symphony_config(), self._make_github(), state,
+            dispatch_fn, clean_verify_fn=verify_fn,
+        )
+
+        verify_fn.assert_awaited_once()
+        dispatch_fn.assert_awaited_once()
+        assert cache_state.bootstrap_in_flight is True
+
+    @pytest.mark.asyncio
+    async def test_sha_mismatch_bootstraps_without_verify(self, tmp_path: Path) -> None:
+        """A spec change means the cache content is stale regardless of its
+        health — go straight to a full bootstrap, don't waste a verify run."""
+        svc = self._make_service()
+        cache_state = self._make_cache_state(
+            tmp_path, readme_sha=_combined_sha({"README.md": "old_sha"})
+        )
+        state: dict = {"env_cache": {"sym": cache_state}, "config": MagicMock()}
+        dispatch_fn = AsyncMock()
+        verify_fn = AsyncMock(return_value=(True, "verify ok"))
+
+        await svc.check_and_trigger(
+            "sym", self._make_symphony_config(), self._make_github("new_sha"), state,
+            dispatch_fn, clean_verify_fn=verify_fn,
+        )
+
+        verify_fn.assert_not_called()
+        dispatch_fn.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_verify_none_trusts_persisted_success(self, tmp_path: Path) -> None:
+        """Verify un-runnable (no verify.sh in cache / docker error) ⇒ degraded:
+        trust the persisted success — do NOT downgrade it or re-bootstrap."""
+        svc = self._make_service()
+        cache_state = self._make_cache_state(tmp_path)
+        state: dict = {"env_cache": {"sym": cache_state}, "config": MagicMock()}
+        dispatch_fn = AsyncMock()
+        verify_fn = AsyncMock(return_value=(None, "no verify.sh in cache"))
+
+        await svc.check_and_trigger(
+            "sym", self._make_symphony_config(), self._make_github(), state,
+            dispatch_fn, clean_verify_fn=verify_fn,
+        )
+
+        verify_fn.assert_awaited_once()
+        dispatch_fn.assert_not_called()
+        assert cache_state.last_bootstrap_succeeded is True
+        assert cache_state.cache_dir_ready is True
+
+    @pytest.mark.asyncio
+    async def test_verify_runs_only_once_per_process(self, tmp_path: Path) -> None:
+        """The honor path is a RESTART check, not a poll-cycle check — the
+        second cycle in the same process must not re-run the verify."""
+        svc = self._make_service()
+        cache_state = self._make_cache_state(tmp_path)
+        state: dict = {"env_cache": {"sym": cache_state}, "config": MagicMock()}
+        dispatch_fn = AsyncMock()
+        verify_fn = AsyncMock(return_value=(True, "verify ok"))
+        sym_cfg = self._make_symphony_config()
+        github = self._make_github()
+
+        await svc.check_and_trigger(
+            "sym", sym_cfg, github, state, dispatch_fn, clean_verify_fn=verify_fn
+        )
+        await svc.check_and_trigger(
+            "sym", sym_cfg, github, state, dispatch_fn, clean_verify_fn=verify_fn
+        )
+
+        verify_fn.assert_awaited_once()
+        dispatch_fn.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_in_process_success_suppresses_restart_verify(
+        self, tmp_path: Path
+    ) -> None:
+        """A bootstrap that succeeded IN THIS PROCESS was already clean-verified
+        by the daemon's completion path — the honor verify must not re-fire."""
+        svc = self._make_service()
+        cache_state = self._make_cache_state(tmp_path, last_bootstrap_succeeded=None)
+        state: dict = {"env_cache": {"sym": cache_state}, "config": MagicMock()}
+        svc.on_bootstrap_complete("sym", True, state)
+
+        dispatch_fn = AsyncMock()
+        verify_fn = AsyncMock(return_value=(True, "verify ok"))
+        await svc.check_and_trigger(
+            "sym", self._make_symphony_config(), self._make_github(), state,
+            dispatch_fn, clean_verify_fn=verify_fn,
+        )
+
+        verify_fn.assert_not_called()
+        dispatch_fn.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_activate_missing_retrigger_still_fires(self, tmp_path: Path) -> None:
+        """087's hollow-cache retrigger must survive the honor path: persisted
+        success with NO activate.sh on disk re-bootstraps (the verify is moot —
+        the cache demonstrably lost its toolchain)."""
+        svc = self._make_service()
+        cache_state = self._make_cache_state(
+            tmp_path, with_activate=False, last_bootstrap_at=None
+        )
+        state: dict = {"env_cache": {"sym": cache_state}, "config": MagicMock()}
+        dispatch_fn = AsyncMock()
+        verify_fn = AsyncMock(return_value=(True, "verify ok"))
+
+        await svc.check_and_trigger(
+            "sym", self._make_symphony_config(), self._make_github(), state,
+            dispatch_fn, clean_verify_fn=verify_fn,
+        )
+
+        verify_fn.assert_not_called()
+        dispatch_fn.assert_awaited_once()

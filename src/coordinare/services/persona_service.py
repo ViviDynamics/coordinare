@@ -425,6 +425,11 @@ DEFAULT_INSTRUCTIONS: dict[str, str] = {
         "Set `visual_validation_required=true` for any UI / UX / visual "
         "change (layout, styling, interaction, rendering, dashboards, "
         "pages). When required:\n"
+        "- PROVE the application booted: run a health check against the "
+        "running app (e.g. `curl -fsS http://localhost:<port>/`), record it "
+        "in `executed_checks`, and reference that exact command in "
+        "`app_boot_check` with its real exit code. Visual criteria without "
+        "boot proof count as UNVERIFIED, not passed.\n"
         "- Capture at least one `visual_evidence` artifact "
         "(screenshot / GIF / video) from this run.\n"
         "- If the environment blocks capture, set `environment_error` and "
@@ -445,6 +450,8 @@ DEFAULT_INSTRUCTIONS: dict[str, str] = {
         '"verification_steps": ["step 1", "step 2"], '
         '"pre_fix_repro_steps": ["optional known repro step"], '
         '"visual_validation_required": true/false, '
+        '"app_boot_check": {"command": "curl -fsS http://localhost:3000/", '
+        '"exit_code": 0}, '
         '"demo_setup_steps": ["optional setup + navigation step to reach the UI under test"], '
         '"visual_capture_commands": ["exact command attempted to capture screenshot/gif"], '
         '"visual_capture_blockers": ["optional reason screenshots could not be captured"], '
@@ -456,7 +463,10 @@ DEFAULT_INSTRUCTIONS: dict[str, str] = {
         "`verification_steps` is REQUIRED and must be non-empty. For every "
         "criterion counted in `criteria_passed`, `executed_checks` must carry "
         "a corresponding entry (command + exit_code) — unless you set "
-        "`environment_error` to declare you could not run the checks."
+        "`environment_error` to declare you could not run the checks. "
+        "`app_boot_check` is REQUIRED when `visual_validation_required` is "
+        "true (it must reference an `executed_checks` entry); use null when "
+        "the card has no visual criteria."
     ),
     "closer": (
         "## Role\n"

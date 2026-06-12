@@ -186,6 +186,11 @@ class EnvCacheStateSnapshot(BaseModel):
     # and the feedback-injection retry survives a restart.
     last_bootstrap_error: str | None = None
     cache_dir_ready: bool = False
+    # 088 (FR-009): bootstrap circuit-breaker budget. Persisted so a restart
+    # does not reset a failing bootstrap's attempt count; old snapshots load
+    # with the defaults (no migration).
+    bootstrap_attempts: int = 0
+    bootstrap_exhausted: bool = False
 
 
 class WorkflowSnapshot(BaseModel):

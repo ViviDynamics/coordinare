@@ -907,6 +907,7 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
         from coordinare.services.env_cache import (
             DEFAULT_DEVENV_ROOT,
             _cache_dir_has_activate,
+            bootstrap_hold_detail,
             get_env_volume_for_symphony,
         )
         from coordinare.services.http_performer_service import HTTPPerformerService
@@ -952,11 +953,9 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
                     bootstrap_in_flight=_ec_state_for_sym.bootstrap_in_flight,
                     readme_sha=_ec_state_for_sym.readme_sha,
                     last_seen_spec_sha=_ec_state_for_sym.last_seen_spec_sha,
-                    detail=(
-                        "Holding dispatch until env_bootstrap has SUCCESSFULLY "
-                        "completed for the current spec. Card retries on the next "
-                        "pickup cycle."
-                    ),
+                    bootstrap_exhausted=_ec_state_for_sym.bootstrap_exhausted,
+                    # 088 (FR-010): names the exhausted breaker when tripped.
+                    detail=bootstrap_hold_detail(_ec_state_for_sym),
                 )
                 _release_slot_on_error()
                 return state

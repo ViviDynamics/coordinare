@@ -11,6 +11,8 @@ previously dropped the refreshed value on the floor.
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import httpx
 import pytest
 
@@ -126,3 +128,112 @@ async def test_check_status_patch_failure_does_not_block_status_poll() -> None:
         "job-T", payload={"github_token": "ghs_new"}
     )
     assert result["status"] in {"ok", "in_progress", "running", "working"}
+
+
+# ---------------------------------------------------------------------------
+# 088 US6 (FR-012): retry-once-then-degrade on secret-refresh failure
+# ---------------------------------------------------------------------------
+
+
+def _running_job_response() -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={
+            "job_id": "job-T",
+            "state": "running",
+            "started_at": "2026-05-26T00:00:00Z",
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_check_status_patch_failure_retries_once_then_degrades() -> None:
+    """088 US6: a failed token PATCH is retried once immediately; a second
+    failure marks the session degraded (``secret_refresh_failed_at``) and
+    emits ``http_performer.secret_refresh_degraded`` at error level — but the
+    status poll still runs (the session continues, it is not killed)."""
+    import structlog.testing
+
+    patch_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal patch_count
+        if request.method == "PATCH":
+            patch_count += 1
+            return httpx.Response(500, json={"detail": "boom"})
+        return _running_job_response()
+
+    svc = HTTPPerformerService(_ephemeral_config(), client=_client(handler))
+
+    with structlog.testing.capture_logs() as cap_logs:
+        result = await svc.check_status(
+            "job-T", payload={"github_token": "ghs_new"}
+        )
+
+    assert patch_count == 2, "refresh failure must be retried exactly once"
+
+    degraded = [
+        e for e in cap_logs
+        if e["event"] == "http_performer.secret_refresh_degraded"
+    ]
+    assert len(degraded) == 1, f"expected one degraded event, got {cap_logs}"
+    assert degraded[0]["log_level"] == "error"
+    assert degraded[0]["performer_id"] == "perf-e1"
+
+    failed_at = svc.secret_refresh_failed_at("job-T")
+    assert isinstance(failed_at, datetime)
+
+    # Session continues — the status poll still ran and reported working.
+    assert result["status"] == "working"
+
+
+@pytest.mark.asyncio
+async def test_check_status_patch_transient_failure_retry_success_is_clean() -> None:
+    """088 US6: a single transient PATCH failure followed by a retry success
+    leaves the session clean — no degraded flag, no degraded event."""
+    import structlog.testing
+
+    patch_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal patch_count
+        if request.method == "PATCH":
+            patch_count += 1
+            if patch_count == 1:
+                return httpx.Response(500, json={"detail": "transient"})
+            return httpx.Response(204)
+        return _running_job_response()
+
+    svc = HTTPPerformerService(_ephemeral_config(), client=_client(handler))
+
+    with structlog.testing.capture_logs() as cap_logs:
+        result = await svc.check_status(
+            "job-T", payload={"github_token": "ghs_new"}
+        )
+
+    assert patch_count == 2, "first failure must trigger exactly one retry"
+    assert svc.secret_refresh_failed_at("job-T") is None
+    assert not [
+        e for e in cap_logs
+        if e["event"] == "http_performer.secret_refresh_degraded"
+    ]
+    assert result["status"] == "working"
+
+
+@pytest.mark.asyncio
+async def test_check_status_patch_success_does_not_retry() -> None:
+    """088 US6: a first-attempt PATCH success must not produce a second PATCH."""
+    patch_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal patch_count
+        if request.method == "PATCH":
+            patch_count += 1
+            return httpx.Response(204)
+        return _running_job_response()
+
+    svc = HTTPPerformerService(_ephemeral_config(), client=_client(handler))
+    await svc.check_status("job-T", payload={"github_token": "ghs_new"})
+
+    assert patch_count == 1
+    assert svc.secret_refresh_failed_at("job-T") is None

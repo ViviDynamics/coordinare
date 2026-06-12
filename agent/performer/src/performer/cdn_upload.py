@@ -280,18 +280,25 @@ async def resolve_visual_evidence_urls(
             candidate = Path(loc)
             if not candidate.is_absolute():
                 candidate = workspace_root / candidate
+            upload_error: str | None = None
             try:
                 url = await upload(
                     candidate, github_token, org, repo, issue_number,
                 )
             except Exception as exc:
+                upload_error = _redact(str(exc), github_token)
                 logger.warning(
                     "cdn_upload.evidence_upload_failed",
                     path=str(candidate),
-                    error=_redact(str(exc), github_token),
+                    error=upload_error,
                 )
                 url = None
             if url:
                 ev2["path_or_url"] = url
+            else:
+                # 088 (FR-006): record WHY the artifact stayed unpublished so the
+                # PR-comment renderer can list it as a capture blocker instead of
+                # a dead link.
+                ev2["upload_error"] = upload_error or "upload did not return a CDN URL"
         out.append(ev2)
     return out

@@ -20,6 +20,7 @@ from coordinare.graph.nodes.monitor_performer import (
 )
 from coordinare.graph.state import initial_state
 from coordinare.transport.base import TransportError
+from coordinare.transport.http_transport import PerformerAuthError
 
 # ---------------------------------------------------------------------------
 # Mock helpers (mirrors test_monitor_agent.py patterns)
@@ -3064,3 +3065,185 @@ async def test_stall_watchdog_trips_on_stable_full_event_list() -> None:
     assert result["phase"] == "dispatching"  # tripped -> kill + retry
     assert result["performer_stage"] == "architecting"
     assert result.get("last_progress_at") is None
+
+
+# ---------------------------------------------------------------------------
+# 088 US1 — qa_env_blocked terminal handling (T007)
+# ---------------------------------------------------------------------------
+
+
+def test_qa_env_blocked_is_not_a_terminal_success_state() -> None:
+    """qa_env_blocked is a terminal NON-success: it must never appear in
+    TERMINAL_SUCCESS_STATES (an advance there would re-open the false-pass)."""
+    assert "qa_env_blocked" not in TERMINAL_SUCCESS_STATES
+
+
+@pytest.mark.asyncio
+async def test_qa_env_blocked_holds_card_and_routes_env_reverify() -> None:
+    """FR-002/FR-003: a qa_env_blocked verdict holds the card on the SAME stage
+    with a structured reason, routes the symphony's env cache to the existing
+    re-verify machinery, and never advances nor starts the fix-feedback cycle."""
+    from unittest.mock import MagicMock
+
+    svc = _Performer(response={
+        "status": "qa_env_blocked",
+        "reason": "bundler missing — toolchain absent from PATH",
+    })
+    state = _make_state(
+        service=svc,
+        stage="qa",
+        sequence=["implementing", "qa"],
+    )
+    env_svc = MagicMock()
+    state["env_cache_service"] = env_svc
+    state["current_symphony"] = "sym"
+
+    result = await monitor_performer(state)
+
+    # Held, not advanced: the QA stage re-runs after the env cache is repaired.
+    assert result["performer_stage"] == "qa"
+    assert result["phase"] == "dispatching"
+    assert result["agent_dispatch"] == {}
+    assert result["agent_dispatch_at"] is None
+    # Never the fix-feedback cycle (that is qa_failed's path).
+    assert not result.get("relay_feedback")
+    # Routed to env re-verify via the existing forced-regen machinery.
+    env_svc.mark_runtime_health_failed.assert_called_once_with("sym", result)
+    # Structured hold reason names the blocker.
+    reason = str(result.get("env_health_hold_reason"))
+    assert "qa_env_blocked" in reason
+    assert "bundler missing" in reason
+
+
+@pytest.mark.asyncio
+async def test_qa_env_blocked_releases_performer_slot() -> None:
+    """qa_env_blocked is in the terminal-marker set: the performer slot is
+    released so the next queued card can use it."""
+    from unittest.mock import MagicMock
+
+    svc = _Performer(response={"status": "qa_env_blocked", "reason": "no toolchain"})
+    state = _make_state(service=svc, stage="qa", sequence=["implementing", "qa"])
+    slot_mgr = MagicMock()
+    slot_mgr.acquire.return_value = svc
+    state["slot_manager"] = slot_mgr
+
+    await monitor_performer(state)
+
+    slot_mgr.release.assert_called_once_with("qa", "ITEM_1")
+
+
+@pytest.mark.asyncio
+async def test_qa_env_blocked_without_env_service_still_holds() -> None:
+    """Missing env_cache_service/current_symphony must not crash the hold path."""
+    svc = _Performer(response={"status": "qa_env_blocked", "reason": "no toolchain"})
+    state = _make_state(service=svc, stage="qa", sequence=["implementing", "qa"])
+
+    result = await monitor_performer(state)
+
+    assert result["performer_stage"] == "qa"
+    assert result["phase"] == "dispatching"
+
+
+# ---------------------------------------------------------------------------
+# 088 US2 — terminal success respects env_cache_health_failed (T014)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_terminal_success_with_env_health_failed_does_not_advance() -> None:
+    """FR-004: a terminal success whose status payload carries
+    env_cache_health_failed must NOT advance — the card is held with the
+    structured reason terminal_success_env_health_failed and the stage re-runs
+    after the cache is repaired."""
+    from unittest.mock import MagicMock
+
+    svc = _Performer(response={
+        "status": "qa_passed",
+        "report": {"criteria_checked": 2, "criteria_passed": 2},
+        "env_cache_health_failed": True,
+    })
+    state = _make_state(service=svc, stage="qa", sequence=["implementing", "qa"])
+    env_svc = MagicMock()
+    state["env_cache_service"] = env_svc
+    state["current_symphony"] = "sym"
+
+    result = await monitor_performer(state)
+
+    # Held on the same stage; never advanced to monitoring_pr / next stage.
+    assert result["performer_stage"] == "qa"
+    assert result["phase"] == "dispatching"
+    assert result["agent_dispatch"] == {}
+    # mark_runtime_health_failed path taken (existing 063 wiring).
+    env_svc.mark_runtime_health_failed.assert_called_once_with("sym", result)
+    # Structured reason names the tainted success.
+    assert "terminal_success_env_health_failed" in str(result.get("env_health_hold_reason"))
+
+
+@pytest.mark.asyncio
+async def test_terminal_success_without_env_health_flag_advances_normally() -> None:
+    """Control: the same terminal success without the flag advances exactly as today."""
+    svc = _Performer(response={
+        "status": "qa_passed",
+        "report": {"criteria_checked": 2, "criteria_passed": 2},
+    })
+    # qa_passed on a non-final stage advances to the next stage.
+    state = _make_state(service=svc, stage="qa", sequence=["qa", "documenting"])
+
+    result = await monitor_performer(state)
+
+    assert result["performer_stage"] == "documenting"
+    assert result["phase"] == "dispatching"
+
+
+# ---------------------------------------------------------------------------
+# 088 US6 (FR-012): auth-failure attribution to stale credentials
+# ---------------------------------------------------------------------------
+
+
+class _PerformerAuthErrorService:
+    """Raises PerformerAuthError from check_status; reports a prior
+    secret-refresh failure for the session via secret_refresh_failed_at."""
+
+    def __init__(self, failed_at: datetime | None) -> None:
+        self._failed_at = failed_at
+
+    async def check_status(self, session_id: str, **kwargs: object) -> dict:
+        raise PerformerAuthError("401 from performer")
+
+    def secret_refresh_failed_at(self, session_id: str) -> datetime | None:
+        return self._failed_at
+
+
+@pytest.mark.asyncio
+async def test_auth_failure_with_refresh_failure_attributes_stale_credentials() -> None:
+    """088 US6: an auth-class failure on a session whose secret refresh
+    previously degraded gets the structured reason 'stale credentials
+    (refresh failed at T)' and routes to blocked, not generic system_error."""
+    gh = _GitHub()
+    failed_at = datetime(2026, 6, 11, 10, 30, tzinfo=UTC)
+    service = _PerformerAuthErrorService(failed_at)
+    state = _make_state(service=service, github=gh)
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "blocked"
+    questions = result.get("open_questions") or []
+    assert any("stale credentials (refresh failed at" in q for q in questions), (
+        f"expected stale-credentials attribution, got {questions}"
+    )
+    # The degradation timestamp must be cited in the reason.
+    assert any("2026-06-11" in q for q in questions)
+    assert ("ITEM_1", "BLOCKED") in gh.move_calls
+
+
+@pytest.mark.asyncio
+async def test_auth_failure_without_refresh_failure_keeps_retry_path() -> None:
+    """Control: an auth failure with no recorded refresh degradation keeps the
+    existing transport-error retry path (system_error budget)."""
+    service = _PerformerAuthErrorService(None)
+    state = _make_state(service=service)
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "system_error"
+    assert result["system_error_count"] == 1

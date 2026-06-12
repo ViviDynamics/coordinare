@@ -296,8 +296,11 @@ async def _activate_env_cache(env_cache_path: str) -> dict[str, str]:
     # BASH_ENV/ENV from the reference keeps profile-set vars in the delta.
     ref_env = {k: v for k, v in os.environ.items() if k not in ("BASH_ENV", "ENV")}
     try:
+        # Mirror the sourced invocation's command shape (source && env) so
+        # bash-internal bookkeeping that depends on command structure (e.g.
+        # checkwinsize) behaves identically on both sides of the diff.
         ref_proc = await asyncio.create_subprocess_exec(
-            "bash", "-c", "env -0",
+            "bash", "-c", "source /dev/null >/dev/null 2>&1 && env -0",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
             env=ref_env,
@@ -325,7 +328,10 @@ async def _activate_env_cache(env_cache_path: str) -> dict[str, str]:
     # shells re-source per command — openclaw/pi/codex would lose the toolchain),
     # and the shell-bootstrap pointers themselves (only in the delta as an
     # artifact of stripping them from the reference).
-    _never_propagate = {"_DEVENV_SOURCED", "BASH_ENV", "ENV"}
+    # COLUMNS/LINES: terminal geometry bash may inject as a checkwinsize
+    # fallback (80/24) when there is no tty (CI runners) — never meaningful
+    # to an agent subprocess and asymmetric between the two invocations.
+    _never_propagate = {"_DEVENV_SOURCED", "BASH_ENV", "ENV", "COLUMNS", "LINES"}
     delta: dict[str, str] = {}
     for k, v in sourced.items():
         if k in _never_propagate:
@@ -376,6 +382,42 @@ def _mark_env_cache_health_failed() -> None:
         _ENV_CACHE_HEALTH_FAILED = True
 
 
+# 088 US6 (FR-013) — human-readable description of the most recent
+# services-start.sh failure (timeout or non-zero exit). Consumed single-shot
+# by the outbound response packaging so QA can cite it as an environment
+# blocker (it joins the `environment_error` channel) instead of judging the
+# code change against a broken environment.
+_SERVICES_START_FAILURE: str | None = None
+_SERVICES_START_LOCK = threading.Lock()
+
+
+def consume_services_start_failure() -> str | None:
+    """Return (and clear) the stored services-start failure, if any."""
+    global _SERVICES_START_FAILURE
+    with _SERVICES_START_LOCK:
+        failure = _SERVICES_START_FAILURE
+        _SERVICES_START_FAILURE = None
+    return failure
+
+
+def _record_services_start_failure(
+    script: str, returncode: int | str, output_tail: str
+) -> None:
+    """Emit the error-level event and store the failure for the QA channel."""
+    log.error(
+        "env_cache.services_start_failed",
+        script=script,
+        returncode=returncode,
+        output_tail=output_tail,
+    )
+    global _SERVICES_START_FAILURE
+    with _SERVICES_START_LOCK:
+        _SERVICES_START_FAILURE = (
+            f"env-cache services-start failed: {script} "
+            f"(returncode={returncode}): {output_tail}".strip()
+        )
+
+
 async def _start_env_cache_services(
     env_cache_path: str, cache_env: dict[str, str]
 ) -> None:
@@ -402,18 +444,20 @@ async def _start_env_cache_services(
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120.0)
     except (OSError, asyncio.TimeoutError) as exc:
-        log.warning(
-            "env_cache.services_start_failed",
-            env_cache_path=env_cache_path,
-            error=str(exc),
+        # builtin TimeoutError subclasses OSError (3.10+), so check it first.
+        timed_out = isinstance(exc, asyncio.TimeoutError)
+        _record_services_start_failure(
+            script=str(start),
+            returncode="timeout" if timed_out else type(exc).__name__,
+            output_tail=str(exc) or ("timed out after 120s" if timed_out else ""),
         )
         return
     if proc.returncode != 0:
-        log.warning(
-            "env_cache.services_start_nonzero",
-            env_cache_path=env_cache_path,
+        output = (stderr or stdout).decode(errors="replace")
+        _record_services_start_failure(
+            script=str(start),
             returncode=proc.returncode,
-            stderr=stderr.decode(errors="replace")[:500],
+            output_tail=output[-500:],
         )
         return
     log.info(
