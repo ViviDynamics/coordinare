@@ -131,6 +131,10 @@ class Score(BaseModel):
     latest_main_sha: str = ""  # 054: used by QA to verify branch freshness
     env_cache_path: str = ""  # 060: container path of mounted env-cache; sourced via activate.sh
     orchestration: dict | None = None  # 080: dual-model proxy block (None = single, no proxy)
+    # 089: implementer local-test gate config delivered by dispatch_performer.
+    # Must be declared here or extra="ignore" silently drops it (C1). Shape:
+    # {enabled: bool, timeout_seconds: int}. None/absent ⇒ gate dormant (SC-005).
+    local_test_gate: dict | None = None
 
     model_config = {"extra": "ignore"}  # silently drop unknown fields from coordinare
 

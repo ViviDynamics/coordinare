@@ -333,6 +333,7 @@ def test_session_fields_all_present_in_initial_state_or_coordinare_state() -> No
         "processed_review_ids",
         "persona_scope",
         "bounce_counter",
+        "local_fix_counter",
         "review_empty_retry_count",
         "last_progress_at",
         "last_progress_fingerprint",

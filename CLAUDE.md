@@ -21,6 +21,8 @@ See AGENTS.md for all development guidelines.
 - N/A — no persisted coordinare state. The writable per-cache lib dir and the (087-env-cache-deterministic-activation)
 - Python 3.14 (project minimum 3.12; prod 3.14.5 via uv) + pydantic 2.x (result/status models, EnvCacheState), structlog (structured events), httpx (performer HTTP client), aiohttp (performer server) — no new external dependencies (088-qa-verdict-integrity)
 - JSON snapshot via `state_store.py` (existing) — extended with persisted bootstrap success + attempt budget fields on the env-cache state; no new store (088-qa-verdict-integrity)
+- Python 3.14 (project minimum 3.12; prod 3.14.5 via uv) + pydantic 2.x (config + response models), structlog (observability), the existing `ci_detection.detect()` service, the existing `run_command` performer helper, langgraph (coordinare graph nodes). No new external dependencies. (089-implementer-local-test-gate)
+- JSON snapshot via `state_store.py` (existing) — extended with a per-head `local_fix_counter` on `PersistedSession`, parallel to spec-075's `bounce_counter`. No new store. (089-implementer-local-test-gate)
 
 ## Recent Changes
 - 076-qa-cycle: Added Python 3.14 (project minimum: 3.12; production currently on 3.14.5 via uv) + pydantic 2.x, langgraph, structlog, docker SDK (or subprocess to `docker` CLI), fastapi (dashboard SSE), httpx (performer HTTP transport), pyyaml (config)

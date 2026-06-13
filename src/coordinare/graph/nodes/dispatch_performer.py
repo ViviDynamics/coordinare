@@ -61,6 +61,24 @@ def _persona_role_for_stage(stage: str) -> str | None:
     return _STAGE_TO_ROLE.get(stage)
 
 
+def _get_local_test_gate_config(state: CoordinareState) -> Any:
+    """Resolve the active symphony's persona_scope.local_test_gate (spec 089).
+
+    Mirrors ``monitor_performer._get_ci_gate_config``. Returns the
+    ``LocalTestGateConfig`` if available, else None (legacy single-symphony
+    mode), so the implementer local-test gate stays dormant until opt-in.
+    """
+    sym_name = state.get("current_symphony")
+    sym_configs = state.get("symphony_configs") or {}
+    sym_cfg = sym_configs.get(sym_name) if sym_name else None
+    if sym_cfg is None:
+        return None
+    persona_scope_cfg = getattr(sym_cfg, "persona_scope", None)
+    if persona_scope_cfg is None:
+        return None
+    return getattr(persona_scope_cfg, "local_test_gate", None)
+
+
 def _resolve_persona_slice_and_behavior(
     state: CoordinareState,
     card_id: str,
@@ -895,6 +913,18 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
                             persona=role,
                             depth=depth,
                         )
+
+    # 089: implementer local-test gate — coordinare-configured but executes in
+    # the performer, so the enable flag + timeout must ride the dispatch payload
+    # (Score.local_test_gate). Implementer-only; max_fix_attempts stays
+    # coordinare-side (consumed by the monitor self-fix loop).
+    if role == "implementer":
+        gate_cfg = _get_local_test_gate_config(state)
+        if gate_cfg is not None:
+            card_context["local_test_gate"] = {
+                "enabled": bool(getattr(gate_cfg, "enabled", False)),
+                "timeout_seconds": int(getattr(gate_cfg, "timeout_seconds", 600)),
+            }
 
     # --- Dispatch ---
     # T022/T033/T037 (060): Attach per-symphony env-cache volume so performers find

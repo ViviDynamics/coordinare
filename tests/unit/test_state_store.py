@@ -856,6 +856,70 @@ async def test_v5_snapshot_roundtrips_bounce_counter(tmp_path: Path) -> None:
     assert loaded.active_sessions["PVT_75"].bounce_counter == {"sha-abc": 2, "sha-def": 1}
 
 
+# --- 089: local_fix_counter persistence (v7 → v8 graceful upgrade) ---
+
+
+@pytest.mark.asyncio
+async def test_v7_snapshot_loads_with_empty_local_fix_counter(tmp_path: Path) -> None:
+    """089: a pre-089 snapshot (schema v7) whose PersistedSession entries lack
+    ``local_fix_counter`` deserializes cleanly under v8 with
+    ``local_fix_counter == {}``; the next local-test-gate decision repopulates
+    the head SHA entry.
+    """
+    import json
+
+    metrics = CoordinareMetrics()
+    path = tmp_path / "state.json"
+    store = StateStore(path=path, metrics=metrics)
+    snapshot = _make_snapshot(
+        phase="dispatching",
+        active_card_id="PVT_89",
+        active_sessions={
+            "PVT_89": PersistedSession(card_id="PVT_89", performer_stage="implementing"),
+        },
+    )
+    await store.save(snapshot)
+
+    data = json.loads(path.read_text())
+    data["schema_version"] = 7
+    data["active_sessions"]["PVT_89"].pop("local_fix_counter", None)
+    path.write_text(json.dumps(data))
+
+    loaded = await store.load()
+    assert loaded is not None
+    assert loaded.active_sessions["PVT_89"].local_fix_counter == {}
+
+
+@pytest.mark.asyncio
+async def test_v8_snapshot_roundtrips_local_fix_counter(tmp_path: Path) -> None:
+    """089: per-HEAD local-fix counts survive save → load so the escalation gate
+    does not forget local-test-gate fix attempts across daemon restarts. The
+    counter is independent of ``bounce_counter`` (SC-004)."""
+    metrics = CoordinareMetrics()
+    store = StateStore(path=tmp_path / "state.json", metrics=metrics)
+    snapshot = _make_snapshot(
+        phase="monitoring_performer",
+        active_card_id="PVT_89",
+        active_sessions={
+            "PVT_89": PersistedSession(
+                card_id="PVT_89",
+                performer_stage="implementing",
+                bounce_counter={"sha-abc": 1},
+                local_fix_counter={"sha-abc": 2, "sha-def": 1},
+            ),
+        },
+    )
+
+    await store.save(snapshot)
+    loaded = await store.load()
+
+    assert loaded is not None
+    session = loaded.active_sessions["PVT_89"]
+    assert session.local_fix_counter == {"sha-abc": 2, "sha-def": 1}
+    # SC-004: the two counters round-trip independently.
+    assert session.bounce_counter == {"sha-abc": 1}
+
+
 @pytest.mark.asyncio
 async def test_env_cache_roundtrips_bootstrap_budget_fields(tmp_path: Path) -> None:
     """088 (FR-009): the bootstrap circuit-breaker budget — ``bootstrap_attempts``

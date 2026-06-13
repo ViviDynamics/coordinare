@@ -1326,6 +1326,22 @@ class CIGateConfig(BaseModel):
     pending_timeout_seconds: int = Field(default=900, ge=60, le=7200)
 
 
+class LocalTestGateConfig(BaseModel):
+    """Implementer local test gate (spec 089), sibling of CIGateConfig.
+
+    Opt-in pre-filter: when enabled, the implementer runs the detected
+    test_command locally before push. Default-off → byte-identical to pre-089
+    (SC-005). ``max_fix_attempts`` is coordinare-only (drives the bounded
+    self-fix loop); it is never sent to the performer.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    timeout_seconds: int = Field(default=600, ge=60, le=7200)
+    max_fix_attempts: int = Field(default=2, ge=0, le=20)
+
+
 # ---------------------------------------------------------------------------
 # 074 — Persona Scope Tiering
 # ---------------------------------------------------------------------------
@@ -1349,6 +1365,10 @@ class PersonaScopeConfig(BaseModel):
     # 075 — Implementer CI gate (opt-in; default-off, see contracts/config-schema.md).
     persona_check_map: PersonaCheckMapConfig | None = None
     ci_gate: CIGateConfig = Field(default_factory=CIGateConfig)
+
+    # 089 — Implementer local test gate (opt-in; default-off, see
+    # contracts/local_test_gate_config.md).
+    local_test_gate: LocalTestGateConfig = Field(default_factory=LocalTestGateConfig)
 
     @field_validator("path_classes")
     @classmethod

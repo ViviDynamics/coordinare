@@ -138,6 +138,10 @@ class CardSession(TypedDict, total=False):
     # MUST round-trip through session ↔ state or the gate forgets bounces
     # between cycles and never escalates to needs_human_review.
     bounce_counter: dict[str, int]
+    # 089: per-HEAD implementer local-test self-fix counter.  Parallel to
+    # bounce_counter (keyed by head SHA, reset on new push); never reads/writes
+    # bounce_counter (SC-004).  MUST round-trip or the gate forgets the budget.
+    local_fix_counter: dict[str, int]
     # 077: consecutive empty-feedback re-reviews for the current reviewer turn.
     # Bounds the re-dispatch-on-empty retry (weak-model flip-flop) before the
     # 065 Fix 4c block fires. MUST round-trip so the counter survives the
@@ -221,6 +225,7 @@ _SESSION_FIELDS: tuple[str, ...] = (
     "processed_review_ids",
     "persona_scope",
     "bounce_counter",
+    "local_fix_counter",
     "review_empty_retry_count",
     "last_progress_at",
     "last_progress_fingerprint",
@@ -283,6 +288,7 @@ def create_session_from_card(card: dict[str, Any]) -> CardSession:
         processed_review_ids=set(),
         persona_scope=None,
         bounce_counter={},
+        local_fix_counter={},
         review_empty_retry_count=0,
         last_progress_at=None,
         last_progress_fingerprint=None,

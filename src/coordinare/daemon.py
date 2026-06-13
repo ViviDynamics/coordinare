@@ -142,6 +142,18 @@ def _persist_active_sessions(active_sessions: dict[str, Any]) -> dict[str, Persi
                     bounce_counter[str(k)] = int(v)
                 except (ValueError, OverflowError):
                     continue
+        # 089: per-HEAD implementer local-test self-fix counter (mirror
+        # bounce_counter validation — reject bools/non-finite/overflow).
+        local_fix_counter_raw = sess.get("local_fix_counter")
+        local_fix_counter: dict[str, int] = {}
+        if isinstance(local_fix_counter_raw, dict):
+            for k, v in local_fix_counter_raw.items():
+                if isinstance(v, bool) or not isinstance(v, (int, float)):
+                    continue
+                try:
+                    local_fix_counter[str(k)] = int(v)
+                except (ValueError, OverflowError):
+                    continue
         ci_gate_rollup_sig_raw = sess.get("ci_gate_rollup_signature")
         ci_gate_rollup_sig = ci_gate_rollup_sig_raw \
             if isinstance(ci_gate_rollup_sig_raw, str) and ci_gate_rollup_sig_raw else None
@@ -167,6 +179,7 @@ def _persist_active_sessions(active_sessions: dict[str, Any]) -> dict[str, Persi
             head_at_last_turn=head_last,
             persona_scope=persona_scope,
             bounce_counter=bounce_counter,
+            local_fix_counter=local_fix_counter,
             ci_gate_rollup_signature=ci_gate_rollup_sig,
         )
     return out
@@ -635,6 +648,7 @@ class CoordinareDaemon:
                     "head_at_last_turn": persisted.head_at_last_turn,
                     "persona_scope": persisted.persona_scope,
                     "bounce_counter": dict(persisted.bounce_counter),
+                    "local_fix_counter": dict(persisted.local_fix_counter),
                     "ci_gate_rollup_signature": persisted.ci_gate_rollup_signature,
                     "ci_gate_advisory_failures": [],
                 }
