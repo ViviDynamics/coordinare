@@ -1055,6 +1055,48 @@ class TestPersonaScopeConfig:
         assert "does_not_exist" in str(exc_info.value)
 
 
+class TestLocalTestGateConfig:
+    """089 T003 — config-level invariants for the implementer local test gate."""
+
+    def test_defaults(self) -> None:
+        """FR-008/FR-010: default-off, generous timeout, small fix budget."""
+        from coordinare.config import LocalTestGateConfig
+
+        cfg = LocalTestGateConfig()
+        assert cfg.enabled is False
+        assert cfg.timeout_seconds == 600
+        assert cfg.max_fix_attempts == 2
+
+    def test_nested_on_persona_scope_default_off(self) -> None:
+        """Sibling of ci_gate: PersonaScopeConfig carries a default-off gate."""
+        from coordinare.config import PersonaScopeConfig
+
+        scope = PersonaScopeConfig()
+        assert scope.local_test_gate.enabled is False
+        assert scope.local_test_gate.timeout_seconds == 600
+        assert scope.local_test_gate.max_fix_attempts == 2
+
+    @pytest.mark.parametrize("bad", [59, 7201])
+    def test_timeout_seconds_bounds_rejected(self, bad: int) -> None:
+        from coordinare.config import LocalTestGateConfig
+
+        with pytest.raises(ValidationError):
+            LocalTestGateConfig(timeout_seconds=bad)
+
+    @pytest.mark.parametrize("bad", [-1, 21])
+    def test_max_fix_attempts_bounds_rejected(self, bad: int) -> None:
+        from coordinare.config import LocalTestGateConfig
+
+        with pytest.raises(ValidationError):
+            LocalTestGateConfig(max_fix_attempts=bad)
+
+    def test_extra_forbidden(self) -> None:
+        from coordinare.config import LocalTestGateConfig
+
+        with pytest.raises(ValidationError):
+            LocalTestGateConfig(unknown_field=True)
+
+
 # ---------------------------------------------------------------------------
 # 074 T053 — closer.scope_behavior warns and is ignored at dispatch (FR-009)
 # ---------------------------------------------------------------------------

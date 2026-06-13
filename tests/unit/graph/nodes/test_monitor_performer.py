@@ -3145,6 +3145,190 @@ async def test_qa_env_blocked_without_env_service_still_holds() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 089 US2 — implementer env_blocked terminal handling (T016/T019)
+# ---------------------------------------------------------------------------
+
+
+def test_env_blocked_is_not_a_terminal_success_state() -> None:
+    """env_blocked is a terminal NON-success: an advance there would push code
+    that never ran cleanly (the role-agnostic mirror of qa_env_blocked)."""
+    assert "env_blocked" not in TERMINAL_SUCCESS_STATES
+
+
+@pytest.mark.asyncio
+async def test_env_blocked_routes_to_blocked_column_with_env_reason() -> None:
+    """089 US2 (FR-005/SC-003): an env_blocked verdict bails immediately to the
+    BLOCKED column carrying the env-cache reason — never advances, never
+    re-dispatches, never enters the fix-feedback cycle, invalidates the env
+    cache, releases the slot, and leaves local_fix_counter untouched (0 self-fix
+    attempts)."""
+    from unittest.mock import MagicMock
+
+    svc = _Performer(response={
+        "status": "env_blocked",
+        "reason": "postgres failed to start",
+    })
+    state = _make_state(
+        service=svc,
+        stage="implementing",
+        sequence=["implementing", "qa"],
+    )
+    env_svc = MagicMock()
+    state["env_cache_service"] = env_svc
+    state["current_symphony"] = "sym"
+    state["local_fix_counter"] = {"abc123": 1}
+    slot_mgr = MagicMock()
+    slot_mgr.acquire.return_value = svc
+    state["slot_manager"] = slot_mgr
+
+    result = await monitor_performer(state)
+
+    # Bailed to the blocked column — not advanced, not re-dispatched.
+    assert result["phase"] == "blocked"
+    assert result["agent_dispatch"] == {}
+    assert result["agent_dispatch_at"] is None
+    # Never the fix-feedback cycle (no code defect to fix).
+    assert not result.get("relay_feedback")
+    # Env cache invalidated so it rebuilds once an operator unblocks.
+    env_svc.mark_runtime_health_failed.assert_called_once_with("sym", result)
+    # Structured hold reason names the blocker.
+    reason = str(result.get("env_health_hold_reason"))
+    assert "env_blocked" in reason
+    assert "postgres failed to start" in reason
+    # The blocked card surfaces the env-cache reason to the operator.
+    assert "postgres failed to start" in str(result.get("system_error_reason"))
+    assert any(
+        "postgres failed to start" in str(q) for q in result.get("open_questions", [])
+    )
+    # Slot released.
+    slot_mgr.release.assert_called_once_with("implementing", "ITEM_1")
+    # Zero self-fix attempts consumed.
+    assert result.get("local_fix_counter") == {"abc123": 1}
+
+
+# ---------------------------------------------------------------------------
+# 089 US3 — bounded local-test self-fix loop with escalation (T020/T021/T022)
+# ---------------------------------------------------------------------------
+
+
+def _local_gate_state(
+    *,
+    head_after: str,
+    local_fix_counter: dict[str, int] | None = None,
+    bounce_counter: dict[str, int] | None = None,
+    max_fix_attempts: int = 2,
+    comments: list[dict] | None = None,
+) -> dict:
+    """State for an implementer changes_requested carrying local_test_failed."""
+    from coordinare.config import LocalTestGateConfig, PersonaScopeConfig
+
+    svc = _Performer(response={
+        "status": "changes_requested",
+        "local_test_failed": True,
+        "comments": comments or [{"body": "Local tests failed before push:\nFAIL", "author_login": "coordinare"}],
+        "head_after": head_after,
+    })
+    state = _make_state(
+        service=svc,
+        stage="implementing",
+        sequence=["implementing", "reviewing"],
+    )
+    if local_fix_counter is not None:
+        state["local_fix_counter"] = local_fix_counter
+    if bounce_counter is not None:
+        state["bounce_counter"] = bounce_counter
+
+    class _Sym:
+        persona_scope = PersonaScopeConfig(
+            local_test_gate=LocalTestGateConfig(enabled=True, max_fix_attempts=max_fix_attempts),
+        )
+
+    state["current_symphony"] = "default"
+    state["symphony_configs"] = {"default": _Sym()}
+    return state
+
+
+@pytest.mark.asyncio
+async def test_local_test_failed_increments_counter_and_redispatches() -> None:
+    """T020: on implementer changes_requested with local_test_failed=True,
+    local_fix_counter[head] increments and the implementer is re-dispatched
+    while the count <= max_fix_attempts; a new head SHA resets the count."""
+    # Attempt 2 of 2 (prior count 1) — still within budget, re-dispatch.
+    state = _local_gate_state(
+        head_after="sha1",
+        local_fix_counter={"sha1": 1},
+        max_fix_attempts=2,
+    )
+    result = await monitor_performer(state)
+
+    assert result["local_fix_counter"] == {"sha1": 2}
+    assert result["performer_stage"] == "implementing"
+    assert result["phase"] == "dispatching"
+    assert result["agent_dispatch"] == {}
+    assert result["agent_dispatch_at"] is None
+    # Failing output relayed back to the implementer.
+    assert result.get("relay_feedback")
+    assert "FAIL" in str(result["relay_feedback"])
+
+    # A new head SHA (agent committed a fix) starts a fresh count of 1,
+    # leaving the prior head's count intact.
+    state2 = _local_gate_state(
+        head_after="sha2",
+        local_fix_counter={"sha1": 2},
+        max_fix_attempts=2,
+    )
+    result2 = await monitor_performer(state2)
+    assert result2["local_fix_counter"] == {"sha1": 2, "sha2": 1}
+    assert result2["phase"] == "dispatching"
+
+
+@pytest.mark.asyncio
+async def test_local_test_failed_budget_exhausted_blocks_with_output() -> None:
+    """T021: once the count exceeds max_fix_attempts, the card routes to blocked
+    carrying the failing test output as the reason — no re-dispatch, no push."""
+    state = _local_gate_state(
+        head_after="sha1",
+        local_fix_counter={"sha1": 2},
+        max_fix_attempts=2,
+    )
+    from unittest.mock import MagicMock
+    slot_mgr = MagicMock()
+    slot_mgr.acquire.return_value = state["performer_services"]["implementing"]
+    state["slot_manager"] = slot_mgr
+
+    result = await monitor_performer(state)
+
+    assert result["local_fix_counter"] == {"sha1": 3}
+    assert result["phase"] == "blocked"
+    # Not re-dispatched.
+    assert not result.get("relay_feedback")
+    assert result["agent_dispatch"] == {}
+    assert result["agent_dispatch_at"] is None
+    # Failing output carried as the blocking reason.
+    blob = str(result.get("system_error_reason", "")) + str(result.get("open_questions", ""))
+    assert "FAIL" in blob
+    # Slot released.
+    slot_mgr.release.assert_called_once_with("implementing", "ITEM_1")
+
+
+@pytest.mark.asyncio
+async def test_local_fix_counter_independent_of_bounce_counter() -> None:
+    """T022 / SC-004: local_fix_counter and bounce_counter move independently —
+    incrementing the local-fix counter never reads or writes bounce_counter."""
+    state = _local_gate_state(
+        head_after="sha1",
+        local_fix_counter={},
+        bounce_counter={"sha1": 1},
+        max_fix_attempts=2,
+    )
+    result = await monitor_performer(state)
+
+    assert result["local_fix_counter"] == {"sha1": 1}
+    # bounce_counter untouched by the local-test self-fix path.
+    assert result.get("bounce_counter") == {"sha1": 1}
+
+
+# ---------------------------------------------------------------------------
 # 088 US2 — terminal success respects env_cache_health_failed (T014)
 # ---------------------------------------------------------------------------
 

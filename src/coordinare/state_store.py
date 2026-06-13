@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-CURRENT_SCHEMA_VERSION: int = 7
+CURRENT_SCHEMA_VERSION: int = 8
 
 # Lowest schema_version we still know how to read.  v1 snapshots are upgraded
 # in-memory at load time (065 Fix 7b: active_sessions added in v2; v1 snapshots
@@ -34,6 +34,8 @@ CURRENT_SCHEMA_VERSION: int = 7
 # wedge_count_window (FR-020 promotion threshold tracking), and
 # reconciliation_decisions_last_startup (per-card decision audit trail).  v1-v6
 # snapshots load with all five fields at their safe empty defaults.
+# v8 (089) adds local_fix_counter on PersistedSession (implementer local-test
+# self-fix budget, parallel to bounce_counter); v1-v7 snapshots load with {}.
 MIN_SUPPORTED_SCHEMA_VERSION: int = 1
 
 WorkflowPhase = Literal[
@@ -106,6 +108,10 @@ class PersistedSession(BaseModel):
     # bounce count across daemon restarts.  Optional / default ``{}`` keeps
     # v1-v4 snapshots loading unchanged.
     bounce_counter: dict[str, int] = Field(default_factory=dict)
+    # 089: per-HEAD implementer local-test self-fix counter (schema v8+).
+    # Parallel to bounce_counter — keyed by head SHA, never reads/writes it
+    # (SC-004).  Optional / default ``{}`` keeps v1-v7 snapshots loading.
+    local_fix_counter: dict[str, int] = Field(default_factory=dict)
     # 075 fix (schema v6+): signature of the last CI-gate rollup comment posted
     # so notify.py dedup survives daemon restarts.  None = not yet posted.
     ci_gate_rollup_signature: str | None = None

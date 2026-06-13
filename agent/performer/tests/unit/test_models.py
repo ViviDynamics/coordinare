@@ -138,6 +138,34 @@ class TestScore:
         assert s.acceptance_criteria == []
         assert s.base_branch == ""
 
+    def test_local_test_gate_survives_score_construction(self) -> None:
+        """089 T003a(b): the dispatched gate config must survive Score(**msg.payload).
+
+        ``card_context["local_test_gate"]`` flattens to a top-level
+        ``msg.payload`` key and is constructed via ``Score(**msg.payload)``
+        (main.py:1218). The model's ``extra="ignore"`` (models.py:135) would
+        silently drop it unless ``Score`` declares the field — without which
+        the gate no-ops in prod regardless of coordinare config (C1 gap).
+        """
+        s = Score(
+            title="T",
+            repo_url="https://github.com/org/repo",
+            branch="main",
+            github_token="tok",
+            local_test_gate={"enabled": True, "timeout_seconds": 600},
+        )
+        assert s.local_test_gate == {"enabled": True, "timeout_seconds": 600}
+
+    def test_local_test_gate_defaults_none(self) -> None:
+        """Absent gate config → field is None (gate dormant, SC-005)."""
+        s = Score(
+            title="T",
+            repo_url="https://github.com/org/repo",
+            branch="main",
+            github_token="tok",
+        )
+        assert s.local_test_gate is None
+
     def test_score_accepts_issue_number_and_issue_url(self) -> None:
         s = Score(
             title="T",

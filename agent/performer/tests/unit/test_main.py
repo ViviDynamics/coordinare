@@ -3478,3 +3478,298 @@ class TestPersonaTag:
         from performer.models import Score
 
         assert "weird" in _persona_tag(Score(title="t", repo_url="https://github.com/o/r", branch="b", role="weird"))
+
+
+# ---------------------------------------------------------------------------
+# 089 US1 — implementer local test gate
+# ---------------------------------------------------------------------------
+
+
+def _ci_run_result(success: bool, *, stdout: str = "", stderr: str = "", command: str = "pytest", duration: float = 1.5):
+    """Build a CIRunResult for mocking run_command."""
+    from performer.workspace import CIRunResult
+
+    return CIRunResult(
+        success=success,
+        exit_code=0 if success else 1,
+        stdout=stdout,
+        stderr=stderr,
+        command=command,
+        duration_seconds=duration,
+    )
+
+
+def _detection(test_command: str | None):
+    from coordinare.services.ci_detection import CIDetectionResult
+
+    return CIDetectionResult(stack="python", lint_command=None, test_command=test_command)
+
+
+@pytest.mark.asyncio
+class TestRunTestCheck:
+    async def test_standalone_import_error_passes_through(self) -> None:
+        """T009: coordinare package absent → pass-through (passed=True, command=None)."""
+        import sys
+
+        from performer.main import _run_test_check
+
+        with patch.dict(sys.modules, {"coordinare.services.ci_detection": None}):
+            result = await _run_test_check(Path("/tmp/x"))
+        assert result.passed is True
+        assert result.command is None
+
+    async def test_no_test_command_skips(self) -> None:
+        """T009: detect().test_command is None → skip (passed=True, command=None)."""
+        from performer.main import _run_test_check
+
+        with patch("coordinare.services.ci_detection.detect", return_value=_detection(None)):
+            result = await _run_test_check(Path("/tmp/x"))
+        assert result.passed is True
+        assert result.command is None
+
+    async def test_green_run_reports_command_and_duration(self) -> None:
+        """T010: green run → passed=True, command=<cmd>, duration>0."""
+        from performer.main import _run_test_check
+
+        with (
+            patch("coordinare.services.ci_detection.detect", return_value=_detection("pytest")),
+            patch("performer.main.run_command", new=AsyncMock(return_value=_ci_run_result(True, duration=2.0))),
+        ):
+            result = await _run_test_check(Path("/tmp/x"))
+        assert result.passed is True
+        assert result.command == "pytest"
+        assert result.duration_seconds > 0
+        assert result.env_blocked is False
+
+    async def test_code_failure_no_env_signal(self) -> None:
+        """T010: non-zero exit, no env signal → passed=False, env_blocked=False, output=<tail>."""
+        from performer.main import _run_test_check
+
+        with (
+            patch("coordinare.services.ci_detection.detect", return_value=_detection("pytest")),
+            patch(
+                "performer.main.run_command",
+                new=AsyncMock(return_value=_ci_run_result(False, stdout="3 failed", stderr="AssertionError")),
+            ),
+            patch("performer.workspace.consume_services_start_failure", return_value=None),
+            patch("performer.workspace.consume_env_cache_health_failure", return_value=False),
+        ):
+            result = await _run_test_check(Path("/tmp/x"))
+        assert result.passed is False
+        assert result.env_blocked is False
+        assert "AssertionError" in result.output or "3 failed" in result.output
+
+
+@pytest.mark.asyncio
+class TestImplementerLocalTestGateDonePath:
+    """T011: gate runs after lint, before push, on the implementer done-path."""
+
+    def _impl_perf(self):
+        perf = _make_perf(session_id="sid")
+        perf.score.role = "implementer"
+        perf.score.local_test_gate = {"enabled": True, "timeout_seconds": 600}
+        perf.backend.get_status.return_value = BackendStatus(state="done")
+        return perf
+
+    async def test_green_pushes_and_opens_pr(self) -> None:
+        perf = self._impl_perf()
+        push = AsyncMock()
+        with (
+            patch("performer.main._run_ci_check", new=AsyncMock(return_value=(True, ""))),
+            patch(
+                "performer.main._run_test_check",
+                new=AsyncMock(return_value=_local_test_result(passed=True, command="pytest")),
+            ),
+            patch("performer.main.push_branch", new=push),
+            patch(
+                "performer.main.create_pull_request",
+                new=AsyncMock(return_value=("https://github.com/org/repo/pull/1", "PR_n1")),
+            ),
+            patch("performer.main.get_head_sha", new=AsyncMock(return_value="abc123")),
+        ):
+            resp = await handle_status(_msg("status", session_id="sid"), perf)
+        assert resp.status == "working"
+        push.assert_awaited_once()
+
+    async def test_code_failure_blocks_push(self) -> None:
+        perf = self._impl_perf()
+        push = AsyncMock()
+        with (
+            patch("performer.main._run_ci_check", new=AsyncMock(return_value=(True, ""))),
+            patch(
+                "performer.main._run_test_check",
+                new=AsyncMock(
+                    return_value=_local_test_result(
+                        passed=False, command="pytest", output="E AssertionError: boom", env_blocked=False
+                    )
+                ),
+            ),
+            patch("performer.main.push_branch", new=push),
+            patch("performer.main.create_pull_request", new=AsyncMock()),
+            patch("performer.main.get_head_sha", new=AsyncMock(return_value="headsha1")),
+        ):
+            resp = await handle_status(_msg("status", session_id="sid"), perf)
+        assert resp.status == "changes_requested"
+        assert resp.local_test_failed is True
+        assert "boom" in (resp.comments[0]["body"] if resp.comments else "")
+        # head_after lets the coordinare key local_fix_counter and reset on a new HEAD.
+        assert resp.head_after == "headsha1"
+        push.assert_not_awaited()
+
+    async def test_gate_dormant_when_unconfigured(self) -> None:
+        """SC-005: no local_test_gate on score → no _run_test_check call, push proceeds."""
+        perf = self._impl_perf()
+        perf.score.local_test_gate = None
+        test_check = AsyncMock()
+        with (
+            patch("performer.main._run_ci_check", new=AsyncMock(return_value=(True, ""))),
+            patch("performer.main._run_test_check", new=test_check),
+            patch("performer.main.push_branch", new=AsyncMock()),
+            patch(
+                "performer.main.create_pull_request",
+                new=AsyncMock(return_value=("https://github.com/org/repo/pull/1", "PR_n1")),
+            ),
+            patch("performer.main.get_head_sha", new=AsyncMock(return_value="abc123")),
+        ):
+            resp = await handle_status(_msg("status", session_id="sid"), perf)
+        assert resp.status == "working"
+        test_check.assert_not_awaited()
+
+
+def _local_test_result(
+    *,
+    passed: bool,
+    command: str | None,
+    output: str = "",
+    env_blocked: bool = False,
+    env_reason: str | None = None,
+):
+    from performer.main import LocalTestResult
+
+    return LocalTestResult(
+        passed=passed,
+        command=command,
+        output=output,
+        duration_seconds=1.0,
+        env_blocked=env_blocked,
+        env_reason=env_reason,
+    )
+
+
+# ---------------------------------------------------------------------------
+# 089 US2 — broken env-cache classified as env-blocked, not a code defect
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+class TestRunTestCheckEnvBlocked:
+    """T014: a failing run coinciding with a spec-088 env signal → env_blocked."""
+
+    async def test_code_fail_with_services_start_failure_is_env_blocked(self) -> None:
+        from performer.main import _run_test_check
+
+        with (
+            patch("coordinare.services.ci_detection.detect", return_value=_detection("pytest")),
+            patch("performer.main.run_command", new=AsyncMock(return_value=_ci_run_result(False, stderr="boom"))),
+            patch("performer.workspace.consume_services_start_failure", return_value="postgres failed to start"),
+            patch("performer.workspace.consume_env_cache_health_failure", return_value=False),
+        ):
+            result = await _run_test_check(Path("/tmp/x"))
+        assert result.passed is False
+        assert result.env_blocked is True
+        assert result.env_reason == "postgres failed to start"
+
+    async def test_code_fail_with_env_cache_health_failure_is_env_blocked(self) -> None:
+        from performer.main import _run_test_check
+
+        with (
+            patch("coordinare.services.ci_detection.detect", return_value=_detection("pytest")),
+            patch("performer.main.run_command", new=AsyncMock(return_value=_ci_run_result(False, stderr="boom"))),
+            patch("performer.workspace.consume_services_start_failure", return_value=None),
+            patch("performer.workspace.consume_env_cache_health_failure", return_value=True),
+        ):
+            result = await _run_test_check(Path("/tmp/x"))
+        assert result.passed is False
+        assert result.env_blocked is True
+        assert result.env_reason
+
+    async def test_timeout_with_env_signal_is_env_blocked(self) -> None:
+        from performer.main import _run_test_check
+
+        with (
+            patch("coordinare.services.ci_detection.detect", return_value=_detection("pytest")),
+            patch("performer.main.run_command", new=AsyncMock(return_value=_ci_run_result(False, stderr="timed out"))),
+            patch("performer.workspace.consume_services_start_failure", return_value="services never came up"),
+            patch("performer.workspace.consume_env_cache_health_failure", return_value=False),
+        ):
+            result = await _run_test_check(Path("/tmp/x"))
+        assert result.env_blocked is True
+
+    async def test_timeout_no_signal_is_code_failure(self) -> None:
+        from performer.main import _run_test_check
+
+        with (
+            patch("coordinare.services.ci_detection.detect", return_value=_detection("pytest")),
+            patch("performer.main.run_command", new=AsyncMock(return_value=_ci_run_result(False, stderr="timed out"))),
+            patch("performer.workspace.consume_services_start_failure", return_value=None),
+            patch("performer.workspace.consume_env_cache_health_failure", return_value=False),
+        ):
+            result = await _run_test_check(Path("/tmp/x"))
+        assert result.passed is False
+        assert result.env_blocked is False
+
+    async def test_green_run_does_not_consult_env_signal(self) -> None:
+        """A green run pushes; env signals are never consulted (no false env-block)."""
+        from performer.main import _run_test_check
+
+        services = MagicMock(return_value="should not be read")
+        health = MagicMock(return_value=True)
+        with (
+            patch("coordinare.services.ci_detection.detect", return_value=_detection("pytest")),
+            patch("performer.main.run_command", new=AsyncMock(return_value=_ci_run_result(True))),
+            patch("performer.workspace.consume_services_start_failure", new=services),
+            patch("performer.workspace.consume_env_cache_health_failure", new=health),
+        ):
+            result = await _run_test_check(Path("/tmp/x"))
+        assert result.passed is True
+        assert result.env_blocked is False
+        services.assert_not_called()
+        health.assert_not_called()
+
+
+@pytest.mark.asyncio
+class TestImplementerLocalTestGateEnvBlockedDonePath:
+    """T015: helper env_blocked → PerformerResponse(status='env_blocked'), no push."""
+
+    def _impl_perf(self):
+        perf = _make_perf(session_id="sid")
+        perf.score.role = "implementer"
+        perf.score.local_test_gate = {"enabled": True, "timeout_seconds": 600}
+        perf.backend.get_status.return_value = BackendStatus(state="done")
+        return perf
+
+    async def test_env_blocked_holds_without_push(self) -> None:
+        perf = self._impl_perf()
+        push = AsyncMock()
+        with (
+            patch("performer.main._run_ci_check", new=AsyncMock(return_value=(True, ""))),
+            patch(
+                "performer.main._run_test_check",
+                new=AsyncMock(
+                    return_value=_local_test_result(
+                        passed=False,
+                        command="pytest",
+                        output="boom",
+                        env_blocked=True,
+                        env_reason="postgres failed to start",
+                    )
+                ),
+            ),
+            patch("performer.main.push_branch", new=push),
+            patch("performer.main.create_pull_request", new=AsyncMock()),
+        ):
+            resp = await handle_status(_msg("status", session_id="sid"), perf)
+        assert resp.status == "env_blocked"
+        assert resp.reason == "postgres failed to start"
+        assert resp.local_test_failed is False
+        push.assert_not_awaited()

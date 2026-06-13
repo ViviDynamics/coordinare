@@ -11,6 +11,7 @@ import traceback
 import uuid
 from datetime import UTC, datetime
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
@@ -133,6 +134,116 @@ async def _run_ci_check(stand_path: Path, label: str = "performer") -> tuple[boo
         output_preview=error_output[:200],
     )
     return False, error_output
+
+
+# ---------------------------------------------------------------------------
+# 089 — Implementer local test gate (US1)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class LocalTestResult:
+    """Outcome of the local test-execution gate.
+
+    ``passed`` is True when tests ran green, when no test command was detected,
+    or when the coordinare package is unavailable (standalone pass-through) — in
+    all of which cases the gate must not block the push.  ``command`` is the
+    test command that ran (None when skipped/passed-through).  ``output`` is the
+    truncated failure tail (empty on success).  ``env_blocked`` is True only when
+    a failure is attributable to an environment signal (089 US2); ``env_reason``
+    carries the human-readable cause in that case.
+    """
+
+    passed: bool
+    command: str | None
+    output: str
+    duration_seconds: float
+    env_blocked: bool = False
+    env_reason: str | None = None
+
+
+async def _run_test_check(
+    stand_path: Path, *, timeout_seconds: int = 600, label: str = "performer"
+) -> LocalTestResult:
+    """Run the detected test command in the workspace before pushing.
+
+    Mirrors :func:`_run_ci_check`: gracefully passes through when the coordinare
+    package is unavailable (standalone mode) or when no test command is detected,
+    so the coordinare-side remote CI gate remains the authoritative backstop.
+    """
+    try:
+        from coordinare.services.ci_detection import detect
+    except ImportError:
+        log.info("test_check.coordinare_not_available", label=label)
+        return LocalTestResult(passed=True, command=None, output="", duration_seconds=0.0)
+
+    result = detect(stand_path)
+    if result.test_command is None:
+        log.info("test_check.no_test_detected", label=label, stack=result.stack)
+        return LocalTestResult(passed=True, command=None, output="", duration_seconds=0.0)
+
+    log.info("test_check.running", label=label, command=result.test_command, stack=result.stack)
+    run_result = await run_command(result.test_command, stand_path, timeout=timeout_seconds)
+    if run_result.success:
+        log.info(
+            "test_check.passed",
+            label=label,
+            command=result.test_command,
+            duration=run_result.duration_seconds,
+        )
+        return LocalTestResult(
+            passed=True,
+            command=result.test_command,
+            output="",
+            duration_seconds=run_result.duration_seconds,
+        )
+
+    error_output = (run_result.stderr + "\n" + run_result.stdout).strip()
+
+    # 089 US2: a failure coinciding with a spec-088 env signal is an environment
+    # block, not a code defect — consult both single-shot consumers (drain both,
+    # don't short-circuit) only on the failure branch so a green run never
+    # spuriously env-blocks.
+    from performer.workspace import (
+        consume_env_cache_health_failure,
+        consume_services_start_failure,
+    )
+
+    services_failure = consume_services_start_failure()
+    health_failed = consume_env_cache_health_failure()
+    if services_failure or health_failed:
+        env_reason = services_failure or "env-cache health probe failed before local tests"
+        log.warning(
+            "test_check.env_blocked",
+            label=label,
+            command=result.test_command,
+            duration=run_result.duration_seconds,
+            env_reason=env_reason,
+        )
+        return LocalTestResult(
+            passed=False,
+            command=result.test_command,
+            output=error_output,
+            duration_seconds=run_result.duration_seconds,
+            env_blocked=True,
+            env_reason=env_reason,
+        )
+
+    log.warning(
+        "test_check.failed",
+        label=label,
+        command=result.test_command,
+        duration=run_result.duration_seconds,
+        exit_code=run_result.exit_code,
+        output_preview=error_output[:200],
+    )
+    return LocalTestResult(
+        passed=False,
+        command=result.test_command,
+        output=error_output,
+        duration_seconds=run_result.duration_seconds,
+        env_blocked=False,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2814,6 +2925,61 @@ async def handle_status(
                 comments=[{"body": f"Lint failed before push:\n{ci_error[:500]}"}],
             )
 
+        # 089 US1: implementer local test gate — run the detected test command
+        # before pushing so code that fails its own tests never reaches the
+        # remote CI gate (a cheap pre-filter; local pass ≠ remote pass).  Opt-in
+        # and coordinare-delivered via score.local_test_gate; when absent or
+        # disabled the gate is dormant and this path is byte-identical (SC-005).
+        # The config is delivered only on implementer dispatches (the coordinare
+        # injects card_context["local_test_gate"] solely for role == implementer),
+        # and this default push path is reached only by the implementer/default
+        # flow — every other role returns earlier — so config presence alone is a
+        # sufficient and robust gate without a brittle role-string comparison.
+        gate_cfg = perf.score.local_test_gate
+        if gate_cfg and gate_cfg.get("enabled"):
+            test_result = await _run_test_check(
+                perf.stand.path,
+                timeout_seconds=int(gate_cfg.get("timeout_seconds", 600)),
+                label=perf.role,
+            )
+            if test_result.env_blocked:
+                # 089 US2: an env-cache signal coincided with the failure — hold
+                # the card on the same stage (env-blocked, like qa_env_blocked),
+                # never re-dispatch the agent to fix fine code, never push.
+                log.warning(
+                    "pre_push_local_tests_env_blocked",
+                    role=perf.role,
+                    command=test_result.command,
+                    env_reason=test_result.env_reason,
+                )
+                perf.state = "env_blocked"
+                return PerformerResponse(
+                    status="env_blocked",
+                    session_id=perf.session_id,
+                    reason=test_result.env_reason,
+                )
+            if not test_result.passed:
+                log.warning(
+                    "pre_push_local_tests_failed",
+                    role=perf.role,
+                    command=test_result.command,
+                    output_preview=test_result.output[:200],
+                )
+                body = f"Local tests failed before push:\n{test_result.output[:500]}"
+                perf.state = "changes_requested"
+                perf.review_comments = [{"body": body}]
+                # 089 US3: carry the current HEAD so the coordinare can key the
+                # per-head local_fix_counter and reset the self-fix budget when
+                # the agent commits a fix (a new HEAD SHA).
+                _head_after = await get_head_sha(perf.stand)
+                return PerformerResponse(
+                    status="changes_requested",
+                    session_id=perf.session_id,
+                    comments=[{"body": body}],
+                    local_test_failed=True,
+                    head_after=_head_after,
+                )
+
         # Default path: push branch and open PR
         owner, repo = perf.score.owner_repo
         await push_branch(perf.stand, perf.score)
@@ -3004,7 +3170,7 @@ async def run_loop() -> None:
         except asyncio.TimeoutError:
             log.warning("session watchdog fired — stopping backend",
                         session_id=perf.session_id if perf else "")
-            if perf is not None and perf.state not in ("pr_opened", "plan_committed", "approved", "changes_requested", "security_passed", "security_failed", "qa_passed", "qa_failed", "qa_env_blocked", "docs_committed", "error"):
+            if perf is not None and perf.state not in ("pr_opened", "plan_committed", "approved", "changes_requested", "security_passed", "security_failed", "qa_passed", "qa_failed", "qa_env_blocked", "env_blocked", "docs_committed", "error"):
                 perf.state = "error"
                 perf.error_reason = (
                     f"watchdog: session exceeded {settings.AGENT_TIMEOUT:.0f}s"
@@ -3108,7 +3274,7 @@ async def run_loop() -> None:
         _write_response(resp)
 
         # Terminal states exit the loop
-        if resp.status in ("pr_opened", "plan_committed", "approved", "changes_requested", "security_passed", "security_failed", "qa_passed", "qa_failed", "qa_env_blocked", "docs_committed", "error") and msg.action != "health":
+        if resp.status in ("pr_opened", "plan_committed", "approved", "changes_requested", "security_passed", "security_failed", "qa_passed", "qa_failed", "qa_env_blocked", "env_blocked", "docs_committed", "error") and msg.action != "health":
             break
         # session_expired with no active session means nothing will ever start
         if resp.status == "session_expired" and perf is None:

@@ -32,6 +32,7 @@ class TestSchemaContractValidation:
             "approved", "changes_requested",
             "security_passed", "security_failed",
             "qa_passed", "qa_failed", "qa_env_blocked",
+            "env_blocked",
             "docs_committed", "env_bootstrap_complete", "assessment_complete",
             "partial_progress",
             "blocked", "error", "unknown", "busy", "acknowledged",

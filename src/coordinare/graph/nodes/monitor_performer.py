@@ -935,6 +935,24 @@ def _get_ci_gate_config(state: CoordinareState) -> Any:
     return getattr(persona_scope_cfg, "ci_gate", None)
 
 
+def _get_local_test_gate_config(state: CoordinareState) -> Any:
+    """Resolve the active symphony's persona_scope.local_test_gate config (spec 089).
+
+    Returns the ``LocalTestGateConfig`` if available, else None.  Used on the
+    coordinare side to read the coordinare-only ``max_fix_attempts`` budget for
+    the bounded local-test self-fix loop (US3).
+    """
+    sym_name = state.get("current_symphony")
+    sym_configs = state.get("symphony_configs") or {}
+    sym_cfg = sym_configs.get(sym_name) if sym_name else None
+    if sym_cfg is None:
+        return None
+    persona_scope_cfg = getattr(sym_cfg, "persona_scope", None)
+    if persona_scope_cfg is None:
+        return None
+    return getattr(persona_scope_cfg, "local_test_gate", None)
+
+
 def _get_persona_check_map(state: CoordinareState) -> dict | None:
     """Pull the configured persona_check_map for the active symphony (075 US3).
 
@@ -2059,6 +2077,7 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
         # security_failed, qa_failed, error) return early.
         _terminal_markers = TERMINAL_SUCCESS_STATES | {
             "changes_requested", "security_failed", "qa_failed", "qa_env_blocked",
+            "env_blocked",
             "error", "blocked", "session_expired", "token_limit",
             "partial_progress",
         }
@@ -2097,6 +2116,51 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
                     )
             state["env_health_hold_reason"] = f"qa_env_blocked: {_reason}"  # type: ignore[typeddict-unknown-key]
             state["phase"] = "dispatching"
+            state["agent_dispatch"] = {}
+            state["agent_dispatch_at"] = None
+            return state
+
+        # --- 089 (US2): implementer local-test gate env-blocked — role-agnostic ---
+        # The local test run failed coinciding with a spec-088 env-cache signal,
+        # so there is no code defect to fix. Per spec.md (US2, FR-005, SC-003) the
+        # card bails immediately to the BLOCKED column carrying the env-cache
+        # reason — it is not changes_requested and consumes zero self-fix attempts
+        # (local_fix_counter is left untouched). We still invalidate the env cache
+        # via mark_runtime_health_failed so it rebuilds once an operator unblocks.
+        if marker == "env_blocked":
+            _reason = str(status.get("reason") or "").strip() or (
+                "local tests failed with an environment blocker (no code defect)"
+            )
+            logger.warning(
+                "monitor_performer.env_blocked",
+                performer_stage=stage,
+                card_id=card_id,
+                reason=_reason,
+            )
+            _env_cache_svc = state.get("env_cache_service")
+            _sym_name = state.get("current_symphony")
+            if _env_cache_svc is not None and _sym_name:
+                try:
+                    _env_cache_svc.mark_runtime_health_failed(_sym_name, state)
+                except Exception as _exc:
+                    logger.warning(
+                        "monitor_performer.env_blocked_mark_failed",
+                        card_id=card_id,
+                        symphony=_sym_name,
+                        error=str(_exc),
+                    )
+            state["env_health_hold_reason"] = f"env_blocked: {_reason}"  # type: ignore[typeddict-unknown-key]
+            state["phase"] = "blocked"
+            state["system_error_reason"] = (
+                f"local tests could not run due to an environment blocker "
+                f"(no code defect); not pushing:\n{_reason}"
+            )
+            state["open_questions"] = [
+                "The implementer's local test gate hit an environment blocker "
+                f"(env-cache reason: {_reason}). The card is parked in the blocked "
+                "column — no code change will fix this; an operator must repair the "
+                "performer environment / env cache before the stage can re-run."
+            ]
             state["agent_dispatch"] = {}
             state["agent_dispatch_at"] = None
             return state
@@ -2268,6 +2332,68 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
                 comment_count=len(comments),
                 has_body=bool(body),
             )
+            # --- 089 (US3): bounded local-test self-fix loop ---------------
+            # The implementer ran the detected test command locally before
+            # pushing and it failed for a CODE reason (env_blocked is handled
+            # earlier as its own terminal marker). This is NOT a reviewer
+            # bounce: it never touches spec-075's bounce_counter /
+            # _feedback_cycle_exhausted machinery (SC-004). Instead we keep a
+            # per-head local_fix_counter and re-dispatch the implementer with
+            # the failing output while within the coordinare-only
+            # max_fix_attempts budget; once exhausted we block the card
+            # carrying the failing output — never pushing.
+            if status.get("local_test_failed") and stage == "implementing":
+                _head = str(status.get("head_after") or "").strip()
+                _gate_cfg = _get_local_test_gate_config(state)
+                _max_attempts = (
+                    int(getattr(_gate_cfg, "max_fix_attempts", 2))
+                    if _gate_cfg is not None
+                    else 2
+                )
+                _counter = dict(state.get("local_fix_counter") or {})
+                _count = _counter.get(_head, 0) + 1
+                _counter[_head] = _count
+                state["local_fix_counter"] = _counter  # type: ignore[typeddict-unknown-key]
+                if _count <= _max_attempts:
+                    logger.info(
+                        "monitor_performer.local_test_failed_redispatch",
+                        performer_stage=stage,
+                        card_id=card_id,
+                        head=_head,
+                        attempt=_count,
+                        max_fix_attempts=_max_attempts,
+                    )
+                    state["relay_feedback"] = comments  # type: ignore[typeddict-unknown-key]
+                    state["performer_stage"] = "implementing"
+                    state["phase"] = "dispatching"
+                    state["agent_dispatch"] = {}
+                    state["agent_dispatch_at"] = None
+                    return state
+                _fail_blob = body or "\n".join(
+                    str(c.get("body", "")) for c in comments if isinstance(c, dict)
+                )
+                logger.warning(
+                    "monitor_performer.local_test_failed_escalate",
+                    performer_stage=stage,
+                    card_id=card_id,
+                    head=_head,
+                    attempt=_count,
+                    max_fix_attempts=_max_attempts,
+                )
+                state["phase"] = "blocked"
+                state["system_error_reason"] = (
+                    f"local tests still failing after {_max_attempts} self-fix "
+                    f"attempt(s); not pushing:\n{_fail_blob}"
+                )
+                state["open_questions"] = [
+                    f"The implementer's local test gate failed "
+                    f"{_count - 1} consecutive self-fix attempt(s) (budget "
+                    f"{_max_attempts}) without converging. Failing output:\n"
+                    f"{_fail_blob}"
+                ]
+                state["agent_dispatch"] = {}
+                state["agent_dispatch_at"] = None
+                return state
             # 065 Fix 4c: safety net — if performer reported changes_requested
             # but supplied neither structured comments nor a prose body, the
             # implementer would have no information to act on.

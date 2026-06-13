@@ -18,9 +18,9 @@ from coordinare.state_store import (
 )
 
 
-def test_current_schema_version_is_7() -> None:
-    """Spec 076 bumps the snapshot schema."""
-    assert CURRENT_SCHEMA_VERSION == 7
+def test_current_schema_version_is_8() -> None:
+    """Spec 089 bumps the snapshot schema to v8 (per-session local_fix_counter)."""
+    assert CURRENT_SCHEMA_VERSION == 8
 
 
 def test_min_supported_unchanged() -> None:

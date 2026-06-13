@@ -22,6 +22,7 @@ StatusType = Literal[
     "qa_passed",
     "qa_failed",
     "qa_env_blocked",
+    "env_blocked",
     "docs_committed",
     "env_bootstrap_complete",
     "assessment_complete",
@@ -69,6 +70,10 @@ class ProtocolResponse(BaseModel):
     # non-zero during workspace setup. Coordinare's daemon glue routes this
     # into EnvCacheService.mark_runtime_health_failed for forced regen.
     env_cache_health_failed: bool = False
+    # 089: performer sets True when the implementer local-test gate ran the
+    # detected test_command and it failed for a code reason (not env). The
+    # monitor uses this on changes_requested to drive the bounded self-fix loop.
+    local_test_failed: bool = False
     # 063 Cross-cutting (T026c/T026d): performer-reported service-inference
     # outcome for env_bootstrap jobs. EnvCacheService stamps these onto
     # EnvCacheState so the dashboard can surface what the agent produced.
