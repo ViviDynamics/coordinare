@@ -225,6 +225,21 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
 
     state["pending_reviews"] = actionable
     if approved:
+        # 090 L1 (US1) — refuse to advance to merge while a REQUIRED check on
+        # the PR's *base* branch is red.  Default-off and fail-open, so when the
+        # gate is disabled / indeterminate this is byte-identical to going
+        # straight to "merging" (SC-006).  Re-evaluated each cycle (no latch).
+        from coordinare.graph.nodes.monitor_performer import (
+            _evaluate_baseline_prevention_gate,
+        )
+
+        base_updates, base_stop = await _evaluate_baseline_prevention_gate(
+            state, card_id, pr_url
+        )
+        if base_stop:
+            for key, value in base_updates.items():
+                state[key] = value  # type: ignore[literal-required]
+            return state
         state["phase"] = "merging"
     elif actionable:
         logger.info(

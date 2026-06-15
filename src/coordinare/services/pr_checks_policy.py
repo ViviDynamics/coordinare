@@ -77,7 +77,17 @@ def decide(
     (the default), 064's existing behavior is preserved byte-identically.
     """
     now = now or datetime.now(UTC)
-    elapsed = (now - rollup.head_pushed_at).total_seconds()
+    # A *base*-origin rollup (spec-090) has no `head_pushed_at` — the base is a
+    # long-lived branch, not a PR HEAD — so the push-age timeout must not apply
+    # to it. The head path always supplies a real datetime, so head rollups stay
+    # byte-identical (elapsed is computed exactly as before); only base rollups
+    # take the 0.0 branch, which keeps a pending base check on HOLD rather than
+    # tripping the pending-timeout BOUNCE.
+    elapsed = (
+        (now - rollup.head_pushed_at).total_seconds()
+        if rollup.head_pushed_at is not None
+        else 0.0
+    )
 
     if required_check_names is not None:
         present = {c.name for c in rollup.checks}

@@ -18,18 +18,24 @@ from urllib.parse import urlparse
 
 import structlog
 
+from coordinare.graph.attribution import coordinare_attribution
 from coordinare.graph.state import _retire_active_session, _set_current_card
 from coordinare.lib.acceptance_criteria import parse_acceptance_criteria
-from coordinare.services.ci_gate import CIGateDecision, FailedCheck
+from coordinare.services.base_gate import evaluate_base_gate
+from coordinare.services.ci_gate import CIGateDecision, FailedCheck, FailedCheckWithSignature
+from coordinare.services.failure_classification import BaselineFailure, classify_failure_origin
+from coordinare.services.failure_signature import make_failure_signature, normalize_reason
 from coordinare.services.github import PermanentGitHubError
-from coordinare.services.pr_checks_policy import decide
+from coordinare.services.pr_checks_policy import _is_failure, decide
 from coordinare.services.pr_checks_service import PrChecksService
 from coordinare.services.required_checks_resolver import resolve
+from coordinare.services.test_integrity_guard import analyze_diff
 from coordinare.transport.base import TransportError
 from coordinare.transport.http_transport import PerformerAuthError
 
 if TYPE_CHECKING:
     from coordinare.graph.state import CoordinareState
+    from coordinare.services.pr_checks_service import CheckRollup
 
 logger = structlog.get_logger(__name__)
 
@@ -953,6 +959,582 @@ def _get_local_test_gate_config(state: CoordinareState) -> Any:
     return getattr(persona_scope_cfg, "local_test_gate", None)
 
 
+def _get_baseline_prevention_gate_config(state: CoordinareState) -> Any:
+    """Resolve the active symphony's persona_scope.baseline_prevention_gate config.
+
+    Spec 090 L1 (US1). Returns the ``BaselinePreventionGateConfig`` if available,
+    else None. Legacy single-symphony mode (no symphony_configs entry) returns
+    None so the L1 base-precondition gate stays off until an operator opts in —
+    keeping merge decisions byte-identical to the pre-feature baseline (SC-006).
+    """
+    sym_name = state.get("current_symphony")
+    sym_configs = state.get("symphony_configs") or {}
+    sym_cfg = sym_configs.get(sym_name) if sym_name else None
+    if sym_cfg is None:
+        return None
+    persona_scope_cfg = getattr(sym_cfg, "persona_scope", None)
+    if persona_scope_cfg is None:
+        return None
+    return getattr(persona_scope_cfg, "baseline_prevention_gate", None)
+
+
+def _get_baseline_classification_gate_config(state: CoordinareState) -> Any:
+    """Resolve the active symphony's persona_scope.baseline_classification_gate config.
+
+    Spec 090 L2 (US2). Returns the ``BaselineClassificationGateConfig`` if
+    available, else None. Legacy single-symphony mode (no symphony_configs entry)
+    returns None so the L2 observe-only classifier stays off until an operator
+    opts in — keeping CI-gate decisions byte-identical to the pre-feature
+    baseline (SC-006).
+    """
+    sym_name = state.get("current_symphony")
+    sym_configs = state.get("symphony_configs") or {}
+    sym_cfg = sym_configs.get(sym_name) if sym_name else None
+    if sym_cfg is None:
+        return None
+    persona_scope_cfg = getattr(sym_cfg, "persona_scope", None)
+    if persona_scope_cfg is None:
+        return None
+    return getattr(persona_scope_cfg, "baseline_classification_gate", None)
+
+
+def _get_inherited_repair_gate_config(state: CoordinareState) -> Any:
+    """Resolve the active symphony's persona_scope.inherited_repair_gate config.
+
+    Spec 090 L3 (US3). Returns the ``InheritedRepairGateConfig`` if available,
+    else None. Legacy single-symphony mode (no symphony_configs entry) returns
+    None so autonomous baseline repair stays off until an operator opts in —
+    keeping dispatch byte-identical to the pre-feature baseline (SC-006).
+    """
+    sym_name = state.get("current_symphony")
+    sym_configs = state.get("symphony_configs") or {}
+    sym_cfg = sym_configs.get(sym_name) if sym_name else None
+    if sym_cfg is None:
+        return None
+    persona_scope_cfg = getattr(sym_cfg, "persona_scope", None)
+    if persona_scope_cfg is None:
+        return None
+    return getattr(persona_scope_cfg, "inherited_repair_gate", None)
+
+
+# 090-L3 (US3): the durable do-not-weaken instruction carried on every repair
+# mandate (contracts/repair-dispatch.md). It is a static coordinare-owned
+# template — never agent-authored — so the prohibition cannot be paraphrased
+# away across a long run (FR-016, FR-020).
+_REPAIR_INSTRUCTION = (
+    "A check that is already red on the base branch is failing on this PR for "
+    "the same reason. Fix the underlying code or configuration so the check "
+    "passes. You MUST NOT weaken, skip, xfail, delete, comment-out, mock-away, "
+    "or loosen any test or assertion to make the check pass. If the only way to "
+    "make it pass is to change a test's strictness, stop and leave the work for "
+    "a human."
+)
+
+
+def _build_repair_mandate(
+    *,
+    state: CoordinareState,
+    rollup: CheckRollup,
+    inherited: list[FailedCheckWithSignature],
+    head_sha: str,
+    inheritance_repair_counter: dict[str, int],
+) -> dict[str, Any] | None:
+    """Build the 090-L3 ``repair_mandate`` for the INHERITED head failures.
+
+    Returns ``None`` (and mutates nothing) unless the inherited-repair gate is
+    enabled, at least one INHERITED failure is present, and the per-head repair
+    budget has remaining attempts — keeping dispatch byte-identical to the
+    pre-feature baseline at all flag defaults (SC-006). When it does build a
+    mandate it increments the per-head budget AT dispatch (FR-018) so a crash
+    after dispatch still consumes the attempt, and stamps ``attempt`` with the
+    1-based post-increment value (always ``<= max_attempts``).
+
+    Each ``normalized_reason`` is recomputed from the head ``CheckEntry`` via the
+    SAME title/summary selection the classifier used, so it is byte-equal to the
+    canonical string the classifier hashed (reason-fidelity; FR-016). The
+    budget-exhausted escalation path is handled by the caller (T034).
+    """
+    cfg = _get_inherited_repair_gate_config(state)
+    if cfg is None or not getattr(cfg, "enabled", False):
+        return None
+    if not inherited:
+        return None
+    max_attempts = getattr(cfg, "max_repair_attempts_per_head", 1)
+    attempts_so_far = inheritance_repair_counter.get(head_sha, 0)
+    if attempts_so_far >= max_attempts:
+        # Budget exhausted — the caller escalates rather than dispatching.
+        return None
+    inheritance_repair_counter[head_sha] = attempts_so_far + 1
+    attempt = inheritance_repair_counter[head_sha]
+
+    head_by_name = {c.name: c for c in rollup.checks}
+    inherited_checks: list[dict[str, Any]] = []
+    for fc in inherited:
+        entry = head_by_name.get(fc.name)
+        if entry is not None and entry.conclusion is not None:
+            title, summary = entry.title, entry.summary
+        else:
+            title, summary = None, None
+        inherited_checks.append(
+            {
+                "name": fc.name,
+                "conclusion": fc.conclusion,
+                "normalized_reason": normalize_reason(title, summary),
+                "html_url": fc.html_url,
+            }
+        )
+    return {
+        "type": "baseline_repair",
+        "inherited_checks": inherited_checks,
+        "attempt": attempt,
+        "max_attempts": max_attempts,
+        "instruction": _REPAIR_INSTRUCTION,
+    }
+
+
+def _l3_budget_exhausted(
+    *,
+    state: CoordinareState,
+    inherited: list[FailedCheckWithSignature],
+    head_sha: str,
+    inheritance_repair_counter: dict[str, int],
+) -> bool:
+    """True iff an autonomous repair was warranted but the per-head budget is
+    already fully consumed — the caller must escalate rather than dispatch.
+
+    ``_build_repair_mandate`` returns ``None`` for BOTH genuine exhaustion AND a
+    configured budget of zero (``max_repair_attempts_per_head: 0`` =
+    classify-but-never-dispatch), so the bounce path can't tell them apart from
+    the ``None`` alone. This helper isolates *genuine* exhaustion: L3 enabled, at
+    least one INHERITED failure, a budget of ``>= 1``, and that budget already
+    consumed for this head. A zero budget returns ``False`` here (fall through to
+    a plain bounce, never escalate), and L3-disabled returns ``False`` so the
+    bounce path is byte-identical to the pre-spec-090 baseline (SC-006).
+    """
+    cfg = _get_inherited_repair_gate_config(state)
+    if cfg is None or not getattr(cfg, "enabled", False):
+        return False
+    if not inherited:
+        return False
+    max_attempts = getattr(cfg, "max_repair_attempts_per_head", 1)
+    if max_attempts < 1:
+        return False
+    attempts_so_far = inheritance_repair_counter.get(head_sha, 0)
+    return attempts_so_far >= max_attempts
+
+
+# 090-L3 (US3, T032): the dual test-integrity guard on the candidate repair diff.
+# ---------------------------------------------------------------------------
+# Comment template restating the no-auto-merge / stale-approval assumption
+# (Decision 7, FR-021, SC-005). The coordinare NEVER auto-merges a repair; it
+# lands the fix as a candidate and relies on GitHub-native "Dismiss stale
+# approvals on new commits" so a prior human approval cannot carry over onto the
+# repaired head. The lowercase substrings "approval" and "merge" are asserted by
+# the contract tests — keep them present.
+_REPAIR_CANDIDATE_COMMENT = (
+    "🤖 **Baseline repair landed as a candidate.** The dual test-integrity guard "
+    "(static analysis + an independent adversarial reviewer) cleared this fix for "
+    "an inherited base-branch failure.\n\n"
+    "This is **not** auto-merged. It awaits fresh human review and approval. Any "
+    "prior approval on an earlier head is dismissed by GitHub's "
+    "\"Dismiss stale approvals on new commits\" setting, so re-approval on this "
+    "head is required before merge."
+)
+
+
+def _pending_repair_dispatch(state: CoordinareState) -> dict[str, Any] | None:
+    """Return the most recent ``repair_audit`` record iff it is a pending
+    ``dispatch`` awaiting guard adjudication, else ``None``.
+
+    Gating the guard purely on the presence of a trailing ``dispatch`` record
+    keeps the whole L3 guard a no-op at all flag defaults: dispatch records are
+    only ever appended when the inherited-repair gate is enabled, so behavior is
+    byte-identical to pre-spec-090 when L3 is off (SC-006). Reading the last
+    record (not a scan) also makes the guard fail-safe: a flag toggled off
+    mid-flight still adjudicates the one pending repair before anything lands.
+    """
+    audit = state.get("repair_audit") or []
+    if not audit:
+        return None
+    last = audit[-1]
+    if isinstance(last, dict) and last.get("kind") == "dispatch":
+        return last
+    return None
+
+
+def _repair_record(
+    *,
+    head_sha: str,
+    attempt: int,
+    kind: str,
+    now_iso: str,
+    is_safe: bool | None = None,
+    flagged_patterns: list[str] | None = None,
+    detail: str | None = None,
+) -> dict[str, Any]:
+    """Build a JSON-serialized ``RepairDecisionRecord`` for ``repair_audit``."""
+    from coordinare.state_store import RepairDecisionRecord
+
+    return RepairDecisionRecord(
+        head_sha=head_sha,
+        attempt=attempt,
+        kind=kind,  # type: ignore[arg-type]
+        is_safe=is_safe,
+        flagged_patterns=flagged_patterns or [],
+        detail=detail,
+        decided_at=now_iso,
+    ).model_dump(mode="json")
+
+
+async def _dispatch_repair_reviewer(
+    *,
+    state: CoordinareState,
+    card_id: str,
+    diff: str,
+    pending: dict[str, Any],
+) -> tuple[bool, str]:
+    """Dispatch the independent ``diagnostic``-role adversarial reviewer with
+    fresh context to adjudicate the candidate repair diff (FR-019).
+
+    Returns ``(is_safe, detail)``. **Fails SAFE**: if the diagnostic performer is
+    not wired, the reviewer is treated as a veto (``is_safe=False``) so an
+    un-reviewed repair is never allowed to land. The real adversarial probe is
+    not yet wired end-to-end; until then the guard refuses to land any candidate
+    that reaches this half, which is the conservative default the contract
+    requires (the unit suite monkeypatches this function to exercise the
+    clear/veto/uncertainty branches).
+    """
+    services = state.get("performer_services") or {}
+    reviewer = services.get("diagnostic") if isinstance(services, dict) else None
+    if reviewer is None:
+        return (
+            False,
+            "No diagnostic-role reviewer is configured, so the candidate repair "
+            "could not be independently adversarially reviewed; refusing to land "
+            "it (guard fails safe).",
+        )
+    # A wired diagnostic reviewer would be dispatched here with fresh context and
+    # the do-not-weaken mandate. Until that transport exists, treat a configured
+    # but unexercised reviewer the same way the unit suite does via monkeypatch.
+    return (
+        False,
+        "Adversarial repair review is not yet implemented; refusing to land the "
+        "candidate (guard fails safe).",
+    )
+
+
+async def _post_repair_comment(state: CoordinareState, body: str) -> None:
+    """Best-effort: post a guard escalation/acceptance comment on the PR.
+
+    Reads the PR node id from ``current_card``; no-ops silently if the GitHub
+    service, the ``add_comment`` capability, or the subject id is missing.
+    Prefixed with the coordinare attribution header. Never raises — a comment
+    failure must not change the guard verdict.
+    """
+    github = state.get("github_service")
+    if github is None or not hasattr(github, "add_comment"):
+        return
+    card = state.get("current_card")
+    subject_id = card.get("pr_node_id") if isinstance(card, dict) else None
+    if not subject_id:
+        return
+    header = coordinare_attribution(state.get("config"), "implementing")
+    try:
+        await github.add_comment(str(subject_id), f"{header}\n\n{body}")
+    except Exception as exc:
+        logger.warning(
+            "repair_guard.comment_failed",
+            error=str(exc),
+            exc_type=type(exc).__name__,
+        )
+
+
+async def _evaluate_repair_guard(
+    state: CoordinareState,
+    card_id: str,
+    pr_url: str | None,
+) -> tuple[dict[str, Any], bool]:
+    """Adjudicate the landed candidate repair diff via the dual guard (T032).
+
+    Runs ONLY when a pending ``dispatch`` record is present. Returns a
+    ``(state_updates, stop)`` tuple. ``stop=True`` means REJECT — the candidate
+    is blocked, escalated, and never advanced (no push). ``stop=False`` means
+    both halves cleared — the candidate lands and the caller advances normally.
+
+    The guard **fails SAFE**: any uncertainty (diff cannot be fetched, reviewer
+    errors) rejects, unlike the fail-open L1/L2/CI gates. Adjudication order:
+    (1) static ``analyze_diff`` hot path, then (2) the independent adversarial
+    reviewer — consulted ONLY when the static half clears. Either veto rejects.
+    Each step appends a ``RepairDecisionRecord`` to ``repair_audit`` (FR-023).
+    """
+    pending = _pending_repair_dispatch(state)
+    if pending is None:
+        return {}, False
+
+    head_sha = str(pending.get("head_sha", ""))
+    attempt = int(pending.get("attempt", 0))
+    now_iso = datetime.now(UTC).isoformat()
+    audit: list[dict[str, Any]] = list(state.get("repair_audit") or [])
+
+    async def _reject(detail: str, *, kind_seq: list[dict[str, Any]]) -> tuple[dict[str, Any], bool]:
+        records = list(kind_seq)
+        records.append(
+            _repair_record(
+                head_sha=head_sha,
+                attempt=attempt,
+                kind="rejection",
+                now_iso=now_iso,
+                detail=detail,
+            )
+        )
+        open_qs = list(state.get("open_questions") or [])
+        open_qs.append(
+            f"Autonomous baseline repair (attempt {attempt}) on head {head_sha[:12]} "
+            f"was rejected by the test-integrity guard and NOT landed: {detail} "
+            "A human must review and resolve the inherited base-branch failure."
+        )
+        await _post_repair_comment(
+            state,
+            "🚫 **Baseline repair rejected by the test-integrity guard — not "
+            f"landed.** {detail}\n\nThe coordinare never weakens tests and never "
+            "auto-merges; this requires human review.",
+        )
+        return (
+            {
+                "phase": "blocked",
+                "agent_dispatch": {},
+                "agent_dispatch_at": None,
+                "repair_audit": audit + records,
+                "open_questions": open_qs,
+            },
+            True,
+        )
+
+    # (1) Fetch the candidate diff. A failure here is uncertainty → fail safe,
+    # and we reject BEFORE recording a static_guard record (analyze_diff never
+    # ran).
+    github = state.get("github_service")
+    if github is None or not hasattr(github, "get_pr_diff") or not pr_url:
+        return await _reject(
+            "Could not fetch the candidate repair diff to adjudicate it.",
+            kind_seq=[],
+        )
+    try:
+        diff, _changed = await github.get_pr_diff(pr_url)
+    except Exception as exc:
+        logger.warning(
+            "repair_guard.diff_fetch_failed",
+            card_id=card_id,
+            error=str(exc),
+            exc_type=type(exc).__name__,
+        )
+        return await _reject(
+            "Could not fetch the candidate repair diff to adjudicate it.",
+            kind_seq=[],
+        )
+
+    # (2) Static guard (hot path). FR-011: never log the raw diff.
+    is_safe, flagged = analyze_diff(diff or "")
+    static_record = _repair_record(
+        head_sha=head_sha,
+        attempt=attempt,
+        kind="static_guard",
+        now_iso=now_iso,
+        is_safe=is_safe,
+        flagged_patterns=flagged,
+    )
+    if not is_safe:
+        return await _reject(
+            "The static test-integrity check flagged the diff as weakening tests "
+            f"({', '.join(flagged)}).",
+            kind_seq=[static_record],
+        )
+
+    # (3) Independent adversarial reviewer — only when the static half cleared.
+    try:
+        reviewer_safe, reviewer_detail = await _dispatch_repair_reviewer(
+            state=state, card_id=card_id, diff=diff or "", pending=pending
+        )
+    except Exception as exc:
+        logger.warning(
+            "repair_guard.reviewer_failed",
+            card_id=card_id,
+            error=str(exc),
+            exc_type=type(exc).__name__,
+        )
+        reviewer_safe, reviewer_detail = (
+            False,
+            "The adversarial reviewer could not reach a verdict "
+            f"({type(exc).__name__}).",
+        )
+    reviewer_record = _repair_record(
+        head_sha=head_sha,
+        attempt=attempt,
+        kind="reviewer",
+        now_iso=now_iso,
+        is_safe=reviewer_safe,
+        detail=None if reviewer_safe else reviewer_detail,
+    )
+    if not reviewer_safe:
+        return await _reject(
+            reviewer_detail,
+            kind_seq=[static_record, reviewer_record],
+        )
+
+    # Both halves cleared → land as a candidate (never auto-merged).
+    acceptance_record = _repair_record(
+        head_sha=head_sha,
+        attempt=attempt,
+        kind="acceptance",
+        now_iso=now_iso,
+        is_safe=True,
+    )
+    await _post_repair_comment(state, _REPAIR_CANDIDATE_COMMENT)
+    logger.info(
+        "repair_guard.candidate_accepted",
+        card_id=card_id,
+        attempt=attempt,
+        head_sha=head_sha,
+    )
+    return {
+        "repair_audit": [*audit, static_record, reviewer_record, acceptance_record]
+    }, False
+
+
+def _build_baseline_index(
+    base_rollup: CheckRollup | None,
+) -> dict[str, BaselineFailure] | None:
+    """Index the merge-base baseline's *failing* checks by name (090-L2).
+
+    Returns ``None`` when the base rollup is unavailable (unfetchable /
+    indeterminate) so ``classify_failure_origin`` routes every HEAD failure to
+    UNKNOWN rather than INHERITED (FR-012).  A fetched base with zero failures
+    yields an **empty dict** — a distinct sentinel that lets same-name HEAD
+    failures classify INTRODUCED.  The two must never be conflated.
+    """
+    if base_rollup is None:
+        return None
+    index: dict[str, BaselineFailure] = {}
+    for entry in base_rollup.checks:
+        if not _is_failure(entry):
+            continue
+        conclusion = entry.conclusion or "failure"
+        signature, normalized = make_failure_signature(
+            entry.name, conclusion, entry.title, entry.summary
+        )
+        index[entry.name] = BaselineFailure(
+            name=entry.name,
+            conclusion=conclusion,
+            signature=signature,
+            normalized_reason=normalized,
+        )
+    return index
+
+
+def _plain(fc: FailedCheckWithSignature) -> FailedCheck:
+    """Drop the signature fields — FLAKE/UNKNOWN lists carry plain failures."""
+    return FailedCheck(
+        name=fc.name,
+        conclusion=fc.conclusion,
+        html_url=fc.html_url,
+        last_log_line=fc.last_log_line,
+    )
+
+
+async def _classify_head_failures(
+    *,
+    state: CoordinareState,
+    card_id: str,
+    svc: PrChecksService,
+    rollup: CheckRollup,
+    failed_names: list[str],
+    failed_conclusion: str,
+    url_by_name: dict[str, str],
+) -> dict[str, list[Any]]:
+    """Observe-only 090-L2 classification of each failing HEAD check.
+
+    Returns the four classification lists as ``CIGateDecision`` kwargs, or an
+    empty dict when the gate is disabled / unconfigured.  The entire body is
+    wrapped in its own ``try/except`` returning ``{}`` so a classification
+    failure can NEVER reach ``_evaluate_ci_gate``'s outer fail-open ``except``
+    (which would turn a BOUNCE into a PASS).  Classification is strictly
+    additive — it never influences the verdict or routing (FR-013, FR-014,
+    SC-006).
+    """
+    cfg = _get_baseline_classification_gate_config(state)
+    if cfg is None or not getattr(cfg, "enabled", False):
+        return {}
+    try:
+        base_rollup = await svc.get_base_branch_check_rollup(rollup.base_ref or "main")
+        baseline_index = _build_baseline_index(base_rollup)
+        head_by_name = {c.name: c for c in rollup.checks}
+
+        inherited: list[FailedCheckWithSignature] = []
+        introduced: list[FailedCheckWithSignature] = []
+        flake: list[FailedCheck] = []
+        unknown: list[FailedCheck] = []
+
+        for name in failed_names:
+            entry = head_by_name.get(name)
+            if entry is not None and entry.conclusion is not None:
+                # Real conclusion/output: a transient conclusion classifies
+                # FLAKE (FR-010), so we must NOT substitute the gate's
+                # overridden failed_conclusion here.
+                conclusion = entry.conclusion
+                title = entry.title
+                summary = entry.summary
+            else:
+                # pending_timeout / missing entry: no real output to read, so
+                # synthesize the gate's failed_conclusion ("timed_out" for a
+                # pending timeout → FLAKE; "failure" otherwise).
+                conclusion = failed_conclusion
+                title = None
+                summary = None
+            head_sig, head_reason = make_failure_signature(
+                name, conclusion, title, summary
+            )
+            base_failure = baseline_index.get(name) if baseline_index else None
+            fc = FailedCheckWithSignature(
+                name=name,
+                conclusion=conclusion,
+                html_url=url_by_name.get(name) or None,
+                head_signature=head_sig,
+                baseline_signature=base_failure.signature if base_failure else None,
+            )
+            origin = classify_failure_origin(fc, head_reason, baseline_index)
+            if origin == "inherited":
+                inherited.append(fc)
+            elif origin == "introduced":
+                introduced.append(fc)
+            elif origin == "flake":
+                flake.append(_plain(fc))
+            else:
+                unknown.append(_plain(fc))
+
+        logger.info(
+            "ci_gate.classified",
+            card_id=card_id,
+            pr=rollup.pr_number,
+            head=rollup.head_sha[:7],
+            inherited=[c.name for c in inherited],
+            introduced=[c.name for c in introduced],
+            flake=[c.name for c in flake],
+            unknown=[c.name for c in unknown],
+            base_fetched=baseline_index is not None,
+        )
+        return {
+            "inherited_checks": inherited,
+            "introduced_checks": introduced,
+            "flake_checks": flake,
+            "unknown_checks": unknown,
+        }
+    except Exception as exc:
+        logger.warning(
+            "ci_gate.classification_failed", card_id=card_id, error=str(exc)
+        )
+        return {}
+
+
 def _get_persona_check_map(state: CoordinareState) -> dict | None:
     """Pull the configured persona_check_map for the active symphony (075 US3).
 
@@ -1177,6 +1759,11 @@ async def _evaluate_ci_gate(
 
         head_sha = rollup.head_sha
         bounce_counter = dict(state.get("bounce_counter") or {})
+        # 090-L3 (US3): per-head repair-dispatch budget. Copied (not mutated in
+        # place) so a fail-open exit leaves the persisted counter untouched; the
+        # mandate builder increments this copy at dispatch (see
+        # _build_repair_mandate). Empty when L3 is disabled (SC-006).
+        inheritance_repair_counter = dict(state.get("inheritance_repair_counter") or {})
         max_bounces = getattr(cfg, "max_bounces_per_head", 3)
         now_iso = datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
@@ -1290,6 +1877,23 @@ async def _evaluate_ci_gate(
             for name in failed_names
         ]
 
+        # 090-L2 (US2): observe-only failure-origin classification. Computed once
+        # (the base rollup is fetched at most once) and spread onto the BOUNCE
+        # and ESCALATE decisions only — never PASS/HOLD, whose failed_checks is
+        # empty. Returns {} (no lists) when the classification gate is disabled,
+        # keeping the decision byte-identical to the pre-spec-090 baseline
+        # (SC-006). It is wrapped in its own try/except so it can never trip the
+        # outer fail-open path.
+        classification = await _classify_head_failures(
+            state=state,
+            card_id=card_id,
+            svc=svc,
+            rollup=rollup,
+            failed_names=failed_names,
+            failed_conclusion=failed_conclusion,
+            url_by_name=url_by_name,
+        )
+
         if count >= max_bounces:
             decision_obj = CIGateDecision(
                 verdict="escalate",
@@ -1300,6 +1904,7 @@ async def _evaluate_ci_gate(
                 bounce_count_after=count,
                 max_bounces_per_head=max_bounces,
                 decided_at=now_iso,
+                **classification,
             )
             logger.warning(
                 "ci_gate.decided",
@@ -1319,6 +1924,82 @@ async def _evaluate_ci_gate(
                     "agent_dispatch": {},
                     "agent_dispatch_at": None,
                     "bounce_counter": bounce_counter,
+                    # Round-trip the (unchanged) repair budget alongside the CI
+                    # bounce counter so a restart from blocked sees the same L3
+                    # budget it had pre-escalation.
+                    "inheritance_repair_counter": inheritance_repair_counter,
+                    "latest_ci_gate_decision": dump,
+                    "ci_gate_advisory_failures": [],
+                },
+                True,
+            )
+
+        # 090-L3 (US3): genuine repair-budget exhaustion (distinct from the CI
+        # bounce-budget exhaustion above) — at least one INHERITED failure is
+        # still red but the per-head autonomous-repair budget is fully consumed.
+        # Escalate for human repair (phase=blocked + open_questions + a PR
+        # comment + an ``escalation`` audit record) instead of looping a fresh
+        # autonomous attempt (FR-022, FR-024, SC-007). A zero budget
+        # (max_repair_attempts_per_head: 0) and L3-disabled both fall through to a
+        # plain bounce, keeping SC-006 byte-identical.
+        inherited_for_l3 = classification.get("inherited_checks") or []
+        repair_audit: list[dict[str, Any]] = list(state.get("repair_audit") or [])
+        if _l3_budget_exhausted(
+            state=state,
+            inherited=inherited_for_l3,
+            head_sha=head_sha,
+            inheritance_repair_counter=inheritance_repair_counter,
+        ):
+            attempts_used = inheritance_repair_counter.get(head_sha, 0)
+            reason = (
+                f"Autonomous baseline-repair budget exhausted for head "
+                f"{head_sha[:7]}: {attempts_used} attempt(s) used and "
+                f"{len(inherited_for_l3)} inherited base-branch failure(s) remain "
+                f"red. Escalating for human repair instead of dispatching another "
+                f"autonomous attempt."
+            )
+            decision_obj = CIGateDecision(
+                verdict="escalate",
+                head_sha=head_sha,
+                required_checks=sorted(required_names),
+                failed_checks=failed_objs,
+                resolver_source=resolved["source"],
+                bounce_count_after=count,
+                max_bounces_per_head=max_bounces,
+                decided_at=now_iso,
+                **classification,
+            )
+            dump = decision_obj.model_dump(mode="json")
+            _stash(dump)
+            repair_audit.append(
+                _repair_record(
+                    head_sha=head_sha,
+                    attempt=attempts_used,
+                    kind="escalation",
+                    now_iso=now_iso,
+                    detail=reason,
+                )
+            )
+            open_questions = list(state.get("open_questions") or [])
+            open_questions.append(reason)
+            await _post_repair_comment(
+                state, f"🤖 **Baseline repair budget exhausted.** {reason}"
+            )
+            logger.warning(
+                "ci_gate.repair_budget_exhausted",
+                pr=pr_num,
+                head=head_sha[:7],
+                attempts=attempts_used,
+            )
+            return (
+                {
+                    "phase": "blocked",
+                    "agent_dispatch": {},
+                    "agent_dispatch_at": None,
+                    "bounce_counter": bounce_counter,
+                    "inheritance_repair_counter": inheritance_repair_counter,
+                    "repair_audit": repair_audit,
+                    "open_questions": open_questions,
                     "latest_ci_gate_decision": dump,
                     "ci_gate_advisory_failures": [],
                 },
@@ -1334,6 +2015,7 @@ async def _evaluate_ci_gate(
             bounce_count_after=count,
             max_bounces_per_head=max_bounces,
             decided_at=now_iso,
+            **classification,
         )
         if decision.reason == "pending_timeout":
             body = (
@@ -1359,22 +2041,152 @@ async def _evaluate_ci_gate(
         _stash(dump)
         existing_rf = list(state.get("relay_feedback") or [])
         existing_rf.append({"body": body, "author_login": "coordinare"})
-        return (
-            {
-                "performer_stage": "implementing",
-                "phase": "dispatching",
-                "agent_dispatch": {},
-                "agent_dispatch_at": None,
-                "bounce_counter": bounce_counter,
-                "latest_ci_gate_decision": dump,
-                "relay_feedback": existing_rf,
-                "ci_gate_advisory_failures": [],
-            },
-            True,
+        # 090-L3 (US3): when L3 is enabled and at least one INHERITED failure
+        # remains within the per-head repair budget, build the repair mandate to
+        # thread into the re-dispatched implementer's JobInitPayload.metadata
+        # (the dispatch node reads result["repair_mandate"]). The builder mutates
+        # inheritance_repair_counter at dispatch and returns None when L3 is off,
+        # nothing is INHERITED, or the budget is exhausted — so the mandate key is
+        # absent and the counter is byte-identical to baseline when L3 is off
+        # (SC-006).
+        repair_mandate = _build_repair_mandate(
+            state=state,
+            rollup=rollup,
+            inherited=classification.get("inherited_checks") or [],
+            head_sha=head_sha,
+            inheritance_repair_counter=inheritance_repair_counter,
         )
+        bounce_updates: dict[str, Any] = {
+            "performer_stage": "implementing",
+            "phase": "dispatching",
+            "agent_dispatch": {},
+            "agent_dispatch_at": None,
+            "bounce_counter": bounce_counter,
+            "inheritance_repair_counter": inheritance_repair_counter,
+            "latest_ci_gate_decision": dump,
+            "relay_feedback": existing_rf,
+            "ci_gate_advisory_failures": [],
+        }
+        if repair_mandate is not None:
+            bounce_updates["repair_mandate"] = repair_mandate
+            # FR-023: record the dispatch decision in the append-only audit trail
+            # (the guard appends static_guard/reviewer/outcome on the next cycle).
+            repair_audit.append(
+                _repair_record(
+                    head_sha=head_sha,
+                    attempt=repair_mandate["attempt"],
+                    kind="dispatch",
+                    now_iso=now_iso,
+                    detail=(
+                        f"Dispatched autonomous baseline-repair attempt "
+                        f"{repair_mandate['attempt']}/{repair_mandate['max_attempts']} "
+                        f"for {len(repair_mandate['inherited_checks'])} inherited "
+                        f"failure(s)."
+                    ),
+                )
+            )
+            bounce_updates["repair_audit"] = repair_audit
+        return (bounce_updates, True)
     except Exception as exc:
         # FR-011: fail-open on any error so a broken gate never blocks flow.
         _warn_ci_gate_api_error(pr=pr_num, card_id=card_id, exc=exc)
+        return {}, False
+
+
+async def _evaluate_baseline_prevention_gate(
+    state: CoordinareState,
+    card_id: str,
+    pr_url: str | None,
+) -> tuple[dict[str, Any], bool]:
+    """L1 base-precondition gate (spec 090, US1) at the merge transition.
+
+    Refuses to advance an approved, head-green PR to ``merging`` while a
+    *required* check on its **base** branch is red (FR-001/FR-002).  Returns a
+    (state_updates, stop) tuple:
+
+    * ``stop=True`` — the base is RED: caller holds in ``monitoring_pr`` and
+      re-evaluates next cycle.  The gate is pure and holds no state, so a base
+      that turns green proceeds on the very next cycle (no latch, FR-006).
+    * ``stop=False`` — PROCEED: base all-green, only *non-required* base
+      failures (FR-004), a still-*pending* required base check, an
+      INDETERMINATE (unfetchable) base (FR-005), or the gate disabled.
+
+    The disabled / no-PR / unparseable-URL / no-github short-circuits and the
+    fail-open ``except`` keep merge decisions byte-identical to the pre-feature
+    baseline whenever L1 is off or its I/O breaks (SC-006).  The offending
+    *base* check(s) are named in the ``monitor_pr.base_not_green_hold`` record
+    distinctly from any head failure (FR-003).
+    """
+    cfg = _get_baseline_prevention_gate_config(state)
+    if cfg is None or not getattr(cfg, "enabled", False):
+        return {}, False
+
+    # No PR yet → nothing to gate on.
+    if not pr_url:
+        return {}, False
+
+    parts = _pr_url_parts(pr_url)
+    if parts is None:
+        logger.warning("monitor_pr.base_gate_unparseable_pr_url", pr_url=pr_url)
+        return {}, False
+    owner, repo, pr_num = parts
+
+    github = state.get("github_service")
+    if github is None:
+        return {}, False
+
+    try:
+        # Reuse the PrChecksService cached on the github service object (see
+        # _evaluate_ci_gate) so the branch-protection FORBIDDEN flag survives
+        # between poll cycles instead of resetting on every evaluation.
+        _svc_cache: dict[tuple[str, str], PrChecksService] = getattr(
+            github, "_pr_checks_service_cache", None
+        ) or {}
+        if not hasattr(github, "_pr_checks_service_cache"):
+            github._pr_checks_service_cache = _svc_cache
+        cache_key = (owner, repo)
+        if cache_key not in _svc_cache:
+            _svc_cache[cache_key] = PrChecksService(github, owner, repo)
+        svc = _svc_cache[cache_key]
+
+        # The PR's base ref is the branch we gate on; fall back to "main" only
+        # when baseRefName came back empty (malformed/stub payload).
+        rollup = await svc.get_pr_check_rollup(pr_num)
+        base_ref = rollup.base_ref or "main"
+        base_rollup = await svc.get_base_branch_check_rollup(base_ref)
+
+        scope = _get_session_persona_scope(state, card_id)
+        persona_check_map = _get_persona_check_map(state)
+        decision = evaluate_base_gate(
+            base_rollup, scope, persona_check_map=persona_check_map
+        )
+
+        if decision.decision == "BLOCK":
+            base_failing = [
+                {"name": c.name, "url": c.html_url, "conclusion": c.conclusion}
+                for c in decision.failing_checks
+            ]
+            logger.warning(
+                "monitor_pr.base_not_green_hold",
+                card_id=card_id,
+                pr=pr_num,
+                base_ref=base_ref,
+                base_failing_checks=base_failing,
+            )
+            return {"phase": "monitoring_pr"}, True
+
+        # PROCEED / INDETERMINATE → fall through to head-only behavior.
+        return {}, False
+    except Exception as exc:
+        # Fail-open: a broken L1 gate must never hard-block the merge (SC-006).
+        logger.warning(
+            "monitor_pr.base_gate_error",
+            card_id=card_id,
+            pr=pr_num,
+            reason=type(exc).__name__,
+            error=str(exc),
+            fail_open=True,
+        )
         return {}, False
 
 
@@ -2202,6 +3014,19 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
                 pr_url_for_gate = status.get("pr_url") if status else None
                 if not pr_url_for_gate and isinstance(card, dict):
                     pr_url_for_gate = card.get("pr_url")
+                # 090-L3 (US3): adjudicate a pending candidate repair via the dual
+                # test-integrity guard BEFORE the CI gate. A weakened test could
+                # turn the inherited check green precisely BECAUSE the requirement
+                # was removed, so the guard must catch it before the CI gate would
+                # forward it. No-op at all flag defaults (SC-006).
+                if _pending_repair_dispatch(state) is not None:
+                    guard_updates, guard_stop = await _evaluate_repair_guard(
+                        state, card_id, pr_url_for_gate
+                    )
+                    for key, value in guard_updates.items():
+                        state[key] = value  # type: ignore[literal-required]
+                    if guard_stop:
+                        return state
                 ci_updates, ci_stop = await _evaluate_ci_gate(
                     state, card_id, pr_url_for_gate
                 )

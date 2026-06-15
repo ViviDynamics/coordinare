@@ -73,6 +73,24 @@ def test_qa_default_mentions_verification_and_visual_evidence() -> None:
     assert "reproduction steps" in qa_text.lower()
 
 
+def test_implementer_default_forbids_weakening_tests() -> None:
+    """090 (T030): the implementer persona carries the durable do-not-weaken
+    mandate so the prohibition survives long runs even before the coordinare's
+    independent test-integrity guard ever runs (FR-018, FR-020)."""
+    personas = PersonasConfig()
+    text = get_effective_instructions("implementer", personas)
+    lower = text.lower()
+
+    # The fix is the underlying code, never the test/check.
+    assert "weaken" in lower
+    # Every weakening vector the static guard rejects is named so the model
+    # recognizes them as forbidden, not merely discouraged.
+    for forbidden in ("skip", "xfail", "delete", "mock", "loosen"):
+        assert forbidden in lower, forbidden
+    # Hard stop + escalate rather than declaring DONE on a weakened check.
+    assert "human" in lower
+
+
 def test_security_default_uses_taint_to_sink_checklist() -> None:
     """US2 (083): the security persona must drive a CWE taint→sink review.
 

@@ -1500,6 +1500,48 @@ def test_persist_active_sessions_round_trips_head_audit_fields() -> None:
     assert sess["head_at_last_turn"] == "bbb222"
 
 
+def test_persist_active_sessions_drops_malformed_repair_audit_entries() -> None:
+    """090-L3: a corrupt ``repair_audit`` entry must be dropped, never crash the
+    whole snapshot load.
+
+    ``PersistedSession.repair_audit`` is ``list[RepairDecisionRecord]`` (frozen,
+    ``extra="forbid"``, required fields), so handing a malformed dict straight to
+    pydantic would raise and fail the entire snapshot. ``_persist_active_sessions``
+    validates each entry up front and skips the bad ones, keeping the well-formed
+    decisions so the audit trail survives a partially-corrupt on-disk snapshot.
+    """
+    from coordinare.daemon import _persist_active_sessions
+
+    good = {
+        "head_sha": "aaa111",
+        "attempt": 1,
+        "kind": "dispatch",
+        "decided_at": "2026-06-14T12:00:00+00:00",
+    }
+    live = {
+        "card-90": {
+            "current_card": {"id": "card-90"},
+            "performer_stage": "implementing",
+            "phase": "monitoring_performer",
+            "repair_audit": [
+                good,
+                {"kind": "dispatch"},  # missing required fields → drop
+                {**good, "kind": "not_a_real_kind"},  # bad Literal → drop
+                {**good, "bogus_field": True},  # extra="forbid" → drop
+                "not-even-a-dict",  # wrong type → drop
+            ],
+        }
+    }
+
+    persisted = _persist_active_sessions(live)
+
+    audit = persisted["card-90"].repair_audit
+    assert len(audit) == 1
+    assert audit[0].head_sha == "aaa111"
+    assert audit[0].kind == "dispatch"
+    assert audit[0].attempt == 1
+
+
 # ---------------------------------------------------------------------------
 # 073 Fix 3: env_cache persistence — _persist_env_cache + restore overlay
 # ---------------------------------------------------------------------------

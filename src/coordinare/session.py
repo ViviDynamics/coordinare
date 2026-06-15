@@ -142,6 +142,17 @@ class CardSession(TypedDict, total=False):
     # bounce_counter (keyed by head SHA, reset on new push); never reads/writes
     # bounce_counter (SC-004).  MUST round-trip or the gate forgets the budget.
     local_fix_counter: dict[str, int]
+    # 090-L3: per-HEAD autonomous baseline-repair dispatch budget.  Keyed by head
+    # SHA (a new push resets the budget for that SHA); incremented AT dispatch so
+    # a crash after dispatch still consumes the attempt.  MUST round-trip or the
+    # repair gate forgets the budget and could loop.  Empty when L3 is disabled
+    # (SC-006).
+    inheritance_repair_counter: dict[str, int]
+    # 090-L3: append-only audit trail of every repair decision (dispatch /
+    # static_guard / reviewer / acceptance / rejection / escalation) as serialized
+    # RepairDecisionRecord dicts.  MUST round-trip so the FR-023 trail survives
+    # daemon restarts.  Empty when L3 is disabled (SC-006).
+    repair_audit: list[dict[str, Any]]
     # 077: consecutive empty-feedback re-reviews for the current reviewer turn.
     # Bounds the re-dispatch-on-empty retry (weak-model flip-flop) before the
     # 065 Fix 4c block fires. MUST round-trip so the counter survives the
@@ -226,6 +237,8 @@ _SESSION_FIELDS: tuple[str, ...] = (
     "persona_scope",
     "bounce_counter",
     "local_fix_counter",
+    "inheritance_repair_counter",
+    "repair_audit",
     "review_empty_retry_count",
     "last_progress_at",
     "last_progress_fingerprint",
@@ -289,6 +302,8 @@ def create_session_from_card(card: dict[str, Any]) -> CardSession:
         persona_scope=None,
         bounce_counter={},
         local_fix_counter={},
+        inheritance_repair_counter={},
+        repair_audit=[],
         review_empty_retry_count=0,
         last_progress_at=None,
         last_progress_fingerprint=None,

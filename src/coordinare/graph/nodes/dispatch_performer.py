@@ -925,6 +925,13 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
                 "enabled": bool(getattr(gate_cfg, "enabled", False)),
                 "timeout_seconds": int(getattr(gate_cfg, "timeout_seconds", 600)),
             }
+        # 090-L3: when the CI gate built an autonomous baseline-repair mandate
+        # (INHERITED failures, gate enabled, budget not exhausted), ride it into
+        # the implementer payload so the performer scopes its work to repairing
+        # the inherited red checks. Present only on a repair-dispatch cycle.
+        repair_mandate = state.get("repair_mandate")
+        if repair_mandate:
+            card_context["repair_mandate"] = repair_mandate
 
     # --- Dispatch ---
     # T022/T033/T037 (060): Attach per-symphony env-cache volume so performers find

@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 import structlog
+from pydantic import ValidationError
 
 from coordinare.graph.nodes.check_board import NON_SLOT_PHASES, PASSIVE_PHASES
 from coordinare.graph.nodes.github_retry import (
@@ -37,6 +38,7 @@ from coordinare.session import _SESSION_FIELDS, session_to_state, state_to_sessi
 from coordinare.state_store import (
     EnvCacheStateSnapshot,
     PersistedSession,
+    RepairDecisionRecord,
     StateLoadError,
     WorkflowPhase,
     WorkflowSnapshot,
@@ -154,6 +156,32 @@ def _persist_active_sessions(active_sessions: dict[str, Any]) -> dict[str, Persi
                     local_fix_counter[str(k)] = int(v)
                 except (ValueError, OverflowError):
                     continue
+        # 090-L3: per-HEAD INHERITED-failure repair budget (mirror bounce_counter
+        # validation — reject bools/non-finite/overflow) + append-only repair audit
+        # (validate each entry against RepairDecisionRecord here and drop any that
+        # fail — a corrupt entry is skipped, never crash-on-load. We cannot rely on
+        # PersistedSession's own coercion: it raises on a malformed list item rather
+        # than dropping it, which would fail the whole snapshot load).
+        inheritance_repair_counter_raw = sess.get("inheritance_repair_counter")
+        inheritance_repair_counter: dict[str, int] = {}
+        if isinstance(inheritance_repair_counter_raw, dict):
+            for k, v in inheritance_repair_counter_raw.items():
+                if isinstance(v, bool) or not isinstance(v, (int, float)):
+                    continue
+                try:
+                    inheritance_repair_counter[str(k)] = int(v)
+                except (ValueError, OverflowError):
+                    continue
+        repair_audit_raw = sess.get("repair_audit")
+        repair_audit: list[RepairDecisionRecord] = []
+        if isinstance(repair_audit_raw, (list, tuple)):
+            for r in repair_audit_raw:
+                if not isinstance(r, dict):
+                    continue
+                try:
+                    repair_audit.append(RepairDecisionRecord(**r))
+                except (ValidationError, TypeError):
+                    continue
         ci_gate_rollup_sig_raw = sess.get("ci_gate_rollup_signature")
         ci_gate_rollup_sig = ci_gate_rollup_sig_raw \
             if isinstance(ci_gate_rollup_sig_raw, str) and ci_gate_rollup_sig_raw else None
@@ -180,6 +208,8 @@ def _persist_active_sessions(active_sessions: dict[str, Any]) -> dict[str, Persi
             persona_scope=persona_scope,
             bounce_counter=bounce_counter,
             local_fix_counter=local_fix_counter,
+            inheritance_repair_counter=inheritance_repair_counter,
+            repair_audit=repair_audit,
             ci_gate_rollup_signature=ci_gate_rollup_sig,
         )
     return out
@@ -649,6 +679,8 @@ class CoordinareDaemon:
                     "persona_scope": persisted.persona_scope,
                     "bounce_counter": dict(persisted.bounce_counter),
                     "local_fix_counter": dict(persisted.local_fix_counter),
+                    "inheritance_repair_counter": dict(persisted.inheritance_repair_counter),
+                    "repair_audit": [r.model_dump(mode="json") for r in persisted.repair_audit],
                     "ci_gate_rollup_signature": persisted.ci_gate_rollup_signature,
                     "ci_gate_advisory_failures": [],
                 }

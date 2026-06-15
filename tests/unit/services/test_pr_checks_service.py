@@ -2,11 +2,21 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
 import pytest
+import structlog
+from pydantic import ValidationError
 
-from coordinare.services.pr_checks_service import PrChecksService, parse_rollup
+from coordinare.services.pr_checks_service import (
+    CheckEntry,
+    CheckRollup,
+    PrChecksService,
+    _BaselineFetchFailureTracker,
+    parse_base_rollup,
+    parse_rollup,
+)
 
 
 def _payload(
@@ -61,6 +71,276 @@ def test_parses_check_run_node() -> None:
     assert entry.status == "completed"
     assert entry.conclusion == "success"
     assert entry.details_url == "https://example/check/1"
+
+
+# --- F1 (spec-090): CheckEntry failure text + GraphQL output{} ----------------
+
+
+def test_check_entry_title_summary_default_to_none() -> None:
+    """CheckEntry gains optional failure-text fields defaulting to None; the
+    model stays frozen (spec-090 F1)."""
+    entry = CheckEntry(name="ci/test", status="completed", conclusion="failure")
+    assert entry.title is None
+    assert entry.summary is None
+    # frozen preserved
+    with pytest.raises(ValidationError):
+        entry.title = "x"  # type: ignore[misc]
+
+
+def test_parse_rollup_populates_title_summary_from_check_run_output() -> None:
+    """parse_rollup lifts title/summary from a CheckRun output{} block so the
+    classifier (L2) and repair mandate (L3) can read the failure reason."""
+    payload = _payload(
+        contexts=[
+            {
+                "__typename": "CheckRun",
+                "name": "ci/test",
+                "status": "COMPLETED",
+                "conclusion": "FAILURE",
+                "detailsUrl": "https://example/check/1",
+                "output": {
+                    "title": "3 tests failed",
+                    "summary": "test_foo AssertionError: expected 1 got 2",
+                },
+            }
+        ],
+    )
+    rollup = parse_rollup(payload, pr_number=1)
+    entry = rollup.checks[0]
+    assert entry.title == "3 tests failed"
+    assert entry.summary == "test_foo AssertionError: expected 1 got 2"
+
+
+def test_parse_rollup_check_run_without_output_yields_none() -> None:
+    """A CheckRun lacking an output{} block (or with null fields) yields None
+    for both title and summary — no crash."""
+    payload = _payload(
+        contexts=[
+            {
+                "__typename": "CheckRun",
+                "name": "ci/test",
+                "status": "COMPLETED",
+                "conclusion": "SUCCESS",
+            },
+            {
+                "__typename": "CheckRun",
+                "name": "ci/other",
+                "status": "COMPLETED",
+                "conclusion": "SUCCESS",
+                "output": {"title": None, "summary": None},
+            },
+        ],
+    )
+    rollup = parse_rollup(payload, pr_number=1)
+    by_name = {c.name: c for c in rollup.checks}
+    assert by_name["ci/test"].title is None
+    assert by_name["ci/test"].summary is None
+    assert by_name["ci/other"].title is None
+    assert by_name["ci/other"].summary is None
+
+
+def test_parse_rollup_status_context_has_no_title_summary() -> None:
+    """Legacy StatusContext rows carry no output{} — title/summary stay None."""
+    payload = _payload(
+        contexts=[
+            {
+                "__typename": "StatusContext",
+                "context": "buildkite/build",
+                "state": "FAILURE",
+                "targetUrl": "https://example/build/2",
+            }
+        ],
+    )
+    rollup = parse_rollup(payload, pr_number=1)
+    assert rollup.checks[0].title is None
+    assert rollup.checks[0].summary is None
+
+
+# --- F2 (spec-090): base-branch rollup + rollup_origin + FR-027 tracker -------
+
+
+def _base_payload(
+    *,
+    base_ref: str = "main",
+    oid: str = "base123",
+    contexts: list[dict] | None = None,
+    bpr_nodes: list[dict] | None = None,
+    include_target: bool = True,
+) -> dict:
+    """Build a Ref→target→Commit shaped payload for the base-branch query.
+
+    This is intentionally a different shape from `_payload` (which is
+    PR→commits→commit): the base rollup is fetched off a branch ref, not a PR.
+    """
+    target = (
+        {
+            "oid": oid,
+            "pushedDate": "2026-05-10T09:00:00Z",
+            "committedDate": "2026-05-10T09:00:00Z",
+            "statusCheckRollup": {
+                "state": "FAILURE",
+                "contexts": {"nodes": contexts or []},
+            },
+        }
+        if include_target
+        else None
+    )
+    return {
+        "repository": {
+            "ref": {"target": target},
+            "branchProtectionRules": {"nodes": bpr_nodes} if bpr_nodes is not None else {"nodes": []},
+        }
+    }
+
+
+def test_check_rollup_rollup_origin_defaults_to_head() -> None:
+    """CheckRollup gains rollup_origin defaulting to 'head'; frozen preserved."""
+    rollup = CheckRollup(
+        pr_number=1,
+        head_sha="abc",
+        head_pushed_at=datetime(2026, 5, 16, tzinfo=UTC),
+        branch_protection_readable=True,
+        checks=[],
+    )
+    assert rollup.rollup_origin == "head"
+    with pytest.raises(ValidationError):
+        rollup.rollup_origin = "base"  # type: ignore[misc]
+
+
+def test_parse_base_rollup_stamps_base_origin() -> None:
+    """parse_base_rollup stamps rollup_origin='base' with neutral pr_number=0 and
+    head_pushed_at=None (the base is a long-lived branch — no push-age timeout
+    applies), and resolves the base's OWN required set from branch protection."""
+    payload = _base_payload(
+        contexts=[
+            {
+                "__typename": "CheckRun",
+                "name": "ci/test",
+                "status": "COMPLETED",
+                "conclusion": "FAILURE",
+                "detailsUrl": "https://example/check/9",
+                "output": {"title": "boom", "summary": "test_x failed"},
+            }
+        ],
+        bpr_nodes=[{"pattern": "main", "requiredStatusChecks": [{"context": "ci/test"}]}],
+    )
+    rollup = parse_base_rollup(payload, base_ref="main")
+    assert rollup.rollup_origin == "base"
+    assert rollup.pr_number == 0
+    assert rollup.head_pushed_at is None
+    assert rollup.base_ref == "main"
+    assert rollup.head_sha == "base123"
+    assert rollup.branch_protection_readable is True
+    entry = rollup.checks[0]
+    assert entry.name == "ci/test"
+    assert entry.conclusion == "failure"
+    assert entry.is_required is True  # base's own protection resolved
+    assert entry.title == "boom"
+    assert entry.summary == "test_x failed"
+
+
+def test_parse_base_rollup_raises_on_missing_target() -> None:
+    """A base ref with no target commit (deleted/ambiguous ref) raises ValueError
+    so the service's fetch wrapper can fail-safe to None (FR-005)."""
+    payload = _base_payload(include_target=False)
+    with pytest.raises(ValueError, match="no target commit"):
+        parse_base_rollup(payload, base_ref="main")
+
+
+@pytest.mark.asyncio
+async def test_get_base_branch_check_rollup_returns_none_on_error() -> None:
+    """get_base_branch_check_rollup never raises — it fail-safes to None on fetch
+    error, timeout, and empty/ambiguous base ref (FR-005)."""
+    gh = type("GH", (), {})()
+    svc = PrChecksService(gh, "o", "r")
+
+    # Generic fetch error.
+    gh._execute = AsyncMock(side_effect=Exception("boom"))
+    assert await svc.get_base_branch_check_rollup("main") is None
+
+    # Timeout.
+    gh._execute = AsyncMock(side_effect=TimeoutError())
+    assert await svc.get_base_branch_check_rollup("main") is None
+
+    # Empty/ambiguous base ref — never even attempts a fetch.
+    gh._execute = AsyncMock(side_effect=AssertionError("must not be called"))
+    assert await svc.get_base_branch_check_rollup("") is None
+
+
+@pytest.mark.asyncio
+async def test_get_base_branch_check_rollup_parses_on_success() -> None:
+    """Happy path: the service parses a base rollup into a base-origin CheckRollup."""
+    gh = type("GH", (), {})()
+    gh._execute = AsyncMock(
+        return_value=_base_payload(
+            contexts=[
+                {
+                    "__typename": "CheckRun",
+                    "name": "ci/test",
+                    "status": "COMPLETED",
+                    "conclusion": "FAILURE",
+                }
+            ],
+        )
+    )
+    svc = PrChecksService(gh, "o", "r")
+    rollup = await svc.get_base_branch_check_rollup("main")
+    assert rollup is not None
+    assert rollup.rollup_origin == "base"
+    assert rollup.head_pushed_at is None
+    assert rollup.checks[0].conclusion == "failure"
+
+
+def test_baseline_fetch_tracker_signals_only_at_threshold() -> None:
+    """FR-027: the degraded signal fires only at ≥5 failures within the 1h window.
+    Boundary: 4 → no signal, 5 → signal, 6 → signal."""
+    clock = {"t": 0.0}
+    tracker = _BaselineFetchFailureTracker("o", "r", clock=lambda: clock["t"])
+
+    # 4 failures, all within the window → no signal.
+    for _ in range(4):
+        clock["t"] += 1.0
+        with structlog.testing.capture_logs() as logs:
+            degraded = tracker.record_failure()
+        assert degraded is False
+        assert not [r for r in logs if r["event"] == "baseline_fetch_degraded"]
+
+    # 5th failure → signal.
+    clock["t"] += 1.0
+    with structlog.testing.capture_logs() as logs:
+        degraded = tracker.record_failure()
+    assert degraded is True
+    signal = [r for r in logs if r["event"] == "baseline_fetch_degraded"]
+    assert len(signal) == 1
+    assert signal[0]["log_level"] == "error"
+    assert signal[0]["owner"] == "o"
+    assert signal[0]["repo"] == "r"
+
+    # 6th failure → still signals.
+    clock["t"] += 1.0
+    with structlog.testing.capture_logs() as logs:
+        degraded = tracker.record_failure()
+    assert degraded is True
+    assert len([r for r in logs if r["event"] == "baseline_fetch_degraded"]) == 1
+
+
+def test_baseline_fetch_tracker_ages_out_old_failures() -> None:
+    """Failures older than the 1-hour window stop counting, so a slow drip of
+    failures never trips the degraded signal."""
+    clock = {"t": 0.0}
+    tracker = _BaselineFetchFailureTracker("o", "r", clock=lambda: clock["t"])
+
+    # 4 failures at t=1..4.
+    for _ in range(4):
+        clock["t"] += 1.0
+        assert tracker.record_failure() is False
+
+    # Jump past the 1h window so the first 4 age out, then one fresh failure.
+    clock["t"] += 3600.0 + 1.0
+    with structlog.testing.capture_logs() as logs:
+        degraded = tracker.record_failure()
+    assert degraded is False  # only 1 failure remains inside the window
+    assert not [r for r in logs if r["event"] == "baseline_fetch_degraded"]
 
 
 def test_parses_status_context_success() -> None:
