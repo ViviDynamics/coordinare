@@ -12,15 +12,13 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from coordinare.state_store import (
-    CURRENT_SCHEMA_VERSION,
     MIN_SUPPORTED_SCHEMA_VERSION,
     PersistedSession,
 )
 
-
-def test_current_schema_version_is_8() -> None:
-    """Spec 089 bumps the snapshot schema to v8 (per-session local_fix_counter)."""
-    assert CURRENT_SCHEMA_VERSION == 8
+# NOTE: the current-version assertion (``CURRENT_SCHEMA_VERSION == N``) lives in
+# the newest migration file (test_state_persistence_v8_to_v9.py) so the bump
+# only touches one test; this file keeps the v6 → v7 migration regression intact.
 
 
 def test_min_supported_unchanged() -> None:

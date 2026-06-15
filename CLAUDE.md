@@ -23,6 +23,8 @@ See AGENTS.md for all development guidelines.
 - JSON snapshot via `state_store.py` (existing) — extended with persisted bootstrap success + attempt budget fields on the env-cache state; no new store (088-qa-verdict-integrity)
 - Python 3.14 (project minimum 3.12; prod 3.14.5 via uv) + pydantic 2.x (config + response models), structlog (observability), the existing `ci_detection.detect()` service, the existing `run_command` performer helper, langgraph (coordinare graph nodes). No new external dependencies. (089-implementer-local-test-gate)
 - JSON snapshot via `state_store.py` (existing) — extended with a per-head `local_fix_counter` on `PersistedSession`, parallel to spec-075's `bounce_counter`. No new store. (089-implementer-local-test-gate)
+- Python 3.14 (project minimum 3.12; production on 3.14.5 via uv) + pydantic 2.x (config + decision/signature models), langgraph (090-baseline-repair-autonomy)
+- JSON snapshot via `state_store.py` (existing single-host single-process (090-baseline-repair-autonomy)
 
 ## Recent Changes
 - 076-qa-cycle: Added Python 3.14 (project minimum: 3.12; production currently on 3.14.5 via uv) + pydantic 2.x, langgraph, structlog, docker SDK (or subprocess to `docker` CLI), fastapi (dashboard SSE), httpx (performer HTTP transport), pyyaml (config)

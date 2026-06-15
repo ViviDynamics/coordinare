@@ -580,17 +580,41 @@ def _fix8_rollup_payload(*, contexts: list[dict], bpr_nodes: list[dict]) -> dict
 
 
 class _FixGitHub:
-    """Mock github service for Fix 8 — supports gate query + reviews + move_card."""
+    """Mock github service for Fix 8 — supports gate query + reviews + move_card.
 
-    def __init__(self, rollup_payload: dict, reviews: list[dict] | None = None) -> None:
+    spec-090 L1 extends this with an optional ``base_payload``: a base-branch
+    rollup query keys on ``qualifiedName`` while the head PR rollup keys on
+    ``pr``, so one mock can serve both. Existing fix8 tests pass no
+    ``base_payload`` and never trigger a base query (the L1 gate is disabled
+    without a ``persona_scope``), so their behavior is byte-identical.
+    """
+
+    def __init__(
+        self,
+        rollup_payload: dict,
+        reviews: list[dict] | None = None,
+        *,
+        base_payload: dict | None = None,
+    ) -> None:
         self._payload = rollup_payload
+        self._base_payload = base_payload
         self._reviews = reviews or []
         self.move_calls: list[tuple[str, str]] = []
+        self.execute_calls: list[dict] = []
 
     async def move_card(self, item_id: str, status: str) -> None:
         self.move_calls.append((item_id, status))
 
     async def _execute(self, query: str, variables: dict) -> dict:
+        self.execute_calls.append(variables)
+        # A base-branch rollup query keys on ``qualifiedName`` (spec-090 L1);
+        # the head PR rollup keys on ``pr``. A None base_payload models an
+        # unfetchable base (→ INDETERMINATE via the fail-safe in
+        # ``get_base_branch_check_rollup``).
+        if "qualifiedName" in variables:
+            if self._base_payload is None:
+                raise RuntimeError("base rollup unavailable (test: indeterminate)")
+            return self._base_payload
         return self._payload
 
     async def get_pr_reviews(self, pr_id: str):
@@ -680,3 +704,239 @@ async def test_monitor_pr_fix8_forwards_to_reviews_when_checks_pass() -> None:
     # FORWARD → reviews evaluated → human approval routes to merging
     assert result["phase"] == "merging"
     assert gh.move_calls == []
+
+
+# ---------------------------------------------------------------------------
+# 090 L1 — Base-precondition prevention gate (US1).
+#
+# Wiring contract: between the `approved == True` merge precondition and the
+# `state["phase"] = "merging"` transition, an approved + head-green PR is held
+# while a REQUIRED check on its *base* branch is red. The gate is default-off,
+# fail-safe (an unfetchable base never hard-blocks), and never latched.
+# Covers FR-001..FR-006 / SC-002 / SC-006.
+# ---------------------------------------------------------------------------
+
+
+def _l1_ctx(
+    name: str,
+    conclusion: str | None,
+    *,
+    status: str = "COMPLETED",
+    url: str | None = None,
+) -> dict:
+    """A base-branch ``CheckRun`` context node (spec-090 F2 base rollup)."""
+    node: dict = {
+        "__typename": "CheckRun",
+        "name": name,
+        "status": status,
+        "conclusion": conclusion,
+    }
+    if url is not None:
+        node["detailsUrl"] = url
+    return node
+
+
+def _l1_base_payload(*, contexts: list[dict], bpr_nodes: list[dict]) -> dict:
+    """A base-branch rollup GraphQL response (Ref → target Commit).
+
+    Mirrors what ``parse_base_rollup`` consumes: ``repository.ref.target`` with an
+    ``oid`` + ``statusCheckRollup.contexts.nodes``, and a sibling
+    ``branchProtectionRules.nodes`` whose patterns resolve the base's required set.
+    """
+    return {
+        "repository": {
+            "ref": {
+                "target": {
+                    "oid": "base0000",
+                    "statusCheckRollup": {"contexts": {"nodes": contexts}},
+                }
+            },
+            "branchProtectionRules": {"nodes": bpr_nodes},
+        }
+    }
+
+
+def _l1_green_head() -> tuple[dict, list[dict]]:
+    """A green, human-approved HEAD: the closer gate FORWARDs, then a human
+    APPROVED review would route to ``merging`` — so the only thing that can hold
+    the merge is the L1 base gate."""
+    payload = _fix8_rollup_payload(
+        contexts=[
+            {
+                "__typename": "CheckRun",
+                "name": "ci/test",
+                "status": "COMPLETED",
+                "conclusion": "SUCCESS",
+            },
+        ],
+        bpr_nodes=[{"pattern": "main", "requiredStatusChecks": [{"context": "ci/test"}]}],
+    )
+    reviews = [{"author_login": "alice", "state": "APPROVED"}]
+    return payload, reviews
+
+
+def _l1_state_with_gate(github: object, *, enabled: bool = True) -> dict:
+    from coordinare.config import (
+        BaselinePreventionGateConfig,
+        CloserPrChecksConfig,
+        PersonaScopeConfig,
+    )
+
+    state = initial_state()
+    state["current_card"] = {
+        "id": "ITEM_42",
+        "pr_node_id": "PR_NODE_42",
+        "pr_url": "https://github.com/org/repo/pull/42",
+        "status": "IN_REVIEW",
+    }
+    state["github_service"] = github
+    state["human_reviewers"] = ["alice"]
+
+    class _Sym:
+        closer_pr_checks = CloserPrChecksConfig()
+        persona_scope = PersonaScopeConfig(
+            baseline_prevention_gate=BaselinePreventionGateConfig(enabled=enabled)
+        )
+
+    state["current_symphony"] = "default"
+    state["symphony_configs"] = {"default": _Sym()}
+    return state
+
+
+@pytest.mark.asyncio
+async def test_monitor_pr_l1_blocks_merge_when_base_required_check_red() -> None:
+    """FR-001/FR-002/FR-003: an approved, head-green PR holds (does not advance to
+    ``merging``) while a REQUIRED base check is red, and the hold record names the
+    offending *base* check + its URL distinctly from any head failure.
+    """
+    from structlog.testing import capture_logs
+
+    head_payload, reviews = _l1_green_head()
+    base_payload = _l1_base_payload(
+        contexts=[
+            _l1_ctx("ci/test", "SUCCESS"),
+            _l1_ctx(
+                "ci/integration",
+                "FAILURE",
+                url="https://github.com/org/repo/runs/99",
+            ),
+        ],
+        bpr_nodes=[
+            {
+                "pattern": "main",
+                "requiredStatusChecks": [
+                    {"context": "ci/test"},
+                    {"context": "ci/integration"},
+                ],
+            }
+        ],
+    )
+    gh = _FixGitHub(head_payload, reviews=reviews, base_payload=base_payload)
+    state = _l1_state_with_gate(gh, enabled=True)
+
+    with capture_logs() as logs:
+        result = await monitor_pr(state)
+
+    # Held, not merged, and no board move (L1 is a passive precondition hold).
+    assert result["phase"] == "monitoring_pr"
+    assert gh.move_calls == []
+
+    holds = [e for e in logs if e.get("event") == "monitor_pr.base_not_green_hold"]
+    assert len(holds) == 1
+    ev = holds[0]
+    assert ev["base_ref"] == "main"
+    failing = ev["base_failing_checks"]
+    # Only the offending REQUIRED base check is named, with its base URL —
+    # distinct from any head check (FR-003).
+    assert [c["name"] for c in failing] == ["ci/integration"]
+    assert failing[0]["url"] == "https://github.com/org/repo/runs/99"
+    assert failing[0]["conclusion"] == "failure"
+
+
+@pytest.mark.asyncio
+async def test_monitor_pr_l1_no_latch_proceeds_once_base_turns_green() -> None:
+    """FR-006: the gate re-reads each cycle and holds no state — a red base blocks
+    this cycle, and once the base turns green the merge proceeds next cycle (the
+    same cached ``PrChecksService`` is re-read, proving no "already escalated" memo).
+    """
+    head_payload, reviews = _l1_green_head()
+    bpr = [{"pattern": "main", "requiredStatusChecks": [{"context": "ci/test"}]}]
+    gh = _FixGitHub(
+        head_payload,
+        reviews=reviews,
+        base_payload=_l1_base_payload(
+            contexts=[_l1_ctx("ci/test", "FAILURE")], bpr_nodes=bpr
+        ),
+    )
+
+    # Cycle 1: red base → hold.
+    result1 = await monitor_pr(_l1_state_with_gate(gh, enabled=True))
+    assert result1["phase"] == "monitoring_pr"
+
+    # Base turns green; the SAME github (cached service) is re-read next cycle.
+    gh._base_payload = _l1_base_payload(
+        contexts=[_l1_ctx("ci/test", "SUCCESS")], bpr_nodes=bpr
+    )
+    result2 = await monitor_pr(_l1_state_with_gate(gh, enabled=True))
+    assert result2["phase"] == "merging"
+
+
+@pytest.mark.asyncio
+async def test_monitor_pr_l1_indeterminate_base_proceeds_head_only() -> None:
+    """FR-005/SC-002: an unfetchable base is INDETERMINATE — fall through to
+    head-only behavior (merge proceeds), never hard-block.
+    """
+    from structlog.testing import capture_logs
+
+    head_payload, reviews = _l1_green_head()
+    # base_payload=None → the base query raises in the mock → the fail-safe in
+    # get_base_branch_check_rollup returns None → INDETERMINATE.
+    gh = _FixGitHub(head_payload, reviews=reviews, base_payload=None)
+    state = _l1_state_with_gate(gh, enabled=True)
+
+    with capture_logs() as logs:
+        result = await monitor_pr(state)
+
+    assert result["phase"] == "merging"
+    holds = [e for e in logs if e.get("event") == "monitor_pr.base_not_green_hold"]
+    assert holds == []
+
+
+@pytest.mark.asyncio
+async def test_monitor_pr_l1_disabled_is_byte_identical_no_base_fetch() -> None:
+    """SC-006: with the gate disabled the merge proceeds exactly as today, and NO
+    base-branch query is ever issued (L1 short-circuits before any fetch).
+    """
+    head_payload, reviews = _l1_green_head()
+    red_base = _l1_base_payload(
+        contexts=[_l1_ctx("ci/test", "FAILURE")],
+        bpr_nodes=[{"pattern": "main", "requiredStatusChecks": [{"context": "ci/test"}]}],
+    )
+    gh = _FixGitHub(head_payload, reviews=reviews, base_payload=red_base)
+    state = _l1_state_with_gate(gh, enabled=False)
+
+    result = await monitor_pr(state)
+
+    assert result["phase"] == "merging"
+    # A base query keys on ``qualifiedName``; the disabled gate must never fetch.
+    assert all("qualifiedName" not in v for v in gh.execute_calls)
+
+
+@pytest.mark.asyncio
+async def test_monitor_pr_l1_non_required_base_failure_does_not_block() -> None:
+    """FR-004: only a *non-required* base check is red → the merge proceeds (the
+    failing base check is not in the base branch's required set)."""
+    head_payload, reviews = _l1_green_head()
+    base_payload = _l1_base_payload(
+        contexts=[
+            _l1_ctx("build", "SUCCESS"),
+            _l1_ctx("optional-coverage", "FAILURE"),
+        ],
+        bpr_nodes=[{"pattern": "main", "requiredStatusChecks": [{"context": "build"}]}],
+    )
+    gh = _FixGitHub(head_payload, reviews=reviews, base_payload=base_payload)
+    state = _l1_state_with_gate(gh, enabled=True)
+
+    result = await monitor_pr(state)
+
+    assert result["phase"] == "merging"

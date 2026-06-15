@@ -1343,6 +1343,54 @@ class LocalTestGateConfig(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# 090 — Baseline Repair Autonomy (three guarded-autonomy layers, all default-off)
+# ---------------------------------------------------------------------------
+
+
+class BaselinePreventionGateConfig(BaseModel):
+    """L1 merge-precondition gate (spec 090, US1).
+
+    When enabled, the closer refuses to merge while the base branch's REQUIRED
+    checks are red — re-read every cycle, fail-safe (an unreadable base never
+    hard-blocks). Default-off → routing/verdicts/merge stay byte-identical to
+    the pre-feature baseline (SC-006).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+
+
+class BaselineClassificationGateConfig(BaseModel):
+    """L2 inherited/introduced/flake/unknown classification (spec 090, US2).
+
+    Observe-only when enabled: compares head failures against a merge-base
+    baseline using the reason-sensitive failure signature and emits the
+    classification, taking no autonomous action. Default-off (SC-006).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+
+
+class InheritedRepairGateConfig(BaseModel):
+    """L3 bounded autonomous repair of inherited stable failures (spec 090, US3).
+
+    When enabled, the implementer may repair INHERITED stable failures on the
+    card's existing branch into its open PR, gated by the dual test-integrity
+    guard and a per-head attempt budget; never auto-merged. Default-off → the
+    repair loop is dormant; ``max_repair_attempts_per_head`` defaults to a
+    single attempt (0 = repair disabled even when ``enabled``). (SC-006)
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    max_repair_attempts_per_head: int = Field(default=1, ge=0, le=20)
+
+
+# ---------------------------------------------------------------------------
 # 074 — Persona Scope Tiering
 # ---------------------------------------------------------------------------
 
@@ -1369,6 +1417,18 @@ class PersonaScopeConfig(BaseModel):
     # 089 — Implementer local test gate (opt-in; default-off, see
     # contracts/local_test_gate_config.md).
     local_test_gate: LocalTestGateConfig = Field(default_factory=LocalTestGateConfig)
+
+    # 090 — Baseline repair autonomy (three layers, all opt-in / default-off; see
+    # specs/090-baseline-repair-autonomy/data-model.md §10, SC-006).
+    baseline_prevention_gate: BaselinePreventionGateConfig = Field(
+        default_factory=BaselinePreventionGateConfig
+    )
+    baseline_classification_gate: BaselineClassificationGateConfig = Field(
+        default_factory=BaselineClassificationGateConfig
+    )
+    inherited_repair_gate: InheritedRepairGateConfig = Field(
+        default_factory=InheritedRepairGateConfig
+    )
 
     @field_validator("path_classes")
     @classmethod

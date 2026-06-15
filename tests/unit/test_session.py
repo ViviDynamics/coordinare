@@ -205,6 +205,58 @@ def test_bounce_counter_round_trips() -> None:
     assert recovered["bounce_counter"] == {"sha-abc": 2, "sha-def": 1}
 
 
+def test_inheritance_repair_counter_round_trips() -> None:
+    """090-L3: monitor_performer increments inheritance_repair_counter[head_sha]
+    at repair dispatch; if it's missing from _SESSION_FIELDS the per-head repair
+    budget resets every cycle and the gate never escalates on exhaustion.
+    Mirrors the bounce_counter regression test."""
+    session = create_session_from_card(_sample_card())
+    session["inheritance_repair_counter"] = {"a" * 40: 1, "b" * 40: 2}
+
+    state = initial_state()
+    session_to_state(session, state)
+    assert state["inheritance_repair_counter"] == {"a" * 40: 1, "b" * 40: 2}
+
+    recovered = state_to_session(state)
+    assert recovered["inheritance_repair_counter"] == {"a" * 40: 1, "b" * 40: 2}
+
+
+def test_repair_audit_round_trips() -> None:
+    """090-L3: the append-only repair_audit trail (dispatch/static_guard/reviewer/
+    acceptance/rejection/escalation records) must round-trip through
+    _SESSION_FIELDS or the daemon's fanout merge drops the audit history between
+    cycles (FR-023)."""
+    audit = [
+        {
+            "head_sha": "a" * 40,
+            "attempt": 1,
+            "kind": "dispatch",
+            "is_safe": None,
+            "flagged_patterns": [],
+            "detail": "Dispatched autonomous baseline-repair attempt 1/1.",
+            "decided_at": "2026-06-14T00:00:00Z",
+        },
+        {
+            "head_sha": "a" * 40,
+            "attempt": 1,
+            "kind": "escalation",
+            "is_safe": None,
+            "flagged_patterns": [],
+            "detail": "Autonomous baseline-repair budget exhausted.",
+            "decided_at": "2026-06-14T00:01:00Z",
+        },
+    ]
+    session = create_session_from_card(_sample_card())
+    session["repair_audit"] = audit
+
+    state = initial_state()
+    session_to_state(session, state)
+    assert state["repair_audit"] == audit
+
+    recovered = state_to_session(state)
+    assert recovered["repair_audit"] == audit
+
+
 def test_latest_ci_gate_decision_round_trips() -> None:
     """075: monitor_performer writes the most recent CIGateDecision to
     flat state for notify.py to consume on the next cycle.  Must round-trip
@@ -334,6 +386,8 @@ def test_session_fields_all_present_in_initial_state_or_coordinare_state() -> No
         "persona_scope",
         "bounce_counter",
         "local_fix_counter",
+        "inheritance_repair_counter",
+        "repair_audit",
         "review_empty_retry_count",
         "last_progress_at",
         "last_progress_fingerprint",

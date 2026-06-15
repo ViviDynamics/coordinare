@@ -1097,6 +1097,60 @@ class TestLocalTestGateConfig:
             LocalTestGateConfig(unknown_field=True)
 
 
+class TestBaselineRepairGateConfigs:
+    """090 T006 — config invariants for the three baseline-repair gate classes.
+
+    SC-006 headline guarantee: a PersonaScopeConfig that omits all three gate
+    keys must leave every gate dormant (``enabled is False``), so routing /
+    verdicts / merge stay byte-identical to the pre-feature baseline.
+    """
+
+    def test_persona_scope_default_off_for_all_three_gates(self) -> None:
+        """FR-015/FR-025/SC-006: a block that omits all three gate keys
+        validates and every gate is dormant by default; the repair budget
+        defaults to a single attempt per head.
+        """
+        from coordinare.config import PersonaScopeConfig
+
+        scope = PersonaScopeConfig()
+        assert scope.baseline_prevention_gate.enabled is False
+        assert scope.baseline_classification_gate.enabled is False
+        assert scope.inherited_repair_gate.enabled is False
+        assert scope.inherited_repair_gate.max_repair_attempts_per_head == 1
+
+    def test_prevention_gate_extra_forbidden(self) -> None:
+        from coordinare.config import BaselinePreventionGateConfig
+
+        with pytest.raises(ValidationError):
+            BaselinePreventionGateConfig(unknown_field=True)
+
+    def test_classification_gate_extra_forbidden(self) -> None:
+        from coordinare.config import BaselineClassificationGateConfig
+
+        with pytest.raises(ValidationError):
+            BaselineClassificationGateConfig(unknown_field=True)
+
+    def test_repair_gate_extra_forbidden(self) -> None:
+        from coordinare.config import InheritedRepairGateConfig
+
+        with pytest.raises(ValidationError):
+            InheritedRepairGateConfig(unknown_field=True)
+
+    @pytest.mark.parametrize("ok", [0, 20])
+    def test_max_repair_attempts_bounds_accepted(self, ok: int) -> None:
+        from coordinare.config import InheritedRepairGateConfig
+
+        cfg = InheritedRepairGateConfig(max_repair_attempts_per_head=ok)
+        assert cfg.max_repair_attempts_per_head == ok
+
+    @pytest.mark.parametrize("bad", [-1, 21])
+    def test_max_repair_attempts_bounds_rejected(self, bad: int) -> None:
+        from coordinare.config import InheritedRepairGateConfig
+
+        with pytest.raises(ValidationError):
+            InheritedRepairGateConfig(max_repair_attempts_per_head=bad)
+
+
 # ---------------------------------------------------------------------------
 # 074 T053 — closer.scope_behavior warns and is ignored at dispatch (FR-009)
 # ---------------------------------------------------------------------------
