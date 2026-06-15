@@ -1302,6 +1302,26 @@ def _init_metrics() -> None:
 # Action handlers
 # ---------------------------------------------------------------------------
 
+def _backfill_terminal_failure_reason(resp: PerformerResponse) -> PerformerResponse:
+    """Guarantee a terminal FAILURE response carries an operator-visible reason.
+
+    The performer serialises its summary with ``model_dump_json(exclude_none=True)``,
+    so a ``None`` ``reason`` is dropped entirely — collapsing the coordinare's
+    diagnostics to a bare status token (and ultimately a silent card-block). For
+    any failing status with no explicit reason, backfill from the next-best
+    diagnostic field so every failure summary explains itself, regardless of
+    which role return produced it. Non-failure or already-reasoned responses are
+    returned unchanged.
+    """
+    if resp.status not in FAILURE_STATUSES or resp.reason:
+        return resp
+    fallback_reason = (
+        resp.inference_skipped_reason
+        or f"performer returned terminal status '{resp.status}' with no reason"
+    )
+    return resp.model_copy(update={"reason": fallback_reason})
+
+
 def handle_health(settings: Settings) -> PerformerResponse:
     """Return healthy/unhealthy immediately without any I/O."""
     try:
@@ -3419,6 +3439,9 @@ async def _perform_job(payload: "JobInitPayload") -> "JobResult":  # pragma: no 
             resp = resp.model_copy(update={"env_cache_health_failed": True})
 
         success = resp.status not in FAILURE_STATUSES
+        # Terminal FAILURE with no explicit reason would lose its only diagnostic
+        # when exclude_none drops `reason`; backfill before serialising.
+        resp = _backfill_terminal_failure_reason(resp)
         summary = resp.model_dump_json(exclude_none=True)
         return JobResult(success=success, summary=summary, error_code=None if success else resp.status)
     finally:

@@ -812,6 +812,33 @@ async def test_error_status_without_reason() -> None:
 
 
 @pytest.mark.asyncio
+async def test_unclassified_terminal_error_logs_warning() -> None:
+    """An unclassified terminal error (no reason, no smart branch) must emit a
+    WARN so it is never silently parked in Blocked without an operator signal."""
+    from unittest.mock import patch
+
+    service = _Performer({"status": "error"})
+    state = _make_state(
+        service=service,
+        stage="implementing",
+        sequence=["implementing", "reviewing"],
+    )
+
+    with patch("coordinare.graph.nodes.monitor_performer.logger.warning") as warn_mock:
+        result = await monitor_performer(state)
+
+    assert result["phase"] == "blocked"
+    assert any(
+        call.args
+        and call.args[0] == "monitor_performer.terminal_error"
+        and call.kwargs.get("performer_stage") == "implementing"
+        and call.kwargs.get("marker") == "error"
+        and call.kwargs.get("reason") == "<empty>"
+        for call in warn_mock.call_args_list
+    )
+
+
+@pytest.mark.asyncio
 async def test_workflow_permission_push_error_reroutes_to_implementer() -> None:
     """Workflow-permission push failures should auto-reroute with feedback."""
     service = _Performer({

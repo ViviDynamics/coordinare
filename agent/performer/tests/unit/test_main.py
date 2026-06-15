@@ -15,6 +15,7 @@ from performer.backends.base import BackendStatus
 from performer.config import Settings, get_settings
 from performer.github import GitHubAPIError
 from performer.main import (
+    _backfill_terminal_failure_reason,
     _doc_folder,
     _extract_pr_number,
     collect_metrics,
@@ -3773,3 +3774,45 @@ class TestImplementerLocalTestGateEnvBlockedDonePath:
         assert resp.reason == "postgres failed to start"
         assert resp.local_test_failed is False
         push.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Terminal-failure reason backfill (silent-card-block observability fix)
+# ---------------------------------------------------------------------------
+
+
+def test_backfill_terminal_failure_reason_synthesizes_status_reason() -> None:
+    """A failing status with no reason/diagnostic fields gets a synthesized
+    reason naming the status, so exclude_none can't drop the only signal."""
+    resp = PerformerResponse(status="error", session_id="sid")
+    out = _backfill_terminal_failure_reason(resp)
+    assert out.reason
+    assert "error" in out.reason
+    # The serialized summary the coordinare reads now carries the reason.
+    assert "reason" in out.model_dump_json(exclude_none=True)
+
+
+def test_backfill_terminal_failure_reason_prefers_diagnostic_fields() -> None:
+    """When present, inference_skipped_reason is preferred over a synthesized
+    status string."""
+    resp = PerformerResponse(
+        status="error",
+        session_id="sid",
+        inference_skipped_reason="upstream model unreachable",
+    )
+    out = _backfill_terminal_failure_reason(resp)
+    assert out.reason == "upstream model unreachable"
+
+
+def test_backfill_terminal_failure_reason_leaves_explicit_reason() -> None:
+    """An already-reasoned failure is returned unchanged."""
+    resp = PerformerResponse(status="error", session_id="sid", reason="boom")
+    out = _backfill_terminal_failure_reason(resp)
+    assert out.reason == "boom"
+
+
+def test_backfill_terminal_failure_reason_ignores_success() -> None:
+    """A non-failure status is never mutated (no spurious reason added)."""
+    resp = PerformerResponse(status="pr_opened", session_id="sid")
+    out = _backfill_terminal_failure_reason(resp)
+    assert out.reason is None

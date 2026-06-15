@@ -629,6 +629,74 @@ async def test_check_status_valid_result_json_does_not_log_malformed() -> None:
     await svc.aclose()
 
 
+# -------- terminal failure with no `reason`: error_reason fallback chain ------
+
+
+@pytest.mark.asyncio
+async def test_terminal_failure_without_reason_logs_status_token() -> None:
+    """A terminal failure whose summary omits `reason` (dropped by the
+    performer's exclude_none serialisation) must NOT log
+    ``error_reason=None``. The transition log falls back to the status token."""
+    import structlog.testing
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "job_id": "job-NR",
+                "state": "failed",
+                "started_at": "2026-06-14T00:00:00Z",
+                "finished_at": "2026-06-14T00:01:00Z",
+                # exclude_none drops a None reason: only the status survives.
+                "result": {"success": False, "summary": '{"status": "error"}'},
+            },
+        )
+
+    svc = HTTPPerformerService(_persistent_config(), client=_client(handler))
+    with structlog.testing.capture_logs() as cap_logs:
+        await svc.check_status("job-NR")
+
+    events = [e for e in cap_logs if e["event"] == "performer_endpoint.transition"]
+    assert len(events) == 1, f"expected one transition event, got {cap_logs}"
+    assert events[0]["terminal_state"] == "failed"
+    assert events[0]["error_reason"] == "status=error"
+    await svc.aclose()
+
+
+@pytest.mark.asyncio
+async def test_terminal_failure_without_reason_falls_back_to_diagnostic_field() -> None:
+    """When `reason` is absent the transition log falls back through the other
+    diagnostic fields (inference_skipped_reason) before the status token."""
+    import structlog.testing
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "job_id": "job-IS",
+                "state": "failed",
+                "started_at": "2026-06-14T00:00:00Z",
+                "finished_at": "2026-06-14T00:01:00Z",
+                "result": {
+                    "success": False,
+                    "summary": (
+                        '{"status": "error", '
+                        '"inference_skipped_reason": "upstream model unreachable"}'
+                    ),
+                },
+            },
+        )
+
+    svc = HTTPPerformerService(_persistent_config(), client=_client(handler))
+    with structlog.testing.capture_logs() as cap_logs:
+        await svc.check_status("job-IS")
+
+    events = [e for e in cap_logs if e["event"] == "performer_endpoint.transition"]
+    assert len(events) == 1, f"expected one transition event, got {cap_logs}"
+    assert events[0]["error_reason"] == "upstream model unreachable"
+    await svc.aclose()
+
+
 # ---------------------------- workspace with github_token --------------------
 
 
