@@ -45,9 +45,10 @@ class CheckEntry(BaseModel):
     conclusion: CheckConclusion | None = None
     is_required: bool = False
     details_url: str | None = None
-    # Failure text lifted from a CheckRun's output{} block (spec-090 F1). Feeds
-    # the L2 classifier's reason-sensitive signature and the L3 repair mandate.
-    # Always None for legacy StatusContext rows (commit statuses have no output).
+    # Failure text from a CheckRun's top-level title/summary fields (spec-090 F1).
+    # Feeds the L2 classifier's reason-sensitive signature and the L3 repair
+    # mandate. Always None for legacy StatusContext rows (commit statuses carry no
+    # title/summary).
     title: str | None = None
     summary: str | None = None
 
@@ -77,9 +78,12 @@ class CheckRollup(BaseModel):
 # --- GraphQL query (kept in-module so tests don't need to read the contracts file) ---
 
 # Shared statusCheckRollup selection. Reused by the PR-HEAD query and the
-# base-branch query (spec-090 F2) so the CheckRun output{} block (spec-090 F1)
-# is defined in exactly one place — the head query is whitespace-identical to
-# before (GraphQL ignores whitespace; tests parse canned payloads, not strings).
+# base-branch query (spec-090 F2) so the CheckRun failure-text selection (spec-090
+# F1) is defined in exactly one place.
+# NOTE: `title`/`summary` are TOP-LEVEL fields on the GraphQL `CheckRun` type —
+# there is NO `output {}` wrapper (that exists on the REST check-run object, not
+# GraphQL). Nesting them under `output {}` makes GitHub reject the whole query
+# with `Field 'output' doesn't exist on type 'CheckRun'`.
 _STATUS_CHECK_ROLLUP = """
             statusCheckRollup {
               state
@@ -94,10 +98,8 @@ _STATUS_CHECK_ROLLUP = """
                     status
                     conclusion
                     detailsUrl
-                    output {
-                      title
-                      summary
-                    }
+                    title
+                    summary
                   }
                   ... on StatusContext {
                     context
@@ -295,8 +297,8 @@ def _parse_context_nodes(
     """Parse statusCheckRollup context nodes into CheckEntry rows.
 
     Shared by `parse_rollup` (PR HEAD) and `parse_base_rollup` (base branch) so the
-    CheckRun/StatusContext handling — including the F1 ``output{title,summary}``
-    lift — lives in exactly one place (spec-090 F2).
+    CheckRun/StatusContext handling — including the F1 top-level
+    ``title``/``summary`` lift — lives in exactly one place (spec-090 F2).
     """
     entries: list[CheckEntry] = []
     for node in context_nodes:
@@ -305,6 +307,9 @@ def _parse_context_nodes(
         typename = node.get("__typename")
         if typename == "CheckRun":
             name = node.get("name") or ""
+            # `title`/`summary` are top-level fields on the GraphQL CheckRun type
+            # (no `output {}` wrapper — see _STATUS_CHECK_ROLLUP). A canned payload
+            # may still nest them under "output", so fall back for parser robustness.
             output = node.get("output") or {}
             entry = CheckEntry(
                 name=name,
@@ -312,8 +317,8 @@ def _parse_context_nodes(
                 conclusion=_normalize_conclusion(node.get("conclusion")),
                 is_required=branch_protection_readable and name in required_names,
                 details_url=node.get("detailsUrl"),
-                title=output.get("title"),
-                summary=output.get("summary"),
+                title=node.get("title") if node.get("title") is not None else output.get("title"),
+                summary=node.get("summary") if node.get("summary") is not None else output.get("summary"),
             )
         elif typename == "StatusContext":
             name = node.get("context") or ""

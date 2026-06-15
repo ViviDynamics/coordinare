@@ -98,10 +98,10 @@ def test_parse_rollup_populates_title_summary_from_check_run_output() -> None:
                 "status": "COMPLETED",
                 "conclusion": "FAILURE",
                 "detailsUrl": "https://example/check/1",
-                "output": {
-                    "title": "3 tests failed",
-                    "summary": "test_foo AssertionError: expected 1 got 2",
-                },
+                # Real GraphQL shape: title/summary are TOP-LEVEL on CheckRun,
+                # NOT nested under output{} (which doesn't exist on the type).
+                "title": "3 tests failed",
+                "summary": "test_foo AssertionError: expected 1 got 2",
             }
         ],
     )
@@ -111,9 +111,39 @@ def test_parse_rollup_populates_title_summary_from_check_run_output() -> None:
     assert entry.summary == "test_foo AssertionError: expected 1 got 2"
 
 
+def test_rollup_queries_select_title_summary_directly_not_under_output() -> None:
+    """Regression (spec-090 F1): GitHub's GraphQL `CheckRun` type has NO `output`
+    field — `title`/`summary` are top-level. Nesting them under `output {}` makes
+    GitHub reject the entire query with `Field 'output' doesn't exist on type
+    'CheckRun'`, which the client wraps as a (mis-classified) TransientGitHubError
+    and retries forever. Canned-payload parser tests can't catch this — only the
+    query string can. Guard every shipped rollup query."""
+    from coordinare.services.pr_checks_service import (
+        _BASE_ROLLUP_QUERY,
+        _BASE_ROLLUP_QUERY_NO_BPR,
+        _ROLLUP_QUERY,
+        _ROLLUP_QUERY_NO_BPR,
+        _STATUS_CHECK_ROLLUP,
+    )
+
+    for query in (
+        _STATUS_CHECK_ROLLUP,
+        _ROLLUP_QUERY,
+        _ROLLUP_QUERY_NO_BPR,
+        _BASE_ROLLUP_QUERY,
+        _BASE_ROLLUP_QUERY_NO_BPR,
+    ):
+        # No `output {` selection anywhere (would be invalid on CheckRun).
+        assert "output {" not in query
+        assert "output{" not in query
+    # title/summary ARE selected (so the F1 failure-text lift still works).
+    assert "title" in _STATUS_CHECK_ROLLUP
+    assert "summary" in _STATUS_CHECK_ROLLUP
+
+
 def test_parse_rollup_check_run_without_output_yields_none() -> None:
-    """A CheckRun lacking an output{} block (or with null fields) yields None
-    for both title and summary — no crash."""
+    """A CheckRun lacking title/summary (or with null fields) yields None
+    for both — no crash."""
     payload = _payload(
         contexts=[
             {
@@ -127,7 +157,8 @@ def test_parse_rollup_check_run_without_output_yields_none() -> None:
                 "name": "ci/other",
                 "status": "COMPLETED",
                 "conclusion": "SUCCESS",
-                "output": {"title": None, "summary": None},
+                "title": None,
+                "summary": None,
             },
         ],
     )
@@ -219,7 +250,8 @@ def test_parse_base_rollup_stamps_base_origin() -> None:
                 "status": "COMPLETED",
                 "conclusion": "FAILURE",
                 "detailsUrl": "https://example/check/9",
-                "output": {"title": "boom", "summary": "test_x failed"},
+                "title": "boom",
+                "summary": "test_x failed",
             }
         ],
         bpr_nodes=[{"pattern": "main", "requiredStatusChecks": [{"context": "ci/test"}]}],
