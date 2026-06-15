@@ -91,6 +91,23 @@ def test_implementer_default_forbids_weakening_tests() -> None:
     assert "human" in lower
 
 
+def test_implementer_default_steers_off_workflow_files() -> None:
+    """The implementer persona must proactively steer the agent away from
+    editing `.github/workflows/**`, since the GitHub App token lacks
+    `workflows` permission and any such push bounces the card. This is the
+    preventive complement to the reactive workflow-push-permission relay."""
+    personas = PersonasConfig()
+    text = get_effective_instructions("implementer", personas)
+    lower = text.lower()
+
+    assert ".github/workflows/" in text
+    assert "workflows" in lower
+    # The instruction names the consequence so the model treats it as a hard
+    # prohibition, and offers the escape hatch (describe the change for a human).
+    assert "permission" in lower
+    assert "human" in lower
+
+
 def test_security_default_uses_taint_to_sink_checklist() -> None:
     """US2 (083): the security persona must drive a CWE taint→sink review.
 

@@ -3589,6 +3589,19 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
                     card_id=card_id,
                     lifecycle_sequence=lifecycle,
                 )
+            # Default terminal-error path: no smart branch matched. Emit a WARN so
+            # an unclassified terminal failure is never silently parked in Blocked
+            # with no operator-visible signal. An empty reason here points at the
+            # upstream observability collapse (performer returned a terminal failure
+            # with no `reason`), which the coordinare reason-fallback chain in
+            # http_performer_service should normally backfill.
+            logger.warning(
+                "monitor_performer.terminal_error",
+                performer_stage=stage,
+                card_id=card_id,
+                marker=marker,
+                reason=reason or "<empty>",
+            )
             state["phase"] = "blocked"
             state["open_questions"] = [
                 f"Performer ({stage}) encountered an error: {reason}" if reason

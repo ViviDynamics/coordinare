@@ -473,7 +473,23 @@ class HTTPPerformerService:
                 try:
                     parsed_summary = json.loads(status.result.summary)
                     if isinstance(parsed_summary, dict):
-                        error_reason = parsed_summary.get("reason")
+                        # The performer serialises its PerformerResponse with
+                        # model_dump_json(exclude_none=True), so a None `reason`
+                        # vanishes from the summary entirely. Fall back through the
+                        # other diagnostic fields before degrading to the status
+                        # token (and finally the raw summary) so a terminal failure
+                        # never logs error_reason=None and discards every signal.
+                        error_reason = (
+                            parsed_summary.get("reason")
+                            or parsed_summary.get("inference_skipped_reason")
+                        )
+                        if not error_reason:
+                            status_token = parsed_summary.get("status")
+                            error_reason = (
+                                f"status={status_token}"
+                                if status_token
+                                else status.result.summary
+                            )
                 except (json.JSONDecodeError, TypeError):
                     error_reason = status.result.summary
                 if isinstance(error_reason, str):
