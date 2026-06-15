@@ -712,7 +712,9 @@ def _check_run(
         "conclusion": conclusion,
     }
     if title is not None or summary is not None:
-        node["output"] = {"title": title, "summary": summary}
+        # Real GraphQL shape: title/summary are top-level on CheckRun (no output{}).
+        node["title"] = title
+        node["summary"] = summary
     if details_url is not None:
         node["detailsUrl"] = details_url
     return node
