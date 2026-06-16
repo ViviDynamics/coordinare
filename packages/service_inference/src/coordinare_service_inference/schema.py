@@ -28,6 +28,16 @@ _ENV_VAR_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 # Shared with render_system_prompt — see service_inference/prompt.py.
 AGENT_VERSION_RE = re.compile(r"^[A-Za-z0-9._:-]{1,64}$")
 
+# Kinds whose server binary the coordinare installs *from this manifest* during
+# env-bootstrap (spec-091 US2/FR-006): the deb is fetched into the cache by the
+# persona-driven install block, so the binary is NOT expected to be present at
+# inference time. Mirrors coordinare's `_SERVICE_KIND_PACKAGES` (env_manifest.py)
+# — the source of truth for which kinds coordinare knows how to install. Used by
+# the agent's PATH-resolution check to skip these kinds (the chicken-and-egg:
+# the inference pass that *describes* the service runs before coordinare has
+# installed it).
+COORDINARE_MANAGED_KINDS = frozenset({"postgres", "redis"})
+
 
 class ServiceInit(BaseModel):
     """First-run initialization parameters for a stateful service (spec 091).
@@ -107,7 +117,16 @@ class ServiceEntry(BaseModel):
         min_length=1,
         description="Executable name or absolute path. PATH-resolvable inside the performer.",
     )
-    version: str = Field(..., min_length=1, description="Detected or required version string")
+    version: str | None = Field(
+        default=None,
+        description=(
+            "Detected or required version string, when known. Optional: for a "
+            "coordinare-managed stateful kind (postgres/redis) the binary is not "
+            "installed at inference time, so the version cannot be probed — leave "
+            "it null rather than guessing. Purely diagnostic; not consumed by the "
+            "templater or the cache key."
+        ),
+    )
     data_dir: str = Field(
         ...,
         min_length=1,
@@ -165,6 +184,20 @@ class ServiceEntry(BaseModel):
             raise ValueError("must not be whitespace-only")
         if "\x00" in value:
             raise ValueError("must not contain NUL bytes")
+        return value
+
+    @field_validator("version")
+    @classmethod
+    def _version_non_empty_when_provided(cls, value: str | None) -> str | None:
+        # `version` is optional (None when unprobeable), but an explicit empty or
+        # whitespace-only string is an authoring mistake — reject it rather than
+        # silently rendering a blank version into diagnostics.
+        if value is None:
+            return value
+        if not value.strip():
+            raise ValueError("version, when provided, must not be empty or whitespace-only")
+        if "\x00" in value:
+            raise ValueError("version must not contain NUL bytes")
         return value
 
     @field_validator("name")

@@ -279,6 +279,74 @@ async def test_unresolvable_binary_allowed_for_external(sandbox: ToolSandbox) ->
     assert manifest.services[0].external_required is True
 
 
+@pytest.mark.asyncio
+async def test_unresolvable_binary_allowed_for_coordinare_managed_kind(
+    sandbox: ToolSandbox,
+) -> None:
+    """spec-091: coordinare installs the binary for postgres/redis kinds FROM the
+    manifest during env-bootstrap, so the binary is legitimately absent at
+    inference time. Such a manifest must be accepted, not rejected — mirroring
+    the manual-override (.coordinare/score.json) path which never runs the
+    PATH-resolution check."""
+    pg = {
+        "services": [
+            {
+                "name": "postgres",
+                "binary": "postgres",  # not installed in the performer image
+                "version": None,  # cannot probe an uninstalled binary
+                "data_dir": "/tmp/pg",
+                "port": 5432,
+                "why_needed": "rails db",
+                "kind": "postgres",
+                "init": {"superuser": "root", "databases": ["app_test"]},
+            },
+            {
+                "name": "redis",
+                "binary": "redis-server",
+                "version": None,
+                "data_dir": "/tmp/redis",
+                "port": 6379,
+                "why_needed": "sidekiq queue",
+                "kind": "redis",
+            },
+        ],
+        "cache_inputs": ["Gemfile", "config/database.yml"],
+        "agent_version": "test-0",
+    }
+    client = _StubClient([LLMStep(manifest=pg)])
+    agent = ServiceInferenceAgent(sandbox=sandbox, client=client)
+    manifest = await agent.run("infer")
+    assert {s.name for s in manifest.services} == {"postgres", "redis"}
+    assert all(s.version is None for s in manifest.services)
+
+
+@pytest.mark.asyncio
+async def test_unresolvable_binary_still_rejected_for_generic_kind(
+    sandbox: ToolSandbox,
+) -> None:
+    """A 'generic' kind (the default) is NOT coordinare-installed, so an
+    unresolvable binary must still be rejected — the skip is scoped to
+    coordinare-managed stateful kinds only."""
+    bad = {
+        "services": [
+            {
+                "name": "weird",
+                "binary": "definitely-not-on-path-weird",
+                "data_dir": "/tmp/weird",
+                "port": 9999,
+                "why_needed": "test",
+                "kind": "generic",
+            }
+        ],
+        "cache_inputs": ["Gemfile"],
+        "agent_version": "test-0",
+    }
+    client = _StubClient([LLMStep(manifest=bad)])
+    agent = ServiceInferenceAgent(sandbox=sandbox, client=client)
+    with pytest.raises(ManifestValidationError, match="not resolvable"):
+        await agent.run("infer")
+
+
 class _HangingClient:
     """Client whose ``step`` blocks forever, simulating a wedged upstream."""
 

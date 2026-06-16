@@ -70,6 +70,31 @@ def test_name_binary_data_dir_reject_nul_bytes(field: str) -> None:
         ServiceEntry(**_base_entry(**{field: bad}))
 
 
+def test_version_optional_defaults_to_none() -> None:
+    # spec-091: a coordinare-managed stateful binary is not installed at inference
+    # time, so its version cannot be probed. version must be optional.
+    fields = _base_entry()
+    del fields["version"]
+    entry = ServiceEntry(**fields)
+    assert entry.version is None
+
+
+def test_version_explicit_none_accepted() -> None:
+    entry = ServiceEntry(**_base_entry(version=None))
+    assert entry.version is None
+
+
+@pytest.mark.parametrize("bad_version", ["", "   ", "\t"])
+def test_version_rejects_empty_or_whitespace_when_provided(bad_version: str) -> None:
+    with pytest.raises(ValidationError, match="empty or whitespace"):
+        ServiceEntry(**_base_entry(version=bad_version))
+
+
+def test_version_rejects_nul_byte() -> None:
+    with pytest.raises(ValidationError, match="NUL"):
+        ServiceEntry(**_base_entry(version="7.\x002"))
+
+
 def test_start_args_rejects_empty_list() -> None:
     with pytest.raises(ValidationError, match="non-empty"):
         ServiceEntry(**_base_entry(start_args=[]))
