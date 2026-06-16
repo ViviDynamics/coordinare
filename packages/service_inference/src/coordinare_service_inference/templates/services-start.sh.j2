@@ -45,7 +45,12 @@ echo "info: {{ svc.name }} is external; connection vars present"
 {% else %}
 # --- {{ svc.name }} ({{ svc.why_needed }}) ---
 {{ svc.name | upper }}_PID_FILE="$SERVICES_DIR/{{ svc.name }}.pid"
+{% if svc.kind == "postgres" %}
+# Postgres state lives under the writable services root, never the (read-only) cache mount.
+{{ svc.name | upper }}_DATA_DIR="$SERVICES_DIR/{{ svc.name }}-data"
+{% else %}
 {{ svc.name | upper }}_DATA_DIR={{ svc.data_dir | shq }}
+{% endif %}
 {{ svc.name | upper }}_PORT="{{ svc.port }}"
 
 if _is_running "${{ '{' }}{{ svc.name | upper }}_PID_FILE{{ '}' }}"; then
@@ -54,16 +59,68 @@ elif _port_bound "${{ '{' }}{{ svc.name | upper }}_PORT{{ '}' }}"; then
   echo "info: {{ svc.name }} port ${{ '{' }}{{ svc.name | upper }}_PORT{{ '}' }} already bound; assuming external instance"
 else
   mkdir -p "${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}"
+{% if svc.kind == "postgres" %}
+{% set _su = svc.init.superuser if svc.init else 'postgres' %}
+  # Postgres first-run init is coordinare-owned and idempotent: initdb (guarded by the
+  # PG_VERSION sentinel) creates the cluster + superuser atomically; the server then binds
+  # the declared port on loopback; each database is created create-if-missing so a re-run —
+  # or a run that died mid-recipe — converges without error and without data loss.
+  _PGDATA="${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}"
+  _PGPORT="${{ '{' }}{{ svc.name | upper }}_PORT{{ '}' }}"
+  if [ ! -f "$_PGDATA/PG_VERSION" ]; then
+{% if svc.init and svc.init.password_env_var %}
+    # The declared admin secret MUST be present at init time. Under `set -u` a missing
+    # var would otherwise abort with a cryptic "unbound variable"; pre-check it and
+    # surface a clear environment-attributed failure (exit 75) instead.
+    if [ -z "${{ '{' }}{{ svc.init.password_env_var }}:-{{ '}' }}" ]; then
+      echo "ERROR: env: {{ svc.name }} requires env var {{ svc.init.password_env_var }} (the admin secret) but it is unset" >&2
+      exit 75
+    fi
+    # The admin secret is never a literal here: --pwfile reads ${{ '{' }}{{ svc.init.password_env_var }}{{ '}' }} via
+    # process substitution at runtime, so it never lands in argv, logs, or the declaration.
+    initdb --pgdata="$_PGDATA" --username={{ _su | shq }} --auth-local=trust --auth-host=md5 --pwfile=<(printf '%s' "${{ '{' }}{{ svc.init.password_env_var }}{{ '}' }}") >"${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}/initdb.log" 2>&1
+{% else %}
+    # No password env var declared: trust-auth local init (no secret material).
+    initdb --pgdata="$_PGDATA" --username={{ _su | shq }} --auth-local=trust --auth-host=trust >"${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}/initdb.log" 2>&1
+{% endif %}
+  fi
+  {{ svc.binary | shq }} -D "$_PGDATA" -p "$_PGPORT" -k "$_PGDATA" -c listen_addresses=127.0.0.1 >"${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}/{{ svc.name }}.log" 2>&1 &
+  echo $! > "${{ '{' }}{{ svc.name | upper }}_PID_FILE{{ '}' }}"
+  # Bounded readiness wait: postgres binds the port before it can serve, so probe the
+  # connection target; a timeout is surfaced as an environment-attributed failure, not a hang.
+  _pg_wait=0
+  while [ "$_pg_wait" -lt 60 ]; do
+    if pg_isready -h 127.0.0.1 -p "$_PGPORT" >/dev/null 2>&1; then break; fi
+    _pg_wait=$((_pg_wait + 1))
+    sleep 1
+  done
+  if [ "$_pg_wait" -ge 60 ]; then
+    echo "ERROR: env: {{ svc.name }} did not become ready within 60s" >&2
+    exit 75
+  fi
+{% for db in svc.init.databases %}
+  # create-if-missing. The script runs without `set -e`, so a failed createdb would
+  # otherwise be swallowed and the service reported "started" with the database absent —
+  # QA would then fail as if the code under test were broken. Gate it explicitly and
+  # attribute a creation failure to the environment (exit 75).
+  if ! psql -h "$_PGDATA" -p "$_PGPORT" -U {{ _su | shq }} -lqt | cut -d'|' -f1 | grep -qw {{ db | shq }}; then
+    if ! createdb -h "$_PGDATA" -p "$_PGPORT" -U {{ _su | shq }} {{ db | shq }}; then
+      echo "ERROR: env: {{ svc.name }} failed to create database {{ db }}" >&2
+      exit 75
+    fi
+  fi
+{% endfor %}
+  echo "info: started {{ svc.name }} (pid $(cat ${{ '{' }}{{ svc.name | upper }}_PID_FILE{{ '}' }}))"
+{% else %}
   # Service-specific bootstrap is delegated to the binary; the templater encodes only the
-  # invocation. Project-specific init (initdb, etc.) lives in the data_dir setup or in the
-  # service-inference template extensions.
-  # Redirect the background service's stdout/stderr so it does not hold the
-  # parent's pipes open — otherwise a caller that does `subprocess.communicate()`
-  # on services-start.sh hangs until the daemon exits.
+  # invocation. Redirect the background service's stdout/stderr so it does not hold the
+  # parent's pipes open — otherwise a caller that does `subprocess.communicate()` on
+  # services-start.sh hangs until the daemon exits.
   # start_args is an argv list; each element is shell-quoted independently via `shq`.
-  {% if svc.start_args %}{{ svc.start_args | map('shq') | join(' ') }}{% else %}{{ svc.binary | shq }} --port={{ svc.port }} --data-dir={{ svc.data_dir | shq }}{% endif %} >"${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}/{{ svc.name }}.log" 2>&1 &
+  {{ (svc.start_args | map('shq') | join(' ')) if svc.start_args else ((svc.binary | shq) ~ ' --port=' ~ svc.port ~ ' --data-dir=' ~ (svc.data_dir | shq)) }} >"${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}/{{ svc.name }}.log" 2>&1 &
   echo $! > "${{ '{' }}{{ svc.name | upper }}_PID_FILE{{ '}' }}"
   echo "info: started {{ svc.name }} (pid $(cat ${{ '{' }}{{ svc.name | upper }}_PID_FILE{{ '}' }}))"
+{% endif %}
 fi
 
 {% endif %}

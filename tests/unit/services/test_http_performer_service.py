@@ -1531,6 +1531,95 @@ def test_build_env_bootstrap_payload_synthesizes_workspace(monkeypatch) -> None:
     assert "ANTHROPIC_API_KEY" in payload.secrets
 
 
+def _bootstrap_card_context(declared_services=None) -> dict[str, object]:
+    ctx: dict[str, object] = {
+        "job_type": "env_bootstrap",
+        "symphony_name": "website",
+        "symphony_org": "VividyNamics",
+        "symphony_repo": "vivi-website",
+        "env_spec_files": ["README.md"],
+        "env_spec_contents": {"README.md": "## Setup"},
+        "cache_mount_path": "/devenv/website-abc123",
+    }
+    if declared_services is not None:
+        ctx["declared_services"] = declared_services
+    return ctx
+
+
+def test_build_env_bootstrap_payload_emits_service_install_for_declared_postgres(
+    monkeypatch,
+) -> None:
+    """091/T017/SC-004: a declared postgres service makes the bootstrap persona
+    instruct fetching its server + client deb into <cache>/debs/."""
+    monkeypatch.setenv("GITHUB_TOKEN", "ghs_test")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    svc = HTTPPerformerService(
+        _persistent_config(), client=_client(lambda r: httpx.Response(204))
+    )
+    declared = [
+        {
+            "name": "postgres",
+            "binary": "postgres",
+            "version": "16",
+            "data_dir": "/tmp/pg-data",
+            "port": 5432,
+            "why_needed": "Primary application database",
+            "sources": ["config/database.yml"],
+            "kind": "postgres",
+            "init": {"superuser": "root", "databases": ["app_dev"]},
+        }
+    ]
+    payload = svc._build_job_payload(_bootstrap_card_context(declared), None)
+    persona = payload.persona
+    assert "SYSTEM SERVICES" in persona
+    # Reuses the existing deb-into-<cache>/debs/ delivery (FR-006/FR-007).
+    assert "/devenv/website-abc123/debs" in persona
+    assert "postgresql" in persona
+    # C-11/T018: the client package providing pg_isready is included.
+    assert "postgresql-client" in persona
+
+
+def test_build_env_bootstrap_payload_no_service_block_when_none_declared(
+    monkeypatch,
+) -> None:
+    """091/T017/FR-013: no declared stateful service ⇒ persona has no service block
+    (behavior unchanged from today)."""
+    monkeypatch.setenv("GITHUB_TOKEN", "ghs_test")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    svc = HTTPPerformerService(
+        _persistent_config(), client=_client(lambda r: httpx.Response(204))
+    )
+    # Both an absent key and an empty list must leave the persona unchanged.
+    persona_absent = svc._build_job_payload(_bootstrap_card_context(), None).persona
+    persona_empty = svc._build_job_payload(_bootstrap_card_context([]), None).persona
+    assert "SYSTEM SERVICES" not in persona_absent
+    assert "SYSTEM SERVICES" not in persona_empty
+    assert persona_absent == persona_empty
+
+
+def test_build_env_bootstrap_payload_generic_service_emits_no_block(monkeypatch) -> None:
+    """091: a declared service with the default 'generic' kind derives no service
+    install item — its binary comes from the project spec files, not a known recipe."""
+    monkeypatch.setenv("GITHUB_TOKEN", "ghs_test")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    svc = HTTPPerformerService(
+        _persistent_config(), client=_client(lambda r: httpx.Response(204))
+    )
+    declared = [
+        {
+            "name": "widget",
+            "binary": "widgetd",
+            "version": "1.0",
+            "data_dir": "/tmp/widget",
+            "port": 9000,
+            "why_needed": "bespoke daemon",
+            "sources": ["docker-compose.yml"],
+        }
+    ]
+    persona = svc._build_job_payload(_bootstrap_card_context(declared), None).persona
+    assert "SYSTEM SERVICES" not in persona
+
+
 def test_build_job_payload_forwards_env_cache_path(monkeypatch) -> None:
     """060/Option B: env_cache_path on card_context must flow into JobInitPayload."""
     from coordinare.workspace import WorkspaceInfo

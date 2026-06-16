@@ -244,3 +244,99 @@ class TestActivateRenderer:
     def test_extracted_deb_bins_best_effort(self) -> None:
         sh = render_activate_sh(self._manifest(), cache_mount_path="/devenv/sym")
         assert '"$DEVENV"/*/usr/bin' in sh
+
+
+class TestServiceInstallDerivation:
+    """091: a declared stateful service contributes a service-binary install item."""
+
+    @staticmethod
+    def _entry(**overrides):
+        from coordinare_service_inference.schema import ServiceEntry, ServiceInit
+
+        fields = dict(
+            name="postgres",
+            binary="postgres",
+            version="16",
+            data_dir="/tmp/pg-data",
+            port=5432,
+            why_needed="Primary application database",
+            sources=["config/database.yml"],
+            kind="postgres",
+            init=ServiceInit(superuser="root", databases=["app_dev"]),
+        )
+        fields.update(overrides)
+        return ServiceEntry(**fields)
+
+    def test_postgres_derives_server_and_client_packages(self) -> None:
+        from coordinare.services.env_manifest import derive_service_install_items
+
+        items = derive_service_install_items([self._entry()])
+        names = {i.name for i in items}
+        # C-14/FR-006: the server package is fetched into the cache...
+        assert "postgresql" in names
+        # ...and C-11/T018: the client package providing pg_isready is included too.
+        assert "postgresql-client" in names
+        assert all(i.kind == "system" for i in items)
+        assert all(i.source == "services.json:postgres" for i in items)
+
+    def test_redis_derives_its_server_package(self) -> None:
+        from coordinare_service_inference.schema import ServiceEntry
+
+        from coordinare.services.env_manifest import derive_service_install_items
+
+        redis = ServiceEntry(
+            name="redis",
+            binary="redis-server",
+            version="7.2",
+            data_dir="/tmp/redis-data",
+            port=6379,
+            why_needed="queue backend",
+            sources=["Gemfile.lock"],
+            kind="redis",
+        )
+        items = derive_service_install_items([redis])
+        assert {i.name for i in items} == {"redis-server"}
+
+    def test_generic_service_derives_no_install_item(self) -> None:
+        # FR-013 / US2 acceptance #3: no stateful kind ⇒ behavior unchanged.
+        from coordinare_service_inference.schema import ServiceEntry
+
+        from coordinare.services.env_manifest import derive_service_install_items
+
+        generic = ServiceEntry(
+            name="widget",
+            binary="widgetd",
+            version="1.0",
+            data_dir="/tmp/widget",
+            port=9000,
+            why_needed="bespoke daemon",
+            sources=["docker-compose.yml"],
+        )
+        assert derive_service_install_items([generic]) == []
+        assert derive_service_install_items([]) == []
+
+    def test_external_service_derives_nothing(self) -> None:
+        from coordinare_service_inference.schema import ServiceEntry
+
+        from coordinare.services.env_manifest import derive_service_install_items
+
+        external = ServiceEntry(
+            name="snowflake",
+            binary="(external)",
+            version="cloud",
+            data_dir="(external)",
+            port=443,
+            why_needed="warehouse",
+            sources=["config/snowflake.yml"],
+            external_required=True,
+            required_env_vars=["SNOWFLAKE_ACCOUNT"],
+        )
+        assert derive_service_install_items([external]) == []
+
+    def test_packages_deduped_across_services(self) -> None:
+        from coordinare.services.env_manifest import derive_service_install_items
+
+        items = derive_service_install_items([self._entry(), self._entry(name="pg2")])
+        # Two postgres services name the same packages once each, not twice.
+        assert len(items) == 2
+        assert {i.name for i in items} == {"postgresql", "postgresql-client"}

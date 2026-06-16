@@ -32,7 +32,18 @@ _stop_pid() {
 
 {% for svc in services %}
 {% if not svc.external_required %}
+{% if svc.kind == "postgres" %}
+# Clean fast shutdown so the next start needs no crash recovery; a bare SIGTERM triggers
+# postgres "smart" shutdown (waits for clients) and the SIGKILL fallback forces recovery.
+{{ svc.name | upper }}_DATA_DIR="$SERVICES_DIR/{{ svc.name }}-data"
+if [ -d "${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}/base" ] || [ -f "${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}/postmaster.pid" ]; then
+  pg_ctl stop -m fast -D "${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}" >/dev/null 2>&1 || true
+fi
+rm -f "$SERVICES_DIR/{{ svc.name }}.pid"
+echo "info: stopped {{ svc.name }} (pg_ctl fast)"
+{% else %}
 _stop_pid "$SERVICES_DIR/{{ svc.name }}.pid" "{{ svc.name }}"
+{% endif %}
 {% endif %}
 {% endfor %}
 

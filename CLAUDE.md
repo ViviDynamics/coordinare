@@ -25,6 +25,8 @@ See AGENTS.md for all development guidelines.
 - JSON snapshot via `state_store.py` (existing) — extended with a per-head `local_fix_counter` on `PersistedSession`, parallel to spec-075's `bounce_counter`. No new store. (089-implementer-local-test-gate)
 - Python 3.14 (project minimum 3.12; production on 3.14.5 via uv) + pydantic 2.x (config + decision/signature models), langgraph (090-baseline-repair-autonomy)
 - JSON snapshot via `state_store.py` (existing single-host single-process (090-baseline-repair-autonomy)
+- Python 3.14 (project minimum 3.12; prod 3.14.5 via uv); generated shell is POSIX/bash sourced inside the Debian-based performer. + pydantic 2.x (manifest/entry models + validators), Jinja2 (`StrictUndefined`, custom `shq` shell-quote filter) for the services-{start,stop,health}.sh templater, the existing `manual_override` loader, `env_manifest` derivation, and `http_performer_service._build_env_bootstrap_payload` persona builder. No new external dependencies. (091-stateful-service-hosting)
+- JSON snapshot via `state_store.py` (existing single-host single-process). No new persisted coordinare state — service runtime state (initialized/running) is on-disk in the service's `data_dir` (sentinel files) inside the container. (091-stateful-service-hosting)
 
 ## Recent Changes
 - 076-qa-cycle: Added Python 3.14 (project minimum: 3.12; production currently on 3.14.5 via uv) + pydantic 2.x, langgraph, structlog, docker SDK (or subprocess to `docker` CLI), fastapi (dashboard SSE), httpx (performer HTTP transport), pyyaml (config)

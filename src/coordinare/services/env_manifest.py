@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import re
+from typing import Any
 
 from coordinare.models.env_manifest import EnvManifest, ManifestItem
 
@@ -147,6 +148,64 @@ _PARSERS = {
     "Gemfile": _parse_gemfile,
     "Gemfile.lock": _parse_gemfile_lock,
 }
+
+
+# 091: a declared service `kind` → the system package(s) the coordinare-owned
+# service recipe needs in the cache. The server package supplies the daemon +
+# init/teardown tools (initdb/postgres/pg_ctl); the client package supplies the
+# readiness probe (pg_isready) and the create-db tooling (psql/createdb) that
+# services-start.sh and services-health.sh invoke. Only kinds coordinare knows how
+# to host appear here; 'generic' services bring their own binary via the project
+# spec files / start_args and derive nothing. (D3, C-14, FR-006.)
+_SERVICE_KIND_PACKAGES: dict[str, tuple[str, ...]] = {
+    "postgres": ("postgresql", "postgresql-client"),
+    "redis": ("redis-server",),
+}
+
+
+def derive_service_install_items(services: list[Any]) -> list[ManifestItem]:
+    """Turn declared stateful services into service-binary install items (091).
+
+    Each :class:`~coordinare_service_inference.schema.ServiceEntry` with a coordinare-known
+    ``kind`` (postgres, redis) contributes one or more ``system`` ManifestItems
+    naming the deb package(s) the env-bootstrap must fetch into ``<cache>/debs/``
+    — the SAME delivery the existing system-package path uses, so the base image
+    gains nothing (FR-006, FR-007, SC-004). For ``kind == "postgres"`` the set
+    includes the client package providing ``pg_isready`` (the readiness probe in
+    services-health.sh) so that binary is guaranteed present, not assumed
+    image-baked (C-11, C-14).
+
+    ``services`` items are ServiceEntry models (duck-typed: ``external_required``,
+    ``kind``, ``name``). External services host nothing in-container and derive
+    nothing. Packages are de-duplicated across services, preferring the first
+    service that names them.
+    """
+    items: list[ManifestItem] = []
+    seen: set[str] = set()
+    for svc in services:
+        if getattr(svc, "external_required", False):
+            continue
+        kind = getattr(svc, "kind", "generic")
+        packages = _SERVICE_KIND_PACKAGES.get(kind)
+        if not packages:
+            continue
+        svc_name = getattr(svc, "name", kind)
+        for pkg in packages:
+            if pkg in seen:
+                continue
+            seen.add(pkg)
+            items.append(
+                ManifestItem(
+                    name=pkg,
+                    kind="system",
+                    source=f"services.json:{svc_name}",
+                    install_hint=(
+                        f"service '{svc_name}' (kind={kind}); fetch as .deb into "
+                        "<cache>/debs/ via the system-package path"
+                    ),
+                )
+            )
+    return items
 
 
 def derive_manifest(

@@ -12,7 +12,9 @@ import pytest
 from pydantic import ValidationError
 from coordinare_service_inference.schema import (
     ServiceEntry,
+    ServiceInit,
     ServicesManifest,
+    manifest_json_schema,
 )
 
 
@@ -116,3 +118,123 @@ def test_agent_version_accepts_full_safe_charset() -> None:
         services=[], cache_inputs=[], agent_version="Claude-Services_v1.2:3"
     )
     assert manifest.agent_version == "Claude-Services_v1.2:3"
+
+
+# --- spec 091: ServiceInit + kind extension (T006) ---
+
+
+def _postgres_entry(**overrides):
+    """A valid postgres entry with an init block, for the 091 cases."""
+    fields = dict(
+        name="postgres",
+        binary="postgres",
+        version="16",
+        data_dir="/tmp/pg-data",
+        port=5432,
+        why_needed="Primary application database",
+        kind="postgres",
+        init=ServiceInit(
+            superuser="root",
+            databases=["app_dev", "app_test"],
+            password_env_var="POSTGRES_PASSWORD",
+        ),
+    )
+    fields.update(overrides)
+    return fields
+
+
+def test_postgres_entry_with_init_loads() -> None:
+    # A postgres kind carrying a full init block is the headline case (US1).
+    entry = ServiceEntry(**_postgres_entry())
+    assert entry.kind == "postgres"
+    assert entry.init is not None
+    assert entry.init.superuser == "root"
+    assert entry.init.databases == ["app_dev", "app_test"]
+    assert entry.init.password_env_var == "POSTGRES_PASSWORD"
+
+
+def test_postgres_init_without_password_env_var_loads() -> None:
+    # password_env_var is optional — trust-auth local socket init is valid.
+    entry = ServiceEntry(
+        **_postgres_entry(init=ServiceInit(superuser="root", databases=["app_dev"]))
+    )
+    assert entry.init is not None
+    assert entry.init.password_env_var is None
+
+
+@pytest.mark.parametrize("bad_kind", ["generic", "redis"])
+def test_init_on_non_initializing_kind_raises(bad_kind: str) -> None:
+    # VR-2: an init block is only valid for an initializing kind (postgres).
+    with pytest.raises(ValidationError, match="init"):
+        ServiceEntry(
+            **_postgres_entry(kind=bad_kind, init=ServiceInit(superuser="root"))
+        )
+
+
+def test_unknown_kind_rejected() -> None:
+    # VR-1: kind is a closed set; an unknown value is a load-time error.
+    with pytest.raises(ValidationError):
+        ServiceEntry(**_base_entry(kind="mysql"))
+
+
+def test_init_literal_password_key_rejected() -> None:
+    # VR-8: ServiceInit forbids extra keys, so a literal-secret field (e.g.
+    # `password`) cannot be smuggled into the declaration.
+    with pytest.raises(ValidationError):
+        ServiceInit(superuser="root", password="hunter2")  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize(
+    "bad_superuser",
+    ["Root", "1root", "root-user", "root user", "", "root;DROP"],
+)
+def test_init_superuser_pattern_violations_raise(bad_superuser: str) -> None:
+    # VR-5: superuser is interpolated into the role-creation step.
+    with pytest.raises(ValidationError):
+        ServiceInit(superuser=bad_superuser)
+
+
+@pytest.mark.parametrize(
+    "bad_db",
+    ["App_DB", "1db", "my-db", "my db", "", "db;DROP"],
+)
+def test_init_database_pattern_violations_raise(bad_db: str) -> None:
+    # VR-6: each database name is interpolated into the create-db step.
+    with pytest.raises(ValidationError):
+        ServiceInit(superuser="root", databases=[bad_db])
+
+
+@pytest.mark.parametrize(
+    "bad_var",
+    ["lower_case", "WITH-DASH", "1LEADING", "HAS SPACE", ""],
+)
+def test_init_password_env_var_pattern_violations_raise(bad_var: str) -> None:
+    # VR-7: password_env_var names an env var read as ${VAR}; must be POSIX-safe.
+    with pytest.raises(ValidationError):
+        ServiceInit(superuser="root", password_env_var=bad_var)
+
+
+def test_generic_kind_with_no_init_is_unchanged() -> None:
+    # VR-3: an entry that omits kind/init defaults to generic + None and is the
+    # pre-091 shape; explicitly setting kind="generic", init=None is identical.
+    default_entry = ServiceEntry(**_base_entry())
+    explicit_entry = ServiceEntry(**_base_entry(kind="generic", init=None))
+    assert default_entry.kind == "generic"
+    assert default_entry.init is None
+    assert explicit_entry.kind == "generic"
+    assert explicit_entry.init is None
+
+
+def test_manifest_json_schema_emits_kind_and_init() -> None:
+    schema = manifest_json_schema()
+    entry_schema = schema["$defs"]["ServiceEntry"]
+    assert "kind" in entry_schema["properties"]
+    assert "init" in entry_schema["properties"]
+    assert "ServiceInit" in schema["$defs"]
+    # VR-2 conditional grafted on: init present ⇒ kind must be "postgres".
+    conditionals = entry_schema.get("allOf", [])
+    assert any(
+        c.get("then", {}).get("properties", {}).get("kind", {}).get("const")
+        == "postgres"
+        for c in conditionals
+    ), "VR-2 init-requires-postgres conditional missing from emitted schema"

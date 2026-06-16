@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vividynamics.com/coordinare/091/services-manifest.schema.json",
+  "title": "ServicesManifest",
+  "description": "Extended services.json contract for stateful service hosting (spec 091). Additive over the 063 contract: a ServiceEntry with kind='generic' and no init renders identically to today.",
+  "type": "object",
+  "required": ["services", "cache_inputs", "agent_version"],
+  "additionalProperties": false,
+  "properties": {
+    "services": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/ServiceEntry" },
+      "description": "Supportive services the project depends on. Service names must be unique."
+    },
+    "cache_inputs": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Project paths whose contents drive cache invalidation."
+    },
+    "agent_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9._:-]{1,64}$",
+      "description": "Producer identifier; 'manual-override' for hand-authored score.json (trusted over LLM inference)."
+    }
+  },
+  "$defs": {
+    "ServiceEntry": {
+      "type": "object",
+      "required": ["name", "binary", "version", "data_dir", "port", "why_needed"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "description": "Logical service name; interpolated into shell identifiers and paths."
+        },
+        "binary": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Executable name or absolute path, PATH-resolvable inside the performer."
+        },
+        "version": { "type": "string", "minLength": 1 },
+        "data_dir": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Mutable service-state path; MUST resolve under a writable location ($XDG_RUNTIME_DIR), never the read-only cache mount."
+        },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "why_needed": { "type": "string", "minLength": 1 },
+        "sources": { "type": "array", "items": { "type": "string" }, "default": [] },
+        "external_required": { "type": "boolean", "default": false },
+        "required_env_vars": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[A-Z_][A-Z0-9_]*$" },
+          "default": []
+        },
+        "start_args": {
+          "type": ["array", "null"],
+          "items": { "type": "string" },
+          "default": null,
+          "description": "Optional argv override for in-container launch; each element is shell-quoted."
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["generic", "postgres", "redis"],
+          "default": "generic",
+          "description": "Selects the coordinare-owned init recipe and readiness probe. 'generic' = no init (063 behavior). NEW in 091."
+        },
+        "init": {
+          "anyOf": [{ "$ref": "#/$defs/ServiceInit" }, { "type": "null" }],
+          "default": null,
+          "description": "First-run initialization parameters. Only valid for kinds that initialize (postgres). NEW in 091."
+        }
+      },
+      "allOf": [
+        {
+          "$comment": "VR-2: init only valid for an initializing kind.",
+          "if": { "properties": { "init": { "type": "object" } }, "required": ["init"] },
+          "then": { "properties": { "kind": { "const": "postgres" } } }
+        }
+      ]
+    },
+    "ServiceInit": {
+      "type": "object",
+      "required": ["superuser"],
+      "additionalProperties": false,
+      "description": "Init parameters only — never a recipe, never a literal secret.",
+      "properties": {
+        "superuser": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "description": "Admin/superuser role to create (e.g. 'root'). Identifier-safe."
+        },
+        "databases": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+          "default": [],
+          "description": "Databases created idempotently on first run, each create-if-missing."
+        },
+        "password_env_var": {
+          "type": ["string", "null"],
+          "pattern": "^[A-Z_][A-Z0-9_]*$",
+          "default": null,
+          "description": "Name of the env var holding the admin secret. The recipe reads ${VAR}; the secret value is NEVER stored here, in argv, or in logs."
+        }
+      }
+    }
+  }
+}

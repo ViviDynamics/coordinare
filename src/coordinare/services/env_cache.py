@@ -624,6 +624,16 @@ class EnvCacheService:
             llm_chat=llm_chat,
         )
 
+        # 091: surface durably-declared stateful services so the bootstrap fetches
+        # their binaries into the cache (deb-into-<cache>/debs/). Best-effort: a
+        # missing/invalid .coordinare/score.json is normal — fall back to no services.
+        declared_services = await self._fetch_declared_services(
+            github_org=eff_config.github_org,
+            repo=repo,
+            github_service=github_service,
+            symphony_name=symphony_name,
+        )
+
         payload = BootstrapJobPayload(
             symphony_name=symphony_name,
             symphony_org=eff_config.github_org,
@@ -637,6 +647,7 @@ class EnvCacheService:
             dependency_checklist=dependency_checklist,
             verify_provided=verify_provided,
             activate_provided=activate_provided,
+            declared_services=declared_services,
         )
 
         # Mark in-flight BEFORE dispatching. dispatch_fn may fail SYNCHRONOUSLY
@@ -669,6 +680,51 @@ class EnvCacheService:
             cache_state.bootstrap_in_flight = False
             cache_state.readme_sha = None
             return
+
+    async def _fetch_declared_services(
+        self,
+        *,
+        github_org: str,
+        repo: str,
+        github_service: _GitHubService,
+        symphony_name: str,
+    ) -> list[dict[str, Any]]:
+        """Best-effort fetch of durably-declared services from .coordinare/score.json (091).
+
+        Returns each declared :class:`ServiceEntry` as a plain dict (model dump) so it
+        rides BootstrapJobPayload → card_context into the persona builder, which derives
+        the service-binary install items. Any failure (no file, parse/validation error)
+        returns ``[]`` — the bootstrap simply derives no service-install item, exactly as
+        before 091.
+        """
+        try:
+            content = await github_service.get_file_content(
+                github_org, repo, ".coordinare/score.json"
+            )
+        except Exception:
+            return []
+        if not content:
+            return []
+        try:
+            from coordinare_service_inference.schema import ServicesManifest
+
+            manifest = ServicesManifest.model_validate_json(content)
+        except Exception as exc:
+            logger.info(
+                "env_cache.declared_services_unparseable",
+                symphony=symphony_name,
+                error=str(exc),
+            )
+            return []
+        services = [svc.model_dump() for svc in manifest.services]
+        if services:
+            logger.info(
+                "env_cache.declared_services_found",
+                symphony=symphony_name,
+                count=len(services),
+                kinds=sorted({svc.get("kind", "generic") for svc in services}),
+            )
+        return services
 
     async def _build_manifest_artifacts(
         self,

@@ -175,3 +175,105 @@ async def test_manual_override_end_to_end_starts_and_stops_service(
     finally:
         # Defence in depth: never leak a python listener if assertions fail mid-run.
         stop_all_env_cache_services()
+
+
+# --------------------- spec 091: stateful postgres (US3) ---------------------
+
+
+def test_manual_override_postgres_declaration_renders_init_block(tmp_path: Path) -> None:
+    """091/T021/T023/FR-008/SC-005: a .coordinare/score.json declaring a postgres
+    service with an init block flows verbatim through apply_manual_override → render,
+    producing a services-start.sh with the coordinare-owned postgres init recipe. The
+    durable declaration is trusted over (here, empty) LLM inference: apply_manual_override
+    short-circuits inference and forces agent_version='manual-override'.
+    """
+    project = tmp_path / "project"
+    (project / ".coordinare").mkdir(parents=True)
+    score = {
+        # Operator typed a different version; manual_override must force-correct it.
+        "agent_version": "operator-typed",
+        "services": [
+            {
+                "name": "postgres",
+                "binary": "postgres",
+                "version": "16",
+                "data_dir": "/tmp/pg-data",
+                "port": 5432,
+                "why_needed": "Primary application database",
+                "sources": [".coordinare/score.json"],
+                "kind": "postgres",
+                "init": {
+                    "superuser": "root",
+                    "databases": ["app_dev", "app_test"],
+                    "password_env_var": "POSTGRES_PASSWORD",
+                },
+            }
+        ],
+        "cache_inputs": [".coordinare/score.json"],
+    }
+    (project / ".coordinare" / "score.json").write_text(json.dumps(score))
+
+    env_cache = tmp_path / "env-cache"
+    result = apply_manual_override(
+        project_root=project, output_root=env_cache, run_validation=False
+    )
+
+    assert result.applied is True, result.reason
+    # Durable declaration trusted over inference; agent_version force-tagged.
+    assert result.manifest is not None
+    assert result.manifest.agent_version == "manual-override"
+    # T023: kind + init carried through verbatim (not dropped by the override path).
+    svc = result.manifest.services[0]
+    assert svc.kind == "postgres"
+    assert svc.init is not None
+    assert svc.init.superuser == "root"
+    assert svc.init.databases == ["app_dev", "app_test"]
+    assert svc.init.password_env_var == "POSTGRES_PASSWORD"
+
+    # The rendered start script carries the coordinare-owned postgres init recipe.
+    start = (env_cache / "services" / "services-start.sh").read_text()
+    assert "initdb" in start
+    assert 'if [ ! -f "$_PGDATA/PG_VERSION" ]; then' in start
+    assert "createdb" in start
+    assert "--pwfile=<(printf '%s' \"${POSTGRES_PASSWORD}\")" in start
+    # Readiness failure is surfaced as environment-attributed, not a hang (C-12).
+    assert "ERROR: env: postgres did not become ready" in start
+    # Teardown is the clean fast shutdown (C-13b).
+    stop = (env_cache / "services" / "services-stop.sh").read_text()
+    assert "pg_ctl stop -m fast -D" in stop
+
+
+@pytest.mark.asyncio
+async def test_postgres_start_failure_is_environment_attributed(tmp_path: Path) -> None:
+    """091/T022/T024/FR-005/SC-003: a stateful service's init/start/readiness failure
+    surfaces a non-zero services-start.sh exit, which the workspace start helper routes
+    into the environment_error channel (spec-088 wiring) — NOT judged as code-under-test.
+
+    Deterministic + fast: we drop a services-start.sh that emits the SAME env-attributed
+    readiness-timeout surface the postgres template renders (`ERROR: env: ... exit 75`)
+    rather than waiting out a real 60s probe against an absent server.
+    """
+    from performer.workspace import (
+        _start_env_cache_services,
+        consume_services_start_failure,
+    )
+
+    # Clear any residual single-shot failure from an earlier test in this process.
+    consume_services_start_failure()
+
+    services_dir = tmp_path / "env-cache" / "services"
+    services_dir.mkdir(parents=True)
+    start = services_dir / "services-start.sh"
+    start.write_text(
+        "#!/usr/bin/env bash\n"
+        'echo "ERROR: env: postgres did not become ready within 60s" >&2\n'
+        "exit 75\n"
+    )
+    start.chmod(0o755)
+
+    await _start_env_cache_services(str(tmp_path / "env-cache"), {})
+
+    failure = consume_services_start_failure()
+    assert failure is not None, "non-zero services-start must populate the env channel"
+    assert "returncode=75" in failure
+    assert "did not become ready" in failure
