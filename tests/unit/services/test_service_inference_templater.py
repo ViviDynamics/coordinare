@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from coordinare_service_inference.schema import (
     ServiceEntry,
+    ServiceInit,
     ServicesManifest,
 )
 from coordinare_service_inference.templater import render
@@ -176,6 +177,211 @@ def test_render_synthesises_default_when_start_args_none():
 
     assert "--port=6379" in scripts.start
     assert "--data-dir=" in scripts.start
+
+
+# --- spec 091: postgres init / kind-aware rendering (T007-T010, T014b) ---
+
+
+def _manifest(services, agent_version="test-091"):
+    return ServicesManifest(
+        services=services, cache_inputs=[], agent_version=agent_version
+    )
+
+
+def _postgres_init(**init_overrides) -> ServiceEntry:
+    """A postgres entry carrying a full init block — the US1 headline case."""
+    init_fields = dict(
+        superuser="root",
+        databases=["app_dev", "app_test"],
+        password_env_var="POSTGRES_PASSWORD",
+    )
+    init_fields.update(init_overrides)
+    return ServiceEntry(
+        name="postgres",
+        binary="postgres",
+        version="16",
+        data_dir="/tmp/pg-data",
+        port=5432,
+        why_needed="Primary application database",
+        sources=["config/database.yml"],
+        kind="postgres",
+        init=ServiceInit(**init_fields),
+    )
+
+
+# C-1..C-3: shell-safety (T007)
+
+
+def test_postgres_start_does_not_set_e():
+    # C-1: no `set -e` — a create-if-missing probe intentionally returns non-zero
+    # and must not abort the script.
+    scripts = render(_manifest([_postgres_init()]))
+    assert "\nset -e\n" not in scripts.start
+    assert "set -e " not in scripts.start
+
+
+def test_postgres_password_referenced_only_as_env_var():
+    # C-3: the admin secret is referenced only via ${<password_env_var>}, read at
+    # runtime through process substitution — never a literal in argv or logs.
+    scripts = render(_manifest([_postgres_init()]))
+    assert "--pwfile=<(printf '%s' \"${POSTGRES_PASSWORD}\")" in scripts.start
+    # The env-var NAME may appear; no literal secret value is ever emitted.
+    assert "password=" not in scripts.start.lower()
+
+
+def test_postgres_without_password_omits_pwfile():
+    # C-3: trust-auth local init is valid; no password env var ⇒ no --pwfile.
+    entry = _postgres_init(password_env_var=None)
+    scripts = render(_manifest([entry]))
+    assert "initdb" in scripts.start
+    assert "--pwfile" not in scripts.start
+
+
+# C-5..C-10: postgres init render (T008)
+
+
+def test_postgres_init_runs_before_launch():
+    # C-5: initdb → (superuser created atomically by initdb --username) → launch
+    # → create databases. Assert ordering by offset.
+    scripts = render(_manifest([_postgres_init()]))
+    s = scripts.start
+    i_initdb = s.index("initdb")
+    i_launch = s.index("postgres -D")
+    i_createdb = s.index("createdb")
+    assert i_initdb < i_launch < i_createdb
+    # superuser created atomically by initdb (no separate CREATE ROLE step).
+    assert "--username=root" in s
+
+
+def test_postgres_initdb_guarded_by_pg_version_sentinel():
+    # C-6: initdb is skipped when the <data_dir>/PG_VERSION sentinel exists.
+    scripts = render(_manifest([_postgres_init()]))
+    assert 'if [ ! -f "$_PGDATA/PG_VERSION" ]; then' in scripts.start
+
+
+def test_postgres_database_creation_is_create_if_missing():
+    # C-7: each database is created only if absent — convergent on partial init,
+    # never short-circuited by the initdb sentinel.
+    scripts = render(_manifest([_postgres_init()]))
+    s = scripts.start
+    assert "grep -qw app_dev" in s
+    assert "grep -qw app_test" in s
+    assert 'createdb -h "$_PGDATA" -p "$_PGPORT" -U root app_dev' in s
+    assert 'createdb -h "$_PGDATA" -p "$_PGPORT" -U root app_test' in s
+
+
+def test_postgres_createdb_failure_is_attributed_not_swallowed():
+    # C-7: the script runs without `set -e`, so a failed createdb would be
+    # swallowed and the service reported "started" with the database absent.
+    # The createdb is gated explicitly and a failure is attributed to the
+    # environment (exit 75), not misattributed to the code under test.
+    scripts = render(_manifest([_postgres_init()]))
+    s = scripts.start
+    assert "if ! createdb" in s
+    assert "ERROR: env: postgres failed to create database app_dev" in s
+    assert "ERROR: env: postgres failed to create database app_test" in s
+    # the failure path uses the environment-attributed exit code.
+    assert "exit 75" in s
+
+
+def test_postgres_init_guards_missing_password_env_var():
+    # C-3/FR-005: when an init password env var is declared, its absence at init
+    # time must surface a clear environment-attributed failure (exit 75) rather
+    # than a cryptic `set -u` "unbound variable" abort inside the initdb line.
+    scripts = render(_manifest([_postgres_init()]))
+    s = scripts.start
+    assert 'if [ -z "${POSTGRES_PASSWORD:-}" ]; then' in s
+    assert (
+        "ERROR: env: postgres requires env var POSTGRES_PASSWORD "
+        "(the admin secret) but it is unset" in s
+    )
+
+
+def test_postgres_without_password_omits_password_guard():
+    # C-3: trust-auth init declares no secret, so there is no password-presence
+    # guard to render — it is bound to the --pwfile branch only.
+    scripts = render(_manifest([_postgres_init(password_env_var=None)]))
+    assert "the admin secret) but it is unset" not in scripts.start
+
+
+def test_postgres_binds_declared_port():
+    # C-8: the server listens on the declared port on loopback, not the default.
+    scripts = render(_manifest([_postgres_init()]))
+    s = scripts.start
+    assert 'POSTGRES_PORT="5432"' in s
+    assert 'postgres -D "$_PGDATA" -p "$_PGPORT"' in s
+    assert "listen_addresses=127.0.0.1" in s
+
+
+def test_postgres_reuses_running_and_port_guards():
+    # C-9: the init+launch sits inside the existing _is_running / _port_bound
+    # guard so a second invocation no-ops.
+    scripts = render(_manifest([_postgres_init()]))
+    s = scripts.start
+    assert 'if _is_running "${POSTGRES_PID_FILE}"; then' in s
+    assert 'elif _port_bound "${POSTGRES_PORT}"; then' in s
+
+
+def test_postgres_data_dir_resolves_under_services_root():
+    # C-10: an initializing service's data_dir is the writable services root,
+    # never the declared (possibly read-only cache) path.
+    scripts = render(_manifest([_postgres_init()]))
+    s = scripts.start
+    assert 'POSTGRES_DATA_DIR="$SERVICES_DIR/postgres-data"' in s
+    # the declared data_dir is ignored for postgres state
+    assert "/tmp/pg-data" not in s
+
+
+# C-4: generic/redis render unchanged (T009)
+
+
+def test_generic_redis_render_unchanged_by_postgres_support():
+    # C-4: a manifest with no initializing kind renders byte-for-byte as pre-091
+    # — none of the postgres-only tokens leak in.
+    scripts = render(_manifest([_redis()]))
+    s = scripts.start
+    for token in ("initdb", "PG_VERSION", "pg_isready", "createdb", "_PGDATA"):
+        assert token not in s, f"postgres token {token!r} leaked into generic render"
+    # the redis launch line and comment block are emitted verbatim
+    assert (
+        "  redis-server --port=6379 --data-dir=/tmp/redis-data "
+        '>"${REDIS_DATA_DIR}/redis.log" 2>&1 &' in s
+    )
+    assert "pg_isready" not in scripts.health
+    assert "pg_ctl" not in scripts.stop
+
+
+# C-11, C-12: readiness probe (T010)
+
+
+def test_postgres_health_uses_pg_isready_redis_retains_port_check():
+    # C-11: postgres health is a connect-level pg_isready probe; redis keeps the
+    # existing port/liveness check.
+    scripts = render(_manifest([_postgres_init(), _redis()]))
+    h = scripts.health
+    assert "pg_isready -h 127.0.0.1 -p 5432" in h
+    assert '_port_open "6379"' in h
+
+
+def test_postgres_readiness_wait_is_bounded_and_attributed():
+    # C-12: the readiness wait before createdb is bounded (no hang) and a timeout
+    # is surfaced as an environment-attributed failure.
+    scripts = render(_manifest([_postgres_init()]))
+    s = scripts.start
+    assert 'while [ "$_pg_wait" -lt 60 ]; do' in s
+    assert "ERROR: env: postgres did not become ready within 60s" in s
+
+
+# C-13b: kind-aware teardown (T014b)
+
+
+def test_postgres_stop_uses_pg_ctl_fast_redis_retains_stop_pid():
+    # C-13b: postgres teardown is a clean `pg_ctl stop -m fast`; redis/generic
+    # keep the SIGTERM→SIGKILL _stop_pid path.
+    scripts = render(_manifest([_postgres_init(), _redis()]))
+    st = scripts.stop
+    assert "pg_ctl stop -m fast -D" in st
+    assert '_stop_pid "$SERVICES_DIR/redis.pid" "redis"' in st
 
 
 def test_render_uses_strict_undefined(monkeypatch, tmp_path):

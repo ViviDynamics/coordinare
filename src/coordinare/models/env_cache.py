@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime  # noqa: TC003 — needed at runtime for pydantic field resolution
 from pathlib import Path  # noqa: TC003 — needed at runtime for pydantic field resolution
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -125,5 +125,16 @@ class BootstrapJobPayload(BaseModel):
             "toolchain but must NOT create/overwrite activate.sh — coordinare owns the "
             "activation contract. Hand-written activation paths (.rbenv vs rbenv, .nvm "
             "vs nvm) were fumbled every run, leaving a built cache verify.sh couldn't see."
+        ),
+    )
+    declared_services: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "091: durably-declared stateful services (from .coordinare/score.json), each a "
+            "ServiceEntry dump. A service with a coordinare-known kind (postgres, redis) makes "
+            "the bootstrap fetch its binary as a .deb into <cache>/debs/ via the existing "
+            "system-package path, so the cache contains the service binary while the base "
+            "image stays agnostic. Empty when no stateful service is declared (behavior "
+            "unchanged)."
         ),
     )

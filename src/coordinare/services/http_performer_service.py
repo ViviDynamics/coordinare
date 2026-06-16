@@ -797,6 +797,55 @@ class HTTPPerformerService:
             }
         )
 
+    @staticmethod
+    def _render_service_install_block(
+        declared_services: list[Any], cache_mount_path: str
+    ) -> str:
+        """Render the SYSTEM SERVICES install block for declared stateful services (091).
+
+        A declared service with a coordinare-known kind (postgres, redis) contributes
+        its server/client deb package(s) — derived once in
+        ``env_manifest.derive_service_install_items`` (the single source of truth) —
+        and instructs the agent to fetch them into ``<cache>/debs/`` via the existing
+        system-package path. Returns "" when nothing stateful is declared so the
+        persona is byte-for-byte unchanged (FR-006, FR-007, C-14).
+        """
+        if not declared_services:
+            return ""
+        from coordinare_service_inference.schema import ServiceEntry
+
+        from coordinare.services.env_manifest import derive_service_install_items
+
+        entries: list[ServiceEntry] = []
+        for raw in declared_services:
+            if isinstance(raw, ServiceEntry):
+                entries.append(raw)
+                continue
+            try:
+                entries.append(ServiceEntry.model_validate(raw))
+            except Exception:
+                # A malformed declaration must not abort the whole bootstrap; skip it.
+                continue
+        items = derive_service_install_items(entries)
+        if not items:
+            return ""
+        pkgs = " ".join(sorted({i.name for i in items}))
+        return (
+            "SYSTEM SERVICES (stateful) — CRITICAL: this project declares stateful "
+            "services that coordinare hosts in-container, but the image ships NO service "
+            "binary. Fetch the following package(s) AND their full dependency closure as "
+            f".deb files into {cache_mount_path}/debs/ during THIS bootstrap (the SAME "
+            "deb-into-cache path as any other system package, e.g. `cd "
+            f"{cache_mount_path}/debs && apt-get update && apt-get download $(apt-cache "
+            "depends --recurse --no-recommends --no-suggests --no-conflicts --no-breaks "
+            f"--no-replaces --no-enhances -i {pkgs} | grep '^\\w' | sort -u)`), then "
+            f"extract each into the cache (`dpkg-deb -x .../<pkg>.deb {cache_mount_path}/"
+            "<prefix>`) so the daemon and its tooling land on PATH via the auto-discovering "
+            "activate.sh. Coordinare owns the service start/init/health/stop recipe (rendered "
+            "into services-{start,health,stop}.sh) — you only need the binaries present in "
+            f"the cache. Packages: {pkgs}.\n\n"
+        )
+
     def _build_env_bootstrap_payload(
         self, card_context: dict[str, Any]
     ) -> JobInitPayload:
@@ -891,6 +940,13 @@ class HTTPPerformerService:
         # so the agent has the authoritative, itemised list of what to install
         # (with exact pinned versions) before the free-form spec files.
         checklist_block = f"{dependency_checklist}\n\n" if dependency_checklist else ""
+        # 091: a durably-declared stateful service (postgres/redis) makes the
+        # bootstrap fetch its binary into the cache via the SAME deb-into-<cache>/debs/
+        # path as any other system package — the base image gains nothing. Empty
+        # declared_services ⇒ no extra block (behavior unchanged).
+        service_install_block = HTTPPerformerService._render_service_install_block(
+            card_context.get("declared_services") or [], cache_mount_path
+        )
         # 077: when coordinare has written an authoritative verify.sh from the
         # manifest, the agent must RUN it (not author it) — coordinare owns the
         # verification contract. Otherwise fall back to having the agent write one.
@@ -1042,6 +1098,7 @@ class HTTPPerformerService:
             "asserts the exact version (e.g. `ruby -v` matches .ruby-version) and a "
             "mismatch FAILS the whole bootstrap. Install the pinned runtime FIRST, "
             "before bundler/gems/node modules, since those build against it.\n\n"
+            + service_install_block
             + activate_block
             + verify_block
             + f"Spec files ({', '.join(env_spec_files) or 'none'}):\n\n"

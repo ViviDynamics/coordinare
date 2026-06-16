@@ -34,6 +34,14 @@ _port_open() {
 [ -n "${{ '{' }}{{ env_var }}:-{{ '}' }}" ] || _fail "external service {{ svc.name }}: missing env var {{ env_var }}"
 {% endfor %}
 echo "ok: {{ svc.name }} (external; env vars present)"
+{% elif svc.kind == "postgres" %}
+# Postgres binds the port before it can serve queries, so a bare port check is a false
+# positive. Probe actual connection readiness with pg_isready on the declared target.
+if pg_isready -h 127.0.0.1 -p {{ svc.port }} >/dev/null 2>&1; then
+  echo "ok: {{ svc.name }} accepting connections on {{ svc.port }}"
+else
+  _fail "{{ svc.name }} not accepting connections on port {{ svc.port }}"
+fi
 {% else %}
 if _port_open "{{ svc.port }}"; then
   echo "ok: {{ svc.name }} listening on {{ svc.port }}"
