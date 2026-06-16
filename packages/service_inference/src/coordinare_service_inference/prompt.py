@@ -56,14 +56,40 @@ application's own server, build tools, or language runtimes.
 # Required fields per service
 - `name`: lowercase canonical name (`postgres`, `redis`, ...).
 - `binary`: absolute path or a name resolvable on PATH. Use the `which` tool
-  to verify before emitting.
+  to verify EXCEPT for coordinare-managed stateful kinds (see below) — for those
+  the binary is not installed yet, so emit the conventional name (`postgres`,
+  `redis-server`) without verifying.
 - `version`: the version the project pins or — if unpinned — the version
-  reported by `probe_version`. Never guess.
+  reported by `probe_version`. Never guess. If the binary is not installed
+  (coordinare-managed stateful kinds — `probe_version`/`which` will report it
+  missing), leave this field null. Do NOT guess and do NOT drop the service.
 - `data_dir`: a writable directory the start script will create.
   Convention: `$XDG_RUNTIME_DIR/<name>` (the templater handles substitution).
 - `port`: an unprivileged TCP port the service will listen on locally.
 - `why_needed`: one sentence, human-readable, naming the cited file.
 - `sources`: every path you read that informed THIS service entry.
+- `kind`: `postgres`, `redis`, or `generic` (default). Set it whenever the
+  service is a Postgres or Redis instance — it selects the coordinare-owned init
+  recipe and readiness probe, and tells coordinare to install the binary.
+- `init`: ONLY for `kind: postgres`. A block of `{{superuser, databases,
+  password_env_var}}`. `superuser` is the admin role to create on first run
+  (read it from the app's DB config — e.g. `config/database.yml` `username`).
+  `databases` lists the DBs to create. `password_env_var` is the NAME of an
+  env var holding the admin secret (never the secret value itself); omit it if
+  the project authenticates without a password (trust auth).
+
+# Coordinare-managed stateful services (postgres / redis)
+The performer image is deliberately agnostic: postgres and redis are NOT
+pre-installed. Coordinare installs their binary FROM the manifest you emit, as a
+later env-bootstrap step. So at inference time `which postgres` and
+`probe_version postgres` WILL fail — that is expected and correct, not a reason
+to omit the service or mark it `external_required`. For a Postgres or Redis the
+project clearly depends on (a `pg`/`pg`-driver dependency, `config/database.yml`,
+a `redis`/`bullmq`/`sidekiq` dependency, a `docker-compose` `db`/`redis`
+service), emit a normal in-container entry with the right `kind`, the
+conventional `binary` name, `version: null`, and (for postgres) an `init` block.
+Do NOT set `external_required` for these — that is only for managed-only SaaS
+offerings that genuinely cannot run in-container.
 
 # Manifest-level fields
 - `cache_inputs`: every path you read during this run, full stop. The env-cache

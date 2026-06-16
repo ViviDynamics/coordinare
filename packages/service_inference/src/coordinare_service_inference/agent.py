@@ -27,7 +27,7 @@ from typing import Any, Protocol
 import structlog
 from pydantic import ValidationError
 
-from .schema import ServicesManifest
+from .schema import COORDINARE_MANAGED_KINDS, ServicesManifest
 from .tools import SandboxViolation, ToolSandbox
 
 _log = structlog.get_logger(__name__)
@@ -254,8 +254,12 @@ class ServiceInferenceAgent:
         """Reject manifests whose in-container service binaries cannot be resolved.
 
         External-required services are skipped (their binary lives in another
-        container/host). Absolute paths are accepted as-is so the LLM can pin
-        a known location. Otherwise we run the sandbox's ``which`` check; an
+        container/host). Coordinare-managed stateful kinds (postgres/redis) are
+        also skipped: spec-091 installs their binary *from this manifest* during
+        env-bootstrap, so it is not present at inference time — requiring it on
+        PATH here is the chicken-and-egg that made a correct stateful manifest
+        unrejectably invalid. Absolute paths are accepted as-is so the LLM can
+        pin a known location. Otherwise we run the sandbox's ``which`` check; an
         unresolved binary is surfaced as :class:`ManifestValidationError` so the
         retry loop in the orchestrator feeds the failure back to the next attempt.
         """
@@ -264,6 +268,10 @@ class ServiceInferenceAgent:
         missing: list[str] = []
         for svc in manifest.services:
             if svc.external_required:
+                continue
+            if svc.kind in COORDINARE_MANAGED_KINDS:
+                # Coordinare installs this binary from the manifest (spec-091);
+                # it legitimately won't resolve until env-bootstrap runs.
                 continue
             binary = svc.binary
             if binary.startswith("/"):
