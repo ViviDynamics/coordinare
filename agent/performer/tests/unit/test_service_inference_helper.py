@@ -72,6 +72,7 @@ def _patch_llm_path(
 
     class _StubManifest:
         services: tuple = ()
+        test_env_source = None
 
     class _StubResult:
         attempts = 1
@@ -213,6 +214,7 @@ def _patch_openai_compat_path(
 
     class _StubManifest:
         services: tuple = ()
+        test_env_source = None
 
     class _StubResult:
         attempts = 1

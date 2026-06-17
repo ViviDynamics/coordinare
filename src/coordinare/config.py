@@ -4,7 +4,7 @@ import re
 import string
 from collections import Counter
 from enum import StrEnum
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 from urllib.parse import urlparse
 
@@ -1470,6 +1470,54 @@ class PersonaScopeConfig(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# 092 — Symphony test-environment injection
+# ---------------------------------------------------------------------------
+
+
+class TestEnvConfig(BaseModel):
+    """Symphony test-environment file (spec 092).
+
+    Names a dotenv-style file whose ``KEY=VALUE`` pairs coordinare injects into
+    every container that runs project code (the start-phase validation dry-run,
+    the env-cache QA runtime, and code-running performers). Exactly one source
+    must be supplied:
+
+    - ``repo_path``: resolved INSIDE the cloned symphony repo (containment-checked).
+    - ``host_path``: an absolute host path, read directly.
+
+    The file carries genuine test credentials; loaded values are treated as
+    secret-like (routed through the redacted secrets channel — never logged or
+    persisted as literals). See contracts/test_env_config.md.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    # Not a pytest test class despite the ``Test`` prefix (silences collection warning).
+    __test__ = False
+
+    repo_path: str | None = None
+    host_path: str | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one_source(self) -> TestEnvConfig:
+        if self.repo_path is not None and self.host_path is not None:
+            msg = "test_env: set exactly one of repo_path / host_path, not both"
+            raise ValueError(msg)
+        if self.repo_path is None and self.host_path is None:
+            msg = "empty test_env block; set repo_path or host_path, or omit it"
+            raise ValueError(msg)
+        if self.repo_path is not None:
+            rp = self.repo_path
+            if PurePosixPath(rp).is_absolute() or Path(rp).is_absolute():
+                msg = f"test_env.repo_path must be repo-relative, got absolute: {rp!r}"
+                raise ValueError(msg)
+            if ".." in PurePosixPath(rp).parts:
+                msg = f"test_env.repo_path escapes the clone (contains '..'): {rp!r}"
+                raise ValueError(msg)
+        return self
+
+
+# ---------------------------------------------------------------------------
 # 057 — Symphony Management & Multi-Project Orchestration
 # ---------------------------------------------------------------------------
 
@@ -1494,6 +1542,9 @@ class SymphonyConfig(BaseModel):
 
     # 074 — Persona scope tiering per symphony (opt-in; FR-010 additive default).
     persona_scope: PersonaScopeConfig | None = None
+
+    # 092 — Symphony test-environment injection (opt-in; None = agent-discovery fallback).
+    test_env: TestEnvConfig | None = None
 
     @field_validator("env_spec_files")
     @classmethod

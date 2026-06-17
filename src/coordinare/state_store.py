@@ -242,6 +242,12 @@ class EnvCacheStateSnapshot(BaseModel):
     # with the defaults (no migration).
     bootstrap_attempts: int = 0
     bootstrap_exhausted: bool = False
+    # 092 (FR-016/FR-017): agent-discovered test-env file PATH (e.g.
+    # ".coordinare/test.env"), persisted only when no symphony-level test_env
+    # config block is set. PATH ONLY — never the loaded KEY=VALUE pairs. A reused
+    # cache reloads variables from this source file at runtime, so no literal
+    # secret is ever written to disk. Old snapshots load with None (no migration).
+    test_env_source: str | None = None
 
 
 class WorkflowSnapshot(BaseModel):

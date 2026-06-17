@@ -285,16 +285,39 @@ def test_postgres_createdb_failure_is_attributed_not_swallowed():
 
 
 def test_postgres_init_guards_missing_password_env_var():
-    # C-3/FR-005: when an init password env var is declared, its absence at init
-    # time must surface a clear environment-attributed failure (exit 75) rather
-    # than a cryptic `set -u` "unbound variable" abort inside the initdb line.
+    # C-3/FR-005: when an init password env var is declared, a GENUINELY-UNSET var
+    # (not merely empty) at init time must surface a clear environment-attributed
+    # failure (exit 75) rather than a cryptic `set -u` "unbound variable" abort.
+    # The unset-vs-empty distinction uses ${VAR+x} (set-test), not ${VAR:-}
+    # (empty-or-unset), so a declared-but-empty password is NOT treated as unset.
     scripts = render(_manifest([_postgres_init()]))
     s = scripts.start
-    assert 'if [ -z "${POSTGRES_PASSWORD:-}" ]; then' in s
+    assert 'if [ -z "${POSTGRES_PASSWORD+x}" ]; then' in s
     assert (
         "ERROR: env: postgres requires env var POSTGRES_PASSWORD "
         "(the admin secret) but it is unset" in s
     )
+
+
+def test_postgres_declared_empty_password_falls_through_to_trust_auth():
+    # spec-092/FR: a declared password env var that is SET BUT EMPTY signals an
+    # intentional passwordless cluster (e.g. POSTGRESQL_PASSWORD= in .env.test).
+    # The init must branch on empty-after-set and initialize with trust auth for
+    # BOTH local and host connections — never reject it with exit 75, and never
+    # feed an empty secret to md5 via --pwfile (which postgres would reject).
+    scripts = render(_manifest([_postgres_init()]))
+    s = scripts.start
+    # the empty-after-set branch: unset already handled, so a plain -z on the value.
+    assert 'elif [ -z "${POSTGRES_PASSWORD}" ]; then' in s
+    # the passwordless init uses trust auth on both seams.
+    assert "--auth-local=trust --auth-host=trust" in s
+    # the non-empty branch still reaches md5 + pwfile.
+    assert "--auth-local=trust --auth-host=md5" in s
+    assert "--pwfile=<(printf '%s' \"${POSTGRES_PASSWORD}\")" in s
+    # the empty case must NOT route through --pwfile (no md5 with an empty secret).
+    i_empty = s.index('elif [ -z "${POSTGRES_PASSWORD}" ]; then')
+    i_md5 = s.index("--auth-host=md5")
+    assert i_empty < i_md5  # empty branch precedes the md5 (else) branch
 
 
 def test_postgres_without_password_omits_password_guard():

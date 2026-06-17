@@ -457,6 +457,10 @@ async def _run_service_inference(
         "inference_attempts": result.attempts,
         "inference_succeeded": True,
         "inference_services": services,
+        # Spec 092 US2: surface the agent-discovered test-env source PATH (never
+        # values) so the coordinare can persist it and reload the same file for
+        # later QA-runtime and performer contexts.
+        "inference_test_env_source": result.manifest.test_env_source,
     }
 
 

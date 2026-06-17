@@ -22,6 +22,8 @@ def _make_cfg(sym_name: str, cache_root: Path) -> tuple[MagicMock, MagicMock]:
     sym.name = sym_name
     sym.env_bootstrap_performer_id = "bootstrap-env"
     sym.env_spec_files = ["README.md"]
+    # 092: no test_env block configured (the common case).
+    sym.test_env = None
 
     eff = MagicMock()
     eff.github_org = "myorg"

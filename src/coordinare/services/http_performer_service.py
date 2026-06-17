@@ -30,7 +30,7 @@ import structlog
 
 from coordinare.graph.nodes.handle_system_error import classify_upstream
 from coordinare.services import performer_lifecycle
-from coordinare.transport.base import TransportError
+from coordinare.transport.base import TransportError, TransportTimeoutError
 from coordinare.transport.http_transport import (
     PerformerAuthError,
     PerformerHTTPClient,
@@ -78,6 +78,19 @@ def _inject_claude_code_secrets(
             secrets["ANTHROPIC_API_KEY"] = anthropic_key
     if role_base_url:
         secrets["ANTHROPIC_BASE_URL"] = str(role_base_url)
+
+
+def _str_dict(value: Any) -> dict[str, str]:
+    """Coerce a possibly-None mapping into a plain ``dict[str, str]``.
+
+    092: ``test_env_vars`` arrives via ``card_context`` (a ``model_dump`` of
+    ``BootstrapJobPayload`` or a synthesized dispatch dict). Tolerate ``None`` /
+    absent and stringify keys+values so the result is safe to feed into the
+    ``secrets`` channel regardless of source.
+    """
+    if not isinstance(value, dict):
+        return {}
+    return {str(k): str(v) for k, v in value.items()}
 
 
 @dataclass
@@ -459,10 +472,20 @@ class HTTPPerformerService:
                         )
         try:
             status = await client.get_job(url_job_id)
+        except TransportTimeoutError:
+            # A bare status-poll timeout is NOT evidence the container is dead:
+            # during a CPU-heavy build (e.g. a long Ruby native-gem compile) the
+            # job runner can momentarily exceed the poll deadline while still
+            # making progress. Reaping the container here would abort an
+            # in-flight bootstrap. Re-raise WITHOUT cleanup so the caller's
+            # retry path (daemon bootstrap poll loop / monitor_performer
+            # transport-retry budget) can poll again. Genuinely-dead containers
+            # surface as PerformerUnreachableError below, not as timeouts.
+            raise
         except (PerformerAuthError, PerformerUnreachableError, TransportError):
-            # Auth failure, unreachability, or transport error — clean up the
-            # stale _active_jobs entry so subsequent check_health() calls aren't
-            # blocked by the dead container.
+            # Auth failure, unreachability, or other transport error — clean up
+            # the stale _active_jobs entry so subsequent check_health() calls
+            # aren't blocked by the dead container.
             if self._config.mode == "ephemeral":
                 await self._cleanup_ephemeral_job_by_id(session_id)
             raise
@@ -732,6 +755,25 @@ class HTTPPerformerService:
         import os
 
         secrets: dict[str, str] = {}
+        # 092: symphony test-environment vars are injected FIRST so a test file can
+        # never clobber a coordinare-owned operational credential (GITHUB_TOKEN, API
+        # keys) appended below — operational secrets always win on a name collision.
+        # These reach code-running performers (e.g. the implementer) and the env-cache
+        # QA runtime where services-start.sh runs. Secret-like: redacted from metadata
+        # below; the dispatch payload carries values but logs emit names + source only.
+        _test_env_vars = _str_dict(card_context.get("test_env_vars"))
+        secrets.update(_test_env_vars)
+        if _test_env_vars:
+            # 092 US3: log only the var NAMES + source label — never values. The
+            # values are routed exclusively through the redacted `secrets` channel
+            # above; this confirms the redacted hand-off at the dispatch boundary.
+            logger.info(
+                "http_performer.test_env_injected",
+                card_id=str(card_context.get("id", "")),
+                context="performer_payload",
+                source=str(card_context.get("test_env_source") or "card_context"),
+                keys=sorted(_test_env_vars.keys()),
+            )
         if workspace_info is not None and workspace_info.github_token:
             secrets["GITHUB_TOKEN"] = workspace_info.github_token
         # Only inject the API key(s) required by the selected backend to avoid
@@ -779,7 +821,10 @@ class HTTPPerformerService:
 
         # Stash card_context as metadata so the performer has full access to
         # role/persona/relay_feedback/etc. without us forking the schema here.
-        metadata = json.loads(json.dumps(dict(card_context), default=str))
+        # 092: test_env_vars are secret-like — they ride the redacted `secrets`
+        # channel above and MUST NOT be echoed into metadata (which is unredacted).
+        meta_src = {k: v for k, v in card_context.items() if k != "test_env_vars"}
+        metadata = json.loads(json.dumps(meta_src, default=str))
 
         env_cache_path = card_context.get("env_cache_path")
         return JobInitPayload.model_validate(
@@ -887,6 +932,26 @@ class HTTPPerformerService:
         activate_provided = bool(card_context.get("activate_provided"))
 
         secrets: dict[str, str] = {}
+        # 092: THE load-bearing dry-run fix. The service-inference start-phase
+        # validation runs INSIDE this bootstrap performer (the performer sets
+        # os.environ from payload.secrets before _run_service_inference → validate),
+        # so threading the symphony's test-env vars here is what lets the dry-run see
+        # e.g. POSTGRESQL_PASSWORD and clear the unset-secret gate (exit 75). Injected
+        # FIRST so the coordinare-owned operational secrets below always win on a name
+        # collision; secret-like, so redacted from metadata (logs carry names only).
+        _test_env_vars = _str_dict(card_context.get("test_env_vars"))
+        secrets.update(_test_env_vars)
+        if _test_env_vars:
+            # 092 US3: keys + source label only — never values (the load-bearing
+            # dry-run vars ride the redacted `secrets` channel into the bootstrap
+            # performer, where the start-phase validation reads them from os.environ).
+            logger.info(
+                "http_performer.test_env_injected",
+                card_id=str(card_context.get("id", "")),
+                context="env_bootstrap_payload",
+                source=str(card_context.get("test_env_source") or "card_context"),
+                keys=sorted(_test_env_vars.keys()),
+            )
         # Prefer the daemon-injected token (fresh App installation token or
         # configured PAT, sourced via WorkspaceManager.get_fresh_github_token);
         # fall back to the coordinare process env only when not provided.
@@ -1024,9 +1089,118 @@ class HTTPPerformerService:
                 "never abort. Hard assertions go ONLY in verify.sh, which is RUN "
                 "standalone (never sourced), so its `exit 1` is safe.\n\n"
             )
+        # 092 toolchain fix: a forgetful model reads the detailed prose below, does
+        # the CHEAP setup (git-clone rbenv/ruby-build, extract debs) and then DECLARES
+        # DONE — never running the expensive `rbenv install` / `nvm install` /
+        # `bundle install` that actually build the toolchain. The result is a cache
+        # with .rbenv/ but no .rbenv/versions/<ver>, no ruby binary, no gems, and
+        # verify.sh fails. A front-loaded, numbered, imperative sequence that names
+        # this EXACT anti-pattern is what forgetful models attend to — the prose wall
+        # alone did not stop it. Keep this FIRST (after any retry feedback).
+        required_sequence = (
+            "REQUIRED EXECUTION SEQUENCE — DO NOT SKIP A STEP, DO NOT STOP EARLY.\n"
+            "The #1 way this job FAILS: you git-clone a version manager (rbenv, "
+            "ruby-build, nvm, asdf, pyenv) and extract some .deb files, then declare "
+            "done. CLONING A VERSION MANAGER IS NOT INSTALLING THE RUNTIME. A cache "
+            "with .rbenv/ but no .rbenv/versions/<version>/bin/ruby is BROKEN. You "
+            "MUST actually RUN the install command and WAIT for it to finish "
+            "(`rbenv install <version>` COMPILES Ruby and can take many minutes — let "
+            "it run to completion; do not abort it). FIRST, before any step below, "
+            f"`cd {cache_mount_path}` and run `pwd`: it MUST print exactly "
+            f"{cache_mount_path} (with its leading '/') — see THE INSTALL TARGET IS AN "
+            "ABSOLUTE PATH rule below; every step's install prefix must be that "
+            "absolute path or a subdirectory of it. Then execute, in order:\n"
+            "  1. Install the EXACT pinned language runtime(s) — set the version "
+            "manager's install prefix/root to a subdirectory of "
+            f"{cache_mount_path} (NOT its default under $HOME; see the INSTALL-IN-PLACE "
+            "rule below), run its install (e.g. `rbenv install <ver>`, "
+            "`nvm install <ver>`) and WAIT for it to finish. Then confirm the binary "
+            "exists (`ruby -v`, `node -v`) BEFORE moving on.\n"
+            "  2. Install the dependency manager, then the project's declared "
+            "dependencies via the lockfile (`gem install bundler` + "
+            "`cd /repo && bundle install`; `npm ci`; `pip install -r requirements.txt`). "
+            "Confirm with `bundle -v` / installed-gem checks.\n"
+            "  3. Fetch + extract any declared stateful-service and system-package "
+            f"debs into {cache_mount_path}/debs (see the service-install and "
+            "apt-package sections below).\n"
+            f"  4. RUN `bash {cache_mount_path}/verify.sh` yourself and read its "
+            "output. If it exits non-zero, FIX the specific dependency it names and "
+            "re-run. DO NOT end your turn, and DO NOT report success, until verify.sh "
+            "exits 0. Every detail of HOW to do each step is in the sections below — "
+            "but these four steps, actually executed and verified, are mandatory.\n\n"
+        )
+        # 092 cache-relocation fix (toolchain-agnostic). Root cause is a PATH mismatch,
+        # not a writability one: whatever is installed here is CONSUMED as-is by later
+        # performers, which mount this exact directory at this exact container path and
+        # run the toolchain — they do NOT rebuild it. Many toolchains bake their absolute
+        # build-time install path into compiled binaries (ELF RUNPATH) and generated
+        # wrapper scripts (shebang lines). Installing at a default/$HOME location and
+        # relocating into the cache leaves those baked paths pointing at the original
+        # (now-absent) location, so the cache looks complete but its binaries/wrappers
+        # fail to resolve in the consumer (verify.sh fails) — and that holds whether the
+        # consume mount is read-only or read-write, because the build-time path simply
+        # does not exist in the consumer container. Coordinare names NO specific tool
+        # here: it states the constraint and the WHY; the agent (which already infers the
+        # toolchain) owns the per-tool mechanism (install prefix / root env var).
+        # 092 absolute-path fix (toolchain-agnostic). Observed failure: a forgetful
+        # model treated cache_mount_path (an ABSOLUTE path like /devenv/<name>) as if
+        # it were relative to its shell cwd, so the leading '/' was effectively dropped
+        # and the toolchain was built under <cwd>/devenv/<name> (e.g.
+        # /tmp/performer-XXXX/devenv/<name>) — ~1GB of a complete, self-consistent
+        # install in the WRONG place. The real mounted volume stayed empty, the agent's
+        # own verify.sh (written into the wrong dir) passed locally, and coordinare's
+        # convergence check (run against the empty real mount) rejected it. This is
+        # distinct from build-then-relocate (relocation_block): the path is never even
+        # resolved to the right absolute location. Coordinare names no tool here; it
+        # states the invariant (use the path verbatim, confirm pwd) and the WHY.
+        absolute_path_block = (
+            "THE INSTALL TARGET IS AN ABSOLUTE PATH — USE IT VERBATIM (a top cause of a "
+            "broken cache). The install directory you are given, "
+            f"{cache_mount_path}, is an ABSOLUTE path: it begins with a leading '/' and "
+            "resolves from the filesystem root, NOT from your shell's current working "
+            "directory. It is a real, already-mounted volume that exists at exactly that "
+            "path inside this container right now. A frequent and FATAL mistake is to "
+            "treat it as relative — running an install from some working directory so "
+            "the leading '/' is effectively dropped and the path gets joined onto the "
+            f"cwd, silently creating a DIFFERENT directory (e.g. <cwd>{cache_mount_path} "
+            f"instead of {cache_mount_path}). When that happens you build a complete, "
+            "self-consistent toolchain in the WRONG place: the real mounted volume stays "
+            "empty, nothing you installed persists for downstream consumers, and the "
+            "bootstrap is REJECTED even though your own local checks passed. To prevent "
+            f"this, before installing anything: `cd {cache_mount_path}` and run `pwd` — "
+            f"it MUST print exactly {cache_mount_path}, leading '/' included. Always "
+            "reference the cache by this absolute path verbatim (with the leading '/'); "
+            "never strip it, never join it onto another directory, and never assume your "
+            "shell cwd is the cache. Every install prefix / root you set must be this "
+            f"absolute path or a subdirectory of it (e.g. {cache_mount_path}/<subdir>), "
+            "written out in full.\n\n"
+        )
+        relocation_block = (
+            "INSTALL IN PLACE — NEVER BUILD-THEN-RELOCATE (the #1 cause of a "
+            "complete-looking but BROKEN cache). Whatever you install here is CONSUMED "
+            "as-is by later performers: they mount this exact directory at this exact "
+            f"path ({cache_mount_path}) and run your toolchain — they do NOT rebuild it. "
+            "Many toolchains bake their absolute build-time install path into compiled "
+            "binaries (the ELF RUNPATH) and into generated wrapper scripts (shebang "
+            "lines on dependency-manager executables). If you install a toolchain "
+            f"ANYWHERE other than under {cache_mount_path} — for example at its default "
+            "location under $HOME — and then move or copy it into the cache, those "
+            "baked-in absolute paths still point at the ORIGINAL build location, which "
+            "does not exist in the consumer container. The result is a cache that passes "
+            "your own eyeball check but whose binaries and wrappers fail to resolve for "
+            "every downstream consumer (and the consume mount may be read-only there, so "
+            "the paths cannot even be patched after the fact). Therefore: set each "
+            "toolchain's install prefix / root to a subdirectory of "
+            f"{cache_mount_path} BEFORE you install, so everything compiles, links, and "
+            "writes its wrapper shebangs against the FINAL consume-time path. Never "
+            "install to a default or $HOME location and relocate.\n\n"
+        )
         persona = (
             retry_block
             + checklist_block
+            + required_sequence
+            + absolute_path_block
+            + relocation_block
             + "You are an environment bootstrap agent. Your job is to install "
             f"all build/test/runtime dependencies for this project into "
             f"the directory {cache_mount_path!r}, which is a writable volume "
@@ -1098,6 +1272,23 @@ class HTTPPerformerService:
             "asserts the exact version (e.g. `ruby -v` matches .ruby-version) and a "
             "mismatch FAILS the whole bootstrap. Install the pinned runtime FIRST, "
             "before bundler/gems/node modules, since those build against it.\n\n"
+            "PROJECT DEPENDENCIES — CRITICAL: installing the pinned runtime is only "
+            "step one. You MUST then install the project's DECLARED dependencies with "
+            "its native dependency manager, or every gem/module the checklist lists "
+            "will be missing and verify.sh will FAIL. Specifically: if the repo has a "
+            "Gemfile/Gemfile.lock, first `gem install bundler` (match the version in "
+            "Gemfile.lock's `BUNDLED WITH` if one is pinned), then run `bundle install` "
+            "from the repo root (`cd /repo && bundle install`) so bundler AND every gem "
+            "in the Gemfile are installed under the pinned Ruby — that Ruby lives in "
+            f"{cache_mount_path}, so its gem dir persists in the cache automatically. "
+            "Likewise run `npm ci` (or `npm install`) for a package.json, and "
+            "`pip install -r requirements.txt` / `pip install .` for a Python project "
+            f"— all resolving INTO {cache_mount_path}. Do NOT hand-install gems "
+            "one-by-one with `gem install <name>`; use the lockfile-driven "
+            "`bundle install` so versions resolve correctly and transitive deps come "
+            "along. The dependency checklist above enumerates the individual gems ONLY "
+            "so verify.sh can assert each is present — the way to SATISFY that list is "
+            "`bundle install`, not piecemeal installs.\n\n"
             + service_install_block
             + activate_block
             + verify_block
@@ -1105,7 +1296,13 @@ class HTTPPerformerService:
             f"{spec_block}\n"
         )
 
-        meta_src = {k: v for k, v in card_context.items() if k != "_github_token"}
+        # 092: also drop test_env_vars — secret-like values ride the redacted
+        # `secrets` channel, never the unredacted metadata.
+        meta_src = {
+            k: v
+            for k, v in card_context.items()
+            if k not in ("_github_token", "test_env_vars")
+        }
         # Score (performer-side dispatch payload model) requires a `title`
         # field; BootstrapJobPayload doesn't carry one, so synthesize it from
         # the symphony name. Also seed `description` from the spec block so the

@@ -11,6 +11,7 @@ the operator-visible failure message described in plan.md.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -52,6 +53,69 @@ __all__ = [
 _log = structlog.get_logger(__name__)
 
 REJECTED_FILENAME = "services.json.rejected"
+
+
+def _strip_one_quote_layer(value: str) -> str:
+    """Strip a single layer of matching surrounding quotes, if present."""
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+        return value[1:-1]
+    return value
+
+
+def _parse_dotenv(text: str) -> dict[str, str]:
+    """Parse dotenv-style text into a literal ``dict[str, str]`` (no shell semantics).
+
+    Minimal literal parser (spec 092): ``KEY=VALUE``; skip blank/comment lines; strip a
+    single quote layer; ignore a leading ``export ``; values taken literally (no command
+    substitution, no interpolation). Mirrors coordinare's ``test_env_loader._parse_dotenv``,
+    duplicated here because the ``coordinare_service_inference`` package cannot import coordinare.
+    """
+    out: dict[str, str] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.rstrip("\r")
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        if key.startswith("export "):
+            key = key[len("export ") :].strip()
+        if not key:
+            continue
+        out[key] = _strip_one_quote_layer(value.strip())
+    return out
+
+
+def _load_test_env_source(project_root: Path, test_env_source: str | None) -> dict[str, str]:
+    """Load agent-discovered test-env vars for the start-phase dry-run (spec 092 US2).
+
+    The inference loop self-loads ``manifest.test_env_source`` because on retry-budget
+    exhaustion ``infer_services`` raises *without* returning a manifest — so a
+    coordinare-side persisted-path reload alone could never bootstrap the first cycle.
+    This is the in-package counterpart to coordinare's ``load_test_env`` (the package
+    boundary forbids importing coordinare).
+
+    The source is PATH ONLY and containment-checked: it must resolve inside
+    ``project_root``. A missing path, an escaping path, or a read error returns ``{}``
+    silently — the genuinely-missing var then still trips the ``services-start.sh``
+    exit-75 gate, which is the actionable signal. Discovered vars only gap-fill against
+    ``os.environ`` (never override an already-present operational var), matching the
+    validator's ``{**os.environ, **(env or {})}`` merge order so a configured value wins.
+    """
+    if not test_env_source:
+        return {}
+    try:
+        root = project_root.resolve()
+        resolved = (project_root / test_env_source).resolve()
+        if not resolved.is_relative_to(root):
+            return {}
+        text = resolved.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    parsed = _parse_dotenv(text)
+    return {key: value for key, value in parsed.items() if key not in os.environ}
 
 
 class InferenceFailed(RuntimeError):  # noqa: N818
@@ -224,7 +288,13 @@ async def infer_services(
             )
             continue
 
-        last_validation = validate(scripts, working_dir=None)
+        # Spec 092 US2: gap-fill the start-phase dry-run with agent-discovered
+        # test-env vars (path-only `test_env_source`; literal values are read
+        # here, never persisted). The validator merges {**os.environ, **env},
+        # so a value already in os.environ (e.g. a configured test_env routed
+        # via the bootstrap payload's secrets channel) always wins.
+        env_overrides = _load_test_env_source(project_root, manifest.test_env_source)
+        last_validation = validate(scripts, working_dir=None, env=env_overrides or None)
         attempt_log["validation_phase"] = last_validation.phase
         attempt_log["validation_ok"] = last_validation.ok
         attempt_log["validation_returncode"] = last_validation.returncode

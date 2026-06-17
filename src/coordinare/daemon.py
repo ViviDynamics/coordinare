@@ -243,6 +243,8 @@ def _persist_env_cache(env_cache: dict[str, Any]) -> dict[str, EnvCacheStateSnap
             cache_dir_ready=bool(get("cache_dir_ready") or False),
             bootstrap_attempts=int(get("bootstrap_attempts") or 0),
             bootstrap_exhausted=bool(get("bootstrap_exhausted") or False),
+            # 092 (FR-016/FR-017): persist the discovered test-env PATH only.
+            test_env_source=get("test_env_source"),
         )
     return out
 
@@ -426,6 +428,11 @@ _PHASE_TRANSITION_METRIC: dict[tuple[str, str], str] = {
 # GitHub is down. Use a fixed backoff so the circuit can probe-recover.
 _CIRCUIT_OPEN_BACKOFF_SECONDS: int = 60
 _BOOTSTRAP_POLL_MAX_ATTEMPTS: int = 720  # 720 x 10 s = 7200 s ~= 2 h
+# A single status poll can fail transiently (e.g. a 30 s HTTP timeout while the
+# bootstrap container is mid-compile under host load) without the bootstrap
+# actually being dead. Tolerate a few *consecutive* such failures before
+# declaring the bootstrap failed; the counter resets on any successful poll.
+_BOOTSTRAP_POLL_MAX_CONSECUTIVE_FAILURES: int = 3
 
 
 def _bootstrap_progress_lines(log_lines: list[str]) -> list[str]:
@@ -1829,6 +1836,7 @@ class CoordinareDaemon:
         last_logs_snapshot: list[str] = []
         _last_progress: list[str] | None = None
         _last_progress_attempt = 0
+        _consecutive_poll_failures = 0
         for _attempt in range(max_attempts):
             await asyncio.sleep(10)
             # Snapshot container logs *before* check_status, because a terminal
@@ -1879,16 +1887,35 @@ class CoordinareDaemon:
             try:
                 status_result = await svc.check_status(job_id)
             except Exception as exc:
+                # A single status poll can fail transiently while the container
+                # is still alive and building (notably a 30 s HTTP timeout under
+                # host load). Treat such failures as non-terminal up to
+                # _BOOTSTRAP_POLL_MAX_CONSECUTIVE_FAILURES consecutive misses;
+                # only then declare the bootstrap failed. The counter resets the
+                # moment any poll succeeds.
+                _consecutive_poll_failures += 1
+                if _consecutive_poll_failures < _BOOTSTRAP_POLL_MAX_CONSECUTIVE_FAILURES:
+                    logger.warning(
+                        "env_cache.bootstrap_poll_transient",
+                        symphony=symphony_name,
+                        error=str(exc),
+                        consecutive_failures=_consecutive_poll_failures,
+                        max_consecutive_failures=_BOOTSTRAP_POLL_MAX_CONSECUTIVE_FAILURES,
+                    )
+                    continue
                 logger.warning(
                     "env_cache.bootstrap_poll_failed",
                     symphony=symphony_name,
                     error=str(exc),
+                    consecutive_failures=_consecutive_poll_failures,
                 )
                 env_cache_svc.on_bootstrap_complete(
                     symphony_name, False, self._state,
                     error=f"bootstrap polling failed: {exc}",
                 )
                 return
+            # A successful poll clears the transient-failure streak.
+            _consecutive_poll_failures = 0
             if status_result.get("status") not in ("working", None):
                 # 060/Option A: performer reports a terminal status when the
                 # bootstrap session ends. "env_bootstrap_complete" is the
@@ -1965,6 +1992,7 @@ class CoordinareDaemon:
                         attempts=status_result.get("inference_attempts"),
                         succeeded=status_result.get("inference_succeeded"),
                         services=list(status_result.get("inference_services") or []),
+                        test_env_source=status_result.get("inference_test_env_source"),
                     )
                 except Exception as _exc:
                     logger.warning(

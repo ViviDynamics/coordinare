@@ -69,16 +69,25 @@ else
   _PGPORT="${{ '{' }}{{ svc.name | upper }}_PORT{{ '}' }}"
   if [ ! -f "$_PGDATA/PG_VERSION" ]; then
 {% if svc.init and svc.init.password_env_var %}
-    # The declared admin secret MUST be present at init time. Under `set -u` a missing
-    # var would otherwise abort with a cryptic "unbound variable"; pre-check it and
-    # surface a clear environment-attributed failure (exit 75) instead.
-    if [ -z "${{ '{' }}{{ svc.init.password_env_var }}:-{{ '}' }}" ]; then
+    # The declared admin secret's env var must be PRESENT at init time (it may legitimately
+    # be empty). Under `set -u` a genuinely-unset var would otherwise abort with a cryptic
+    # "unbound variable"; distinguish "unset" (a real misconfiguration: surface a clear
+    # environment-attributed exit 75) from "set but empty" (an intentional passwordless
+    # cluster — the test-env declared the var but left its value blank).
+    if [ -z "${{ '{' }}{{ svc.init.password_env_var }}+x{{ '}' }}" ]; then
       echo "ERROR: env: {{ svc.name }} requires env var {{ svc.init.password_env_var }} (the admin secret) but it is unset" >&2
       exit 75
+    elif [ -z "${{ '{' }}{{ svc.init.password_env_var }}{{ '}' }}" ]; then
+      # Declared but empty: the test-env intentionally requests a passwordless cluster.
+      # Initialize with trust auth (no secret material) so the empty password is accepted
+      # for both local and host connections.
+      initdb --pgdata="$_PGDATA" --username={{ _su | shq }} --auth-local=trust --auth-host=trust >"${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}/initdb.log" 2>&1
+    else
+      # Non-empty secret: md5 auth. The secret is never a literal here: --pwfile reads
+      # ${{ '{' }}{{ svc.init.password_env_var }}{{ '}' }} via process substitution at runtime, so it never lands
+      # in argv, logs, or the declaration.
+      initdb --pgdata="$_PGDATA" --username={{ _su | shq }} --auth-local=trust --auth-host=md5 --pwfile=<(printf '%s' "${{ '{' }}{{ svc.init.password_env_var }}{{ '}' }}") >"${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}/initdb.log" 2>&1
     fi
-    # The admin secret is never a literal here: --pwfile reads ${{ '{' }}{{ svc.init.password_env_var }}{{ '}' }} via
-    # process substitution at runtime, so it never lands in argv, logs, or the declaration.
-    initdb --pgdata="$_PGDATA" --username={{ _su | shq }} --auth-local=trust --auth-host=md5 --pwfile=<(printf '%s' "${{ '{' }}{{ svc.init.password_env_var }}{{ '}' }}") >"${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}/initdb.log" 2>&1
 {% else %}
     # No password env var declared: trust-auth local init (no secret material).
     initdb --pgdata="$_PGDATA" --username={{ _su | shq }} --auth-local=trust --auth-host=trust >"${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}/initdb.log" 2>&1

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from unittest.mock import AsyncMock
 
 import httpx
@@ -1336,6 +1337,46 @@ async def test_check_status_ephemeral_unreachable_cleanup(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_check_status_ephemeral_timeout_does_not_reap(monkeypatch) -> None:
+    """A bare TransportTimeoutError must re-raise WITHOUT reaping the container.
+
+    A status-poll timeout is not evidence the container is dead — during a
+    CPU-heavy build the job runner can momentarily miss the poll deadline while
+    still making progress. Reaping here would abort an in-flight bootstrap.
+    """
+    from coordinare.transport.base import TransportTimeoutError
+
+    stopped_containers: list[str] = []
+
+    async def fake_stop(container_id: str, **_):
+        stopped_containers.append(container_id)
+
+    class TimingOutClient:
+        async def get_job(self, job_id: str):
+            raise TransportTimeoutError(30.0)
+
+        async def aclose(self) -> None:
+            pass
+
+    monkeypatch.setattr(hps_mod.performer_lifecycle, "stop", fake_stop)
+
+    svc = HTTPPerformerService(_ephemeral_config())
+    svc._active_jobs["job-T"] = hps_mod._EphemeralJob(
+        container_id="building-container",
+        endpoint="http://building:9090",
+        client=TimingOutClient(),
+    )
+
+    with pytest.raises(TransportTimeoutError):
+        await svc.check_status("job-T")
+
+    # The container must NOT have been reaped, and the job must remain active
+    # so the caller can poll it again.
+    assert stopped_containers == []
+    assert "job-T" in svc._active_jobs
+
+
+@pytest.mark.asyncio
 async def test_check_status_ensure_client_transport_error() -> None:
     """When _ensure_client raises TransportError for persistent mode (no injected client), it's re-raised."""
     from coordinare.transport.base import TransportError
@@ -1531,6 +1572,53 @@ def test_build_env_bootstrap_payload_synthesizes_workspace(monkeypatch) -> None:
     assert "ANTHROPIC_API_KEY" in payload.secrets
 
 
+def test_build_env_bootstrap_payload_instructs_bundle_install(monkeypatch) -> None:
+    """092 toolchain fix: the persona must explicitly tell the agent to install the
+    project's DECLARED dependencies via the native dependency manager — for a
+    Gemfile that means `bundle install`, not piecemeal `gem install`. Without this
+    bundler + every gem cascade to 'not installed' and verify.sh fails, which is
+    what skipped service inference for the website symphony (services=[])."""
+    monkeypatch.setenv("GITHUB_TOKEN", "ghs_test")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    svc = HTTPPerformerService(
+        _persistent_config(), client=_client(lambda r: httpx.Response(204))
+    )
+    persona = svc._build_job_payload(_bootstrap_card_context(), None).persona
+    assert "PROJECT DEPENDENCIES" in persona
+    assert "bundle install" in persona
+    # The install must run from the in-container repo root (where verify.sh's
+    # Rails boot smoke-test also reads /repo/Gemfile).
+    assert "cd /repo && bundle install" in persona
+    # And it must steer AWAY from the piecemeal path the agent kept defaulting to.
+    assert "gem install <name>" in persona
+
+
+def test_build_env_bootstrap_payload_front_loads_required_sequence(monkeypatch) -> None:
+    """092 toolchain fix: a forgetful model did the cheap setup (git-clone
+    rbenv/ruby-build, extract debs) then declared done — never running the
+    expensive `rbenv install` / `bundle install`, leaving .rbenv/ with no
+    versions/<ver>/bin/ruby. A front-loaded, numbered execution sequence that
+    names that EXACT anti-pattern must lead the persona (forgetful models attend
+    to the top), gated on verify.sh exiting 0 before the turn ends."""
+    monkeypatch.setenv("GITHUB_TOKEN", "ghs_test")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    svc = HTTPPerformerService(
+        _persistent_config(), client=_client(lambda r: httpx.Response(204))
+    )
+    persona = svc._build_job_payload(_bootstrap_card_context(), None).persona
+    assert "REQUIRED EXECUTION SEQUENCE" in persona
+    # Names the exact observed anti-pattern: cloning a version manager != installing.
+    assert "CLONING A VERSION MANAGER IS NOT INSTALLING THE RUNTIME" in persona
+    assert "rbenv install" in persona
+    # Gates turn-end on the coordinare-owned contract.
+    assert "until verify.sh exits 0" in persona
+    # Must lead the persona, ahead of the detailed prose wall, so a forgetful model
+    # sees the imperative sequence first.
+    assert persona.index("REQUIRED EXECUTION SEQUENCE") < persona.index(
+        "You are an environment bootstrap agent"
+    )
+
+
 def _bootstrap_card_context(declared_services=None) -> dict[str, object]:
     ctx: dict[str, object] = {
         "job_type": "env_bootstrap",
@@ -1672,6 +1760,98 @@ def test_build_env_bootstrap_payload_missing_org_raises() -> None:
         svc._build_job_payload(
             {"job_type": "env_bootstrap", "symphony_repo": "x"}, None
         )
+
+
+# ---------------------- 092: test-env var injection -------------------------
+
+
+def test_bootstrap_payload_injects_test_env_vars_into_secrets(monkeypatch) -> None:
+    """092/US1/T010: test_env_vars on the bootstrap card_context reach payload.secrets
+    so the start-phase dry-run (which runs INSIDE this performer) sees them and clears
+    the unset-secret gate (e.g. POSTGRESQL_PASSWORD)."""
+    monkeypatch.setenv("GITHUB_TOKEN", "ghs_test")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    svc = HTTPPerformerService(
+        _persistent_config(), client=_client(lambda r: httpx.Response(204))
+    )
+    ctx = _bootstrap_card_context()
+    ctx["test_env_vars"] = {"POSTGRESQL_PASSWORD": "test-pw-123"}
+
+    payload = svc._build_job_payload(ctx, None)
+
+    assert payload.secrets["POSTGRESQL_PASSWORD"].get_secret_value() == "test-pw-123"
+
+
+def test_bootstrap_operational_secret_wins_over_same_named_test_env_var(
+    monkeypatch,
+) -> None:
+    """092/US1/T011: a test-env file can never clobber a coordinare-owned operational
+    credential — test-env vars are injected FIRST, operational secrets override."""
+    monkeypatch.setenv("GITHUB_TOKEN", "ghs_operational")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    svc = HTTPPerformerService(
+        _persistent_config(), client=_client(lambda r: httpx.Response(204))
+    )
+    ctx = _bootstrap_card_context()
+    # A malicious/careless test file tries to shadow the operational token.
+    ctx["test_env_vars"] = {"GITHUB_TOKEN": "ghs_from_test_file"}
+
+    payload = svc._build_job_payload(ctx, None)
+
+    assert payload.secrets["GITHUB_TOKEN"].get_secret_value() == "ghs_operational"
+
+
+def test_bootstrap_payload_excludes_test_env_vars_from_metadata(monkeypatch) -> None:
+    """092/US3/T011: test_env_vars are secret-like — they ride the redacted secrets
+    channel and MUST NOT leak into the unredacted metadata blob."""
+    monkeypatch.setenv("GITHUB_TOKEN", "ghs_test")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    svc = HTTPPerformerService(
+        _persistent_config(), client=_client(lambda r: httpx.Response(204))
+    )
+    ctx = _bootstrap_card_context()
+    ctx["test_env_vars"] = {"POSTGRESQL_PASSWORD": "test-pw-123"}
+
+    payload = svc._build_job_payload(ctx, None)
+
+    assert "test_env_vars" not in payload.metadata
+    assert "test-pw-123" not in json.dumps(payload.metadata)
+
+
+def test_job_payload_injects_test_env_and_operational_secret_wins(monkeypatch) -> None:
+    """092/US1/T009+T011: the same injection + precedence holds for the regular
+    code-running performer path (_build_job_payload, e.g. the implementer)."""
+    from coordinare.workspace import WorkspaceInfo
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    svc = HTTPPerformerService(
+        _persistent_config(), client=_client(lambda r: httpx.Response(204))
+    )
+    card_context = {
+        "id": "card-1",
+        "role": "implementing",
+        "backend": "claude_code",
+        "persona_instructions": "do the thing",
+        "test_env_vars": {
+            "POSTGRESQL_PASSWORD": "test-pw-123",
+            "GITHUB_TOKEN": "ghs_from_test_file",
+        },
+    }
+    workspace_info = WorkspaceInfo(
+        path=None,
+        repo_url="https://github.com/org/repo",
+        branch="feat/x",
+        github_token="ghs_operational",
+    )
+
+    payload = svc._build_job_payload(card_context, workspace_info)
+
+    assert payload.secrets["POSTGRESQL_PASSWORD"].get_secret_value() == "test-pw-123"
+    # Operational GITHUB_TOKEN (from WorkspaceInfo) wins over the test-file value.
+    assert payload.secrets["GITHUB_TOKEN"].get_secret_value() == "ghs_operational"
+    # And the secret-like vars never enter metadata.
+    assert "test_env_vars" not in payload.metadata
+    assert "test-pw-123" not in json.dumps(payload.metadata)
 
 
 # ---------------------------- has_live_session (065 Fix 22) ------------------
