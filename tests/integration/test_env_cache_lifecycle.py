@@ -51,6 +51,7 @@ def _make_coordinare_config(symphony_name: str, cache_root: Path, performer_id: 
     sym.name = symphony_name
     sym.env_bootstrap_performer_id = performer_id
     sym.env_spec_files = ["README.md"]
+    sym.test_env = None  # 092: no configured test-env block by default.
 
     eff = MagicMock()
     eff.github_org = "myorg"
@@ -110,6 +111,10 @@ async def test_full_lifecycle(tmp_path: Path) -> None:
     assert state.bootstrap_in_flight is True
 
     # First bootstrap completes successfully — cache becomes ready.
+    # 092: on_bootstrap_complete downgrades a "successful" bootstrap to failure
+    # if the mount holds only the coordinare-seeded files, so seed real toolchain
+    # content to exercise the success path.
+    (state.cache_dir / "toolchain").mkdir(exist_ok=True)
     svc.on_bootstrap_complete(sym_name, success=True, state=full_state)
     assert state.cache_dir_ready is True
     assert state.bootstrap_in_flight is False

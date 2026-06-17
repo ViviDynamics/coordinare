@@ -62,6 +62,14 @@ class EnvCacheState(BaseModel):
     last_inference_succeeded: bool | None = None
     last_inference_services: list[str] = Field(default_factory=list)
 
+    # 092 (FR-016/FR-017): the test-env file PATH discovered by the inference
+    # agent (ServicesManifest.test_env_source), captured at record-inference time
+    # when no symphony-level test_env config block is set. PATH ONLY — never the
+    # loaded KEY=VALUE pairs. Persisted onto the snapshot so a reused cache
+    # reloads variables from this source file at QA/performer runtime instead of
+    # carrying baked-in secret values.
+    test_env_source: str | None = None
+
 
 class BootstrapJobPayload(BaseModel):
     """Dispatch payload for an env_bootstrap performer job."""
@@ -136,5 +144,17 @@ class BootstrapJobPayload(BaseModel):
             "system-package path, so the cache contains the service binary while the base "
             "image stays agnostic. Empty when no stateful service is declared (behavior "
             "unchanged)."
+        ),
+    )
+    test_env_vars: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "092: symphony test-environment variables (literal KEY=VALUE pairs) loaded by "
+            "coordinare from the configured test_env source. Threaded into the bootstrap "
+            "performer's process env so the service-inference start-phase dry-run (which runs "
+            "inside this performer) sees them and clears the unset-secret gate. These are "
+            "SECRET-LIKE: they travel in the transient dispatch payload but MUST be redacted "
+            "in logs (names + source only, never values) per the spec-091/092 invariant. "
+            "Empty when no test_env is configured/discovered (behavior unchanged)."
         ),
     )

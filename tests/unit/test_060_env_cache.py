@@ -27,6 +27,15 @@ def _combined_sha(per_file: dict[str, str]) -> str:
     return hashlib.sha256(s.encode()).hexdigest()[:12]
 
 
+def _seed_toolchain(cache_dir: Path) -> None:
+    """092: write toolchain content beyond the coordinare-seeded files so
+    on_bootstrap_complete's populated-mount invariant treats a success as
+    genuine. An empty mount (only the seed set) is now downgraded to failure.
+    """
+    (cache_dir / "bin").mkdir(parents=True, exist_ok=True)
+    (cache_dir / "bin" / "python").write_text("#!/bin/sh\n")
+
+
 # ---------------------------------------------------------------------------
 # T026: sanitise_symphony_name
 # ---------------------------------------------------------------------------
@@ -263,6 +272,10 @@ class TestEnvCacheServiceCheckAndTrigger:
         cfg.env_bootstrap_performer_id = performer_id
         cfg.env_spec_files = ["README.md"]
         cfg.name = "test-symphony"
+        # 092: no test_env block configured (the common case). A bare MagicMock
+        # would yield a truthy .test_env and send _load_test_env_vars down the
+        # configured-source path against a mock host_path.
+        cfg.test_env = None
         return cfg
 
     def _make_eff_config(self) -> MagicMock:
@@ -595,6 +608,8 @@ class TestEnvCacheServiceInitialise:
         sym.name = name
         sym.env_bootstrap_performer_id = performer_id
         sym.env_spec_files = env_spec_files if env_spec_files is not None else ["README.md"]
+        # 092: no test_env block configured (the common case).
+        sym.test_env = None
         eff = MagicMock()
         eff.github_org = "org"
         eff.project_name = "repo"
@@ -686,6 +701,7 @@ class TestOnBootstrapComplete:
             cache_dir=tmp_path,
             bootstrap_in_flight=True,
         )
+        _seed_toolchain(tmp_path)
         state = {"env_cache": {"sym": cache_state}}
         svc.on_bootstrap_complete("sym", True, state)
         assert cache_state.bootstrap_in_flight is False
@@ -707,6 +723,7 @@ class TestOnBootstrapComplete:
         assert cache_state.last_bootstrap_succeeded is False
         assert cache_state.last_bootstrap_error == "verify failed: chromium missing"
         # A later success clears the error.
+        _seed_toolchain(tmp_path)
         svc.on_bootstrap_complete("sym", True, state)
         assert cache_state.last_bootstrap_succeeded is True
         assert cache_state.last_bootstrap_error is None
@@ -772,10 +789,38 @@ class TestOnBootstrapComplete:
             bootstrap_in_flight=True,
             readme_sha="sha1",
         )
+        _seed_toolchain(tmp_path)
         state = {"env_cache": {"sym": cache_state}}
         svc.on_bootstrap_complete("sym", True, state)
         assert cache_state.last_bootstrap_succeeded is True
         assert cache_state.readme_sha == "sha1"
+
+    def test_empty_mount_downgrades_reported_success(self, tmp_path: Path) -> None:
+        """092: a bootstrap that reports success but leaves the mount holding
+        only the coordinare-seeded files (or nothing) installed the toolchain in
+        the wrong location. The success is downgraded to failure LOUDLY so the
+        empty cache is never marked ready, and it flows through the normal
+        attempt-counter path.
+        """
+        svc = self._make_service()
+        # Seed only the three coordinare-owned files — no toolchain content.
+        (tmp_path / "activate.sh").write_text("# seed\n")
+        (tmp_path / "manifest.json").write_text("{}\n")
+        (tmp_path / "verify.sh").write_text("# seed\n")
+        cache_state = EnvCacheState(
+            symphony_name="sym",
+            sanitised_name="sym-abc",
+            cache_dir=tmp_path,
+            cache_dir_ready=False,
+            bootstrap_in_flight=True,
+        )
+        state = {"env_cache": {"sym": cache_state}}
+        svc.on_bootstrap_complete("sym", True, state)
+        assert cache_state.last_bootstrap_succeeded is False
+        assert cache_state.cache_dir_ready is False
+        assert cache_state.bootstrap_attempts == 1
+        assert cache_state.last_bootstrap_error is not None
+        assert "wrong location" in cache_state.last_bootstrap_error
 
     def test_marks_cache_ready_only_on_success(self, tmp_path: Path) -> None:
         """061: cache_dir_ready must flip True only after a successful bootstrap.
@@ -791,6 +836,7 @@ class TestOnBootstrapComplete:
             cache_dir=tmp_path,
             cache_dir_ready=False,
         )
+        _seed_toolchain(tmp_path)
         state = {"env_cache": {"sym": cache_state}}
         svc.on_bootstrap_complete("sym", True, state)
         assert cache_state.cache_dir_ready is True
@@ -1646,6 +1692,8 @@ class TestPollBootstrapCompletion:
 
     @pytest.mark.asyncio
     async def test_check_status_exception_marks_failure(self) -> None:
+        import coordinare.daemon as daemon_mod
+
         daemon = _make_daemon_for_env_cache()
         svc = MagicMock()
         svc.check_status = AsyncMock(side_effect=RuntimeError("connection lost"))
@@ -1654,6 +1702,65 @@ class TestPollBootstrapCompletion:
         await daemon._poll_bootstrap_completion(svc, "job-1", "alpha", ec_svc)
 
         ec_svc.on_bootstrap_complete.assert_called_once_with("alpha", False, daemon._state, error=ANY)
+        # Only declared terminal after the consecutive-failure tolerance is
+        # exhausted — not on the very first transient miss.
+        assert svc.check_status.await_count == daemon_mod._BOOTSTRAP_POLL_MAX_CONSECUTIVE_FAILURES
+
+    @pytest.mark.asyncio
+    async def test_transient_poll_failures_below_threshold_do_not_fail(self) -> None:
+        """A run of transient poll exceptions shorter than the tolerance, then a
+        terminal success, must NOT mark the bootstrap failed — the streak resets
+        on the first successful poll."""
+        daemon = _make_daemon_for_env_cache()
+        svc = MagicMock()
+        # Two transient failures (tolerance is 3) then a clean terminal success.
+        svc.check_status = AsyncMock(
+            side_effect=[
+                RuntimeError("timeout"),
+                RuntimeError("timeout"),
+                {"status": "env_bootstrap_complete"},
+            ]
+        )
+        ec_svc = MagicMock()
+
+        await daemon._poll_bootstrap_completion(svc, "job-1", "alpha", ec_svc)
+
+        # Success path: marked complete with success=True, never a failure.
+        # The success call passes an ``error=`` kwarg (None on success), so match
+        # loosely on the positional args rather than the full signature.
+        ec_svc.on_bootstrap_complete.assert_called_once()
+        args = ec_svc.on_bootstrap_complete.call_args.args
+        assert args[0] == "alpha"
+        assert args[1] is True
+        assert svc.check_status.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_poll_failure_streak_resets_on_success(self) -> None:
+        """Non-consecutive failures must not accumulate: a success between two
+        short failure runs resets the counter so neither run alone trips the
+        terminal threshold."""
+        daemon = _make_daemon_for_env_cache()
+        svc = MagicMock()
+        # fail, fail, success (reset), fail, fail, success — never 3 in a row.
+        svc.check_status = AsyncMock(
+            side_effect=[
+                RuntimeError("timeout"),
+                RuntimeError("timeout"),
+                {"status": "working"},
+                RuntimeError("timeout"),
+                RuntimeError("timeout"),
+                {"status": "env_bootstrap_complete"},
+            ]
+        )
+        ec_svc = MagicMock()
+
+        await daemon._poll_bootstrap_completion(svc, "job-1", "alpha", ec_svc)
+
+        ec_svc.on_bootstrap_complete.assert_called_once()
+        args = ec_svc.on_bootstrap_complete.call_args.args
+        assert args[0] == "alpha"
+        assert args[1] is True
+        assert svc.check_status.await_count == 6
 
     @pytest.mark.asyncio
     async def test_failure_uses_active_jobs_container_id_lookup(self, monkeypatch) -> None:
@@ -2052,6 +2159,8 @@ class TestBootstrapCircuitBreaker:
         cfg.env_bootstrap_performer_id = "bootstrap"
         cfg.env_spec_files = ["README.md"]
         cfg.name = "test-symphony"
+        # 092: no test_env block configured (the common case).
+        cfg.test_env = None
         eff = MagicMock()
         eff.github_org = "org"
         eff.project_name = "repo"
@@ -2087,6 +2196,7 @@ class TestBootstrapCircuitBreaker:
         cache_state = self._make_cache_state(
             tmp_path, bootstrap_attempts=2, bootstrap_exhausted=True,
         )
+        _seed_toolchain(tmp_path)
         state = {"env_cache": {"sym": cache_state}}
         svc.on_bootstrap_complete("sym", True, state)
         assert cache_state.bootstrap_attempts == 0
@@ -2242,6 +2352,8 @@ class TestRestartHonorPath:
         cfg.env_bootstrap_performer_id = "bootstrap"
         cfg.env_spec_files = ["README.md"]
         cfg.name = "test-symphony"
+        # 092: no test_env block configured (the common case).
+        cfg.test_env = None
         eff = MagicMock()
         eff.github_org = "org"
         eff.project_name = "repo"

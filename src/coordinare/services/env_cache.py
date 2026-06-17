@@ -26,6 +26,11 @@ from coordinare.services.env_manifest import (
     render_verify_sh,
 )
 from coordinare.services.env_manifest_llm import enrich_from_readme
+from coordinare.services.test_env_loader import (
+    TestEnvFileError,
+    load_test_env,
+    parse_test_env,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
@@ -95,6 +100,31 @@ def _cache_dir_has_activate(cache_dir: Path) -> bool:
     """
     try:
         return (cache_dir / "activate.sh").is_file()
+    except OSError:
+        return False
+
+
+# 092: the three files coordinare itself seeds into every cache_dir before a
+# bootstrap runs (render_activate_sh / render_verify_sh / the manifest dump).
+# A successful bootstrap must leave the toolchain *beside* these — if the mount
+# contains only the seed set after a "successful" run, the agent installed the
+# toolchain somewhere other than the absolute cache_mount_path it was given
+# (the observed glm-4.7-flash failure: a relative-path build under
+# <cwd>/devenv/<name> while the real mount stayed empty). See the absolute-path
+# block in http_performer_service._build_env_bootstrap_payload.
+_CACHE_SEED_FILES = frozenset({"activate.sh", "manifest.json", "verify.sh"})
+
+
+def _cache_dir_is_populated(cache_dir: Path) -> bool:
+    """Return True iff cache_dir holds toolchain content beyond the seed set.
+
+    Used to fail a "successful" bootstrap loudly when the agent built the
+    toolchain in the wrong location and the real mount is still just the three
+    coordinare-seeded files. A non-empty result requires at least one entry whose
+    name is not in ``_CACHE_SEED_FILES``.
+    """
+    try:
+        return any(entry.name not in _CACHE_SEED_FILES for entry in cache_dir.iterdir())
     except OSError:
         return False
 
@@ -171,6 +201,87 @@ def _collect_env_volumes_for_persistent_performer(
             )
         )
     return mounts
+
+
+async def resolve_test_env_vars(
+    *,
+    symphony_name: str,
+    test_env: Any,
+    github_org: str,
+    repo: str,
+    github_service: _GitHubService,
+    fallback_source: str | None = None,
+) -> dict[str, str]:
+    """Resolve a symphony's test-environment vars to literal ``KEY -> value`` pairs (092).
+
+    Shared by the env-bootstrap dispatch (``EnvCacheService._load_test_env_vars``) and
+    the consumer/QA-runtime dispatch (``dispatch_performer``) so both apply identical
+    secret-handling. The coordinare has no on-disk clone at dispatch, so the two
+    *configured* sources are resolved differently:
+
+    * ``host_path`` — read directly off the coordinare host via ``load_test_env``.
+    * ``repo_path`` — fetched through the GitHub API and parsed via ``parse_test_env``
+      (clone-relative, containment already enforced at config-load; ``get_file_content``
+      cannot escape the repo).
+
+    092 US2 fallback: when no ``test_env`` block is configured but a prior inference
+    persisted an agent-discovered ``fallback_source`` PATH, reload that same repo-relative
+    file through the GitHub API. The configured block always wins (this branch only runs
+    when ``test_env`` is ``None``). A missing fallback file is best-effort — the
+    genuinely-unset var still trips the services-start.sh exit-75 gate downstream.
+
+    Returns ``{}`` when neither a configured ``test_env`` nor a fallback source is present.
+    Raises :class:`TestEnvFileError` when a *configured* source is missing — a clear
+    error, never a silent empty dict.
+
+    Logs keys + source only, never values (spec-091/092 secret invariant).
+    """
+    if test_env is None:
+        if not fallback_source:
+            return {}
+        # Discovered path-only fallback: repo-relative, fetched via the API.
+        content = await github_service.get_file_content(github_org, repo, fallback_source)
+        if content is None:
+            # Best-effort: a vanished discovered file is not a config error.
+            logger.warning(
+                "env_cache.test_env_fallback_missing",
+                symphony=symphony_name,
+                source=f"test_env_source:{fallback_source}",
+            )
+            return {}
+        loaded = parse_test_env(content)
+        logger.info(
+            "env_cache.test_env_loaded",
+            symphony=symphony_name,
+            source=f"test_env_source:{fallback_source}",
+            keys=sorted(loaded.keys()),
+        )
+        return loaded
+
+    if test_env.host_path is not None:
+        # repo_root is unused for host_path resolution; pass a placeholder.
+        loaded = load_test_env(test_env, repo_root=Path("/"))
+        source = f"host_path:{test_env.host_path}"
+    else:
+        content = await github_service.get_file_content(
+            github_org, repo, test_env.repo_path
+        )
+        if content is None:
+            msg = (
+                f"test_env file not found in repo: {test_env.repo_path!r} "
+                "(configured via repo_path); a configured test-env file must exist"
+            )
+            raise TestEnvFileError(msg)
+        loaded = parse_test_env(content)
+        source = f"repo_path:{test_env.repo_path}"
+
+    logger.info(
+        "env_cache.test_env_loaded",
+        symphony=symphony_name,
+        source=source,
+        keys=sorted(loaded.keys()),
+    )
+    return loaded
 
 
 class EnvCacheService:
@@ -634,6 +745,30 @@ class EnvCacheService:
             symphony_name=symphony_name,
         )
 
+        # 092: load the symphony's configured test-environment so the bootstrap
+        # performer's start-phase dry-run (which runs INSIDE this performer) sees
+        # the secret-like vars and clears the unset-secret gate (e.g. the website
+        # symphony's POSTGRESQL_PASSWORD). A configured-but-missing file is a clear
+        # coordinare-side error, not a silent empty dict — abort dispatch so the
+        # operator fixes config instead of getting a confusing QA failure later.
+        try:
+            test_env_vars = await self._load_test_env_vars(
+                symphony_name=symphony_name,
+                symphony_config=symphony_config,
+                github_org=eff_config.github_org,
+                repo=repo,
+                github_service=github_service,
+                fallback_source=cache_state.test_env_source,
+            )
+        except TestEnvFileError as exc:
+            # The error message carries only the resolved path + field, never values.
+            logger.error(
+                "env_cache.test_env_load_failed",
+                symphony=symphony_name,
+                error=str(exc),
+            )
+            return
+
         payload = BootstrapJobPayload(
             symphony_name=symphony_name,
             symphony_org=eff_config.github_org,
@@ -648,6 +783,7 @@ class EnvCacheService:
             verify_provided=verify_provided,
             activate_provided=activate_provided,
             declared_services=declared_services,
+            test_env_vars=test_env_vars,
         )
 
         # Mark in-flight BEFORE dispatching. dispatch_fn may fail SYNCHRONOUSLY
@@ -680,6 +816,31 @@ class EnvCacheService:
             cache_state.bootstrap_in_flight = False
             cache_state.readme_sha = None
             return
+
+    async def _load_test_env_vars(
+        self,
+        *,
+        symphony_name: str,
+        symphony_config: Any,
+        github_org: str,
+        repo: str,
+        github_service: _GitHubService,
+        fallback_source: str | None = None,
+    ) -> dict[str, str]:
+        """Load the symphony's configured test-environment vars (092).
+
+        Thin wrapper over the module-level :func:`resolve_test_env_vars`, which the
+        consumer dispatch path (``dispatch_performer``) shares so both contexts apply
+        identical secret-handling. See that function for the full contract.
+        """
+        return await resolve_test_env_vars(
+            symphony_name=symphony_name,
+            test_env=getattr(symphony_config, "test_env", None),
+            github_org=github_org,
+            repo=repo,
+            github_service=github_service,
+            fallback_source=fallback_source,
+        )
 
     async def _fetch_declared_services(
         self,
@@ -837,6 +998,7 @@ class EnvCacheService:
         attempts: int | None,
         succeeded: bool | None,
         services: list[str],
+        test_env_source: str | None = None,
     ) -> None:
         """063 T026d: stamp the latest service-inference summary onto state.
 
@@ -844,6 +1006,11 @@ class EnvCacheService:
         status, before ``on_bootstrap_complete``. The dashboard reads these
         fields to show operators what the agent produced (or why it didn't
         run) without having to inspect the env-cache directory.
+
+        092 US2: ``test_env_source`` is the agent-discovered test-env source
+        PATH (never literal values). Persisting it lets later QA-runtime and
+        performer contexts reload the same file when no ``test_env`` block is
+        configured.
         """
         env_cache: dict[str, Any] = state.get("env_cache") or {}
         cache_state: EnvCacheState | None = env_cache.get(symphony_name)
@@ -855,6 +1022,8 @@ class EnvCacheService:
         cache_state.last_inference_attempts = attempts
         cache_state.last_inference_succeeded = succeeded
         cache_state.last_inference_services = list(services or [])
+        if test_env_source is not None:
+            cache_state.test_env_source = test_env_source
         logger.info(
             "env_cache.inference_recorded",
             symphony=symphony_name,
@@ -863,6 +1032,7 @@ class EnvCacheService:
             attempts=attempts,
             succeeded=succeeded,
             services=services,
+            test_env_source=test_env_source,
         )
 
     def _notify_bootstrap_exhausted(
@@ -937,6 +1107,30 @@ class EnvCacheService:
 
         cache_state.bootstrap_in_flight = False
         cache_state.last_bootstrap_at = datetime.now(UTC)
+
+        # 092: a bootstrap that reports success but leaves the mount holding only
+        # the three coordinare-seeded files installed the toolchain in the wrong
+        # place (the agent treated the absolute cache_mount_path as cwd-relative
+        # and built under <cwd>/devenv/<name> instead). The real mount is empty,
+        # so consumers would get no toolchain. Downgrade to failure LOUDLY here
+        # rather than letting cache_dir_ready flip True on an empty cache; the
+        # failure flows through the normal attempt-counter/exhaust path below.
+        if success and not _cache_dir_is_populated(cache_state.cache_dir):
+            success = False
+            error = (
+                "env-cache mount contains only coordinare-seeded files "
+                "(activate.sh, manifest.json, verify.sh) after a reported-"
+                "successful bootstrap — the toolchain was installed in the "
+                f"wrong location; the absolute mount {cache_state.cache_dir} is "
+                "empty. The bootstrap agent likely treated the absolute "
+                "cache_mount_path as a cwd-relative path. Cache rejected."
+            )
+            logger.error(
+                "env_cache.bootstrap_mount_empty",
+                symphony=symphony_name,
+                cache_dir=str(cache_state.cache_dir),
+            )
+
         cache_state.last_bootstrap_succeeded = success
         # 077: surface WHY a bootstrap failed (dashboard); clear on success.
         cache_state.last_bootstrap_error = None if success else (error or "bootstrap failed")

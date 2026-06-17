@@ -137,6 +137,10 @@ class PerformerResponse(BaseModel):
     inference_attempts: int | None = None
     inference_succeeded: bool | None = None
     inference_services: list[str] = Field(default_factory=list)
+    # 092 US2: agent-discovered test-env source PATH (never literal values).
+    # Coordinare persists this alongside the env-cache and reloads the same file
+    # for later QA-runtime and performer contexts when no test_env is configured.
+    inference_test_env_source: str | None = None
     # 070: branch HEAD before/after the performer session. Set on terminal
     # statuses for implementer-style stages so the coordinare can detect
     # zero-commit turns (head_before == head_after) and route them to retry

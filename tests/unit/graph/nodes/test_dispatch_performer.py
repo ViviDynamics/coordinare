@@ -2077,3 +2077,124 @@ async def test_review_role_empty_diff_not_injected() -> None:
     await dispatch_performer(state)
 
     assert "pr_diff" not in svc.dispatched[0]
+
+
+# ---------------------------------------------------------------------------
+# 092 US2: dispatch-level test-env wiring regression coverage
+#
+# The integration suite only exercises resolve_test_env_vars() in ISOLATION via
+# explicit kwargs — it never drives the dispatch_performer wiring that derives
+# github_org / repo from the effective ProjectConfiguration. That coverage gap
+# let a `.global_config` typo (state["config"] is already a ProjectConfiguration,
+# not a CoordinareConfiguration wrapper) ship and crash live consumer dispatch
+# with AttributeError after the env-cache built. These tests drive the real path.
+# ---------------------------------------------------------------------------
+
+
+class _GitHubWithFileContent(_GitHub):
+    """_GitHub plus a recording get_file_content (for the test-env fallback flow)."""
+
+    def __init__(self, *, file_content: str | None = None) -> None:
+        super().__init__()
+        self._file_content = file_content
+        self.get_file_content_calls: list[tuple[str, str, str]] = []
+
+    async def get_file_content(self, org: str, repo: str, path: str) -> str | None:
+        self.get_file_content_calls.append((org, repo, path))
+        return self._file_content
+
+
+def _ready_env_cache_with_test_env_source(
+    tmp_path: Path, symphony_name: str, source: str
+) -> dict:
+    """A ready env_cache whose state carries a persisted agent-discovered test_env_source."""
+    env_cache = _ready_env_cache(tmp_path, symphony_name)
+    env_cache[symphony_name].test_env_source = source
+    return env_cache
+
+
+@pytest.mark.asyncio
+async def test_dispatch_resolves_test_env_via_effective_config(tmp_path: Path) -> None:
+    """Consumer dispatch derives github_org/repo from the SymphonyConfig's
+    effective_config (a ProjectConfiguration) and injects the resolved vars into
+    card_context["test_env_vars"] — keys only reach logs, values ride secrets.
+
+    Regression: state["config"] is the ProjectConfiguration itself; passing
+    `.global_config` to effective_config() raised AttributeError and crashed
+    dispatch after the env-cache built (092 live failure).
+    """
+    from coordinare.config import ProjectConfiguration, SymphonyConfig
+
+    symphony_name = "my-project"
+    github = _GitHubWithFileContent(file_content="POSTGRESQL_PASSWORD=\nFOO=bar\n")
+    env_cache = _ready_env_cache_with_test_env_source(
+        tmp_path, symphony_name, source=".env.test"
+    )
+    global_cfg = ProjectConfiguration(
+        github_org="acme-org",
+        github_project_number=1,
+        github_token="token",
+        human_reviewers=["alice"],
+    )
+    sym_cfg = SymphonyConfig(name=symphony_name, github_project_number=1)
+
+    svc = _make_http_service(mode="ephemeral")
+    state = _base_state(
+        github_service=github,
+        performer_services={"implementing": svc},
+        performer_stage="implementing",
+        lifecycle_sequence=["implementing"],
+        current_symphony=symphony_name,
+        env_cache=env_cache,
+        config=global_cfg,
+        symphony_configs={symphony_name: sym_cfg},
+    )
+
+    # Must not raise AttributeError ('...has no attribute global_config').
+    await dispatch_performer(state)
+
+    # github_org came from effective_config; repo defaulted to the symphony name.
+    assert github.get_file_content_calls == [("acme-org", symphony_name, ".env.test")]
+
+    assert svc.dispatch_card.called
+    card_context = svc.dispatch_card.call_args.args[0]
+    assert card_context["test_env_vars"] == {"POSTGRESQL_PASSWORD": "", "FOO": "bar"}
+
+
+@pytest.mark.asyncio
+async def test_dispatch_test_env_absent_when_no_source_configured(
+    tmp_path: Path,
+) -> None:
+    """No test_env block and no persisted fallback source → no test_env_vars key
+    (and resolve_test_env_vars never reaches the GitHub API)."""
+    from coordinare.config import ProjectConfiguration, SymphonyConfig
+
+    symphony_name = "my-project"
+    github = _GitHubWithFileContent(file_content="SHOULD_NOT_BE_READ=1\n")
+    env_cache = _ready_env_cache(tmp_path, symphony_name)  # no test_env_source
+    global_cfg = ProjectConfiguration(
+        github_org="acme-org",
+        github_project_number=1,
+        github_token="token",
+        human_reviewers=["alice"],
+    )
+    sym_cfg = SymphonyConfig(name=symphony_name, github_project_number=1)
+
+    svc = _make_http_service(mode="ephemeral")
+    state = _base_state(
+        github_service=github,
+        performer_services={"implementing": svc},
+        performer_stage="implementing",
+        lifecycle_sequence=["implementing"],
+        current_symphony=symphony_name,
+        env_cache=env_cache,
+        config=global_cfg,
+        symphony_configs={symphony_name: sym_cfg},
+    )
+
+    await dispatch_performer(state)
+
+    assert github.get_file_content_calls == []
+    assert svc.dispatch_card.called
+    card_context = svc.dispatch_card.call_args.args[0]
+    assert "test_env_vars" not in card_context

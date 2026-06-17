@@ -173,6 +173,9 @@ async def test_bootstrap_completion_flushes_snapshot_to_disk(tmp_path) -> None:
     )
     cache = tmp_path / "sym"
     cache.mkdir()
+    # 092: on_bootstrap_complete downgrades success to failure when the mount
+    # holds only coordinare-seeded files; seed toolchain content for the success.
+    (cache / "toolchain").mkdir()
     daemon._state["env_cache"] = {"sym": _ec_state(cache)}
 
     svc = EnvCacheService(

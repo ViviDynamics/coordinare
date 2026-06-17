@@ -96,6 +96,14 @@ offerings that genuinely cannot run in-container.
   hashes these to detect when re-inference is needed. Missing entries cause
   stale caches; spurious entries cause cache thrash.
 - `agent_version`: the version string passed in this prompt — copy it verbatim.
+- `test_env_source`: OPTIONAL. If — and only if — the project ships a
+  conventional dotenv-style test-environment file holding the values tests need
+  (e.g. `.env.test`, `.env.testing`, `.coordinare/test.env`, or a clearly
+  test-scoped `.env`), emit its repo-relative PATH here. This lets coordinare
+  load those `KEY=VALUE`s (e.g. a Postgres password) so service start-up gates
+  pass during QA. PATH ONLY — emit the file path, NEVER the file's contents or
+  any literal secret value. Omit the field entirely when no such file exists.
+  Do NOT point at production `.env` files or secret stores.
 
 # Tool surface (all read-only, all sandboxed to the project root)
 - `read_file(path)`: read a UTF-8 file. Binary files are reported as such.

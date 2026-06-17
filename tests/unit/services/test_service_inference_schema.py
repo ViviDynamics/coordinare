@@ -263,3 +263,90 @@ def test_manifest_json_schema_emits_kind_and_init() -> None:
         == "postgres"
         for c in conditionals
     ), "VR-2 init-requires-postgres conditional missing from emitted schema"
+
+
+# --- spec 092: agent-discovered test_env_source (path-only) (T013) ---
+
+
+def test_test_env_source_defaults_to_none() -> None:
+    # Fallback discovery is opt-in: a manifest that does not name a test-env
+    # file leaves the field None (no path discovered).
+    manifest = ServicesManifest(
+        services=[], cache_inputs=[], agent_version="manual-override"
+    )
+    assert manifest.test_env_source is None
+
+
+def test_test_env_source_accepts_repo_relative_path() -> None:
+    # The agent emits a repo-relative path to a recognized test-env file; the
+    # schema carries it as a plain string (the loader re-checks containment).
+    manifest = ServicesManifest(
+        services=[],
+        cache_inputs=[],
+        agent_version="Claude-Services_v1",
+        test_env_source=".coordinare/test.env",
+    )
+    assert manifest.test_env_source == ".coordinare/test.env"
+
+
+def test_test_env_source_omitted_from_dump_when_none() -> None:
+    # FR-016/FR-017: a manifest without a discovered source carries no
+    # test_env_source key at all, so persisted state stays minimal.
+    manifest = ServicesManifest(
+        services=[], cache_inputs=[], agent_version="manual-override"
+    )
+    dumped = manifest.model_dump(exclude_none=True)
+    assert "test_env_source" not in dumped
+
+
+def test_test_env_source_rejects_nul_byte() -> None:
+    # Parity with data_dir's NUL guard: the path flows into filesystem
+    # resolution where an embedded NUL would truncate silently.
+    with pytest.raises(ValidationError, match="NUL"):
+        ServicesManifest(
+            services=[],
+            cache_inputs=[],
+            agent_version="manual-override",
+            test_env_source=".coordinare/te\x00st.env",
+        )
+
+
+def test_test_env_source_surfaces_in_manifest_json_schema() -> None:
+    # The agent's structured-output target must advertise the field so the
+    # model can populate it.
+    schema = manifest_json_schema()
+    props = schema["properties"]
+    assert "test_env_source" in props
+
+
+def test_manifest_carries_only_names_and_paths_never_literal_values() -> None:
+    # spec-092 secret invariant (carried from 091, non-negotiable): a persisted
+    # manifest names env vars and file paths but NEVER a literal secret value.
+    # Build the richest test-env-bearing shape — a postgres entry whose init
+    # names a password env var AND a discovered test_env_source path — then dump
+    # it and assert only the NAME and PATH survive, never any literal value.
+    secret_value = "s3cr3t-NEVER-IN-MANIFEST-456"
+    manifest = ServicesManifest(
+        services=[
+            ServiceEntry(
+                **_postgres_entry(
+                    init=ServiceInit(
+                        superuser="root",
+                        databases=["app_test"],
+                        password_env_var="POSTGRESQL_PASSWORD",
+                    )
+                )
+            )
+        ],
+        cache_inputs=[],
+        agent_version="Claude-Services_v1",
+        test_env_source=".coordinare/test.env",
+    )
+
+    dumped = manifest.model_dump_json()
+    assert "POSTGRESQL_PASSWORD" in dumped  # the var NAME is carried...
+    assert ".coordinare/test.env" in dumped  # ...and the file PATH...
+    assert secret_value not in dumped  # ...but no literal value is representable.
+    # There is no field on the manifest that could hold a loaded KEY=VALUE pair:
+    # the only test-env artifact is the path-only source string.
+    assert manifest.test_env_source == ".coordinare/test.env"

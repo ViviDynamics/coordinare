@@ -51,6 +51,7 @@ def _make_cfg(symphony_name: str, cache_root: Path) -> tuple[MagicMock, MagicMoc
     sym.name = symphony_name
     sym.env_bootstrap_performer_id = "bootstrap-env"
     sym.env_spec_files = ["README.md"]
+    sym.test_env = None  # 092: no configured test-env block by default.
 
     eff = MagicMock()
     eff.github_org = "myorg"

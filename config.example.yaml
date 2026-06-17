@@ -781,6 +781,24 @@ symphonies:
     # personas:
     #   implementer:
     #     instructions: "Follow the backend coding standards in CONTRIBUTING.md."
+    # --- 092: symphony test-environment injection (optional) ---
+    # Names a dotenv-style file of KEY=VALUE pairs (e.g. POSTGRESQL_PASSWORD)
+    # that coordinare injects into every context that runs project code: the
+    # service-inference start-phase validation dry-run, the env-cache QA runtime
+    # where services-start.sh runs, and code-running performers. Values are
+    # parsed literally (no shell execution / interpolation) and treated as
+    # secret-like — only var NAMES and the source PATH are ever logged/persisted.
+    # Coordinare-owned operational secrets (GITHUB_TOKEN, API keys) are injected
+    # AFTER these, so a test file can never clobber them.
+    #
+    # Supply EXACTLY ONE source (both-set or neither-set is a config error). Omit
+    # the whole block to fall back to the inference agent's discovered path.
+    # test_env:
+    #   repo_path: .coordinare/test.env   # resolved INSIDE the cloned symphony repo
+    #                                     # (repo-relative, containment-checked)
+    #   # host_path: /home/youruser/secrets/backend-test.env  # absolute host path,
+    #   #                                                       # read directly (mutually
+    #   #                                                       # exclusive with repo_path)
 
   - name: frontend
     github_project_number: 44

@@ -272,6 +272,25 @@ class ServicesManifest(BaseModel):
         min_length=1,
         description="Identifier for the agent/prompt revision that produced this manifest (or 'manual-override' for hand-authored)",
     )
+    test_env_source: str | None = Field(
+        default=None,
+        description=(
+            "spec-092 fallback: repo-relative PATH to a dotenv-style test-env file "
+            "the agent discovered (e.g. '.coordinare/test.env'). PATH ONLY — never "
+            "literal KEY=VALUE secrets. Coordinare parses it through the same loader "
+            "(containment-checked at read time) when no config-level test_env block "
+            "is set. Omit when none is found or when config provides the file."
+        ),
+    )
+
+    @field_validator("test_env_source")
+    @classmethod
+    def _test_env_source_no_nulls(cls, value: str | None) -> str | None:
+        # Parity with ServiceEntry.data_dir: this path flows into filesystem
+        # resolution, where an embedded NUL would truncate silently.
+        if value is not None and "\x00" in value:
+            raise ValueError("test_env_source must not contain NUL bytes")
+        return value
 
     @field_validator("agent_version")
     @classmethod

@@ -946,8 +946,10 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
             _cache_dir_has_activate,
             bootstrap_hold_detail,
             get_env_volume_for_symphony,
+            resolve_test_env_vars,
         )
         from coordinare.services.http_performer_service import HTTPPerformerService
+        from coordinare.services.test_env_loader import TestEnvFileError
 
         # 077: Gate consumer dispatch on the env cache being CURRENT and VERIFIED
         # for this symphony. A consumer must not run until the env_bootstrap phase
@@ -1027,6 +1029,59 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
                 _ec_vol, _ec_container_path = _ec_result
                 _extra_volumes = [_ec_vol]
                 card_context["env_cache_path"] = _ec_container_path
+
+        # 092 US2: inject the symphony's configured (or agent-discovered) test-env
+        # vars into the consumer/QA-runtime dispatch via the redacted `secrets`
+        # channel (http_performer_service routes card_context["test_env_vars"] →
+        # secrets, BEFORE operational secrets so a test file can never clobber
+        # them). The configured `test_env` block always wins (resolve_test_env_vars
+        # ignores fallback_source when test_env is set); absent one, the persisted
+        # agent-discovered path is reloaded. Bootstrap dispatch is exempt — it
+        # receives test-env vars through the BootstrapJobPayload secrets seam.
+        if not _is_bootstrap_dispatch:
+            _sym_cfg_for_te = (state.get("symphony_configs") or {}).get(
+                _symphony_name_for_ec
+            )
+            _config_for_te = state.get("config")
+            _github_for_te = state.get("github_service")
+            if (
+                _sym_cfg_for_te is not None
+                and _config_for_te is not None
+                and _github_for_te is not None
+            ):
+                # state["config"] is already the ProjectConfiguration (the
+                # global config), not a CoordinareConfiguration wrapper — pass it
+                # directly to effective_config(), which expects a
+                # ProjectConfiguration as its base.
+                _eff_for_te = _sym_cfg_for_te.effective_config(_config_for_te)
+                _fallback_src = (
+                    _ec_state_for_sym.test_env_source
+                    if isinstance(_ec_state_for_sym, EnvCacheState)
+                    else None
+                )
+                try:
+                    _test_env_vars = await resolve_test_env_vars(
+                        symphony_name=_symphony_name_for_ec,
+                        test_env=getattr(_sym_cfg_for_te, "test_env", None),
+                        github_org=_eff_for_te.github_org,
+                        repo=_eff_for_te.project_name or _symphony_name_for_ec,
+                        github_service=_github_for_te,
+                        fallback_source=_fallback_src,
+                    )
+                except TestEnvFileError as exc:
+                    # A configured-but-missing file is a clear coordinare-side
+                    # error (logged), never a silent empty dict. The consumer
+                    # proceeds without the var and the genuinely-unset var still
+                    # trips the services-start.sh exit-75 gate downstream.
+                    logger.warning(
+                        "dispatch_performer.test_env_load_failed",
+                        card_id=card_id,
+                        symphony=_symphony_name_for_ec,
+                        error=str(exc),
+                    )
+                    _test_env_vars = {}
+                if _test_env_vars:
+                    card_context["test_env_vars"] = _test_env_vars
 
     try:
         await github.move_card(card_id, "IN_PROGRESS")
