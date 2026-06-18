@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from coordinare.graph.state import _set_current_card
+from coordinare.services.env_cache import verify_env_cache_clean
 from coordinare.services.github import PermanentGitHubError
 from coordinare.services.persona_service import get_effective_instructions, load_personas_hot
 from coordinare.services.security_scanner import ScannerError, scan_diff
@@ -996,6 +997,63 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
                     # 088 (FR-010): names the exhausted breaker when tripped.
                     detail=bootstrap_hold_detail(_ec_state_for_sym),
                 )
+                _release_slot_on_error()
+                return state
+
+            # 093: Toolchain-readiness dispatch gate. The "current + verified"
+            # guard above keys on last_bootstrap_succeeded — a persisted flag from
+            # the LAST bootstrap, which can be true while the toolchain for THIS
+            # spec sha is still being built (the live website-symphony race: QA
+            # dispatched against a cache whose ruby wasn't installed yet). Re-run
+            # the manifest-driven verify.sh checklist in a clean-context container
+            # on EVERY code-running dispatch (no cached verdict, FR-006) so the
+            # decision keys on what is actually present/running/usable now.
+            #   True  (exit 0)  ⇒ proceed with dispatch.
+            #   False (nonzero) ⇒ withhold + release slot; the FAIL falls into the
+            #     same env_cache_not_current hold (re-bootstrap is triggered by the
+            #     bootstrap-completion path / budget machinery — single hold point).
+            #   None  (verify.sh absent / docker error) ⇒ degraded: MUST NOT block,
+            #     fall through on the legacy last_bootstrap_succeeded path.
+            _readiness_passed, _readiness_detail = await verify_env_cache_clean(
+                state, _symphony_name_for_ec, service
+            )
+            if _readiness_passed is False:
+                logger.info(
+                    "dispatch_performer.env_cache_not_current",
+                    card_id=card_id,
+                    performer_stage=performer_stage,
+                    symphony=_symphony_name_for_ec,
+                    # 093: the readiness gate (not the current+verified guard) is
+                    # the deciding factor here — the toolchain for this spec sha is
+                    # not yet usable. Keys/paths only (secret invariant).
+                    readiness="fail",
+                    readme_sha=_ec_state_for_sym.readme_sha,
+                    last_seen_spec_sha=_ec_state_for_sym.last_seen_spec_sha,
+                    bootstrap_exhausted=_ec_state_for_sym.bootstrap_exhausted,
+                    detail=_readiness_detail,
+                )
+                # 093 (FR-007): kick the cache back to env-bootstrap. Reuse the
+                # existing forced-regen seam (the same one monitor_performer uses
+                # for a services-health failure) — mark_runtime_health_failed
+                # flags the cache so the next check_and_trigger cycle dispatches a
+                # re-bootstrap for the current spec sha and the dispatch falls
+                # into the existing bootstrap_in_flight hold. The loop is bounded
+                # by the EXISTING env_bootstrap_max_attempts budget (check_and_trigger
+                # gates the forced regen on `not bootstrap_exhausted`), so a
+                # genuinely-broken cache surfaces the existing bootstrap_exhausted
+                # env-blocked verdict instead of thrashing — no new counter.
+                _env_cache_svc = state.get("env_cache_service")
+                if _env_cache_svc is not None:
+                    try:
+                        _env_cache_svc.mark_runtime_health_failed(
+                            _symphony_name_for_ec, state
+                        )
+                    except Exception as _exc:  # pragma: no cover - defensive
+                        logger.warning(
+                            "dispatch_performer.readiness_rebootstrap_error",
+                            symphony=_symphony_name_for_ec,
+                            error=str(_exc),
+                        )
                 _release_slot_on_error()
                 return state
 

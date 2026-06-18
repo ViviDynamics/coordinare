@@ -1753,63 +1753,9 @@ class CoordinareDaemon:
         errors. ``detail`` is a concise human-readable reason (the verify FAIL
         lines) for the dashboard.
         """
-        from pathlib import Path
+        from coordinare.services.env_cache import verify_env_cache_clean
 
-        from coordinare.models.env_cache import EnvCacheState
-        from coordinare.services.env_cache import DEFAULT_DEVENV_ROOT
-        from coordinare.services.http_performer_service import HTTPPerformerService
-
-        ec = (self._state.get("env_cache") or {}).get(symphony_name)
-        if not isinstance(ec, EnvCacheState):
-            return None, "no env-cache state for symphony"
-        cache_dir = Path(ec.cache_dir)
-        if not (cache_dir / "verify.sh").is_file():
-            logger.warning(
-                "env_cache.clean_verify_skipped",
-                symphony=symphony_name,
-                reason="no verify.sh in cache — cannot confirm consumer install",
-            )
-            return None, "no verify.sh in cache (cannot confirm consumer install)"
-        devenv_root = (
-            svc.devenv_root if isinstance(svc, HTTPPerformerService) else DEFAULT_DEVENV_ROOT
-        )
-        image = getattr(getattr(svc, "_config", None), "image", None) or "coordinare-performer:full"
-        # Mount at the SAME container path the bootstrap used, since activate.sh /
-        # verify.sh hardcode that absolute DEVEENV path.
-        container_path = f"{devenv_root}/{ec.sanitised_name}"
-        cmd = [
-            "docker", "run", "--rm",
-            "-v", f"{cache_dir}:{container_path}:ro",
-            "--entrypoint", "bash", str(image),
-            f"{container_path}/verify.sh",
-        ]
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-            )
-            out_b, _ = await asyncio.wait_for(proc.communicate(), timeout=300.0)
-        except Exception as exc:
-            logger.warning(
-                "env_cache.clean_verify_errored",
-                symphony=symphony_name,
-                error=str(exc),
-            )
-            return None, f"clean verify could not run: {exc}"
-        out = out_b.decode(errors="replace")
-        passed = proc.returncode == 0
-        logger.info(
-            "env_cache.clean_verify_result",
-            symphony=symphony_name,
-            passed=passed,
-            returncode=proc.returncode,
-            output_tail=out[-500:],
-        )
-        # Concise reason for the dashboard: the FAIL lines verify.sh emitted.
-        fails = [ln.strip() for ln in out.splitlines() if "FAIL" in ln.upper()][:5]
-        detail = "; ".join(fails) if fails else (out[-300:].strip() or "verify.sh non-zero")
-        return passed, detail
+        return await verify_env_cache_clean(self._state, symphony_name, svc)
 
     async def _poll_bootstrap_completion(
         self,

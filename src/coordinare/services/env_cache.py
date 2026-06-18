@@ -284,6 +284,83 @@ async def resolve_test_env_vars(
     return loaded
 
 
+async def verify_env_cache_clean(
+    state: dict[str, Any], symphony_name: str, svc: Any
+) -> tuple[bool | None, str]:
+    """077/093: run the cache's ``verify.sh`` in a CLEAN consumer-context
+    container — the performer image with ONLY the cache mounted read-only at
+    the same path consumers use — so a broken consumer-facing ``activate.sh``
+    can't false-pass via installs the bootstrap container did online.
+
+    verify.sh sources activate.sh and asserts every dependency is runnable
+    (it installs from the cache's local debs, no network), so this is a
+    faithful "does the cache alone provide a working toolchain" check.
+
+    Returns ``(passed, detail)``: ``passed`` is True/False when verify.sh
+    ran, or None when it can't be run (absent script / docker error) — None
+    is degraded and does NOT downgrade success, to avoid looping on infra
+    errors. ``detail`` is a concise human-readable reason (the verify FAIL
+    lines) for the dashboard.
+
+    Pure over existing seams (``state``, ``symphony_name``, ``svc``) so both the
+    daemon method and the dispatch-time readiness gate (093) share one source of
+    truth with no drift. Emits observability with NAMES/PATHS only.
+    """
+    from coordinare.services.http_performer_service import HTTPPerformerService
+
+    ec = (state.get("env_cache") or {}).get(symphony_name)
+    if not isinstance(ec, EnvCacheState):
+        return None, "no env-cache state for symphony"
+    cache_dir = Path(ec.cache_dir)
+    if not (cache_dir / "verify.sh").is_file():
+        logger.warning(
+            "env_cache.clean_verify_skipped",
+            symphony=symphony_name,
+            reason="no verify.sh in cache — cannot confirm consumer install",
+        )
+        return None, "no verify.sh in cache (cannot confirm consumer install)"
+    devenv_root = (
+        svc.devenv_root if isinstance(svc, HTTPPerformerService) else DEFAULT_DEVENV_ROOT
+    )
+    image = getattr(getattr(svc, "_config", None), "image", None) or "coordinare-performer:full"
+    # Mount at the SAME container path the bootstrap used, since activate.sh /
+    # verify.sh hardcode that absolute DEVEENV path.
+    container_path = f"{devenv_root}/{ec.sanitised_name}"
+    cmd = [
+        "docker", "run", "--rm",
+        "-v", f"{cache_dir}:{container_path}:ro",
+        "--entrypoint", "bash", str(image),
+        f"{container_path}/verify.sh",
+    ]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        out_b, _ = await asyncio.wait_for(proc.communicate(), timeout=300.0)
+    except Exception as exc:
+        logger.warning(
+            "env_cache.clean_verify_errored",
+            symphony=symphony_name,
+            error=str(exc),
+        )
+        return None, f"clean verify could not run: {exc}"
+    out = out_b.decode(errors="replace")
+    passed = proc.returncode == 0
+    logger.info(
+        "env_cache.clean_verify_result",
+        symphony=symphony_name,
+        passed=passed,
+        returncode=proc.returncode,
+        output_tail=out[-500:],
+    )
+    # Concise reason for the dashboard: the FAIL lines verify.sh emitted.
+    fails = [ln.strip() for ln in out.splitlines() if "FAIL" in ln.upper()][:5]
+    detail = "; ".join(fails) if fails else (out[-300:].strip() or "verify.sh non-zero")
+    return passed, detail
+
+
 class EnvCacheService:
     """Manages per-symphony env-cache bootstrapping and SHA change detection."""
 
@@ -723,6 +800,18 @@ class EnvCacheService:
         # The manifest drives BOTH the install checklist (persona) and the
         # verification (coordinare-written verify.sh) so a pinned tool version
         # can't be silently missed by a free-forming agent.
+        # 091: surface durably-declared stateful services so the bootstrap fetches
+        # their binaries into the cache (deb-into-<cache>/debs/). Best-effort: a
+        # missing/invalid .coordinare/score.json is normal — fall back to no services.
+        # Fetched BEFORE the manifest artifacts so verify.sh can emit a live
+        # readiness probe (093) for each coordinare-managed service.
+        declared_services = await self._fetch_declared_services(
+            github_org=eff_config.github_org,
+            repo=repo,
+            github_service=github_service,
+            symphony_name=symphony_name,
+        )
+
         dependency_checklist, verify_provided, activate_provided = await self._build_manifest_artifacts(
             symphony_name=symphony_name,
             repo=repo,
@@ -733,16 +822,7 @@ class EnvCacheService:
             cache_dir=cache_state.cache_dir,
             cache_mount_path=cache_mount_path,
             llm_chat=llm_chat,
-        )
-
-        # 091: surface durably-declared stateful services so the bootstrap fetches
-        # their binaries into the cache (deb-into-<cache>/debs/). Best-effort: a
-        # missing/invalid .coordinare/score.json is normal — fall back to no services.
-        declared_services = await self._fetch_declared_services(
-            github_org=eff_config.github_org,
-            repo=repo,
-            github_service=github_service,
-            symphony_name=symphony_name,
+            declared_services=declared_services,
         )
 
         # 092: load the symphony's configured test-environment so the bootstrap
@@ -899,6 +979,7 @@ class EnvCacheService:
         cache_dir: Path,
         cache_mount_path: str,
         llm_chat: ChatJson | None,
+        declared_services: list[dict[str, Any]] | None = None,
     ) -> tuple[str | None, bool]:
         """Derive the manifest, write an authoritative verify.sh AND activate.sh
         into the cache, and return ``(dependency_checklist, verify_provided,
@@ -935,10 +1016,33 @@ class EnvCacheService:
         # containers). 087: coordinare owns activate.sh too — an auto-discovering
         # activation that verify.sh sources, so the agent installs the toolchain
         # but no longer hand-writes the (fumbled) activation paths.
+        # 093: re-validate the declared-service dicts back into ServiceEntry models so
+        # render_verify_sh can emit a live RUNNING/healthy readiness probe (pg_isready /
+        # redis PING) per coordinare-managed service. Best-effort: a dict that no longer
+        # validates is simply skipped — verify.sh still covers the toolchain checklist.
+        service_models: list[Any] = []
+        if declared_services:
+            try:
+                from coordinare_service_inference.schema import ServiceEntry
+
+                for svc in declared_services:
+                    try:
+                        service_models.append(ServiceEntry.model_validate(svc))
+                    except Exception:
+                        continue
+            except Exception:
+                service_models = []
+
         try:
             cache_dir.mkdir(parents=True, exist_ok=True)
             verify_path = cache_dir / "verify.sh"
-            verify_path.write_text(render_verify_sh(manifest, cache_mount_path=cache_mount_path))
+            verify_path.write_text(
+                render_verify_sh(
+                    manifest,
+                    cache_mount_path=cache_mount_path,
+                    services=service_models,
+                )
+            )
             verify_path.chmod(0o755)
             activate_path = cache_dir / "activate.sh"
             activate_path.write_text(

@@ -164,6 +164,140 @@ class TestVerifyRenderer:
         assert "require 'rails'" not in sh
 
 
+class TestServiceReadinessChecklist:
+    """093 / US2: verify.sh must include a RUNNING/healthy readiness line for each
+    coordinare-managed service (postgres, redis) — not merely "installed". The probe
+    is live (pg_isready / redis PING→PONG) and a not-running service hard-FAILs so
+    the dispatch gate withholds against a half-built cache."""
+
+    @staticmethod
+    def _manifest() -> EnvManifest:
+        # A minimal toolchain manifest; services are threaded separately (they do
+        # not live on the EnvManifest — they reach render_verify_sh via services=).
+        return EnvManifest(
+            symphony_name="sym",
+            items=[ManifestItem(name="ruby", kind="runtime", version="3.4.2", source=".ruby-version")],
+        )
+
+    @staticmethod
+    def _service(**overrides):
+        from coordinare_service_inference.schema import ServiceEntry, ServiceInit
+
+        fields = dict(
+            name="postgres",
+            binary="postgres",
+            version="16",
+            data_dir="/tmp/pg-data",
+            port=5432,
+            why_needed="Primary application database",
+            sources=["config/database.yml"],
+            kind="postgres",
+            init=ServiceInit(superuser="root", databases=["app_dev"]),
+        )
+        fields.update(overrides)
+        return ServiceEntry(**fields)
+
+    def test_postgres_readiness_uses_pg_isready_and_hard_fails(self) -> None:
+        sh = render_verify_sh(
+            self._manifest(), cache_mount_path="/devenv/sym", services=[self._service()]
+        )
+        # Live readiness probe (RUNNING, not merely installed) on the declared port.
+        assert "pg_isready" in sh
+        assert "5432" in sh
+        # Installed-but-not-running ⇒ FAIL line that flips FAILED.
+        pg_fail = next(ln for ln in sh.splitlines() if "FAIL:" in ln and "postgres" in ln)
+        assert "FAILED=1" in pg_fail
+        # Running/healthy ⇒ OK line.
+        assert any("OK:" in ln and "postgres" in ln for ln in sh.splitlines())
+
+    def test_redis_readiness_uses_ping_pong_and_hard_fails(self) -> None:
+        sh = render_verify_sh(
+            self._manifest(),
+            cache_mount_path="/devenv/sym",
+            services=[self._service(name="redis", binary="redis-server", kind="redis", port=6379, init=None)],
+        )
+        assert "redis-cli" in sh
+        assert "PING" in sh
+        assert "PONG" in sh
+        assert "6379" in sh
+        redis_fail = next(ln for ln in sh.splitlines() if "FAIL:" in ln and "redis" in ln)
+        assert "FAILED=1" in redis_fail
+        assert any("OK:" in ln and "redis" in ln for ln in sh.splitlines())
+
+    def test_generic_and_external_services_emit_no_readiness_line(self) -> None:
+        """Only coordinare-MANAGED services (postgres/redis) get a readiness probe.
+        A generic/externally-required service is not coordinare's to start, so it
+        must not appear as a FAIL-able readiness line."""
+        sh = render_verify_sh(
+            self._manifest(),
+            cache_mount_path="/devenv/sym",
+            services=[
+                self._service(
+                    name="elasticsearch", binary="elasticsearch", kind="generic", port=9200, init=None
+                ),
+                self._service(
+                    name="vault",
+                    binary="vault",
+                    kind="generic",
+                    port=8200,
+                    external_required=True,
+                    init=None,
+                ),
+            ],
+        )
+        assert "elasticsearch" not in sh
+        assert "vault" not in sh
+
+    def test_services_default_empty_is_backward_compatible(self) -> None:
+        """Existing callers pass no services= — render must behave exactly as before
+        (no readiness section, no crash)."""
+        sh = render_verify_sh(self._manifest(), cache_mount_path="/devenv/sym")
+        assert "pg_isready" not in sh
+        assert "redis-cli" not in sh
+        assert sh.rstrip().endswith("exit 0")
+
+    def test_service_readiness_after_toolchain_before_aggregate_exit(self) -> None:
+        """Ordering: service readiness runs after the toolchain checks but still
+        feeds the single aggregate exit gate at the end."""
+        sh = render_verify_sh(
+            self._manifest(), cache_mount_path="/devenv/sym", services=[self._service()]
+        )
+        assert sh.index("RUBY_VERSION") < sh.index("pg_isready")
+        assert sh.index("pg_isready") < sh.rindex('if [ "$FAILED" -ne 0 ]; then')
+
+    def test_aggregate_exit_unchanged_nonzero_iff_failure(self) -> None:
+        """T012/T016: WARN-only items never flip FAILED; the aggregate gate is the
+        sole exit driver and is unchanged by the service section."""
+        sh = render_verify_sh(
+            self._manifest(),
+            cache_mount_path="/devenv/sym",
+            services=[self._service()],
+        )
+        assert 'if [ "$FAILED" -ne 0 ]; then' in sh
+        assert "exit 1" in sh
+        assert sh.rstrip().endswith("exit 0")
+
+    def test_no_secret_value_leaks_into_readiness_probe(self) -> None:
+        """T013 invariant: rendered verify.sh carries only names/paths, never a
+        literal secret. The readiness probe is auth-free (pg_isready / redis PING),
+        so no password is interpolated even when the service declares a
+        password_env_var."""
+        from coordinare_service_inference.schema import ServiceInit
+
+        svc = self._service(
+            init=ServiceInit(
+                superuser="root", databases=["app_dev"], password_env_var="PGPASSWORD"
+            )
+        )
+        sh = render_verify_sh(self._manifest(), cache_mount_path="/devenv/sym", services=[svc])
+        # The env-var NAME may appear, but never a password flag carrying a value,
+        # and never a process-substitution pwfile (the probe authenticates nothing).
+        assert "pg_isready" in sh
+        assert "--pwfile" not in sh
+        assert "PGPASSWORD=" not in sh  # no value-binding assignment of the secret
+        assert "-W" not in sh  # pg_isready never prompts/sends a password
+
+
 class TestActivateRenderer:
     """render_activate_sh: coordinare owns activate.sh (like verify.sh), generating
     an auto-discovering, POSIX-safe activation from the manifest's runtime pins —

@@ -315,12 +315,56 @@ def render_checklist(manifest: EnvManifest) -> str:
     return "\n".join(lines)
 
 
-def render_verify_sh(manifest: EnvManifest, *, cache_mount_path: str) -> str:
+def _service_readiness_check(svc: Any) -> str | None:
+    """093 / US2: render a LIVE readiness probe for a coordinare-managed service.
+
+    Returns a shell line that hard-FAILs (sets FAILED=1) when the service is
+    installed-but-not-running, or ``None`` for services coordinare does not manage
+    (generic kinds, externally-required services) — those are not ours to start,
+    so they get no FAIL-able readiness line.
+
+    The probe is auth-free by construction: ``pg_isready`` and ``redis-cli PING``
+    check liveness without authenticating, so no secret value is ever interpolated
+    (only the schema-validated service name and integer port reach the script).
+    """
+    if getattr(svc, "external_required", False):
+        return None
+    name = svc.name
+    port = svc.port
+    if svc.kind == "postgres":
+        return (
+            f"if pg_isready -h 127.0.0.1 -p {port} >/dev/null 2>&1; then "
+            f'echo "OK: service {name} accepting connections on {port}"; '
+            f'else echo "FAIL: service {name} not accepting connections on {port} (pg_isready)"; '
+            f"FAILED=1; fi"
+        )
+    if svc.kind == "redis":
+        return (
+            f'if [ "$(redis-cli -h 127.0.0.1 -p {port} PING 2>/dev/null)" = "PONG" ]; then '
+            f'echo "OK: service {name} responding to PING on {port}"; '
+            f'else echo "FAIL: service {name} not responding to PING on {port}"; '
+            f"FAILED=1; fi"
+        )
+    # generic / unknown kind → coordinare doesn't manage its lifecycle; no probe.
+    return None
+
+
+def render_verify_sh(
+    manifest: EnvManifest,
+    *,
+    cache_mount_path: str,
+    services: list[Any] | None = None,
+) -> str:
     """Render an authoritative verify.sh from the manifest.
 
     Sources activate.sh first (so the installed toolchain is on PATH), runs every
     item's check, and exits non-zero if any failed — the same contract the
     clean-context verifier (daemon._verify_env_cache_clean) already runs.
+
+    ``services`` are the declared service descriptors (ServiceEntry). For each
+    coordinare-managed one (postgres/redis), a LIVE readiness probe is appended that
+    hard-FAILs when the service is installed but not running — so the dispatch gate
+    withholds against a cache whose service isn't actually up yet.
     """
     lines = [
         "#!/usr/bin/env bash",
@@ -348,6 +392,16 @@ def render_verify_sh(manifest: EnvManifest, *, cache_mount_path: str) -> str:
             '{ echo "FAIL: rails/psych failed to load (native extension or config error)" >&2; FAILED=1; }',
             "fi",
         ]
+    # Coordinare-managed services must be RUNNING, not merely installed: probe each
+    # live (pg_isready / redis PING). A not-running managed service hard-fails so the
+    # dispatch gate withholds against a half-built cache.
+    service_checks = [
+        line for svc in (services or []) if (line := _service_readiness_check(svc)) is not None
+    ]
+    if service_checks:
+        lines.append("")
+        lines.append("# Coordinare-managed service readiness (RUNNING + healthy, not just installed)")
+        lines += service_checks
     lines += [
         "",
         'if [ "$FAILED" -ne 0 ]; then',
