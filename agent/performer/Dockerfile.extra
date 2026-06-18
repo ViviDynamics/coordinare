@@ -1,0 +1,52 @@
+# Dockerfile.extra — browser-heavy performer image for browser-driven QA.
+#
+# Layers real system browsers (chromium + firefox-esr) ON TOP of :full so the
+# base/full images stay lean and fast to build; only roles that actually run
+# browser-driven tests (e.g. qa) point at coordinare-performer:extra. Capybara /
+# selenium-webdriver / webdrivers reliably install as gems but the browser
+# binaries themselves are the thing env-bootstrap keeps failing to get going —
+# so we bake them into the image instead.
+#
+# Why not just google-chrome-stable? Google ships Linux Chrome for amd64 ONLY —
+# there is no arm64 build. These images build arm64 (Apple Silicon), so on arm64
+# we install chromium (Chrome's open-source base; selenium/capybara drive it via
+# chromedriver identically) and alias the common binary names. Docker provides
+# TARGETARCH automatically under buildx, so the same Dockerfile still installs
+# real google-chrome-stable when built for amd64 — future-proof multi-arch.
+#
+# NOTE: the base is python:3.12-slim (Debian, NOT Ubuntu), so the package is
+# `chromium` / `chromium-driver`, not Ubuntu's `chromium-browser` snap stub.
+ARG BASE_IMAGE=coordinare-performer:full
+FROM $BASE_IMAGE
+
+ARG TARGETARCH
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        wget \
+        gnupg \
+        firefox-esr \
+        fonts-liberation \
+    && if [ "$TARGETARCH" = "amd64" ]; then \
+         # amd64: real Google Chrome from Google's apt repo, plus chromium for parity.
+         wget -q -O /tmp/google-key.pub https://dl.google.com/linux/linux_signing_key.pub && \
+         gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg /tmp/google-key.pub && \
+         rm -f /tmp/google-key.pub && \
+         echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" \
+             > /etc/apt/sources.list.d/google-chrome.list && \
+         apt-get update && apt-get install -y --no-install-recommends \
+             google-chrome-stable chromium chromium-driver; \
+       else \
+         # arm64 (and anything non-amd64): chromium is the Chrome stand-in. Alias
+         # the google-chrome names so test suites / selenium probing for them resolve.
+         apt-get install -y --no-install-recommends chromium chromium-driver && \
+         ln -sf /usr/bin/chromium /usr/local/bin/google-chrome && \
+         ln -sf /usr/bin/chromium /usr/local/bin/google-chrome-stable; \
+       fi \
+    # Common alias names regardless of arch: many suites probe `chromium-browser`
+    # (Ubuntu name) or `firefox` (the firefox-esr binary is `firefox-esr`).
+    && ln -sf /usr/bin/chromium /usr/local/bin/chromium-browser && \
+       ln -sf /usr/bin/firefox-esr /usr/local/bin/firefox \
+    && rm -rf /var/lib/apt/lists/*
+
+# Selenium 4 / the webdrivers gem auto-download geckodriver at runtime; chromedriver
+# is provided by chromium-driver above. Headless is the caller's flag, not baked here.
