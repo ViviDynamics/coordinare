@@ -166,6 +166,21 @@ agent_executable: "/usr/local/bin/performer"  # path to the performer binary
 #     image: coordinare-performer:full
 
 #   # -------------------------------------------------------------------------
+#   # Browser-driven QA — use coordinare-performer:extra for roles that run
+#   # browser-backed tests (capybara/selenium/playwright system specs). The gems
+#   # install fine via env-bootstrap, but the browser BINARIES are what bootstrap
+#   # keeps failing to get going, so :extra bakes chromium + firefox-esr into the
+#   # image (and real google-chrome-stable when built for amd64).
+#   #   Build:  docker build -t coordinare-performer:full  -f agent/performer/Dockerfile.full  agent/performer/
+#   #           docker build -t coordinare-performer:extra -f agent/performer/Dockerfile.extra agent/performer/
+#   # Point only the browser-test role(s) at it (e.g. qa) to keep other images lean.
+#   # -------------------------------------------------------------------------
+#   - id: claude-qa-ephemeral
+#     mode: ephemeral
+#     roles: [qa]
+#     image: coordinare-performer:extra
+
+#   # -------------------------------------------------------------------------
 #   # Junie (JetBrains) — authenticates via a persistent session directory.
 #   #
 #   # Prerequisites:
