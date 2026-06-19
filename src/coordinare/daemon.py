@@ -850,11 +850,122 @@ class CoordinareDaemon:
                         active_card_id=snapshot.active_card_id,
                         phase=snapshot.phase,
                     )
+            # 094: the block above reconciles only the top-level focus card.
+            # In multi-card mode the authoritative state is in active_sessions,
+            # whose phase is restored verbatim — so a session restored
+            # BLOCKED/idle for a card the board has moved on (the #158 wedge)
+            # is never corrected. Reconcile every restored session against the
+            # same (already-fetched) board snapshot: board wins.
+            self._reconcile_sessions_with_board(board_snapshot)
         except Exception as exc:
             logger.warning(
                 "board_reconciliation_skipped",
                 error=str(exc),
             )
+
+    def _reconcile_sessions_with_board(self, board_snapshot: dict) -> None:
+        """094: reconcile each restored per-card session's phase against the
+        live board (board is source of truth).
+
+        - A non-in-flight session whose board-inferred phase differs from its
+          persisted phase is corrected (board wins) and emits
+          ``restart_reconcile.session_corrected``.
+        - A legitimately in-flight session (``monitoring_pr`` /
+          ``monitoring_performer``) whose board column is consistent with that
+          phase is preserved untouched (FR-004) — its PR/performer context is
+          never reset.
+        - A genuinely-blocked card stays blocked (FR-005): BLOCKED infers
+          ``blocked`` == persisted, so no correction fires.
+        - A card DONE or absent from this (successful) board read is retired
+          (FR-010); if it was the top-level focus, the focus is cleared.
+
+        Reuses the board snapshot already fetched by the caller — no extra
+        round-trip — and runs inside the caller's try/except so a failed board
+        read changes nothing (FR-009). Distinct from the spec-076 container
+        reconciler (``run_startup_reconciliation``): that adopts/reaps Docker
+        containers; this corrects board column/phase.
+        """
+        sessions = self._state.get("active_sessions") or {}
+        # The board column that is *consistent* with each in-flight phase. If
+        # the live column matches, the session is genuinely mid-flight and is
+        # preserved; if it differs, the card advanced and is moved forward.
+        inflight_consistent = {
+            "monitoring_performer": {"in progress", "in_progress"},
+            "monitoring_pr": {"in review", "in_review"},
+        }
+        symphony = self._state.get("current_symphony")
+        for card_id in list(sessions.keys()):
+            session = sessions.get(card_id)
+            if not isinstance(session, dict):
+                continue
+            column = self._find_card_column(board_snapshot, card_id, session)
+            prior_phase = session.get("phase")
+            current_card = session.get("current_card")
+            prior_column = (
+                current_card.get("column") if isinstance(current_card, dict) else None
+            )
+
+            # Card gone or DONE on a successful read → retire the session.
+            if column is None or column.strip().upper() == "DONE":
+                logger.info(
+                    "restart_reconcile.session_retired",
+                    card_id=card_id,
+                    prior_phase=prior_phase,
+                    board_column=column,
+                    symphony=symphony,
+                )
+                del sessions[card_id]
+                if self._state.get("active_card_id") == card_id:
+                    _retire_active_session(self._state)
+                continue
+
+            normalized = column.strip().lower()
+            # Preserve a still-valid in-flight session (FR-004).
+            if (
+                prior_phase in inflight_consistent
+                and normalized in inflight_consistent[prior_phase]
+            ):
+                continue
+
+            inferred = self._infer_phase_from_board_column(column)
+            if inferred == prior_phase:
+                continue  # already consistent — no correction (FR-008 convergence)
+
+            session["phase"] = inferred
+            # Refresh the session's cached board column so per-cycle eligibility
+            # sees the post-move state, not the stale persisted column.
+            if isinstance(current_card, dict):
+                current_card["column"] = column
+            logger.info(
+                "restart_reconcile.session_corrected",
+                card_id=card_id,
+                prior_phase=prior_phase,
+                prior_column=prior_column,
+                board_column=column,
+                corrected_phase=inferred,
+                symphony=symphony,
+            )
+
+    @staticmethod
+    def _find_card_column(
+        board_snapshot: dict, card_id: str, session: dict | None = None
+    ) -> str | None:
+        """Return the live board column for a card, or None if absent.
+
+        Matches the session key (the project item id, the same id space the
+        board snapshot and ``active_card_id`` use) and, as a fallback, the
+        session's ``current_card`` content-id/id.
+        """
+        candidates = {card_id}
+        if isinstance(session, dict):
+            cc = session.get("current_card") or {}
+            candidates.add(str(cc.get("content_id") or ""))
+            candidates.add(str(cc.get("id") or ""))
+        candidates.discard("")
+        for column, card_ids in board_snapshot.items():
+            if isinstance(card_ids, list) and any(c in card_ids for c in candidates):
+                return column
+        return None
 
     async def _wait_for_next_cycle(self) -> None:
         """Wait for the next polling cycle, honouring webhook triggers and poll=0 mode."""

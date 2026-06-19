@@ -31,6 +31,8 @@ See AGENTS.md for all development guidelines.
 - env-cache JSON snapshot via `state_store.py` (existing single-hos (092-symphony-test-env)
 - Python 3.14 (project minimum 3.12; prod on 3.14.5 via uv); generated + pydantic 2.x (manifest/result/state models + validators); Jinja2 (093-env-cache-readiness-gate)
 - JSON snapshot via `state_store.py` (existing single-host single-process). **No new (093-env-cache-readiness-gate)
+- Python 3.14 (project minimum 3.12; prod 3.14.5 via uv) + pydantic 2.x (WorkflowSnapshot/PersistedSession models — reused, unchanged), structlog (reconciliation observability), the existing `github_service.poll_board()` board read, langgraph (unchanged). No new external dependencies. (094-restart-session-reconcile)
+- Existing single-host single-process JSON snapshot via `state_store.py` (`coordinare.state.json`). No schema change — reconciliation reads the live board and corrects in-memory restored state before the first cycle; the next persist captures the corrected state. (094-restart-session-reconcile)
 
 ## Recent Changes
 - 076-qa-cycle: Added Python 3.14 (project minimum: 3.12; production currently on 3.14.5 via uv) + pydantic 2.x, langgraph, structlog, docker SDK (or subprocess to `docker` CLI), fastapi (dashboard SSE), httpx (performer HTTP transport), pyyaml (config)
