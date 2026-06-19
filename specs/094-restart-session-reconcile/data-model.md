@@ -46,8 +46,11 @@ After the per-session pass, the top-level focus (`active_card_id` and derived `p
 ### Reconciliation Event (`restart_reconcile.session_corrected`)
 A structlog record emitted per corrected session. Fields (identifiers/columns/phases only — FR-007):
 - `card_id` — the card/session identifier.
-- `prior_phase`, `prior_column` — the stale persisted values.
+- `prior_phase` — the stale persisted phase (the divergence's persisted side; present for every card).
+- `prior_column` — the persisted board column **when available**: only the focus card's column is carried in the snapshot, so non-focus sessions record `None` (their column was never persisted). `prior_phase` already captures the divergence for those.
 - `board_column`, `corrected_phase` — the live/board-derived values applied.
 - `symphony` — the owning symphony name.
+
+A separate `restart_reconcile.session_retired` event (same field discipline) is emitted when a session is retired because its card is DONE or absent from a successful board read.
 
 Contains **no** secret values (no tokens, no env values, no PR bodies).
