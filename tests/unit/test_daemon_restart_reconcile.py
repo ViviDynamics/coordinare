@@ -53,11 +53,16 @@ def _session(card_id: str, *, phase: str, stage: str = "implementing", **extra) 
     return sess
 
 
-def _snapshot(active_card_id: str | None = None, phase: str = "idle") -> WorkflowSnapshot:
+def _snapshot(
+    active_card_id: str | None = None,
+    phase: str = "idle",
+    active_card_column: str | None = None,
+) -> WorkflowSnapshot:
     return WorkflowSnapshot(
         snapshot_at=datetime.now(UTC),
         phase=phase,
         active_card_id=active_card_id,
+        active_card_column=active_card_column,
     )
 
 
@@ -174,13 +179,17 @@ async def test_correction_emits_secretfree_event() -> None:
     _install(daemon, sessions, board, active_card_id="CARD")
 
     with structlog.testing.capture_logs() as logs:
-        await daemon._reconcile_with_board(_snapshot(active_card_id="CARD", phase="blocked"))
+        await daemon._reconcile_with_board(
+            _snapshot(active_card_id="CARD", phase="blocked", active_card_column="BLOCKED")
+        )
 
     events = [e for e in logs if e.get("event") == "restart_reconcile.session_corrected"]
     assert len(events) == 1
     ev = events[0]
     assert ev["card_id"] == "CARD"
     assert ev["prior_phase"] == "blocked"
+    # The focus card's persisted column must appear (not None) — FR-006/SC-004.
+    assert ev["prior_column"] == "BLOCKED"
     assert ev["board_column"] == "TODO"
     assert ev["corrected_phase"] == "idle"
     # Only ids/columns/phases/symphony allowed — no secret-shaped keys/values.
@@ -276,3 +285,36 @@ async def test_card_advanced_past_persisted_stage_moves_forward() -> None:
 
     # IN_REVIEW infers monitoring_pr; a non-in-flight-consistent advance moves forward.
     assert daemon._state["active_sessions"]["CARD"]["phase"] == "monitoring_pr"
+
+
+@pytest.mark.asyncio
+async def test_top_level_phase_consistent_with_preserved_inflight_focus() -> None:
+    """FR-010 follow-up: when the focus card is a preserved in-flight session,
+    self._state['phase'] is re-derived to match it immediately (not left as the
+    top-level block's board-inferred value), so the focus is consistent at
+    reconcile time rather than one cycle late."""
+    daemon = _make_daemon()
+    sessions = {"PERF": _session("PERF", phase="monitoring_performer")}
+    board = {"IN_PROGRESS": ["PERF"]}  # top-level block infers monitoring_agent
+    _install(daemon, sessions, board, active_card_id="PERF")
+
+    await daemon._reconcile_with_board(_snapshot(active_card_id="PERF", phase="monitoring_performer"))
+
+    # Session preserved as monitoring_performer, and the global phase mirror
+    # reflects it (not the stale monitoring_agent from the top-level block).
+    assert daemon._state["active_sessions"]["PERF"]["phase"] == "monitoring_performer"
+    assert daemon._state["phase"] == "monitoring_performer"
+
+
+@pytest.mark.asyncio
+async def test_focus_only_path_unchanged_when_no_active_sessions() -> None:
+    """Guard: with no active_sessions the re-derivation is skipped, so the
+    top-level block's phase result is preserved (regression guard for existing
+    focus-only reconciliation behavior)."""
+    daemon = _make_daemon()
+    daemon._state["github_service"] = _github_with_board({"In Review": ["card-1"]})
+    daemon._state["active_sessions"] = {}
+
+    await daemon._reconcile_with_board(_snapshot(active_card_id="card-1", phase="monitoring_agent"))
+
+    assert daemon._state["phase"] == "monitoring_pr"

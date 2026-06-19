@@ -856,14 +856,16 @@ class CoordinareDaemon:
             # BLOCKED/idle for a card the board has moved on (the #158 wedge)
             # is never corrected. Reconcile every restored session against the
             # same (already-fetched) board snapshot: board wins.
-            self._reconcile_sessions_with_board(board_snapshot)
+            self._reconcile_sessions_with_board(board_snapshot, snapshot)
         except Exception as exc:
             logger.warning(
                 "board_reconciliation_skipped",
                 error=str(exc),
             )
 
-    def _reconcile_sessions_with_board(self, board_snapshot: dict) -> None:
+    def _reconcile_sessions_with_board(
+        self, board_snapshot: dict, snapshot: WorkflowSnapshot | None = None
+    ) -> None:
         """094: reconcile each restored per-card session's phase against the
         live board (board is source of truth).
 
@@ -900,10 +902,18 @@ class CoordinareDaemon:
                 continue
             column = self._find_card_column(board_snapshot, card_id, session)
             prior_phase = session.get("phase")
-            current_card = session.get("current_card")
-            prior_column = (
-                current_card.get("column") if isinstance(current_card, dict) else None
-            )
+            # prior_column is best-effort: only the focus card's column is
+            # persisted (in the snapshot), so it is None for every other card.
+            # The board column is the divergence's NEW side; the persisted
+            # divergence itself is captured by prior_phase, logged for every card.
+            if (
+                snapshot is not None
+                and card_id == snapshot.active_card_id
+                and snapshot.active_card_column
+            ):
+                prior_column = snapshot.active_card_column
+            else:
+                prior_column = None
 
             # Card gone or DONE on a successful read → retire the session.
             if column is None or column.strip().upper() == "DONE":
@@ -931,11 +941,10 @@ class CoordinareDaemon:
             if inferred == prior_phase:
                 continue  # already consistent — no correction (FR-008 convergence)
 
+            # Correct the phase only. Per-cycle eligibility reads the LIVE board
+            # (not any column cached on the session), so the phase is the field
+            # that un-wedges the card; there is nothing else to refresh here.
             session["phase"] = inferred
-            # Refresh the session's cached board column so per-cycle eligibility
-            # sees the post-move state, not the stale persisted column.
-            if isinstance(current_card, dict):
-                current_card["column"] = column
             logger.info(
                 "restart_reconcile.session_corrected",
                 card_id=card_id,
@@ -945,6 +954,19 @@ class CoordinareDaemon:
                 corrected_phase=inferred,
                 symphony=symphony,
             )
+
+        # 094 (FR-010): once every session has been reconciled, re-derive the
+        # top-level focus phase from the corrected session set so it is
+        # consistent immediately — the top-level block above ran BEFORE these
+        # per-session corrections, so its self._state["phase"] can be stale
+        # (e.g. it inferred monitoring_agent for an IN_PROGRESS focus card whose
+        # session is legitimately preserved as monitoring_performer). Guarded on
+        # a non-empty set so the focus-only path (no active_sessions) keeps the
+        # top-level block's result. _derive_global_phase reflects the
+        # highest-priority live session, the same value the first cycle would
+        # compute — this just makes it true at reconcile time, not one cycle late.
+        if sessions:
+            self._state["phase"] = _derive_global_phase(sessions)
 
     @staticmethod
     def _find_card_column(
