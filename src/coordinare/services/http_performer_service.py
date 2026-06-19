@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+import httpx
 import structlog
 
 from coordinare.graph.nodes.handle_system_error import classify_upstream
@@ -455,6 +456,25 @@ class HTTPPerformerService:
                         self._secret_refresh_failed.pop(session_id, None)
                         break
                     except Exception as exc:
+                        # A 404 means the job already reached a terminal state
+                        # (succeeded/failed/cancelled) before this refresh poll
+                        # landed — the performer's refresh_secrets rejects a
+                        # non-active job. That is an expected race on short jobs,
+                        # NOT a delivery failure: the token was never needed. Do
+                        # not retry, and do not mark the session degraded (which
+                        # 088 US6 uses to attribute *later* auth failures to stale
+                        # creds — a false signal here).
+                        if (
+                            isinstance(exc, httpx.HTTPStatusError)
+                            and exc.response.status_code == 404
+                        ):
+                            self._secret_refresh_failed.pop(session_id, None)
+                            logger.debug(
+                                "http_performer.secret_refresh_skipped_job_terminal",
+                                performer_id=self._config.id,
+                                session_id=session_id,
+                            )
+                            break
                         if attempt == 1:
                             logger.warning(
                                 "http_performer.secret_refresh_failed",
