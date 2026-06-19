@@ -221,6 +221,40 @@ async def test_check_status_patch_transient_failure_retry_success_is_clean() -> 
 
 
 @pytest.mark.asyncio
+async def test_check_status_patch_404_job_terminal_is_benign() -> None:
+    """A 404 from the secrets PATCH means the job already reached a terminal
+    state (succeeded/failed/cancelled) before the refresh poll landed — the
+    refresh is moot, not a delivery failure. It must NOT retry, NOT mark the
+    session degraded, and NOT emit the error-level degraded event. (Fixes the
+    every-dispatch false-degraded noise on short jobs.)"""
+    import structlog.testing
+
+    patch_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal patch_count
+        if request.method == "PATCH":
+            patch_count += 1
+            return httpx.Response(404, json={"detail": "job not found"})
+        return _running_job_response()
+
+    svc = HTTPPerformerService(_ephemeral_config(), client=_client(handler))
+
+    with structlog.testing.capture_logs() as cap_logs:
+        result = await svc.check_status("job-T", payload={"github_token": "ghs_new"})
+
+    assert patch_count == 1, "a 404 (job terminal) must not be retried"
+    assert svc.secret_refresh_failed_at("job-T") is None, "404 must not mark degraded"
+    assert not [
+        e for e in cap_logs if e["event"] == "http_performer.secret_refresh_degraded"
+    ], "404 must not emit a degraded ERROR"
+    assert not [
+        e for e in cap_logs if e["event"] == "http_performer.secret_refresh_failed"
+    ], "404 must not emit the failure WARNING either"
+    assert result["status"] == "working"
+
+
+@pytest.mark.asyncio
 async def test_check_status_patch_success_does_not_retry() -> None:
     """088 US6: a first-attempt PATCH success must not produce a second PATCH."""
     patch_count = 0
