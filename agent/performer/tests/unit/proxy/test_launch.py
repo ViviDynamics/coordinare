@@ -124,6 +124,49 @@ async def test_reroute_launches_no_shim_and_no_normalizer(monkeypatch):
     assert env["OPENCLAW_PROVIDER_BASE_URL"] == "http://litellm:4000"
 
 
+def _junie_normalize_table(model="gpt-oss:120b", base_url="http://192.168.3.30:11434"):
+    return RoutingTable(
+        entries=[
+            RoutingEntry(
+                backend="junie",
+                model=model,
+                target=TargetDescriptor(
+                    base_url=base_url,
+                    wire_format="openai",
+                    strategy="normalize",
+                    normalizers=["strip_control_chars", "strip_reasoning"],
+                ),
+            )
+        ]
+    )
+
+
+@pytest.mark.asyncio
+async def test_junie_normalize_shim_carries_wire_path_and_normalizers():
+    """098 US2: routing junie through a normalize-mode SelfHostedShim must (a)
+    apply the declared normalizers (control-char strip + reasoning promote) and
+    (b) hand junie the FULL wire-path URL — junie POSTs verbatim and the shim
+    only serves pathed front doors, so a bare loopback root would 404 into the
+    exact 'Failed to build issue.md' failure this feature fixes."""
+    env: dict[str, str] = {}
+    table = _junie_normalize_table()
+    shim = await maybe_launch_proxy(
+        None, "junie", env, routing_table=table, model="gpt-oss:120b"
+    )
+    try:
+        assert shim is not None
+        base = env["JUNIE_PROVIDER_BASE_URL"]
+        assert base.startswith("http://127.0.0.1:")
+        assert base.endswith(VERBATIM_POST_WIRE_PATH["junie"]), base
+        assert [n.key for n in shim.normalizers] == [
+            "strip_control_chars",
+            "strip_reasoning",
+        ]
+    finally:
+        await shim.stop()
+    assert "JUNIE_PROVIDER_BASE_URL" not in env
+
+
 @pytest.mark.asyncio
 async def test_routing_entry_for_unmappable_backend_raises():
     """T020/FR-078-4 Edge Case: a backend with no PROVIDER_BASE_URL_ENV mapping

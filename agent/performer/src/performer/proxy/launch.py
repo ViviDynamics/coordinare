@@ -77,6 +77,18 @@ class ProxyLaunchError(RuntimeError):
     """Raised when a backend cannot be routed through the dual-model proxy."""
 
 
+def _with_verbatim_wire_path(backend: str, base: str) -> str:
+    """Append a verbatim-POST backend's served wire path to a loopback base URL.
+
+    junie POSTs verbatim to its provider-base-URL env (it appends no path of its
+    own) and the loopback shim/proxy serves only pathed front doors — so a bare
+    root would miss every served path. CLIs that build their own path off the base
+    get the bare root unchanged. Shared by the dual-model proxy (080) and the
+    self-hosted shim (078/098) seams so both stay consistent.
+    """
+    return base + VERBATIM_POST_WIRE_PATH.get(backend, "")
+
+
 def _emit_health_decision(
     capture_dir: str | Path | None, backend: str, model: str | None, result
 ) -> None:
@@ -166,7 +178,7 @@ async def _launch_for_target(
         shim = SelfHostedShim(target=target, normalizers=normalizers)
         base = await shim.start()
         shim.env_restores.append((mapping, env_var, mapping.get(env_var)))
-        mapping[env_var] = base
+        mapping[env_var] = _with_verbatim_wire_path(backend, base)
         _suppress_double_proxy(backend, mapping, shim.env_restores)
         log.info(
             "selfhosted_layer.translate_launched",
@@ -181,7 +193,7 @@ async def _launch_for_target(
     shim = SelfHostedShim(target=target, normalizers=normalizers)
     base = await shim.start()
     shim.env_restores.append((mapping, env_var, mapping.get(env_var)))
-    mapping[env_var] = base
+    mapping[env_var] = _with_verbatim_wire_path(backend, base)
     _suppress_double_proxy(backend, mapping, shim.env_restores)
     log.info(
         "selfhosted_layer.normalize_launched",
@@ -300,7 +312,7 @@ async def maybe_launch_proxy(
     proxy.env_restores.append((target, env_var, target.get(env_var)))
     # Verbatim-POST backends (junie) need the full served wire path appended; CLIs
     # that build their own path off the base get the bare proxy root unchanged.
-    target[env_var] = base + VERBATIM_POST_WIRE_PATH.get(backend, "")
+    target[env_var] = _with_verbatim_wire_path(backend, base)
     # claude_code would otherwise launch its own LiteLLM shim from this var and
     # double-proxy; suppress it so it talks to the dual-model proxy directly.
     if backend == "claude_code":

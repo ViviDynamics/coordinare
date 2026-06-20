@@ -192,6 +192,21 @@ class SelfHostedShim:
     def _forward_headers(self, headers: Any) -> dict[str, str]:
         return {k: v for k, v in headers.items() if k.lower() not in _HOP_BY_HOP}
 
+    def normalize_raw(self, raw: bytes) -> bytes:
+        """Run every declared normalizer's raw-bytes pre-parse path in order.
+
+        098 US2: a normalizer may expose ``normalize_raw(bytes) -> bytes`` to
+        repair a body *before* JSON parsing (e.g. strip invalid control bytes
+        that would otherwise break ``json.loads`` and force a verbatim passthrough
+        of the broken body to the harness). Fail-open and routing-scoped — only
+        chains that declare such a normalizer are affected; all others no-op.
+        """
+        for n in self.normalizers:
+            fn = getattr(n, "normalize_raw", None)
+            if fn is not None:
+                raw = fn(raw)
+        return raw
+
     def normalize_json(self, body: dict[str, Any]) -> dict[str, Any]:
         """Run every declared normalizer's JSON path in order (fail-open).
 
@@ -299,6 +314,8 @@ class SelfHostedShim:
     async def _proxy_json(
         self, upstream_url: str, headers: dict[str, str], raw: bytes
     ) -> tuple[int, Any]:
+        import json as _json
+
         from aiohttp import web
 
         resp = await self.client.post(upstream_url, content=raw, headers=headers)
@@ -313,10 +330,15 @@ class SelfHostedShim:
                 status=status,
                 content_type=resp.headers.get("content-type", "application/json"),
             )
+        # 098 US2: repair the raw body before parsing (e.g. strip invalid control
+        # bytes that would break json.loads). Routing-scoped + fail-open: a no-op
+        # unless a normalizer in this chain declares ``normalize_raw``.
+        raw_body = self.normalize_raw(resp.content)
         try:
-            body = resp.json()
+            body = _json.loads(raw_body)
         except ValueError:
-            # Non-JSON upstream body — pass through verbatim (fail-open).
+            # Non-JSON upstream body even after raw repair — pass through verbatim
+            # (fail-open). Emit the ORIGINAL bytes, not the stripped ones.
             return status, web.Response(
                 body=resp.content,
                 status=status,

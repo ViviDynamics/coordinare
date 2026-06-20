@@ -15,6 +15,7 @@ unknown key fails fast rather than at runtime.
 from __future__ import annotations
 
 from .base import Normalizer, StatefulSSEFilter
+from .control_chars import ControlCharNormalizer
 from .harmony import HarmonyToolCallsNormalizer
 from .reasoning import StripReasoningNormalizer
 
@@ -24,7 +25,11 @@ from .reasoning import StripReasoningNormalizer
 # in the fresh StatefulSSEFilter each ``sse_filter()`` call returns).
 NORMALIZER_REGISTRY: dict[str, Normalizer] = {
     n.key: n
-    for n in (HarmonyToolCallsNormalizer(), StripReasoningNormalizer())
+    for n in (
+        HarmonyToolCallsNormalizer(),
+        StripReasoningNormalizer(),
+        ControlCharNormalizer(),
+    )
 }
 
 __all__ = [
@@ -33,4 +38,5 @@ __all__ = [
     "StatefulSSEFilter",
     "HarmonyToolCallsNormalizer",
     "StripReasoningNormalizer",
+    "ControlCharNormalizer",
 ]
