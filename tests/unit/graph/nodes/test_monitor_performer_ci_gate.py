@@ -163,6 +163,381 @@ async def test_gate_bounces_on_failing_required_check() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 095: ENV_BLOCKED classification (observe-only at this layer)
+# ---------------------------------------------------------------------------
+
+
+def _env_gate_state(github: object) -> dict:
+    """State with the env_blocked + L2 classification gates enabled."""
+    from coordinare.config import (
+        BaselineClassificationGateConfig,
+        CIGateConfig,
+        EnvBlockedGateConfig,
+        PersonaScopeConfig,
+    )
+
+    state = _ci_gate_state(github)
+
+    class _Sym:
+        persona_scope = PersonaScopeConfig(
+            ci_gate=CIGateConfig(enabled=True, max_bounces_per_head=3),
+            baseline_classification_gate=BaselineClassificationGateConfig(enabled=True),
+            env_blocked_gate=EnvBlockedGateConfig(enabled=True),
+        )
+
+    state["symphony_configs"] = {"default": _Sym()}
+    return state
+
+
+@pytest.mark.asyncio
+async def test_env_blocked_holds_no_bounce_no_dispatch() -> None:
+    """095 (US1/SC-001/SC-007): a required failing check whose reason is an infra
+    signature (artifact-storage quota, also failing on base) HOLDs the card —
+    verdict=hold, NO bounce counter increment, NO re-dispatch — and surfaces the
+    env_blocked checks + a deduped operator event."""
+    import structlog.testing
+
+    payload = _rollup_payload(
+        contexts=[
+            {
+                "__typename": "CheckRun",
+                "name": "Build Pull Request",
+                "status": "COMPLETED",
+                "conclusion": "FAILURE",
+                "title": "Failed to CreateArtifact: artifact storage quota has been hit",
+            },
+        ],
+    )
+    gh = _GitHubWithRollup(payload)  # base rollup == head rollup → also fails on base
+    state = _env_gate_state(gh)
+
+    with structlog.testing.capture_logs() as cap_logs:
+        result = await monitor_performer(state)
+
+    decision = result["latest_ci_gate_decision"]
+    head = "a" * 40
+    assert decision["verdict"] == "hold", decision
+    assert "Build Pull Request" in [c["name"] for c in decision.get("env_blocked_checks", [])]
+    # Not misclassified as inherited despite also failing on base.
+    assert "Build Pull Request" not in [c["name"] for c in decision.get("inherited_checks", [])]
+    # SC-001: no bounce was counted; the card is not re-dispatched.
+    assert result.get("bounce_counter", {}).get(head, 0) == 0
+    assert result.get("phase") != "dispatching"
+    # SC-002: one operator event naming the cause + action, secret-free.
+    holds = [e for e in cap_logs if e["event"] == "ci_gate.env_blocked_hold"]
+    assert len(holds) == 1 and holds[0]["pattern_id"] == "artifact_storage_quota"
+    assert "storage" in holds[0]["action"].lower()
+
+
+@pytest.mark.asyncio
+async def test_env_blocked_dispatches_distinct_operator_notification() -> None:
+    """095 (T012/FR-003): the env-block surfaces through the real notification
+    channel as a DISTINCT ``env_blocked`` event carrying the infra cause + action
+    (not a generic 'tests failed'), deduped per (head, pattern)."""
+    from coordinare.models.notification import EventType
+
+    class _CapturingNotifier:
+        def __init__(self) -> None:
+            self.events: list = []
+
+        async def dispatch(self, event):
+            self.events.append(event)
+
+    payload = _rollup_payload(
+        contexts=[
+            {"__typename": "CheckRun", "name": "Build Pull Request",
+             "status": "COMPLETED", "conclusion": "FAILURE",
+             "title": "Failed to CreateArtifact: artifact storage quota has been hit"},
+        ],
+    )
+    notifier = _CapturingNotifier()
+    state = _env_gate_state(_GitHubWithRollup(payload))
+    state["notification_service"] = notifier
+
+    result = await monitor_performer(state)
+
+    assert result["latest_ci_gate_decision"]["verdict"] == "hold"
+    assert len(notifier.events) == 1
+    event = notifier.events[0]
+    assert event.event_type == EventType.env_blocked
+    assert event.dedup_key == f"env_blocked:{'a' * 40}:artifact_storage_quota"
+    assert event.payload["pattern_id"] == "artifact_storage_quota"
+    assert "storage" in event.payload["action"].lower()
+    # secret-free: payload carries only identifiers/cause/action
+    assert "head_sha" in event.payload and len(event.payload["head_sha"]) == 7
+
+    # Re-evaluating the SAME persisted block must NOT re-dispatch (dedup).
+    state["env_blocked"] = result.get("env_blocked")
+    await monitor_performer(state)
+    assert len(notifier.events) == 1
+
+
+@pytest.mark.asyncio
+async def test_env_blocked_multiple_patterns_aggregated_in_notification() -> None:
+    """095 (review fix): a card blocked by TWO DISTINCT infra patterns (artifact
+    quota + offline runner) must surface BOTH causes in one notification, and the
+    dedup key must reflect the full sorted set of pattern ids — not just the first
+    matched pattern (which would mask the second cause and mis-dedup)."""
+    class _CapturingNotifier:
+        def __init__(self) -> None:
+            self.events: list = []
+
+        async def dispatch(self, event):
+            self.events.append(event)
+
+    payload = _rollup_payload(
+        contexts=[
+            {"__typename": "CheckRun", "name": "Build Pull Request",
+             "status": "COMPLETED", "conclusion": "FAILURE",
+             "title": "artifact storage quota has been hit"},
+            {"__typename": "CheckRun", "name": "deploy",
+             "status": "COMPLETED", "conclusion": "FAILURE",
+             "title": "cancelled because no runner came online"},
+        ],
+    )
+    notifier = _CapturingNotifier()
+    state = _env_gate_state(_GitHubWithRollup(payload))
+    state["notification_service"] = notifier
+
+    result = await monitor_performer(state)
+
+    assert result["latest_ci_gate_decision"]["verdict"] == "hold"
+    assert len(notifier.events) == 1
+    ev = notifier.events[0]
+    # dedup key = sorted set of distinct pattern ids
+    assert ev.payload["pattern_id"] == "artifact_storage_quota+runner_offline"
+    assert ev.dedup_key.endswith("artifact_storage_quota+runner_offline")
+    # both causes named, not just the first
+    assert "storage" in ev.payload["cause"].lower()
+    assert "runner" in ev.payload["cause"].lower()
+    # persisted env_blocked carries the same composite pattern id
+    assert result["env_blocked"]["pattern_id"] == "artifact_storage_quota+runner_offline"
+
+
+@pytest.mark.asyncio
+async def test_env_blocked_mixed_with_other_failure_holds_without_crash() -> None:
+    """095 (FR-009 regression): a card with BOTH an env_blocked check AND a
+    non-infra failure must HOLD without the CIGateDecision validator raising
+    (the hold carries only env_blocked_checks, never the inherited/introduced
+    lists which a hold verdict forbids alongside empty failed_checks)."""
+    payload = _rollup_payload(
+        contexts=[
+            {"__typename": "CheckRun", "name": "Build Pull Request",
+             "status": "COMPLETED", "conclusion": "FAILURE",
+             "title": "artifact storage quota has been hit"},
+            {"__typename": "CheckRun", "name": "unit-tests",
+             "status": "COMPLETED", "conclusion": "FAILURE",
+             "title": "2 examples, 1 failure"},
+        ],
+    )
+    import structlog.testing
+
+    gh = _GitHubWithRollup(payload)
+    state = _env_gate_state(gh)
+
+    # Must not raise (pre-fix this crashed in CIGateDecision validation).
+    with structlog.testing.capture_logs() as cap_logs:
+        result = await monitor_performer(state)
+
+    decision = result["latest_ci_gate_decision"]
+    assert decision["verdict"] == "hold"
+    assert "Build Pull Request" in [c["name"] for c in decision.get("env_blocked_checks", [])]
+    # The hold decision does not carry the L2 lists (validator constraint).
+    assert decision.get("inherited_checks", []) == []
+    assert decision.get("introduced_checks", []) == []
+    # FR-009: the operator event still distinguishes the OTHER failing check so
+    # the non-infra failure isn't masked by the infra hold.
+    hold = next(e for e in cap_logs if e["event"] == "ci_gate.env_blocked_hold")
+    assert "unit-tests" in hold["other_failed"]
+
+
+@pytest.mark.asyncio
+async def test_env_blocked_state_cleared_on_resume() -> None:
+    """095 (FR-008): when a later evaluation is NOT an env-hold (here: all green
+    → PASS), the stale env_blocked dedup state is cleared, so a future recurrence
+    of the same (head, pattern) re-notifies rather than being suppressed."""
+    payload = _rollup_payload(
+        contexts=[
+            {"__typename": "CheckRun", "name": "Build Pull Request",
+             "status": "COMPLETED", "conclusion": "SUCCESS"},
+        ],
+    )
+    gh = _GitHubWithRollup(payload)
+    state = _env_gate_state(gh)
+    # Stale hold state from a prior cycle.
+    state["env_blocked"] = {"head_sha": "a" * 40, "pattern_id": "artifact_storage_quota"}
+
+    result = await monitor_performer(state)
+
+    assert result["latest_ci_gate_decision"]["verdict"] == "pass"
+    assert result.get("env_blocked") is None
+
+
+@pytest.mark.asyncio
+async def test_env_on_l2_off_does_not_attach_l2_lists() -> None:
+    """095 (SC-006): with the env gate ON but the L2 classification gate OFF, a
+    non-infra failure must NOT populate the inherited/introduced lists on the
+    decision — those stay byte-identical to the pre-L2 baseline."""
+    from coordinare.config import CIGateConfig, EnvBlockedGateConfig, PersonaScopeConfig
+
+    payload = _rollup_payload(
+        contexts=[
+            {"__typename": "CheckRun", "name": "unit-tests",
+             "status": "COMPLETED", "conclusion": "FAILURE",
+             "title": "2 examples, 1 failure"},
+        ],
+    )
+    gh = _GitHubWithRollup(payload)
+    state = _ci_gate_state(gh)
+
+    class _Sym:
+        persona_scope = PersonaScopeConfig(
+            ci_gate=CIGateConfig(enabled=True, max_bounces_per_head=3),
+            env_blocked_gate=EnvBlockedGateConfig(enabled=True),  # env ON, L2 OFF
+        )
+
+    state["symphony_configs"] = {"default": _Sym()}
+
+    result = await monitor_performer(state)
+    decision = result["latest_ci_gate_decision"]
+    assert decision["verdict"] == "bounce"
+    # L2 off → no L2 classification lists on the decision.
+    assert decision.get("inherited_checks", []) == []
+    assert decision.get("introduced_checks", []) == []
+
+
+@pytest.mark.asyncio
+async def test_env_only_mixed_surfaces_other_failure_and_clears_dispatch() -> None:
+    """095 round-4 regressions: in ENV-ONLY mode (L2 off) a mixed card must still
+    (a) surface the non-env failure on the operator event (FR-009, robust w/o L2)
+    and (b) clear agent_dispatch so neither ephemeral nor persistent performers
+    are re-polled (FR-004)."""
+    import structlog.testing
+
+    from coordinare.config import CIGateConfig, EnvBlockedGateConfig, PersonaScopeConfig
+
+    payload = _rollup_payload(
+        contexts=[
+            {"__typename": "CheckRun", "name": "Build Pull Request",
+             "status": "COMPLETED", "conclusion": "FAILURE",
+             "title": "artifact storage quota has been hit"},
+            {"__typename": "CheckRun", "name": "unit-tests",
+             "status": "COMPLETED", "conclusion": "FAILURE",
+             "title": "2 examples, 1 failure"},
+        ],
+    )
+    gh = _GitHubWithRollup(payload)
+    state = _ci_gate_state(gh)
+
+    class _Sym:
+        persona_scope = PersonaScopeConfig(
+            ci_gate=CIGateConfig(enabled=True, max_bounces_per_head=3),
+            env_blocked_gate=EnvBlockedGateConfig(enabled=True),  # env ON, L2 OFF
+        )
+
+    state["symphony_configs"] = {"default": _Sym()}
+
+    with structlog.testing.capture_logs() as cap_logs:
+        result = await monitor_performer(state)
+
+    assert result["latest_ci_gate_decision"]["verdict"] == "hold"
+    hold = next(e for e in cap_logs if e["event"] == "ci_gate.env_blocked_hold")
+    # FR-009 even with L2 off: the non-env failure is on the event.
+    assert "unit-tests" in hold["other_failed"]
+    # FR-004: dispatch cleared so no re-poll/re-dispatch.
+    assert result.get("agent_dispatch") == {}
+
+
+@pytest.mark.asyncio
+async def test_env_blocked_gate_off_yields_no_env_classification() -> None:
+    """FR-012/SC-006: with the env gate off, an infra-reason failure is NOT
+    labeled env_blocked (it classifies by the existing rules)."""
+    payload = _rollup_payload(
+        contexts=[
+            {
+                "__typename": "CheckRun",
+                "name": "Build Pull Request",
+                "status": "COMPLETED",
+                "conclusion": "FAILURE",
+                "title": "artifact storage quota has been hit",
+            },
+        ],
+    )
+    gh = _GitHubWithRollup(payload)
+    state = _ci_gate_state(gh)  # only ci_gate enabled; env + L2 off
+
+    result = await monitor_performer(state)
+    decision = result["latest_ci_gate_decision"]
+    assert decision.get("env_blocked_checks", []) == []
+
+
+@pytest.mark.asyncio
+async def test_env_blocked_gate_off_dispatches_no_operator_notification() -> None:
+    """095 (T016/FR-012/SC-006): with the gate off, NO env_blocked state is set
+    and NO distinct operator notification fires — behaviour is pre-feature."""
+    class _CapturingNotifier:
+        def __init__(self) -> None:
+            self.events: list = []
+
+        async def dispatch(self, event):
+            self.events.append(event)
+
+    payload = _rollup_payload(
+        contexts=[
+            {"__typename": "CheckRun", "name": "Build Pull Request",
+             "status": "COMPLETED", "conclusion": "FAILURE",
+             "title": "artifact storage quota has been hit"},
+        ],
+    )
+    notifier = _CapturingNotifier()
+    state = _ci_gate_state(_GitHubWithRollup(payload))  # env gate off
+    state["notification_service"] = notifier
+
+    result = await monitor_performer(state)
+    assert result.get("env_blocked") is None
+    assert notifier.events == []
+
+
+@pytest.mark.asyncio
+async def test_env_blocked_renotifies_once_after_resume_then_reblock() -> None:
+    """095 (T017/FR-004/FR-006): a flapping infra block — block (notify once),
+    operator resumes (env_blocked cleared), then the SAME block recurs — must
+    re-notify exactly once, not stay silent on the recurrence."""
+    from coordinare.models.notification import EventType
+
+    class _CapturingNotifier:
+        def __init__(self) -> None:
+            self.events: list = []
+
+        async def dispatch(self, event):
+            self.events.append(event)
+
+    payload = _rollup_payload(
+        contexts=[
+            {"__typename": "CheckRun", "name": "Build Pull Request",
+             "status": "COMPLETED", "conclusion": "FAILURE",
+             "title": "artifact storage quota has been hit"},
+        ],
+    )
+    notifier = _CapturingNotifier()
+    state = _env_gate_state(_GitHubWithRollup(payload))
+    state["notification_service"] = notifier
+
+    # 1) First block → one notification, env_blocked persisted.
+    r1 = await monitor_performer(state)
+    assert len(notifier.events) == 1
+    assert r1.get("env_blocked", {}).get("pattern_id") == "artifact_storage_quota"
+
+    # 2) Condition cleared (operator acted) — dedup state reset to None.
+    state["env_blocked"] = None
+
+    # 3) Same infra block recurs → re-notifies exactly once more.
+    await monitor_performer(state)
+    assert len(notifier.events) == 2
+    assert notifier.events[-1].event_type == EventType.env_blocked
+
+
+# ---------------------------------------------------------------------------
 # T021: passes on all green; gate advances stage normally
 # ---------------------------------------------------------------------------
 
@@ -459,6 +834,41 @@ async def test_gate_passes_when_only_advisory_check_failed() -> None:
     assert decision["verdict"] == "pass"
     assert decision["resolver_source"] == "persona_check_map"
     assert decision["required_checks"] == ["lint"]
+    advisory = result.get("ci_gate_advisory_failures") or []
+    assert any(a.get("name") == "integration" for a in advisory)
+
+
+@pytest.mark.asyncio
+async def test_env_blocked_on_non_required_check_does_not_hold() -> None:
+    """095 (T017): an infra signature on a NON-required check must NOT HOLD the
+    card — ENV_BLOCKED is scoped to required checks, just like bounce. The
+    required set is green, so the gate PASSes and surfaces the infra failure as
+    advisory rather than blocking on it."""
+    from coordinare.config import EnvBlockedGateConfig
+
+    payload = _rollup_payload(
+        contexts=[
+            {"__typename": "CheckRun", "name": "lint",
+             "status": "COMPLETED", "conclusion": "SUCCESS"},
+            {"__typename": "CheckRun", "name": "integration",
+             "status": "COMPLETED", "conclusion": "FAILURE",
+             "title": "artifact storage quota has been hit"},
+        ],
+    )
+    gh = _GitHubWithRollup(payload)
+    state = _ci_gate_state_with_check_map(gh)
+    # Turn the env gate ON without changing the required set ({lint}).
+    state["symphony_configs"]["default"].persona_scope.env_blocked_gate = (
+        EnvBlockedGateConfig(enabled=True)
+    )
+
+    result = await monitor_performer(state)
+
+    decision = result["latest_ci_gate_decision"]
+    assert decision["verdict"] == "pass"
+    assert decision.get("env_blocked_checks", []) == []
+    assert result.get("env_blocked") is None
+    # The (non-required) infra failure is still surfaced as advisory.
     advisory = result.get("ci_gate_advisory_failures") or []
     assert any(a.get("name") == "integration" for a in advisory)
 

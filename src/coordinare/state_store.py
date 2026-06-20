@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-CURRENT_SCHEMA_VERSION: int = 9
+CURRENT_SCHEMA_VERSION: int = 10
 
 # Lowest schema_version we still know how to read.  v1 snapshots are upgraded
 # in-memory at load time (065 Fix 7b: active_sessions added in v2; v1 snapshots
@@ -41,6 +41,10 @@ CURRENT_SCHEMA_VERSION: int = 9
 # RepairDecisionRecord trail) on PersistedSession; v1-v8 snapshots load with {}
 # and [] respectively.  An empty counter means zero attempts taken (not
 # unlimited) — the configured per-head budget still applies (FR-026, SC-009).
+# v10 (095) adds env_blocked on PersistedSession (per-card ENV_BLOCKED
+# hold/notification-dedup state: head_sha, pattern_id, cause, action); v1-v9
+# snapshots load with None so the first ENV_BLOCKED hold notifies once and
+# repopulates it.  Carries only check/infra identifiers — never secret values.
 MIN_SUPPORTED_SCHEMA_VERSION: int = 1
 
 WorkflowPhase = Literal[
@@ -208,6 +212,12 @@ class PersistedSession(BaseModel):
     # cycle so it doesn't suppress mid-run notifications (notification-dedup
     # contract).  Values match ``ReconciliationDecision`` enum strings.
     reconciliation_decisions_last_startup: dict[str, str] = Field(default_factory=dict)
+    # 095: per-card ENV_BLOCKED hold + notification-dedup state.  None when the
+    # card is not currently infra-blocked; otherwise the dict carries only
+    # ``head_sha``, ``pattern_id``, ``cause`` and ``action`` — never secret
+    # values.  Round-tripped so a still-active block does not re-notify the
+    # operator after a daemon restart (notification-dedup contract, FR-006).
+    env_blocked: dict[str, Any] | None = None
 
 
 class EnvCacheStateSnapshot(BaseModel):

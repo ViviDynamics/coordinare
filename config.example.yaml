@@ -552,6 +552,42 @@ stale_branch_cleanup: true
 #   re-dispatch — abort current lifecycle and re-dispatch with updated requirements (default: warn)
 requirement_change_policy: "warn"   # "ignore" | "warn" | "re-dispatch"
 
+# --- CI Gate & Baseline-Repair Autonomy (specs 075 / 090 / 095) ---
+#
+# All of these live under a symphony's `persona_scope:` and default OFF — the
+# pre-feature behaviour is unchanged until an operator opts in per symphony.
+#
+# persona_scope:
+#   ci_gate:                         # 075: evaluate required checks at the
+#     enabled: true                  #   implementer→reviewer boundary; bounce the
+#     max_bounces_per_head: 3        #   performer up to N times per head SHA.
+#   baseline_prevention_gate:        # 090 L1: refuse to merge onto a red base.
+#     enabled: true
+#   baseline_classification_gate:    # 090 L2: classify each failing check as
+#     enabled: true                  #   inherited / introduced / flake / unknown
+#                                    #   (observe-only; no routing influence).
+#   inherited_repair_gate:           # 090 L3: bounded autonomous repair of an
+#     enabled: true                  #   INHERITED failure behind the test-integrity
+#     max_repair_attempts_per_head: 1#   guard (never auto-merges; still needs a human).
+#
+#   # 095: ENV_BLOCKED — infrastructure/environment failures no code change can
+#   # fix (artifact-storage quota, offline runner, billing/spending limit). When
+#   # ON, a required failing check whose normalized reason matches an infra
+#   # signature HOLDs the card (no bounce, no re-dispatch) and surfaces a DISTINCT
+#   # operator notification (cause + action), deduped once per (head, pattern).
+#   # When the signature clears on a later run, coordinare auto-resumes. Built-in
+#   # patterns (artifact_storage_quota, runner_offline, billing_limit) always
+#   # apply; `patterns` only ADDS operator-defined ones. Fail-safe: an
+#   # unrecognized failure is never labeled ENV_BLOCKED. Route the `env_blocked`
+#   # notification event to a channel (see Notifications) so operators see it.
+#   env_blocked_gate:
+#     enabled: true
+#     patterns:                      # optional — extend the built-ins
+#       - id: registry_outage        #   stable identifier (used in dedup + logs)
+#         regex: "registry.*unavailable|pull access denied"   # vs normalized reason
+#         cause: "Container registry unavailable"             # operator-facing
+#         action: "Check registry status / credentials"       # what to do
+
 # --- Conducting Backend (spec 062) ---
 # Coordinare's "internal brain" — what the coordinare uses on the podium to
 # interpret cards and make routing decisions.  Runs one-shot prompts only:
@@ -749,6 +785,11 @@ notifications:
     #   daemon_restart      — coordinare process restarted
     #   circuit_breaker_trip — a circuit breaker opened (service outage detected)
     #   prolonged_idle      — coordinare has been idle for prolonged_idle_threshold_seconds
+    #   env_blocked         — 095: an infra/environment CI block (artifact-storage
+    #                         quota, offline runner, billing limit) no code change
+    #                         can fix. ROUTE THIS if env_blocked_gate is enabled —
+    #                         it is the operator's signal to act. (A ci_gate.
+    #                         env_blocked_hold WARNING log also fires regardless.)
     - event_type: card_transition
       channels: [slack-ops]
     - event_type: card_dispatched
@@ -767,6 +808,8 @@ notifications:
       channels: [slack-ops, email-team]
     - event_type: prolonged_idle
       channels: [email-team]
+    - event_type: env_blocked        # 095: infra/environment block — operator must act
+      channels: [slack-ops, email-team]
 
 
 # --- Symphonies ---

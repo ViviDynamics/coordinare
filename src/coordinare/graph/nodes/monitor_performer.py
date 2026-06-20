@@ -23,6 +23,7 @@ from coordinare.graph.state import _retire_active_session, _set_current_card
 from coordinare.lib.acceptance_criteria import parse_acceptance_criteria
 from coordinare.services.base_gate import evaluate_base_gate
 from coordinare.services.ci_gate import CIGateDecision, FailedCheck, FailedCheckWithSignature
+from coordinare.services.env_signature import match_env_signature
 from coordinare.services.failure_classification import BaselineFailure, classify_failure_origin
 from coordinare.services.failure_signature import make_failure_signature, normalize_reason
 from coordinare.services.github import PermanentGitHubError
@@ -998,6 +999,24 @@ def _get_baseline_classification_gate_config(state: CoordinareState) -> Any:
     return getattr(persona_scope_cfg, "baseline_classification_gate", None)
 
 
+def _get_env_blocked_gate_config(state: CoordinareState) -> Any:
+    """Resolve the active symphony's persona_scope.env_blocked_gate config (095).
+
+    Returns the ``EnvBlockedGateConfig`` if available, else None — keeping
+    ENV_BLOCKED classification off until an operator opts in (default-off,
+    SC-006-equivalent).
+    """
+    sym_name = state.get("current_symphony")
+    sym_configs = state.get("symphony_configs") or {}
+    sym_cfg = sym_configs.get(sym_name) if sym_name else None
+    if sym_cfg is None:
+        return None
+    persona_scope_cfg = getattr(sym_cfg, "persona_scope", None)
+    if persona_scope_cfg is None:
+        return None
+    return getattr(persona_scope_cfg, "env_blocked_gate", None)
+
+
 def _get_inherited_repair_gate_config(state: CoordinareState) -> Any:
     """Resolve the active symphony's persona_scope.inherited_repair_gate config.
 
@@ -1462,8 +1481,15 @@ async def _classify_head_failures(
     SC-006).
     """
     cfg = _get_baseline_classification_gate_config(state)
-    if cfg is None or not getattr(cfg, "enabled", False):
+    l2_on = cfg is not None and getattr(cfg, "enabled", False)
+    # 095: ENV_BLOCKED classification is its own gate, independent of L2. Run the
+    # classifier when EITHER gate is on; ``env_patterns is None`` keeps Row 0 off
+    # (byte-identical) when the env gate is disabled.
+    env_cfg = _get_env_blocked_gate_config(state)
+    env_on = env_cfg is not None and getattr(env_cfg, "enabled", False)
+    if not (l2_on or env_on):
         return {}
+    env_patterns = list(getattr(env_cfg, "patterns", []) or []) if env_on else None
     try:
         base_rollup = await svc.get_base_branch_check_rollup(rollup.base_ref or "main")
         baseline_index = _build_baseline_index(base_rollup)
@@ -1473,6 +1499,7 @@ async def _classify_head_failures(
         introduced: list[FailedCheckWithSignature] = []
         flake: list[FailedCheck] = []
         unknown: list[FailedCheck] = []
+        env_blocked: list[FailedCheckWithSignature] = []
 
         for name in failed_names:
             entry = head_by_name.get(name)
@@ -1501,15 +1528,23 @@ async def _classify_head_failures(
                 head_signature=head_sig,
                 baseline_signature=base_failure.signature if base_failure else None,
             )
-            origin = classify_failure_origin(fc, head_reason, baseline_index)
-            if origin == "inherited":
-                inherited.append(fc)
-            elif origin == "introduced":
-                introduced.append(fc)
-            elif origin == "flake":
-                flake.append(_plain(fc))
-            else:
-                unknown.append(_plain(fc))
+            origin = classify_failure_origin(
+                fc, head_reason, baseline_index, env_patterns=env_patterns
+            )
+            if origin == "env_blocked":
+                env_blocked.append(fc)
+            elif l2_on:
+                # Only collect the L2 lists when the L2 gate is on. With env-only
+                # (l2_on=False), a non-env failure stays unclassified so the
+                # decision is byte-identical to the pre-L2 baseline (SC-006).
+                if origin == "inherited":
+                    inherited.append(fc)
+                elif origin == "introduced":
+                    introduced.append(fc)
+                elif origin == "flake":
+                    flake.append(_plain(fc))
+                else:
+                    unknown.append(_plain(fc))
 
         logger.info(
             "ci_gate.classified",
@@ -1520,14 +1555,19 @@ async def _classify_head_failures(
             introduced=[c.name for c in introduced],
             flake=[c.name for c in flake],
             unknown=[c.name for c in unknown],
+            env_blocked=[c.name for c in env_blocked],
             base_fetched=baseline_index is not None,
         )
-        return {
-            "inherited_checks": inherited,
-            "introduced_checks": introduced,
-            "flake_checks": flake,
-            "unknown_checks": unknown,
-        }
+        # L2 lists only when L2 is on; env_blocked_checks only when env gate is on.
+        result: dict[str, list[Any]] = {}
+        if l2_on:
+            result["inherited_checks"] = inherited
+            result["introduced_checks"] = introduced
+            result["flake_checks"] = flake
+            result["unknown_checks"] = unknown
+        if env_on:
+            result["env_blocked_checks"] = env_blocked
+        return result
     except Exception as exc:
         logger.warning(
             "ci_gate.classification_failed", card_id=card_id, error=str(exc)
@@ -1645,6 +1685,168 @@ def _implementer_session_gone(state: CoordinareState) -> bool:
         return not bool(check(str(session_id)))
     except Exception:
         return False
+
+
+async def _maybe_env_blocked_hold(
+    *,
+    state: CoordinareState,
+    classification: dict[str, Any],
+    rollup: Any,
+    required_names: Any,
+    failed_names: list[str],
+    head_sha: str,
+    pr_num: Any,
+    resolved: dict[str, Any],
+    now_iso: str,
+    stash: Any,
+) -> tuple[dict[str, Any], bool] | None:
+    """095 (US1/US2): HOLD the card when a required failure is an infra/environment
+    block — no code change can fix it, so do NOT bounce or re-dispatch. Surface
+    the cause + suggested action to the operator once per condition (deduped via
+    the per-card ``env_blocked`` state), and let a later cycle auto-resume when
+    the signature clears. Returns the ``(updates, stop)`` tuple, or ``None`` to
+    fall through to the normal bounce path.
+    """
+    env_blocked = classification.get("env_blocked_checks") or []
+    if not env_blocked:
+        return None
+
+    # Re-derive the operator-facing cause/action across ALL env-blocked checks.
+    # A card can be blocked by more than one DISTINCT infra pattern at once (e.g.
+    # an artifact-quota failure on one check and an offline-runner failure on
+    # another). Aggregate every matched pattern so the notification names all of
+    # them, and build the dedup signature from the full sorted set of pattern ids
+    # — that way the operator is re-notified when the SET of infra causes changes
+    # (one clears while another persists), not silently deduped on the first.
+    head_by_name = {c.name: c for c in rollup.checks}
+    env_cfg = _get_env_blocked_gate_config(state)
+    patterns = list(getattr(env_cfg, "patterns", []) or []) if env_cfg else []
+    matched: dict[str, tuple[str, str]] = {}  # pattern_id -> (cause, action), de-duped, insertion-ordered
+    for fc in env_blocked:
+        entry = head_by_name.get(fc.name)
+        reason = normalize_reason(entry.title, entry.summary) if entry else ""
+        ec = match_env_signature(reason, patterns)
+        if ec is not None and ec.pattern_id not in matched:
+            matched[ec.pattern_id] = (ec.cause, ec.action)
+    if matched:
+        # Stable dedup key over the SET of distinct patterns.
+        pattern_id = "+".join(sorted(matched))
+        cause = "; ".join(c for c, _ in matched.values())
+        action = "; ".join(a for _, a in matched.values())
+    else:
+        # Defensive: env_blocked is non-empty so a pattern matched at classification
+        # time; if re-derivation can't reproduce the cause (e.g. reason source
+        # drift), still surface an actionable generic message rather than None.
+        pattern_id = "env_blocked"
+        cause = "Infrastructure/environment CI failure"
+        action = "Operator action required — inspect the failing required check"
+
+    # Carry ONLY env_blocked_checks on the hold. A `hold` verdict forbids
+    # failed_checks, and the validator requires every inherited/introduced/flake/
+    # unknown name to appear in failed_checks — so spreading the full
+    # classification onto a hold raises for a MIXED card (env_blocked + an
+    # inherited/introduced check). The other classifications aren't lost: when the
+    # infra block clears, the next evaluation re-classifies and surfaces them.
+    decision_obj = CIGateDecision(
+        verdict="hold",
+        head_sha=head_sha,
+        required_checks=sorted(required_names),
+        failed_checks=[],
+        resolver_source=resolved["source"],
+        bounce_count_after=0,
+        decided_at=now_iso,
+        env_blocked_checks=env_blocked,
+    )
+    dump = decision_obj.model_dump(mode="json")
+    stash(dump)
+
+    # Dedup: announce once per (head, pattern). Persisted on the session's
+    # env_blocked state so a re-eval of the same block does not re-notify.
+    prior = state.get("env_blocked") or {}
+    already_notified = (
+        prior.get("head_sha") == head_sha and prior.get("pattern_id") == pattern_id
+    )
+    if not already_notified:
+        # FR-009: the card is held on the infra block, but the operator signal
+        # must still distinguish any OTHER failing checks so a code defect
+        # alongside the infra block is not masked. Derive these from the actual
+        # failing names minus the env-blocked ones — robust whether or not the L2
+        # classifier is on (in env-only mode the L2 lists are empty).
+        env_names = {c.name for c in env_blocked}
+        other_failed = sorted(n for n in failed_names if n not in env_names)
+        logger.warning(
+            "ci_gate.env_blocked_hold",
+            pr=pr_num,
+            head=head_sha[:7],
+            checks=[c.name for c in env_blocked],
+            other_failed=other_failed,
+            pattern_id=pattern_id,
+            cause=cause,
+            action=action,
+        )
+        # FR-003: surface the infra cause + action to the operator through the
+        # existing Slack / GitHub-comment notification channel — a DISTINCT
+        # env-block event, not a generic "tests failed". Deduped at the channel
+        # too via dedup_key so a re-eval of the same block stays quiet. A notify
+        # failure must never break the gate, so this is best-effort.
+        notification_service = state.get("notification_service")
+        if notification_service is not None:
+            try:
+                from coordinare.models.notification import (
+                    EventType,
+                    NotificationEvent,
+                    NotificationSeverity,
+                )
+                card_id = state.get("active_card_id") or (
+                    (state.get("current_card") or {}).get("id") or ""
+                )
+                await notification_service.dispatch(NotificationEvent(
+                    event_type=EventType.env_blocked,
+                    severity=NotificationSeverity.warning,
+                    source="monitor_performer",
+                    dedup_key=f"env_blocked:{head_sha}:{pattern_id}",
+                    payload={
+                        "event_type": EventType.env_blocked.value,
+                        "severity": NotificationSeverity.warning.value,
+                        "source": "monitor_performer",
+                        "card_id": str(card_id),
+                        "pr": str(pr_num) if pr_num is not None else "",
+                        "head_sha": head_sha[:7],
+                        "pattern_id": pattern_id,
+                        "cause": cause or "",
+                        "action": action or "",
+                        "checks": ", ".join(c.name for c in env_blocked),
+                        "other_failed": ", ".join(other_failed),
+                    },
+                ))
+            except Exception:
+                logger.warning(
+                    "ci_gate.env_blocked_notify_failed",
+                    pr=pr_num,
+                    head=head_sha[:7],
+                    pattern_id=pattern_id,
+                    exc_info=True,
+                )
+    # Hold via monitoring_performer (the gate-re-evaluation phase) so a later
+    # cycle re-runs the CI gate and AUTO-RESUMES once the infra signature clears
+    # (FR-008). Clear the dispatch reference UNCONDITIONALLY — for both ephemeral
+    # AND persistent performers — because an env block must never re-poll or
+    # re-dispatch a performer (no code change can fix it, FR-004); the card
+    # re-gates instead of polling a stale/persistent session.
+    updates: dict[str, Any] = {
+        "phase": "monitoring_performer",
+        "latest_ci_gate_decision": dump,
+        "ci_gate_advisory_failures": [],
+        "agent_dispatch": {},
+        "agent_dispatch_at": None,
+        "env_blocked": {
+            "head_sha": head_sha,
+            "pattern_id": pattern_id,
+            "cause": cause,
+            "action": action,
+        },
+    }
+    return (updates, True)
 
 
 async def _evaluate_ci_gate(
@@ -1854,10 +2056,8 @@ async def _evaluate_ci_gate(
                 hold_updates["agent_dispatch_at"] = None
             return (hold_updates, True)
 
-        # BOUNCE — increment counter and decide bounce vs escalate.
-        bounce_counter[head_sha] = bounce_counter.get(head_sha, 0) + 1
-        count = bounce_counter[head_sha]
-
+        # 095: classify (incl. ENV_BLOCKED) BEFORE counting a bounce, so an
+        # infrastructure HOLD never consumes the card's bounce budget.
         url_by_name = {c.name: (c.details_url or "") for c in rollup.checks}
         if decision.reason == "pending_timeout":
             # Pending checks exceeded the timeout — represent them as failed
@@ -1893,6 +2093,28 @@ async def _evaluate_ci_gate(
             failed_conclusion=failed_conclusion,
             url_by_name=url_by_name,
         )
+
+        # 095: an infrastructure/environment block HOLDs (no bounce, no
+        # re-dispatch) and surfaces to the operator — returned before the bounce
+        # counter is touched.
+        env_hold = await _maybe_env_blocked_hold(
+            state=state,
+            classification=classification,
+            rollup=rollup,
+            required_names=required_names,
+            failed_names=failed_names,
+            head_sha=head_sha,
+            pr_num=pr_num,
+            resolved=resolved,
+            now_iso=now_iso,
+            stash=_stash,
+        )
+        if env_hold is not None:
+            return env_hold
+
+        # BOUNCE — count this attempt and decide bounce vs escalate.
+        bounce_counter[head_sha] = bounce_counter.get(head_sha, 0) + 1
+        count = bounce_counter[head_sha]
 
         if count >= max_bounces:
             decision_obj = CIGateDecision(
@@ -2340,6 +2562,11 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
             ci_updates, ci_stop = await _evaluate_ci_gate(state, card_id, _pr_url)
             for _k, _v in ci_updates.items():
                 state[_k] = _v  # type: ignore[literal-required]
+            # 095 (FR-008): any non-env-hold verdict means the infra block is not
+            # active this cycle — clear the dedup state so a later recurrence of
+            # the same (head, pattern) re-notifies (auto-resume / flapping).
+            if "env_blocked" not in ci_updates:
+                state["env_blocked"] = None  # type: ignore[typeddict-unknown-key]
             if ci_stop:
                 return state
             advance_updates = _advance_stage(state, None)
@@ -3032,6 +3259,10 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
                 )
                 for key, value in ci_updates.items():
                     state[key] = value  # type: ignore[literal-required]
+                # 095 (FR-008): clear stale env-hold dedup state on any non-env
+                # verdict so a recurrence re-notifies (auto-resume / flapping).
+                if "env_blocked" not in ci_updates:
+                    state["env_blocked"] = None  # type: ignore[typeddict-unknown-key]
                 if ci_stop:
                     return state
 

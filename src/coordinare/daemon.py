@@ -185,6 +185,24 @@ def _persist_active_sessions(active_sessions: dict[str, Any]) -> dict[str, Persi
         ci_gate_rollup_sig_raw = sess.get("ci_gate_rollup_signature")
         ci_gate_rollup_sig = ci_gate_rollup_sig_raw \
             if isinstance(ci_gate_rollup_sig_raw, str) and ci_gate_rollup_sig_raw else None
+        # 095: per-card ENV_BLOCKED hold/dedup state.  Persist a dict of
+        # string-valued identifiers (head_sha/pattern_id/cause/action) so a
+        # still-active block does not re-notify the operator after a restart
+        # (FR-006).  The dedup check keys on head_sha + pattern_id, so a dict
+        # missing or corrupting EITHER would silently break dedup; degrade the
+        # WHOLE thing to None (re-notify once) unless both are non-empty strings.
+        # cause/action are best-effort strings carried alongside.
+        env_blocked_raw = sess.get("env_blocked")
+        env_blocked: dict[str, Any] | None = None
+        if isinstance(env_blocked_raw, dict):
+            hs = env_blocked_raw.get("head_sha")
+            pid = env_blocked_raw.get("pattern_id")
+            if isinstance(hs, str) and hs and isinstance(pid, str) and pid:
+                env_blocked = {"head_sha": hs, "pattern_id": pid}
+                for k in ("cause", "action"):
+                    v = env_blocked_raw.get(k)
+                    if isinstance(v, str):
+                        env_blocked[k] = v
         out[cid] = PersistedSession(
             card_id=cid,
             performer_stage=(sess.get("performer_stage") or None),
@@ -211,6 +229,7 @@ def _persist_active_sessions(active_sessions: dict[str, Any]) -> dict[str, Persi
             inheritance_repair_counter=inheritance_repair_counter,
             repair_audit=repair_audit,
             ci_gate_rollup_signature=ci_gate_rollup_sig,
+            env_blocked=env_blocked,
         )
     return out
 
@@ -690,6 +709,13 @@ class CoordinareDaemon:
                     "repair_audit": [r.model_dump(mode="json") for r in persisted.repair_audit],
                     "ci_gate_rollup_signature": persisted.ci_gate_rollup_signature,
                     "ci_gate_advisory_failures": [],
+                    # 095: restore per-card ENV_BLOCKED hold/dedup state so a
+                    # still-active block does not re-notify after a restart.
+                    "env_blocked": (
+                        dict(persisted.env_blocked)
+                        if persisted.env_blocked is not None
+                        else None
+                    ),
                 }
                 # Seed current_card for the matching active_card_id from the
                 # top-level snapshot fields; other sessions get a stub that
