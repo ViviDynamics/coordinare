@@ -21,6 +21,7 @@ import structlog
 from coordinare.graph.attribution import coordinare_attribution
 from coordinare.graph.state import _retire_active_session, _set_current_card
 from coordinare.lib.acceptance_criteria import parse_acceptance_criteria
+from coordinare.services.assessor_failure import classify_assessor_failure
 from coordinare.services.base_gate import evaluate_base_gate
 from coordinare.services.ci_gate import CIGateDecision, FailedCheck, FailedCheckWithSignature
 from coordinare.services.env_signature import match_env_signature
@@ -3206,6 +3207,16 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
 
         # --- Terminal success states ---
         if marker in TERMINAL_SUCCESS_STATES:
+            # 098 US1 (FR-005 / contract invariant 2): the system-error retry
+            # budget counts CONSECUTIVE failures, so a clean assessor response
+            # must reset the counter — otherwise a flaky-then-clean assessment
+            # carries a stale count forward and could block prematurely on a
+            # later transient error. Scoped to the assessing stage so other
+            # stages' behavior is unchanged (FR-007). Leaves system_error_notified
+            # to the existing notified-recovery reset paths.
+            if stage == "assessing" and state.get("system_error_count", 0):
+                state["system_error_count"] = 0
+                state["system_error_reason"] = None
             # 088 (FR-004): a terminal success whose own status payload carries
             # env_cache_health_failed is tainted — the services health check
             # failed in the very environment that produced the "success". The
@@ -3768,7 +3779,32 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
         # --- Error status (FR-006) ---
         if marker == "error":
             reason = str(status.get("reason", ""))
-            if reason.startswith(_FORMAT_ERROR_PREFIX) or _is_transient_backend_error(reason):
+            # 098 US1 (FR-001/FR-007): the assessor (junie) harness terminal-errors
+            # whenever its strict parser cannot build issue.md from a flaky upstream
+            # response (empty answer / control chars / empty body). Scoped to the
+            # ``assessing`` stage so other backends' paths are untouched, classify
+            # the failure *shape*; a recognised parse/empty shape routes into the
+            # existing bounded system-error retry instead of the default terminal
+            # block. A genuine model-capability (prose) failure returns None and is
+            # NOT reclassified — it must not retry forever. The shape is recorded on
+            # the persisted system_error_reason (re-classified at exhaustion for US3)
+            # and emitted as a secret-free observability record (FR-004).
+            assessor_shape = (
+                classify_assessor_failure(reason) if stage == "assessing" else None
+            )
+            if assessor_shape is not None:
+                logger.info(
+                    "assessor.parse_failure",
+                    card_id=card_id,
+                    stage=stage,
+                    shape=assessor_shape,
+                    attempt=int(state.get("system_error_count", 0)) + 1,
+                )
+            if (
+                reason.startswith(_FORMAT_ERROR_PREFIX)
+                or _is_transient_backend_error(reason)
+                or assessor_shape is not None
+            ):
                 # Treat backend format-contract failures AND transient backend/
                 # infrastructure crashes (subprocess_exit, server disconnected,
                 # readiness timeout, transport reset, container start failure) as
@@ -3780,7 +3816,15 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
                     state["system_error_notified"] = False
                 state["system_error_count"] = state.get("system_error_count", 0) + 1
                 state["system_error_last_at"] = datetime.now(UTC)
-                state["system_error_reason"] = reason
+                # 098 US1/US3: tag an assessor-shape failure at the reason source so
+                # the persisted reason carries the format-error marker (matched by
+                # the retry gate above on the next cycle) AND remains re-classifiable
+                # by shape at exhaustion (empty_body → ENV_BLOCKED). Idempotent — do
+                # not double-prefix an already-tagged reason.
+                if assessor_shape is not None and not reason.startswith(_FORMAT_ERROR_PREFIX):
+                    state["system_error_reason"] = f"{_FORMAT_ERROR_PREFIX} {reason}"
+                else:
+                    state["system_error_reason"] = reason
                 state["open_questions"] = []
                 state["relay_feedback"] = []  # type: ignore[typeddict-unknown-key]
                 state["phase"] = "system_error"

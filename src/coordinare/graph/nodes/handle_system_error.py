@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Literal
 import structlog
 
 from coordinare.models.notification import EventType, NotificationEvent, NotificationSeverity
+from coordinare.services.assessor_failure import classify_assessor_failure
 
 if TYPE_CHECKING:
     from coordinare.graph.state import CoordinareState
@@ -120,30 +121,77 @@ async def handle_system_error(state: CoordinareState) -> CoordinareState:
     # Max retries exhausted — notify operator once, then move card to BLOCKED
     if not state.get("system_error_notified"):
         reason = state.get("system_error_reason") or "Unknown performer error"
+        # 098 US3 (FR-003): when the assessor stage exhausted retries on a
+        # persistently EMPTY upstream (the heavily-shared model is overloaded/down),
+        # this is an infrastructure condition — surface it as ENV_BLOCKED (operator
+        # must act on capacity), not a generic card-fault terminal error. A
+        # malformed-body exhaustion is a content failure and blocks normally.
+        stage = str(state.get("performer_stage") or "")
+        assessor_shape = (
+            classify_assessor_failure(reason) if stage == "assessing" else None
+        )
+        is_env_blocked = assessor_shape == "empty_body"
+        cause = (
+            "Assessor model unavailable/overloaded — the assessor upstream "
+            "returned empty responses across all retries."
+        )
+        action = (
+            "Operator: check assessor model capacity/availability (the shared "
+            "model is likely under load); the card auto-resumes when it recovers."
+        )
+
         logger.error(
             "handle_system_error.max_retries_exceeded",
             card_id=card_id,
             reason=reason,
             attempts=count,
+            env_blocked=is_env_blocked,
         )
         notification_service = state.get("notification_service")
         if notification_service is not None:
-            event = NotificationEvent(
-                event_type=EventType.performer_error,
-                severity=NotificationSeverity.critical,
-                payload={
-                    "card_title": str(card.get("title", "")),
-                    "card_id": card_id,
-                    "error": reason[:500],
-                    "attempts": str(count),
-                },
-                source="handle_system_error",
-                dedup_key=f"system_error:{card_id}",
-            )
+            if is_env_blocked:
+                event = NotificationEvent(
+                    event_type=EventType.env_blocked,
+                    severity=NotificationSeverity.warning,
+                    payload={
+                        "event_type": EventType.env_blocked.value,
+                        "card_title": str(card.get("title", "")),
+                        "card_id": card_id,
+                        "pattern_id": "assessor_model_unavailable",
+                        "cause": cause,
+                        "action": action,
+                        "attempts": str(count),
+                    },
+                    source="handle_system_error",
+                    dedup_key=f"env_blocked:assessor_model_unavailable:{card_id}",
+                )
+            else:
+                event = NotificationEvent(
+                    event_type=EventType.performer_error,
+                    severity=NotificationSeverity.critical,
+                    payload={
+                        "card_title": str(card.get("title", "")),
+                        "card_id": card_id,
+                        "error": reason[:500],
+                        "attempts": str(count),
+                    },
+                    source="handle_system_error",
+                    dedup_key=f"system_error:{card_id}",
+                )
             try:
                 await notification_service.dispatch(event)
             except Exception as exc:
                 logger.warning("handle_system_error.notification_failed", error=str(exc))
+
+        if is_env_blocked:
+            # Per-card ENV_BLOCKED marker (spec-095 shape) so the surfacing is
+            # deduped and operator-visible. No head_sha at the assessing stage.
+            state["env_blocked"] = {  # type: ignore[typeddict-unknown-key]
+                "head_sha": "",
+                "pattern_id": "assessor_model_unavailable",
+                "cause": cause,
+                "action": action,
+            }
 
         github = state.get("github_service")
         if github is not None and card_id:
