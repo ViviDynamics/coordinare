@@ -46,6 +46,11 @@ ResolvedAction = Literal["proceed", "rerouted", "fail_closed"]
 # tool_calls answers it with a call; a broken harmony/reasoning path answers
 # with leaked content and no tool_calls (the 077 openclaw failure shape).
 _DEFAULT_TIMEOUT = 10.0
+# 099: token budget for the completion-mode probe. Must be large enough for a
+# REASONING model (gpt-oss:120b) to finish its internal reasoning and emit a
+# non-empty answer to a trivial prompt — a tight budget yields empty content
+# (finish_reason=length) and fail-closes a healthy model.
+_COMPLETION_PROBE_MAX_TOKENS = 256
 _PROBE_TOOL = {
     "type": "function",
     "function": {
@@ -154,11 +159,19 @@ def _probe_body(target: TargetDescriptor, model: str | None) -> dict[str, Any]:
     # A non-tool-calling backend (the junie assessor) refuses/misbehaves on a
     # tools payload, so the completion probe omits tools entirely and is judged
     # on non-empty content instead (see _has_nonempty_completion).
+    #
+    # max_tokens must be generous: the self-hosted assessor model (gpt-oss:120b)
+    # is a REASONING model that spends tokens on internal reasoning BEFORE the
+    # answer. A tight budget (e.g. 16) is fully consumed by reasoning →
+    # finish_reason=length with EMPTY content → the probe (correctly) reads "no
+    # usable completion" and fail-closes a model that is actually up. 256 lets a
+    # trivial prompt clear reasoning and emit content (~1.5s; the 120s health
+    # timeout has ample headroom).
     if target.health_probe == "completion":
         if target.strategy == "translate":
             body = translate_request({
                 "model": model_name,
-                "max_tokens": 16,
+                "max_tokens": _COMPLETION_PROBE_MAX_TOKENS,
                 "messages": [{"role": "user", "content": "Reply with: ok"}],
             })
             body["model"] = upstream_model_name
@@ -166,12 +179,12 @@ def _probe_body(target: TargetDescriptor, model: str | None) -> dict[str, Any]:
         if target.wire_format == "anthropic":
             return {
                 "model": model_name,
-                "max_tokens": 16,
+                "max_tokens": _COMPLETION_PROBE_MAX_TOKENS,
                 "messages": [{"role": "user", "content": "Reply with: ok"}],
             }
         return {
             "model": model_name,
-            "max_tokens": 16,
+            "max_tokens": _COMPLETION_PROBE_MAX_TOKENS,
             "messages": [{"role": "user", "content": "Reply with: ok"}],
         }
     if target.strategy == "translate":

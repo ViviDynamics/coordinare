@@ -114,6 +114,10 @@ async def test_completion_probe_body_carries_no_tools() -> None:
         await check_health(_target(), model="gpt-oss:120b", client=client)
     assert "tools" not in captured["body"]
     assert "tool_choice" not in captured["body"]
+    # Reasoning models burn tokens on internal reasoning before the answer; the
+    # probe budget must be generous enough to clear it and emit content (else a
+    # tight budget yields empty content → fail-closes a healthy model).
+    assert captured["body"].get("max_tokens", 0) >= 128
 
 
 # --- T010 US3: junie-style activation ---------------------------------------
