@@ -35,6 +35,11 @@ class _StripReasoningSSEFilter(StatefulSSEFilter):
         self._suppressed: set[int] = set()
         self._index_map: dict[int, int] = {}
         self._next_index = 0
+        # OpenAI: buffer reasoning text + track whether any real content was
+        # streamed, so a reasoning-only response (no content) can be rescued by
+        # promoting the buffered reasoning at stream end (mirror of the JSON path).
+        self._reasoning_buf: list[str] = []
+        self._content_emitted = False
 
     def process_frame(self, frame: bytes) -> bytes | None:
         event, payload = self.parse_frame(frame)
@@ -92,16 +97,42 @@ class _StripReasoningSSEFilter(StatefulSSEFilter):
         except (KeyError, IndexError, TypeError):
             return self.encode_frame(event, payload)
         delta = choice.get("delta")
-        if not isinstance(delta, dict) or "reasoning_content" not in delta:
-            return self.encode_frame(event, payload)
-        delta = {k: v for k, v in delta.items() if k != "reasoning_content"}
-        choice = {**choice, "delta": delta}
+        finish = choice.get("finish_reason")
+
+        # Track real content + buffer reasoning, then strip reasoning from the delta.
+        if isinstance(delta, dict):
+            content = delta.get("content")
+            if isinstance(content, str) and content:
+                self._content_emitted = True
+            reasoning = delta.get("reasoning_content")
+            if isinstance(reasoning, str) and reasoning:
+                self._reasoning_buf.append(reasoning)
+            if "reasoning_content" in delta:
+                delta = {k: v for k, v in delta.items() if k != "reasoning_content"}
+                choice = {**choice, "delta": delta}
+
+        # Stream end with no real content: promote the buffered reasoning as a
+        # single content delta emitted just before the (reasoning-stripped) finish
+        # frame, so the agent receives parseable text instead of an empty response.
+        if finish is not None and not self._content_emitted and self._reasoning_buf:
+            promoted = "".join(self._reasoning_buf)
+            self._reasoning_buf = []
+            self._content_emitted = True
+            base = {k: v for k, v in choice.items() if k not in ("delta", "finish_reason")}
+            promo_choice = {**base, "delta": {"content": promoted}, "finish_reason": None}
+            promo_payload = {**payload, "choices": [promo_choice, *payload["choices"][1:]]}
+            finish_payload = {**payload, "choices": [choice, *payload["choices"][1:]]}
+            return (
+                self.encode_frame(event, promo_payload)
+                + b"\n\n"
+                + self.encode_frame(event, finish_payload)
+            )
+
         # A delta that held only reasoning_content is now empty and carries no
         # finish_reason — drop it rather than stream a content-less chunk.
-        if not delta and choice.get("finish_reason") is None:
+        if isinstance(delta, dict) and not delta and finish is None:
             return None
-        payload = {**payload, "choices": [choice, *payload["choices"][1:]]}
-        return self.encode_frame(event, payload)
+        return self.encode_frame(event, {**payload, "choices": [choice, *payload["choices"][1:]]})
 
 
 class StripReasoningNormalizer:
@@ -138,14 +169,27 @@ class StripReasoningNormalizer:
                 if not (isinstance(b, dict) and b.get("type") in _THINKING_TYPES)
             ]
 
-        # OpenAI / qwen: drop reasoning_content from each message.
+        # OpenAI / qwen: drop reasoning_content from each message — UNLESS doing so
+        # would leave ``content`` empty. A harmony/gpt-oss reply truncated mid-
+        # reasoning (or one that leaked the answer into the reasoning channel)
+        # carries ``content: ""`` with everything in ``reasoning_content``; blindly
+        # stripping it hands the agent an empty response, which it reads as an
+        # empty/"unknown" verdict (the qa terminal-error failure). In that case
+        # PROMOTE the reasoning into content so the harness gets parseable text.
         if has_reasoning:
             for choice in body["choices"]:
                 if not isinstance(choice, dict):
                     continue
                 message = choice.get("message")
-                if isinstance(message, dict):
-                    message.pop("reasoning_content", None)
+                if not isinstance(message, dict):
+                    continue
+                reasoning = message.pop("reasoning_content", None)
+                content = message.get("content")
+                content_empty = content is None or (
+                    isinstance(content, str) and not content.strip()
+                )
+                if content_empty and isinstance(reasoning, str) and reasoning.strip():
+                    message["content"] = reasoning
 
         return body
 
