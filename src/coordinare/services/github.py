@@ -238,6 +238,7 @@ query CheckMergeability($prId: ID!) {
       mergeStateStatus
       reviewDecision
       headRefOid
+      headRefName
     }
   }
 }
@@ -1488,6 +1489,9 @@ class GitHubService:
             # 096: branch head OID, used by the auto-rebase anti-thrash marker to
             # tell "performer pushed new work" from "nothing changed".
             "head_ref_oid": str(node.get("headRefOid", "")),
+            # 097: branch name, so the pre-dispatch rebase guard can rebase the
+            # branch directly without depending on a (possibly unset) workspace_branch.
+            "head_ref_name": str(node.get("headRefName", "")),
         }
 
     async def squash_merge(self, pr_id: str) -> dict[str, Any]:
