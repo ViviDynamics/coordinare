@@ -125,7 +125,17 @@ def _probe_url(target: TargetDescriptor) -> str:
         return f"{base}/v1/chat/completions"
     if target.wire_format == "anthropic":
         return f"{base}/v1/messages"
-    return f"{base}/chat/completions"
+    # OpenAI wire (normalize/reroute): OpenAI-compatible servers (Ollama,
+    # LM-Studio, LiteLLM) serve ``/v1/chat/completions``. Be ``/v1``-aware exactly
+    # like the translate branch: a base that already ends in ``/v1`` keeps the
+    # single suffix, while a BARE-ORIGIN base gets ``/v1`` added. The bare origin
+    # is required for a normalize target fronting a verbatim-POST client (junie):
+    # the launcher points that client at ``<shim>/v1/chat/completions`` and the
+    # shim forwards ``base_url + path_qs`` (099/098) — so the probe must hit
+    # ``base_url + /v1/chat/completions`` too, or it 404s a model that is up.
+    if base.endswith("/v1"):
+        return f"{base}/chat/completions"
+    return f"{base}/v1/chat/completions"
 
 
 def _probe_body(target: TargetDescriptor, model: str | None) -> dict[str, Any]:
