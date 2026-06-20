@@ -237,6 +237,7 @@ query CheckMergeability($prId: ID!) {
       mergeable
       mergeStateStatus
       reviewDecision
+      headRefOid
     }
   }
 }
@@ -1484,6 +1485,9 @@ class GitHubService:
             "mergeable_raw": str(node.get("mergeable", "")),
             "merge_state_status": str(node.get("mergeStateStatus", "")),
             "review_decision": review_decision,
+            # 096: branch head OID, used by the auto-rebase anti-thrash marker to
+            # tell "performer pushed new work" from "nothing changed".
+            "head_ref_oid": str(node.get("headRefOid", "")),
         }
 
     async def squash_merge(self, pr_id: str) -> dict[str, Any]:

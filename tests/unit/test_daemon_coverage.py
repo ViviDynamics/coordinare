@@ -432,6 +432,29 @@ def test_restore_from_snapshot_restores_lifecycle_position() -> None:
     ]
 
 
+def test_last_known_main_sha_round_trips_through_daemon() -> None:
+    """096 (T009/FR-001): the rebase baseline survives a build→restore round-trip
+    so a cross-restart main advance is seen as drift on the next startup."""
+    daemon = _make_daemon()
+    daemon._state["last_known_main_sha"] = "a" * 40
+
+    snap = daemon._build_snapshot()
+    assert snap.last_known_main_sha == "a" * 40
+
+    fresh = _make_daemon()
+    fresh._restore_from_snapshot(snap)
+    assert fresh._state["last_known_main_sha"] == "a" * 40
+
+
+def test_restore_seeds_none_baseline_for_pre_096_snapshot() -> None:
+    """096 (FR-010): a snapshot with no last_known_main_sha restores it as None so
+    the first reconciliation heals via the proactive trigger, never crashes."""
+    daemon = _make_daemon()
+    snap = WorkflowSnapshot(snapshot_at=datetime.now(UTC), phase="idle")
+    daemon._restore_from_snapshot(snap)
+    assert daemon._state["last_known_main_sha"] is None
+
+
 # ---------------------------------------------------------------------------
 # _infer_phase_from_board_column
 # ---------------------------------------------------------------------------
