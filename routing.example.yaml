@@ -25,6 +25,13 @@
 #   - missing base_url, or wire_format not in {openai, anthropic} → load error.
 #   - reroute_upstream, when set, is the health-gated auto-reroute fallback used
 #     when the primary target fails the startup probe (else fail closed).
+#   - health_probe (099): startup probe mode — `tool_call` (default) or
+#     `completion`. Default sends a tool-calling probe and gates healthy only on a
+#     structured tool_call (right for tool-using agents: openclaw, claude qa).
+#     `completion` sends a trivial no-tools probe and gates healthy on a non-empty
+#     NORMALIZED completion — use it for non-tool-calling backends (e.g. the junie
+#     assessor, which reads plain chat-completion content). An invalid value fails
+#     fast at load. See the junie example at the bottom of this file.
 
 selfhosted_routing:
   # openclaw reviewer → Ollama-direct. LiteLLM's streaming harmony→tool_calls
@@ -40,3 +47,21 @@ selfhosted_routing:
       wire_format: openai                       # openai | anthropic
       strategy: reroute                         # bypass the lossy proxy entirely
       reroute_upstream: null                    # already the clean path
+
+  # 099: junie assessor → Ollama-direct gpt-oss:120b through the NORMALIZE shim
+  # with a COMPLETION health probe. junie is a non-tool-calling JSON-completion
+  # role; the default tool-call probe would fail-close it (it never emits a
+  # tool_call). `health_probe: completion` gates it on a non-empty normalized
+  # completion instead. The normalizers repair the flaky shapes spec-098 found:
+  # strip_control_chars removes unescaped control bytes that break junie's strict
+  # parser; strip_reasoning promotes a reasoning-only answer into content (#130).
+  # base_url is the bare Ollama origin (no /v1) — the shim appends the verbatim
+  # /v1/chat/completions wire path junie POSTs to.
+  - backend: junie
+    model: gpt-oss:120b
+    target:
+      base_url: http://192.168.3.30:11434
+      wire_format: openai
+      strategy: normalize
+      health_probe: completion
+      normalizers: [strip_control_chars, strip_reasoning]

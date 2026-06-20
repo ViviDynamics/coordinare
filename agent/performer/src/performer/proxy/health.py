@@ -140,6 +140,30 @@ def _probe_body(target: TargetDescriptor, model: str | None) -> dict[str, Any]:
     # accepts, but the upstream (e.g. Ollama) only knows the real model name.
     # Use upstream_model for the probe body so the upstream doesn't 404.
     upstream_model_name = target.upstream_model or model_name
+    # 099: completion-mode probe — a trivial, bounded, NO-TOOLS chat completion.
+    # A non-tool-calling backend (the junie assessor) refuses/misbehaves on a
+    # tools payload, so the completion probe omits tools entirely and is judged
+    # on non-empty content instead (see _has_nonempty_completion).
+    if target.health_probe == "completion":
+        if target.strategy == "translate":
+            body = translate_request({
+                "model": model_name,
+                "max_tokens": 16,
+                "messages": [{"role": "user", "content": "Reply with: ok"}],
+            })
+            body["model"] = upstream_model_name
+            return body
+        if target.wire_format == "anthropic":
+            return {
+                "model": model_name,
+                "max_tokens": 16,
+                "messages": [{"role": "user", "content": "Reply with: ok"}],
+            }
+        return {
+            "model": model_name,
+            "max_tokens": 16,
+            "messages": [{"role": "user", "content": "Reply with: ok"}],
+        }
     if target.strategy == "translate":
         # Route a representative Anthropic body through the real request
         # translator, then ensure the tools survive so the upstream is actually
@@ -212,6 +236,48 @@ def _has_structured_tool_call(target: TargetDescriptor, body: dict[str, Any]) ->
     return isinstance(tool_calls, list) and len(tool_calls) > 0
 
 
+def _anthropic_has_text(body: dict[str, Any]) -> bool:
+    content = body.get("content")
+    if isinstance(content, list):
+        return any(
+            isinstance(b, dict)
+            and b.get("type") == "text"
+            and isinstance(b.get("text"), str)
+            and b["text"].strip()
+            for b in content
+        )
+    return isinstance(content, str) and bool(content.strip())
+
+
+def _has_nonempty_completion(target: TargetDescriptor, body: dict[str, Any]) -> bool:
+    """True iff the probe response carries a non-empty completion AFTER the
+    target's normalizers run (099 completion mode).
+
+    Mirrors :func:`_translate_round_trip_has_tool_use`'s normalize-then-judge
+    order: a reasoning-only answer that ``strip_reasoning`` (#130) promotes into
+    content counts as healthy. Whitespace-only content is treated as empty,
+    consistent with the normalizer's own ``content_empty`` check.
+    """
+    normalized = body
+    for key in target.normalizers:
+        normalizer = NORMALIZER_REGISTRY.get(key)
+        if normalizer is not None:
+            normalized = normalizer.normalize_json(normalized)
+    if target.strategy == "translate":
+        normalized = translate_response(normalized)
+        return _anthropic_has_text(normalized)
+    if target.wire_format == "anthropic":
+        return _anthropic_has_text(normalized)
+    choices = normalized.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return False
+    message = choices[0].get("message") if isinstance(choices[0], dict) else None
+    if not isinstance(message, dict):
+        return False
+    content = message.get("content")
+    return isinstance(content, str) and bool(content.strip())
+
+
 async def check_health(
     target: TargetDescriptor,
     *,
@@ -252,7 +318,17 @@ async def check_health(
                     payload = response.json()
                 except ValueError:
                     payload = None
-                if isinstance(payload, dict) and _has_structured_tool_call(
+                # 099: completion-mode targets are judged on a non-empty
+                # normalized completion; tool-call mode is unchanged.
+                if target.health_probe == "completion":
+                    if isinstance(payload, dict) and _has_nonempty_completion(
+                        target, payload
+                    ):
+                        status, reason = "healthy", None
+                    else:
+                        status = "unhealthy"
+                        reason = "probe response carried no usable completion"
+                elif isinstance(payload, dict) and _has_structured_tool_call(
                     target, payload
                 ):
                     status, reason = "healthy", None
@@ -272,5 +348,6 @@ async def check_health(
         resolved_action=result.resolved_action,
         wire_format=target.wire_format,
         strategy=target.strategy,
+        mode=target.health_probe,
     )
     return result

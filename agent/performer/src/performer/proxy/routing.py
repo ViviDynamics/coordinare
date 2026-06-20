@@ -35,6 +35,11 @@ from .normalizers import NORMALIZER_REGISTRY
 
 WireFormat = Literal["openai", "anthropic"]
 Strategy = Literal["normalize", "reroute", "translate"]
+# 099: which startup health probe gates this target. ``tool_call`` (default) is
+# the existing tool-calling probe; ``completion`` is for non-tool-calling
+# backends (e.g. the junie assessor) and gates on a non-empty normalized
+# completion instead of a structured tool call.
+HealthProbe = Literal["tool_call", "completion"]
 
 
 def _normalize_backend(backend: str) -> str:
@@ -57,6 +62,11 @@ class TargetDescriptor(BaseModel):
     normalizers: list[str] = Field(default_factory=list)
     reroute_upstream: str | None = None
     upstream_model: str | None = None
+    # 099: opt-in startup health-probe mode. Default keeps the tool-call probe
+    # (byte-for-byte unchanged); ``completion`` gates a non-tool-calling target on
+    # a non-empty normalized completion. Invalid value fails at config-load
+    # (Literal + extra="forbid").
+    health_probe: HealthProbe = "tool_call"
 
     @model_validator(mode="after")
     def _validate_strategy(self) -> TargetDescriptor:
