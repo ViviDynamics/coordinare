@@ -222,6 +222,37 @@ def should_attempt_rebase(
     )
 
 
+def classify_pre_dispatch(
+    mergeable_raw: str,
+    merge_state_status: str,
+    head_sha: str,
+    session: dict[str, Any],
+    current_main_sha: str,
+) -> str:
+    """097: decide what to do with an in-flight branch at the dispatch point.
+
+    Pure (no I/O). Maps the platform mergeability + spec-096 anti-thrash marker to
+    one of:
+    - ``"defer"``         — mergeability not yet computed (UNKNOWN / empty head);
+      re-check next cycle rather than rebase/dispatch on a guess (FR-005).
+    - ``"proceed"``       — branch is current with main; dispatch unchanged (FR-006).
+    - ``"rebase"``        — branch is CONFLICTING or BEHIND and a rebase attempt is
+      warranted; rebase BEFORE dispatching a performer (FR-001/002).
+    - ``"blocked_thrash"``— CONFLICTING/BEHIND but already BLOCKED/FAILED against the
+      same (main, head): do not re-rebase and do not dispatch onto the conflicting
+      base (FR-008).
+    """
+    raw = (mergeable_raw or "").upper()
+    mss = (merge_state_status or "").upper()
+    if not head_sha or raw in ("", "UNKNOWN"):
+        return "defer"
+    if raw == "CONFLICTING" or mss == "BEHIND":
+        if should_attempt_rebase(session, current_main_sha, head_sha):
+            return "rebase"
+        return "blocked_thrash"
+    return "proceed"
+
+
 async def rebase_branch(
     repo_url: str,
     branch: str,

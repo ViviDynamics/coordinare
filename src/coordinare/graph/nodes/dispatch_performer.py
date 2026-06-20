@@ -236,6 +236,187 @@ async def _fetch_pr_diff_text(
     return raw_diff
 
 
+async def _pre_dispatch_rebase_guard(state: CoordinareState, card_id: str) -> bool:
+    """097: rebase a conflicting/behind in-flight branch before a performer starts.
+
+    Returns ``True`` to proceed with dispatch, ``False`` to skip this cycle.
+
+    A performer is dispatched only when the base is current — either already, or
+    after a clean rebase here. A branch known to be CONFLICTING/BEHIND that cannot
+    be made current is NOT dispatched onto (returns False → defer): a fresh
+    performer cannot fix a stale-base conflict (the 096 livelock). On a genuine
+    conflict the implementer is routed via 047 conflict-resolution feedback and
+    re-dispatched on a LATER cycle (so ``check_inflight`` re-validates the mutated
+    stage — FR-004 stays intact). A dispatch already carrying pending feedback
+    (incl. that conflict-resolution feedback) is let through unchanged so the
+    resolution path is never starved.
+
+    Fail-open: when the guard cannot act (no open PR / missing deps / mergeability
+    unknown-but-not-yet-conflicting / any error) it returns ``True`` — it never
+    blocks a dispatch it has no positive reason to hold (FR-006/FR-009). It only
+    returns ``False`` once it has CONFIRMED the branch is conflicting/behind.
+    Reuses spec-096/047 machinery; writes 096's anti-thrash marker.
+    """
+    import contextlib
+
+    # A feedback-driven dispatch (review feedback, or 047 conflict-resolution
+    # feedback) carries explicit work for the performer — let it through so the
+    # guard never starves the conflict-resolution path it set up on a prior cycle.
+    # This is BOUNDED, not an unbounded dispatch-onto-conflict: relay_feedback is
+    # consumed (cleared) by _dispatch_performer_body once delivered, and a
+    # resolution attempt that fails to move the branch head trips the anti-thrash
+    # marker (blocked_thrash) on a later cycle. So a conflict resolves in at most
+    # one performer attempt per head before the card is held for an operator.
+    if state.get("relay_feedback"):
+        return True
+
+    card = state.get("current_card") or {}
+    pr_url = card.get("pr_url") if isinstance(card, dict) else None
+    pr_node_id = str(card.get("pr_node_id") or "").strip() if isinstance(card, dict) else ""
+    github = state.get("github_service")
+    config = state.get("config")
+    # Guard N/A → dispatch as today: no open published PR (first run that will
+    # create the branch), or missing deps (FR-006).
+    if not (pr_url and pr_node_id and github is not None and config is not None):
+        return True
+
+    try:
+        from coordinare.models.rebase import RebaseOutcome
+        from coordinare.services.rebase import (
+            classify_pre_dispatch,
+            fetch_main_sha,
+            prepare_conflict_resolution,
+            repo_url_from_config,
+            run_rebase_round,
+        )
+
+        repo_url = repo_url_from_config(config)
+        token = ""
+        if hasattr(github, "_current_token"):
+            with contextlib.suppress(Exception):
+                token = await github._current_token()
+        if not (repo_url and token):
+            return True  # auto-rebase not available (same gate as 047/096)
+
+        current_main = state.get("last_known_main_sha")
+        if not current_main:
+            with contextlib.suppress(Exception):
+                current_main = await fetch_main_sha(repo_url, token)
+        if not current_main:
+            return True
+
+        mc = await github.check_mergeability(pr_node_id)
+        raw = mc.get("mergeable_raw") or ""
+        mss = mc.get("merge_state_status") or ""
+        head = mc.get("head_ref_oid") or ""
+        decision = classify_pre_dispatch(raw, mss, head, state, current_main)
+
+        if decision == "proceed":
+            return True
+        if decision == "defer":
+            logger.info(
+                "dispatch_performer.pre_dispatch_defer",
+                card_id=card_id, mergeable=raw or "?",
+            )
+            return False
+        if decision == "blocked_thrash":
+            # Confirmed CONFLICTING and already BLOCKED/FAILED against this same
+            # (main, head): do NOT dispatch a fresh performer onto it.
+            logger.warning(
+                "dispatch_performer.pre_dispatch_held_on_conflict",
+                card_id=card_id, branch=str(mc.get("head_ref_name") or ""),
+            )
+            return False
+
+        # decision == "rebase". Rebase the branch directly — source it from the PR
+        # (head_ref_name), NOT workspace_branch (which may be unset pre-dispatch).
+        branch = str(mc.get("head_ref_name") or state.get("workspace_branch") or "")
+        if not branch.startswith("coordinare/"):
+            # Confirmed conflicting/behind but we cannot identify the branch to
+            # rebase — DO NOT dispatch onto the conflicting base (FR-002). Record a
+            # marker so we don't re-attempt this every cycle (FR-008), then defer;
+            # 096's check_board sweep (no active performer now) can still heal it.
+            if head:
+                state["last_rebase_attempt"] = {  # type: ignore[typeddict-unknown-key]
+                    "main_sha": current_main, "head_sha": head, "outcome": "failed",
+                }
+            logger.warning(
+                "dispatch_performer.pre_dispatch_branch_unknown",
+                card_id=card_id, mergeable=raw or "?",
+            )
+            return False
+
+        # Build an explicit session carrying the branch so detect_stale_branches
+        # (inside run_rebase_round) includes it regardless of workspace_branch.
+        rebase_session = {
+            "workspace_branch": branch,
+            "phase": "dispatching",
+            "current_card": card,
+            "last_rebase_attempt": state.get("last_rebase_attempt"),
+        }
+        rr = await run_rebase_round(
+            {card_id: rebase_session}, current_main, repo_url, token,
+            notification_service=state.get("notification_service"),
+            github=github, human_reviewers=state.get("human_reviewers"),
+        )
+        if not rr.jobs:
+            # A confirmed-conflicting branch we could not rebase — do NOT dispatch
+            # onto it (this is the bug 097 exists to prevent). Record a marker so
+            # the guard doesn't re-rebase it every cycle (FR-008), then defer.
+            if head:
+                state["last_rebase_attempt"] = {  # type: ignore[typeddict-unknown-key]
+                    "main_sha": current_main, "head_sha": head, "outcome": "failed",
+                }
+            logger.warning(
+                "dispatch_performer.pre_dispatch_rebase_no_op",
+                card_id=card_id, branch=branch,
+            )
+            return False
+
+        prev_main = current_main
+        proceed = True
+        for job in rr.jobs:
+            # Marker head: after a clean rebase the branch head is the new
+            # post-rebase commit (what the next cycle's check_mergeability will
+            # report); on a non-pushing outcome (BLOCKED/FAILED) it is the head we
+            # just checked.
+            if job.outcome in (RebaseOutcome.CLEAN, RebaseOutcome.PERFORMER_RESOLVED) and job.post_rebase_sha:
+                marker_head = job.post_rebase_sha
+            else:
+                marker_head = head or job.pre_rebase_sha or ""
+            state["last_rebase_attempt"] = {  # type: ignore[typeddict-unknown-key]
+                "main_sha": current_main,
+                "head_sha": marker_head,
+                "outcome": job.outcome.value,
+            }
+            logger.info(
+                "rebase.triggered", reason="pre_dispatch",
+                card_id=card_id, branch=job.branch,
+                prev_main_sha=prev_main, current_main_sha=current_main,
+                outcome=job.outcome.value,
+            )
+            if job.outcome == RebaseOutcome.BLOCKED:
+                # 047 US2: set up performer-driven conflict resolution (relay
+                # feedback + implementer stage), then DEFER. Next cycle re-enters
+                # dispatch_performer where check_inflight re-validates the new
+                # stage (FR-004) and this guard lets the feedback-bearing dispatch
+                # through to resolve the conflict.
+                prepare_conflict_resolution(job, state, human_reviewers=state.get("human_reviewers"))
+                proceed = False
+            elif job.outcome == RebaseOutcome.FAILED:
+                proceed = False  # do not dispatch onto a failed rebase; retry next cycle
+        # Record the main we reconciled against (mirror check_board), so the
+        # marker comparison stays consistent across cycles.
+        state["last_known_main_sha"] = current_main  # type: ignore[typeddict-unknown-key]
+        return proceed
+    except Exception as exc:  # FR-009: a guard bug must never block dispatch
+        logger.warning(
+            "dispatch_performer.pre_dispatch_guard_failed",
+            card_id=card_id, error=str(exc),
+        )
+        return True
+
+
 async def dispatch_performer(state: CoordinareState) -> CoordinareState:
     """Public entry point for the dispatch graph node.
 
@@ -326,6 +507,19 @@ async def dispatch_performer(state: CoordinareState) -> CoordinareState:
                 card_id=card_id,
                 error=str(_exc),
             )
+
+        # 097: pre-dispatch rebase guard. We are past check_inflight (no performer
+        # is running for this (card, stage) — FR-004 holds by construction) and
+        # about to start one. If this in-flight card's open-PR branch is
+        # CONFLICTING/BEHIND main, rebase it FIRST so the performer never starts on
+        # a stale base it cannot fix (the 096 active-performer livelock). Reuses
+        # 096/047 machinery; degrades safely (proceeds with a normal dispatch) on
+        # any error or when it cannot act (FR-009 isolation).
+        if not await _pre_dispatch_rebase_guard(state, card_id):
+            # Mergeability unknown / rebase failed / held on an unresolvable
+            # conflict — do NOT dispatch a performer this cycle; phase stays
+            # "dispatching" so the next cycle re-evaluates (FR-003/005).
+            return state
 
         return await _dispatch_performer_body(state)
 
