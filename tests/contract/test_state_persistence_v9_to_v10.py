@@ -19,9 +19,11 @@ from coordinare.state_store import (
 )
 
 
-def test_current_schema_version_is_10() -> None:
-    """Spec 095 bumps the snapshot schema to v10 (per-card env_blocked)."""
-    assert CURRENT_SCHEMA_VERSION == 10
+def test_current_schema_version_is_at_least_10() -> None:
+    """Spec 095 bumped the snapshot schema to v10 (per-card env_blocked). Later
+    specs may bump it further; the exact current value is pinned in the newest
+    vN-1→vN contract test."""
+    assert CURRENT_SCHEMA_VERSION >= 10
 
 
 def test_min_supported_unchanged() -> None:

@@ -191,6 +191,9 @@ class CardSession(TypedDict, total=False):
     # pattern_id, cause, action) — None when not infra-blocked.  Carries only
     # check/infra identifiers, never secret values.
     env_blocked: dict[str, Any] | None
+    # 096: per-card auto-rebase anti-thrash marker ({main_sha, head_sha,
+    # outcome}) — None when never attempted.  SHAs + outcome string only.
+    last_rebase_attempt: dict[str, Any] | None
 
 
 # Fields that live on both CardSession and CoordinareState (flat).
@@ -259,6 +262,10 @@ _SESSION_FIELDS: tuple[str, ...] = (
     # action). Round-trips per-card so multi-card holds don't collide and the
     # operator-notification dedup survives a daemon restart.
     "env_blocked",
+    # 096: per-card auto-rebase anti-thrash marker (main_sha, head_sha, outcome).
+    # Round-trips per-card so a BLOCKED/FAILED conflict isn't re-attempted every
+    # cycle, and the marker survives a daemon restart.
+    "last_rebase_attempt",
 )
 
 
@@ -326,6 +333,8 @@ def create_session_from_card(card: dict[str, Any]) -> CardSession:
         reconciliation_decisions_last_startup={},
         # 095: no infra block on a freshly-picked-up card
         env_blocked=None,
+        # 096: no rebase attempted yet for a freshly-picked-up card
+        last_rebase_attempt=None,
     )
 
 

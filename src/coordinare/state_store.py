@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-CURRENT_SCHEMA_VERSION: int = 10
+CURRENT_SCHEMA_VERSION: int = 11
 
 # Lowest schema_version we still know how to read.  v1 snapshots are upgraded
 # in-memory at load time (065 Fix 7b: active_sessions added in v2; v1 snapshots
@@ -45,6 +45,12 @@ CURRENT_SCHEMA_VERSION: int = 10
 # hold/notification-dedup state: head_sha, pattern_id, cause, action); v1-v9
 # snapshots load with None so the first ENV_BLOCKED hold notifies once and
 # repopulates it.  Carries only check/infra identifiers — never secret values.
+# v11 (096) adds top-level last_known_main_sha (the main SHA the rebase trigger
+# last reconciled against — persisted so a cross-restart main advance is seen as
+# drift) and per-card last_rebase_attempt on PersistedSession (anti-thrash marker:
+# main_sha, head_sha, outcome); v1-v10 snapshots load with None for both, so the
+# first post-upgrade reconciliation heals any conflicting branch.  SHAs / branch
+# names / outcome strings only — never secret values.
 MIN_SUPPORTED_SCHEMA_VERSION: int = 1
 
 WorkflowPhase = Literal[
@@ -218,6 +224,12 @@ class PersistedSession(BaseModel):
     # values.  Round-tripped so a still-active block does not re-notify the
     # operator after a daemon restart (notification-dedup contract, FR-006).
     env_blocked: dict[str, Any] | None = None
+    # 096: per-card anti-thrash marker for the auto-rebase trigger.  Records the
+    # most recent rebase attempt for this card as ``{main_sha, head_sha,
+    # outcome}`` so a BLOCKED/FAILED conflict is not re-attempted every cycle
+    # until the branch head or target main changes.  None = never attempted.
+    # SHAs + an outcome enum string only — never secret values.
+    last_rebase_attempt: dict[str, Any] | None = None
 
 
 class EnvCacheStateSnapshot(BaseModel):
@@ -310,6 +322,12 @@ class WorkflowSnapshot(BaseModel):
     # snapshots load with an empty dict and rely on the first cycle's SHA
     # fetch to repopulate.
     env_cache: dict[str, EnvCacheStateSnapshot] = Field(default_factory=dict)
+    # 096: the main-branch SHA the rebase trigger last reconciled against.
+    # Persisted (run-global, not per-card) so a main advance that happened while
+    # the daemon was down is seen as drift on the first post-restart cycle instead
+    # of being silently adopted as the new baseline.  None = unknown (pre-096
+    # snapshots, or a fresh run).  A git SHA only — never a secret value.
+    last_known_main_sha: str | None = None
 
 
 class StateLoadError(ValueError):

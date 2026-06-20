@@ -200,6 +200,28 @@ def detect_stale_branches(
     return stale
 
 
+def should_attempt_rebase(
+    session: dict[str, Any], current_main_sha: str, head_sha: str
+) -> bool:
+    """096 (FR-007): anti-thrash guard for the proactive conflicting-branch rebase.
+
+    Returns ``False`` only when this card's most recent rebase attempt hit a
+    NON-progressing outcome (``BLOCKED``/``FAILED``) against the SAME
+    ``(main_sha, head_sha)`` — so an unresolvable conflict is not re-attempted
+    every cycle. Any change to the branch head (the performer pushed work) or the
+    target main re-enables the attempt, as does a prior progressing outcome
+    (``CLEAN``/``PERFORMER_RESOLVED``/``SKIPPED``) or no prior attempt at all.
+    """
+    prior = session.get("last_rebase_attempt")
+    if not isinstance(prior, dict):
+        return True
+    if prior.get("outcome") not in (RebaseOutcome.BLOCKED.value, RebaseOutcome.FAILED.value):
+        return True
+    return not (
+        prior.get("main_sha") == current_main_sha and prior.get("head_sha") == head_sha
+    )
+
+
 async def rebase_branch(
     repo_url: str,
     branch: str,

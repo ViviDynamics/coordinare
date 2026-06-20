@@ -203,6 +203,15 @@ def _persist_active_sessions(active_sessions: dict[str, Any]) -> dict[str, Persi
                     v = env_blocked_raw.get(k)
                     if isinstance(v, str):
                         env_blocked[k] = v
+        # 096: per-card auto-rebase anti-thrash marker. Persist only when all
+        # three keys are non-empty strings; anything malformed degrades to None
+        # (re-attempt allowed) so a corrupt marker never wedges a card.
+        lra_raw = sess.get("last_rebase_attempt")
+        last_rebase_attempt: dict[str, Any] | None = None
+        if isinstance(lra_raw, dict):
+            _m, _h, _o = lra_raw.get("main_sha"), lra_raw.get("head_sha"), lra_raw.get("outcome")
+            if all(isinstance(x, str) and x for x in (_m, _h, _o)):
+                last_rebase_attempt = {"main_sha": _m, "head_sha": _h, "outcome": _o}
         out[cid] = PersistedSession(
             card_id=cid,
             performer_stage=(sess.get("performer_stage") or None),
@@ -230,6 +239,7 @@ def _persist_active_sessions(active_sessions: dict[str, Any]) -> dict[str, Persi
             repair_audit=repair_audit,
             ci_gate_rollup_signature=ci_gate_rollup_sig,
             env_blocked=env_blocked,
+            last_rebase_attempt=last_rebase_attempt,
         )
     return out
 
@@ -647,6 +657,13 @@ class CoordinareDaemon:
             processed_review_ids=sorted(self._state.get("processed_review_ids") or set()),
             active_sessions=_persist_active_sessions(self._state.get("active_sessions") or {}),
             env_cache=_persist_env_cache(self._state.get("env_cache") or {}),
+            # 096: persist the rebase baseline so a main advance that happened
+            # while the daemon was down is seen as drift on the next startup.
+            last_known_main_sha=(
+                self._state.get("last_known_main_sha")
+                if isinstance(self._state.get("last_known_main_sha"), str)
+                else None
+            ),
         )
 
     def _restore_from_snapshot(self, snapshot: WorkflowSnapshot) -> None:
@@ -660,6 +677,10 @@ class CoordinareDaemon:
         self._state["last_blocked_notified_at"] = snapshot.last_blocked_notified_at
         self._state["lifecycle_completed_at"] = snapshot.lifecycle_completed_at
         self._state["processed_review_ids"] = set(snapshot.processed_review_ids)
+        # 096: restore the rebase baseline (FR-001) so the first check_board
+        # cycle compares the live main against the pre-restart value and fires
+        # the rebase on genuine cross-restart drift, instead of re-baselining.
+        self._state["last_known_main_sha"] = snapshot.last_known_main_sha
         if snapshot.active_card_id:
             _set_current_card(self._state, {
                 "id": snapshot.active_card_id,
@@ -714,6 +735,13 @@ class CoordinareDaemon:
                     "env_blocked": (
                         dict(persisted.env_blocked)
                         if persisted.env_blocked is not None
+                        else None
+                    ),
+                    # 096: restore the per-card auto-rebase anti-thrash marker so
+                    # a BLOCKED conflict isn't re-attempted right after a restart.
+                    "last_rebase_attempt": (
+                        dict(persisted.last_rebase_attempt)
+                        if persisted.last_rebase_attempt is not None
                         else None
                     ),
                 }
