@@ -21,9 +21,12 @@ from coordinare.state_store import (
 )
 
 
-def test_current_schema_version_is_9() -> None:
-    """Spec 090 bumps the snapshot schema to v9 (inheritance_repair_counter + repair_audit)."""
-    assert CURRENT_SCHEMA_VERSION == 9
+def test_current_schema_version_is_at_least_9() -> None:
+    """Spec 090 bumped the snapshot schema to v9 (inheritance_repair_counter +
+    repair_audit).  Later specs may bump it further; this guarantees only that
+    the 090 fields are present.  The exact current value is pinned in the newest
+    vN-1→vN contract test."""
+    assert CURRENT_SCHEMA_VERSION >= 9
 
 
 def test_min_supported_unchanged() -> None:

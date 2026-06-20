@@ -22,6 +22,7 @@ class EventType(StrEnum):
     card_stuck = "card_stuck"  # 028: card stuck in same phase too long
     card_cancelled = "card_cancelled"  # 026: card cancelled by operator or board
     card_budget_exceeded = "card_budget_exceeded"  # 034: cost budget exceeded
+    env_blocked = "env_blocked"  # 095: infra/environment CI block (operator must act)
 
 
 class NotificationSeverity(StrEnum):

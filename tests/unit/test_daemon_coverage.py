@@ -370,6 +370,46 @@ def test_persist_active_sessions_carries_last_blocked_slack_delivered_at() -> No
     assert out["card-70"].last_blocked_slack_delivered_at == t_slack
 
 
+def test_persist_active_sessions_round_trips_valid_env_blocked() -> None:
+    """095: a well-formed env_blocked (both dedup keys present as strings) persists
+    intact so a still-active block does not re-notify after a restart (FR-006)."""
+    from coordinare.daemon import _persist_active_sessions
+
+    live = {
+        "card-1": {
+            "performer_stage": "implementing",
+            "env_blocked": {
+                "head_sha": "a" * 40,
+                "pattern_id": "artifact_storage_quota",
+                "cause": "CI artifact-storage quota exhausted",
+                "action": "Raise the Actions storage budget",
+            },
+        },
+    }
+
+    out = _persist_active_sessions(live)
+
+    assert out["card-1"].env_blocked == live["card-1"]["env_blocked"]
+
+
+def test_persist_active_sessions_degrades_corrupt_env_blocked_to_none() -> None:
+    """095 (review fix): if EITHER dedup key (head_sha/pattern_id) is missing or
+    non-string, the whole env_blocked degrades to None — never a partial dict that
+    would silently break the (head_sha, pattern_id) dedup and re-notify forever."""
+    from coordinare.daemon import _persist_active_sessions
+
+    cases = [
+        {"head_sha": "a" * 40, "pattern_id": 123, "cause": "x", "action": "y"},  # non-str pid
+        {"head_sha": "a" * 40, "cause": "x", "action": "y"},                      # missing pid
+        {"pattern_id": "quota", "cause": "x"},                                    # missing head_sha
+        {"head_sha": "", "pattern_id": "quota"},                                  # empty head_sha
+        "not-a-dict",                                                             # wrong type
+    ]
+    for i, bad in enumerate(cases):
+        out = _persist_active_sessions({f"c{i}": {"env_blocked": bad}})
+        assert out[f"c{i}"].env_blocked is None, f"case {i} should degrade to None"
+
+
 def test_restore_from_snapshot_restores_lifecycle_position() -> None:
     """053 regression: restart restore must preserve in-flight performer stage."""
     daemon = _make_daemon()

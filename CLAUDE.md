@@ -33,6 +33,8 @@ See AGENTS.md for all development guidelines.
 - JSON snapshot via `state_store.py` (existing single-host single-process). **No new (093-env-cache-readiness-gate)
 - Python 3.14 (project minimum 3.12; prod 3.14.5 via uv) + pydantic 2.x (WorkflowSnapshot/PersistedSession models — reused, unchanged), structlog (reconciliation observability), the existing `github_service.poll_board()` board read, langgraph (unchanged). No new external dependencies. (094-restart-session-reconcile)
 - Existing single-host single-process JSON snapshot via `state_store.py` (`coordinare.state.json`). No schema change — reconciliation reads the live board and corrects in-memory restored state before the first cycle; the next persist captures the corrected state. (094-restart-session-reconcile)
+- Python 3.14 (project minimum 3.12; prod 3.14.5 via uv) + pydantic 2.x (config + state models, reused), structlog (observability), the existing 090 classification (`failure_classification.py`, `failure_signature.py`) and CI-gate (`ci_gate.py`), the existing notify layer (`notify.py`), langgraph (unchanged). No new external dependencies. (095-env-blocked-ci)
+- Existing single-host single-process JSON snapshot via `state_store.py`. Adds a small per-card ENV_BLOCKED field on the persisted session (schema-version bump, backward-compatible default None/empty), parallel to 090's repair counters. (095-env-blocked-ci)
 
 ## Recent Changes
 - 076-qa-cycle: Added Python 3.14 (project minimum: 3.12; production currently on 3.14.5 via uv) + pydantic 2.x, langgraph, structlog, docker SDK (or subprocess to `docker` CLI), fastapi (dashboard SSE), httpx (performer HTTP transport), pyyaml (config)

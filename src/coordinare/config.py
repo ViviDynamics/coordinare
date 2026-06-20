@@ -1390,6 +1390,38 @@ class InheritedRepairGateConfig(BaseModel):
     max_repair_attempts_per_head: int = Field(default=1, ge=0, le=20)
 
 
+class EnvSignaturePattern(BaseModel):
+    """095: one infrastructure/environment failure signature (operator-defined).
+
+    Matched (case-insensitive regex) against a failing check's normalized reason.
+    A match labels the failure ENV_BLOCKED — surfaced with ``cause`` + ``action``,
+    never autonomously repaired or bounced.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    regex: str
+    cause: str
+    action: str
+
+
+class EnvBlockedGateConfig(BaseModel):
+    """095: infrastructure/environment CI-failure classification (ENV_BLOCKED).
+
+    When enabled, a failing required check whose normalized reason matches a
+    built-in or operator-supplied infra pattern is held (not repaired, not
+    re-dispatched) and surfaced to the operator. ``patterns`` are matched in
+    addition to the shipped built-ins (artifact-storage quota / runner-offline /
+    billing-limit). Default-off → behavior identical to the pre-feature baseline.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    patterns: list[EnvSignaturePattern] = Field(default_factory=list)
+
+
 # ---------------------------------------------------------------------------
 # 074 — Persona Scope Tiering
 # ---------------------------------------------------------------------------
@@ -1428,6 +1460,11 @@ class PersonaScopeConfig(BaseModel):
     )
     inherited_repair_gate: InheritedRepairGateConfig = Field(
         default_factory=InheritedRepairGateConfig
+    )
+    # 095 — Infrastructure/environment CI-failure classification (ENV_BLOCKED;
+    # opt-in / default-off). See specs/095-env-blocked-ci/.
+    env_blocked_gate: EnvBlockedGateConfig = Field(
+        default_factory=EnvBlockedGateConfig
     )
 
     @field_validator("path_classes")

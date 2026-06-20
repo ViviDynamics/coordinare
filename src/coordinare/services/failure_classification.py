@@ -57,7 +57,7 @@ from pydantic import BaseModel, ConfigDict
 
 from coordinare.services.ci_gate import FailedCheckWithSignature, compare_signatures
 
-Classification = Literal["inherited", "introduced", "flake", "unknown"]
+Classification = Literal["env_blocked", "inherited", "introduced", "flake", "unknown"]
 
 # The only INHERITED-eligible conclusion.  Everything else that can appear on a
 # failing check is transient and can never be inherited (it is FLAKE when on the
@@ -113,6 +113,7 @@ def classify_failure_origin(
     head_check: FailedCheckWithSignature,
     head_reason: str,
     baseline_index: dict[str, BaselineFailure] | None,
+    env_patterns: list | None = None,
 ) -> Classification:
     """Classify one failing HEAD check against the baseline (source-order table).
 
@@ -124,8 +125,21 @@ def classify_failure_origin(
             rollup, or ``None`` when that rollup was indeterminate/unfetchable.
 
     Returns:
-        One of ``"inherited" | "introduced" | "flake" | "unknown"``.
+        One of ``"env_blocked" | "inherited" | "introduced" | "flake" | "unknown"``.
+        ``"env_blocked"`` is the Row-0 short-circuit (095) — returned only when
+        ``env_patterns`` is not None and the HEAD reason matches an infra pattern.
     """
+    # Row 0 (095) — an infrastructure/environment failure (matched on the HEAD
+    # reason alone) is ENV_BLOCKED: no code change can fix it, so it short-circuits
+    # the whole inherited/introduced/flake decision (FR-001, FR-011). ``env_patterns
+    # is None`` means the gate is off → skip entirely (FR-012, byte-identical
+    # baseline). An empty list means the gate is on with built-ins only.
+    if env_patterns is not None:
+        from coordinare.services.env_signature import match_env_signature
+
+        if match_env_signature(head_reason, env_patterns) is not None:
+            return "env_blocked"
+
     # Row 1 — a transient HEAD conclusion is a FLAKE regardless of any baseline.
     if _is_transient(head_check.conclusion):
         return "flake"

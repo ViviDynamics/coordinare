@@ -394,6 +394,7 @@ def test_session_fields_all_present_in_initial_state_or_coordinare_state() -> No
         "latest_ci_gate_decision",
         "ci_gate_rollup_signature",
         "ci_gate_advisory_failures",
+        "env_blocked",
     }
     for field in _SESSION_FIELDS:
         if field not in optional_in_initial:

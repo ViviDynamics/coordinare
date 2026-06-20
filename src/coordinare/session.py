@@ -187,6 +187,10 @@ class CardSession(TypedDict, total=False):
     multi_pr_divergence: dict[str, Any] | None
     wedge_count_window: dict[str, list[datetime]]
     reconciliation_decisions_last_startup: dict[str, str]
+    # 095: per-card ENV_BLOCKED hold + notification-dedup state (head_sha,
+    # pattern_id, cause, action) — None when not infra-blocked.  Carries only
+    # check/infra identifiers, never secret values.
+    env_blocked: dict[str, Any] | None
 
 
 # Fields that live on both CardSession and CoordinareState (flat).
@@ -251,6 +255,10 @@ _SESSION_FIELDS: tuple[str, ...] = (
     "multi_pr_divergence",
     "wedge_count_window",
     "reconciliation_decisions_last_startup",
+    # 095: per-card ENV_BLOCKED hold/dedup state (head_sha, pattern_id, cause,
+    # action). Round-trips per-card so multi-card holds don't collide and the
+    # operator-notification dedup survives a daemon restart.
+    "env_blocked",
 )
 
 
@@ -316,6 +324,8 @@ def create_session_from_card(card: dict[str, Any]) -> CardSession:
         multi_pr_divergence=None,
         wedge_count_window={},
         reconciliation_decisions_last_startup={},
+        # 095: no infra block on a freshly-picked-up card
+        env_blocked=None,
     )
 
 

@@ -127,6 +127,11 @@ class CIGateDecision(BaseModel):
     introduced_checks: list[FailedCheckWithSignature] = Field(default_factory=list)
     flake_checks: list[FailedCheck] = Field(default_factory=list)
     unknown_checks: list[FailedCheck] = Field(default_factory=list)
+    # 095: failing checks classified as infrastructure/environment blocks
+    # (ENV_BLOCKED) — no code change can fix them. Observe-only at this layer
+    # (carries no verdict influence yet); the dispatch-affecting HOLD is a
+    # separate gated step. Allowed on a `hold` verdict (unlike `failed_checks`).
+    env_blocked_checks: list[FailedCheckWithSignature] = Field(default_factory=list)
 
     @field_validator("head_sha")
     @classmethod
