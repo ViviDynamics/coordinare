@@ -170,12 +170,13 @@ async def test_junie_normalize_shim_carries_wire_path_and_normalizers():
 @pytest.mark.asyncio
 async def test_routing_entry_for_unmappable_backend_raises():
     """T020/FR-078-4 Edge Case: a backend with no PROVIDER_BASE_URL_ENV mapping
-    (hermes) appearing in a ROUTING ENTRY surfaces a clear cannot-route error
-    rather than silently no-opping into a broken path."""
-    table = _reroute_table(backend="hermes", model="some-model")
+    appearing in a ROUTING ENTRY surfaces a clear cannot-route error rather than
+    silently no-opping into a broken path. (hermes is now mapped — spec 100 — so
+    use a genuinely-unmapped backend name here.)"""
+    table = _reroute_table(backend="ghostbackend", model="some-model")
     with pytest.raises(ProxyLaunchError, match="no provider-base-URL override"):
         await maybe_launch_proxy(
-            None, "hermes", {}, routing_table=table, model="some-model"
+            None, "ghostbackend", {}, routing_table=table, model="some-model"
         )
 
 
@@ -302,13 +303,15 @@ async def test_stop_restores_claude_litellm_shim_var():
 
 @pytest.mark.asyncio
 async def test_unsupported_backend_raises():
-    with pytest.raises(ProxyLaunchError, match="no provider-base-URL override"):
-        await maybe_launch_proxy(_ORCH, "hermes", {})
+    # A backend with no PROVIDER_BASE_URL_ENV mapping can't run a multi-model mode.
+    # (hermes is now mapped — spec 100 — so this uses a genuinely-unmapped name.)
+    with pytest.raises(ProxyLaunchError, match="not supported by the dual-model proxy"):
+        await maybe_launch_proxy(_ORCH, "ghostbackend", {})
 
 
 def test_all_supported_backends_have_env_mapping():
     # every backend coordinare can route a multi-model mode to must have a mapping
-    for b in ("codex", "opencode", "junie", "pi", "openclaw", "claude_code"):
+    for b in ("codex", "opencode", "junie", "pi", "openclaw", "claude_code", "hermes"):
         assert b in PROVIDER_BASE_URL_ENV
 
 
