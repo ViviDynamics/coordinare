@@ -101,6 +101,16 @@ if [[ $RUN_DOCKER -eq 1 ]]; then
     docker build -t coordinare-performer:full \
       -f agent/performer/Dockerfile.full agent/performer/
 
+  # :extra layers system browsers ON TOP of :full for browser-driven QA, and is
+  # the image the qa (claude-ephemeral) performer runs. It MUST be rebuilt with
+  # :full so it carries the same performer code — otherwise a routing.yaml schema
+  # change (e.g. a new TargetDescriptor field) makes the stale :extra reject the
+  # table and the qa stage fails to dispatch (card blocked at qa). FROM :full, so
+  # it builds after it.
+  run "Docker: build extra image" \
+    docker build -t coordinare-performer:extra \
+      -f agent/performer/Dockerfile.extra agent/performer/
+
   step "Docker: verify image size gap (SC-007)"
   python3 - <<'EOF'
 import subprocess, json
@@ -167,6 +177,29 @@ EOF
   else
     echo -e "$FAIL Docker: rtk init -g did not write expected hook files"
     FAILED+=("Docker: rtk init -g hook files")
+  fi
+
+  step "Docker: :full and :extra parse routing.example.yaml (schema drift guard)"
+  # The performer-side RoutingTable loader must accept the routing table the
+  # running deployment mounts. routing.example.yaml is the in-repo template and
+  # exercises every supported field (incl. 099 health_probe). If a code/schema
+  # change lands in :full but :extra is stale (or vice versa), the qa performer
+  # rejects the table at job start and the card blocks at qa — this catches that.
+  routing_drift_ok=1
+  for img in full extra; do
+    if ! docker run --rm \
+        -v "$PWD/routing.example.yaml:/etc/coordinare/routing.yaml:ro" \
+        --entrypoint python "coordinare-performer:$img" -c \
+        'from performer.proxy.routing import RoutingTable; RoutingTable.from_yaml_file("/etc/coordinare/routing.yaml")' \
+        >/dev/null 2>&1; then
+      echo -e "$FAIL Docker: coordinare-performer:$img cannot parse routing.example.yaml (stale schema)"
+      routing_drift_ok=0
+    fi
+  done
+  if [[ $routing_drift_ok -eq 1 ]]; then
+    ok "Docker: :full and :extra parse routing.example.yaml"
+  else
+    FAILED+=("Docker: routing.example.yaml schema drift")
   fi
 else
   skip "Docker image builds (pass --docker to enable)"
