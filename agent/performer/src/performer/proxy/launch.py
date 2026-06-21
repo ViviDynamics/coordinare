@@ -52,13 +52,14 @@ PROVIDER_BASE_URL_ENV: dict[str, str] = {
     "junie": "JUNIE_PROVIDER_BASE_URL",
     "pi": "PI_PROVIDER_BASE_URL",
     "openclaw": "OPENCLAW_PROVIDER_BASE_URL",
+    "hermes": "HERMES_BASE_URL",
     # claude_code is pointed via ANTHROPIC_BASE_URL; its own LiteLLM shim is
     # suppressed (see below) so it does not double-proxy.
     "claude_code": "ANTHROPIC_BASE_URL",
 }
 
 # Backends with no provider-base-URL override cannot be proxied (080 constraint).
-UNSUPPORTED_BACKENDS = frozenset({"hermes"})
+UNSUPPORTED_BACKENDS: frozenset[str] = frozenset()
 
 # Backends that POST *verbatim* to their provider-base-URL env var — i.e. the CLI
 # appends NO path of its own (junie.py requires the FULL endpoint URL and POSTs it
@@ -72,21 +73,43 @@ VERBATIM_POST_WIRE_PATH: dict[str, str] = {
     "junie": "/v1/chat/completions",  # junie speaks the OpenAI chat wire format
 }
 
+# Backends whose CLI DOES append its own ``/chat/completions`` to the provider
+# base, but expects that base to carry the ``/v1`` prefix (OpenAI-compat). For
+# these the loopback root is wrong (the shim serves ``/v1/chat/completions``), so
+# we hand them ``<loopback>/v1`` and their appended path lands on the served route.
+# This is the COMPLEMENT of VERBATIM_POST_WIRE_PATH: junie posts the full path
+# verbatim; these post their own suffix onto a ``/v1`` base. A backend belongs to
+# at most one map (100: hermes uses the hermes-agent custom OpenAI provider).
+PROVIDER_BASE_PATH_PREFIX: dict[str, str] = {
+    "hermes": "/v1",
+}
+
 
 class ProxyLaunchError(RuntimeError):
     """Raised when a backend cannot be routed through the dual-model proxy."""
 
 
 def _with_verbatim_wire_path(backend: str, base: str) -> str:
-    """Append a verbatim-POST backend's served wire path to a loopback base URL.
+    """Append a backend's required path onto a loopback base URL.
 
-    junie POSTs verbatim to its provider-base-URL env (it appends no path of its
-    own) and the loopback shim/proxy serves only pathed front doors — so a bare
-    root would miss every served path. CLIs that build their own path off the base
-    get the bare root unchanged. Shared by the dual-model proxy (080) and the
-    self-hosted shim (078/098) seams so both stay consistent.
+    Two disjoint cases, both so the CLI's real request lands on a route the
+    loopback shim/proxy actually serves (it serves only pathed front doors):
+
+    * **verbatim-POST** backends (junie) append NO path of their own, so we hand
+      them the FULL served wire path (``VERBATIM_POST_WIRE_PATH``).
+    * **base-prefix** backends (hermes, OpenAI-compat custom provider) DO append
+      ``/chat/completions``, so we hand them just the ``/v1`` prefix
+      (``PROVIDER_BASE_PATH_PREFIX``) and their suffix completes the served path.
+
+    CLIs that build their own path off a bare root (codex, opencode, openclaw, pi,
+    claude_code) are in neither map and get the bare root unchanged. Shared by the
+    dual-model proxy (080) and the self-hosted shim (078/098/100) seams.
     """
-    return base + VERBATIM_POST_WIRE_PATH.get(backend, "")
+    return (
+        base
+        + VERBATIM_POST_WIRE_PATH.get(backend, "")
+        + PROVIDER_BASE_PATH_PREFIX.get(backend, "")
+    )
 
 
 def _emit_health_decision(
@@ -106,6 +129,9 @@ def _emit_health_decision(
         "base_url": result.target.base_url,
         "wire_format": result.target.wire_format,
         "strategy": result.target.strategy,
+        # 100: record the health-probe mode (099) so completion- vs tool-call-probed
+        # targets are distinguishable in the capture record (contract FR-006).
+        "mode": getattr(result.target, "health_probe", "tool_call"),
         "status": result.status,
         "resolved_action": result.resolved_action,
         "reason": result.reason,
@@ -291,6 +317,9 @@ async def maybe_launch_proxy(
     if not orchestration:
         return None  # no routing entry + single mode / no orchestration → no-op
     backend = backend_name.replace("-", "_").lower()
+    # UNSUPPORTED_BACKENDS is currently empty (100 removed hermes); this data-driven
+    # guard stays so re-adding a backend to the set restores the clear error. The
+    # env-mapping check below is the live safety net for any unmapped backend.
     if backend in UNSUPPORTED_BACKENDS:
         raise ProxyLaunchError(
             f"backend '{backend}' has no provider-base-URL override; it cannot run a "

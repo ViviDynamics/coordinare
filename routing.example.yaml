@@ -65,3 +65,23 @@ selfhosted_routing:
       strategy: normalize
       health_probe: completion
       normalizers: [strip_control_chars, strip_reasoning]
+
+  # 100: hermes tech_writer (documenting) → gpt-oss:120b Ollama-DIRECT through the
+  # NORMALIZE shim with a COMPLETION health probe. hermes is a non-tool-calling
+  # JSON-only role that (before spec 100) bypassed normalization — so a reasoning
+  # model's control-char/empty/reasoning-wrapped output failed its strict JSON
+  # parse (malformed_output, blocked cards at documenting). Same chain as junie:
+  # strip_control_chars + strip_reasoning, completion probe. base_url is the bare
+  # Ollama origin (NOT LiteLLM): the startup health probe POSTs to base_url with
+  # NO auth, so a routed target MUST be a no-auth upstream — exactly like junie /
+  # openclaw / claude-qa, which all route Ollama-direct. The launch seam repoints
+  # HERMES_BASE_URL at the shim loopback (+/v1, since the hermes CLI appends
+  # /chat/completions); hermes's HERMES_API_KEY is ignored by Ollama.
+  - backend: hermes
+    model: gpt-oss:120b               # the Ollama model name (matches the dispatch)
+    target:
+      base_url: http://192.168.3.30:11434   # bare Ollama origin, no auth
+      wire_format: openai
+      strategy: normalize
+      health_probe: completion
+      normalizers: [strip_control_chars, strip_reasoning]
