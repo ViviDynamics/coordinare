@@ -756,6 +756,34 @@ async def commit_file(stand: Stand, path: str, content: str, message: str) -> No
     log.info("commit_file.committed", path=path, branch=stand.branch)
 
 
+async def _git_ignored_subset(
+    paths: list[str], cwd: Path, env: dict[str, str], timeout: float = 30.0,
+) -> set[str]:
+    """Return the subset of *paths* git would refuse to add as ignored.
+
+    ``git check-ignore`` lists matching paths on STDOUT (which ``_run_git``
+    discards), so this runs the probe directly. Exit 0 = some ignored (listed),
+    1 = none ignored, 128 = error — on error we return an empty set (fail-open:
+    let the normal ``git add`` surface a real problem rather than silently drop
+    paths).
+    """
+    if not paths:
+        return set()
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "git", "check-ignore", "--", *paths,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=str(cwd), env=env,
+        )
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except (TimeoutError, OSError):
+        return set()
+    if proc.returncode not in (0, 1):
+        return set()
+    return {line for line in out.decode("utf-8", "replace").splitlines() if line}
+
+
 async def commit_files(
     stand: Stand,
     files: list[dict[str, str]],
@@ -791,6 +819,20 @@ async def commit_files(
         abs_path.write_text(content, encoding="utf-8")
         committed.append(path)
 
+    if not committed:
+        return []
+
+    # Drop gitignored paths before staging. A model may emit a doc path under a
+    # gitignored dir (e.g. Rails' .bundle); `git add` of an explicitly-named
+    # ignored path exits non-zero and would poison the WHOLE batch (blocked #171
+    # at documenting). Filter + log them so one bad path can't fail the commit.
+    ignored = await _git_ignored_subset(committed, stand.path, env)
+    if ignored:
+        log.warning(
+            "commit_files.ignored_paths_skipped",
+            paths=sorted(ignored), count=len(ignored),
+        )
+        committed = [p for p in committed if p not in ignored]
     if not committed:
         return []
 
