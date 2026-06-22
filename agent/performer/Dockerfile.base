@@ -15,6 +15,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
+# spec-106: snapshot the pristine base installed-set so the env-bootstrap service-deb
+# fetch (_render_system_services_install) can resolve "what the base image lacks" (e.g.
+# libicu76) via `apt-get install --download-only -o Dir::State::status=<this file>`,
+# independent of whatever the bootstrap container later installs. Without this, a runtime
+# lib already installed into the container (by the QA browser etc.) is skipped by
+# --download-only and never reaches the cache, so the extracted server can't load it.
+RUN cp /var/lib/dpkg/status /opt/coordinare-base-dpkg-status
+
 # Install rtk (token-compression CLI proxy). Pinned to v0.39.0; bump
 # deliberately, not floated to latest. Build fails loudly if the binary
 # can't be installed — we do not want a silently-missing rtk on images

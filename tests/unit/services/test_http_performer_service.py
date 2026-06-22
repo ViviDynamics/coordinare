@@ -1701,6 +1701,31 @@ def test_service_install_uses_closure_resolving_download(monkeypatch) -> None:
     assert "postgresql" in block and "postgresql-client" in block
 
 
+def test_service_install_resolves_against_base_state_snapshot(monkeypatch) -> None:
+    """106: the fetch must resolve against the pristine BASE-image dpkg status
+    (Dir::State::status=<snapshot>) so the service's full runtime-lib closure
+    (e.g. libicu76) is downloaded even when an earlier bootstrap step already
+    installed it into the container — with a fallback to the live status on
+    older images that lack the snapshot."""
+    monkeypatch.setenv("GITHUB_TOKEN", "ghs_test")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    svc = HTTPPerformerService(
+        _persistent_config(), client=_client(lambda r: httpx.Response(204))
+    )
+    declared = [{"name": "postgres", "kind": "postgres", "binary": "postgres",
+                 "data_dir": "/tmp/pg", "port": 5432, "why_needed": "db",
+                 "sources": ["config/database.yml"]}]
+    persona = svc._build_job_payload(_bootstrap_card_context(declared), None).persona
+    block = persona[persona.index("SYSTEM SERVICES"):]
+    block = block[: block.index("\n\n") + 2]
+    # resolves against the base snapshot, with a live-status fallback
+    assert "Dir::State::status" in block
+    assert "/opt/coordinare-base-dpkg-status" in block
+    assert "/var/lib/dpkg/status" in block  # fallback path
+    # still the closure-resolving download into the cache (102 retained)
+    assert "--download-only" in block and "Dir::Cache::archives" in block
+
+
 def test_service_install_no_hardcoded_server_version(monkeypatch) -> None:
     """102/US2: version-resilient — names the version-agnostic meta, NOT a
     hard-pinned versioned server (which breaks when the base distro advances)."""
