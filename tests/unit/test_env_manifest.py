@@ -379,6 +379,17 @@ class TestActivateRenderer:
         sh = render_activate_sh(self._manifest(), cache_mount_path="/devenv/sym")
         assert '"$DEVENV"/*/usr/bin' in sh
 
+    def test_postgres_server_bin_dir_on_path(self) -> None:
+        """103: Debian's postgresql-NN ships initdb/pg_ctl/postgres under
+        /usr/lib/postgresql/<NN>/bin (NOT /usr/bin); activate.sh must surface that
+        versioned server bin dir so services-start.sh + spec-101 resolve the daemon.
+        Version-agnostic glob (the * matches the NN)."""
+        sh = render_activate_sh(self._manifest(), cache_mount_path="/devenv/sym")
+        assert '"$DEVENV"/*/usr/lib/postgresql/*/bin' in sh
+        # no hard-pinned major version in the discovery glob
+        import re
+        assert not re.search(r"usr/lib/postgresql/\d", sh)
+
 
 class TestServiceInstallDerivation:
     """091: a declared stateful service contributes a service-binary install item."""
