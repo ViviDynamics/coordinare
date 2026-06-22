@@ -343,6 +343,55 @@ class TestEnvBootstrapVerifyGate:
         assert resp.status == "env_bootstrap_complete"
         assert perf.state == "env_bootstrap_complete"
 
+    async def test_service_readiness_failure_fails_the_bootstrap(self, tmp_path) -> None:
+        # 101: a required service that isn't connectable → bootstrap error, not complete.
+        perf = _make_perf(session_id="sid")
+        perf.role = "env_bootstrap"
+        perf.score.env_cache_path = str(tmp_path)
+        perf.backend.get_status.return_value = BackendStatus(state="done")
+        (tmp_path / "verify.sh").write_text("#!/bin/sh\nexit 0\n")
+        settings = Settings(AGENT_BACKEND="opencode", SERVICE_INFERENCE_TIMEOUT=60)
+        with (
+            patch(
+                "performer.main._run_service_inference",
+                new=AsyncMock(return_value={"inference_succeeded": True}),
+            ),
+            patch(
+                "performer.workspace.run_service_readiness",
+                new=AsyncMock(return_value=(False, [{"service": "postgres", "reason": "not connectable"}])),
+            ),
+            patch("performer.main.get_settings", return_value=settings),
+        ):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
+
+        assert resp.status == "error"
+        assert "postgres" in (resp.reason or "") or "not ready" in (resp.reason or "").lower()
+        assert perf.state == "error"
+
+    async def test_service_readiness_ok_completes_the_bootstrap(self, tmp_path) -> None:
+        # 101: required services connectable (or none declared) → completes as before.
+        perf = _make_perf(session_id="sid")
+        perf.role = "env_bootstrap"
+        perf.score.env_cache_path = str(tmp_path)
+        perf.backend.get_status.return_value = BackendStatus(state="done")
+        (tmp_path / "verify.sh").write_text("#!/bin/sh\nexit 0\n")
+        settings = Settings(AGENT_BACKEND="opencode", SERVICE_INFERENCE_TIMEOUT=60)
+        with (
+            patch(
+                "performer.main._run_service_inference",
+                new=AsyncMock(return_value={"inference_succeeded": True}),
+            ),
+            patch(
+                "performer.workspace.run_service_readiness",
+                new=AsyncMock(return_value=(True, [])),
+            ),
+            patch("performer.main.get_settings", return_value=settings),
+        ):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
+
+        assert resp.status == "env_bootstrap_complete"
+        assert perf.state == "env_bootstrap_complete"
+
     async def test_verify_missing_is_degraded_not_fatal(self, tmp_path) -> None:
         # No verify.sh written → legacy/degraded bootstrap: log + proceed, not fail.
         perf = _make_perf(session_id="sid")
