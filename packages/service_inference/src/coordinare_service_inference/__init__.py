@@ -28,6 +28,7 @@ from coordinare_service_inference.prompt import render_system_prompt
 from coordinare_service_inference.schema import (
     ServiceEntry,
     ServicesManifest,
+    services_requiring_inference_validation,
 )
 from coordinare_service_inference.templater import render
 from coordinare_service_inference.tools import ToolSandbox
@@ -268,8 +269,28 @@ async def infer_services(
                 manifest=manifest, scripts_dir=scripts_dir, attempts=attempt_idx
             )
 
+        # Spec 104: do NOT run-validate coordinare-managed (postgres/redis) services.
+        # Their server binary is installed by env-bootstrap *from this manifest*
+        # (091/102) and their readiness is verified by spec-101's gate at bootstrap —
+        # they are not present at inference time, so starting them here only spins
+        # until the validator's subprocess timeout (the chicken-and-egg that returned
+        # services=[]). External-required and generic services are still validated
+        # (the external start script only asserts required_env_vars; it never starts a
+        # binary, so it cannot hang). When nothing remains to validate, skip the run
+        # entirely and accept the manifest. The success artifacts (`scripts`) are
+        # always rendered from the FULL manifest, so managed services stay declared for
+        # coordinare to host; `validation_scripts` (the non-managed subset, or None when
+        # nothing remains) is what the validator actually runs. Both renders share the
+        # same TemplateError/UndefinedError recovery so a bad template feeds the retry
+        # loop rather than crashing inference.
+        validation_services = services_requiring_inference_validation(manifest)
         try:
             scripts = render(manifest)
+            validation_scripts = (
+                render(manifest.model_copy(update={"services": validation_services}))
+                if validation_services
+                else None
+            )
         except (UndefinedError, TemplateError) as exc:
             attempt_log["render_error"] = str(exc)
             attempts.append(attempt_log)
@@ -288,13 +309,29 @@ async def infer_services(
             )
             continue
 
-        # Spec 092 US2: gap-fill the start-phase dry-run with agent-discovered
-        # test-env vars (path-only `test_env_source`; literal values are read
-        # here, never persisted). The validator merges {**os.environ, **env},
-        # so a value already in os.environ (e.g. a configured test_env routed
-        # via the bootstrap payload's secrets channel) always wins.
-        env_overrides = _load_test_env_source(project_root, manifest.test_env_source)
-        last_validation = validate(scripts, working_dir=None, env=env_overrides or None)
+        if validation_scripts is None:
+            last_validation = ValidationResult(
+                phase=None, stdout="", stderr="", ok=True, returncode=0
+            )
+            _log.info(
+                "service_inference_validation_skipped",
+                attempt=attempt_idx,
+                agent_version=agent_version,
+                reason="all_services_coordinare_managed",
+                managed_services=[s.name for s in manifest.services],
+            )
+        else:
+            # Spec 092 US2: gap-fill the start-phase dry-run with agent-discovered
+            # test-env vars (path-only `test_env_source`; literal values are read
+            # here, never persisted). The validator merges {**os.environ, **env},
+            # so a value already in os.environ (e.g. a configured test_env routed
+            # via the bootstrap payload's secrets channel) always wins.
+            env_overrides = _load_test_env_source(project_root, manifest.test_env_source)
+            last_validation = validate(
+                validation_scripts,
+                working_dir=None,
+                env=env_overrides or None,
+            )
         attempt_log["validation_phase"] = last_validation.phase
         attempt_log["validation_ok"] = last_validation.ok
         attempt_log["validation_returncode"] = last_validation.returncode
