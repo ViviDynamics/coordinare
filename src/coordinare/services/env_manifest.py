@@ -528,4 +528,35 @@ def render_activate_sh(manifest: EnvManifest, *, cache_mount_path: str) -> str:
         "done",
         "",
     ]
+    # Service-host aliasing (spec 105): coordinare hosts declared services on
+    # 127.0.0.1 IN THIS container, but the app's test-env names them by their
+    # docker-compose hostnames (e.g. POSTGRESQL_HOST=db, REDIS_HOST=redis, and
+    # redis://redis:.../ embedded in a URL). There is no compose network here, so
+    # those names don't resolve. Map each single-label *_HOST/*_HOSTNAME value to
+    # loopback so the app connects — aliasing the NAME fixes standalone vars AND
+    # URL-embedded uses of the same name. Reads the LIVE env at runtime (no test-env
+    # value is baked into this script — secret-free); best-effort and non-fatal so a
+    # non-writable hosts file never aborts the sourced shell.
+    lines += [
+        "# --- service-host aliasing (spec 105): declared service hostnames -> loopback ---",
+        '_HOSTS="${COORDINARE_HOSTS_FILE:-/etc/hosts}"',
+        # `while read` (not `for $(...)`) so a value is taken whole — never word-split
+        # into bogus fragments if it ever contains whitespace.
+        "env | sed -n 's/^[A-Za-z0-9_]*_HOSTNAME=//p; s/^[A-Za-z0-9_]*_HOST=//p' "
+        "| while IFS= read -r _hv; do",
+        # Single-label hostname only: skip empty / localhost / FQDN (dot) / IP or
+        # host:port (colon), AND anything with a char outside a hostname label
+        # (spaces, shell metachars, slashes) — defensive, never trust the value.
+        '  case "$_hv" in',
+        "    ''|localhost|*.*|*:*) continue ;;",
+        '    *[!A-Za-z0-9_-]*) continue ;;',
+        "  esac",
+        # Idempotent: skip only when our exact alias line already exists (fixed-string,
+        # whole-line — avoids `grep -w` matching `db` inside `postgres-db`).
+        '  grep -qxF "127.0.0.1 $_hv" "$_HOSTS" 2>/dev/null && continue',
+        '  echo "127.0.0.1 $_hv" >> "$_HOSTS" 2>/dev/null || true',  # best-effort, non-fatal
+        "done",
+        "unset _HOSTS",
+        "",
+    ]
     return "\n".join(lines)
