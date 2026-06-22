@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+
 from coordinare.models.env_manifest import EnvManifest, ManifestItem
 from coordinare.services.env_manifest import (
     STRUCTURED_SPEC_FILES,
@@ -389,6 +392,143 @@ class TestActivateRenderer:
         # no hard-pinned major version in the discovery glob
         import re
         assert not re.search(r"usr/lib/postgresql/\d", sh)
+
+    # --- spec 105: service-host aliasing to loopback ---
+
+    def _run_activation(self, tmp_path, env_overrides: dict) -> str:
+        """Render activate.sh, source it in bash with a temp hosts file + the given
+        env, and return the resulting hosts-file contents."""
+        sh = render_activate_sh(self._manifest(), cache_mount_path="/devenv/sym")
+        script = tmp_path / "activate.sh"
+        script.write_text(sh)
+        hosts = tmp_path / "hosts"
+        hosts.write_text("127.0.0.1 localhost\n")
+        env = {
+            **os.environ,
+            "COORDINARE_HOSTS_FILE": str(hosts),
+            "DEVENV": str(tmp_path / "nonexistent-cache"),
+            **env_overrides,
+        }
+        subprocess.run(
+            ["bash", "-c", f". {script}"],
+            env=env,
+            check=False,
+            capture_output=True,
+            timeout=30,
+        )
+        return hosts.read_text()
+
+    def test_service_host_alias_block_present_and_secret_free(self) -> None:
+        """105/FR-001/FR-006: the rendered activate.sh carries the generic
+        *_HOST/*_HOSTNAME alias loop (reading the LIVE env) — never a baked-in
+        hostname value, and uses the COORDINARE_HOSTS_FILE seam defaulting to
+        /etc/hosts."""
+        sh = render_activate_sh(self._manifest(), cache_mount_path="/devenv/sym")
+        assert "_HOSTNAME=" in sh and "_HOST=" in sh  # the sed extraction
+        assert "127.0.0.1 $_hv" in sh
+        assert 'COORDINARE_HOSTS_FILE:-/etc/hosts' in sh
+        # secret-free: the loop reads the live env; no literal test-env value baked in
+        assert "POSTGRESQL_HOST=db" not in sh
+        # must not use errexit/nounset (sourced into every shell)
+        assert "set -e" not in sh and "set -u" not in sh
+
+    def test_service_host_alias_single_label_to_loopback(self, tmp_path) -> None:
+        """105/US1 (SC-001): single-label *_HOST values are aliased to 127.0.0.1."""
+        content = self._run_activation(
+            tmp_path, {"POSTGRESQL_HOST": "db", "REDIS_HOST": "redis"}
+        )
+        assert "127.0.0.1 db" in content
+        assert "127.0.0.1 redis" in content
+
+    def test_service_host_alias_covers_url_embedded_via_name(self, tmp_path) -> None:
+        """105/US2: aliasing the name from REDIS_HOST also makes a URL-embedded
+        `redis://redis:.../` resolve — no URL parsing needed."""
+        content = self._run_activation(
+            tmp_path,
+            {
+                "REDIS_HOST": "redis",
+                "REDIS_SESSION_STORE_URL": "redis://redis:46379/5/session",
+            },
+        )
+        assert "127.0.0.1 redis" in content
+
+    def test_service_host_alias_skips_fqdn_ip_localhost_empty(self, tmp_path) -> None:
+        """105/US3 (SC-002): FQDN, IP, localhost, and empty values are not aliased."""
+        content = self._run_activation(
+            tmp_path,
+            {
+                "SMTP_HOSTNAME": "mail.example.com",
+                "A_HOST": "10.0.0.5",
+                "B_HOST": "localhost",
+                "C_HOST": "",
+            },
+        )
+        assert "mail.example.com" not in content
+        assert "10.0.0.5" not in content
+        # localhost already present once (seed line); no NEW alias line added for it
+        assert content.count("localhost") == 1
+
+    def test_service_host_alias_skips_whitespace_and_metachar_values(self, tmp_path) -> None:
+        """105 review: a *_HOST value containing whitespace or shell metachars must
+        never be word-split into bogus entries or corrupt the hosts file — it is
+        skipped wholesale (read whole-line + strict hostname-charset guard)."""
+        content = self._run_activation(
+            tmp_path,
+            {
+                "SPACEY_HOST": "cache db",  # would word-split with for-$(...)
+                "META_HOST": "db$(echo hi)",  # shell-metachar value
+                "SLASH_HOST": "a/b",
+            },
+        )
+        # none of the fragments or raw values leak in
+        assert "127.0.0.1 cache" not in content
+        assert "echo" not in content
+        assert "a/b" not in content
+        # only the seed line remains
+        assert content.strip() == "127.0.0.1 localhost"
+
+    def test_service_host_alias_allows_hyphenated_label(self, tmp_path) -> None:
+        """105: a legitimate hyphenated single-label hostname IS aliased."""
+        content = self._run_activation(tmp_path, {"DB_HOST": "pg-primary"})
+        assert "127.0.0.1 pg-primary" in content
+
+    def test_service_host_alias_no_false_skip_on_hyphen_substring(self, tmp_path) -> None:
+        """105 review: idempotency must use an exact whole-line match — a pre-existing
+        `127.0.0.1 postgres-db` must NOT cause `db` to be wrongly skipped."""
+        sh = render_activate_sh(self._manifest(), cache_mount_path="/devenv/sym")
+        script = tmp_path / "activate.sh"
+        script.write_text(sh)
+        hosts = tmp_path / "hosts"
+        hosts.write_text("127.0.0.1 localhost\n127.0.0.1 postgres-db\n")
+        env = {
+            **os.environ,
+            "COORDINARE_HOSTS_FILE": str(hosts),
+            "DEVENV": str(tmp_path / "none"),
+            "DB_HOST": "db",
+        }
+        subprocess.run(
+            ["bash", "-c", f". {script}"], env=env, check=False, capture_output=True, timeout=30
+        )
+        assert "127.0.0.1 db\n" in hosts.read_text()  # db added despite postgres-db present
+
+    def test_service_host_alias_idempotent(self, tmp_path) -> None:
+        """105/US3 (SC-003): re-activation adds no duplicate entry."""
+        sh = render_activate_sh(self._manifest(), cache_mount_path="/devenv/sym")
+        script = tmp_path / "activate.sh"
+        script.write_text(sh)
+        hosts = tmp_path / "hosts"
+        hosts.write_text("127.0.0.1 localhost\n")
+        env = {
+            **os.environ,
+            "COORDINARE_HOSTS_FILE": str(hosts),
+            "DEVENV": str(tmp_path / "none"),
+            "POSTGRESQL_HOST": "db",
+        }
+        for _ in range(2):
+            subprocess.run(
+                ["bash", "-c", f". {script}"], env=env, check=False, capture_output=True, timeout=30
+            )
+        assert hosts.read_text().count("127.0.0.1 db") == 1
 
 
 class TestServiceInstallDerivation:
