@@ -1667,6 +1667,70 @@ def test_build_env_bootstrap_payload_emits_service_install_for_declared_postgres
     assert "postgresql-client" in persona
 
 
+def test_service_install_uses_closure_resolving_download(monkeypatch) -> None:
+    """102/US1: the service-deb fetch must resolve the meta-package's full
+    dependency closure (so the versioned postgresql-NN server lands), via
+    `apt-get install --download-only` — NOT the fragile `apt-cache depends|grep`
+    download pipeline that dropped the server binaries (website Postgres gap)."""
+    monkeypatch.setenv("GITHUB_TOKEN", "ghs_test")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    svc = HTTPPerformerService(
+        _persistent_config(), client=_client(lambda r: httpx.Response(204))
+    )
+    declared = [{"name": "postgres", "kind": "postgres", "binary": "postgres",
+                 "data_dir": "/tmp/pg", "port": 5432, "why_needed": "db",
+                 "sources": ["config/database.yml"]}]
+    persona = svc._build_job_payload(_bootstrap_card_context(declared), None).persona
+    assert "SYSTEM SERVICES" in persona
+    # Scope assertions to the SYSTEM SERVICES block — the generic system-package
+    # / shared-library instruction elsewhere in the persona legitimately uses
+    # `apt-cache depends`; the SERVICE fetch must not.
+    block = persona[persona.index("SYSTEM SERVICES"):]
+    block = block[: block.index("\n\n") + 2]
+    # Robust, closure-resolving download:
+    assert "apt-get install" in block and "--download-only" in block
+    assert "Dir::Cache::archives" in block
+    # The fragile pipeline must be gone from the service block:
+    assert "apt-cache depends" not in block
+    # Still extracted into the cache, into a CONCRETE dir (no unsubstituted
+    # `<prefix>` placeholder the agent might take literally):
+    assert "dpkg-deb -x" in block
+    assert "<prefix>" not in block
+    assert "services-extract" in block
+    # Both server + client still named (apt resolves the meta to the server):
+    assert "postgresql" in block and "postgresql-client" in block
+
+
+def test_service_install_no_hardcoded_server_version(monkeypatch) -> None:
+    """102/US2: version-resilient — names the version-agnostic meta, NOT a
+    hard-pinned versioned server (which breaks when the base distro advances)."""
+    monkeypatch.setenv("GITHUB_TOKEN", "ghs_test")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    svc = HTTPPerformerService(
+        _persistent_config(), client=_client(lambda r: httpx.Response(204))
+    )
+    declared = [{"name": "postgres", "kind": "postgres", "binary": "postgres",
+                 "data_dir": "/tmp/pg", "port": 5432, "why_needed": "db", "sources": ["x"]}]
+    persona = svc._build_job_payload(_bootstrap_card_context(declared), None).persona
+    import re
+    assert not re.search(r"postgresql-\d", persona), "must not hard-pin a versioned server"
+
+
+def test_service_install_renders_for_redis(monkeypatch) -> None:
+    """102/US3: the closure-resolving fetch renders for any coordinare-known kind."""
+    monkeypatch.setenv("GITHUB_TOKEN", "ghs_test")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    svc = HTTPPerformerService(
+        _persistent_config(), client=_client(lambda r: httpx.Response(204))
+    )
+    declared = [{"name": "cache", "kind": "redis", "binary": "redis-server",
+                 "data_dir": "/tmp/redis", "port": 6379, "why_needed": "cache", "sources": ["x"]}]
+    persona = svc._build_job_payload(_bootstrap_card_context(declared), None).persona
+    assert "SYSTEM SERVICES" in persona
+    assert "redis-server" in persona
+    assert "apt-get install" in persona and "--download-only" in persona
+
+
 def test_build_env_bootstrap_payload_no_service_block_when_none_declared(
     monkeypatch,
 ) -> None:
