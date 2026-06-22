@@ -350,3 +350,46 @@ def test_manifest_carries_only_names_and_paths_never_literal_values() -> None:
     # There is no field on the manifest that could hold a loaded KEY=VALUE pair:
     # the only test-env artifact is the path-only source string.
     assert manifest.test_env_source == ".coordinare/test.env"
+
+
+# --- spec 104: which services need inference-time run-validation ---
+
+
+def test_services_requiring_inference_validation_excludes_only_managed_kinds() -> None:
+    """104/FR-001/FR-006: only coordinare-managed kinds (postgres/redis) are
+    excluded from inference-time run-validation — their server binary isn't
+    present yet. External-required and generic services ARE still validated
+    (external start scripts only assert required_env_vars; they can't hang).
+    Reuses COORDINARE_MANAGED_KINDS."""
+    from coordinare_service_inference.schema import services_requiring_inference_validation
+
+    pg = ServiceEntry(**_base_entry(name="pgmain", binary="postgres", version=None, kind="postgres"))
+    redis = ServiceEntry(**_base_entry(name="cache", binary="redis-server", version=None, kind="redis"))
+    external = ServiceEntry(
+        **_base_entry(
+            name="mailer",
+            binary="mailhog",
+            version=None,
+            external_required=True,
+            required_env_vars=["MAILHOG_HOST"],
+        )
+    )
+    generic = ServiceEntry(**_base_entry(name="worker", binary="/bin/sh", version=None, kind="generic"))
+
+    # Only coordinare-managed kinds → nothing left to validate.
+    managed_only = ServicesManifest(
+        services=[pg, redis], cache_inputs=["Gemfile"], agent_version="t"
+    )
+    assert services_requiring_inference_validation(managed_only) == []
+
+    # Managed + external → the external service is still validated.
+    managed_plus_external = ServicesManifest(
+        services=[pg, redis, external], cache_inputs=["Gemfile"], agent_version="t"
+    )
+    assert [s.name for s in services_requiring_inference_validation(managed_plus_external)] == ["mailer"]
+
+    # Mixed → generic + external validated, postgres excluded.
+    mixed = ServicesManifest(
+        services=[pg, generic, external], cache_inputs=["Gemfile"], agent_version="t"
+    )
+    assert [s.name for s in services_requiring_inference_validation(mixed)] == ["worker", "mailer"]

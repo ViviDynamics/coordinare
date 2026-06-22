@@ -262,3 +262,182 @@ async def test_stale_rejected_file_removed_on_success(
     )
 
     assert not stale.exists()
+
+
+# --- spec 104: inference must not START coordinare-managed services at validation ---
+
+
+def _managed_only_manifest() -> dict[str, Any]:
+    """postgres + redis — both coordinare-managed; binaries not on PATH at
+    inference time (installed later by env-bootstrap)."""
+    return {
+        "services": [
+            {
+                "name": "pgmain",
+                "binary": "postgres",
+                "version": None,
+                "data_dir": "/tmp/pg",
+                "port": 5432,
+                "why_needed": "primary db",
+                "sources": ["config/database.yml"],
+                "kind": "postgres",
+                "init": {
+                    "superuser": "systemuser",
+                    "databases": ["app_test"],
+                    "password_env_var": None,
+                },
+            },
+            {
+                "name": "cache",
+                "binary": "redis-server",
+                "version": None,
+                "data_dir": "/tmp/redis",
+                "port": 6379,
+                "why_needed": "session store",
+                "sources": ["Gemfile"],
+                "kind": "redis",
+            },
+        ],
+        "cache_inputs": ["Gemfile"],
+        "agent_version": "test-1",
+    }
+
+
+def _mixed_manifest() -> dict[str, Any]:
+    """postgres (managed) + a generic worker with an absolute-path binary."""
+    return {
+        "services": [
+            {
+                "name": "pgmain",
+                "binary": "postgres",
+                "version": None,
+                "data_dir": "/tmp/pg",
+                "port": 5432,
+                "why_needed": "primary db",
+                "sources": ["config/database.yml"],
+                "kind": "postgres",
+                "init": {
+                    "superuser": "systemuser",
+                    "databases": ["app_test"],
+                    "password_env_var": None,
+                },
+            },
+            {
+                "name": "worker",
+                "binary": "/bin/sh",
+                "version": None,
+                "data_dir": "/tmp/worker",
+                "port": 9001,
+                "why_needed": "background jobs",
+                "sources": ["Procfile"],
+                "kind": "generic",
+            },
+        ],
+        "cache_inputs": ["Gemfile"],
+        "agent_version": "test-1",
+    }
+
+
+@pytest.mark.asyncio
+async def test_managed_only_manifest_skips_validation_and_records(
+    project: Path, output_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """104/US1: a manifest whose only services are coordinare-managed
+    (postgres/redis) must NOT be validated-by-starting — validate() is never
+    called — yet both services are recorded (no TimeoutExpired, no services=[])."""
+    calls: list[Any] = []
+
+    def _spy(scripts, **_):
+        calls.append(scripts)
+        return ValidationResult(phase=None, stdout="ok", stderr="", ok=True, returncode=0)
+
+    monkeypatch.setattr("coordinare_service_inference.validate", _spy)
+    client = _StubClient([LLMStep(manifest=_managed_only_manifest())])
+
+    result = await infer_services(
+        project_root=project,
+        output_root=output_root,
+        agent_version="test-1",
+        llm_client=client,
+        retry_budget=3,
+    )
+
+    assert calls == [], "validate() must not run for a managed-only manifest"
+    payload = json.loads((result.scripts_dir / "services.json").read_text())
+    names = {s["name"] for s in payload["services"]}
+    assert names == {"pgmain", "cache"}, "both managed services must be recorded"
+    # success artifacts still rendered from the FULL manifest
+    assert (result.scripts_dir / "services-start.sh").is_file()
+
+
+@pytest.mark.asyncio
+async def test_mixed_manifest_validates_only_generic(
+    project: Path, output_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """104/US3: a mixed manifest validates ONLY the generic service; postgres is
+    never started during inference; the persisted manifest records BOTH."""
+    captured: list[Any] = []
+
+    def _spy(scripts, **_):
+        captured.append(scripts)
+        return ValidationResult(phase=None, stdout="ok", stderr="", ok=True, returncode=0)
+
+    monkeypatch.setattr("coordinare_service_inference.validate", _spy)
+    client = _StubClient([LLMStep(manifest=_mixed_manifest())])
+
+    result = await infer_services(
+        project_root=project,
+        output_root=output_root,
+        agent_version="test-1",
+        llm_client=client,
+        retry_budget=3,
+    )
+
+    assert len(captured) == 1, "validate() runs once for the generic subset"
+    start = captured[0].start
+    assert "initdb" not in start, "postgres must not be in the validation scripts"
+    assert "PGMAIN" not in start, "postgres service must be excluded from validation"
+    assert "worker" in start.lower() or "WORKER" in captured[0].start, "generic service must be validated"
+    payload = json.loads((result.scripts_dir / "services.json").read_text())
+    names = {s["name"] for s in payload["services"]}
+    assert names == {"pgmain", "worker"}, "persisted manifest records BOTH services"
+
+
+@pytest.mark.asyncio
+async def test_generic_failure_still_rejects(
+    project: Path, output_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """104/US2: a generic service whose start/health fails still rejects the
+    manifest (the run-validation regression guard is intact)."""
+    monkeypatch.setattr(
+        "coordinare_service_inference.validate",
+        lambda scripts, **_: ValidationResult(
+            phase="health", stdout="", stderr="not listening", ok=False, returncode=1
+        ),
+    )
+    generic_only = {
+        "services": [
+            {
+                "name": "worker",
+                "binary": "/bin/sh",
+                "version": None,
+                "data_dir": "/tmp/worker",
+                "port": 9001,
+                "why_needed": "jobs",
+                "sources": ["Procfile"],
+                "kind": "generic",
+            }
+        ],
+        "cache_inputs": ["Procfile"],
+        "agent_version": "test-1",
+    }
+    client = _StubClient([LLMStep(manifest=generic_only) for _ in range(3)])
+
+    with pytest.raises(InferenceFailed):
+        await infer_services(
+            project_root=project,
+            output_root=output_root,
+            agent_version="test-1",
+            llm_client=client,
+            retry_budget=3,
+        )

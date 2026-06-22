@@ -357,3 +357,26 @@ def manifest_json_schema() -> dict[str, Any]:
 def manifest_json_schema_str(indent: int = 2) -> str:
     """Return the manifest JSON schema as a formatted string (for docs/operator UI)."""
     return json.dumps(manifest_json_schema(), indent=indent, sort_keys=True)
+
+
+def services_requiring_inference_validation(
+    manifest: ServicesManifest,
+) -> list[ServiceEntry]:
+    """Return the services that should be exercised by inference-time
+    run-validation (start → health → stop).
+
+    Spec 104: a coordinare-managed stateful service (``kind`` in
+    :data:`COORDINARE_MANAGED_KINDS`) has its server binary installed by
+    env-bootstrap *from this manifest* (spec 091/102) and its readiness verified
+    by spec-101's gate at bootstrap — so it is NOT present at inference time and
+    must not be started here (doing so spins until the validator's subprocess
+    timeout, the chicken-and-egg that returned ``services=[]``). Only these
+    coordinare-managed kinds are excluded.
+
+    External-required services ARE still validated: their rendered start script
+    only asserts the declared ``required_env_vars`` are present (it never invokes
+    the external binary), so the check is cheap, meaningful (it surfaces missing
+    operator config), and cannot hang. Generic in-container services are likewise
+    validated as before.
+    """
+    return [svc for svc in manifest.services if svc.kind not in COORDINARE_MANAGED_KINDS]
