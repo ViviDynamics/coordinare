@@ -265,6 +265,25 @@ DEFAULT_INFERENCE_MAX_TOKENS = 64_000
 DEFAULT_INFERENCE_MAX_TOOL_CALLS = 50
 
 
+def _read_declared_services(stand_path: Path) -> list[dict]:
+    """101: read the symphony's durably-declared services from the cloned repo's
+    ``.coordinare/score.json`` (the same source service inference uses), as plain
+    dicts for the service-readiness gate. Any failure (no file / parse error) →
+    ``[]`` (no declared services → the gate is a no-op, behavior unchanged).
+    """
+    try:
+        score = Path(stand_path) / ".coordinare" / "score.json"
+        if not score.is_file():
+            return []
+        from coordinare_service_inference.schema import ServicesManifest
+
+        manifest = ServicesManifest.model_validate_json(score.read_text(encoding="utf-8"))
+        return [svc.model_dump() for svc in manifest.services]
+    except Exception as exc:  # pragma: no cover - defensive
+        log.info("env_bootstrap.declared_services_unreadable", error=str(exc))
+        return []
+
+
 async def _run_service_inference(
     stand_path: Path,
     env_cache_path: str,
@@ -2856,33 +2875,56 @@ async def handle_status(
                 )
             except asyncio.TimeoutError:
                 # 076 (live QA #150): service_inference is a best-effort,
-                # secondary probe — the dev-env install already ran into the
-                # mounted cache above.  A timeout here MUST NOT fail the whole
-                # bootstrap: doing so leaves the cache un-ready and coordinare
-                # re-dispatches the bootstrap forever (observed: 3 attempts, 0
-                # successes, ~30-45 min each on a slow backend, gating the
-                # symphony indefinitely).  Mirror _run_service_inference's own
-                # internal failsafe (which returns inference_succeeded=False on
-                # InferenceFailed / unexpected errors) — only the external
-                # wait_for timeout escaped it.  Report terminal success with the
-                # inference skipped, so the cache is marked ready and the
-                # degraded inference surfaces on the dashboard.
+                # secondary probe; a timeout MUST NOT by itself fail the whole
+                # bootstrap (re-dispatch-forever). Record the skip and fall
+                # through to the 101 readiness gate, which only blocks when the
+                # symphony declares REQUIRED services that aren't connectable.
                 log.warning(
                     "service_inference.timeout",
                     job_id=perf.session_id,
                     timeout_seconds=inference_timeout,
                     detail=(
-                        "inference timed out; treating bootstrap as complete "
-                        "(install already succeeded, inference is best-effort)"
+                        "inference timed out (best-effort); deferring to the "
+                        "service-readiness gate for required-service handling"
                     ),
                 )
-                perf.state = "env_bootstrap_complete"
-                return PerformerResponse(
-                    status="env_bootstrap_complete",
-                    session_id=perf.session_id,
-                    inference_succeeded=False,
-                    inference_skipped_reason="timeout",
+                perf.inference_state = {
+                    "inference_succeeded": False,
+                    "inference_skipped_reason": "timeout",
+                }
+
+            # 101: service-readiness completion gate — a cache is NOT complete
+            # unless every REQUIRED declared service is started + connectable. A
+            # rejected/empty manifest (or an unconnectable required service) →
+            # bootstrap error, routed through on_bootstrap_complete(success=False)
+            # so the cache is not marked ready and re-bootstraps (instead of
+            # dispatching cards into a structurally-broken env). No declared
+            # services → no-op (behavior unchanged).
+            from performer.workspace import run_service_readiness
+
+            ready_ok, ready_failures = await run_service_readiness(
+                perf.score.env_cache_path,
+                getattr(perf.stand, "cache_env", None),
+                _read_declared_services(perf.stand.path),
+                perf.inference_state,
+            )
+            if not ready_ok:
+                perf.state = "error"
+                perf.error_reason = (
+                    "env-cache required service(s) not ready: "
+                    + "; ".join(f["reason"] for f in ready_failures)
                 )
+                log.warning(
+                    "env_bootstrap.service_readiness_failed",
+                    session_id=perf.session_id,
+                    failures=[f["service"] for f in ready_failures],
+                )
+                return PerformerResponse(
+                    status="error",
+                    session_id=perf.session_id,
+                    reason=perf.error_reason,
+                )
+
             perf.state = "env_bootstrap_complete"
             return PerformerResponse(
                 status="env_bootstrap_complete",

@@ -515,6 +515,95 @@ async def _run_env_cache_health_check(
     )
 
 
+async def run_service_readiness(
+    env_cache_path: str,
+    cache_env: dict[str, str] | None,
+    declared_services: list[dict] | None,
+    inference_result: dict | None,
+    *,
+    health_retries: int = 2,
+    retry_delay: float = 2.0,
+) -> tuple[bool, list[dict]]:
+    """101: gate the env-cache bootstrap on REQUIRED declared services being
+    running + connectable.
+
+    Returns ``(ok, failures)`` where ``failures`` is a list of
+    ``{"service": <names>, "reason": <secret-free>}``. ``ok`` is True when there
+    are no required declared services (no-op), or when every required service's
+    ``services-start.sh`` + ``services-health.sh`` succeed. A rejected/empty
+    inference manifest with required services, or a required service that won't
+    start/connect, → ``ok=False``. Optional services (``required: False``) that
+    fail are warned, not blocking.
+
+    Reuses the 091/063 ``_start_env_cache_services`` (which also runs the health
+    check) + the consumable failure flags; the health check is retried briefly so
+    a slow-to-accept service isn't falsely failed. Reasons are secret-free — they
+    name the service + a generic cause, never raw script output or env values.
+    """
+    declared = declared_services or []
+    required = [s for s in declared if s.get("required", True)]
+    if not required:
+        return True, []  # no required services → gate is a no-op (FR-007)
+
+    names = ", ".join(str(s.get("name") or s.get("kind") or "?") for s in required)
+    inference_ok = bool((inference_result or {}).get("inference_succeeded"))
+    manifest = Path(env_cache_path) / "services" / "services.json"
+    # Short-circuit to "rejected" ONLY when there is genuinely nothing to act on:
+    # inference did not succeed AND no services.json was produced (the website
+    # rejected-manifest case). If a manifest EXISTS — even after an inference
+    # TIMEOUT (inference_succeeded=False but a manifest was written) — defer to the
+    # real services-start + services-health check below, which (not the inference
+    # success flag) is the ground truth for connectability.
+    if not inference_ok and not manifest.is_file():
+        # Clear any stale per-job failure flags before this early return so a flag
+        # set by a prior operation can't leak into downstream response packaging.
+        consume_services_start_failure()
+        consume_env_cache_health_failure()
+        reason = "no services manifest produced (inference failed/rejected) — required service(s) not set up"
+        log.warning(
+            "env_bootstrap.service_readiness",
+            services=names, installed=False, started=False, connectable=False,
+            reason=reason, bootstrap_outcome="error",
+        )
+        return False, [{"service": names, "reason": reason}]
+
+    # Start (and health-check, internally) the services, bounded; reuse 063/091.
+    consume_services_start_failure()
+    consume_env_cache_health_failure()
+    await _start_env_cache_services(env_cache_path, dict(cache_env or {}))
+    start_failed = consume_services_start_failure() is not None
+    health_failed = consume_env_cache_health_failure()
+
+    # Brief bounded retry on a health-only failure (slow-to-accept service).
+    if health_failed and not start_failed:
+        env = {**os.environ, **(cache_env or {})}
+        for _ in range(max(0, health_retries)):
+            await asyncio.sleep(retry_delay)
+            await _run_env_cache_health_check(env_cache_path, env)
+            if not consume_env_cache_health_failure():
+                health_failed = False
+                break
+
+    if start_failed or health_failed:
+        # Secret-free reason: name the service + the failing stage, NOT raw output.
+        cause = "services-start failed" if start_failed else "not connectable (services-health non-zero)"
+        reason = f"required service(s) [{names}]: {cause}"
+        log.warning(
+            "env_bootstrap.service_readiness",
+            services=names, installed=True,
+            started=not start_failed, connectable=False,
+            reason=reason, bootstrap_outcome="error",
+        )
+        return False, [{"service": names, "reason": reason}]
+
+    log.info(
+        "env_bootstrap.service_readiness",
+        services=names, installed=True, started=True, connectable=True,
+        bootstrap_outcome="ok",
+    )
+    return True, []
+
+
 async def run_env_cache_verify(
     env_cache_path: str, cache_env: dict[str, str] | None = None
 ) -> tuple[bool | None, str]:
