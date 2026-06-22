@@ -516,5 +516,16 @@ def render_activate_sh(manifest: EnvManifest, *, cache_mount_path: str) -> str:
         '  [ -d "$_b" ] && export PATH="$_b:$PATH"',
         "done",
         "",
+        # Coordinare-managed stateful service servers (spec-091/102): on Debian the
+        # postgresql-NN server ships initdb/pg_ctl/postgres under
+        # /usr/lib/postgresql/<NN>/bin, NOT /usr/bin — the glob above misses it, so
+        # services-start.sh (which calls bare `initdb`/`postgres`) and spec-101's
+        # readiness gate would not resolve them. Surface these versioned server bin
+        # dirs too (version-agnostic via the * for <NN>).
+        "# --- coordinare-managed service server binaries (e.g. postgresql-NN) ---",
+        'for _s in "$DEVENV"/*/usr/lib/postgresql/*/bin; do',
+        '  [ -d "$_s" ] && export PATH="$_s:$PATH"',
+        "done",
+        "",
     ]
     return "\n".join(lines)
