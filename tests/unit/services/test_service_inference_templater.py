@@ -221,12 +221,18 @@ def test_postgres_start_does_not_set_e():
 
 
 def test_postgres_password_referenced_only_as_env_var():
-    # C-3: the admin secret is referenced only via ${<password_env_var>}, read at
-    # runtime through process substitution — never a literal in argv or logs.
+    # C-3 / spec-110: the admin secret is referenced only via ${<password_env_var>},
+    # passed to the unprivileged init shell via the environment (_PGPW), which reads
+    # it through --pwfile=<(...) process substitution it creates itself — never a
+    # literal in argv, logs, or on disk.
     scripts = render(_manifest([_postgres_init()]))
-    assert "--pwfile=<(printf '%s' \"${POSTGRES_PASSWORD}\")" in scripts.start
+    s = scripts.start
+    # secret handed to the dropped-privilege shell via env, not argv/disk:
+    assert '_PGPW="${POSTGRES_PASSWORD}"' in s
+    # that shell reads it via process substitution into --pwfile:
+    assert "--pwfile=<(printf" in s and '"$_PGPW"' in s
     # The env-var NAME may appear; no literal secret value is ever emitted.
-    assert "password=" not in scripts.start.lower()
+    assert "password=" not in s.lower()
 
 
 def test_postgres_without_password_omits_pwfile():
@@ -242,15 +248,20 @@ def test_postgres_without_password_omits_pwfile():
 
 def test_postgres_init_runs_before_launch():
     # C-5: initdb → (superuser created atomically by initdb --username) → launch
-    # → create databases. Assert ordering by offset.
+    # → create databases. Assert ordering by offset of the EXECUTION lines (ignore
+    # comments, which spec-110 added mentioning initdb/postgres).
     scripts = render(_manifest([_postgres_init()]))
-    s = scripts.start
-    i_initdb = s.index("initdb")
-    i_launch = s.index("postgres -D")
-    i_createdb = s.index("createdb")
+    exec_lines = "\n".join(
+        ln for ln in scripts.start.splitlines() if not ln.lstrip().startswith("#")
+    )
+    i_initdb = exec_lines.index("initdb --pgdata")
+    i_launch = exec_lines.index("postgres -D")
+    i_createdb = exec_lines.index("createdb")
     assert i_initdb < i_launch < i_createdb
     # superuser created atomically by initdb (no separate CREATE ROLE step).
-    assert "--username=root" in s
+    assert "--username=root" in exec_lines
+    # spec-110: postgres runs as an unprivileged user (it refuses to run as root).
+    assert "_PGUSER=pgrunner" in scripts.start and "runuser -u" in scripts.start
 
 
 def test_postgres_initdb_guarded_by_pg_version_sentinel():
@@ -311,9 +322,9 @@ def test_postgres_declared_empty_password_falls_through_to_trust_auth():
     assert 'elif [ -z "${POSTGRES_PASSWORD}" ]; then' in s
     # the passwordless init uses trust auth on both seams.
     assert "--auth-local=trust --auth-host=trust" in s
-    # the non-empty branch still reaches md5 + pwfile.
+    # the non-empty branch still reaches md5 + pwfile (secret via _PGPW env).
     assert "--auth-local=trust --auth-host=md5" in s
-    assert "--pwfile=<(printf '%s' \"${POSTGRES_PASSWORD}\")" in s
+    assert '_PGPW="${POSTGRES_PASSWORD}"' in s and "--pwfile=<(printf" in s
     # the empty case must NOT route through --pwfile (no md5 with an empty secret).
     i_empty = s.index('elif [ -z "${POSTGRES_PASSWORD}" ]; then')
     i_md5 = s.index("--auth-host=md5")
