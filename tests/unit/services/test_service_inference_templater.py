@@ -243,6 +243,40 @@ def test_postgres_without_password_omits_pwfile():
     assert "--pwfile" not in scripts.start
 
 
+# --- spec 115: service-scoped library load path (libpq.so.5) ---
+
+
+def test_service_lib_loadpath_prelude_built_from_extract_tree():
+    # spec 115: the script builds _SVC_LD_LIBRARY_PATH from the cache's services-extract tree
+    # (where libpq.so.5 + the postgres extension libs live), prepended onto the profile-set
+    # LD_LIBRARY_PATH and guarded on $DEVENV.
+    s = render(_manifest([_postgres_init()])).start
+    assert '_SVC_LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"' in s
+    assert 'if [ -n "${DEVENV:-}" ]; then' in s
+    assert '"$DEVENV"/services-extract/usr/lib/*-linux-gnu' in s
+    assert '"$DEVENV"/services-extract/usr/lib/postgresql/*/lib' in s
+    # additive prepend, not a clobber:
+    assert '_SVC_LD_LIBRARY_PATH="$_svc_lib:$_SVC_LD_LIBRARY_PATH"' in s
+
+
+def test_service_lib_loadpath_exported_for_clients():
+    # The path is exported for THIS script so the root-caller clients (pg_isready/psql/
+    # createdb) and the backgrounded daemons link against the cached libs. (Safe: the script
+    # is a one-shot bootstrap process; the app-under-test gets a fresh shell via activate.sh.)
+    s = render(_manifest([_postgres_init()])).start
+    assert 'export LD_LIBRARY_PATH="$_SVC_LD_LIBRARY_PATH"' in s
+
+
+def test_postgres_runuser_invocations_pass_scoped_loadpath_explicitly():
+    # runuser drops the inherited env, so _pg_as (initdb/postgres) and the md5-auth init must
+    # pass the scoped path explicitly rather than rely on the script-level export.
+    s = render(_manifest([_postgres_init()])).start
+    assert '_pg_as() { runuser -u "$_PGUSER" -- env PATH="$PATH" LD_LIBRARY_PATH="$_SVC_LD_LIBRARY_PATH"' in s
+    assert 'LD_LIBRARY_PATH="$_SVC_LD_LIBRARY_PATH" _PGPW=' in s
+    # the stale raw-LD_LIBRARY_PATH passthrough is gone from the managed invocations:
+    assert 'LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}" "$@"' not in s
+
+
 # C-5..C-10: postgres init render (T008)
 
 
@@ -370,13 +404,14 @@ def test_postgres_data_dir_resolves_under_services_root():
 
 
 def test_generic_redis_render_unchanged_by_postgres_support():
-    # C-4: a manifest with no initializing kind renders byte-for-byte as pre-091
-    # — none of the postgres-only tokens leak in.
+    # C-4: a manifest with no initializing kind renders as pre-091 — none of the
+    # postgres-only init tokens leak in.
     scripts = render(_manifest([_redis()]))
     s = scripts.start
     for token in ("initdb", "PG_VERSION", "pg_isready", "createdb", "_PGDATA"):
         assert token not in s, f"postgres token {token!r} leaked into generic render"
-    # the redis launch line and comment block are emitted verbatim
+    # the redis launch line is emitted verbatim (it inherits the spec-115 script-level
+    # LD_LIBRARY_PATH export so the cached redis-server's libs resolve).
     assert (
         "  redis-server --port=6379 --data-dir=/tmp/redis-data "
         '>"${REDIS_DATA_DIR}/redis.log" 2>&1 &' in s
