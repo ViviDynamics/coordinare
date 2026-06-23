@@ -837,6 +837,38 @@ class TestStartEnvCacheServices:
         await _start_env_cache_services(str(tmp_path), {"CACHE_TOKEN": "xyz"})
         assert marker.exists(), "cache_env vars must be exported to services-start.sh"
 
+    async def test_devenv_sourced_guard_is_cleared(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """109: the performer process has _DEVENV_SOURCED=1 (it sourced the devenv
+        profile at startup). services-start.sh must run with that re-entry guard
+        CLEARED so BASH_ENV re-sources the profile fresh — putting the now-extracted
+        service binaries (initdb/postgres) on PATH and their libs on LD_LIBRARY_PATH.
+        Without clearing it, the start runs with the stale pre-extraction env and
+        postgres is never found."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from performer.workspace import _start_env_cache_services
+
+        monkeypatch.setenv("_DEVENV_SOURCED", "1")
+        services = tmp_path / "services"
+        services.mkdir()
+        start = services / "services-start.sh"
+        start.write_text("#!/usr/bin/env bash\nexit 0\n")
+        start.chmod(0o755)
+        proc = MagicMock()
+        proc.returncode = 0
+        proc.communicate = AsyncMock(return_value=(b"", b""))
+        with patch(
+            "performer.workspace.asyncio.create_subprocess_exec", return_value=proc
+        ) as mock_exec:
+            await _start_env_cache_services(str(tmp_path), {})
+        env = mock_exec.call_args[1]["env"]
+        assert "_DEVENV_SOURCED" not in env, (
+            "the profile re-entry guard must be cleared so BASH_ENV re-sources "
+            "post-extraction (else initdb/postgres aren't on PATH)"
+        )
+
 
 class TestStopEnvCacheServices:
     """Tests for stop_env_cache_services and stop_all_env_cache_services (spec 063 T007)."""
