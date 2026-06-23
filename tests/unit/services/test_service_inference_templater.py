@@ -254,7 +254,7 @@ def test_postgres_init_runs_before_launch():
     exec_lines = "\n".join(
         ln for ln in scripts.start.splitlines() if not ln.lstrip().startswith("#")
     )
-    i_initdb = exec_lines.index("initdb --pgdata")
+    i_initdb = exec_lines.index("initdb --no-sync")
     i_launch = exec_lines.index("postgres -D")
     i_createdb = exec_lines.index("createdb")
     assert i_initdb < i_launch < i_createdb
@@ -402,8 +402,11 @@ def test_postgres_readiness_wait_is_bounded_and_attributed():
     # is surfaced as an environment-attributed failure.
     scripts = render(_manifest([_postgres_init()]))
     s = scripts.start
-    assert 'while [ "$_pg_wait" -lt 60 ]; do' in s
-    assert "ERROR: env: postgres did not become ready within 60s" in s
+    # spec 111: wait raised 60s→180s to cover initdb under load (ephemeral, re-run
+    # every container); initdb uses --no-sync to keep that fast.
+    assert 'while [ "$_pg_wait" -lt 180 ]; do' in s
+    assert "ERROR: env: postgres did not become ready within 180s" in s
+    assert "initdb --no-sync" in s
 
 
 # C-13b: kind-aware teardown (T014b)
