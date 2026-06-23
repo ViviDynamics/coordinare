@@ -2827,44 +2827,15 @@ async def handle_status(
         # surface as backend_status.state == "error" and route through the
         # generic error path elsewhere in this function.
         if perf.role == "env_bootstrap":
-            # 077 (Tier 2): confirm the install actually worked before reporting
-            # success. The agent wrote verify.sh asserting every documented
-            # dependency is present + runnable; a non-zero exit means a silent
-            # install failure (e.g. apt-get located no package), so we FAIL the
-            # bootstrap here. The coordinare's on_bootstrap_complete(success=False)
-            # path then clears readme_sha and retries — instead of marking a
-            # broken cache "ready". A missing verify.sh is treated as a degraded
-            # (legacy) bootstrap: logged, not failed.
-            from performer.workspace import run_env_cache_verify
-
-            verify_passed, verify_detail = await run_env_cache_verify(
-                perf.score.env_cache_path,
-                getattr(perf.stand, "cache_env", None),
-            )
-            if verify_passed is False:
-                perf.state = "error"
-                perf.error_reason = (
-                    "env-cache verification failed (verify.sh non-zero): "
-                    f"{verify_detail[-600:]}"
-                )
-                log.warning(
-                    "env_bootstrap.verify_failed",
-                    session_id=perf.session_id,
-                    detail=verify_detail[-300:],
-                )
-                return PerformerResponse(
-                    status="error",
-                    session_id=perf.session_id,
-                    reason=perf.error_reason,
-                )
-            if verify_passed is None:
-                log.warning(
-                    "env_bootstrap.verify_script_missing",
-                    session_id=perf.session_id,
-                    detail="verify.sh not written by bootstrap agent; "
-                    "cannot confirm install — proceeding as degraded",
-                )
-
+            # 107: START declared services BEFORE running verify.sh. verify.sh
+            # embeds a LIVE service probe (spec-093 pg_isready/redis PING) that
+            # hard-fails when the service isn't running, so it MUST run after the
+            # spec-101 readiness gate has started the services. Order:
+            #   inference (writes services-start.sh) → readiness (starts + health-
+            #   checks) → verify (toolchain + live service probe, now satisfied).
+            # Running verify first made it fail on the service probe before anything
+            # started the service, returning early so the readiness gate that starts
+            # it was never reached (the website-postgres "never came up" bug).
             inference_timeout = get_settings().SERVICE_INFERENCE_TIMEOUT
             try:
                 perf.inference_state = await asyncio.wait_for(
@@ -2899,7 +2870,8 @@ async def handle_status(
             # bootstrap error, routed through on_bootstrap_complete(success=False)
             # so the cache is not marked ready and re-bootstraps (instead of
             # dispatching cards into a structurally-broken env). No declared
-            # services → no-op (behavior unchanged).
+            # services → no-op (behavior unchanged). Started services stay running
+            # so the verify.sh live probe below observes them.
             from performer.workspace import run_service_readiness
 
             ready_ok, ready_failures = await run_service_readiness(
@@ -2923,6 +2895,46 @@ async def handle_status(
                     status="error",
                     session_id=perf.session_id,
                     reason=perf.error_reason,
+                )
+
+            # 077 (Tier 2): confirm the install actually worked before reporting
+            # success. The agent wrote verify.sh asserting every documented
+            # dependency is present + runnable (and, for declared services, a live
+            # readiness probe — now satisfied because readiness started them above);
+            # a non-zero exit means a silent install failure (e.g. apt-get located
+            # no package), so we FAIL the bootstrap here. The coordinare's
+            # on_bootstrap_complete(success=False) path then clears readme_sha and
+            # retries — instead of marking a broken cache "ready". A missing
+            # verify.sh is treated as a degraded (legacy) bootstrap: logged, not
+            # failed.
+            from performer.workspace import run_env_cache_verify
+
+            verify_passed, verify_detail = await run_env_cache_verify(
+                perf.score.env_cache_path,
+                getattr(perf.stand, "cache_env", None),
+            )
+            if verify_passed is False:
+                perf.state = "error"
+                perf.error_reason = (
+                    "env-cache verification failed (verify.sh non-zero): "
+                    f"{verify_detail[-600:]}"
+                )
+                log.warning(
+                    "env_bootstrap.verify_failed",
+                    session_id=perf.session_id,
+                    detail=verify_detail[-300:],
+                )
+                return PerformerResponse(
+                    status="error",
+                    session_id=perf.session_id,
+                    reason=perf.error_reason,
+                )
+            if verify_passed is None:
+                log.warning(
+                    "env_bootstrap.verify_script_missing",
+                    session_id=perf.session_id,
+                    detail="verify.sh not written by bootstrap agent; "
+                    "cannot confirm install — proceeding as degraded",
                 )
 
             perf.state = "env_bootstrap_complete"
