@@ -455,7 +455,12 @@ async def _start_env_cache_services(
             stderr=asyncio.subprocess.PIPE,
             env=env,
         )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120.0)
+        # 114: this outer cap MUST exceed services-start.sh's own internal readiness
+        # wait (spec-111 raised the postgres pg_isready loop to 180s) plus createdb/
+        # redis time. At 120s the runner killed the script mid-wait under a loaded
+        # container ("services-start failed: timed out after 120s") — postgres was
+        # still coming up. 300s = 180s readiness + margin for initdb/createdb/redis.
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=300.0)
     except (OSError, asyncio.TimeoutError) as exc:
         # builtin TimeoutError subclasses OSError (3.10+), so check it first.
         timed_out = isinstance(exc, asyncio.TimeoutError)
