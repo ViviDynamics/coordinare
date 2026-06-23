@@ -31,6 +31,28 @@ _port_bound() {
   return 1
 }
 
+# spec 115: library search path for the coordinare-managed service binaries.
+# The server binaries (postgres/redis) live in the cache's services-extract tree, and so do
+# their shared libraries (e.g. libpq.so.5 under usr/lib/<arch>, postgres extension libs under
+# usr/lib/postgresql/<NN>/lib). The performer profile only flattens *.so from <cache>/debs/
+# onto the global LD_LIBRARY_PATH, and a fetch that lands the server's deps but not libpq5
+# leaves libpq.so.5 absent — so the server tooling AND its client utilities fail to
+# dynamically link and the cluster never comes up. Build a path from the extract tree,
+# prepended onto the profile-set value, and export it FOR THIS SCRIPT.
+# Exporting is safe here: services-start.sh is a one-shot bootstrap process — the
+# application-under-test does NOT inherit this env (it gets a fresh shell that sources
+# activate.sh), so this never shadows system libs at QA time; only the backgrounded service
+# daemons we launch inherit it, which is exactly what must link against these libs at runtime.
+_SVC_LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
+if [ -n "${DEVENV:-}" ]; then
+  for _svc_lib in "$DEVENV"/services-extract/usr/lib/*-linux-gnu "$DEVENV"/services-extract/usr/lib/postgresql/*/lib; do
+    [ -d "$_svc_lib" ] && _SVC_LD_LIBRARY_PATH="$_svc_lib:$_SVC_LD_LIBRARY_PATH"
+  done
+fi
+# Covers the root-caller client utilities and the backgrounded daemons. `_pg_as` still passes
+# it explicitly because `runuser` drops the inherited environment.
+export LD_LIBRARY_PATH="$_SVC_LD_LIBRARY_PATH"
+
 {% for svc in services %}
 {% if svc.external_required %}
 # --- {{ svc.name }} (external_required) ---
@@ -73,14 +95,14 @@ else
   # spec 110: postgres REFUSES to run as root (initdb/postgres abort). The performer
   # container is root, so run the server tooling as a dedicated unprivileged user.
   # Create it if absent, own the data dir, and run initdb/postgres via `runuser`
-  # preserving the profile-set PATH + LD_LIBRARY_PATH (so the cached postgres binaries
-  # and their libs — e.g. libicu — resolve under the dropped user). pg_isready/createdb
-  # are clients and stay as the (root) caller.
+  # preserving the profile-set PATH and the spec-115 service-scoped LD_LIBRARY_PATH (so the
+  # cached postgres binaries and their libs — e.g. libpq.so.5, libicu — resolve under the
+  # dropped user). pg_isready/createdb are clients and stay as the (root) caller.
   _PGUSER=pgrunner
   id "$_PGUSER" >/dev/null 2>&1 || useradd -r -M -s /usr/sbin/nologin "$_PGUSER" 2>/dev/null || true
   mkdir -p "$_PGDATA"
   chown -R "$_PGUSER" "$_PGDATA" 2>/dev/null || true
-  _pg_as() { runuser -u "$_PGUSER" -- env PATH="$PATH" LD_LIBRARY_PATH="${{ '{' }}LD_LIBRARY_PATH:-{{ '}' }}" "$@"; }
+  _pg_as() { runuser -u "$_PGUSER" -- env PATH="$PATH" LD_LIBRARY_PATH="$_SVC_LD_LIBRARY_PATH" "$@"; }
   if [ ! -f "$_PGDATA/PG_VERSION" ]; then
 {% if svc.init and svc.init.password_env_var %}
     # The declared admin secret's env var must be PRESENT at init time (it may legitimately
@@ -101,7 +123,7 @@ else
       # the unprivileged init shell via the environment (never argv/disk); that shell reads
       # it through --pwfile=<(...) process substitution it creates itself (so the fd is
       # owned by the dropped user), so the value never lands in argv, logs, or on disk.
-      runuser -u "$_PGUSER" -- env PATH="$PATH" LD_LIBRARY_PATH="${{ '{' }}LD_LIBRARY_PATH:-{{ '}' }}" _PGPW="${{ '{' }}{{ svc.init.password_env_var }}{{ '}' }}" bash -c 'initdb --no-sync --pgdata="$1" --username="$2" --auth-local=trust --auth-host=md5 --pwfile=<(printf '"'"'%s'"'"' "$_PGPW")' _ "$_PGDATA" {{ _su | shq }} >"${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}/initdb.log" 2>&1
+      runuser -u "$_PGUSER" -- env PATH="$PATH" LD_LIBRARY_PATH="$_SVC_LD_LIBRARY_PATH" _PGPW="${{ '{' }}{{ svc.init.password_env_var }}{{ '}' }}" bash -c 'initdb --no-sync --pgdata="$1" --username="$2" --auth-local=trust --auth-host=md5 --pwfile=<(printf '"'"'%s'"'"' "$_PGPW")' _ "$_PGDATA" {{ _su | shq }} >"${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}/initdb.log" 2>&1
     fi
 {% else %}
     # No password env var declared: trust-auth local init (no secret material).
@@ -144,6 +166,8 @@ else
   # parent's pipes open — otherwise a caller that does `subprocess.communicate()` on
   # services-start.sh hangs until the daemon exits.
   # start_args is an argv list; each element is shell-quoted independently via `shq`.
+  # spec 115: the generic service binary (e.g. redis-server) lives in services-extract; it
+  # inherits the script-level LD_LIBRARY_PATH export above so its libs resolve at runtime.
   {{ (svc.start_args | map('shq') | join(' ')) if svc.start_args else ((svc.binary | shq) ~ ' --port=' ~ svc.port ~ ' --data-dir=' ~ (svc.data_dir | shq)) }} >"${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}/{{ svc.name }}.log" 2>&1 &
   echo $! > "${{ '{' }}{{ svc.name | upper }}_PID_FILE{{ '}' }}"
   echo "info: started {{ svc.name }} (pid $(cat ${{ '{' }}{{ svc.name | upper }}_PID_FILE{{ '}' }}))"
