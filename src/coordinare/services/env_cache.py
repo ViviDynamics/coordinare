@@ -361,6 +361,62 @@ async def verify_env_cache_clean(
     return passed, detail
 
 
+def write_service_scripts(
+    cache_dir: Path, service_models: list[Any], *, symphony: str = ""
+) -> bool:
+    """108 (P1): coordinare renders + writes the service start/stop/health scripts
+    into ``<cache_dir>/services/`` DETERMINISTICALLY.
+
+    Previously these were written performer-side by ``apply_manual_override`` during
+    the bootstrap, which intermittently left ``<cache>/services/`` empty — so the
+    spec-101 readiness gate had no ``services-start.sh`` to run and the declared
+    services never started. Writing them coordinare-side here (alongside verify.sh /
+    activate.sh, straight to the host cache dir) makes their presence deterministic.
+
+    Best-effort: returns ``False`` (logged) on any render/IO error rather than
+    raising — the readiness gate then reports the missing services instead of this
+    aborting the manifest write. Returns ``False`` (no-op) when no services declared.
+    """
+    if not service_models:
+        return False
+    try:
+        from coordinare_service_inference.schema import ServicesManifest
+        from coordinare_service_inference.templater import render as render_service_scripts
+
+        svc_manifest = ServicesManifest(
+            services=service_models,
+            cache_inputs=["score.json"],
+            agent_version="coordinare-owned-108",
+        )
+        scripts = render_service_scripts(svc_manifest)
+        svc_dir = cache_dir / "services"
+        svc_dir.mkdir(parents=True, exist_ok=True)
+        for name, body in (
+            ("services-start.sh", scripts.start),
+            ("services-stop.sh", scripts.stop),
+            ("services-health.sh", scripts.health),
+        ):
+            path = svc_dir / name
+            path.write_text(body)
+            path.chmod(0o755)
+        (svc_dir / "services.json").write_text(
+            svc_manifest.model_dump_json(indent=2) + "\n"
+        )
+        logger.info(
+            "env_cache.service_scripts_written",
+            symphony=symphony,
+            services=[s.name for s in service_models],
+        )
+        return True
+    except Exception as exc:  # best-effort, never block the bootstrap
+        logger.warning(
+            "env_cache.service_scripts_write_failed",
+            symphony=symphony,
+            error=str(exc),
+        )
+        return False
+
+
 class EnvCacheService:
     """Manages per-symphony env-cache bootstrapping and SHA change detection."""
 
@@ -1050,6 +1106,12 @@ class EnvCacheService:
             )
             activate_path.chmod(0o755)
             (cache_dir / "manifest.json").write_text(manifest.model_dump_json(indent=2))
+            # 108 (P1): coordinare writes the service start/stop/health scripts into
+            # <cache>/services/ DETERMINISTICALLY here (like verify.sh/activate.sh),
+            # rather than relying on the performer-side manual_override write that
+            # intermittently left <cache>/services/ empty so the readiness gate had
+            # no services-start.sh to run (postgres never started).
+            write_service_scripts(cache_dir, service_models, symphony=symphony_name)
         except OSError as exc:
             logger.warning(
                 "env_cache.manifest_write_failed", symphony=symphony_name, error=str(exc)

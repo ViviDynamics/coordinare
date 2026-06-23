@@ -18,6 +18,7 @@ from coordinare.services.env_cache import (
     _collect_env_volumes_for_persistent_performer,
     get_env_volume_for_symphony,
     sanitise_symphony_name,
+    write_service_scripts,
 )
 
 
@@ -2532,3 +2533,45 @@ class TestRestartHonorPath:
 
         verify_fn.assert_not_called()
         dispatch_fn.assert_awaited_once()
+
+
+class TestWriteServiceScripts:
+    """108/P1: coordinare writes services-{start,stop,health}.sh into <cache>/services/
+    deterministically (no dependence on the performer-side manual_override write that
+    intermittently left it empty, so the readiness gate had nothing to start)."""
+
+    @staticmethod
+    def _pg_redis_models():
+        from coordinare_service_inference.schema import ServiceEntry, ServiceInit
+
+        pg = ServiceEntry(
+            name="postgres", binary="postgres", version=None, data_dir="/tmp/pg",
+            port=45432, why_needed="db", sources=["config/database.yml"], kind="postgres",
+            init=ServiceInit(superuser="systemuser", databases=["website_test"],
+                             password_env_var="POSTGRESQL_PASSWORD"),
+        )
+        redis = ServiceEntry(
+            name="redis", binary="redis-server", version=None, data_dir="/tmp/redis",
+            port=46379, why_needed="cache", sources=[".env.test"], kind="redis",
+            start_args=["redis-server", "--port", "46379", "--dir", "/tmp/redis"],
+        )
+        return [pg, redis]
+
+    def test_writes_start_stop_health_scripts(self, tmp_path: Path) -> None:
+        ok = write_service_scripts(tmp_path, self._pg_redis_models(), symphony="website")
+        assert ok is True
+        svc = tmp_path / "services"
+        for name in ("services-start.sh", "services-stop.sh", "services-health.sh"):
+            p = svc / name
+            assert p.is_file(), f"missing {name}"
+            assert p.stat().st_mode & 0o111, f"{name} not executable"
+        # start script actually initializes/starts postgres + redis
+        start = (svc / "services-start.sh").read_text()
+        assert "initdb" in start and "pg_isready" in start  # postgres recipe
+        assert "redis-server" in start
+        # services.json sidecar persisted
+        assert (svc / "services.json").is_file()
+
+    def test_no_services_is_noop(self, tmp_path: Path) -> None:
+        assert write_service_scripts(tmp_path, [], symphony="x") is False
+        assert not (tmp_path / "services").exists()
