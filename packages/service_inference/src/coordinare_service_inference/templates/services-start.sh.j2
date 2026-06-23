@@ -65,8 +65,22 @@ else
   # PG_VERSION sentinel) creates the cluster + superuser atomically; the server then binds
   # the declared port on loopback; each database is created create-if-missing so a re-run —
   # or a run that died mid-recipe — converges without error and without data loss.
-  _PGDATA="${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}"
+  # spec 110: PGDATA is a SUBDIR of the service data dir so the coordinare-written
+  # logs (initdb.log / postgres.log, in the parent) don't make PGDATA non-empty —
+  # initdb refuses a non-empty target.
+  _PGDATA="${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}/pgdata"
   _PGPORT="${{ '{' }}{{ svc.name | upper }}_PORT{{ '}' }}"
+  # spec 110: postgres REFUSES to run as root (initdb/postgres abort). The performer
+  # container is root, so run the server tooling as a dedicated unprivileged user.
+  # Create it if absent, own the data dir, and run initdb/postgres via `runuser`
+  # preserving the profile-set PATH + LD_LIBRARY_PATH (so the cached postgres binaries
+  # and their libs — e.g. libicu — resolve under the dropped user). pg_isready/createdb
+  # are clients and stay as the (root) caller.
+  _PGUSER=pgrunner
+  id "$_PGUSER" >/dev/null 2>&1 || useradd -r -M -s /usr/sbin/nologin "$_PGUSER" 2>/dev/null || true
+  mkdir -p "$_PGDATA"
+  chown -R "$_PGUSER" "$_PGDATA" 2>/dev/null || true
+  _pg_as() { runuser -u "$_PGUSER" -- env PATH="$PATH" LD_LIBRARY_PATH="${{ '{' }}LD_LIBRARY_PATH:-{{ '}' }}" "$@"; }
   if [ ! -f "$_PGDATA/PG_VERSION" ]; then
 {% if svc.init and svc.init.password_env_var %}
     # The declared admin secret's env var must be PRESENT at init time (it may legitimately
@@ -81,19 +95,20 @@ else
       # Declared but empty: the test-env intentionally requests a passwordless cluster.
       # Initialize with trust auth (no secret material) so the empty password is accepted
       # for both local and host connections.
-      initdb --pgdata="$_PGDATA" --username={{ _su | shq }} --auth-local=trust --auth-host=trust >"${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}/initdb.log" 2>&1
+      _pg_as initdb --pgdata="$_PGDATA" --username={{ _su | shq }} --auth-local=trust --auth-host=trust >"${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}/initdb.log" 2>&1
     else
-      # Non-empty secret: md5 auth. The secret is never a literal here: --pwfile reads
-      # ${{ '{' }}{{ svc.init.password_env_var }}{{ '}' }} via process substitution at runtime, so it never lands
-      # in argv, logs, or the declaration.
-      initdb --pgdata="$_PGDATA" --username={{ _su | shq }} --auth-local=trust --auth-host=md5 --pwfile=<(printf '%s' "${{ '{' }}{{ svc.init.password_env_var }}{{ '}' }}") >"${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}/initdb.log" 2>&1
+      # Non-empty secret: md5 auth. The secret is never a literal here — it is passed to
+      # the unprivileged init shell via the environment (never argv/disk); that shell reads
+      # it through --pwfile=<(...) process substitution it creates itself (so the fd is
+      # owned by the dropped user), so the value never lands in argv, logs, or on disk.
+      runuser -u "$_PGUSER" -- env PATH="$PATH" LD_LIBRARY_PATH="${{ '{' }}LD_LIBRARY_PATH:-{{ '}' }}" _PGPW="${{ '{' }}{{ svc.init.password_env_var }}{{ '}' }}" bash -c 'initdb --pgdata="$1" --username="$2" --auth-local=trust --auth-host=md5 --pwfile=<(printf '"'"'%s'"'"' "$_PGPW")' _ "$_PGDATA" {{ _su | shq }} >"${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}/initdb.log" 2>&1
     fi
 {% else %}
     # No password env var declared: trust-auth local init (no secret material).
-    initdb --pgdata="$_PGDATA" --username={{ _su | shq }} --auth-local=trust --auth-host=trust >"${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}/initdb.log" 2>&1
+    _pg_as initdb --pgdata="$_PGDATA" --username={{ _su | shq }} --auth-local=trust --auth-host=trust >"${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}/initdb.log" 2>&1
 {% endif %}
   fi
-  {{ svc.binary | shq }} -D "$_PGDATA" -p "$_PGPORT" -k "$_PGDATA" -c listen_addresses=127.0.0.1 >"${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}/{{ svc.name }}.log" 2>&1 &
+  _pg_as {{ svc.binary | shq }} -D "$_PGDATA" -p "$_PGPORT" -k "$_PGDATA" -c listen_addresses=127.0.0.1 >"${{ '{' }}{{ svc.name | upper }}_DATA_DIR{{ '}' }}/{{ svc.name }}.log" 2>&1 &
   echo $! > "${{ '{' }}{{ svc.name | upper }}_PID_FILE{{ '}' }}"
   # Bounded readiness wait: postgres binds the port before it can serve, so probe the
   # connection target; a timeout is surfaced as an environment-attributed failure, not a hang.

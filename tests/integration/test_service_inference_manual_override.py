@@ -235,7 +235,10 @@ def test_manual_override_postgres_declaration_renders_init_block(tmp_path: Path)
     assert "initdb" in start
     assert 'if [ ! -f "$_PGDATA/PG_VERSION" ]; then' in start
     assert "createdb" in start
-    assert "--pwfile=<(printf '%s' \"${POSTGRES_PASSWORD}\")" in start
+    # spec-110: secret handed to the unprivileged init shell via env, read via <(...).
+    assert '_PGPW="${POSTGRES_PASSWORD}"' in start and "--pwfile=<(printf" in start
+    # spec-110: postgres runs as an unprivileged user (it refuses to run as root).
+    assert "_PGUSER=pgrunner" in start and "runuser -u" in start
     # Readiness failure is surfaced as environment-attributed, not a hang (C-12).
     assert "ERROR: env: postgres did not become ready" in start
     # Teardown is the clean fast shutdown (C-13b).
