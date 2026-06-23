@@ -2567,10 +2567,18 @@ class TestWriteServiceScripts:
             assert p.stat().st_mode & 0o111, f"{name} not executable"
         # start script actually initializes/starts postgres + redis
         start = (svc / "services-start.sh").read_text()
-        assert "initdb" in start and "pg_isready" in start  # postgres recipe
+        assert "initdb" in start  # postgres recipe
         assert "redis-server" in start
-        # services.json sidecar persisted
-        assert (svc / "services.json").is_file()
+
+    def test_does_not_write_services_json(self, tmp_path: Path) -> None:
+        # 113: coordinare writes the .sh scripts but NOT services.json — that file is
+        # the performer's apply_manual_override to write (it feeds the inference-cache
+        # suffix via load_prior_manifest). A second coordinare writer with a different
+        # agent_version/cache_inputs made the suffix oscillate → the dispatch gate
+        # held every card forever (readme_sha != last_seen_spec_sha).
+        write_service_scripts(tmp_path, self._pg_redis_models(), symphony="website")
+        assert not (tmp_path / "services" / "services.json").exists()
+        assert (tmp_path / "services" / "services-start.sh").is_file()
 
     def test_no_services_is_noop(self, tmp_path: Path) -> None:
         assert write_service_scripts(tmp_path, [], symphony="x") is False

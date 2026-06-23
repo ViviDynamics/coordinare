@@ -399,9 +399,15 @@ def write_service_scripts(
             path = svc_dir / name
             path.write_text(body)
             path.chmod(0o755)
-        (svc_dir / "services.json").write_text(
-            svc_manifest.model_dump_json(indent=2) + "\n"
-        )
+        # 113: do NOT write services.json here. `load_prior_manifest` derives the
+        # inference-cache suffix (part of readme_sha / last_seen_spec_sha) from
+        # <cache>/services/services.json. The performer's apply_manual_override is the
+        # canonical writer (agent_version="manual-override", cache_inputs from
+        # score.json). If coordinare ALSO wrote it (different agent_version +
+        # cache_inputs), the two alternated → the suffix oscillated → readme_sha !=
+        # last_seen_spec_sha forever → the dispatch gate held every card and
+        # re-bootstrapped in a loop. We only own the executable scripts here; the
+        # manifest is the performer's to write so the suffix stays stable.
         logger.info(
             "env_cache.service_scripts_written",
             symphony=symphony,
