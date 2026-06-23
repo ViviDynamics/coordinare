@@ -407,6 +407,42 @@ class TestEnvBootstrapVerifyGate:
 
         assert resp.status == "env_bootstrap_complete"
 
+    async def test_readiness_runs_before_verify(self, tmp_path) -> None:
+        """107/SC-001: declared services must be STARTED (run_service_readiness)
+        BEFORE verify.sh runs, so verify's live pg_isready/PING probe (spec-093)
+        observes a running service instead of failing on a not-yet-started one."""
+        perf = _make_perf(session_id="sid")
+        perf.role = "env_bootstrap"
+        perf.score.env_cache_path = str(tmp_path)
+        perf.backend.get_status.return_value = BackendStatus(state="done")
+        (tmp_path / "verify.sh").write_text("#!/bin/sh\nexit 0\n")
+        settings = Settings(AGENT_BACKEND="opencode", SERVICE_INFERENCE_TIMEOUT=60)
+        order: list[str] = []
+
+        async def _readiness(*_a, **_k):
+            order.append("readiness")
+            return (True, [])
+
+        async def _verify(*_a, **_k):
+            order.append("verify")
+            return (True, "")
+
+        with (
+            patch(
+                "performer.main._run_service_inference",
+                new=AsyncMock(return_value={"inference_succeeded": True}),
+            ),
+            patch("performer.workspace.run_service_readiness", new=_readiness),
+            patch("performer.workspace.run_env_cache_verify", new=_verify),
+            patch("performer.main.get_settings", return_value=settings),
+        ):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
+
+        assert resp.status == "env_bootstrap_complete"
+        assert order == ["readiness", "verify"], (
+            "readiness (which starts services) must run before verify (which probes them)"
+        )
+
 
 # ---------------------------------------------------------------------------
 # handle_relay_feedback
