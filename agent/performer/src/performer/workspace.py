@@ -435,6 +435,19 @@ async def _start_env_cache_services(
     if not start.is_file() or not os.access(start, os.X_OK):
         return
     env = {**os.environ, **cache_env}
+    # 109: services-start.sh (and services-health.sh, run with this same env) invoke
+    # bare `initdb`/`postgres`/`redis-server`/`pg_isready`, which are only on PATH —
+    # and whose native libs (e.g. libicu) are only on LD_LIBRARY_PATH — AFTER the
+    # devenv profile (BASH_ENV) re-sources activate.sh + the captured-deb *.so
+    # extraction. The performer process already sourced that profile at startup
+    # (_DEVENV_SOURCED=1 in os.environ), so a non-interactive `bash script` would
+    # hit the profile's re-entry guard and SKIP re-sourcing — running the start with
+    # the STALE pre-service-extraction PATH/LD_LIBRARY_PATH (service debs are fetched
+    # AFTER cache_env was snapshotted), so postgres binaries are not found and the
+    # service never starts. Clear the guard so BASH_ENV re-sources fresh and the
+    # now-extracted service binaries + libs are visible. (Empirically: guard set →
+    # `initdb` NOT-FOUND; guard cleared → `initdb` found, `postgres --version` OK.)
+    env.pop("_DEVENV_SOURCED", None)
     try:
         proc = await asyncio.create_subprocess_exec(
             "bash", str(start),
