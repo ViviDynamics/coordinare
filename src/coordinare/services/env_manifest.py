@@ -392,16 +392,15 @@ def render_verify_sh(
             '{ echo "FAIL: rails/psych failed to load (native extension or config error)" >&2; FAILED=1; }',
             "fi",
         ]
-    # Coordinare-managed services must be RUNNING, not merely installed: probe each
-    # live (pg_isready / redis PING). A not-running managed service hard-fails so the
-    # dispatch gate withholds against a half-built cache.
-    service_checks = [
-        line for svc in (services or []) if (line := _service_readiness_check(svc)) is not None
-    ]
-    if service_checks:
-        lines.append("")
-        lines.append("# Coordinare-managed service readiness (RUNNING + healthy, not just installed)")
-        lines += service_checks
+    # spec 112: verify.sh checks the TOOLCHAIN only — it must NOT probe live service
+    # readiness (pg_isready / redis PING). verify.sh is run by `verify_env_cache_clean`
+    # in a CLEAN consumer-context where NO services are started (the consumer cache is
+    # mounted read-only and the QA app starts services itself), so a live service probe
+    # here ALWAYS fails there and falsely marks a working cache unhealthy. Service
+    # readiness at bootstrap is owned solely by spec-101's `run_service_readiness`,
+    # which actually STARTS the services and health-checks them. (`services` is retained
+    # in the signature for call-site compatibility but no longer emits a probe.)
+    _ = services
     lines += [
         "",
         'if [ "$FAILED" -ne 0 ]; then',

@@ -168,15 +168,15 @@ class TestVerifyRenderer:
 
 
 class TestServiceReadinessChecklist:
-    """093 / US2: verify.sh must include a RUNNING/healthy readiness line for each
-    coordinare-managed service (postgres, redis) — not merely "installed". The probe
-    is live (pg_isready / redis PING→PONG) and a not-running service hard-FAILs so
-    the dispatch gate withholds against a half-built cache."""
+    """112 (supersedes 093-in-verify): verify.sh checks the TOOLCHAIN ONLY and MUST
+    NOT probe live service readiness. verify.sh is run by `verify_env_cache_clean` in
+    a CLEAN consumer-context where NO services are started, so a live pg_isready/PING
+    probe there always fails and falsely marks a working cache unhealthy. Service
+    readiness at bootstrap is owned solely by spec-101's `run_service_readiness`
+    (which actually starts + health-checks the services)."""
 
     @staticmethod
     def _manifest() -> EnvManifest:
-        # A minimal toolchain manifest; services are threaded separately (they do
-        # not live on the EnvManifest — they reach render_verify_sh via services=).
         return EnvManifest(
             symphony_name="sym",
             items=[ManifestItem(name="ruby", kind="runtime", version="3.4.2", source=".ruby-version")],
@@ -200,91 +200,42 @@ class TestServiceReadinessChecklist:
         fields.update(overrides)
         return ServiceEntry(**fields)
 
-    def test_postgres_readiness_uses_pg_isready_and_hard_fails(self) -> None:
+    def test_verify_does_not_probe_postgres_readiness(self) -> None:
+        # 112: even with a postgres service declared, verify.sh must NOT pg_isready —
+        # the clean consumer-context has no running postgres.
         sh = render_verify_sh(
             self._manifest(), cache_mount_path="/devenv/sym", services=[self._service()]
         )
-        # Live readiness probe (RUNNING, not merely installed) on the declared port.
-        assert "pg_isready" in sh
-        assert "5432" in sh
-        # Installed-but-not-running ⇒ FAIL line that flips FAILED.
-        pg_fail = next(ln for ln in sh.splitlines() if "FAIL:" in ln and "postgres" in ln)
-        assert "FAILED=1" in pg_fail
-        # Running/healthy ⇒ OK line.
-        assert any("OK:" in ln and "postgres" in ln for ln in sh.splitlines())
+        assert "pg_isready" not in sh
+        assert not any("FAIL:" in ln and "service postgres" in ln for ln in sh.splitlines())
 
-    def test_redis_readiness_uses_ping_pong_and_hard_fails(self) -> None:
+    def test_verify_does_not_probe_redis_readiness(self) -> None:
         sh = render_verify_sh(
             self._manifest(),
             cache_mount_path="/devenv/sym",
             services=[self._service(name="redis", binary="redis-server", kind="redis", port=6379, init=None)],
         )
-        assert "redis-cli" in sh
-        assert "PING" in sh
-        assert "PONG" in sh
-        assert "6379" in sh
-        redis_fail = next(ln for ln in sh.splitlines() if "FAIL:" in ln and "redis" in ln)
-        assert "FAILED=1" in redis_fail
-        assert any("OK:" in ln and "redis" in ln for ln in sh.splitlines())
+        assert "redis-cli" not in sh and "PONG" not in sh
 
-    def test_generic_and_external_services_emit_no_readiness_line(self) -> None:
-        """Only coordinare-MANAGED services (postgres/redis) get a readiness probe.
-        A generic/externally-required service is not coordinare's to start, so it
-        must not appear as a FAIL-able readiness line."""
-        sh = render_verify_sh(
-            self._manifest(),
-            cache_mount_path="/devenv/sym",
-            services=[
-                self._service(
-                    name="elasticsearch", binary="elasticsearch", kind="generic", port=9200, init=None
-                ),
-                self._service(
-                    name="vault",
-                    binary="vault",
-                    kind="generic",
-                    port=8200,
-                    external_required=True,
-                    init=None,
-                ),
-            ],
+    def test_services_arg_does_not_change_verify_output(self) -> None:
+        """112: `services=` is retained for call-site compat but no longer affects
+        verify.sh — the toolchain checklist is identical with or without it."""
+        base = render_verify_sh(self._manifest(), cache_mount_path="/devenv/sym")
+        with_svcs = render_verify_sh(
+            self._manifest(), cache_mount_path="/devenv/sym", services=[self._service()]
         )
-        assert "elasticsearch" not in sh
-        assert "vault" not in sh
+        assert base == with_svcs
 
-    def test_services_default_empty_is_backward_compatible(self) -> None:
-        """Existing callers pass no services= — render must behave exactly as before
-        (no readiness section, no crash)."""
-        sh = render_verify_sh(self._manifest(), cache_mount_path="/devenv/sym")
-        assert "pg_isready" not in sh
-        assert "redis-cli" not in sh
-        assert sh.rstrip().endswith("exit 0")
-
-    def test_service_readiness_after_toolchain_before_aggregate_exit(self) -> None:
-        """Ordering: service readiness runs after the toolchain checks but still
-        feeds the single aggregate exit gate at the end."""
+    def test_toolchain_checks_and_aggregate_exit_intact(self) -> None:
         sh = render_verify_sh(
             self._manifest(), cache_mount_path="/devenv/sym", services=[self._service()]
         )
-        assert sh.index("RUBY_VERSION") < sh.index("pg_isready")
-        assert sh.index("pg_isready") < sh.rindex('if [ "$FAILED" -ne 0 ]; then')
-
-    def test_aggregate_exit_unchanged_nonzero_iff_failure(self) -> None:
-        """T012/T016: WARN-only items never flip FAILED; the aggregate gate is the
-        sole exit driver and is unchanged by the service section."""
-        sh = render_verify_sh(
-            self._manifest(),
-            cache_mount_path="/devenv/sym",
-            services=[self._service()],
-        )
+        assert "RUBY_VERSION" in sh  # toolchain check still present
         assert 'if [ "$FAILED" -ne 0 ]; then' in sh
         assert "exit 1" in sh
         assert sh.rstrip().endswith("exit 0")
 
-    def test_no_secret_value_leaks_into_readiness_probe(self) -> None:
-        """T013 invariant: rendered verify.sh carries only names/paths, never a
-        literal secret. The readiness probe is auth-free (pg_isready / redis PING),
-        so no password is interpolated even when the service declares a
-        password_env_var."""
+    def test_no_secret_value_in_verify(self) -> None:
         from coordinare_service_inference.schema import ServiceInit
 
         svc = self._service(
@@ -293,12 +244,8 @@ class TestServiceReadinessChecklist:
             )
         )
         sh = render_verify_sh(self._manifest(), cache_mount_path="/devenv/sym", services=[svc])
-        # The env-var NAME may appear, but never a password flag carrying a value,
-        # and never a process-substitution pwfile (the probe authenticates nothing).
-        assert "pg_isready" in sh
         assert "--pwfile" not in sh
-        assert "PGPASSWORD=" not in sh  # no value-binding assignment of the secret
-        assert "-W" not in sh  # pg_isready never prompts/sends a password
+        assert "PGPASSWORD=" not in sh
 
 
 class TestActivateRenderer:
