@@ -37,6 +37,46 @@ def test_billing_limit_matches() -> None:
     assert cause is not None and cause.pattern_id == "billing_limit"
 
 
+@pytest.mark.parametrize(
+    "reason",
+    [
+        # the live signature: setup-ruby dies at the tool-cache mkdir
+        "##[error]Error: EACCES: permission denied, mkdir '/opt/hostedtoolcache'",
+        "run ruby/setup-ruby@v1 error: eacces: permission denied, mkdir '/opt/hostedtoolcache'",
+        # generic tool-cache permission variants
+        "permission denied writing to RUNNER_TOOL_CACHE",
+        "EACCES on AGENT_TOOLSDIRECTORY",
+    ],
+)
+def test_runner_toolcache_perm_matches(reason: str) -> None:
+    # 118: a self-hosted-runner setup/tool-cache permission failure is infra, not code.
+    cause = match_env_signature(reason, [])
+    assert isinstance(cause, EnvCause)
+    assert cause.pattern_id == "runner_toolcache_perm"
+    assert "hostedtoolcache" in cause.action.lower() or "tool" in cause.action.lower()
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        # 118 false-positive guards (adversarial review): a BARE hostedtoolcache
+        # mention with no permission/error qualifier is a SUCCESS log, not infra —
+        # holding these would wrongly stall legit work.
+        "##[info] found hostedtoolcache for ruby 3.2.0",
+        "setup ruby: tool cache directory: /opt/hostedtoolcache",
+        "python setup cached in hostedtoolcache",
+        "copy /opt/hostedtoolcache/ruby into image",
+        # ordinary code failures (no tool-cache token at all)
+        "rubocop: 3 offenses detected",
+        "undefined method `foo' for nil:NilClass",
+        # a generic app-level "permission denied" with no GH tool-cache token
+        "permission denied: cannot write /app/tmp/cache",
+    ],
+)
+def test_runner_toolcache_perm_does_not_false_positive(reason: str) -> None:
+    assert match_env_signature(reason, []) is None
+
+
 def test_non_infra_reason_returns_none() -> None:
     """SC-005: a normal test failure must NOT match (no false ENV_BLOCKED)."""
     assert match_env_signature("expected '0px' but got '24px' (rspec failure)", []) is None

@@ -52,6 +52,27 @@ _BUILTIN_PATTERNS: tuple[tuple[str, str, str, str], ...] = (
         "CI blocked by a billing / spending limit",
         "Raise the spending limit or update the payment method",
     ),
+    (
+        # 118: self-hosted-runner setup/toolchain-cache permission failure. The
+        # setup-* actions (setup-ruby/node/python) die at the tool-cache step with
+        # "EACCES: permission denied, mkdir '/opt/hostedtoolcache'" when the job's
+        # effective UID can't write the cache dir — a pure infra failure (the job
+        # dies before any project code runs), so it must HOLD, not bounce the
+        # implementer. Matches the hostedtoolcache path, the generic tool-cache
+        # EACCES, and AGENT_TOOLSDIRECTORY/RUNNER_TOOL_CACHE permission variants.
+        # Require BOTH a permission/error qualifier AND a GitHub-Actions-specific
+        # tool-cache token, within the same line (≤80 chars apart), in either order.
+        # A bare 'hostedtoolcache' mention is NOT enough — setup-* SUCCESS logs name
+        # the cache dir ("Found hostedtoolcache for ruby 3.2.0") and must not be held
+        # as infra. Generic tokens like "tool cache" are excluded to avoid matching
+        # app-level permission errors; only GH-runner-specific names are used.
+        "runner_toolcache_perm",
+        r"(eacces|permission denied)[^\n]{0,80}(hostedtoolcache|agent_toolsdirectory|runner_tool_cache)|"
+        r"(hostedtoolcache|agent_toolsdirectory|runner_tool_cache)[^\n]{0,80}(eacces|permission denied)",
+        "Self-hosted runner tool-cache directory not writable (setup-* action failed)",
+        "Fix /opt/hostedtoolcache permissions on the runner image / ARC securityContext "
+        "(e.g. chmod 1777, or set AGENT_TOOLSDIRECTORY to a writable path)",
+    ),
 )
 
 _BUILTIN_COMPILED: tuple[tuple[str, re.Pattern[str], str, str], ...] = tuple(
