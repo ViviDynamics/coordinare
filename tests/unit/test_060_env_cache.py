@@ -126,6 +126,29 @@ class TestBootstrapJobPayload:
         assert p.env_spec_files == ["README.md"]
         assert p.cache_mount_path == "/devenv/symphony"
 
+    def test_coordinare_manages_services_field(self) -> None:
+        # 116: the field defaults True (preserve managed path for an older/synthetic
+        # payload) and round-trips an explicit False set by coordinare from config.
+        p = BootstrapJobPayload(
+            symphony_name="s",
+            symphony_org="org",
+            symphony_repo="repo",
+            env_spec_contents={"README.md": "content"},
+        )
+        assert p.coordinare_manages_services is True
+        off = BootstrapJobPayload(
+            symphony_name="s",
+            symphony_org="org",
+            symphony_repo="repo",
+            env_spec_contents={"README.md": "content"},
+            coordinare_manages_services=False,
+        )
+        assert off.coordinare_manages_services is False
+        assert (
+            BootstrapJobPayload.model_validate(off.model_dump()).coordinare_manages_services
+            is False
+        )
+
 
 # ---------------------------------------------------------------------------
 # T027: EnvCacheService unit tests

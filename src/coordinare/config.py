@@ -768,6 +768,14 @@ class EnvCacheConfig(BaseModel):
 
     inference: ServiceInferenceConfig = Field(default_factory=ServiceInferenceConfig)
 
+    # 116: master switch for the coordinare-managed stateful-service subsystem
+    # (091→115: deb-fetch persona, rendered services-{start,health,stop}.sh, the
+    # 101 service-readiness gate). Default OFF restores the pre-091 behavior where
+    # the env-bootstrap PERFORMER owns environment setup end-to-end (it runs
+    # service inference, writes its own scripts, and is verified by the toolchain
+    # verify.sh). Flip to True to re-enable coordinare-managed services.
+    coordinare_manages_services: bool = False
+
 
 class ProjectConfiguration(BaseSettings):
     """Application configuration loaded from YAML and COORDINARE_* env vars."""

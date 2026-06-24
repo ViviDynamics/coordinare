@@ -2872,14 +2872,28 @@ async def handle_status(
             # dispatching cards into a structurally-broken env). No declared
             # services → no-op (behavior unchanged). Started services stay running
             # so the verify.sh live probe below observes them.
-            from performer.workspace import run_service_readiness
+            # 116: the 101 readiness gate is part of the coordinare-managed-services
+            # subsystem. When coordinare does NOT manage services (the default), the
+            # performer owns env setup end-to-end and bootstrap success is decided by
+            # the toolchain verify.sh below — skip the gate entirely (pre-101 behavior).
+            # The performer's own service inference (_run_service_inference →
+            # apply_manual_override) still wrote services.json + scripts above.
+            if getattr(perf.score, "coordinare_manages_services", True):
+                from performer.workspace import run_service_readiness
 
-            ready_ok, ready_failures = await run_service_readiness(
-                perf.score.env_cache_path,
-                getattr(perf.stand, "cache_env", None),
-                _read_declared_services(perf.stand.path),
-                perf.inference_state,
-            )
+                ready_ok, ready_failures = await run_service_readiness(
+                    perf.score.env_cache_path,
+                    getattr(perf.stand, "cache_env", None),
+                    _read_declared_services(perf.stand.path),
+                    perf.inference_state,
+                )
+            else:
+                ready_ok, ready_failures = True, []
+                log.info(
+                    "env_bootstrap.service_readiness_skipped",
+                    session_id=perf.session_id,
+                    reason="coordinare_manages_services=False (performer owns env setup)",
+                )
             if not ready_ok:
                 perf.state = "error"
                 perf.error_reason = (

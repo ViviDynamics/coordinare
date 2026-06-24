@@ -135,6 +135,12 @@ class Score(BaseModel):
     # Must be declared here or extra="ignore" silently drops it (C1). Shape:
     # {enabled: bool, timeout_seconds: int}. None/absent ⇒ gate dormant (SC-005).
     local_test_gate: dict | None = None
+    # 116: whether coordinare manages stateful services for this env_bootstrap. False
+    # (the coordinare default) restores performer-owned env setup — the performer skips
+    # the 101 service-readiness gate (bootstrap success = the toolchain verify.sh).
+    # Must be declared here or extra="ignore" silently drops it; defaults True so an
+    # older/synthetic payload preserves the managed path.
+    coordinare_manages_services: bool = True
 
     model_config = {"extra": "ignore"}  # silently drop unknown fields from coordinare
 

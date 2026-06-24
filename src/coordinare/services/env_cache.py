@@ -867,12 +867,24 @@ class EnvCacheService:
         # missing/invalid .coordinare/score.json is normal — fall back to no services.
         # Fetched BEFORE the manifest artifacts so verify.sh can emit a live
         # readiness probe (093) for each coordinare-managed service.
-        declared_services = await self._fetch_declared_services(
-            github_org=eff_config.github_org,
-            repo=repo,
-            github_service=github_service,
-            symphony_name=symphony_name,
+        # 116: when coordinare does not manage stateful services (the default), the
+        # env-bootstrap PERFORMER owns env setup end-to-end. Leave declared_services
+        # empty so no deb-fetch persona block is injected and coordinare writes no
+        # service scripts; the performer's own service inference handles services.
+        _global_config = self._coordinare_config.global_config
+        manages_services = bool(
+            getattr(_global_config, "env_cache", None)
+            and _global_config.env_cache.coordinare_manages_services
         )
+        if manages_services:
+            declared_services = await self._fetch_declared_services(
+                github_org=eff_config.github_org,
+                repo=repo,
+                github_service=github_service,
+                symphony_name=symphony_name,
+            )
+        else:
+            declared_services = []
 
         dependency_checklist, verify_provided, activate_provided = await self._build_manifest_artifacts(
             symphony_name=symphony_name,
@@ -926,6 +938,7 @@ class EnvCacheService:
             activate_provided=activate_provided,
             declared_services=declared_services,
             test_env_vars=test_env_vars,
+            coordinare_manages_services=manages_services,
         )
 
         # Mark in-flight BEFORE dispatching. dispatch_fn may fail SYNCHRONOUSLY
@@ -1117,7 +1130,11 @@ class EnvCacheService:
             # rather than relying on the performer-side manual_override write that
             # intermittently left <cache>/services/ empty so the readiness gate had
             # no services-start.sh to run (postgres never started).
-            write_service_scripts(cache_dir, service_models, symphony=symphony_name)
+            # 116: only when coordinare manages services. With the default (performer-owned)
+            # config, declared_services — and thus service_models — is empty, and the
+            # performer's own apply_manual_override writes the service scripts (pre-108).
+            if service_models:
+                write_service_scripts(cache_dir, service_models, symphony=symphony_name)
         except OSError as exc:
             logger.warning(
                 "env_cache.manifest_write_failed", symphony=symphony_name, error=str(exc)

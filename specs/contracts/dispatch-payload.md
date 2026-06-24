@@ -61,6 +61,7 @@ authoritative schema — any field not on `Score` is silently dropped by pydanti
 |-------|------|----------|--------|---------|
 | `metadata` | dict[str, str] | no | dispatch_performer | extension point for per-job context |
 | `metadata.env_cache_path` | str (within metadata) | no | dispatch_performer (when env cache ready) | performer activation — path to symphony's env cache subdirectory inside the container (e.g. `/devenv/my-project-a1b2c3`); absent when no cache configured or cache dir not yet ready |
+| `coordinare_manages_services` | bool | no | env_cache (BootstrapJobPayload, feature 116) | env_bootstrap performer — when False (default, sourced from `EnvCacheConfig.coordinare_manages_services`), the performer owns env setup end-to-end and SKIPS the 101 service-readiness gate (success = toolchain verify.sh). Declared on the `Score` model (extra="ignore" would otherwise drop it). Defaults True so an older/synthetic payload preserves the coordinare-managed path |
 
 ### Backend Selection (set by dispatch_performer, feature 037)
 
