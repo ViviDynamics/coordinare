@@ -996,6 +996,24 @@ class TestServiceInferenceConfig:
         assert inf.max_tokens == 100_000
         assert inf.web_search_enabled is False
 
+    def test_coordinare_manages_services_defaults_off(self) -> None:
+        # 116: default OFF restores performer-owned env setup (the 091→115 coordinare-
+        # managed-services subsystem is dormant unless explicitly enabled).
+        assert self._base_cfg().env_cache.coordinare_manages_services is False
+
+    def test_coordinare_manages_services_yaml_override(self, tmp_path) -> None:
+        path = tmp_path / "config.yaml"
+        path.write_text(yaml.dump({
+            "project_name": "Demo",
+            "github_org": "acme",
+            "github_project_number": 1,
+            "github_token": "tok",
+            "human_reviewers": ["alice"],
+            "env_cache": {"coordinare_manages_services": True},
+        }))
+        cfg = ProjectConfiguration.from_yaml(path)
+        assert cfg.env_cache.coordinare_manages_services is True
+
     def test_yaml_overrides(self, tmp_path) -> None:
         path = tmp_path / "config.yaml"
         path.write_text(yaml.dump({

@@ -392,6 +392,33 @@ class TestEnvBootstrapVerifyGate:
         assert resp.status == "env_bootstrap_complete"
         assert perf.state == "env_bootstrap_complete"
 
+    async def test_coordinare_manages_services_false_skips_readiness_gate(self, tmp_path) -> None:
+        # 116: when coordinare does NOT manage services, the performer owns env setup and
+        # the 101 readiness gate is skipped entirely — run_service_readiness must NOT be
+        # called, and bootstrap success is decided by the toolchain verify.sh.
+        perf = _make_perf(session_id="sid")
+        perf.role = "env_bootstrap"
+        perf.score.env_cache_path = str(tmp_path)
+        perf.score.coordinare_manages_services = False
+        perf.backend.get_status.return_value = BackendStatus(state="done")
+        (tmp_path / "verify.sh").write_text("#!/bin/sh\nexit 0\n")
+        settings = Settings(AGENT_BACKEND="opencode", SERVICE_INFERENCE_TIMEOUT=60)
+        readiness = AsyncMock(return_value=(False, [{"service": "postgres", "reason": "x"}]))
+        with (
+            patch(
+                "performer.main._run_service_inference",
+                new=AsyncMock(return_value={"inference_succeeded": True}),
+            ),
+            patch("performer.workspace.run_service_readiness", new=readiness),
+            patch("performer.main.get_settings", return_value=settings),
+        ):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, settings)
+
+        # Gate skipped: the (failing) readiness mock was never invoked, yet bootstrap completes.
+        readiness.assert_not_awaited()
+        assert resp.status == "env_bootstrap_complete"
+        assert perf.state == "env_bootstrap_complete"
+
     async def test_verify_missing_is_degraded_not_fatal(self, tmp_path) -> None:
         # No verify.sh written → legacy/degraded bootstrap: log + proceed, not fail.
         perf = _make_perf(session_id="sid")

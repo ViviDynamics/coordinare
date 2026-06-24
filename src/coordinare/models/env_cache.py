@@ -158,3 +158,15 @@ class BootstrapJobPayload(BaseModel):
             "Empty when no test_env is configured/discovered (behavior unchanged)."
         ),
     )
+    coordinare_manages_services: bool = Field(
+        default=True,
+        description=(
+            "116: whether coordinare manages stateful services for this bootstrap (the 091→115 "
+            "subsystem: deb-fetch persona, rendered service scripts, the 101 readiness gate). "
+            "Sourced from EnvCacheConfig.coordinare_manages_services. When False (the default "
+            "config), the env-bootstrap PERFORMER owns env setup end-to-end and skips the "
+            "coordinare readiness gate; declared_services is empty so no service persona block "
+            "is injected. Defaults True on the model so an older/synthetic payload preserves "
+            "the managed path; coordinare always sets it explicitly from config."
+        ),
+    )
