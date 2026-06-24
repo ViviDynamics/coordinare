@@ -1172,3 +1172,76 @@ class TestServicesStartFailureVisibility:
         start.chmod(0o755)
         await _start_env_cache_services(str(tmp_path), {})
         assert consume_services_start_failure() is None
+
+
+class TestDevenvProfileActivationStartsServices:
+    """117: the devenv profile (BASH_ENV activation entrypoint) starts declared
+    services ON ACTIVATION in the performer container — so postgres/redis are live
+    in the container whose app-under-test connects to them, not the (exited)
+    bootstrap container. Exercises the real devenv-profile.sh via _DEVENV_ROOT."""
+
+    import os as _os
+    import subprocess as _subprocess
+
+    PROFILE = Path(__file__).resolve().parents[2] / "devenv-profile.sh"
+
+    def _source_profile(self, root: Path, lib_base: Path, sysroot: Path):
+        # Source the real profile in a clean shell with the test seams pointed at
+        # tmp dirs, then echo a sentinel so we can prove the sourcing shell survived.
+        env = {
+            **self._os.environ,
+            "_DEVENV_ROOT": str(root),
+            "_DEVENV_LIB_BASE": str(lib_base),
+            "_DEVENV_SYSROOT": str(sysroot),
+        }
+        env.pop("_DEVENV_SOURCED", None)  # ensure the guard lets the body run
+        return self._subprocess.run(
+            ["bash", "-c", f". {self.PROFILE}; echo SHELL_ALIVE"],
+            capture_output=True, text=True, env=env, timeout=60,
+        )
+
+    def _make_cache(self, root: Path, slug: str = "proj-abc123") -> Path:
+        cache = root / slug
+        (cache).mkdir(parents=True)
+        (cache / "activate.sh").write_text('export DEVENV="%s"\n' % cache)
+        return cache
+
+    def test_services_start_runs_on_activation(self, tmp_path: Path) -> None:
+        root, lib_base, sysroot = tmp_path / "devenv", tmp_path / "lib", tmp_path / "sys"
+        cache = self._make_cache(root)
+        services = cache / "services"
+        services.mkdir()
+        marker = tmp_path / "STARTED"
+        start = services / "services-start.sh"
+        start.write_text(f"#!/usr/bin/env bash\ntouch {marker}\n")
+        start.chmod(0o755)
+
+        res = self._source_profile(root, lib_base, sysroot)
+        assert "SHELL_ALIVE" in res.stdout, res.stderr
+        assert marker.exists(), "services-start.sh must run on profile activation"
+
+    def test_nonzero_services_start_is_non_fatal(self, tmp_path: Path) -> None:
+        root, lib_base, sysroot = tmp_path / "devenv", tmp_path / "lib", tmp_path / "sys"
+        cache = self._make_cache(root)
+        services = cache / "services"
+        services.mkdir()
+        start = services / "services-start.sh"
+        start.write_text("#!/usr/bin/env bash\necho boom >&2\nexit 75\n")
+        start.chmod(0o755)
+
+        res = self._source_profile(root, lib_base, sysroot)
+        # The sourcing shell must SURVIVE a failing service (profile never aborts).
+        assert res.returncode == 0
+        assert "SHELL_ALIVE" in res.stdout
+        # Failure is surfaced, not silent.
+        assert "services-start for" in res.stderr
+        # ...and logged to the per-cache log under lib_base.
+        assert (lib_base / "proj-abc123" / "services-start.log").exists()
+
+    def test_no_services_dir_is_noop(self, tmp_path: Path) -> None:
+        root, lib_base, sysroot = tmp_path / "devenv", tmp_path / "lib", tmp_path / "sys"
+        self._make_cache(root)  # cache with activate.sh but no services/ dir
+        res = self._source_profile(root, lib_base, sysroot)
+        assert res.returncode == 0
+        assert "SHELL_ALIVE" in res.stdout
+        assert "services-start for" not in res.stderr

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import os
+import shlex
 import shutil
 import subprocess
 import tarfile
@@ -208,16 +209,16 @@ def fake_devenv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def _patched_profile(tmp_path: Path, devenv_root: Path) -> Path:
-    """Copy profile.sh and rewrite the /devenv/* glob to point at the fixture.
+    """Copy profile.sh and point its cache-root glob at the fixture.
 
-    The script globs cache dirs as ``/devenv/*/`` (and derives
-    ``activate.sh``/``debs`` beneath each). Rewriting the shorter ``/devenv/*/``
-    token covers both the current and the deterministic-extraction layout; the
-    writable lib base is redirected separately via the ``_DEVENV_LIB_BASE`` env
-    var, not by rewriting the script.
+    The profile globs cache dirs as ``"${_DEVENV_ROOT:-/devenv}"/*/`` (spec 117
+    made the root overridable, mirroring ``_DEVENV_SYSROOT``/``_DEVENV_LIB_BASE``).
+    We prepend an ``export _DEVENV_ROOT=<fixture>`` so the body globs the fixture
+    instead of the real ``/devenv`` — no fragile text-replacement of the glob
+    token. The writable lib base is redirected separately via ``_DEVENV_LIB_BASE``.
     """
     original = PROFILE.read_text()
-    patched = original.replace("/devenv/*/", f"{devenv_root}/*/")
+    patched = f"export _DEVENV_ROOT={shlex.quote(str(devenv_root))}\n" + original
     out = tmp_path / "devenv-profile.sh"
     out.write_text(patched)
     return out

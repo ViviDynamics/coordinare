@@ -50,8 +50,12 @@ else
   export _DEVENV_SOURCED=1
 
   _devenv_lib_base="${_DEVENV_LIB_BASE:-/var/lib/devenv}"
+  # Cache root is the container mount point for env-caches. Overridable (like
+  # _DEVENV_SYSROOT / _DEVENV_LIB_BASE) so the activation flow is unit-testable
+  # without writing to the real /devenv.
+  _devenv_root_dir="${_DEVENV_ROOT:-/devenv}"
 
-  for _devenv_cache in /devenv/*/; do
+  for _devenv_cache in "$_devenv_root_dir"/*/; do
     [ -d "$_devenv_cache" ] || continue
     _devenv_slug=${_devenv_cache%/}
     _devenv_slug=${_devenv_slug##*/}
@@ -197,12 +201,35 @@ else
     # --- Source the LLM-authored activation AFTER the deterministic step ----
     _devenv_activate="${_devenv_cache}activate.sh"
     [ -r "$_devenv_activate" ] && . "$_devenv_activate"
+
+    # --- spec 117: start declared stateful services ON ACTIVATION -----------
+    # Stateful services (postgres/redis) have CONTAINER-LOCAL runtime state
+    # (services-start.sh writes pid/data under $XDG_RUNTIME_DIR/coordinare-services,
+    # never the read-only cache mount). They must therefore be started in THIS
+    # performer container — the one whose app-under-test connects to them — not the
+    # (long-gone) env-bootstrap container. The bootstrap installed the binaries into
+    # the cache (debs → services-extract); activation starts them from there. Runs
+    # once per container (this whole block is inside the _DEVENV_SOURCED guard),
+    # AFTER activate.sh so $DEVENV/PATH/LD_LIBRARY_PATH are set for the binaries.
+    # BEST-EFFORT: this profile is sourced into EVERY shell and MUST NOT abort the
+    # caller, so a failing service is logged (per-cache log + one-line stderr) and
+    # swallowed. services-start.sh is idempotent (skips running PIDs / bound ports)
+    # and self-bounds its readiness wait, so re-runs/partial starts converge.
+    _devenv_services="${_devenv_cache}services/services-start.sh"
+    if [ -r "$_devenv_services" ]; then
+      _devenv_svc_log="$_devenv_lib_base/$_devenv_slug/services-start.log"
+      mkdir -p "$_devenv_lib_base/$_devenv_slug" 2>/dev/null || true
+      if ! bash "$_devenv_services" >"$_devenv_svc_log" 2>&1; then
+        echo "devenv: services-start for '$_devenv_slug' exited non-zero;" \
+          "see $_devenv_svc_log" >&2
+      fi
+    fi
   done
 
   unset _devenv_activate _devenv_cache _devenv_slug _devenv_libdir \
-    _devenv_lib_base _devenv_d _devenv_tmp _devenv_stage _devenv_stagelib \
-    _devenv_marker _devenv_lock _devenv_socount _devenv_so _devenv_member \
-    _devenv_root _devenv_sysroot _devenv_sub _devenv_entry _devenv_name \
-    _devenv_target \
+    _devenv_lib_base _devenv_root_dir _devenv_d _devenv_tmp _devenv_stage \
+    _devenv_stagelib _devenv_marker _devenv_lock _devenv_socount _devenv_so \
+    _devenv_member _devenv_root _devenv_sysroot _devenv_sub _devenv_entry \
+    _devenv_name _devenv_target _devenv_services _devenv_svc_log \
     2>/dev/null || true
 fi
