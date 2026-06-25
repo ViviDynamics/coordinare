@@ -448,6 +448,26 @@ def _is_transient_backend_error(reason: str) -> bool:
     return any(m in low for m in _TRANSIENT_BACKEND_ERROR_MARKERS)
 
 
+# 119: backend output-format-contract failures. A JSON-only role (tech_writer,
+# assessor, ...) on a stochastic local reasoning model (gpt-oss:120b via hermes)
+# occasionally emits output with no parseable JSON object — the backend reports
+# `malformed_output`. This is NOT a content verdict and NOT deterministic: a
+# re-dispatch almost always parses. Route it through the same bounded retry
+# (handle_system_error: backoff + budget, blocks after N consecutive fails) that
+# spec-098 gave assessor-shape / `BACKEND_FORMAT_ERROR:` failures, instead of
+# terminal-blocking the card on the first bad roll. (Truncation — a genuinely
+# too-large doc — is the deterministic case; it exhausts the budget and blocks,
+# which is the right floor.)
+_FORMAT_CONTRACT_ERROR_MARKERS = ("malformed_output",)
+
+
+def _is_format_contract_error(reason: str) -> bool:
+    """True for a backend output-format-contract failure (e.g. ``malformed_output``)
+    that warrants a bounded retry rather than an immediate terminal block."""
+    low = reason.lower()
+    return any(m in low for m in _FORMAT_CONTRACT_ERROR_MARKERS)
+
+
 def _is_workflow_push_permission_error(reason: str) -> bool:
     """True when git push was rejected because workflow writes are disallowed."""
     lowered = reason.lower()
@@ -3803,6 +3823,7 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
             if (
                 reason.startswith(_FORMAT_ERROR_PREFIX)
                 or _is_transient_backend_error(reason)
+                or _is_format_contract_error(reason)
                 or assessor_shape is not None
             ):
                 # Treat backend format-contract failures AND transient backend/
@@ -3821,7 +3842,10 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
                 # the retry gate above on the next cycle) AND remains re-classifiable
                 # by shape at exhaustion (empty_body → ENV_BLOCKED). Idempotent — do
                 # not double-prefix an already-tagged reason.
-                if assessor_shape is not None and not reason.startswith(_FORMAT_ERROR_PREFIX):
+                if (
+                    (assessor_shape is not None or _is_format_contract_error(reason))
+                    and not reason.startswith(_FORMAT_ERROR_PREFIX)
+                ):
                     state["system_error_reason"] = f"{_FORMAT_ERROR_PREFIX} {reason}"
                 else:
                     state["system_error_reason"] = reason

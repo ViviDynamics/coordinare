@@ -190,6 +190,29 @@ async def test_transient_backend_crash_retries_not_blocks() -> None:
     assert result["performer_stage"] == "reviewing"  # NOT advanced
 
 
+@pytest.mark.asyncio
+async def test_malformed_output_retries_not_blocks() -> None:
+    """119: a backend `malformed_output` (a JSON-only role like tech_writer on a
+    stochastic local model emits no parseable JSON) routes to system_error (retry
+    budget) instead of terminal-blocking the documenting phase on the first bad
+    roll — and the persisted reason is tagged with the format-error prefix so the
+    retry gate matches it on the next cycle."""
+    service = _Performer({"status": "error", "reason": "malformed_output"})
+    state = _make_state(
+        service=service,
+        stage="documenting",
+        sequence=["implementing", "reviewing", "documenting"],
+    )
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "system_error"  # retried, NOT blocked
+    assert result["system_error_count"] == 1
+    assert result["performer_stage"] == "documenting"  # NOT advanced/abandoned
+    assert result["system_error_reason"].startswith("BACKEND_FORMAT_ERROR:")
+    assert "malformed_output" in result["system_error_reason"]
+
+
 # ---------------------------------------------------------------------------
 # T015-4: in-progress returns unchanged state with phase="monitoring_performer"
 # ---------------------------------------------------------------------------
