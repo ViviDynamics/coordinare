@@ -981,6 +981,37 @@ def _qa_unsubstantiated_pass(
     return not has_evidence
 
 
+def _qa_env_limited_without_verification(
+    *,
+    qa_passed_flag: bool,
+    env_limited: bool,
+    criteria_checked: object,
+    criteria_passed: object,
+) -> bool:
+    """120 (US1): True when an env-limited advisory pass verified ZERO criteria.
+
+    The env-limited advisory pass (077) lets a run whose only failures are
+    environmental pass DEGRADED. But a run that passed *zero* criteria
+    (``criteria_passed == 0`` while criteria were checked) verified nothing — it
+    is "couldn't verify", not a pass — even when the failed attempts left some
+    evidence (so ``_qa_unsubstantiated_pass``, which only guards the
+    zero-evidence case, would let it through). The caller routes such a run to
+    ``qa_env_blocked`` (HOLD for cache repair) instead of the advisory pass. The
+    advisory pass remains valid only when at least one criterion genuinely
+    passed. Non-numeric counts coerce to 0 (never raises)."""
+    if not (qa_passed_flag and env_limited):
+        return False
+    try:
+        checked = int(criteria_checked or 0)
+    except (TypeError, ValueError):
+        checked = 0
+    try:
+        passed = int(criteria_passed or 0)
+    except (TypeError, ValueError):
+        passed = 0
+    return checked > 0 and passed == 0
+
+
 def _qa_app_boot_evidence(
     qa_output: dict,
     executed_checks: list[dict],
@@ -2567,6 +2598,23 @@ async def handle_status(
                         session_id=perf.session_id,
                         criteria_passed=criteria_passed,
                     )
+
+            # 120 (US1): an env-limited advisory pass that verified ZERO criteria
+            # is "couldn't verify", not a pass — route it to qa_env_blocked (HOLD
+            # for cache repair) instead of the advisory qa_passed below.
+            if not qa_env_blocked and _qa_env_limited_without_verification(
+                qa_passed_flag=qa_passed_flag,
+                env_limited=env_limited,
+                criteria_checked=criteria_checked,
+                criteria_passed=criteria_passed,
+            ):
+                qa_env_blocked = True
+                log.warning(
+                    "qa.env_blocked_zero_criteria_passed",
+                    session_id=perf.session_id,
+                    criteria_checked=criteria_checked,
+                    env_error=(env_error or "")[:200],
+                )
 
             # Commit QA report to the architecture folder
             folder = _doc_folder(perf.score)

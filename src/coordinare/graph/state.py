@@ -206,6 +206,10 @@ class CoordinareState(TypedDict, total=False):
     session_skip_reasons: dict[str, dict[str, Any]]
     # 055: QA screenshot results from most recent capture pass.
     qa_screenshots: list[Any]
+    # 120 (US3/FR-014): app-boot proof from the most recent QA run. True/False
+    # when the QA report carried an app_boot_check verdict; None when unknown.
+    # The post-QA screenshot backstop only captures when this is not False.
+    qa_app_boot_ok: bool | None
     # 055: Issue comment idempotency fields.
     last_issue_comment_id: int | None
     processed_issue_comment_ids: set[int]
@@ -298,6 +302,7 @@ def initial_state() -> CoordinareState:
         "github_retry_after": None,
         "session_skip_reasons": {},
         "qa_screenshots": [],
+        "qa_app_boot_ok": None,
         "last_issue_comment_id": None,
         "processed_issue_comment_ids": set(),
         "performer_endpoints": {},
