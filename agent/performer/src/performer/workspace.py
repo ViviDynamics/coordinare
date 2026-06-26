@@ -306,6 +306,13 @@ async def _activate_env_cache(env_cache_path: str) -> dict[str, str]:
     # LD_LIBRARY_PATH is set too. (Mirrors the _DEVENV_SOURCED fix already used by
     # _start_env_cache_services.)
     source_env = {k: v for k, v in os.environ.items() if k != "_DEVENV_SOURCED"}
+    # 120 fix: skip the profile's spec-117 services-start during activation. With
+    # the re-entry guard cleared the profile runs in full, which includes starting
+    # postgres/redis (initdb can take >30s) — that blew this subprocess's timeout,
+    # leaving cache_env empty and the QA agent without ruby on PATH. We only need
+    # the env here (PATH/LD_LIBRARY_PATH/activate.sh); _start_env_cache_services
+    # starts the services separately right after with a 300s budget.
+    source_env["_DEVENV_SKIP_SERVICES"] = "1"
     script = (
         f"export DEVENV={shlex.quote(str(env_cache_path))}; "
         f"source {shlex.quote(str(activate))} >/dev/null 2>&1 && "
@@ -400,7 +407,7 @@ async def _activate_env_cache(env_cache_path: str) -> dict[str, str]:
     # category as COLUMNS/LINES.
     _never_propagate = {
         "_DEVENV_SOURCED", "BASH_ENV", "ENV", "COLUMNS", "LINES", "DEVENV",
-        "SHLVL",
+        "SHLVL", "_DEVENV_SKIP_SERVICES",
     }
     delta: dict[str, str] = {}
     for k, v in sourced.items():

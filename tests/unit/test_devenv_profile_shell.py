@@ -259,6 +259,44 @@ def test_profile_sources_under_bash_env(
     assert "SOURCED=1" in result.stdout
 
 
+def test_profile_skips_services_start_when_flag_set(
+    tmp_path: Path, fake_devenv: Path
+) -> None:
+    """spec 120: `_DEVENV_SKIP_SERVICES=1` skips the spec-117 services-start block
+    while STILL activating the env. `_activate_env_cache` sets this so it captures
+    the toolchain (PATH/LD_LIBRARY_PATH) without paying the slow postgres `initdb`
+    that otherwise blew its timeout. Other shells (no flag) keep starting services.
+    """
+    svc_dir = fake_devenv / "sym" / "services"
+    svc_dir.mkdir(parents=True)
+    marker = tmp_path / "services-ran.marker"
+    (svc_dir / "services-start.sh").write_text(
+        f"#!/usr/bin/env bash\ntouch {shlex.quote(str(marker))}\n"
+    )
+    profile = _patched_profile(tmp_path, fake_devenv)
+    base_env = {
+        **os.environ,
+        "BASH_ENV": str(profile),
+        "_DEVENV_LIB_BASE": str(tmp_path / "libbase"),
+    }
+    base_env.pop("_DEVENV_SOURCED", None)
+
+    # Without the flag: env activates AND services-start runs.
+    r1 = _run(["bash", "-c", "echo SOURCED=$DEVENV_ACTIVATED"], env=dict(base_env))
+    assert "SOURCED=1" in r1.stdout, r1.stderr
+    assert marker.exists(), "services-start should run without the skip flag"
+
+    marker.unlink()
+
+    # With the flag: env still activates, services-start is skipped.
+    env2 = {**base_env, "_DEVENV_SKIP_SERVICES": "1"}
+    r2 = _run(["bash", "-c", "echo SOURCED=$DEVENV_ACTIVATED"], env=env2)
+    assert "SOURCED=1" in r2.stdout, r2.stderr
+    assert not marker.exists(), (
+        "services-start must be skipped when _DEVENV_SKIP_SERVICES=1"
+    )
+
+
 def test_profile_reentry_guard_prevents_recursion(
     tmp_path: Path, fake_devenv: Path
 ) -> None:
