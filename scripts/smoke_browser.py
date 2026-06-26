@@ -89,6 +89,17 @@ def run_one(endpoint: dict, cfg: dict, dotenv: dict, repo_url: str) -> dict:
     docker_env += ["-e", f"GITHUB_TOKEN={gh_token}",
                    "-e", "PERFORMER_SECRET_SOURCE_INIT_PAYLOAD=1",
                    "-e", "PERFORMER_SECRET_SOURCE_ENV=1"]
+    # Mount the endpoint's declared volumes (e.g. the SELFHOSTED_ROUTING_CONFIG
+    # routing.yaml) so dispatch sees exactly what the daemon mounts — otherwise
+    # an endpoint that points SELFHOSTED_ROUTING_CONFIG at a mounted file fails
+    # dispatch with FileNotFoundError before the agent ever runs.
+    docker_vols: list[str] = []
+    for vol in (endpoint.get("volumes", []) or []):
+        host = _expand(str(vol.get("host_path", "")), dotenv)
+        cont = str(vol.get("container_path", ""))
+        mode = str(vol.get("mode", "ro"))
+        if host and cont and Path(host).exists():
+            docker_vols += ["-v", f"{host}:{cont}:{mode}"]
     extra_secrets: dict[str, str] = {}
     key_name = backend_key_map.get(backend.replace("-", "_"))
     if key_name:
@@ -100,7 +111,7 @@ def run_one(endpoint: dict, cfg: dict, dotenv: dict, repo_url: str) -> dict:
     cid = None
     try:
         run = subprocess.run(
-            ["docker", "run", "-d", "--name", name, "-p", f"{port}:8088", *docker_env, image],
+            ["docker", "run", "-d", "--name", name, "-p", f"{port}:8088", *docker_env, *docker_vols, image],
             capture_output=True, text=True, timeout=60,
         )
         if run.returncode != 0:

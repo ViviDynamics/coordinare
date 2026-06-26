@@ -2973,6 +2973,89 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
                         seen.add(key)
                 status = {**status, "findings": merged}
 
+        # --- 120 (US3/FR-014): expose app-boot proof for the screenshot backstop.
+        # The post-QA capture node only attempts capture when the app actually
+        # booted; persist the QA report's app_boot_check verdict so it can gate.
+        if stage == "qa":
+            _qa_rep_for_boot = status.get("report")
+            if isinstance(_qa_rep_for_boot, dict):
+                _boot = _qa_rep_for_boot.get("app_boot_check")
+                state["qa_app_boot_ok"] = bool(
+                    isinstance(_boot, dict) and _boot.get("exit_code") == 0
+                )
+
+        # --- 120 (US1): QA evidence-integrity floor — coordinare-authoritative ---
+        # A QA "qa_passed" that verified ZERO acceptance criteria (criteria were
+        # checked but criteria_passed==0) or lacks the visual evidence a UI change
+        # requires is UNSUBSTANTIATED and must not advance — regardless of the
+        # performer's self-report (mirrors the 083 security floor: override the
+        # marker BEFORE terminal handling). An accompanying environment signal
+        # (report.environment_error / env_cache_health_failed) routes to the
+        # qa_env_blocked HOLD path (repair the cache + re-run); otherwise it
+        # bounces to the implementer as a synthetic failure. A substantiated pass
+        # (>=1 criterion with evidence) and a genuine no-criteria scope
+        # (criteria_checked==0) advance unchanged — no regression of real passes.
+        if stage == "qa" and marker == "qa_passed":
+            from coordinare.services.qa_verdict import (
+                classify_qa_verdict,
+                qa_unsubstantiated_reason,
+            )
+
+            _qa_report = status.get("report") if isinstance(status.get("report"), dict) else {}
+            _qa_route = classify_qa_verdict(
+                marker, _qa_report, bool(status.get("env_cache_health_failed"))
+            )
+            if _qa_route != "advance":
+                _downgrade_reason = (
+                    qa_unsubstantiated_reason(_qa_report) or "unsubstantiated_pass"
+                )
+                _visual_evidence_n = sum(
+                    1
+                    for _ev in (_qa_report.get("visual_evidence") or [])
+                    if isinstance(_ev, dict) and _ev.get("path_or_url")
+                )
+                logger.warning(
+                    "monitor_performer.qa_evidence_floor_override",
+                    performer_stage=stage,
+                    card_id=card_id,
+                    route=_qa_route,
+                    criteria_checked=_qa_report.get("criteria_checked"),
+                    criteria_passed=_qa_report.get("criteria_passed"),
+                    visual_required=bool(_qa_report.get("visual_validation_required")),
+                    visual_evidence_count=_visual_evidence_n,
+                    reason=_downgrade_reason,
+                )
+                if _qa_route == "hold":
+                    # Reuse the existing qa_env_blocked handler below (HOLD + cache
+                    # repair + notify). The handler reads status["reason"].
+                    marker = "qa_env_blocked"
+                    status = {
+                        **status,
+                        "reason": f"qa_evidence_floor: {_downgrade_reason}",
+                    }
+                else:  # bounce → reuse the qa_failed fix-feedback handler below.
+                    marker = "qa_failed"
+                    _synthetic_failure = {
+                        "type": "unsubstantiated_pass",
+                        "criterion": "QA reported a pass it did not substantiate",
+                        "expected": (
+                            "At least one acceptance criterion verified with execution "
+                            "evidence (plus a screenshot for visual changes)."
+                        ),
+                        "actual": (
+                            f"Coordinare evidence floor rejected the pass: "
+                            f"{_downgrade_reason}."
+                        ),
+                    }
+                    _existing_failures = status.get("failures")
+                    _failures = (
+                        list(_existing_failures)
+                        if isinstance(_existing_failures, list)
+                        else []
+                    )
+                    _failures.append(_synthetic_failure)
+                    status = {**status, "failures": _failures}
+
         # 072 FR-072-8..11: head-delta audit trail. Capture head_at_dispatch
         # the first time we see a non-empty head_before for this card's
         # current pass, and overwrite head_at_last_turn on every terminal

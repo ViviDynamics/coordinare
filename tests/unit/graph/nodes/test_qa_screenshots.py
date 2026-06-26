@@ -197,7 +197,9 @@ async def test_node_disabled_by_config(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_node_docker_unavailable_sets_empty_list(tmp_path):
+async def test_node_docker_unavailable_records_not_captured(tmp_path):
+    # 120 (US3/FR-015): docker unavailable must NOT read as an empty success —
+    # it records an honest skipped result with a reason.
     state = _make_state(workspace_path=tmp_path)
 
     with patch(
@@ -207,7 +209,29 @@ async def test_node_docker_unavailable_sets_empty_list(tmp_path):
     ):
         result = await qa_screenshots(state)
 
-    assert result["qa_screenshots"] == []
+    shots = result["qa_screenshots"]
+    assert len(shots) == 1
+    assert shots[0].status == "skipped"
+    assert "docker_unavailable" in (shots[0].error or "")
+
+
+@pytest.mark.asyncio
+async def test_node_skips_capture_when_app_did_not_boot(tmp_path):
+    # 120 (US3/FR-014): no boot-proof → skip launch, record honest not-captured.
+    state = _make_state(workspace_path=tmp_path)
+    state["qa_app_boot_ok"] = False
+
+    launch = AsyncMock(return_value=None)
+    with patch(
+        "coordinare.graph.nodes.qa_screenshots.launch_docker_env", launch
+    ):
+        result = await qa_screenshots(state)
+
+    launch.assert_not_called()  # did not even attempt capture
+    shots = result["qa_screenshots"]
+    assert len(shots) == 1
+    assert shots[0].status == "skipped"
+    assert "app_boot_unverified" in (shots[0].error or "")
 
 
 @pytest.mark.asyncio

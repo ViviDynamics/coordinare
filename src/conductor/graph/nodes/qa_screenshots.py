@@ -12,6 +12,7 @@ Gracefully skips if:
 """
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import structlog
@@ -33,6 +34,21 @@ _DEFAULT_FEATURE_AREAS = ["home", "main_feature"]
 _DEFAULT_PLAYWRIGHT_IMAGE = "mcr.microsoft.com/playwright/python:v1.44.0-jammy"
 
 
+def _not_captured(reason: str) -> QAScreenshotResult:
+    """120 (US3/FR-015): an honest 'no screenshot captured' record.
+
+    Returned instead of a silent empty list so a screenshot-less backstop run
+    can never read as one that captured evidence. ``status='skipped'`` with a
+    names-only reason in ``error``."""
+    return QAScreenshotResult(
+        feature_area="(none)",
+        file_path=Path(""),
+        cdn_url=None,
+        status="skipped",
+        error=f"no screenshot captured: {reason}",
+    )
+
+
 async def qa_screenshots(state: CoordinareState) -> CoordinareState:
     config = state.get("config")
     workspace_path = state.get("workspace_path")
@@ -43,6 +59,19 @@ async def qa_screenshots(state: CoordinareState) -> CoordinareState:
     # Respect config flag — default to enabled if config is absent
     if config is not None and not getattr(config, "qa_docker_enabled", True):
         logger.debug("qa_screenshots.disabled_by_config")
+        return state
+
+    card = state.get("current_card") or {}
+    card_id = str(card.get("id", ""))
+
+    # 120 (US3/FR-014): only attempt capture when the app actually booted in QA.
+    # The QA run records whether app_boot_check passed (state["qa_app_boot_ok"]).
+    # If it explicitly did NOT boot, record an honest skip rather than launching
+    # a capture that can only fail against a dead app. Unknown (None) → proceed;
+    # launch_docker_env itself waits on reachability.
+    if state.get("qa_app_boot_ok") is False:
+        logger.info("qa_screenshots.skipped_no_boot_proof", card_id=card_id)
+        state["qa_screenshots"] = [_not_captured("app_boot_unverified")]
         return state
 
     playwright_image = (
@@ -56,9 +85,6 @@ async def qa_screenshots(state: CoordinareState) -> CoordinareState:
         else 120
     )
 
-    card = state.get("current_card") or {}
-    card_id = str(card.get("id", ""))
-
     docker_session = await launch_docker_env(
         playwright_image=playwright_image,
         workspace_path=workspace_path,
@@ -66,8 +92,9 @@ async def qa_screenshots(state: CoordinareState) -> CoordinareState:
     )
 
     if docker_session is None:
+        # 120 (US3/FR-015): never report an empty success — record the skip.
         logger.warning("qa_screenshots.docker_unavailable", card_id=card_id)
-        state["qa_screenshots"] = []
+        state["qa_screenshots"] = [_not_captured("docker_unavailable")]
         return state
 
     try:

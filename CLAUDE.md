@@ -49,6 +49,8 @@ See AGENTS.md for all development guidelines.
 - existing JSON snapshot (`state_store.py`) / `EnvCacheState` (`models/env_cache.py`); optionally extend with per-service readiness (backward-compatible). No new store. (101-bootstrap-service-readiness)
 - Python 3.14 (project min 3.12; prod 3.14.5 via uv); the rendered instruction is shell run in the Debian-family performer. + `http_performer_service._render_system_services_install` (the persona block — the fetch command); `env_manifest._SERVICE_KIND_PACKAGES` + `derive_service_install_items` (the kind→package source of truth); the env-cache deb extraction + activate.sh path-placement; spec-101 `run_service_readiness` (the verifier/backstop). **No new external dependency** (apt is already used). (102-service-server-package-install)
 - none new. (102-service-server-package-install)
+- Python 3.14 (project min 3.12; prod 3.14.5 via uv) + existing only — pydantic 2.x (PerformerResponse/report contract, no schema (120-qa-evidence-integrity)
+- existing single-host JSON snapshot via `state_store.py`. **No schema migration** — the (120-qa-evidence-integrity)
 
 ## Recent Changes
 - 076-qa-cycle: Added Python 3.14 (project minimum: 3.12; production currently on 3.14.5 via uv) + pydantic 2.x, langgraph, structlog, docker SDK (or subprocess to `docker` CLI), fastapi (dashboard SSE), httpx (performer HTTP transport), pyyaml (config)

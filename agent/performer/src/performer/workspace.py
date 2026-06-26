@@ -232,6 +232,42 @@ async def clone_repository(score: Score) -> Stand:
     return stand
 
 
+# 120 (US2): markers an activate.sh uses to advertise a language toolchain →
+# the binary that MUST resolve on PATH once the cache is activated. Keyed on what
+# the cache itself declares, so a cache that references none asserts nothing
+# (non-Ruby / toolchain-less projects are unaffected). Markers are deliberately
+# specific (a path segment or an env-var assignment) so a passing mention in a
+# comment does not false-positive a non-Ruby project.
+_TOOLCHAIN_ADVERTISEMENTS: tuple[tuple[str, str], ...] = (
+    (".rbenv/", "ruby"),
+    ("RBENV_ROOT", "ruby"),
+)
+
+
+def _unresolved_advertised_toolchain(
+    activate_text: str, sourced_path: str
+) -> str | None:
+    """Return a names-only reason if activate.sh advertises a toolchain whose
+    binary does not resolve on the post-activation PATH, else None.
+
+    Pure (no I/O beyond the PATH lookup it is handed): asserts only toolchains the
+    cache explicitly references, so caches that advertise none assert nothing. The
+    returned string carries category names only — never secret values."""
+    if not sourced_path:
+        return None
+    expected: set[str] = {
+        binary
+        for marker, binary in _TOOLCHAIN_ADVERTISEMENTS
+        if marker in activate_text
+    }
+    missing = sorted(
+        b for b in expected if shutil.which(b, path=sourced_path) is None
+    )
+    if missing:
+        return f"advertised_toolchain_unresolved: {', '.join(missing)}"
+    return None
+
+
 async def _activate_env_cache(env_cache_path: str) -> dict[str, str]:
     """Source ``<env_cache_path>/activate.sh`` and return the env-var delta.
 
@@ -256,7 +292,22 @@ async def _activate_env_cache(env_cache_path: str) -> dict[str, str]:
 
     # Diff env after sourcing against a reference env (same shell, no source)
     # so we capture only the keys the script set/changed, not bash defaults.
+    #
+    # 120 (US2): pin DEVENV to THIS cache and clear the profile re-entry guard
+    # before sourcing. activate.sh resolves the project toolchain through $DEVENV
+    # (e.g. ``$DEVENV/.rbenv/versions/X/bin``). The performer process already
+    # sourced the devenv profile at startup (``_DEVENV_SOURCED=1`` in os.environ),
+    # so without clearing the guard the BASH_ENV profile SKIPS in this subshell,
+    # $DEVENV is never set, and activate.sh prepends bogus empty-$DEVENV paths to
+    # PATH — the consumer then reports "ruby not installed" even though the cache
+    # is correct on disk. Exporting DEVENV inside the command (after BASH_ENV has
+    # run) makes toolchain resolution deterministic regardless of profile state;
+    # clearing the guard lets the profile re-run so the captured-deb
+    # LD_LIBRARY_PATH is set too. (Mirrors the _DEVENV_SOURCED fix already used by
+    # _start_env_cache_services.)
+    source_env = {k: v for k, v in os.environ.items() if k != "_DEVENV_SOURCED"}
     script = (
+        f"export DEVENV={shlex.quote(str(env_cache_path))}; "
         f"source {shlex.quote(str(activate))} >/dev/null 2>&1 && "
         f"env -0"
     )
@@ -265,6 +316,7 @@ async def _activate_env_cache(env_cache_path: str) -> dict[str, str]:
             "bash", "-c", script,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=source_env,
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30.0)
     except (OSError, asyncio.TimeoutError) as exc:
@@ -294,7 +346,14 @@ async def _activate_env_cache(env_cache_path: str) -> dict[str, str]:
     # which does not re-source per command) couldn't load native extensions
     # (psych/libyaml → Rails wouldn't boot → no QA screenshots). Stripping
     # BASH_ENV/ENV from the reference keeps profile-set vars in the delta.
-    ref_env = {k: v for k, v in os.environ.items() if k not in ("BASH_ENV", "ENV")}
+    # 120 (US2): also strip _DEVENV_SOURCED from the reference so both sides
+    # treat the profile re-entry guard identically (the sourced side clears it);
+    # otherwise the guard's presence on only one side could skew the delta.
+    ref_env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("BASH_ENV", "ENV", "_DEVENV_SOURCED")
+    }
     try:
         # Mirror the sourced invocation's command shape (source && env) so
         # bash-internal bookkeeping that depends on command structure (e.g.
@@ -331,19 +390,56 @@ async def _activate_env_cache(env_cache_path: str) -> dict[str, str]:
     # COLUMNS/LINES: terminal geometry bash may inject as a checkwinsize
     # fallback (80/24) when there is no tty (CI runners) — never meaningful
     # to an agent subprocess and asymmetric between the two invocations.
-    _never_propagate = {"_DEVENV_SOURCED", "BASH_ENV", "ENV", "COLUMNS", "LINES"}
+    # 120 (US2): DEVENV is the bootstrap pointer we export ourselves before
+    # sourcing activate.sh; it must not leak into the cache delta (the agent's
+    # PATH/LD_LIBRARY_PATH are already fully resolved, so DEVENV is not needed
+    # downstream, and an empty-script cache must still yield an empty delta).
+    # SHLVL: bash's shell-nesting counter — it increments per subshell and is
+    # asymmetric between the sourced and reference invocations at some nesting
+    # depths (e.g. CI runners), so it must never enter the cache delta. Same
+    # category as COLUMNS/LINES.
+    _never_propagate = {
+        "_DEVENV_SOURCED", "BASH_ENV", "ENV", "COLUMNS", "LINES", "DEVENV",
+        "SHLVL",
+    }
     delta: dict[str, str] = {}
     for k, v in sourced.items():
         if k in _never_propagate:
             continue
         if reference.get(k) != v:
             delta[k] = v
+
+    # 120 (US2/FR-010/FR-011): verify the project toolchain the cache ADVERTISES
+    # actually resolves after activation, and record it for diagnosability. Only
+    # toolchains the cache itself references are asserted, so non-Ruby caches
+    # assert nothing. An advertised-but-unresolved toolchain is surfaced through
+    # the existing env-failure channels (environment_error for QA + the
+    # env_cache_health_failed signal the coordinare's evidence floor routes to a
+    # HOLD) rather than letting the consumer judge code against a broken env.
+    # Only assert against the cache's own PATH contribution (the activated delta),
+    # not a system-PATH fallback — a broken activate.sh that never touched PATH
+    # must not be masked by a system binary that the cache does not provide.
+    sourced_path = delta.get("PATH", "")
+    try:
+        activate_text = activate.read_text(errors="replace")
+    except OSError:
+        activate_text = ""
+    toolchain_issue = _unresolved_advertised_toolchain(activate_text, sourced_path)
     log.info(
         "env_cache.activated",
         env_cache_path=env_cache_path,
         var_count=len(delta),
         keys=sorted(delta.keys()),
+        toolchain_resolved=(toolchain_issue is None),
     )
+    if toolchain_issue is not None:
+        log.warning(
+            "env_cache.toolchain_unresolved",
+            env_cache_path=env_cache_path,
+            reason=toolchain_issue,
+        )
+        _record_env_cache_activation_failure(toolchain_issue)
+        _mark_env_cache_health_failed()
     return delta
 
 
@@ -415,6 +511,19 @@ def _record_services_start_failure(
         _SERVICES_START_FAILURE = (
             f"env-cache services-start failed: {script} "
             f"(returncode={returncode}): {output_tail}".strip()
+        )
+
+
+def _record_env_cache_activation_failure(reason: str) -> None:
+    """120 (US2): store an env-cache ACTIVATION failure for the QA env_error
+    channel, with an accurate message (the toolchain a cache advertised did not
+    resolve after activation) — distinct from a services-start failure. Shares
+    the same single-shot channel consumed by the outbound response packaging.
+    ``reason`` carries category names only, never secret values."""
+    global _SERVICES_START_FAILURE
+    with _SERVICES_START_LOCK:
+        _SERVICES_START_FAILURE = (
+            f"env-cache activation incomplete: {reason}".strip()
         )
 
 
