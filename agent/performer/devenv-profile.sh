@@ -215,13 +215,22 @@ else
     # caller, so a failing service is logged (per-cache log + one-line stderr) and
     # swallowed. services-start.sh is idempotent (skips running PIDs / bound ports)
     # and self-bounds its readiness wait, so re-runs/partial starts converge.
-    _devenv_services="${_devenv_cache}services/services-start.sh"
-    if [ -r "$_devenv_services" ]; then
-      _devenv_svc_log="$_devenv_lib_base/$_devenv_slug/services-start.log"
-      mkdir -p "$_devenv_lib_base/$_devenv_slug" 2>/dev/null || true
-      if ! bash "$_devenv_services" >"$_devenv_svc_log" 2>&1; then
-        echo "devenv: services-start for '$_devenv_slug' exited non-zero;" \
-          "see $_devenv_svc_log" >&2
+    # spec 120: a caller that only needs the ENV (PATH/LD_LIBRARY_PATH/activate.sh)
+    # — notably the performer's `_activate_env_cache`, which snapshots the env-var
+    # delta under a short timeout — sets `_DEVENV_SKIP_SERVICES=1` to skip the slow
+    # service start (postgres `initdb` can exceed that timeout, which left the
+    # snapshot empty → no ruby on the QA agent's PATH). Services are still started:
+    # the performer calls `services-start.sh` separately with a 300s budget, and
+    # other shells (no flag) keep the spec-117 start-on-activation behavior.
+    if [ -z "${_DEVENV_SKIP_SERVICES:-}" ]; then
+      _devenv_services="${_devenv_cache}services/services-start.sh"
+      if [ -r "$_devenv_services" ]; then
+        _devenv_svc_log="$_devenv_lib_base/$_devenv_slug/services-start.log"
+        mkdir -p "$_devenv_lib_base/$_devenv_slug" 2>/dev/null || true
+        if ! bash "$_devenv_services" >"$_devenv_svc_log" 2>&1; then
+          echo "devenv: services-start for '$_devenv_slug' exited non-zero;" \
+            "see $_devenv_svc_log" >&2
+        fi
       fi
     fi
   done
