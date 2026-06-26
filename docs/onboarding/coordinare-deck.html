@@ -1,0 +1,312 @@
+<title>Coordinare — Project Overview Deck</title>
+<style>
+  :root{
+    --bg:#0b0f1a; --bg2:#121a2e; --ink:#e8edf7; --mut:#9fb0cf; --dim:#6b7da3;
+    --accent:#6ea8fe; --accent2:#7ee0c0; --warn:#ffcc66; --line:#26324d;
+    --card:#16203a; --good:#5fd38d; --bad:#ff7a85;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);overflow:hidden}
+  #stage{height:100vh;width:100vw;display:flex;align-items:center;justify-content:center;padding:3.5vh 4vw}
+  .slide{display:none;width:100%;max-width:1100px;max-height:92vh;overflow:auto}
+  .slide.active{display:block;animation:f .35s ease}
+  @keyframes f{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+  h1{font-size:clamp(28px,5vw,52px);line-height:1.05;margin:0 0 .3em;letter-spacing:-.5px}
+  h2{font-size:clamp(20px,3.4vw,34px);margin:0 0 .6em;letter-spacing:-.3px}
+  h2 .n{color:var(--dim);font-variant-numeric:tabular-nums;margin-right:.5em;font-weight:600}
+  p,li{font-size:clamp(14px,1.7vw,19px);line-height:1.5;color:var(--mut)}
+  b,strong{color:var(--ink)}
+  .accent{color:var(--accent)} .accent2{color:var(--accent2)} .warn{color:var(--warn)}
+  code{font-family:var(--mono);background:#0d1424;border:1px solid var(--line);border-radius:5px;padding:1px 6px;font-size:.88em;color:#cfe0ff}
+  .lead{font-size:clamp(17px,2.3vw,24px);color:var(--mut);max-width:42ch}
+  .sub{color:var(--dim);font-size:clamp(13px,1.5vw,16px);text-transform:uppercase;letter-spacing:2px;font-weight:600;margin-bottom:1.2em}
+  ul{margin:.2em 0;padding-left:1.1em} li{margin:.4em 0}
+  .grid{display:grid;gap:14px}
+  .g2{grid-template-columns:1fr 1fr} .g3{grid-template-columns:repeat(3,1fr)} .g4{grid-template-columns:repeat(4,1fr)}
+  @media(max-width:760px){.g2,.g3,.g4{grid-template-columns:1fr}}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+  .card h3{margin:0 0 .3em;font-size:clamp(15px,1.9vw,20px);color:var(--ink)}
+  .card p{margin:.2em 0;font-size:clamp(12.5px,1.5vw,16px)}
+  .tag{display:inline-block;font:600 11px/1 var(--mono);color:var(--bg);background:var(--accent);border-radius:5px;padding:4px 7px;margin-right:6px}
+  .pill{display:inline-block;border:1px solid var(--line);border-radius:999px;padding:5px 12px;margin:4px 6px 4px 0;font-size:13px;color:var(--mut);background:#0e1626}
+  .row{display:flex;gap:12px;align-items:stretch;flex-wrap:wrap}
+  .flow{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:10px 0}
+  .node{background:var(--card);border:1px solid var(--line);border-radius:9px;padding:8px 11px;font-size:13px;color:var(--ink);white-space:nowrap}
+  .node.k{border-color:var(--accent);box-shadow:0 0 0 1px rgba(110,168,254,.25) inset}
+  .node.g{border-color:var(--good)} .node.w{border-color:var(--warn)} .node.b{border-color:var(--bad)}
+  .arr{color:var(--dim);font-size:18px}
+  .layer{border-left:3px solid var(--accent);padding:10px 14px;margin:8px 0;background:linear-gradient(90deg,rgba(110,168,254,.08),transparent);border-radius:0 10px 10px 0}
+  .layer .t{font-weight:700;color:var(--ink)} .layer .d{color:var(--mut);font-size:14px}
+  table{border-collapse:collapse;width:100%;font-size:clamp(12px,1.5vw,15.5px)}
+  th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line)}
+  th{color:var(--dim);font-weight:600;text-transform:uppercase;letter-spacing:.5px;font-size:11px}
+  td{color:var(--mut)} td b{color:var(--ink)}
+  .mono{font-family:var(--mono);font-size:.9em}
+  /* chrome */
+  #bar{position:fixed;left:0;right:0;bottom:0;height:4px;background:#0d1424}
+  #fill{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2));width:0;transition:width .3s}
+  #hud{position:fixed;right:18px;bottom:14px;font:600 13px var(--mono);color:var(--dim)}
+  #nav{position:fixed;left:18px;bottom:12px;display:flex;gap:8px}
+  #nav button{background:var(--card);border:1px solid var(--line);color:var(--mut);border-radius:8px;width:34px;height:30px;font-size:15px;cursor:pointer}
+  #nav button:hover{color:var(--ink);border-color:var(--accent)}
+  .kbd{font:600 11px var(--mono);color:var(--dim);border:1px solid var(--line);border-radius:4px;padding:1px 5px}
+  .ttl-wrap{text-align:center}
+  .badge{display:inline-block;border:1px solid var(--accent);color:var(--accent);border-radius:999px;padding:6px 16px;font:600 13px var(--mono);letter-spacing:1px;margin-bottom:1.4em}
+  .foot{color:var(--dim);font-size:13px;margin-top:1.4em}
+</style>
+
+<div id="stage">
+
+  <!-- 1 -->
+  <section class="slide active ttl-wrap">
+    <div class="badge">DEVELOPER ORIENTATION</div>
+    <h1>Coordinare</h1>
+    <p class="lead" style="margin:0 auto">An autonomous software-engineering <span class="accent">orchestrator</span> — a team of AI agents that takes cards from a board to merged PRs.</p>
+    <p class="foot">One daemon · many projects · real CLIs in containers · frontier &amp; self-hosted models &nbsp; · &nbsp; <span class="kbd">←</span> <span class="kbd">→</span> to navigate</p>
+  </section>
+
+  <!-- 2 -->
+  <section class="slide">
+    <div class="sub">The one-paragraph model</div>
+    <h2><span class="n">01</span>What is it?</h2>
+    <p class="lead" style="max-width:60ch">A <b class="accent">coordinare</b> (one daemon) conducts several <b class="accent">symphonies</b> (projects). For each card it dispatches a sequence of <b class="accent">performers</b> (one per lifecycle role). Each performer runs an <b class="accent">agent harness</b> (a CLI) in a container with the project's cached <b class="accent">environment</b>, talking to a <b class="accent">model</b> — frontier (Claude) or local (gpt-oss, qwen). When local, a <b class="accent2">shim</b> normalizes its output to frontier-grade. <b class="accent">Gates</b> enforce CI, security &amp; human approval.</p>
+    <div class="row" style="margin-top:18px">
+      <span class="pill">🎼 coordinare = the daemon</span>
+      <span class="pill">🎻 symphony = a project</span>
+      <span class="pill">🎤 performer = an agent</span>
+      <span class="pill">🛠 harness = the CLI it runs</span>
+      <span class="pill">🧩 shim = local→frontier parity</span>
+    </div>
+  </section>
+
+  <!-- 3 -->
+  <section class="slide">
+    <div class="sub">Why it exists</div>
+    <h2><span class="n">02</span>Three hard problems, three answers</h2>
+    <div class="grid g3">
+      <div class="card"><h3>① One shot isn't enough</h3><p>Real changes need plan → build → review → test → fix → merge.</p><p style="color:var(--accent2)">→ an explicit <b>lifecycle</b> with gates, bounces &amp; bounded retries.</p></div>
+      <div class="card"><h3>② Agents need a real env</h3><p>Tests need the toolchain, a DB, services.</p><p style="color:var(--accent2)">→ a per-project <b>env-cache</b> mounted into every performer; services start on activation.</p></div>
+      <div class="card"><h3>③ Local models ≠ frontier</h3><p>They leak reasoning, mangle tool calls, emit bad JSON, wrong wire format.</p><p style="color:var(--accent2)">→ a transparent <b>shim + normalizers</b> so stock harnesses just work.</p></div>
+    </div>
+    <p class="foot">Coordinare is, in essence, the accumulated answer to these three.</p>
+  </section>
+
+  <!-- 4 -->
+  <section class="slide">
+    <div class="sub">The big picture</div>
+    <h2><span class="n">03</span>Five layers</h2>
+    <div class="layer"><span class="t">① Coordinare</span> <span class="d">— one daemon · LangGraph workflow · poll → dispatch → monitor → gate → merge</span></div>
+    <div class="layer" style="border-color:var(--accent2)"><span class="t">② Symphonies</span> <span class="d">— N projects, each = a GitHub board + repo + config</span></div>
+    <div class="layer"><span class="t">③ Performers</span> <span class="d">— per card, per role: architect · implementer · reviewer · security · qa · tech_writer · closer</span></div>
+    <div class="layer" style="border-color:var(--accent2)"><span class="t">④ Agent harnesses</span> <span class="d">— claude_code · codex · opencode · junie · pi · hermes · openclaw (CLIs in containers)</span></div>
+    <div class="layer"><span class="t">⑤ Models</span> <span class="d">— frontier (Claude) direct · local (gpt-oss / qwen / glm) <b class="accent2">through a shim</b></span></div>
+  </section>
+
+  <!-- 5 -->
+  <section class="slide">
+    <div class="sub">Orchestration flow</div>
+    <h2><span class="n">04</span>How a card moves</h2>
+    <div class="flow">
+      <span class="node">Backlog</span><span class="arr">→</span>
+      <span class="node">TODO</span><span class="arr">→</span>
+      <span class="node k">IN&nbsp;PROGRESS</span><span class="arr">→</span>
+      <span class="node">IN&nbsp;REVIEW</span><span class="arr">→</span>
+      <span class="node g">DONE</span>
+    </div>
+    <div class="flow" style="opacity:.95">
+      <span class="node">architect</span><span class="arr">→</span><span class="node">assess</span><span class="arr">→</span>
+      <span class="node k">implement</span><span class="arr">→</span><span class="node">review</span><span class="arr">→</span>
+      <span class="node">security</span><span class="arr">→</span><span class="node">qa</span><span class="arr">→</span>
+      <span class="node">document</span><span class="arr">→</span><span class="node">close</span>
+    </div>
+    <ul>
+      <li><b>Sequential</b> — a stage starts only when the prior one succeeds.</li>
+      <li><b>CI bounce</b> → back to the implementer with the failing checks.</li>
+      <li><b>Infra failure</b> → parked in <span class="warn">BLOCKED</span> + operator notified (not bounced).</li>
+      <li><b class="accent">Only humans approve</b> the final merge — bots may comment, never approve.</li>
+    </ul>
+  </section>
+
+  <!-- 6 -->
+  <section class="slide">
+    <div class="sub">Roles</div>
+    <h2><span class="n">05</span>The lifecycle roles</h2>
+    <table>
+      <tr><th>#</th><th>Role</th><th>Stage</th><th>Produces</th></tr>
+      <tr><td>1</td><td><b>advocate</b></td><td class="mono">advocate</td><td>indexes the card's intent</td></tr>
+      <tr><td>2</td><td><b>assessor</b></td><td class="mono">assessing</td><td>assessment (singleton)</td></tr>
+      <tr><td>3</td><td><b>architect</b></td><td class="mono">architecting</td><td>plan + tasks</td></tr>
+      <tr><td>4</td><td><b>implementer</b></td><td class="mono">implementing</td><td>code + opened PR</td></tr>
+      <tr><td>5</td><td><b>reviewer</b></td><td class="mono">reviewing</td><td>review verdict</td></tr>
+      <tr><td>6</td><td><b>security</b></td><td class="mono">security</td><td>security verdict</td></tr>
+      <tr><td>7</td><td><b>qa</b></td><td class="mono">qa</td><td>tests vs the live env</td></tr>
+      <tr><td>8</td><td><b>tech_writer</b></td><td class="mono">documenting</td><td>docs</td></tr>
+      <tr><td>9</td><td><b>closer</b></td><td class="mono">closing_review</td><td>final close-out (singleton)</td></tr>
+    </table>
+    <p class="foot">Source of truth: <code>src/coordinare/lifecycle.py</code>. Roles are configured per symphony.</p>
+  </section>
+
+  <!-- 7 -->
+  <section class="slide">
+    <div class="sub">Harnesses</div>
+    <h2><span class="n">06</span>Performers run different agent harnesses</h2>
+    <p>A performer runs one <b>backend</b> CLI, chosen by the <code>BACKEND</code> env. Coordinare assigns harnesses <b class="accent">per role</b> — each stage uses the one that works best for it.</p>
+    <div class="grid g4" style="margin-top:12px">
+      <div class="card"><h3>claude_code</h3><p>Anthropic wire · QA</p></div>
+      <div class="card"><h3>opencode</h3><p>HTTP+SSE · env-bootstrap</p></div>
+      <div class="card"><h3>codex</h3><p>WS JSON-RPC</p></div>
+      <div class="card"><h3>junie</h3><p>one-shot · JSON-only</p></div>
+      <div class="card"><h3>pi</h3><p>one-shot JSON</p></div>
+      <div class="card"><h3>hermes</h3><p>one-shot · documenting</p></div>
+      <div class="card"><h3>openclaw</h3><p>embedded agent</p></div>
+      <div class="card" style="border-style:dashed"><h3>resolution</h3><p class="mono" style="font-size:11.5px">role→backend→mode<br>→model_endpoint→endpoint</p></div>
+    </div>
+  </section>
+
+  <!-- 8 -->
+  <section class="slide">
+    <div class="sub">The centerpiece</div>
+    <h2><span class="n">07</span>Shims: making local models frontier-grade</h2>
+    <p>A stock harness expects a <b>frontier</b> model. A local model breaks those expectations. A <b class="accent2">shim</b> — a loopback reverse-proxy the harness's provider URL is repointed to — <b>forwards requests verbatim</b> and <b>repairs responses</b>. The harness is unmodified.</p>
+    <div class="flow" style="margin-top:14px">
+      <span class="node">harness CLI</span><span class="arr">→</span>
+      <span class="node k">SHIM&nbsp;(127.0.0.1)<br><span style="font-size:11px;color:var(--mut)">route · normalize · translate</span></span><span class="arr">→</span>
+      <span class="node">local model<br><span style="font-size:11px;color:var(--mut)">Ollama / LiteLLM</span></span>
+    </div>
+    <div class="flow">
+      <span class="node b" style="font-size:12px">raw: reasoning leak · harmony tool-call leak · bad JSON · wrong wire</span>
+      <span class="arr">⇒</span>
+      <span class="node g" style="font-size:12px">repaired: clean tool calls · valid JSON · right wire format</span>
+    </div>
+  </section>
+
+  <!-- 9 -->
+  <section class="slide">
+    <div class="sub">Routing</div>
+    <h2><span class="n">08</span>Strategies &amp; normalizers</h2>
+    <div class="grid g3">
+      <div class="card"><span class="tag">reroute</span><p>Repoint the harness at a clean upstream. No shim, no rewriting.</p></div>
+      <div class="card"><span class="tag">normalize</span><p>Loopback shim repairs the response via normalizers.</p></div>
+      <div class="card"><span class="tag">translate</span><p>+ wire translation: Anthropic <code>/v1/messages</code> ⇄ OpenAI <code>/v1/chat/completions</code> (spec 084).</p></div>
+    </div>
+    <h3 style="color:var(--ink);margin:18px 0 6px;font-size:18px">Normalizers (pure, fail-open repairs)</h3>
+    <table>
+      <tr><th>key</th><th>repairs</th></tr>
+      <tr><td class="mono">harmony_tool_calls</td><td>gpt-oss "harmony" channel leaking as text → reassembled into a real tool call</td></tr>
+      <tr><td class="mono">strip_reasoning</td><td>thinking / <code>reasoning_content</code> leaking into the answer (promote if reasoning-only)</td></tr>
+      <tr><td class="mono">strip_control_chars</td><td>unescaped control bytes that break the JSON parser (stripped pre-parse)</td></tr>
+    </table>
+    <p class="foot">Chosen per <code>(backend, model)</code> in <code>routing.yaml</code>; gated by a startup health probe (<code>tool_call</code> | <code>completion</code>).</p>
+  </section>
+
+  <!-- 10 -->
+  <section class="slide">
+    <div class="sub">Configuration compositions</div>
+    <h2><span class="n">09</span>Where behavior comes from</h2>
+    <div class="grid g3">
+      <div class="card"><h3 class="mono">.env</h3><p>secrets · <code>${VAR}</code> expanded into the YAMLs at load</p></div>
+      <div class="card"><h3 class="mono">config.yaml</h3><p>global defaults · <b>symphonies[]</b> + overrides · performers/endpoints · per-role backend/mode · catalogs</p></div>
+      <div class="card"><h3 class="mono">routing.yaml</h3><p>(backend,model) → strategy + normalizers + health probe → activates a shim</p></div>
+    </div>
+    <div class="flow" style="margin-top:16px">
+      <span class="node">global defaults</span><span class="arr">⊕</span>
+      <span class="node">symphony.overrides</span><span class="arr">=</span>
+      <span class="node k">effective config</span><span class="arr">→</span>
+      <span class="node">role→backend→mode→<br>model_endpoint→endpoint</span><span class="arr">→</span>
+      <span class="node g">dispatch</span>
+    </div>
+    <p class="foot">Spec-080 catalogs — <code>endpoints[]</code> · <code>model_endpoints[]</code> · <code>modes[]</code> — unify single/dual/self-hosted/frontier model selection.</p>
+  </section>
+
+  <!-- 11 -->
+  <section class="slide">
+    <div class="sub">Environment cache</div>
+    <h2><span class="n">10</span>A real place to build &amp; test</h2>
+    <p>Build the project's dev environment <b>once</b>, cache it on the host, mount it into every performer at <code>/devenv</code> (rw for bootstrap, ro for everyone else).</p>
+    <div class="flow">
+      <span class="node">env spec changed<br><span style="font-size:11px;color:var(--mut)">(README SHA)</span></span><span class="arr">→</span>
+      <span class="node k">bootstrap performer<br>installs toolchain</span><span class="arr">→</span>
+      <span class="node">verify.sh</span><span class="arr">→</span>
+      <span class="node g">cache ready</span>
+    </div>
+    <div class="grid g3" style="margin-top:8px">
+      <div class="card"><h3>Activation</h3><p>profile sourced on every shell: extract native libs → <code>LD_LIBRARY_PATH</code>, source <code>activate.sh</code>, then start services.</p></div>
+      <div class="card"><h3>Services @ activation</h3><p>Postgres/Redis state is <b>container-local</b>, so they start in the performer's own container (spec 117).</p></div>
+      <div class="card"><h3>Performer-owned</h3><p><code>coordinare_manages_services=false</code> by default (spec 116) — the performer owns env setup.</p></div>
+    </div>
+  </section>
+
+  <!-- 12 -->
+  <section class="slide">
+    <div class="sub">Safety</div>
+    <h2><span class="n">11</span>Gates contain failure</h2>
+    <div class="grid g2">
+      <div class="card"><h3>CI gate <span class="mono" style="font-size:11px;color:var(--dim)">075/090</span></h3><p><span class="good">pass</span> → advance · <span class="warn">hold</span> → wait · <span class="bad">bounce</span> → back to implementer · <span class="bad">escalate</span> → BLOCKED. Classifies <b>introduced</b> vs <b>inherited</b> vs <b>flake</b> vs <b>env_blocked</b>.</p></div>
+      <div class="card"><h3>Env-blocked <span class="mono" style="font-size:11px;color:var(--dim)">095/118</span></h3><p>Infra failures (artifact quota, runner perms) → <b>HOLD + notify</b>, never bounce a blameless implementer.</p></div>
+      <div class="card"><h3>Baseline-repair <span class="mono" style="font-size:11px;color:var(--dim)">090</span></h3><p>Refuse to merge onto a red base; bounded autonomous repair of <i>inherited</i> failures (audited, never auto-merges).</p></div>
+      <div class="card"><h3>Resilience <span class="mono" style="font-size:11px;color:var(--dim)">098/119</span></h3><p>Transient &amp; <code>malformed_output</code> errors → bounded <b>retry</b>, not instant block. A bad roll from a stochastic model self-corrects.</p></div>
+    </div>
+    <p class="foot">…and the final gate: <b class="accent">a human approves</b> before merge.</p>
+  </section>
+
+  <!-- 13 -->
+  <section class="slide">
+    <div class="sub">Roadmap</div>
+    <h2><span class="n">12</span>Spec lines &amp; status</h2>
+    <table>
+      <tr><th>Line</th><th>Specs</th><th>Status</th></tr>
+      <tr><td><b>Core orchestration / lifecycle / config</b></td><td class="mono">001–057</td><td><span class="good">✅ implemented</span></td></tr>
+      <tr><td><b>Gates &amp; autonomy</b></td><td class="mono">075·089·090·095·118·119</td><td><span class="good">✅</span> actively extended</td></tr>
+      <tr><td><b>Self-hosted model parity</b> (shims)</td><td class="mono">078·084·098·099·100</td><td><span class="good">✅</span> actively extended</td></tr>
+      <tr><td><b>Dual-model orchestration</b></td><td class="mono">080</td><td><span class="warn">🔶 in progress</span></td></tr>
+      <tr><td><b>Env-cache</b></td><td class="mono">060·087·116·117</td><td><span class="good">✅ implemented</span></td></tr>
+      <tr><td><b>Coordinare-managed services</b></td><td class="mono">091–115</td><td><span style="color:var(--dim)">💤 dormant (116 toggle)</span></td></tr>
+    </table>
+    <p class="foot"><b>Throughline:</b> make a team of cheaper, self-hosted models reliably do frontier-grade engineering — gates contain their failures, shims fix their output, the env-cache gives them a place to build &amp; test.</p>
+  </section>
+
+  <!-- 14 -->
+  <section class="slide ttl-wrap">
+    <div class="badge">START HERE</div>
+    <h1 style="font-size:clamp(24px,4vw,40px)">Dive in</h1>
+    <div class="grid g2" style="text-align:left;margin-top:10px">
+      <div class="card"><h3>Read the docs</h3><p class="mono" style="font-size:12.5px">docs/onboarding/README.md → 01…07</p></div>
+      <div class="card"><h3>Trace the loop</h3><p class="mono" style="font-size:12.5px">src/coordinare/graph/nodes/<br>check_board · dispatch_performer · monitor_performer · monitor_pr</p></div>
+      <div class="card"><h3>See the harnesses</h3><p class="mono" style="font-size:12.5px">agent/performer/src/performer/<br>backends/ · proxy/ (shim + normalizers)</p></div>
+      <div class="card"><h3>Specs = source of truth</h3><p class="mono" style="font-size:12.5px">specs/NNN-name/spec.md</p></div>
+    </div>
+    <p class="foot">🎼 One coordinare, many symphonies, performed by agents on a mix of frontier and self-hosted models.</p>
+  </section>
+
+</div>
+
+<div id="nav"><button id="prev">‹</button><button id="next">›</button></div>
+<div id="hud">1 / 14</div>
+<div id="bar"><div id="fill"></div></div>
+
+<script>
+  const slides=[...document.querySelectorAll('.slide')], hud=document.getElementById('hud'), fill=document.getElementById('fill');
+  let i=0;
+  function show(n){
+    i=Math.max(0,Math.min(slides.length-1,n));
+    slides.forEach((s,k)=>s.classList.toggle('active',k===i));
+    hud.textContent=(i+1)+' / '+slides.length;
+    fill.style.width=((i)/(slides.length-1)*100)+'%';
+  }
+  function next(){show(i+1)} function prev(){show(i-1)}
+  document.getElementById('next').onclick=next;
+  document.getElementById('prev').onclick=prev;
+  addEventListener('keydown',e=>{
+    if(e.key==='ArrowRight'||e.key==='PageDown'||e.key===' '){e.preventDefault();next()}
+    else if(e.key==='ArrowLeft'||e.key==='PageUp'){e.preventDefault();prev()}
+    else if(e.key==='Home'){show(0)} else if(e.key==='End'){show(slides.length-1)}
+  });
+  // click right/left half of stage to advance (ignoring buttons/links)
+  document.getElementById('stage').onclick=e=>{
+    if(e.target.closest('a,button')) return;
+    (e.clientX > innerWidth/2) ? next() : prev();
+  };
+  show(0);
+</script>
