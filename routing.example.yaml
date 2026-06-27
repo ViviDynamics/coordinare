@@ -85,3 +85,18 @@ selfhosted_routing:
       strategy: normalize
       health_probe: completion
       normalizers: [strip_control_chars, strip_reasoning]
+
+# --- 122: observe-passthrough (the configurable tap) -------------------------
+# Once LiteLLM does the repair server-side, a compatible backend needs no
+# normalizer — but you may keep a coordinare-side tap (per-request latency/status
+# + capture_dir) via strategy: observe (forwards the CLI body verbatim, no
+# transform). Omit the entry entirely for DIRECT (no proxy hop). Repair
+# normalizers stay registered; re-add a normalize/translate entry to re-enable.
+#   - backend: claude_code
+#     model: spark/gpt-oss:120b           # the LiteLLM-served name
+#     target:
+#       base_url: https://litellm.example.com   # BARE origin (shim appends /v1/messages)
+#       wire_format: anthropic
+#       strategy: observe                  # forward + log + capture; no transform
+#       health_probe: completion           # for slow reasoning models (gpt-oss:120b);
+#                                          # the default tool_call probe (64-tok) times out

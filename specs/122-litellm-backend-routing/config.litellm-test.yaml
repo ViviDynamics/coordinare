@@ -1,0 +1,90 @@
+# Spec 122 US2 — LiteLLM compatibility-matrix test config (committed; git-allowlisted
+# via the `config.example.*` rule). Points every agent backend at the LiteLLM gateway
+# with spark/gpt-oss:120b and NO self-hosted routing shim, so `scripts/smoke_backends.py
+# --via-litellm --matrix` exercises each backend's CLI integration directly against the
+# gateway. Contains NO secrets — only ${VAR} placeholders expanded from .env at run time.
+#
+# Run:  scripts/smoke_backends.py --via-litellm --matrix
+#
+# Provider base-URL env per backend (proxy/launch.py PROVIDER_BASE_URL_ENV):
+#   claude_code → ANTHROPIC_BASE_URL  (LiteLLM /v1/messages front door)
+#   codex       → CODEX_PROVIDER_BASE_URL        (OpenAI /v1)
+#   opencode    → OPENCODE_PROVIDER_BASE_URL     (OpenAI /v1)
+#   junie       → JUNIE_PROVIDER_BASE_URL        (OpenAI /v1)
+#   pi          → PI_PROVIDER_BASE_URL           (OpenAI /v1)
+#   openclaw    → OPENCLAW_PROVIDER_BASE_URL     (OpenAI /v1)
+#   hermes      → HERMES_BASE_URL                (OpenAI /v1)
+
+# The smoke harness reads performers.<role>.model for the dispatched model.
+performers:
+  default:
+    model: spark/gpt-oss:120b
+  qa:
+    model: spark/gpt-oss:120b
+
+# One ephemeral endpoint per backend, each pointed at LiteLLM (no SELFHOSTED_ROUTING_CONFIG).
+performer_endpoints:
+  - id: claude-litellm
+    mode: ephemeral
+    image: coordinare-performer:full
+    roles: [qa]
+    env:
+      BACKEND: claude_code
+      ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL}        # LiteLLM fronts /v1/messages
+      ANTHROPIC_AUTH_TOKEN: ${LITELLM_MASTER_KEY}
+
+  - id: codex-litellm
+    mode: ephemeral
+    image: coordinare-performer:full
+    roles: [qa]
+    env:
+      BACKEND: codex
+      CODEX_PROVIDER_BASE_URL: ${LITELLM_BASE_URL}
+      OPENAI_API_KEY: ${LITELLM_MASTER_KEY}
+
+  - id: opencode-litellm
+    mode: ephemeral
+    image: coordinare-performer:full
+    roles: [qa]
+    env:
+      BACKEND: opencode
+      OPENCODE_PROVIDER_BASE_URL: ${LITELLM_BASE_URL}
+      OPENAI_API_KEY: ${LITELLM_MASTER_KEY}
+
+  - id: junie-litellm
+    mode: ephemeral
+    image: coordinare-performer:full
+    roles: [qa]
+    env:
+      BACKEND: junie
+      JUNIE_PROVIDER_BASE_URL: ${LITELLM_BASE_URL}
+      JUNIE_PROVIDER_API_KEY: ${LITELLM_MASTER_KEY}
+
+  - id: pi-litellm
+    mode: ephemeral
+    image: coordinare-performer:full
+    roles: [qa]
+    env:
+      BACKEND: pi
+      PI_PROVIDER_BASE_URL: ${LITELLM_BASE_URL}
+      OPENAI_API_KEY: ${LITELLM_MASTER_KEY}
+
+  - id: openclaw-litellm
+    mode: ephemeral
+    image: coordinare-performer:full
+    roles: [qa]
+    env:
+      BACKEND: openclaw
+      OPENCLAW_PROVIDER_BASE_URL: ${LITELLM_BASE_URL}
+      OPENAI_API_KEY: ${LITELLM_MASTER_KEY}
+
+  - id: hermes-litellm
+    mode: ephemeral
+    image: coordinare-performer:full
+    roles: [qa]
+    env:
+      BACKEND: hermes
+      HERMES_PROVIDER: litellm
+      HERMES_BASE_URL: ${LITELLM_BASE_URL}
+      HERMES_API_KEY: ${LITELLM_MASTER_KEY}
+      HERMES_MODEL: spark/gpt-oss:120b

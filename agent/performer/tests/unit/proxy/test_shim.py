@@ -240,3 +240,101 @@ async def test_custom_forward_timeout_flows_to_owned_client():
         assert shim.client.timeout.read == 42.0
     finally:
         await shim.stop()
+
+
+# --- 122: front-door path canonicalization (no-/v1 CLIs) -------------------- #
+
+
+@pytest.mark.asyncio
+async def test_no_v1_chat_completions_is_routed_and_canonicalized():
+    """An OpenAI-wire CLI whose repointed base_url lacks /v1 POSTs to
+    ``/chat/completions`` (no /v1). The shim must route it (not 404 at the router)
+    AND forward to the upstream's ``/v1/chat/completions`` (122: shared cause of the
+    openclaw + opencode shim 404s)."""
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    shim = SelfHostedShim(
+        target=TargetDescriptor(
+            base_url="https://litellm.example.com", wire_format="openai",
+            strategy="observe",
+        ),
+        client=client,
+    )
+    base = await shim.start()
+    try:
+        async with httpx.AsyncClient() as c:
+            r = await c.post(f"{base}/chat/completions",
+                             json={"model": "spark/gpt-oss:120b", "messages": []})
+        assert r.status_code == 200
+    finally:
+        await shim.stop()
+        await client.aclose()
+    assert seen["url"] == "https://litellm.example.com/v1/chat/completions"
+
+
+@pytest.mark.asyncio
+async def test_v1_chat_completions_still_forwarded_unchanged():
+    """The canonical /v1/chat/completions path (junie/hermes) is unaffected."""
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    shim = SelfHostedShim(
+        target=TargetDescriptor(
+            base_url="http://192.168.3.30:11434", wire_format="openai",
+            strategy="normalize", normalizers=["strip_control_chars"],
+        ),
+        client=client,
+    )
+    base = await shim.start()
+    try:
+        async with httpx.AsyncClient() as c:
+            await c.post(f"{base}/v1/chat/completions", json={"messages": []})
+    finally:
+        await shim.stop()
+        await client.aclose()
+    assert seen["url"] == "http://192.168.3.30:11434/v1/chat/completions"
+
+
+# --- 122: upstream auth injection (junie/pi/hermes key-resolution gap) ------ #
+
+
+def test_upstream_auth_env_overrides_forwarded_authorization(monkeypatch):
+    """When the target names an upstream_auth_env, the shim replaces the CLI's
+    Authorization with Bearer <env value> so a CLI that fails to put the key on the
+    wire still authenticates against LiteLLM."""
+    monkeypatch.setenv("LITELLM_MASTER_KEY", "sk-real-key")
+    shim = SelfHostedShim(
+        target=TargetDescriptor(
+            base_url="https://litellm.example.com", wire_format="openai",
+            strategy="normalize", normalizers=["strip_control_chars"],
+            upstream_auth_env="LITELLM_MASTER_KEY",
+        ),
+    )
+    out = shim._forward_headers({"Authorization": "Bearer no-key-required",
+                                "api-key": "no-key-required",
+                                "Content-Type": "application/json"})
+    assert out["Authorization"] == "Bearer sk-real-key"
+    # alternate auth headers (api-key/x-api-key) are dropped so a stale one can't
+    # shadow the injected Authorization at the upstream (hermes sends api-key).
+    assert "api-key" not in {k.lower() for k in out}
+    assert out["Content-Type"] == "application/json"
+
+
+def test_upstream_auth_env_noop_when_unset_on_target():
+    """No upstream_auth_env → the CLI's header passes through unchanged."""
+    shim = SelfHostedShim(
+        target=TargetDescriptor(
+            base_url="http://ollama:11434", wire_format="openai", strategy="reroute",
+        ),
+    )
+    out = shim._forward_headers({"Authorization": "Bearer cli-token"})
+    assert out["Authorization"] == "Bearer cli-token"

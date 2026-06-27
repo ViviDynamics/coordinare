@@ -314,3 +314,37 @@ def test_from_yaml_file_non_mapping_root_rejected(tmp_path):
     cfg.write_text("just a string\n", encoding="utf-8")
     with pytest.raises(ValueError, match="must be a mapping or a list"):
         RoutingTable.from_yaml_file(cfg)
+
+
+# --- 122 (Decision 6): observe strategy (passthrough tap, no transform) -------
+
+
+def test_observe_strategy_valid_with_no_normalizers():
+    """observe forwards verbatim + logs; it must validate with no normalizers."""
+    t = TargetDescriptor(
+        base_url="https://litellm.example.com",
+        wire_format="anthropic",
+        strategy="observe",
+    )
+    assert t.strategy == "observe"
+    assert t.normalizers == []
+
+
+def test_observe_strategy_valid_openai_wire():
+    t = TargetDescriptor(
+        base_url="https://litellm.example.com/v1",
+        wire_format="openai",
+        strategy="observe",
+    )
+    assert t.strategy == "observe"
+
+
+def test_observe_strategy_rejects_normalizers():
+    """observe transforms nothing — declaring a normalizer is a config error."""
+    with pytest.raises(ValidationError, match="observe strategy must declare no normalizers"):
+        TargetDescriptor(
+            base_url="https://litellm.example.com",
+            wire_format="openai",
+            strategy="observe",
+            normalizers=["harmony_tool_calls"],
+        )

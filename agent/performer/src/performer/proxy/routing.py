@@ -34,7 +34,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from .normalizers import NORMALIZER_REGISTRY
 
 WireFormat = Literal["openai", "anthropic"]
-Strategy = Literal["normalize", "reroute", "translate"]
+Strategy = Literal["normalize", "reroute", "translate", "observe"]
 # 099: which startup health probe gates this target. ``tool_call`` (default) is
 # the existing tool-calling probe; ``completion`` is for non-tool-calling
 # backends (e.g. the junie assessor) and gates on a non-empty normalized
@@ -67,6 +67,19 @@ class TargetDescriptor(BaseModel):
     # a non-empty normalized completion. Invalid value fails at config-load
     # (Literal + extra="forbid").
     health_probe: HealthProbe = "tool_call"
+    # 122: opt-in upstream auth injection. Some backend CLIs (junie, pi, hermes)
+    # reference the LiteLLM key via an env-var-name/api_key_env indirection their CLI
+    # does not resolve onto the wire — so they 401 against an auth-requiring upstream.
+    # When set to an env var NAME, the shim overrides the forwarded Authorization
+    # with ``Bearer <os.environ[upstream_auth_env]>`` so the coordinare-owned key
+    # authenticates regardless of CLI behaviour. (The startup health probe carries
+    # its own auth via ``_gate_target``'s probe-token env — OPENAI_API_KEY /
+    # ANTHROPIC_AUTH_TOKEN / LITELLM_PROXY_AUTH_TOKEN — so set this to OPENAI_API_KEY
+    # to keep probe and traffic on the same key. NB LITELLM_MASTER_KEY is scrubbed
+    # from the shim's process env; OPENAI_API_KEY survives.) The secret lives only in
+    # the env var; the NAME is all that is configured. Auth-free upstreams (Ollama)
+    # ignore the header, so this is safe everywhere.
+    upstream_auth_env: str | None = None
 
     @model_validator(mode="after")
     def _validate_strategy(self) -> TargetDescriptor:
@@ -75,6 +88,21 @@ class TargetDescriptor(BaseModel):
                 raise ValueError(
                     "reroute strategy must declare no normalizers "
                     f"(got {self.normalizers!r}); reroute is not a shim"
+                )
+            return self
+
+        if self.strategy == "observe":
+            # 122 (Decision 6): an observe-passthrough shim forwards the CLI body
+            # VERBATIM to base_url and only LOGS latency/status + writes the
+            # capture_dir — no response transform. It exists to preserve the
+            # coordinare-side request tap once LiteLLM does the repair server-side.
+            # It MUST declare no normalizers (it transforms nothing); to repair,
+            # use `normalize`.
+            if self.normalizers:
+                raise ValueError(
+                    "observe strategy must declare no normalizers "
+                    f"(got {self.normalizers!r}); observe only forwards + logs. "
+                    "Use 'normalize' to apply a transform"
                 )
             return self
 

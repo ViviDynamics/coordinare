@@ -27,6 +27,7 @@ plus the normalizer decision (which keys ran) — never tokens or bodies
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -42,7 +43,15 @@ log = structlog.get_logger(__name__)
 # provider base URL is set to the loopback origin, so it appends the standard
 # ``/v1/...`` path; the shim forwards that same path to ``target.base_url``
 # (which is therefore the upstream *origin*, no ``/v1`` of its own).
-_FRONT_DOOR_PATHS = ("/v1/messages", "/v1/chat/completions")
+# Front-door POST routes the shim serves. Both the canonical ``/v1/...`` paths and
+# the no-``/v1`` variants are registered: an OpenAI-wire CLI whose (repointed)
+# provider base_url is the bare loopback origin POSTs to ``/chat/completions`` (no
+# ``/v1``), which would otherwise 404 at the router before the handler ran (122:
+# the shared cause of the openclaw + opencode shim failures). ``_upstream_url``
+# canonicalizes whichever variant arrives to the upstream's expected ``/v1`` path.
+_FRONT_DOOR_PATHS = (
+    "/v1/messages", "/v1/chat/completions", "/messages", "/chat/completions",
+)
 
 # Per-request forwarding timeout for the shim's owned client. Bounds a wedged
 # self-hosted upstream (the 077 spark/qwen runner-wedge edge) so a mid-job hang
@@ -152,15 +161,23 @@ class SelfHostedShim:
         Ollama-compat logic in ``health._probe_url``.
         """
         base = self.target.base_url.rstrip("/")
-        if self._translate:
-            path, sep, query = path_qs.partition("?")
-            if path == "/v1/messages":
-                path = "/v1/chat/completions"
-            # Avoid double-/v1 when base already ends with it.
-            if base.endswith("/v1") and path.startswith("/v1/"):
-                path = path[3:]  # strip leading /v1
-            path_qs = path + sep + query
-        return base + path_qs
+        path, sep, query = path_qs.partition("?")
+        # Canonicalize the front-door path to the upstream's expected /v1 path.
+        # A CLI whose (repointed) provider base_url lacks /v1 POSTs to
+        # ``/chat/completions`` or ``/messages``; the upstream (LiteLLM/Ollama)
+        # serves them under ``/v1/...``. Translate additionally rewrites the
+        # Anthropic front door to the OpenAI upstream path (Decision 4).
+        if self._translate and path in ("/v1/messages", "/messages"):
+            path = "/v1/chat/completions"
+        elif path in ("/chat/completions", "/v1/chat/completions"):
+            path = "/v1/chat/completions"
+        elif path in ("/messages", "/v1/messages"):
+            path = "/v1/messages"
+        # Avoid double-/v1 when base already ends with it (e.g. an Ollama base
+        # ``…:11434/v1`` + ``/v1/chat/completions`` → ``…/v1/v1/…`` 404).
+        if base.endswith("/v1") and path.startswith("/v1/"):
+            path = path[3:]  # strip leading /v1
+        return base + path + sep + query
 
     def _translate_request_bytes(self, raw: bytes) -> bytes:
         """Translate an inbound Anthropic ``/v1/messages`` body to OpenAI wire.
@@ -190,7 +207,28 @@ class SelfHostedShim:
         return _json.dumps(openai_body).encode("utf-8")
 
     def _forward_headers(self, headers: Any) -> dict[str, str]:
-        return {k: v for k, v in headers.items() if k.lower() not in _HOP_BY_HOP}
+        fwd = {k: v for k, v in headers.items() if k.lower() not in _HOP_BY_HOP}
+        # 122: when the target opts into upstream auth injection, override the
+        # CLI's Authorization with the coordinare-owned key (from the named env
+        # var). Some backend CLIs (junie/pi/hermes) fail to put the LiteLLM key on
+        # the wire; this guarantees the upstream sees a valid Bearer. The secret is
+        # read from the env var NAME on the descriptor — never logged. Drop any
+        # existing Authorization (case-insensitively) before setting the canonical
+        # one so a stale/blank CLI header can't shadow it.
+        auth_env = getattr(self.target, "upstream_auth_env", None)
+        if auth_env:
+            token = (os.environ.get(auth_env) or "").strip()
+            if token:
+                # Drop EVERY auth-bearing header a CLI might set (Authorization,
+                # api-key, x-api-key) — some backends (hermes) send the key via
+                # ``api-key`` rather than ``Authorization``, and LiteLLM reads
+                # whichever is present, so a stale one would shadow the injection.
+                fwd = {
+                    k: v for k, v in fwd.items()
+                    if k.lower() not in ("authorization", "api-key", "x-api-key")
+                }
+                fwd["Authorization"] = f"Bearer {token}"
+        return fwd
 
     def normalize_raw(self, raw: bytes) -> bytes:
         """Run every declared normalizer's raw-bytes pre-parse path in order.

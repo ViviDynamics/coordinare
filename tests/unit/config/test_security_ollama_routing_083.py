@@ -94,12 +94,20 @@ def test_live_config_security_uses_openclaw_backend() -> None:
 
 
 @_live
-def test_live_config_security_resolves_unprefixed_gptoss() -> None:
-    """The shipped security mode must resolve Ollama-direct: bare 'gpt-oss:120b'."""
+def test_live_config_security_resolves_litellm_gptoss() -> None:
+    """The shipped security mode resolves to the LiteLLM-served 'spark/gpt-oss:120b'.
+
+    083 originally pinned this to bare 'gpt-oss:120b' (Ollama-direct) because the
+    LiteLLM harmony→tool_calls handling leaked raw harmony text (#17246/#13300).
+    Spec 122 supersedes that: LiteLLM now returns clean structured tool_calls
+    server-side, so security (openclaw) routes DIRECT to LiteLLM on the 'spark/'
+    model — validated live (openclaw on spark/gpt-oss:120b emits a valid verdict).
+    """
     cfg = _raw_live()
     mode = next(m for m in cfg["modes"] if m["name"] == cfg["performers"]["security"]["mode"])
     me = next(m for m in cfg["model_endpoints"] if m["name"] == mode["tool"])
-    assert me["model"] == "gpt-oss:120b", (
-        f"shipped security resolves to {me['model']!r}; a 'spark/' prefix re-triggers "
-        "the harmony tool_calls leak (#17246/#13300)"
+    assert me["model"] == "spark/gpt-oss:120b", (
+        f"shipped security resolves to {me['model']!r}; expected the LiteLLM-served "
+        "'spark/gpt-oss:120b' (122: the harmony leak that forced Ollama-direct is "
+        "fixed upstream)"
     )
