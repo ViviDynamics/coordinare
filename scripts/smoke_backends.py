@@ -98,15 +98,105 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
+def _resolve_mode_model(cfg: dict, rc: dict) -> str:
+    """Resolve a performer's model via either a direct `model:` or the
+    mode -> model_endpoints chain (mode.tool -> model_endpoints[name].model)."""
+    if rc.get("model"):
+        return str(rc["model"])
+    mode_name = rc.get("mode")
+    if not mode_name:
+        return ""
+    modes = {m.get("name"): m for m in (cfg.get("modes") or [])}
+    tool = (modes.get(mode_name) or {}).get("tool")
+    if not tool:
+        return ""
+    mes = {e.get("name"): e for e in (cfg.get("model_endpoints") or [])}
+    return str((mes.get(tool) or {}).get("model", ""))
+
+
 def _backend_model(cfg: dict, endpoint: dict) -> str:
     """Pick the model this endpoint's first role uses (from performers:)."""
     performers = cfg.get("performers", {}) or {}
     for role in endpoint.get("roles", []):
         rc = performers.get(role)
-        if isinstance(rc, dict) and rc.get("model"):
-            return str(rc["model"])
+        if isinstance(rc, dict):
+            m = _resolve_mode_model(cfg, rc)
+            if m:
+                return m
     default = performers.get("default", {}) or {}
-    return str(default.get("model", ""))
+    return _resolve_mode_model(cfg, default) or str(default.get("model", ""))
+
+
+# --- spec 122 US2: compatibility-matrix row building (pure, unit-tested) ---
+
+_GATEWAY_UNAVAIL_MARKERS = (
+    "no healthy deployments",
+    "no deployments available",
+    "connection refused",
+    "connecterror",
+    "read timed out",
+    "readtimeout",
+    "502 bad gateway",
+    "503 service",
+    "504 gateway",
+)
+
+
+def gateway_unavailable(text: str) -> bool:
+    """True when a failure looks like a gateway-availability problem (model not
+    served / proxy 5xx / connection) rather than a backend incompatibility."""
+    t = (text or "").lower()
+    return any(m in t for m in _GATEWAY_UNAVAIL_MARKERS)
+
+
+def compute_verdict(*, launched: bool, completed: bool, contract_satisfied: bool,
+                    gateway_available: bool) -> str:
+    """Map per-backend signals to the contract verdict (contracts/compatibility-matrix.md)."""
+    if not gateway_available:
+        return "gateway_unavailable"
+    if launched and completed and contract_satisfied:
+        return "compatible"
+    return "incompatible"
+
+
+# A valid QA terminal status proves the backend reached the model and emitted its
+# role contract — the env-block variant (qa_env_blocked) is still backend↔gateway
+# compatible (the env limit is a task concern, not a wire/model concern).
+_VALID_BACKEND_STATUSES = frozenset({"qa_passed", "qa_failed", "qa_env_blocked"})
+
+
+def build_matrix_row(result: dict) -> dict:
+    """Map a run_one() result to the spec-122 compatibility-matrix contract row.
+
+    Compatibility keys on the performer's terminal STATUS, not the smoke job
+    state: a backend that emits a valid QA verdict (incl. qa_env_blocked) reached
+    the model through the gateway and produced its role contract.
+    """
+    launched = bool(result.get("launched"))
+    performer_status = result.get("performer_status") or ""
+    completed = performer_status in _VALID_BACKEND_STATUSES
+    output_present = int(result.get("output_len") or 0) > 0
+    contract_satisfied = completed  # a valid backend status IS the role contract
+    fail_text = f"{result.get('error', '')} {result.get('detail', '')}"
+    gateway_available = not (not completed and gateway_unavailable(fail_text))
+    # On the LiteLLM path no orchestrator normalizers are applied; a pass ⇒ none
+    # needed. A raw failure is investigated per-backend in US1.
+    normalizers_needed: list[str] = []
+    return {
+        "backend": result.get("backend", ""),
+        "endpoint_id": result.get("endpoint", ""),
+        "model": result.get("model", ""),
+        "launched": launched,
+        "completed": completed,
+        "output_present": output_present,
+        "contract_satisfied": contract_satisfied,
+        "normalizers_needed": normalizers_needed,
+        "gateway_available": gateway_available,
+        "verdict": compute_verdict(launched=launched, completed=completed,
+                                   contract_satisfied=contract_satisfied,
+                                   gateway_available=gateway_available),
+        "note": (result.get("error") or result.get("detail") or "")[:80],
+    }
 
 
 def run_one(endpoint: dict, cfg: dict, dotenv: dict, repo_url: str, pr_url: str) -> dict:
@@ -145,10 +235,19 @@ def run_one(endpoint: dict, cfg: dict, dotenv: dict, repo_url: str, pr_url: str)
             extra_secrets[_key_name] = master
             docker_env += ["-e", f"{_key_name}={master}"]
     image = endpoint.get("image", IMAGE)
+    # 122: mount routing.yaml so the observe/normalize/translate shim path is
+    # actually exercised (the endpoint's SELFHOSTED_ROUTING_CONFIG points at it;
+    # without the file the launch fails fast). Mirrors the live volume mount.
+    docker_mounts: list[str] = []
+    for vol in (endpoint.get("volumes", []) or []):
+        hp, cp = vol.get("host_path"), vol.get("container_path")
+        if hp and cp:
+            docker_mounts += ["-v", f"{hp}:{cp}:{vol.get('mode', 'ro')}"]
     cid = None
     try:
         run = subprocess.run(
-            ["docker", "run", "-d", "--name", name, "-p", f"{port}:8088", *docker_env, image],
+            ["docker", "run", "-d", "--name", name, "-p", f"{port}:8088",
+             *docker_mounts, *docker_env, image],
             capture_output=True, text=True, timeout=60,
         )
         if run.returncode != 0:
@@ -218,6 +317,17 @@ def run_one(endpoint: dict, cfg: dict, dotenv: dict, repo_url: str, pr_url: str)
         result["output_len"] = len(out)
         # Prefer the human-readable summary (carries the real error) over the code.
         result["detail"] = (summary or res.get("error_code") or status.get("reason") or "")[:180]
+        # spec 122: the performer's terminal status is the compatibility signal —
+        # a valid QA terminal (qa_passed/qa_failed/qa_env_blocked) proves the
+        # backend reached the model + emitted its role contract; error /
+        # BACKEND_FORMAT_ERROR means it could not use the model.
+        result["performer_status"] = ""
+        try:
+            _obj = json.loads(summary)
+            if isinstance(_obj, dict):
+                result["performer_status"] = str(_obj.get("status") or "")
+        except Exception:
+            pass
         # Dump the full result for post-mortem (the matrix only shows a snippet).
         try:
             d = REPO_ROOT / "tmp" / "smoke_results"
@@ -243,6 +353,17 @@ def run_one(endpoint: dict, cfg: dict, dotenv: dict, repo_url: str, pr_url: str)
         result["error"] = f"{type(exc).__name__}: {exc}"[:200]
         return result
     finally:
+        if cid:
+            # 122: capture container logs (proxy launch markers: observe_launched,
+            # upstream host) for the observe-cutover post-mortem before removal.
+            try:
+                lg = subprocess.run(["docker", "logs", name], capture_output=True,
+                                    text=True, timeout=30)
+                d = REPO_ROOT / "tmp" / "smoke_results"
+                d.mkdir(parents=True, exist_ok=True)
+                (d / f"{eid}.containerlog").write_text((lg.stdout or "") + (lg.stderr or ""))
+            except Exception:
+                pass
         if cid and not result.get("_keep"):
             subprocess.run(["docker", "rm", "-f", name], capture_output=True, timeout=30)
 
@@ -253,7 +374,13 @@ def main() -> int:
     ap.add_argument("--repo", default="https://github.com/ViviDynamics/website.git")
     ap.add_argument("--pr", default="https://github.com/ViviDynamics/website/pull/154")
     ap.add_argument("--config", default=str(REPO_ROOT / "config.yaml"))
+    ap.add_argument("--via-litellm", action="store_true",
+                    help="use the bundled LiteLLM test config (specs/122-litellm-backend-routing/config.litellm-test.yaml)")
+    ap.add_argument("--matrix", action="store_true",
+                    help="emit the spec-122 compatibility-matrix rows + tmp/litellm_matrix.json")
     args = ap.parse_args()
+    if args.via_litellm:
+        args.config = str(REPO_ROOT / "specs/122-litellm-backend-routing/config.litellm-test.yaml")
 
     cfg = yaml.safe_load(Path(args.config).read_text())
     dotenv = _load_env(REPO_ROOT / ".env")
@@ -295,6 +422,20 @@ def main() -> int:
               f"{r['state']!s:<11}{r['output_len']:<7}{verdict:<9}{note[:50]}")
     print("-" * 100)
     print(f"{ok}/{len(results)} backends produced a parseable QA verdict")
+
+    if args.matrix:
+        rows = [build_matrix_row(r) for r in results]
+        outdir = REPO_ROOT / "tmp"
+        outdir.mkdir(parents=True, exist_ok=True)
+        (outdir / "litellm_matrix.json").write_text(json.dumps(rows, indent=2))
+        print("\n=== spec-122 compatibility matrix ===")
+        print(f"{'BACKEND':<14}{'MODEL':<28}{'VERDICT':<20}NORMALIZERS_NEEDED")
+        print("-" * 90)
+        for row in rows:
+            print(f"{row['backend']:<14}{row['model'][:27]:<28}{row['verdict']:<20}"
+                  f"{row['normalizers_needed']}")
+        print("\nartifact: tmp/litellm_matrix.json")
+
     return 0 if ok == len(results) else 1
 
 

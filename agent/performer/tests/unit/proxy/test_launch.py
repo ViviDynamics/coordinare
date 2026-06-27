@@ -324,7 +324,7 @@ async def test_health_timeout_threads_through_to_probe(monkeypatch):
 
     seen: dict = {}
 
-    async def fake_check_health(target, *, model=None, client=None, timeout=10.0):
+    async def fake_check_health(target, *, model=None, client=None, timeout=10.0, headers=None):
         seen["timeout"] = timeout
         seen["model"] = model
         return HealthResult(

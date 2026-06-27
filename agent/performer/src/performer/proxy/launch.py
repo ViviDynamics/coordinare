@@ -214,7 +214,9 @@ async def _launch_for_target(
         )
         return shim
 
-    # strategy == "normalize" — launch the loopback shim with declared normalizers.
+    # strategy == "normalize" (apply declared normalizers) OR "observe" (122
+    # Decision 6: verbatim passthrough — normalizers is empty, so the shim only
+    # forwards the body + logs latency/status + writes capture_dir, no transform).
     normalizers = [NORMALIZER_REGISTRY[k] for k in target.normalizers]
     shim = SelfHostedShim(target=target, normalizers=normalizers)
     base = await shim.start()
@@ -222,7 +224,7 @@ async def _launch_for_target(
     mapping[env_var] = _with_verbatim_wire_path(backend, base)
     _suppress_double_proxy(backend, mapping, shim.env_restores)
     log.info(
-        "selfhosted_layer.normalize_launched",
+        f"selfhosted_layer.{target.strategy}_launched",
         backend=backend, env_var=env_var, normalizers=[n.key for n in normalizers],
     )
     return shim
@@ -248,7 +250,20 @@ async def _gate_target(
     The decision is emitted to ``capture_dir`` (decision summary only, never
     tokens/bodies, FR-078-10).
     """
-    result = await check_health(target, model=model, client=client, timeout=timeout)
+    # 122: an auth-requiring upstream (e.g. LiteLLM) 401s a bare probe — every
+    # prior target was auth-free Ollama. Send the same provider credential the
+    # real CLI traffic uses (Bearer), pulled from the provider-auth env. Auth-free
+    # upstreams (Ollama) ignore the header, so this is safe for all targets.
+    _probe_tok = (
+        os.environ.get("ANTHROPIC_AUTH_TOKEN")
+        or os.environ.get("OPENAI_API_KEY")
+        or os.environ.get("LITELLM_PROXY_AUTH_TOKEN")
+        or ""
+    ).strip()
+    _probe_headers = {"Authorization": f"Bearer {_probe_tok}"} if _probe_tok else None
+    result = await check_health(
+        target, model=model, client=client, timeout=timeout, headers=_probe_headers
+    )
     _emit_health_decision(capture_dir, backend_name, model, result)
 
     if result.resolved_action == "proceed":

@@ -27,6 +27,7 @@ the resolved action; never tokens or bodies.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -307,6 +308,7 @@ async def check_health(
     model: str | None = None,
     client: httpx.AsyncClient | None = None,
     timeout: float = _DEFAULT_TIMEOUT,
+    headers: dict[str, str] | None = None,
 ) -> HealthResult:
     """Run the bounded tool-calling smoke probe, then gate the result.
 
@@ -326,7 +328,8 @@ async def check_health(
     try:
         try:
             response = await client.post(
-                _probe_url(target), json=_probe_body(target, model), timeout=timeout
+                _probe_url(target), json=_probe_body(target, model),
+                headers=headers, timeout=timeout,
             )
         except httpx.TimeoutException:
             status, reason = "unhealthy", f"probe timed out after {timeout}s"
@@ -337,8 +340,23 @@ async def check_health(
                 status = "unhealthy"
                 reason = f"probe returned HTTP {response.status_code}"
             else:
+                # Apply the declared normalizers' RAW (pre-parse) path before
+                # json-decoding. A flaky upstream can emit an unescaped control
+                # byte (observed: glm-4.7-flash via LiteLLM, in reasoning_content)
+                # that breaks json parsing BEFORE the parsed normalize_json path
+                # (used by the completion/tool-call judges below) ever runs — so a
+                # model that is actually up fail-closes the card. The shim already
+                # cleans response traffic this way; the probe must judge the same
+                # repaired body the CLI will see. Fail-open: a clean body is
+                # unchanged; a normalizer without a raw path is skipped.
+                raw = response.content
+                for key in target.normalizers:
+                    normalizer = NORMALIZER_REGISTRY.get(key)
+                    raw_fn = getattr(normalizer, "normalize_raw", None)
+                    if raw_fn is not None:
+                        raw = raw_fn(raw)
                 try:
-                    payload = response.json()
+                    payload = json.loads(raw)
                 except ValueError:
                     payload = None
                 # 099: completion-mode targets are judged on a non-empty

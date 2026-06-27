@@ -124,6 +124,53 @@ async def test_healthy_probe_proceeds():
 
 
 @pytest.mark.asyncio
+async def test_completion_probe_survives_unescaped_control_byte_via_raw_normalizer():
+    """122: a flaky upstream (glm-4.7-flash via LiteLLM) intermittently emits an
+    unescaped control byte in reasoning_content → the raw body is invalid JSON, so
+    ``response.json()`` raises and the parsed normalize_json path can never run. When
+    ``strip_control_chars`` is declared, the probe MUST apply its RAW pre-parse path
+    first (mirroring the shim) so the body parses and the completion is judged."""
+    # raw 200 body with a literal control byte (0x07 BELL) inside a string value
+    bad = (
+        '{"choices":[{"message":{"role":"assistant",'
+        '"content":"ok","reasoning_content":"thinking\x07here"}}]}'
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=bad.encode("utf-8"),
+                              headers={"content-type": "application/json"})
+
+    target = _target(strategy="normalize", normalizers=["strip_control_chars"])
+    target = TargetDescriptor(
+        base_url=target.base_url, wire_format="openai", strategy="normalize",
+        normalizers=["strip_control_chars"], health_probe="completion",
+    )
+    async with _client(handler) as client:
+        result = await check_health(target, client=client)
+    assert result.status == "healthy"
+    assert result.resolved_action == "proceed"
+
+
+@pytest.mark.asyncio
+async def test_completion_probe_invalid_json_without_raw_normalizer_is_unhealthy():
+    """Control: the same broken body with NO raw-capable normalizer declared stays
+    unhealthy (the fix is scoped to declared normalizers, not a blanket leniency)."""
+    bad = '{"choices":[{"message":{"content":"ok\x07"}}]}'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=bad.encode("utf-8"),
+                              headers={"content-type": "application/json"})
+
+    target = TargetDescriptor(
+        base_url="http://litellm:4000", wire_format="openai", strategy="observe",
+        normalizers=[], health_probe="completion",
+    )
+    async with _client(handler) as client:
+        result = await check_health(target, client=client)
+    assert result.status == "unhealthy"
+
+
+@pytest.mark.asyncio
 async def test_harmony_leak_probe_is_unhealthy_and_reroutes():
     """The 077 openclaw failure: gpt-oss harmony leaks into content instead of
     structured tool_calls. The probe sees no tool_calls → unhealthy; with a
@@ -328,3 +375,48 @@ async def test_anthropic_tool_use_probe_is_healthy():
         result = await check_health(target, client=client)
     assert result.status == "healthy"
     assert result.resolved_action == "proceed"
+
+
+# --- 122: the probe forwards the Authorization header (auth-requiring upstream) ---
+
+
+@pytest.mark.asyncio
+async def test_probe_forwards_authorization_header():
+    """check_health(headers=...) must send them — LiteLLM 401s a bare probe."""
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["auth"] = request.headers.get("authorization", "")
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "tool_calls": [
+                {"id": "c0", "type": "function",
+                 "function": {"name": "ping", "arguments": "{}"}}]}}]},
+        )
+
+    target = _target()
+    async with _client(handler) as client:
+        result = await check_health(
+            target, client=client, headers={"Authorization": "Bearer sk-test"}
+        )
+    assert seen["auth"] == "Bearer sk-test"
+    assert result.status == "healthy"
+
+
+@pytest.mark.asyncio
+async def test_probe_without_headers_sends_none():
+    """No headers (auth-free Ollama) → no Authorization sent (back-compat)."""
+    seen: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["auth"] = request.headers.get("authorization", "<absent>")
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "tool_calls": [
+                {"id": "c0", "type": "function",
+                 "function": {"name": "ping", "arguments": "{}"}}]}}]},
+        )
+
+    async with _client(handler) as client:
+        await check_health(_target(), client=client)
+    assert seen["auth"] == "<absent>"
