@@ -316,6 +316,43 @@ def test_all_supported_backends_have_env_mapping():
 
 
 @pytest.mark.asyncio
+async def test_probe_prefers_upstream_auth_env_over_poisoned_openai_key(monkeypatch):
+    """123: the probe must authenticate with the target's ``upstream_auth_env`` when
+    set — not the generic OPENAI_API_KEY, which the coordinare poisons for
+    opencode/junie by injecting the daemon's REAL OpenAI key. The dedicated
+    COORDINARE_PROXY_AUTH carries the LiteLLM bearer."""
+    from performer.proxy.health import HealthResult
+
+    seen: dict = {}
+
+    async def fake_check_health(target, *, model=None, client=None, timeout=10.0, headers=None):
+        seen["headers"] = headers
+        return HealthResult(
+            target=target, status="healthy", reason=None, resolved_action="proceed"
+        )
+
+    monkeypatch.setattr("performer.proxy.launch.check_health", fake_check_health)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-real-openai-poisoned")
+    monkeypatch.setenv("COORDINARE_PROXY_AUTH", "sk-litellm-master")
+    table = RoutingTable(entries=[RoutingEntry(
+        backend="junie", model="spark/gpt-oss:120b",
+        target=TargetDescriptor(
+            base_url="https://litellm.example.com", wire_format="openai",
+            strategy="normalize", normalizers=["strip_control_chars"],
+            upstream_auth_env="COORDINARE_PROXY_AUTH",
+        ),
+    )])
+    shim = await maybe_launch_proxy(
+        None, "junie", {}, routing_table=table, model="spark/gpt-oss:120b",
+        health_check=True, health_timeout=120.0,
+    )
+    try:
+        assert seen["headers"] == {"Authorization": "Bearer sk-litellm-master"}
+    finally:
+        await shim.stop()
+
+
+@pytest.mark.asyncio
 async def test_health_timeout_threads_through_to_probe(monkeypatch):
     """The caller-supplied ``health_timeout`` must reach ``check_health`` so a
     big self-hosted model (gpt-oss:120b) gets a cold-load-tolerant probe budget

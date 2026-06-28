@@ -838,6 +838,20 @@ class HTTPPerformerService:
                 if token:
                     secrets["ANTHROPIC_API_KEY"] = token
                     secrets["OPENAI_API_KEY"] = token
+            # 123: the OPENAI_API_KEY injected above is the daemon's REAL OpenAI key
+            # (from .env) — correct for a NATIVE opencode/junie, but it 401s and
+            # poisons the 078 health probe when the backend is routed through the
+            # self-hosted shim to LiteLLM (the probe reads OPENAI_API_KEY). The
+            # coordinare can't see the container-mounted routing table, so it cannot
+            # tell here whether this dispatch is shim-routed. Instead, ALSO expose the
+            # LiteLLM master key under a DEDICATED, non-colliding env var; a shim
+            # routing entry sets `upstream_auth_env: COORDINARE_PROXY_AUTH` so the
+            # probe + the shim's Authorization override use the clean proxy bearer,
+            # while a native (unrouted) opencode/junie ignores it and keeps the raw
+            # provider keys above. Secret rides the redacted `secrets` channel.
+            _proxy_bearer = os.environ.get("LITELLM_MASTER_KEY", "")
+            if _proxy_bearer:
+                secrets["COORDINARE_PROXY_AUTH"] = _proxy_bearer
 
         # Stash card_context as metadata so the performer has full access to
         # role/persona/relay_feedback/etc. without us forking the schema here.

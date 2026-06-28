@@ -254,12 +254,22 @@ async def _gate_target(
     # prior target was auth-free Ollama. Send the same provider credential the
     # real CLI traffic uses (Bearer), pulled from the provider-auth env. Auth-free
     # upstreams (Ollama) ignore the header, so this is safe for all targets.
-    _probe_tok = (
-        os.environ.get("ANTHROPIC_AUTH_TOKEN")
-        or os.environ.get("OPENAI_API_KEY")
-        or os.environ.get("LITELLM_PROXY_AUTH_TOKEN")
-        or ""
-    ).strip()
+    # 123: prefer the target's ``upstream_auth_env`` FIRST so the probe authenticates
+    # with the exact key the shim injects into traffic (``_forward_headers``). This
+    # matters when the generic OPENAI_API_KEY is poisoned — the coordinare injects the
+    # daemon's REAL OpenAI key into opencode/junie containers, which would 401 the
+    # probe; the dedicated upstream_auth_env carries the proxy bearer instead.
+    _probe_tok = ""
+    _auth_env = getattr(target, "upstream_auth_env", None)
+    if _auth_env:
+        _probe_tok = (os.environ.get(_auth_env) or "").strip()
+    if not _probe_tok:
+        _probe_tok = (
+            os.environ.get("ANTHROPIC_AUTH_TOKEN")
+            or os.environ.get("OPENAI_API_KEY")
+            or os.environ.get("LITELLM_PROXY_AUTH_TOKEN")
+            or ""
+        ).strip()
     _probe_headers = {"Authorization": f"Bearer {_probe_tok}"} if _probe_tok else None
     result = await check_health(
         target, model=model, client=client, timeout=timeout, headers=_probe_headers
