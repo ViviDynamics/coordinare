@@ -731,6 +731,38 @@ async def test_dispatch_includes_github_token_in_secrets() -> None:
     await svc.aclose()
 
 
+@pytest.mark.asyncio
+async def test_junie_dispatch_injects_proxy_bearer_under_dedicated_env(monkeypatch) -> None:
+    """123: for opencode/junie the coordinare injects the LiteLLM master key under the
+    DEDICATED COORDINARE_PROXY_AUTH env (consumed by a shim routing entry's
+    upstream_auth_env) — separate from OPENAI_API_KEY, which carries the daemon's
+    real OpenAI key and would 401 a shim-routed probe."""
+    monkeypatch.setenv("LITELLM_MASTER_KEY", "sk-litellm-master")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-real-openai")
+    payloads: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json as _json
+        payloads.append(_json.loads(request.content))
+        return httpx.Response(202, json={
+            "accepted": True, "job_id": "job-junie",
+            "started_at": "2026-04-28T00:00:00Z",
+        })
+
+    card = dict(_card())
+    card["backend"] = "junie"
+    svc = HTTPPerformerService(_persistent_config(), client=_client(handler))
+    await svc.dispatch_card(card, WorkspaceInfo(
+        path=None, repo_url="https://github.com/x/y", branch="feat",
+        github_token="ghs_test_token",
+    ))
+    secrets = payloads[0].get("secrets", {})
+    assert secrets.get("COORDINARE_PROXY_AUTH") == "sk-litellm-master"
+    # the raw provider key is still injected (native opencode/junie needs it)
+    assert secrets.get("OPENAI_API_KEY") == "sk-real-openai"
+    await svc.aclose()
+
+
 # ---------------------------- _ensure_client edge cases ----------------------
 
 
