@@ -44,6 +44,11 @@ def _fake_proc():
     # otherwise the unconfigured AsyncMock returns a truthy MagicMock and the
     # reader spins forever.
     proc.stdout.read = AsyncMock(return_value=b"")
+    # stdin is now a pipe (prompt written after spawn); drain() must be awaitable.
+    proc.stdin = AsyncMock()
+    proc.stdin.write = MagicMock()
+    proc.stdin.drain = AsyncMock()
+    proc.stdin.close = MagicMock()
     return proc
 
 

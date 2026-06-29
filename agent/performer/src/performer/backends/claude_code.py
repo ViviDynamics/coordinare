@@ -306,7 +306,12 @@ class ClaudeCodeBackend:
             args += ["--resume", resume_session_id]
         for extra_dir in self._extra_dirs:
             args += ["--add-dir", extra_dir]
-        args += ["-p", prompt]
+        # Pass the prompt via stdin rather than as a positional argv element so
+        # that large diffs (hundreds of KiB) don't exceed the OS ARG_MAX limit.
+        # Claude Code in --print mode reads from stdin when no positional prompt
+        # is supplied.
+        args += ["--print"]
+        prompt_bytes = prompt.encode()
 
         self._output_accumulator = []
         self._stderr_tail.clear()
@@ -376,13 +381,18 @@ class ClaudeCodeBackend:
 
         self._proc = await asyncio.create_subprocess_exec(
             *args,
-            stdin=asyncio.subprocess.DEVNULL,
+            stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=str(self._stand.path) if self._stand else None,
             start_new_session=True,
             env=subproc_env,
         )
+        # Write the prompt and close stdin so the CLI doesn't wait for more input.
+        assert self._proc.stdin is not None
+        self._proc.stdin.write(prompt_bytes)
+        await self._proc.stdin.drain()
+        self._proc.stdin.close()
         self._open_stdout_capture()
         self._last_event_at = time.monotonic()
         self._reader_task = asyncio.create_task(
