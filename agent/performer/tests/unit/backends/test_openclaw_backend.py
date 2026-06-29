@@ -376,3 +376,80 @@ async def test_card_docs_written_to_workspace_and_referenced_in_prompt(
     # The prompt points the agent at CARD.md.
     msg = captured["argv"][captured["argv"].index("--message") + 1]
     assert "CARD.md" in msg
+
+
+# ---------------------------------------------------------------------------
+# large-prompt offloading (E2BIG / MAX_ARG_STRLEN guard)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_large_prompt_offloaded_to_task_md(tmp_path: Path, monkeypatch) -> None:
+    """When the assembled prompt exceeds _MAX_INLINE_BYTES the backend writes it
+    to TASK.md in the workspace and passes a short --message reference instead,
+    avoiding the Linux MAX_ARG_STRLEN (128 KB) per-argument limit that caused
+    OSError E2BIG on large reviewer dispatches (e.g. wauXI About-page rewrite)."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    captured: dict = {}
+
+    async def _fake_exec(*argv, **kwargs):
+        captured["argv"] = list(argv)
+        return _fake_proc(b'{"payloads":[{"text":"ok"}],"meta":{"stopReason":"stop"}}')
+
+    async def _noop_reader(self):
+        return None
+
+    import performer.backends.openclaw as oc_mod
+    monkeypatch.setattr(oc_mod.asyncio, "create_subprocess_exec", _fake_exec)
+    monkeypatch.setattr(OpenClawBackend, "_wait_and_parse", _noop_reader)
+
+    checkout = tmp_path / "repo"
+    checkout.mkdir()
+    # Build a score whose pr_diff alone exceeds the 100 KB inline threshold.
+    big_diff = "+" + "a" * 110_000
+    score = Score(
+        title="Big rewrite", repo_url="https://github.com/x/y",
+        branch="main", github_token="t", role="reviewer",
+        pr_diff=big_diff,
+    )
+    stand = Stand(path=checkout, branch="main")
+    await OpenClawBackend().start(stand, score, model="spark/qwen3.6:35b")
+
+    # TASK.md must exist and contain the full prompt (including the diff).
+    task_md = checkout / "TASK.md"
+    assert task_md.is_file(), "TASK.md must be written when prompt exceeds threshold"
+    task_content = task_md.read_text()
+    assert big_diff[:50] in task_content, "TASK.md must contain the full task prompt"
+
+    # The --message arg must be a SHORT reference, not the full prompt.
+    msg = captured["argv"][captured["argv"].index("--message") + 1]
+    assert len(msg.encode("utf-8")) < 1000, "--message must be short when prompt is offloaded"
+    assert "TASK.md" in msg, "--message must reference TASK.md"
+
+
+@pytest.mark.asyncio
+async def test_small_prompt_not_offloaded(tmp_path: Path, monkeypatch) -> None:
+    """Prompts under the threshold are passed inline — TASK.md must NOT be created."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    async def _fake_exec(*argv, **kwargs):
+        return _fake_proc(b'{"payloads":[{"text":"ok"}],"meta":{"stopReason":"stop"}}')
+
+    async def _noop_reader(self):
+        return None
+
+    import performer.backends.openclaw as oc_mod
+    monkeypatch.setattr(oc_mod.asyncio, "create_subprocess_exec", _fake_exec)
+    monkeypatch.setattr(OpenClawBackend, "_wait_and_parse", _noop_reader)
+
+    checkout = tmp_path / "repo"
+    checkout.mkdir()
+    score = Score(
+        title="Small fix", repo_url="https://github.com/x/y",
+        branch="main", github_token="t", role="reviewer",
+        pr_diff="+one line change",
+    )
+    stand = Stand(path=checkout, branch="main")
+    await OpenClawBackend().start(stand, score, model="spark/qwen3.6:35b")
+
+    assert not (checkout / "TASK.md").exists(), "TASK.md must NOT be written for small prompts"

@@ -190,6 +190,27 @@ class HermesBackend:
         self._job_log_id = f"{time.strftime('%Y%m%dT%H%M%S')}_{(score.role or 'job')}_{uuid.uuid4().hex[:8]}"
         self._persist_job_artifact("prompt", prompt)
 
+        # If the prompt exceeds the Linux per-argument limit (MAX_ARG_STRLEN ≈
+        # 128 KB), create_subprocess_exec raises OSError E2BIG.  Offload to
+        # TASK.md in the workspace and pass a short -q reference instead.
+        _MAX_INLINE_BYTES = 100_000  # 100 KB — safe below 131 072 B limit
+        prompt_bytes = len(prompt.encode("utf-8"))
+        if prompt_bytes > _MAX_INLINE_BYTES:
+            task_md = stand.path / "TASK.md"
+            try:
+                task_md.write_text(prompt, encoding="utf-8")
+                prompt = (
+                    "Your complete task briefing is in `TASK.md` at the root of "
+                    "the repo checkout.  Read `TASK.md` carefully and follow ALL "
+                    "instructions in it exactly before taking any action."
+                )
+                log.info("hermes.prompt_offloaded_to_task_md", original_bytes=prompt_bytes)
+            except OSError as exc:
+                log.warning("hermes.task_md_write_failed", error=str(exc))
+                # proceed with the original oversized prompt — subprocess will
+                # raise E2BIG just as before, surfacing a clear error rather
+                # than silently losing the task description
+
         # The installed hermes-agent CLI exposes neither --output-file nor
         # --base-url on `chat`, and -z is a top-level shortcut rather than a
         # chat-subcommand flag. We capture the agent's final reply from stdout
