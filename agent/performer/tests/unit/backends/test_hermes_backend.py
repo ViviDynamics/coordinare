@@ -868,3 +868,62 @@ class TestSubprocessEnvPolicy:
         assert env["HERMES_HOME"] == str(tmp_path)
         assert env["HERMES_API_KEY"] == "sk"
         assert env["HERMES_BASE_URL"] == "http://litellm/v1"
+
+
+# ---------------------------------------------------------------------------
+# large-prompt offloading (E2BIG / MAX_ARG_STRLEN guard)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_hermes_large_prompt_offloaded_to_task_md(
+    tmp_path: Path, hermes_env
+) -> None:
+    """When the assembled prompt exceeds _MAX_INLINE_BYTES the backend writes it
+    to TASK.md in the workspace and passes a short -q reference instead, avoiding
+    OSError E2BIG (Linux MAX_ARG_STRLEN ~128 KB per CLI argument)."""
+    proc = _fake_proc(returncode=None)
+    big_diff = "+" + "a" * 110_000
+    score = _score(pr_diff=big_diff)
+    adapter = HermesBackend()
+    with patch(
+        "performer.backends.hermes.asyncio.create_subprocess_exec",
+        new=AsyncMock(return_value=proc),
+    ) as mock_exec:
+        await adapter.start(_stand(tmp_path), score)
+    try:
+        mock_exec.assert_awaited_once()
+        args = list(mock_exec.call_args[0])
+        q_idx = args.index("-q")
+        inline_msg = args[q_idx + 1]
+
+        # The -q arg must be short (a TASK.md reference, not the full prompt).
+        assert len(inline_msg.encode("utf-8")) < 1000
+        assert "TASK.md" in inline_msg
+
+        # TASK.md must exist at the workspace root with the full prompt content.
+        task_md = tmp_path / "TASK.md"
+        assert task_md.is_file(), "TASK.md must be written for large prompts"
+        assert big_diff[:50] in task_md.read_text()
+    finally:
+        await adapter.stop()
+
+
+@pytest.mark.asyncio
+async def test_hermes_small_prompt_not_offloaded(
+    tmp_path: Path, hermes_env
+) -> None:
+    """Prompts under the threshold are passed inline — TASK.md must NOT be created."""
+    proc = _fake_proc(returncode=None)
+    score = _score(pr_diff="+one line change")
+    adapter = HermesBackend()
+    with patch(
+        "performer.backends.hermes.asyncio.create_subprocess_exec",
+        new=AsyncMock(return_value=proc),
+    ) as mock_exec:
+        await adapter.start(_stand(tmp_path), score)
+    try:
+        mock_exec.assert_awaited_once()
+        assert not (tmp_path / "TASK.md").exists(), "TASK.md must NOT exist for small prompts"
+    finally:
+        await adapter.stop()

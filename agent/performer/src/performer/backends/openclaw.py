@@ -219,6 +219,28 @@ class OpenClawBackend:
             if persona:
                 score.persona_instructions = persona  # restore for callers/relay
 
+        # If the prompt exceeds the Linux per-argument limit (MAX_ARG_STRLEN ≈
+        # 128 KB), create_subprocess_exec raises OSError E2BIG.  Offload to
+        # TASK.md in the workspace (same pattern as SOUL.md / CARD.md) and
+        # pass a short --message reference instead.
+        _MAX_INLINE_BYTES = 100_000  # 100 KB — safe below 131 072 B limit
+        prompt_bytes = len(prompt.encode("utf-8"))
+        if prompt_bytes > _MAX_INLINE_BYTES:
+            task_md = stand.path / "TASK.md"
+            try:
+                task_md.write_text(prompt, encoding="utf-8")
+                prompt = (
+                    "Your complete task briefing is in `TASK.md` at the root of "
+                    "your workspace.  Read `TASK.md` carefully and follow ALL "
+                    "instructions in it exactly before taking any action."
+                )
+                log.info("openclaw.prompt_offloaded_to_task_md", original_bytes=prompt_bytes)
+            except OSError as exc:
+                log.warning("openclaw.task_md_write_failed", error=str(exc))
+                # proceed with the original oversized prompt — subprocess will
+                # raise E2BIG just as before, surfacing a clear error rather
+                # than silently losing the task description
+
         role = (score.role or "job").lower()
         session_key = f"coordinare-{role}-{uuid.uuid4().hex[:8]}"
 
