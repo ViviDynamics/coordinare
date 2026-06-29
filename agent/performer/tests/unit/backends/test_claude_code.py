@@ -52,6 +52,10 @@ def _fake_proc(pid: int = 42) -> MagicMock:
     proc.stderr.__aiter__ = lambda self: _stderr_iter()
     proc.wait = AsyncMock(return_value=0)
     proc.kill = MagicMock()
+    proc.stdin = AsyncMock()
+    proc.stdin.write = MagicMock()
+    proc.stdin.drain = AsyncMock()
+    proc.stdin.close = MagicMock()
     return proc
 
 
@@ -146,7 +150,7 @@ class TestClaudeCodeBackendStart:
         args = mock_exec.call_args[0]
         assert "--resume" not in args
 
-    async def test_start_passes_prompt_via_p_flag(self, tmp_path: Path) -> None:
+    async def test_start_passes_prompt_via_stdin(self, tmp_path: Path) -> None:
         proc = _fake_proc()
         adapter = ClaudeCodeBackend()
 
@@ -157,8 +161,11 @@ class TestClaudeCodeBackendStart:
             await adapter.start(_stand(tmp_path), _score())
 
         args = mock_exec.call_args[0]
-        p_idx = list(args).index("-p")
-        assert "Test Task" in args[p_idx + 1]
+        # Prompt is now sent via stdin, not as a positional arg after -p.
+        assert "--print" in args
+        assert "-p" not in args
+        written = proc.stdin.write.call_args[0][0]
+        assert b"Test Task" in written
 
     async def test_persona_passed_via_append_system_prompt_flag(
         self, tmp_path: Path
@@ -176,10 +183,10 @@ class TestClaudeCodeBackendStart:
         assert "--append-system-prompt" in args
         sp_idx = args.index("--append-system-prompt")
         assert args[sp_idx + 1] == "PERSONA_MARKER_CC be careful."
-        # And the persona text is NOT embedded in the -p prompt.
-        p_idx = args.index("-p")
-        assert "PERSONA_MARKER_CC" not in args[p_idx + 1]
-        assert "## Role Instructions" not in args[p_idx + 1]
+        # And the persona text is NOT embedded in the stdin prompt.
+        written = proc.stdin.write.call_args[0][0].decode()
+        assert "PERSONA_MARKER_CC" not in written
+        assert "## Role Instructions" not in written
 
     async def test_append_system_prompt_omitted_when_persona_empty(
         self, tmp_path: Path
@@ -1076,9 +1083,9 @@ class TestRelayFeedback:
         assert "--resume" in args
         idx = list(args).index("--resume")
         assert args[idx + 1] == "sess-xyz-789"
-        assert "-p" in args
-        p_idx = list(args).index("-p")
-        assert args[p_idx + 1] == "use black for formatting"
+        assert "--print" in args
+        written = proc.stdin.write.call_args[0][0]
+        assert b"use black for formatting" in written
         assert adapter.get_status().state == "working"
 
     async def test_relay_feedback_no_resume_when_no_session_id(self, tmp_path: Path) -> None:
