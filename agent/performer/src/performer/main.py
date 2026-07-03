@@ -25,6 +25,7 @@ from pydantic import ValidationError
 from performer.backends import UnsupportedBackendError, get_backend
 from performer.backends.base import BackendAdapter, BackendStatus
 from performer.cdn_upload import resolve_visual_evidence_urls
+from performer.qa_capture import boot_and_capture_app_screenshot
 from performer.config import Settings, get_settings
 from performer.github import GitHubAPIError, create_pull_request, get_check_run_logs, get_check_runs, list_pr_comments, post_issue_comment, post_pr_comment, post_pull_request_review, resolve_pr_review_threads, summarise_check_runs
 from performer.io_utils import iter_lines_chunked
@@ -687,6 +688,27 @@ def _normalise_visual_evidence(value: object) -> list[dict[str, str]]:
 def _looks_like_url(value: str) -> bool:
     """Return True for HTTP(S) URLs."""
     return value.startswith("http://") or value.startswith("https://")
+
+
+def _has_local_visual_artifact(visual_evidence: list[dict[str, str]]) -> bool:
+    """True if any evidence entry points at a local file that actually exists.
+
+    Used to decide whether the deterministic capture backstop is needed: an
+    already-uploaded URL, or a local path the QA agent genuinely produced, means
+    we don't re-capture. A claimed-but-absent local path does NOT count.
+    """
+    for ev in visual_evidence:
+        loc = str(ev.get("path_or_url", "")).strip()
+        if not loc:
+            continue
+        if _looks_like_url(loc):
+            return True
+        try:
+            if Path(loc).is_file() and Path(loc).stat().st_size > 0:
+                return True
+        except OSError:
+            continue
+    return False
 
 
 def _qa_visual_validation_required(
@@ -2431,6 +2453,31 @@ async def handle_status(
                 visual_capture_blockers=visual_capture_blockers,
                 visual_evidence=visual_evidence,
             )
+
+            # Deterministic screenshot backstop (performer-owned): when a visual
+            # change needs evidence but the QA agent produced no on-disk artifact,
+            # capture it ourselves (system python + Playwright) — removes the LLM's
+            # browser-driving variance (wrong interpreter / Selenium / faked path).
+            # If the app isn't already serving, infer the project's start command
+            # and boot it in the activated env-cache (cwd=workspace), then tear it
+            # back down. Never fabricates (returns a verified on-disk file only).
+            if visual_validation_required and not _has_local_visual_artifact(visual_evidence):
+                _cap_env = {**os.environ, **getattr(perf.stand, "cache_env", {})}
+                _auto_shot = boot_and_capture_app_screenshot(
+                    env=_cap_env, workspace=perf.stand.path,
+                )
+                if _auto_shot:
+                    visual_evidence.append({
+                        "label": "coordinare auto-capture",
+                        "kind": "screenshot",
+                        "path_or_url": _auto_shot,
+                        "note": "captured by the performer against the running app",
+                    })
+                    log.info(
+                        "qa_capture.injected",
+                        card_id=str(getattr(perf.score, "card_id", "") or ""),
+                        path=_auto_shot,
+                    )
 
             # Check for failures/env blockers before summarising and posting evidence.
             raw_failures = qa_output.get("failures", [])

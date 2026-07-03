@@ -35,12 +35,29 @@ def _as_int(value: object) -> int:
         return 0
 
 
+def _url_is_verifiable(path_or_url: object) -> bool:
+    """True when path_or_url is a local path or a real qa-assets CDN URL.
+
+    The performer upload mechanism (cdn_upload.py) always produces URLs of the
+    form ``https://github.com/{org}/{repo}/raw/qa-assets/...``.  A
+    ``user-attachments`` URL is GitHub's drag-and-drop private CDN — it is never
+    produced by our upload code and indicates a model hallucination; treat it as
+    absent evidence.
+    """
+    s = str(path_or_url) if path_or_url else ""
+    if not s:
+        return False
+    if not s.startswith("http://") and not s.startswith("https://"):
+        return True  # local file path — performer hasn't uploaded yet
+    return "/raw/qa-assets/" in s
+
+
 def _visual_evidence_present(report: dict) -> bool:
-    """True when at least one visual_evidence item carries a truthy path_or_url."""
+    """True when at least one visual_evidence item carries a verifiable path_or_url."""
     items = report.get("visual_evidence")
     if not isinstance(items, list):
         return False
-    return any(isinstance(ev, dict) and ev.get("path_or_url") for ev in items)
+    return any(isinstance(ev, dict) and _url_is_verifiable(ev.get("path_or_url")) for ev in items)
 
 
 def _has_env_signal(report: dict, env_cache_health_failed: bool) -> bool:

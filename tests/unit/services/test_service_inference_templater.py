@@ -67,6 +67,22 @@ def test_render_single_service_produces_three_scripts():
     assert "6379" in scripts.health
 
 
+def test_port_bound_matches_only_listen_state():
+    """123 fix: _port_bound must match ONLY a LISTEN socket (st field 0A with an
+    all-zero rem_address), not any TCP state. Matching any state false-positives
+    on the TIME_WAIT sockets a just-killed/restarted server leaves behind, so a
+    re-run wrongly 'assumes external instance' and skips starting the service."""
+    scripts = render(
+        ServicesManifest(services=[_redis()], cache_inputs=[], agent_version="t")
+    )
+    start = scripts.start
+    assert "_port_bound()" in start
+    # The LISTEN-only guard: local port hex, all-zero remote addr:port, state 0A.
+    assert '":${hex_port} 0+:0000 0A"' in start
+    # The old any-state grep must be gone.
+    assert 'grep -qE ":${hex_port} " ' not in start
+
+
 def test_render_multi_service_emits_each():
     manifest = ServicesManifest(
         services=[_postgres(), _redis()],

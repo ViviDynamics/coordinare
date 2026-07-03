@@ -118,6 +118,13 @@ def _fake_proc() -> MagicMock:
     # accept past `await`, producing a non-empty truthy chunk that loops).
     proc.stdout.read = AsyncMock(return_value=b"")
     proc.stderr = MagicMock()
+    # The CLI prompt is written via stdin then drained (E2BIG fix, d4c33c9):
+    # ``write``/``close`` are sync, but ``drain`` is awaited — give it an
+    # AsyncMock so ``await proc.stdin.drain()`` doesn't blow up on a bare Mock.
+    proc.stdin = MagicMock()
+    proc.stdin.write = MagicMock()
+    proc.stdin.drain = AsyncMock()
+    proc.stdin.close = MagicMock()
     proc.wait = AsyncMock(return_value=0)
     proc.kill = MagicMock()
     return proc

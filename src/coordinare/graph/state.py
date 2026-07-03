@@ -183,6 +183,19 @@ class CoordinareState(TypedDict, total=False):
     # dashboard so the operator can see cumulative churn across un-blocks.
     total_feedback_cycles: int
     triage_blocks: int
+    # 123: split bounce budget.  content_feedback_cycles counts content-driven
+    # feedback rounds (reviewer/QA changes_requested) and is checked against
+    # config.max_feedback_cycles; transient_error_cycles counts infra/transient
+    # failures (env_blocked/system_error/unknown) and is checked against a
+    # separate limit (3).  Both live on CardSession + PersistedSession and
+    # round-trip through session ↔ state.  Splitting the old feedback_cycle_count
+    # stops an infra-flaky card being escalated on content grounds (and reverse).
+    content_feedback_cycles: int
+    transient_error_cycles: int
+    # 123: answered assessor Q&A ({"question","answer"} dicts) carried across
+    # bounce cycles; injected as prior_clarifications on assessor re-dispatch.
+    # Distinct from open_questions (list[str], blocked-card diagnostics) above.
+    assessor_open_questions: list[dict]
     # 046: Dependency state for the current card — list of unsatisfied blocker
     # dicts [{issue_number, title, column, issue_url, source}].  Populated by
     # check_board's dependency filtering and consumed by dashboard + notifications.
@@ -204,12 +217,6 @@ class CoordinareState(TypedDict, total=False):
     # 054: Per-cycle eligibility skip map — card_id → {reason, detail, blockers}.
     # Cleared at cycle start; populated by _invoke_multi_session for ineligible sessions.
     session_skip_reasons: dict[str, dict[str, Any]]
-    # 055: QA screenshot results from most recent capture pass.
-    qa_screenshots: list[Any]
-    # 120 (US3/FR-014): app-boot proof from the most recent QA run. True/False
-    # when the QA report carried an app_boot_check verdict; None when unknown.
-    # The post-QA screenshot backstop only captures when this is not False.
-    qa_app_boot_ok: bool | None
     # 055: Issue comment idempotency fields.
     last_issue_comment_id: int | None
     processed_issue_comment_ids: set[int]
@@ -292,6 +299,10 @@ def initial_state() -> CoordinareState:
         "feedback_cycle_count": 0,
         "total_feedback_cycles": 0,
         "triage_blocks": 0,
+        # 123: split bounce budget + assessor Q&A carryover
+        "content_feedback_cycles": 0,
+        "transient_error_cycles": 0,
+        "assessor_open_questions": [],
         "blocked_by_dependencies": [],
         "last_known_main_sha": None,
         "last_rebase_round": None,
@@ -301,8 +312,6 @@ def initial_state() -> CoordinareState:
         "github_retry_queue": [],
         "github_retry_after": None,
         "session_skip_reasons": {},
-        "qa_screenshots": [],
-        "qa_app_boot_ok": None,
         "last_issue_comment_id": None,
         "processed_issue_comment_ids": set(),
         "performer_endpoints": {},

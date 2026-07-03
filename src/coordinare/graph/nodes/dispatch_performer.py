@@ -9,6 +9,7 @@ the lifecycle pipeline and the persona system.
 from __future__ import annotations
 
 import asyncio
+import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -193,6 +194,73 @@ _DIFF_REVIEW_ROLES: frozenset[str] = frozenset(
     {"reviewer", "closer", "qa", "tech_writer"}
 )
 
+# Cap on the inline PR diff injected into review prompts. A diff bloated by
+# committed agent-tooling artifacts (.codex/, .tmp/), vendored trees, or binary
+# files can blow past the model's context window — observed live: a 573 KB diff
+# (99% committed .codex/ Codex-CLI junk) produced a ~169k-token QA prompt that
+# tripped LiteLLM's ContextWindowExceededError on a 40,960-token model → HTTP
+# 400 → QA returned zero evidence and looped. We FILTER obvious noise per-file
+# sections first, THEN cap the remainder — filtering (not a head-truncation)
+# because noise paths like `.codex/` sort BEFORE the real change, so a blind
+# head-cut would keep the junk and drop the actual diff.
+_DIFF_INJECT_MAX_CHARS = 60_000
+_DIFF_NOISE_PATH_MARKERS: tuple[str, ...] = (
+    ".codex/", ".tmp/", "node_modules/", "vendor/bundle/",
+    ".venv/", "__pycache__/", ".git/",
+)
+
+
+def _diff_section_path(section: str) -> str:
+    """Best-effort a/-side path from a ``diff --git a/PATH b/PATH`` header line."""
+    m = re.match(r"diff --git a/(.+?) b/", section.split("\n", 1)[0])
+    return m.group(1) if m else ""
+
+
+def _sanitize_pr_diff(raw_diff: str, *, max_chars: int = _DIFF_INJECT_MAX_CHARS) -> str:
+    """Drop agent-tooling/vendor/binary per-file sections, then cap total size.
+
+    Keeps any preamble before the first ``diff --git`` header. Appends a short
+    ``[coordinare: …]`` note when anything was omitted/truncated so the model
+    knows the diff is partial (the persona already instructs fetching the full
+    diff via ``gh pr diff`` when needed).
+    """
+    sections = re.split(r"(?m)^(?=diff --git )", raw_diff)
+    kept: list[str] = []
+    dropped_noise = 0
+    dropped_binary = 0
+    for sec in sections:
+        if not sec.strip():
+            continue
+        if not sec.startswith("diff --git "):
+            kept.append(sec)  # preamble before the first file header
+            continue
+        path = _diff_section_path(sec)
+        if path and any(mk in path for mk in _DIFF_NOISE_PATH_MARKERS):
+            dropped_noise += 1
+            continue
+        if "\nBinary files " in sec:
+            dropped_binary += 1
+            continue
+        kept.append(sec)
+    filtered = "".join(kept)
+    truncated = len(filtered) > max_chars
+    if truncated:
+        filtered = filtered[:max_chars]
+    notes: list[str] = []
+    if dropped_noise or dropped_binary:
+        notes.append(
+            f"omitted {dropped_noise} tooling/vendor and {dropped_binary} "
+            f"binary file section(s)"
+        )
+    if truncated:
+        notes.append(
+            f"diff truncated to {max_chars} chars — run `gh pr diff <pr_url>` "
+            f"for the full changes"
+        )
+    if notes:
+        filtered = filtered.rstrip() + "\n\n[coordinare: " + "; ".join(notes) + "]\n"
+    return filtered
+
 
 async def _fetch_pr_diff_text(
     state: CoordinareState, card: dict[str, Any]
@@ -228,12 +296,54 @@ async def _fetch_pr_diff_text(
     if not raw_diff.strip():
         return None
 
+    # Filter noise + cap so a bloated diff can't overflow the model context.
+    sanitized = _sanitize_pr_diff(raw_diff)
+    if not sanitized.strip():
+        return None
+
     logger.info(
         "dispatch_performer.review_diff_injected",
         card_id=card_id,
-        diff_length=len(raw_diff),
+        diff_length=len(sanitized),
+        raw_diff_length=len(raw_diff),
     )
-    return raw_diff
+    return sanitized
+
+
+def _should_skip_documenting(changed_files: list[str]) -> bool:
+    """123 US1 (FR-001/FR-002): True when the PR diff changes no ``docs/`` path.
+
+    When a PR touches no documentation, the documenting (tech_writer) stage has
+    nothing to do and can be skipped.  An empty ``changed_files`` list (no
+    textual changes — e.g. a diff of only binary/image files) also skips, since
+    there is likewise no doc content for the tech_writer to maintain.
+    """
+    return not any(str(path).startswith("docs/") for path in changed_files)
+
+
+async def _fetch_changed_files(
+    state: CoordinareState, card: dict[str, Any]
+) -> list[str] | None:
+    """Fetch the PR's changed-file paths for the doc gate, or None on failure.
+
+    Best-effort and fail-OPEN: a missing github service / ``pr_url`` or any
+    fetch error returns ``None`` so the caller does NOT skip documenting (when
+    we cannot tell what changed, dispatching tech_writer is the safe default).
+    """
+    github = state.get("github_service")
+    pr_url = str(card.get("pr_url") or "").strip()
+    if github is None or not hasattr(github, "get_pr_diff") or not pr_url:
+        return None
+    try:
+        _raw_diff, changed_files = await github.get_pr_diff(pr_url)
+    except Exception as exc:
+        logger.warning(
+            "dispatch_performer.doc_gate_diff_fetch_failed",
+            card_id=str(card.get("id", "")),
+            error_type=type(exc).__name__,
+        )
+        return None
+    return [str(f) for f in (changed_files or [])]
 
 
 async def _pre_dispatch_rebase_guard(state: CoordinareState, card_id: str) -> bool:
@@ -651,6 +761,28 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
                 state[key] = value  # type: ignore[literal-required]
             return state
 
+    # 123 US1 (FR-001/FR-002): tech_writer doc-change gate. Before dispatching
+    # the documenting stage, skip it entirely when the PR diff changes no
+    # ``docs/`` path — the tech_writer has nothing to do. Advance the card as if
+    # documenting completed. Fail-open: if the changed files can't be fetched we
+    # dispatch tech_writer as usual (never skip on an unknown diff).
+    # (FR-003 content-hash dedup deferred: the existing doc_dedup.py performs
+    # markdown section-overlap merging, not content-hash-vs-last-commit dedup.)
+    if performer_stage == "documenting":
+        changed_files = await _fetch_changed_files(state, card)
+        if changed_files is not None and _should_skip_documenting(changed_files):
+            logger.info(
+                "dispatch_performer.stage_skipped",
+                reason="no_doc_changes",
+                card_id=card_id,
+                performer_stage=performer_stage,
+                changed_file_count=len(changed_files),
+            )
+            updates = _advance_stage(state)
+            for key, value in updates.items():
+                state[key] = value  # type: ignore[literal-required]
+            return state
+
     # 053: Guard against repeated PR churn for the same issue.
     config = state.get("config")
     raw_closed_pr_limit = getattr(config, "max_closed_pr_attempts_per_issue", 0) if config else 0
@@ -1027,6 +1159,16 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
 
     # Pass the performer role so the performer can gate behavior on it.
     card_context["role"] = performer_stage
+
+    # 123 US4 (FR-011): on an assessor (re-)dispatch, carry forward answered Q&A
+    # from prior assessor runs so the assessor doesn't re-ask questions already
+    # answered on an earlier bounce. Injected as ``prior_clarifications`` only
+    # when non-empty; absent on the first dispatch (empty list). Persisted by
+    # monitor_performer after each successful assessor run (FR-010).
+    if performer_stage == "assessing":
+        prior_qa = state.get("assessor_open_questions") or []
+        if prior_qa:
+            card_context["prior_clarifications"] = [dict(q) for q in prior_qa]
 
     # 083 US1: coordinare-authoritative static-analysis floor. For the security
     # role ONLY, fetch the PR diff and run the scanner exactly once here at

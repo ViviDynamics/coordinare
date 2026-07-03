@@ -2557,6 +2557,33 @@ class TestQAPerformer:
             "actual": "16px still present", "message": "assertion failed: margin not removed",
         }) is False
 
+    def test_has_local_visual_artifact_true_for_existing_file(self, tmp_path) -> None:
+        """A local path the QA agent genuinely produced counts — no re-capture."""
+        from performer.main import _has_local_visual_artifact
+        f = tmp_path / "shot.png"
+        f.write_bytes(b"\x89PNG" + b"x" * 32)
+        assert _has_local_visual_artifact([
+            {"label": "e", "kind": "screenshot", "path_or_url": str(f), "note": ""},
+        ]) is True
+
+    def test_has_local_visual_artifact_true_for_uploaded_url(self) -> None:
+        """An already-uploaded URL counts — nothing to re-capture."""
+        from performer.main import _has_local_visual_artifact
+        assert _has_local_visual_artifact([
+            {"label": "e", "kind": "screenshot",
+             "path_or_url": "https://cdn.example.com/a.png", "note": ""},
+        ]) is True
+
+    def test_has_local_visual_artifact_false_for_claimed_absent_path(self) -> None:
+        """A path the capture never created must NOT count — this is exactly the
+        faked-screenshot case the deterministic backstop exists to cover."""
+        from performer.main import _has_local_visual_artifact
+        assert _has_local_visual_artifact([
+            {"label": "e", "kind": "screenshot",
+             "path_or_url": "/tmp/does-not-exist-qa.png", "note": ""},
+        ]) is False
+        assert _has_local_visual_artifact([]) is False
+
     @pytest.mark.asyncio
     async def test_qa_couldnt_check_failures_route_to_env_blocked_not_qa_failed(self) -> None:
         """End-to-end: a QA run whose failures are all 'couldn't check' (PR #159

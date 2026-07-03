@@ -141,3 +141,38 @@ def test_reason_missing_visual_evidence():
 def test_reason_none_for_substantiated():
     report = _report(criteria_checked=4, criteria_passed=4)
     assert qa_unsubstantiated_reason(report) is None
+
+
+# --- hallucinated URL rejection (user-attachments CDN) ---------------------
+
+
+def test_real_cdn_url_accepted_as_evidence():
+    url = "https://github.com/ViviDynamics/coordinare/raw/qa-assets/content/42/ts-home.png"
+    report = _report(criteria_checked=2, criteria_passed=2,
+                     visual_validation_required=True,
+                     visual_evidence=[{"path_or_url": url}])
+    assert classify_qa_verdict("qa_passed", report, False) == "advance"
+
+
+def test_local_path_accepted_as_evidence():
+    report = _report(criteria_checked=2, criteria_passed=2,
+                     visual_validation_required=True,
+                     visual_evidence=[{"path_or_url": "/tmp/screenshot.png"}])
+    assert classify_qa_verdict("qa_passed", report, False) == "advance"
+
+
+def test_user_attachments_url_rejected_as_hallucinated():
+    # GitHub's drag-and-drop CDN — never produced by cdn_upload.py; treat as absent
+    hallucinated = "https://github.com/user-attachments/assets/claude-code/services-page-20260628.png"
+    report = _report(criteria_checked=2, criteria_passed=2,
+                     visual_validation_required=True,
+                     visual_evidence=[{"path_or_url": hallucinated}])
+    assert classify_qa_verdict("qa_passed", report, False) == "bounce"
+
+
+def test_user_attachments_url_reason_is_missing_visual_evidence():
+    hallucinated = "https://github.com/user-attachments/assets/x/y.png"
+    report = _report(criteria_checked=2, criteria_passed=2,
+                     visual_validation_required=True,
+                     visual_evidence=[{"path_or_url": hallucinated}])
+    assert qa_unsubstantiated_reason(report) == "missing_visual_evidence"

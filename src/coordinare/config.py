@@ -919,12 +919,6 @@ class ProjectConfiguration(BaseSettings):
     # coordinare blocks fresh implementer dispatches. 0 disables this guard.
     max_closed_pr_attempts_per_issue: int = Field(default=0, ge=0, le=100)
 
-    # 055 — QA visual testing
-    qa_docker_enabled: bool = True
-    qa_playwright_image: str = "mcr.microsoft.com/playwright:v1.44.0-jammy"
-    qa_screenshot_timeout_s: int = Field(default=120, ge=10, le=600)
-    qa_screenshot_upload_retries: int = Field(default=3, ge=0, le=10)
-
     # 056 — Containerized performer registrations.
     # Each entry registers an ephemeral or persistent performer endpoint;
     # subprocess-mode entries coexist for backwards compatibility but carry

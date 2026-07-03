@@ -1342,6 +1342,13 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
                     continue
                 _prior_count = int(_sess.get("feedback_cycle_count") or 0)
                 _sess["feedback_cycle_count"] = 0
+                # 123 US3: reset the split bounce budget too so an un-blocked
+                # card gets a fresh content + transient budget on re-dispatch.
+                _sess["content_feedback_cycles"] = 0
+                _sess["transient_error_cycles"] = 0
+                # 123 US4: clear stale assessor Q&A so a fresh attempt does not
+                # re-inject prior_clarifications answered in the last attempt.
+                _sess["assessor_open_questions"] = []
                 _sess_card["previous_status"] = "BLOCKED"
                 _sess_card["status"] = "TODO"
                 _sess["current_card"] = _sess_card
@@ -1353,6 +1360,9 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
                 # and the single-card un-block path that started here.
                 if state.get("active_card_id") == _cid or not state.get("active_card_id"):
                     state["feedback_cycle_count"] = 0  # type: ignore[typeddict-unknown-key]
+                    state["content_feedback_cycles"] = 0  # type: ignore[typeddict-unknown-key]
+                    state["transient_error_cycles"] = 0  # type: ignore[typeddict-unknown-key]
+                    state["assessor_open_questions"] = []  # type: ignore[typeddict-unknown-key]
                     state["phase"] = "dispatching"
                     state["open_questions"] = []
                     if not state.get("active_card_id"):

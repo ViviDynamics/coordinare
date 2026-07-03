@@ -22,10 +22,18 @@ _is_running() {
 _port_bound() {
   local port="$1"
   # Prefer /proc when available (no extra deps); fall back to bash tcp probe.
+  # Match ONLY a socket in the LISTEN state (st field 0A) whose LOCAL port is
+  # $hex_port — a LISTEN socket has an all-zero rem_address (0+:0000). Matching
+  # ANY state here false-positives on the TIME_WAIT sockets a just-killed or
+  # restarted server leaves behind (its served connections carry local port
+  # $hex_port for ~60s): a re-run then "assumes external instance" and SKIPS
+  # starting the service, so the app has no server to connect to. The /dev/tcp
+  # fallback is likewise a real connect() — it only succeeds against a live
+  # listener, never a TIME_WAIT — so both paths are teardown-safe.
   if [ -r /proc/net/tcp ]; then
     local hex_port
     hex_port=$(printf '%04X' "$port")
-    grep -qE ":${hex_port} " /proc/net/tcp /proc/net/tcp6 2>/dev/null && return 0
+    grep -qE ":${hex_port} 0+:0000 0A" /proc/net/tcp /proc/net/tcp6 2>/dev/null && return 0
   fi
   (exec 3<>/dev/tcp/127.0.0.1/"$port") 2>/dev/null && { exec 3>&-; exec 3<&-; return 0; }
   return 1

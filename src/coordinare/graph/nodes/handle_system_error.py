@@ -17,6 +17,12 @@ logger = structlog.get_logger(__name__)
 
 _RETRY_INTERVAL = 90.0   # seconds between retry attempts
 _MAX_RETRIES = 3          # maximum attempts before notifying operator
+# 123 US3 (FR-008): per-card transient/infra failure budget — how many times a
+# card may definitively fail a dispatch on infra/transient grounds (each
+# exhausting the per-dispatch _MAX_RETRIES above) before it is surfaced as
+# ENV_BLOCKED. Distinct from _MAX_RETRIES (which counts retries WITHIN one
+# dispatch); this counter accumulates across the card's lifetime.
+_TRANSIENT_ERROR_CYCLE_LIMIT = 3
 
 # Single source of truth for upstream-HTTP transient/permanent classification
 # (spec 067 FR-005). No other substring-matching of upstream content is
@@ -140,12 +146,42 @@ async def handle_system_error(state: CoordinareState) -> CoordinareState:
             "model is likely under load); the card auto-resumes when it recovers."
         )
 
+        # 123 US3 (FR-006/FR-008): this dispatch has definitively failed on a
+        # transient/infra condition (the per-dispatch system_error_count retry
+        # budget above is exhausted). Bump the SEPARATE per-card transient budget
+        # — it accumulates across the card's lifetime and is never reset between
+        # dispatches, and it never touches content_feedback_cycles (content
+        # feedback keeps its own budget, FR-006). At the limit (3), surface the
+        # card as ENV_BLOCKED (spec-095 shape) rather than a generic
+        # performer_error, so a card repeatedly hitting infra failures becomes
+        # operator-actionable instead of silently churning.
+        transient_cycles = int(state.get("transient_error_cycles") or 0) + 1
+        state["transient_error_cycles"] = transient_cycles  # type: ignore[typeddict-unknown-key]
+        if transient_cycles >= _TRANSIENT_ERROR_CYCLE_LIMIT and not is_env_blocked:
+            is_env_blocked = True
+            cause = (
+                f"Repeated infrastructure/transient performer failures "
+                f"({transient_cycles} across this card's lifetime)."
+            )
+            action = (
+                "Operator: investigate the performer environment/backend; the "
+                "card auto-resumes when the infrastructure recovers."
+            )
+
         logger.error(
             "handle_system_error.max_retries_exceeded",
             card_id=card_id,
             reason=reason,
             attempts=count,
             env_blocked=is_env_blocked,
+        )
+        # 123 US3: distinguish the assessor-empty-body env-block from the
+        # transient-budget-exhaustion env-block so dedup + operator surfacing
+        # carry the right pattern.
+        env_pattern_id = (
+            "assessor_model_unavailable"
+            if assessor_shape == "empty_body"
+            else "transient_error_budget_exhausted"
         )
         notification_service = state.get("notification_service")
         if notification_service is not None:
@@ -157,13 +193,13 @@ async def handle_system_error(state: CoordinareState) -> CoordinareState:
                         "event_type": EventType.env_blocked.value,
                         "card_title": str(card.get("title", "")),
                         "card_id": card_id,
-                        "pattern_id": "assessor_model_unavailable",
+                        "pattern_id": env_pattern_id,
                         "cause": cause,
                         "action": action,
                         "attempts": str(count),
                     },
                     source="handle_system_error",
-                    dedup_key=f"env_blocked:assessor_model_unavailable:{card_id}",
+                    dedup_key=f"env_blocked:{env_pattern_id}:{card_id}",
                 )
             else:
                 event = NotificationEvent(
@@ -188,7 +224,7 @@ async def handle_system_error(state: CoordinareState) -> CoordinareState:
             # deduped and operator-visible. No head_sha at the assessing stage.
             state["env_blocked"] = {  # type: ignore[typeddict-unknown-key]
                 "head_sha": "",
-                "pattern_id": "assessor_model_unavailable",
+                "pattern_id": env_pattern_id,
                 "cause": cause,
                 "action": action,
             }

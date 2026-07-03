@@ -698,12 +698,6 @@ log_level: "info"                       # "debug" | "info" | "warning" | "error"
 #   max_attempts: 3                     # total attempts when waiting for a performer to become ready; range 1–10
 #   backoff_seconds: 1.0                # base backoff in seconds; doubles each attempt
 
-# --- QA Visual Testing ---
-# qa_docker_enabled: true               # enable Playwright screenshot capture via Docker
-# qa_playwright_image: "mcr.microsoft.com/playwright:v1.44.0-jammy"
-# qa_screenshot_timeout_s: 120          # range 10–600
-# qa_screenshot_upload_retries: 3       # range 0–10
-
 # --- Resilience (circuit breakers & retries) ---
 # Fine-tune retry/circuit-breaker behaviour per service. Defaults shown.
 #

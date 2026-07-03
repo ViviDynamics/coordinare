@@ -410,6 +410,33 @@ def test_persist_active_sessions_degrades_corrupt_env_blocked_to_none() -> None:
         assert out[f"c{i}"].env_blocked is None, f"case {i} should degrade to None"
 
 
+def test_persist_active_sessions_normalizes_assessor_qa_to_well_formed() -> None:
+    """123 (review fix): assessor_open_questions is normalized to {"question",
+    "answer"} dicts — an entry missing "answer" gets answer="" (never a
+    missing-key dict that reaches dispatch_performer's prior_clarifications), a
+    questionless or non-dict entry is dropped, and the load never crashes."""
+    from coordinare.daemon import _persist_active_sessions
+
+    live = {
+        "card-1": {
+            "assessor_open_questions": [
+                {"question": "What auth mechanism?", "answer": "JWT"},  # well-formed
+                {"question": "Missing answer key?"},                    # missing "answer"
+                {"answer": "orphan answer"},                            # no question -> drop
+                "not-a-dict",                                           # wrong type -> drop
+                {"question": "", "answer": "empty q"},                  # empty question -> drop
+            ],
+        },
+    }
+
+    out = _persist_active_sessions(live)
+
+    assert out["card-1"].assessor_open_questions == [
+        {"question": "What auth mechanism?", "answer": "JWT"},
+        {"question": "Missing answer key?", "answer": ""},
+    ]
+
+
 def test_restore_from_snapshot_restores_lifecycle_position() -> None:
     """053 regression: restart restore must preserve in-flight performer stage."""
     daemon = _make_daemon()
