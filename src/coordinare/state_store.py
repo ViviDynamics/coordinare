@@ -8,14 +8,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 import structlog
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 if TYPE_CHECKING:
     from coordinare.metrics import CoordinareMetrics
 
 logger = structlog.get_logger(__name__)
 
-CURRENT_SCHEMA_VERSION: int = 11
+CURRENT_SCHEMA_VERSION: int = 12
 
 # Lowest schema_version we still know how to read.  v1 snapshots are upgraded
 # in-memory at load time (065 Fix 7b: active_sessions added in v2; v1 snapshots
@@ -51,6 +51,15 @@ CURRENT_SCHEMA_VERSION: int = 11
 # main_sha, head_sha, outcome); v1-v10 snapshots load with None for both, so the
 # first post-upgrade reconciliation heals any conflicting branch.  SHAs / branch
 # names / outcome strings only — never secret values.
+# v12 (123) adds three fields on PersistedSession: content_feedback_cycles and
+# transient_error_cycles (the split bounce budget — content-driven feedback vs
+# infra/transient failures, each with an independent exhaustion check) and
+# assessor_open_questions (answered assessor Q&A carried across bounce cycles,
+# a list of {"question", "answer"} dicts, injected as prior_clarifications on
+# assessor re-dispatch — deliberately distinct from the existing
+# open_questions: list[str] blocked-card diagnostic surface).  v1-v11 snapshots
+# load with 0/0/[]; a legacy feedback_cycle_count value is migrated into
+# content_feedback_cycles on load (see the model_validator below).
 MIN_SUPPORTED_SCHEMA_VERSION: int = 1
 
 WorkflowPhase = Literal[
@@ -230,6 +239,48 @@ class PersistedSession(BaseModel):
     # until the branch head or target main changes.  None = never attempted.
     # SHAs + an outcome enum string only — never secret values.
     last_rebase_attempt: dict[str, Any] | None = None
+    # 123 (schema v12+): split bounce budget.  ``content_feedback_cycles`` counts
+    # content-driven feedback rounds (reviewer/QA ``changes_requested``) and is
+    # checked against ``config.max_feedback_cycles`` (default 5).
+    # ``transient_error_cycles`` counts infra/transient failures
+    # (env_blocked/system_error/unknown) and is checked against a separate limit
+    # (3).  Splitting them stops a card that hit repeated infra failures from
+    # being falsely escalated on content grounds and vice-versa.  Optional /
+    # default ``0`` keeps v1-v11 snapshots loading unchanged; a legacy
+    # ``feedback_cycle_count`` is migrated into ``content_feedback_cycles`` (see
+    # ``_migrate_legacy_feedback_cycle_count``).
+    content_feedback_cycles: int = 0
+    transient_error_cycles: int = 0
+    # 123 (schema v12+): answered assessor Q&A carried across bounce cycles.
+    # Each entry is ``{"question": str, "answer": str}`` extracted from a
+    # successful assessor performer result; injected as ``prior_clarifications``
+    # on assessor re-dispatch so the assessor doesn't re-ask answered questions.
+    # Deliberately DISTINCT from ``open_questions: list[str]`` above (the
+    # blocked-card diagnostic surface).  Optional / default ``[]`` keeps v1-v11
+    # snapshots loading unchanged.
+    assessor_open_questions: list[dict] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_feedback_cycle_count(cls, data: object) -> object:
+        """123 (schema v12): migrate legacy ``feedback_cycle_count`` on load.
+
+        Pre-123 flat state tracked a single ``feedback_cycle_count`` counter that
+        conflated content feedback and infra failures.  It was never a persisted
+        ``PersistedSession`` field, but a snapshot written by a transitional
+        build (or a hand-authored fixture) may still carry it.  When
+        ``content_feedback_cycles`` is absent or 0 and a positive legacy
+        ``feedback_cycle_count`` is present, seed the new content counter from it
+        so an in-flight card's content budget is preserved across the upgrade.
+        """
+        if not isinstance(data, dict):
+            return data
+        legacy = data.get("feedback_cycle_count")
+        current = data.get("content_feedback_cycles")
+        if (current is None or current == 0) and isinstance(legacy, int) and not isinstance(legacy, bool) and legacy > 0:
+            data = dict(data)
+            data["content_feedback_cycles"] = legacy
+        return data
 
 
 class EnvCacheStateSnapshot(BaseModel):

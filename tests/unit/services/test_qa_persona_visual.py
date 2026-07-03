@@ -1,9 +1,9 @@
-"""Spec 120 US3: the QA persona permits any in-image browser tooling for capture.
+"""Spec 120 US3: the QA persona guides the performer to capture visual evidence.
 
-The persona must free the performer to drive whatever browser tooling is present
-(Chromium / Playwright / a screenshot CLI) — no single mandated tool — while
-still requiring app-boot proof and at least one visual_evidence artifact for a
-visual change.
+Spec 120 pins the capture path to the pre-installed Playwright Python tooling
+(rather than the earlier "use whatever browser tooling is present" wording) so
+the model has a concrete, reliable recipe.  The persona must still require
+app-boot proof and at least one visual_evidence artifact for a visual change.
 """
 
 from __future__ import annotations
@@ -11,13 +11,11 @@ from __future__ import annotations
 from coordinare.services.persona_service import DEFAULT_INSTRUCTIONS
 
 
-def test_qa_persona_permits_any_browser_tooling():
+def test_qa_persona_prescribes_playwright_capture():
     qa = DEFAULT_INSTRUCTIONS["qa"].lower()
-    assert "however is easiest" in qa
-    # mentions concrete options without mandating one
-    assert "chromium" in qa
+    # Playwright Python is the pre-installed, prescribed capture tool.
     assert "playwright" in qa
-    assert "no single tool is mandated" in qa
+    assert "screenshot" in qa
 
 
 def test_qa_persona_still_requires_boot_proof_and_evidence():

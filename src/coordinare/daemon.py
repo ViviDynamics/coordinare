@@ -212,6 +212,30 @@ def _persist_active_sessions(active_sessions: dict[str, Any]) -> dict[str, Persi
             _m, _h, _o = lra_raw.get("main_sha"), lra_raw.get("head_sha"), lra_raw.get("outcome")
             if all(isinstance(x, str) and x for x in (_m, _h, _o)):
                 last_rebase_attempt = {"main_sha": _m, "head_sha": _h, "outcome": _o}
+        # 123: split bounce budget counters — coerce defensively (reject
+        # bools/non-int) so a corrupt snapshot can't crash startup on int().
+        def _coerce_counter(value: object) -> int:
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return 0
+            try:
+                return max(0, int(value))
+            except (ValueError, OverflowError):
+                return 0
+
+        content_feedback_cycles = _coerce_counter(sess.get("content_feedback_cycles"))
+        transient_error_cycles = _coerce_counter(sess.get("transient_error_cycles"))
+        # 123: answered assessor Q&A — normalize to well-formed {"question","answer"}
+        # dicts so a malformed entry never fails the whole snapshot load AND never
+        # reaches dispatch_performer's prior_clarifications injection missing a key.
+        assessor_qa_raw = sess.get("assessor_open_questions")
+        assessor_open_questions: list[dict] = []
+        if isinstance(assessor_qa_raw, (list, tuple)):
+            for item in assessor_qa_raw:
+                if isinstance(item, dict) and item.get("question"):
+                    assessor_open_questions.append({
+                        "question": str(item.get("question", "")),
+                        "answer": str(item.get("answer", "")),
+                    })
         out[cid] = PersistedSession(
             card_id=cid,
             performer_stage=(sess.get("performer_stage") or None),
@@ -240,6 +264,9 @@ def _persist_active_sessions(active_sessions: dict[str, Any]) -> dict[str, Persi
             ci_gate_rollup_signature=ci_gate_rollup_sig,
             env_blocked=env_blocked,
             last_rebase_attempt=last_rebase_attempt,
+            content_feedback_cycles=content_feedback_cycles,
+            transient_error_cycles=transient_error_cycles,
+            assessor_open_questions=assessor_open_questions,
         )
     return out
 
@@ -744,6 +771,11 @@ class CoordinareDaemon:
                         if persisted.last_rebase_attempt is not None
                         else None
                     ),
+                    # 123: restore split bounce budget counters + assessor Q&A
+                    # carryover so they survive a daemon restart.
+                    "content_feedback_cycles": persisted.content_feedback_cycles,
+                    "transient_error_cycles": persisted.transient_error_cycles,
+                    "assessor_open_questions": [dict(q) for q in persisted.assessor_open_questions],
                 }
                 # Seed current_card for the matching active_card_id from the
                 # top-level snapshot fields; other sessions get a stub that

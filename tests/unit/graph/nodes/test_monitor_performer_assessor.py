@@ -200,3 +200,105 @@ async def test_exhausted_malformed_blocks_normally() -> None:
     result = await handle_system_error(state)
     assert result.get("env_blocked") is None
     assert github.move_calls == [("ITEM_1", "BLOCKED")]
+
+
+# --- 123 US3 (T011): split bounce budget — content vs transient ------------
+
+
+@pytest.mark.asyncio
+async def test_transient_budget_exhaustion_surfaces_env_blocked() -> None:
+    """123 FR-008: after transient_error_cycles reaches its limit (3), a
+    definitive infra failure surfaces the card as ENV_BLOCKED even when the
+    reason is not the assessor empty-body case."""
+    from coordinare.graph.nodes.handle_system_error import _TRANSIENT_ERROR_CYCLE_LIMIT
+
+    github = _GitHub()
+    env_result = None
+    for cycle in range(_TRANSIENT_ERROR_CYCLE_LIMIT):
+        state = initial_state()
+        state["performer_stage"] = "implementing"
+        state["current_card"] = {"id": "ITEM_1", "title": "T", "status": "IN_PROGRESS"}
+        state["github_service"] = github
+        state["system_error_count"] = _MAX_RETRIES
+        state["system_error_last_at"] = datetime.now(UTC)
+        state["system_error_reason"] = "some generic backend failure"
+        # carry the accumulating per-card counter forward across episodes
+        state["transient_error_cycles"] = cycle
+        env_result = await handle_system_error(state)
+
+    assert env_result is not None
+    assert env_result["transient_error_cycles"] == _TRANSIENT_ERROR_CYCLE_LIMIT
+    env = env_result.get("env_blocked")
+    assert env is not None
+    assert env.get("pattern_id") == "transient_error_budget_exhausted"
+
+
+@pytest.mark.asyncio
+async def test_transient_budget_first_episode_blocks_normally() -> None:
+    """123 FR-008: the first infra-failure episode (transient_error_cycles=1)
+    is below the limit — it blocks normally, not ENV_BLOCKED."""
+    github = _GitHub()
+    state = initial_state()
+    state["performer_stage"] = "implementing"
+    state["current_card"] = {"id": "ITEM_1", "title": "T", "status": "IN_PROGRESS"}
+    state["github_service"] = github
+    state["system_error_count"] = _MAX_RETRIES
+    state["system_error_last_at"] = datetime.now(UTC)
+    state["system_error_reason"] = "some generic backend failure"
+    result = await handle_system_error(state)
+    assert result["transient_error_cycles"] == 1
+    assert result.get("env_blocked") is None
+
+
+@pytest.mark.asyncio
+async def test_transient_failures_do_not_touch_content_budget() -> None:
+    """123 US3 independent test: infra failures increment transient_error_cycles
+    and never content_feedback_cycles (the counters don't cross-trigger)."""
+    github = _GitHub()
+    state = initial_state()
+    state["performer_stage"] = "implementing"
+    state["current_card"] = {"id": "ITEM_1", "title": "T", "status": "IN_PROGRESS"}
+    state["github_service"] = github
+    state["system_error_count"] = _MAX_RETRIES
+    state["system_error_last_at"] = datetime.now(UTC)
+    state["system_error_reason"] = "some generic backend failure"
+    state["content_feedback_cycles"] = 2
+    result = await handle_system_error(state)
+    assert result["transient_error_cycles"] == 1
+    assert result["content_feedback_cycles"] == 2  # untouched
+
+
+# --- 123 US4 (T014): assessor open_questions persisted from result ----------
+
+
+@pytest.mark.asyncio
+async def test_assessor_questions_persisted_as_assessor_open_questions() -> None:
+    """123 FR-010: when the assessor blocks with open questions, they are
+    persisted as assessor_open_questions ({"question","answer"} carry-forward)
+    for injection on the next dispatch."""
+    service = _Performer({"status": "blocked", "questions": ["Use OAuth?", "Which DB?"]})
+    state = _assessing_state(service=service)
+    result = await monitor_performer(state)
+    assert result["phase"] == "blocked"
+    qa = result.get("assessor_open_questions")
+    assert qa == [
+        {"question": "Use OAuth?", "answer": ""},
+        {"question": "Which DB?", "answer": ""},
+    ]
+    # The blocked-diagnostic surface (open_questions: list[str]) is unaffected.
+    assert result.get("open_questions") == ["Use OAuth?", "Which DB?"]
+
+
+@pytest.mark.asyncio
+async def test_non_assessing_blocked_questions_not_persisted_as_assessor_qa() -> None:
+    """123: the assessor Q&A carry-forward is scoped to the assessing stage —
+    a non-assessing blocked-with-questions does not populate it."""
+    service = _Performer({"status": "blocked", "questions": ["Q?"]})
+    state = initial_state()
+    state["performer_services"] = {"reviewing": service}
+    state["performer_stage"] = "reviewing"
+    state["lifecycle_sequence"] = ["reviewing", "implementing"]
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    result = await monitor_performer(state)
+    assert result.get("assessor_open_questions") in (None, [])

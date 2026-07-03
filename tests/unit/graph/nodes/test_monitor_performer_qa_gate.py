@@ -143,29 +143,6 @@ async def test_no_criteria_scope_advances():
 
 
 @pytest.mark.asyncio
-async def test_persists_app_boot_ok_from_report():
-    # 120 (US3/FR-014): the screenshot backstop gate signal is set from the report.
-    state = _qa_state(_qa_passed({
-        "criteria_checked": 2,
-        "criteria_passed": 2,
-        "app_boot_check": {"command": "curl localhost:3000", "exit_code": 0},
-    }))
-    result = await monitor_performer(state)
-    assert result.get("qa_app_boot_ok") is True
-
-
-@pytest.mark.asyncio
-async def test_persists_app_boot_not_ok_when_boot_failed():
-    state = _qa_state(_qa_passed({
-        "criteria_checked": 2,
-        "criteria_passed": 2,
-        "app_boot_check": {"command": "curl localhost:3000", "exit_code": 7},
-    }))
-    result = await monitor_performer(state)
-    assert result.get("qa_app_boot_ok") is False
-
-
-@pytest.mark.asyncio
 async def test_visual_pass_with_screenshot_advances():
     state = _qa_state(_qa_passed({
         "criteria_checked": 3,

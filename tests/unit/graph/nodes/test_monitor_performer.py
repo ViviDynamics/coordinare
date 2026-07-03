@@ -3254,6 +3254,34 @@ async def test_env_blocked_routes_to_blocked_column_with_env_reason() -> None:
     slot_mgr.release.assert_called_once_with("implementing", "ITEM_1")
     # Zero self-fix attempts consumed.
     assert result.get("local_fix_counter") == {"abc123": 1}
+    # 123 FR-006: env_blocked counts toward the transient (infra) budget.
+    assert result.get("transient_error_cycles") == 1
+
+
+@pytest.mark.asyncio
+async def test_env_blocked_accumulates_transient_error_cycles() -> None:
+    """123 FR-006: transient_error_cycles accumulates across the card's lifetime
+    on env_blocked (it is NOT the content budget), consistent with the
+    system_error/unknown path that also feeds this counter."""
+    from unittest.mock import MagicMock
+
+    svc = _Performer(response={"status": "env_blocked", "reason": "redis down"})
+    state = _make_state(
+        service=svc, stage="implementing", sequence=["implementing", "qa"],
+    )
+    state["transient_error_cycles"] = 2  # two prior infra failures on this card
+    state["env_cache_service"] = MagicMock()
+    state["current_symphony"] = "sym"
+    slot_mgr = MagicMock()
+    slot_mgr.acquire.return_value = svc
+    state["slot_manager"] = slot_mgr
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "blocked"
+    assert result.get("transient_error_cycles") == 3  # accumulated, not reset
+    # Must NOT touch the content budget.
+    assert result.get("content_feedback_cycles", 0) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -3481,3 +3509,139 @@ async def test_auth_failure_without_refresh_failure_keeps_retry_path() -> None:
 
     assert result["phase"] == "system_error"
     assert result["system_error_count"] == 1
+
+
+# ---------------------------------------------------------------------------
+# 123 US3 (T011): split bounce budget — content side
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_content_budget_is_persisted_source_of_truth() -> None:
+    """123 FR-006/FR-009: content_feedback_cycles drives exhaustion even when
+    feedback_cycle_count is 0 (as after a restart — it is not persisted)."""
+    from types import SimpleNamespace
+
+    state = initial_state()
+    svc = _Performer(response={"status": "changes_requested", "comments": [
+        {"file": "app/x.rb", "line": 1, "body": "still broken"},
+    ]})
+    state["performer_services"] = {"reviewing": svc}
+    state["performer_stage"] = "reviewing"
+    state["lifecycle_sequence"] = ["implementing", "reviewing"]
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS", "title": "T", "pr_url": "https://github.com/o/r/pull/1"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["config"] = SimpleNamespace(max_feedback_cycles=2)
+    state["human_reviewers"] = ["alice"]
+    # Simulate a restart: content counter survived (persisted), legacy did not.
+    state["content_feedback_cycles"] = 2
+    state["feedback_cycle_count"] = 0
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "blocked"
+    assert result["content_feedback_cycles"] == 3
+    # Content exhaustion must not touch the transient budget.
+    assert int(result.get("transient_error_cycles") or 0) == 0
+
+
+@pytest.mark.asyncio
+async def test_content_budget_does_not_block_on_transient_grounds() -> None:
+    """123 US3 independent test: a card with a high transient_error_cycles but a
+    low content_feedback_cycles does NOT block on content grounds."""
+    from types import SimpleNamespace
+
+    state = initial_state()
+    svc = _Performer(response={"status": "changes_requested", "comments": [
+        {"file": "app/x.rb", "line": 1, "body": "please fix the bug"},
+    ]})
+    state["performer_services"] = {"reviewing": svc}
+    state["performer_stage"] = "reviewing"
+    state["lifecycle_sequence"] = ["implementing", "reviewing"]
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS", "title": "T", "pr_url": "https://github.com/o/r/pull/1"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["config"] = SimpleNamespace(max_feedback_cycles=5)
+    state["transient_error_cycles"] = 3  # infra failures piled up
+    state["content_feedback_cycles"] = 1
+
+    result = await monitor_performer(state)
+
+    # 1 -> 2 content cycles, well under the limit of 5: keep going, don't block.
+    assert result["phase"] == "dispatching"
+    assert result["content_feedback_cycles"] == 2
+    assert result["transient_error_cycles"] == 3  # untouched
+
+
+# ---------------------------------------------------------------------------
+# 123 US5 (T016): multi-concern reviewer feedback routes through assessor
+# ---------------------------------------------------------------------------
+
+
+def _reviewer_changes_state(comments: list[dict]) -> dict:
+    from types import SimpleNamespace
+
+    state = initial_state()
+    svc = _Performer(response={"status": "changes_requested", "comments": comments})
+    state["performer_services"] = {"reviewing": svc}
+    state["performer_stage"] = "reviewing"
+    state["lifecycle_sequence"] = ["assessing", "implementing", "reviewing"]
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS", "title": "T", "pr_url": "https://github.com/o/r/pull/1"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["config"] = SimpleNamespace(max_feedback_cycles=5)
+    return state
+
+
+@pytest.mark.asyncio
+async def test_multi_concern_feedback_routes_to_assessing() -> None:
+    """123 FR-013: reviewer feedback spanning 2+ concern categories routes the
+    card through the assessor before implementing."""
+    state = _reviewer_changes_state([
+        {"file": "a.rb", "line": 1, "body": "There is a bug in this logic."},
+        {"file": "b.rb", "line": 2, "body": "The overall module design/architecture pattern is wrong."},
+    ])
+    result = await monitor_performer(state)
+    assert result["performer_stage"] == "assessing"
+    assert result["phase"] == "dispatching"
+
+
+@pytest.mark.asyncio
+async def test_single_concern_feedback_routes_to_implementing() -> None:
+    """123 FR-014: single-category reviewer feedback routes straight to
+    implementing (no assessor round-trip)."""
+    state = _reviewer_changes_state([
+        {"file": "a.rb", "line": 1, "body": "There is a bug; please fix the broken logic."},
+    ])
+    result = await monitor_performer(state)
+    assert result["performer_stage"] == "implementing"
+
+
+@pytest.mark.asyncio
+async def test_unclassifiable_feedback_routes_to_implementing() -> None:
+    """123 FR-014: feedback with no classifiable concern category is a safe
+    default to implementing."""
+    state = _reviewer_changes_state([
+        {"file": "a.rb", "line": 1, "body": "Please take another look at this."},
+    ])
+    result = await monitor_performer(state)
+    assert result["performer_stage"] == "implementing"
+
+
+@pytest.mark.asyncio
+async def test_multi_concern_stays_implementing_when_no_assessing_stage() -> None:
+    """123 FR-013: if the lifecycle has no assessing stage, multi-concern
+    feedback still routes to implementing (can't route to a missing stage)."""
+    from types import SimpleNamespace
+
+    state = initial_state()
+    svc = _Performer(response={"status": "changes_requested", "comments": [
+        {"file": "a.rb", "line": 1, "body": "There is a bug in this logic."},
+        {"file": "b.rb", "line": 2, "body": "The design/architecture pattern is wrong."},
+    ]})
+    state["performer_services"] = {"reviewing": svc}
+    state["performer_stage"] = "reviewing"
+    state["lifecycle_sequence"] = ["implementing", "reviewing"]  # no assessing
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS", "title": "T", "pr_url": "https://github.com/o/r/pull/1"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["config"] = SimpleNamespace(max_feedback_cycles=5)
+    result = await monitor_performer(state)
+    assert result["performer_stage"] == "implementing"

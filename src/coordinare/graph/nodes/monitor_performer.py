@@ -362,7 +362,23 @@ def _feedback_cycle_exhausted(
     max_cycles = _feedback_cycle_budget(state)
     if max_cycles <= 0:
         return None  # 0 disables the bound
-    current = int(state.get("feedback_cycle_count") or 0) + 1
+    # 123 US3 (FR-006/FR-007/FR-009): content_feedback_cycles is the operative
+    # content-driven budget — reviewer/QA/security ``changes_requested`` rounds.
+    # It is the persisted source of truth (feedback_cycle_count is NOT persisted
+    # and resets to 0 on restart), so the count survives a daemon restart. The
+    # legacy feedback_cycle_count is kept in lock-step for the dashboard and any
+    # legacy readers. Infra/transient failures use transient_error_cycles
+    # instead (see _transient_error_exhausted) and never touch this counter.
+    # Read the MAX of the two counters so the budget is robust to either source
+    # being the live one: content_feedback_cycles is the persisted survivor
+    # across a restart (feedback_cycle_count is not persisted and resets to 0),
+    # while legacy in-memory state may have only feedback_cycle_count set. Both
+    # are written back in lock-step below.
+    current = max(
+        int(state.get("content_feedback_cycles") or 0),
+        int(state.get("feedback_cycle_count") or 0),
+    ) + 1
+    state["content_feedback_cycles"] = current  # type: ignore[typeddict-unknown-key]
     state["feedback_cycle_count"] = current  # type: ignore[typeddict-unknown-key]
     # 065 US4 — monotonic lifetime counter; never resets on un-block.
     state["total_feedback_cycles"] = int(state.get("total_feedback_cycles") or 0) + 1  # type: ignore[typeddict-unknown-key]
@@ -2973,17 +2989,6 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
                         seen.add(key)
                 status = {**status, "findings": merged}
 
-        # --- 120 (US3/FR-014): expose app-boot proof for the screenshot backstop.
-        # The post-QA capture node only attempts capture when the app actually
-        # booted; persist the QA report's app_boot_check verdict so it can gate.
-        if stage == "qa":
-            _qa_rep_for_boot = status.get("report")
-            if isinstance(_qa_rep_for_boot, dict):
-                _boot = _qa_rep_for_boot.get("app_boot_check")
-                state["qa_app_boot_ok"] = bool(
-                    isinstance(_boot, dict) and _boot.get("exit_code") == 0
-                )
-
         # --- 120 (US1): QA evidence-integrity floor — coordinare-authoritative ---
         # A QA "qa_passed" that verified ZERO acceptance criteria (criteria were
         # checked but criteria_passed==0) or lacks the visual evidence a UI change
@@ -3294,6 +3299,13 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
                     )
             state["env_health_hold_reason"] = f"env_blocked: {_reason}"  # type: ignore[typeddict-unknown-key]
             state["phase"] = "blocked"
+            # 123 FR-006: env_blocked is an infrastructure/transient failure — count
+            # it toward the per-card transient budget (accumulates across the card's
+            # lifetime; reset only on un-block) so it stays off the content budget
+            # and the accounting is consistent with the system_error/unknown path.
+            state["transient_error_cycles"] = int(  # type: ignore[typeddict-unknown-key]
+                state.get("transient_error_cycles") or 0
+            ) + 1
             state["system_error_reason"] = (
                 f"local tests could not run due to an environment blocker "
                 f"(no code defect); not pushing:\n{_reason}"
@@ -3622,7 +3634,32 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
             if exhausted is not None:
                 return exhausted
             state["relay_feedback"] = comments  # type: ignore[typeddict-unknown-key]
-            state["performer_stage"] = "implementing"
+            # 123 US5 (FR-012/FR-013/FR-014): when REVIEWER feedback spans 2+
+            # distinct concern categories, the work needs re-scoping — route it
+            # through the assessor first (feedback rides along as relay context)
+            # rather than straight back to the implementer. Uses the existing
+            # keyword concern classifier (NO new AI call, FR-012). Single-category
+            # or unclassifiable feedback routes directly to implementing (safe
+            # default, FR-014). Gated on the assessing stage being in this
+            # symphony's lifecycle.
+            next_stage = "implementing"
+            if stage == "reviewing":
+                lifecycle_seq = list(state.get("lifecycle_sequence") or [])
+                if "assessing" in lifecycle_seq:
+                    from coordinare.graph.nodes.classify_human_feedback import (
+                        classify_feedback_concerns,
+                    )
+                    categories = classify_feedback_concerns(
+                        [{"body": body, "comments": comments}]
+                    )
+                    if len(set(categories)) >= 2:
+                        next_stage = "assessing"
+                        logger.info(
+                            "monitor_performer.multi_concern_route_to_assessing",
+                            card_id=card_id,
+                            categories=sorted(set(categories)),
+                        )
+            state["performer_stage"] = next_stage
             state["phase"] = "dispatching"
             state["agent_dispatch"] = {}
             state["agent_dispatch_at"] = None
@@ -4237,6 +4274,15 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
             questions = status.get("questions")
             if isinstance(questions, list) and questions:
                 state["open_questions"] = [str(item) for item in questions]
+                # 123 US4 (FR-010): persist the assessor's open questions so a
+                # later assessor re-dispatch carries them forward as
+                # prior_clarifications (FR-011) and does not re-ask them.
+                # Distinct from open_questions above (blocked-card diagnostic
+                # surface): stored as {"question","answer"} carry-forward Q&A.
+                if stage == "assessing":
+                    state["assessor_open_questions"] = [  # type: ignore[typeddict-unknown-key]
+                        {"question": str(item), "answer": ""} for item in questions
+                    ]
             else:
                 # Blocked with no questions — assessment backend will generate them.
                 state["open_questions"] = []

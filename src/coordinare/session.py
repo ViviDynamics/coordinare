@@ -97,7 +97,6 @@ class CardSession(TypedDict, total=False):
     session_stats: SessionStats | None
     last_issue_comment_id: int | None
     processed_issue_comment_ids: set[int]
-    qa_screenshots: list[Any]
     feedback_cycle_count: int
     total_feedback_cycles: int
     triage_blocks: int
@@ -194,6 +193,19 @@ class CardSession(TypedDict, total=False):
     # 096: per-card auto-rebase anti-thrash marker ({main_sha, head_sha,
     # outcome}) — None when never attempted.  SHAs + outcome string only.
     last_rebase_attempt: dict[str, Any] | None
+    # 123: split bounce budget.  content_feedback_cycles counts content-driven
+    # feedback rounds (reviewer/QA changes_requested), checked against
+    # config.max_feedback_cycles; transient_error_cycles counts infra/transient
+    # failures (env_blocked/system_error/unknown), checked against a separate
+    # limit of 3.  MUST round-trip through session ↔ state or the split budget
+    # forgets its counts between cycles.  Accumulate across the card lifetime.
+    content_feedback_cycles: int
+    transient_error_cycles: int
+    # 123: answered assessor Q&A carried across bounce cycles.  Each entry is
+    # {"question": str, "answer": str}, extracted from a successful assessor
+    # result and injected as prior_clarifications on re-dispatch.  DISTINCT from
+    # open_questions: list[str] (the blocked-card diagnostic surface above).
+    assessor_open_questions: list[dict[str, Any]]
 
 
 # Fields that live on both CardSession and CoordinareState (flat).
@@ -231,7 +243,6 @@ _SESSION_FIELDS: tuple[str, ...] = (
     "session_stats",
     "last_issue_comment_id",
     "processed_issue_comment_ids",
-    "qa_screenshots",
     "feedback_cycle_count",
     "total_feedback_cycles",
     "triage_blocks",
@@ -266,6 +277,11 @@ _SESSION_FIELDS: tuple[str, ...] = (
     # Round-trips per-card so a BLOCKED/FAILED conflict isn't re-attempted every
     # cycle, and the marker survives a daemon restart.
     "last_rebase_attempt",
+    # 123: split bounce budget counters + assessor Q&A carryover.  Round-trip
+    # per-card so the counts and answered questions survive a daemon restart.
+    "content_feedback_cycles",
+    "transient_error_cycles",
+    "assessor_open_questions",
 )
 
 
@@ -304,7 +320,6 @@ def create_session_from_card(card: dict[str, Any]) -> CardSession:
         session_stats=None,
         last_issue_comment_id=None,
         processed_issue_comment_ids=set(),
-        qa_screenshots=[],
         feedback_cycle_count=0,
         total_feedback_cycles=0,
         triage_blocks=0,
@@ -335,6 +350,10 @@ def create_session_from_card(card: dict[str, Any]) -> CardSession:
         env_blocked=None,
         # 096: no rebase attempted yet for a freshly-picked-up card
         last_rebase_attempt=None,
+        # 123: split bounce budget + assessor Q&A carryover start empty
+        content_feedback_cycles=0,
+        transient_error_cycles=0,
+        assessor_open_questions=[],
     )
 
 

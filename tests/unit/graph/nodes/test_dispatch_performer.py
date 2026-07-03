@@ -1997,7 +1997,9 @@ _REVIEW_DIFF = "diff --git a/src/app.py b/src/app.py\n+    margin = base * 0.9\n
         ("reviewing", "reviewing"),
         ("closing_review", "closing_review"),
         ("qa", "qa"),
-        ("documenting", "documenting"),
+        # documenting is exercised separately by the US1 doc-gate tests below:
+        # its diff fetch doubles as the doc-change gate, so it does not fit this
+        # single-get_pr_diff-call parametrization.
     ],
 )
 async def test_review_roles_receive_pr_diff(stage, role_key) -> None:
@@ -2198,3 +2200,180 @@ async def test_dispatch_test_env_absent_when_no_source_configured(
     assert svc.dispatch_card.called
     card_context = svc.dispatch_card.call_args.args[0]
     assert "test_env_vars" not in card_context
+
+
+# ---------------------------------------------------------------------------
+# 123 US1 (T007): tech_writer doc-change gate
+# ---------------------------------------------------------------------------
+
+from coordinare.graph.nodes.dispatch_performer import _should_skip_documenting  # noqa: E402
+
+
+def test_should_skip_documenting_true_for_non_doc_diff() -> None:
+    """123 FR-001: no docs/ path in the diff → skip documenting."""
+    assert _should_skip_documenting(
+        ["src/coordinare/services/qa_verdict.py", "tests/unit/services/test_qa_verdict.py"]
+    ) is True
+
+
+def test_should_skip_documenting_false_when_docs_present() -> None:
+    """123 FR-001: a docs/ path present → do NOT skip."""
+    assert _should_skip_documenting(
+        ["src/coordinare/services/qa_verdict.py", "docs/api/qa.md"]
+    ) is False
+
+
+def test_should_skip_documenting_true_for_empty_diff() -> None:
+    """123: an empty changed-files list has nothing to document → skip."""
+    assert _should_skip_documenting([]) is True
+
+
+@pytest.mark.asyncio
+async def test_documenting_skipped_and_advances_when_no_doc_changes() -> None:
+    """123 FR-002: documenting stage with no docs/ diff is not dispatched; the
+    card advances to the next stage."""
+    svc = _Service()
+    github = _GitHubWithDiff(diff_raw=_REVIEW_DIFF, diff_files=["src/app.py"])
+    state = _base_state(
+        github_service=github,
+        performer_services={"documenting": svc, "closing_review": _Service()},
+        performer_stage="documenting",
+        lifecycle_sequence=["documenting", "closing_review"],
+        current_card=dict(_REVIEW_CARD),
+    )
+
+    await dispatch_performer(state)
+
+    # tech_writer never dispatched; stage advanced to closing_review.
+    assert svc.dispatched == []
+    assert state["performer_stage"] == "closing_review"
+    assert state["phase"] == "dispatching"
+
+
+@pytest.mark.asyncio
+async def test_documenting_dispatched_when_doc_changes_present() -> None:
+    """123 FR-001: documenting stage WITH a docs/ diff dispatches tech_writer."""
+    svc = _Service()
+    github = _GitHubWithDiff(diff_raw=_REVIEW_DIFF, diff_files=["docs/wiki/setup.md"])
+    state = _base_state(
+        github_service=github,
+        performer_services={"documenting": svc},
+        performer_stage="documenting",
+        lifecycle_sequence=["documenting"],
+        current_card=dict(_REVIEW_CARD),
+    )
+
+    await dispatch_performer(state)
+
+    assert len(svc.dispatched) == 1
+
+
+@pytest.mark.asyncio
+async def test_documenting_dispatched_when_diff_fetch_fails() -> None:
+    """123: fail-open — if the changed files can't be fetched, dispatch anyway
+    (never skip on an unknown diff)."""
+    svc = _Service()
+
+    class _GitHubDiffRaises(_GitHubWithDiff):
+        async def get_pr_diff(self, pr_url: str):
+            raise RuntimeError("boom")
+
+    github = _GitHubDiffRaises(diff_raw="", diff_files=[])
+    state = _base_state(
+        github_service=github,
+        performer_services={"documenting": svc},
+        performer_stage="documenting",
+        lifecycle_sequence=["documenting"],
+        current_card=dict(_REVIEW_CARD),
+    )
+
+    await dispatch_performer(state)
+
+    assert len(svc.dispatched) == 1
+
+
+# ---------------------------------------------------------------------------
+# 123 US4 (T014): prior_clarifications injected on assessor re-dispatch
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_prior_clarifications_injected_when_present() -> None:
+    """123 FR-011: assessor re-dispatch carries persisted Q&A as
+    prior_clarifications."""
+    svc = _Service()
+    qa = [{"question": "Should auth use OAuth?", "answer": "Yes, OAuth2 PKCE"}]
+    state = _base_state(
+        performer_services={"assessing": svc},
+        performer_stage="assessing",
+        lifecycle_sequence=["assessing"],
+        assessor_open_questions=qa,
+    )
+
+    await dispatch_performer(state)
+
+    assert len(svc.dispatched) == 1
+    assert svc.dispatched[0].get("prior_clarifications") == qa
+
+
+@pytest.mark.asyncio
+async def test_prior_clarifications_absent_on_first_dispatch() -> None:
+    """123 FR-011: first assessor dispatch (no prior Q&A) omits the key."""
+    svc = _Service()
+    state = _base_state(
+        performer_services={"assessing": svc},
+        performer_stage="assessing",
+        lifecycle_sequence=["assessing"],
+        assessor_open_questions=[],
+    )
+
+    await dispatch_performer(state)
+
+    assert len(svc.dispatched) == 1
+    assert "prior_clarifications" not in svc.dispatched[0]
+
+
+# ---------------------------------------------------------------------------
+# 123 fix: PR-diff sanitizer — filter agent/vendor/binary noise + cap size
+# (prevents committed .codex/ junk from overflowing the model context → 400)
+# ---------------------------------------------------------------------------
+
+from coordinare.graph.nodes.dispatch_performer import _sanitize_pr_diff  # noqa: E402
+
+
+def _diff(path: str, body: str = "+x\n") -> str:
+    return f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -0,0 +1 @@\n{body}"
+
+
+def test_sanitize_drops_agent_tooling_sections():
+    raw = _diff(".codex/.tmp/plugins") + _diff("app/views/about.html.erb", "+<h1>About</h1>\n") + _diff("node_modules/x/index.js")
+    out = _sanitize_pr_diff(raw)
+    assert ".codex/" not in out
+    assert "node_modules/" not in out
+    assert "app/views/about.html.erb" in out  # the real change is kept
+    assert "[coordinare:" in out and "tooling/vendor" in out
+
+
+def test_sanitize_drops_binary_sections():
+    raw = _diff("app/models/user.rb", "+# real\n") + (
+        "diff --git a/app/assets/logo.png b/app/assets/logo.png\n"
+        "new file mode 100644\nBinary files /dev/null and b/app/assets/logo.png differ\n"
+    )
+    out = _sanitize_pr_diff(raw)
+    assert "user.rb" in out
+    assert "logo.png" not in out
+    assert "binary file section" in out
+
+
+def test_sanitize_caps_oversized_diff_and_notes_truncation():
+    big = _diff("app/huge.rb", "+" + ("x" * 200_000) + "\n")
+    out = _sanitize_pr_diff(big, max_chars=10_000)
+    assert len(out) <= 10_000 + 200  # cap + short note
+    assert "truncated" in out
+
+
+def test_sanitize_keeps_clean_diff_unchanged_no_note():
+    raw = _diff("app/views/about.html.erb", "+<h1>About</h1>\n")
+    out = _sanitize_pr_diff(raw)
+    assert "about.html.erb" in out
+    assert "[coordinare:" not in out  # nothing omitted/truncated → no note

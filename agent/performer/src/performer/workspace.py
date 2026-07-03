@@ -493,6 +493,13 @@ def _mark_env_cache_health_failed() -> None:
 _SERVICES_START_FAILURE: str | None = None
 _SERVICES_START_LOCK = threading.Lock()
 
+# Outer cap on the services-start.sh run. MUST exceed the script's own internal
+# readiness wait (spec-111 postgres pg_isready loop is 180s) plus initdb/createdb/
+# redis time. 300s = 180s readiness + margin. (Kept as a named constant so the
+# timeout and the failure message can never drift apart — the message used to say
+# a stale "120s" while the real cap was 300s.)
+_SERVICES_START_TIMEOUT_S = 300.0
+
 
 def consume_services_start_failure() -> str | None:
     """Return (and clear) the stored services-start failure, if any."""
@@ -564,40 +571,71 @@ async def _start_env_cache_services(
     # now-extracted service binaries + libs are visible. (Empirically: guard set →
     # `initdb` NOT-FOUND; guard cleared → `initdb` found, `postgres --version` OK.)
     env.pop("_DEVENV_SOURCED", None)
+    # Prevent the devenv profile's spec-117 start-on-activation from ALSO running
+    # services-start.sh when this bash sources BASH_ENV: THIS call is the explicit
+    # service start, so a profile-nested run would double-launch postgres/redis in
+    # the same shell — extra teardown churn (and its ~60s TIME_WAIT sockets, which
+    # the next run's port check trips over) plus double the time under the outer
+    # cap. The profile still runs (guard cleared above) so it sets the captured-deb
+    # LD_LIBRARY_PATH; only its service start is skipped. services-start.sh itself
+    # does not consult this flag, so the explicit run below is unaffected.
+    env["_DEVENV_SKIP_SERVICES"] = "1"
+    # Capture to a temp FILE and wait on PROCESS EXIT (proc.wait), NOT a PIPE with
+    # communicate(). services-start.sh backgrounds long-lived daemons; the postgres
+    # launcher (``_pg_as postgres ... &``) runs the function in a subshell that then
+    # blocks in wait() on the postgres daemon forever (wchan=do_wait). With
+    # stdout=PIPE, communicate() waits for the pipe to reach EOF — which that
+    # daemon-holding subshell defers indefinitely — so communicate() burned the
+    # entire timeout even though the script had already finished and postgres/redis
+    # were up (observed live as a bogus 300s "services-start timeout" while the DB
+    # was actually running). proc.wait() returns the moment the main script process
+    # exits, independent of any orphaned background jobs.
+    out_fd, out_path = tempfile.mkstemp(prefix="services-start.", suffix=".log")
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "bash", str(start),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=env,
-        )
-        # 114: this outer cap MUST exceed services-start.sh's own internal readiness
-        # wait (spec-111 raised the postgres pg_isready loop to 180s) plus createdb/
-        # redis time. At 120s the runner killed the script mid-wait under a loaded
-        # container ("services-start failed: timed out after 120s") — postgres was
-        # still coming up. 300s = 180s readiness + margin for initdb/createdb/redis.
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=300.0)
-    except (OSError, asyncio.TimeoutError) as exc:
-        # builtin TimeoutError subclasses OSError (3.10+), so check it first.
-        timed_out = isinstance(exc, asyncio.TimeoutError)
-        _record_services_start_failure(
-            script=str(start),
-            returncode="timeout" if timed_out else type(exc).__name__,
-            output_tail=str(exc) or ("timed out after 120s" if timed_out else ""),
-        )
-        return
+        try:
+            with os.fdopen(out_fd, "wb") as out_fh:
+                proc = await asyncio.create_subprocess_exec(
+                    "bash", str(start),
+                    stdout=out_fh,
+                    stderr=asyncio.subprocess.STDOUT,
+                    env=env,
+                )
+                await asyncio.wait_for(proc.wait(), timeout=_SERVICES_START_TIMEOUT_S)
+        except (OSError, asyncio.TimeoutError) as exc:
+            # builtin TimeoutError subclasses OSError (3.10+), so check it first.
+            timed_out = isinstance(exc, asyncio.TimeoutError)
+            if timed_out:
+                try:
+                    proc.kill()  # best-effort; proc exists once wait_for started
+                except Exception:
+                    pass
+            _record_services_start_failure(
+                script=str(start),
+                returncode="timeout" if timed_out else type(exc).__name__,
+                output_tail=str(exc)
+                or (f"timed out after {_SERVICES_START_TIMEOUT_S:.0f}s" if timed_out else ""),
+            )
+            return
+        try:
+            services_out = Path(out_path).read_text(errors="replace")
+        except OSError:
+            services_out = ""
+    finally:
+        try:
+            os.unlink(out_path)
+        except OSError:
+            pass
     if proc.returncode != 0:
-        output = (stderr or stdout).decode(errors="replace")
         _record_services_start_failure(
             script=str(start),
             returncode=proc.returncode,
-            output_tail=output[-500:],
+            output_tail=services_out[-500:],
         )
         return
     log.info(
         "env_cache.services_started",
         env_cache_path=env_cache_path,
-        stdout_tail=stdout.decode(errors="replace")[-200:],
+        stdout_tail=services_out[-200:],
     )
     # Register for shutdown cleanup. We re-record cache_env each time so a
     # rotated token (e.g. refreshed GITHUB_TOKEN) is what `services-stop.sh`

@@ -980,3 +980,67 @@ async def test_old_env_cache_snapshot_defaults_bootstrap_budget(tmp_path: Path) 
     entry = loaded.env_cache["sym-one"]
     assert entry.bootstrap_attempts == 0
     assert entry.bootstrap_exhausted is False
+
+
+# --- 123 T004: split bounce budget + assessor Q&A carryover on PersistedSession ---
+
+
+def test_persisted_session_split_budget_fields_default_to_zero_and_empty() -> None:
+    """123: a freshly-constructed PersistedSession has the new fields at safe defaults."""
+    sess = PersistedSession(card_id="PVTI_123")
+    assert sess.content_feedback_cycles == 0
+    assert sess.transient_error_cycles == 0
+    assert sess.assessor_open_questions == []
+
+
+def test_persisted_session_accepts_split_budget_values() -> None:
+    """123: the new fields accept explicit values and preserve assessor Q&A dicts."""
+    qa = [{"question": "Should auth use OAuth?", "answer": "Yes, OAuth2 PKCE"}]
+    sess = PersistedSession(
+        card_id="PVTI_123",
+        content_feedback_cycles=2,
+        transient_error_cycles=3,
+        assessor_open_questions=qa,
+    )
+    assert sess.content_feedback_cycles == 2
+    assert sess.transient_error_cycles == 3
+    assert sess.assessor_open_questions == qa
+
+
+def test_persisted_session_migrates_legacy_feedback_cycle_count() -> None:
+    """123 (schema v12): a snapshot carrying legacy feedback_cycle_count seeds
+    content_feedback_cycles when the new field is absent."""
+    sess = PersistedSession.model_validate(
+        {
+            "card_id": "PVTI_123",
+            "feedback_cycle_count": 3,
+            # content_feedback_cycles absent
+        }
+    )
+    assert sess.content_feedback_cycles == 3  # migrated from legacy field
+    assert sess.transient_error_cycles == 0  # default
+    assert sess.assessor_open_questions == []  # default
+
+
+def test_persisted_session_legacy_migration_does_not_override_explicit_value() -> None:
+    """123: an explicit non-zero content_feedback_cycles wins over the legacy field."""
+    sess = PersistedSession.model_validate(
+        {
+            "card_id": "PVTI_123",
+            "feedback_cycle_count": 3,
+            "content_feedback_cycles": 5,
+        }
+    )
+    assert sess.content_feedback_cycles == 5
+
+
+def test_persisted_session_legacy_migration_ignores_zero_and_bool() -> None:
+    """123: a zero / bool legacy value is not treated as a positive migration source."""
+    zero = PersistedSession.model_validate(
+        {"card_id": "PVTI_123", "feedback_cycle_count": 0}
+    )
+    assert zero.content_feedback_cycles == 0
+    truthy = PersistedSession.model_validate(
+        {"card_id": "PVTI_123", "feedback_cycle_count": True}
+    )
+    assert truthy.content_feedback_cycles == 0

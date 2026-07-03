@@ -858,7 +858,7 @@ class TestStartEnvCacheServices:
         start.chmod(0o755)
         proc = MagicMock()
         proc.returncode = 0
-        proc.communicate = AsyncMock(return_value=(b"", b""))
+        proc.wait = AsyncMock(return_value=0)
         with patch(
             "performer.workspace.asyncio.create_subprocess_exec", return_value=proc
         ) as mock_exec:
@@ -867,6 +867,36 @@ class TestStartEnvCacheServices:
         assert "_DEVENV_SOURCED" not in env, (
             "the profile re-entry guard must be cleared so BASH_ENV re-sources "
             "post-extraction (else initdb/postgres aren't on PATH)"
+        )
+
+    async def test_profile_service_autostart_is_suppressed(
+        self, tmp_path: Path
+    ) -> None:
+        """123 fix: THIS is the explicit service start, so the devenv profile's
+        spec-117 start-on-activation (which fires when the launched bash sources
+        BASH_ENV) must be suppressed via _DEVENV_SKIP_SERVICES=1 — otherwise
+        services-start runs twice in one shell, doubling teardown/TIME_WAIT churn
+        that the next run's port check trips over."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from performer.workspace import _start_env_cache_services
+
+        services = tmp_path / "services"
+        services.mkdir()
+        start = services / "services-start.sh"
+        start.write_text("#!/usr/bin/env bash\nexit 0\n")
+        start.chmod(0o755)
+        proc = MagicMock()
+        proc.returncode = 0
+        proc.wait = AsyncMock(return_value=0)
+        with patch(
+            "performer.workspace.asyncio.create_subprocess_exec", return_value=proc
+        ) as mock_exec:
+            await _start_env_cache_services(str(tmp_path), {})
+        env = mock_exec.call_args[1]["env"]
+        assert env.get("_DEVENV_SKIP_SERVICES") == "1", (
+            "the profile's spec-117 auto-start must be skipped for the explicit "
+            "services-start call to avoid a double-launch in the same shell"
         )
 
 

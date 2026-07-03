@@ -24,10 +24,12 @@ from coordinare.state_store import (
 )
 
 
-def test_current_schema_version_is_11() -> None:
-    """Spec 096 bumps the snapshot schema to v11 (last_known_main_sha +
-    per-card last_rebase_attempt)."""
-    assert CURRENT_SCHEMA_VERSION == 11
+def test_current_schema_version_is_at_least_11() -> None:
+    """Spec 096 bumped the snapshot schema to v11 (last_known_main_sha +
+    per-card last_rebase_attempt). Later specs bump it further (123 → v12), so
+    this only asserts v11's fields are still supported, not that v11 is current.
+    """
+    assert CURRENT_SCHEMA_VERSION >= 11
 
 
 def test_min_supported_unchanged() -> None:

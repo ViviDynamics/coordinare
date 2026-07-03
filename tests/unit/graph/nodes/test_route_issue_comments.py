@@ -312,3 +312,70 @@ async def test_blocker_update_not_appended_to_clarifications():
     assert len(clarifications) == 0
     # But the comment should still be marked as processed
     assert 7000 in result["processed_issue_comment_ids"]
+
+
+# ---------------------------------------------------------------------------
+# 123 US6 (T018): dedup comments BEFORE the AI classifier runs
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_us6_dedup_before_classify_only_new_comments_classified():
+    """123 FR-015: 3 already-processed + 2 new → AI classifier called exactly
+    twice (only the unprocessed comments)."""
+    backend = _Backend(label="clarification")
+    state = initial_state()
+    state["github_service"] = _GitHub(comments=[
+        {"id": 101, "author": "a", "body": "q1?", "created_at": "t"},
+        {"id": 102, "author": "a", "body": "q2?", "created_at": "t"},
+        {"id": 103, "author": "a", "body": "q3?", "created_at": "t"},
+        {"id": 104, "author": "a", "body": "q4?", "created_at": "t"},
+        {"id": 105, "author": "a", "body": "q5?", "created_at": "t"},
+    ])
+    state["current_card"] = {"id": "ITEM_1", "issue_number": 42}
+    state["conducting_backend"] = backend
+    state["processed_issue_comment_ids"] = {101, 102, 103}
+
+    await route_issue_comments(state)
+
+    assert backend.call_count == 2  # only 104 + 105 classified
+
+
+@pytest.mark.asyncio
+async def test_us6_all_processed_skips_classification_entirely():
+    """123 FR-016: all comments already processed → AI classifier called 0
+    times and the watermark still advances."""
+    backend = _Backend(label="clarification")
+    state = initial_state()
+    state["github_service"] = _GitHub(comments=[
+        {"id": 101, "author": "a", "body": "q1?", "created_at": "t"},
+        {"id": 102, "author": "a", "body": "q2?", "created_at": "t"},
+    ])
+    state["current_card"] = {"id": "ITEM_1", "issue_number": 42}
+    state["conducting_backend"] = backend
+    state["processed_issue_comment_ids"] = {101, 102}
+
+    result = await route_issue_comments(state)
+
+    assert backend.call_count == 0
+    assert (result.get("card_clarifications") or []) == []
+    assert result["last_issue_comment_id"] == 102  # watermark advanced
+
+
+@pytest.mark.asyncio
+async def test_us6_all_new_comments_classified_no_regression():
+    """123 FR-015: a fresh set of comments (none processed) is fully classified
+    — no regression on new comments."""
+    backend = _Backend(label="clarification")
+    state = initial_state()
+    state["github_service"] = _GitHub(comments=[
+        {"id": 201, "author": "a", "body": "q1?", "created_at": "t"},
+        {"id": 202, "author": "a", "body": "q2?", "created_at": "t"},
+        {"id": 203, "author": "a", "body": "q3?", "created_at": "t"},
+    ])
+    state["current_card"] = {"id": "ITEM_1", "issue_number": 42}
+    state["conducting_backend"] = backend
+
+    await route_issue_comments(state)
+
+    assert backend.call_count == 3

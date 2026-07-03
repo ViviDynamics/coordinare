@@ -45,23 +45,34 @@ async def route_issue_comments(state: CoordinareState) -> CoordinareState:
     if not events:
         return state
 
-    conducting_backend = state.get("conducting_backend")
-    clarifications: list[dict] = list(state.get("card_clarifications") or [])
-    requirements_changed: bool = bool(state.get("requirements_changed"))
+    # 123 US6 (FR-015): dedup BEFORE the AI classifier runs — never re-classify a
+    # comment already in ``processed_issue_comment_ids``.  The watermark is still
+    # advanced across ALL fetched events (below) so an already-processed comment
+    # is not re-fetched next cycle.
     new_max_id = since_id or 0
-
     for event in events:
         if event.comment_id > new_max_id:
             new_max_id = event.comment_id
+    unprocessed = [e for e in events if e.comment_id not in processed]
 
-        if event.comment_id in processed:
-            logger.debug(
-                "route_issue_comments.already_processed",
-                comment_id=event.comment_id,
-                card_id=card_id,
-            )
-            continue
+    # 123 US6 (FR-016): if every fetched comment was already processed, skip the
+    # AI classification call entirely — advance the watermark and return as a
+    # no-op rather than looping through already-handled comments.
+    if not unprocessed:
+        logger.debug(
+            "route_issue_comments.all_processed_skip",
+            card_id=card_id,
+            issue_number=issue_number,
+            fetched=len(events),
+        )
+        state["last_issue_comment_id"] = new_max_id if new_max_id else since_id
+        return state
 
+    conducting_backend = state.get("conducting_backend")
+    clarifications: list[dict] = list(state.get("card_clarifications") or [])
+    requirements_changed: bool = bool(state.get("requirements_changed"))
+
+    for event in unprocessed:
         label = await classify_issue_comment_ai(
             event.body, event.author, conducting_backend
         )

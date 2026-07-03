@@ -275,3 +275,93 @@ def test_hot_reload_no_caching(tmp_path) -> None:
 
     # Confirm the two results are different
     assert result1 != result2
+
+
+# ---------------------------------------------------------------------------
+# 123 US2 (T009): QA persona is acceptance-criteria + visual only
+# ---------------------------------------------------------------------------
+
+
+def test_qa_persona_omits_lint_coverage_and_style() -> None:
+    """123 FR-004: the QA persona no longer instructs the model to run linters,
+    check test-coverage percentages, or report code-style issues."""
+    qa = DEFAULT_INSTRUCTIONS["qa"].lower()
+    assert "lint" not in qa
+    assert "coverage" not in qa
+    assert "code style" not in qa
+
+
+def test_qa_persona_retains_acceptance_and_visual_evidence() -> None:
+    """123 FR-005: the QA persona still centers acceptance-criteria verification
+    and visual-evidence capture."""
+    qa = DEFAULT_INSTRUCTIONS["qa"].lower()
+    assert "acceptance criteri" in qa  # matches "criterion"/"criteria"
+    assert "screenshot" in qa
+    assert "visual_evidence" in DEFAULT_INSTRUCTIONS["qa"]
+
+
+# ---------------------------------------------------------------------------
+# 123 US7 (T020): closer persona is thread-resolution only
+# ---------------------------------------------------------------------------
+
+
+def test_closer_persona_omits_code_review_language() -> None:
+    """123 FR-016: the closer no longer re-reviews code — no lint / code-quality
+    / diff-review instructions remain."""
+    closer = DEFAULT_INSTRUCTIONS["closer"].lower()
+    assert "lint" not in closer
+    assert "code quality" not in closer
+    assert "diff review" not in closer
+
+
+def test_closer_persona_retains_thread_resolution() -> None:
+    """123 FR-015: the closer persona is about verifying reviewer threads are
+    resolved and CI is passing."""
+    closer = DEFAULT_INSTRUCTIONS["closer"].lower()
+    assert "thread" in closer
+    assert "resolv" in closer  # matches "resolved"/"resolution"
+    assert "ci is passing" in closer
+
+
+# ---------------------------------------------------------------------------
+# 123 last-mile: QA persona must enforce boot-the-app-THEN-capture-THEN-verify
+# (live QA passed 5/5 criteria but recorded a screenshot path that never existed
+# because it ran Playwright without booting the app first)
+# ---------------------------------------------------------------------------
+
+
+def test_qa_persona_enforces_app_boot_before_capture() -> None:
+    """The QA persona must tell the performer to START the app (if not serving)
+    and confirm it responds BEFORE attempting a screenshot."""
+    qa = DEFAULT_INSTRUCTIONS["qa"].lower()
+    assert "start the app" in qa
+    assert "do not attempt a screenshot against an app that is not serving" in qa
+
+
+def test_qa_persona_enforces_screenshot_file_verification() -> None:
+    """The QA persona must require verifying the screenshot FILE exists before
+    recording it, and forbid claiming a path the capture did not create."""
+    qa = DEFAULT_INSTRUCTIONS["qa"]
+    assert "ls -la /tmp/qa_screenshot.png" in qa
+    low = qa.lower()
+    assert "never record a path" in low  # don't fake a nonexistent artifact
+
+
+def test_qa_persona_uses_system_python_for_playwright() -> None:
+    """The env-cache prepends a playwright-less python3 onto PATH, so the QA
+    capture must invoke the image's system interpreter (/usr/local/bin/python3)
+    explicitly — bare `python3` resolves to the cache's python and fails with
+    ModuleNotFoundError (the real reason QA screenshots never materialized)."""
+    qa = DEFAULT_INSTRUCTIONS["qa"]
+    assert "/usr/local/bin/python3 - <<'EOF'" in qa  # capture uses the system python
+    assert "shadow" in qa.lower()  # explains WHY bare python3 is wrong
+
+
+def test_qa_persona_says_db_is_prestarted_and_forbids_initdb() -> None:
+    """Coordinare's services-start already runs postgres/redis with the test DB
+    created; a QA run wasted a whole cycle doing `initdb` itself (failed as
+    root / non-root) → qa_env_blocked 0/5. The persona must tell QA the DB is
+    already up and forbid managing its own."""
+    qa = DEFAULT_INSTRUCTIONS["qa"].lower()
+    assert "already running" in qa
+    assert "initdb" in qa  # explicitly names what NOT to do

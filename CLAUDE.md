@@ -53,6 +53,8 @@ See AGENTS.md for all development guidelines.
 - existing single-host JSON snapshot via `state_store.py`. **No schema migration** — the (120-qa-evidence-integrity)
 - Python 3.14 (project min 3.12; prod 3.14.5 via uv) + existing only — the spec-080 catalogs (`endpoints` / `model_endpoints` / (122-litellm-backend-routing)
 - N/A. No persisted coordinare state. The migration target is config: the live (122-litellm-backend-routing)
+- Python 3.14 (project minimum 3.12; prod on 3.14.5 via uv) + pydantic 2.x (PersistedSession model extension), structlog (observability); no new external dependencies (123-pipeline-flow-optimizations)
+- Existing single-host single-process JSON snapshot via `state_store.py`; three new fields on `PersistedSession` with defaults (123-pipeline-flow-optimizations)
 
 ## Recent Changes
 - 076-qa-cycle: Added Python 3.14 (project minimum: 3.12; production currently on 3.14.5 via uv) + pydantic 2.x, langgraph, structlog, docker SDK (or subprocess to `docker` CLI), fastapi (dashboard SSE), httpx (performer HTTP transport), pyyaml (config)

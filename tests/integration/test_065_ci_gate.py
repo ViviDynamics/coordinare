@@ -188,17 +188,20 @@ def test_reviewer_persona_contains_ci_ownership_directive() -> None:
     )
 
 
-def test_closer_persona_contains_ci_ownership_directive() -> None:
-    """The closer's rendered persona MUST include the CI-ownership
-    directive so the final approver re-checks lint before merging."""
+def test_closer_persona_is_thread_resolution_verifier() -> None:
+    """123 US7 (FR-017/FR-018): the closer is a lightweight thread-resolution
+    verifier — it confirms open reviewer threads are resolved and CI is passing,
+    and does NOT own linting / code re-review (that is the reviewer's job; the
+    coordinare's spec-064 gate owns the authoritative CI decision)."""
     from coordinare.services.persona_service import DEFAULT_INSTRUCTIONS
 
     closer = DEFAULT_INSTRUCTIONS.get("closer", "")
     lowered = closer.lower()
-    assert (
-        "ci ownership" in lowered
-        or ("lint" in lowered and "do not approve" in lowered)
-    ), (
-        "closer persona missing CI/lint ownership directive — text was:\n"
+    # FR-018: verifies thread resolution + CI passing.
+    assert "thread" in lowered and "resolv" in lowered and "ci is passing" in lowered, (
+        "closer persona missing thread-resolution / CI-passing language — text was:\n"
         f"{closer[:600]}"
     )
+    # FR-017: no lint / code-quality / diff-review ownership.
+    assert "lint" not in lowered
+    assert "code quality" not in lowered
