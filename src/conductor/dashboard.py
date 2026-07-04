@@ -1845,6 +1845,8 @@ async function loadSymphonyDetail(name, el) {
       + '<table style="font-size:12px;margin-bottom:10px"><tbody>' + ecRows + '</tbody></table>'
       + '<button class="action-btn" id="sym-env-bootstrap-btn" ' + disabled + '>Force bootstrap now</button>'
       + ' <span id="sym-env-bootstrap-msg" class="action-msg"></span>'
+      + ' <button class="action-btn" id="sym-wiki-init-btn">Init wiki</button>'
+      + ' <span id="sym-wiki-init-msg" class="action-msg"></span>'
       + '</div>';
   }
   el.innerHTML = backLink
@@ -1899,6 +1901,32 @@ async function loadSymphonyDetail(name, el) {
         msg.textContent = 'Network error';
         msg.style.color = 'var(--color-accent-red)';
         ecBtn.disabled = false;
+      }
+    });
+  }
+  var wikiBtn = document.getElementById('sym-wiki-init-btn');
+  if (wikiBtn) {
+    wikiBtn.addEventListener('click', async function() {
+      var msg = document.getElementById('sym-wiki-init-msg');
+      wikiBtn.disabled = true;
+      msg.textContent = 'Dispatching...';
+      msg.style.color = 'var(--color-text-muted)';
+      try {
+        var r = await fetch('/api/symphonies/' + encodeURIComponent(name) + '/wiki-init', {method: 'POST'});
+        var d = await r.json();
+        if (r.ok) {
+          msg.textContent = 'Accepted — building the wiki, a seed PR will open on completion';
+          msg.style.color = 'var(--color-accent-green)';
+          setTimeout(function() { loadSymphonyDetail(name, el); }, 1500);
+        } else {
+          msg.textContent = d.error || ('Error ' + r.status);
+          msg.style.color = 'var(--color-accent-red)';
+          wikiBtn.disabled = false;
+        }
+      } catch(e) {
+        msg.textContent = 'Network error';
+        msg.style.color = 'var(--color-accent-red)';
+        wikiBtn.disabled = false;
       }
     });
   }
@@ -4223,6 +4251,48 @@ def create_dashboard_app(
                 "performer_id": performer_id,
             },
             status_code=202,
+        )
+
+    @app.post("/api/symphonies/{name}/wiki-init")
+    async def trigger_wiki_init(name: str) -> JSONResponse:
+        """Manually seed a symphony's living docs/wiki (spec 124 US2).
+
+        Records a wiki-init request that the daemon's next cycle dispatches: our
+        documenter runs in ``init`` mode against the repo, opens a seed PR, and
+        WikiInitService auto-merges it on CI-green + trusted-bot approval. Operator
+        -initiated (no auto-gate), so it never holds other dispatch. 202 on accept;
+        404 unknown symphony; 409 if a wiki-init is already in flight; 503 if the
+        env-cache state isn't ready yet.
+        """
+        symphony_configs = daemon.state.get("symphony_configs") or {}
+        if name not in symphony_configs:
+            return JSONResponse({"error": f"Symphony {name!r} not found"}, status_code=404)
+
+        cache_state = (daemon.state.get("env_cache") or {}).get(name)
+        if cache_state is None:
+            return JSONResponse(
+                {"error": (
+                    f"Symphony {name!r} env-cache state has not been initialised "
+                    "yet — wait one cycle and retry"
+                )},
+                status_code=503,
+            )
+        if getattr(cache_state, "wiki_in_flight", False):
+            return JSONResponse(
+                {"error": "A wiki-init is already in flight for this symphony",
+                 "status": "wiki_in_flight"},
+                status_code=409,
+            )
+
+        # Record the manual request; the daemon cycle drains it (mirrors the
+        # env-bootstrap flag-then-poke pattern). ``_wiki_init_requests`` is always
+        # created in the daemon's __init__.
+        daemon._wiki_init_requests.add(name)
+        if hasattr(daemon, "_webhook_trigger"):
+            daemon._webhook_trigger.set()
+
+        return JSONResponse(
+            {"status": "accepted", "symphony": name}, status_code=202,
         )
 
     def _build_config_snapshot_inputs() -> tuple[Any, dict[str, str | None], dict[str, Any], bool, bool]:

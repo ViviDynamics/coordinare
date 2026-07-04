@@ -1045,22 +1045,51 @@ async def _git_ignored_subset(
     return {line for line in out.decode("utf-8", "replace").splitlines() if line}
 
 
+def _safe_doc_deletions(deletions: list | None) -> list[str]:
+    """Filter model-supplied deletion paths to safe, docs-scoped relative paths.
+
+    124: the documenter may retire dead wiki pages, but deletion is a sharp tool —
+    restrict it to ``docs/`` (the documenter's domain) so a hallucinated or wrong
+    path can never ``git rm`` source code or a root file like ``AGENTS.md`` /
+    ``README.md``. Absolute paths and ``..`` traversal are rejected outright.
+    """
+    safe: list[str] = []
+    for d in deletions or []:
+        if not isinstance(d, str) or not d:
+            continue
+        if os.path.isabs(d) or ".." in Path(d).parts:
+            log.warning("commit_files.unsafe_deletion_skipped", path=d)
+            continue
+        if Path(d).parts[:1] != ("docs",):
+            log.warning("commit_files.non_docs_deletion_skipped", path=d)
+            continue
+        safe.append(d)
+    return safe
+
+
 async def commit_files(
     stand: Stand,
     files: list[dict[str, str]],
     message: str,
+    deletions: list[str] | None = None,
 ) -> list[str]:
     """Batch-commit multiple files in a single git commit + push.
 
     Each entry in *files* must have ``path`` (relative to workspace) and
     ``content`` (full file content).  All files are written to disk, staged
     with a single ``git add``, committed with *message*, and pushed once.
-    Returns the list of committed file paths.
+
+    124: optional *deletions* is a list of repo-relative paths (restricted to
+    ``docs/`` by :func:`_safe_doc_deletions`) to ``git rm`` in the SAME commit —
+    this lets the documenter RETIRE dead/low-value pages, not only rewrite them.
+    Returns the list of paths that changed (written + removed).
 
     044: Replaces the per-file ``commit_file`` loop in the tech writer
     handler to produce 1 commit instead of N.
     """
-    if not files:
+    files = files or []
+    del_paths = _safe_doc_deletions(deletions)
+    if not files and not del_paths:
         return []
 
     env = {**os.environ, **stand.git_env} if stand.git_env else {**os.environ}
@@ -1080,36 +1109,47 @@ async def commit_files(
         abs_path.write_text(content, encoding="utf-8")
         committed.append(path)
 
-    if not committed:
-        return []
-
     # Drop gitignored paths before staging. A model may emit a doc path under a
     # gitignored dir (e.g. Rails' .bundle); `git add` of an explicitly-named
     # ignored path exits non-zero and would poison the WHOLE batch (blocked #171
     # at documenting). Filter + log them so one bad path can't fail the commit.
-    ignored = await _git_ignored_subset(committed, stand.path, env)
-    if ignored:
-        log.warning(
-            "commit_files.ignored_paths_skipped",
-            paths=sorted(ignored), count=len(ignored),
+    if committed:
+        ignored = await _git_ignored_subset(committed, stand.path, env)
+        if ignored:
+            log.warning(
+                "commit_files.ignored_paths_skipped",
+                paths=sorted(ignored), count=len(ignored),
+            )
+            committed = [p for p in committed if p not in ignored]
+
+    # Stage deletions: only paths that actually exist on disk (a nonexistent path
+    # is a no-op); --ignore-unmatch keeps an untracked-but-present path from
+    # failing the whole batch. `git rm` both removes from disk AND stages.
+    removed: list[str] = [d for d in del_paths if (stand.path / d).exists()]
+    if removed:
+        returncode, stderr = await _run_git(
+            ["git", "rm", "-q", "--ignore-unmatch", "--"] + removed, cwd=stand.path, env=env,
         )
-        committed = [p for p in committed if p not in ignored]
-    if not committed:
+        if returncode != 0:
+            raise WorkspaceSetupError(f"git rm (batch) failed (exit {returncode}): {stderr}")
+
+    if not committed and not removed:
         return []
 
-    # Stage all files
-    returncode, stderr = await _run_git(
-        ["git", "add", "--"] + committed, cwd=stand.path, env=env,
-    )
-    if returncode != 0:
-        raise WorkspaceSetupError(f"git add (batch) failed (exit {returncode}): {stderr}")
+    # Stage all written files
+    if committed:
+        returncode, stderr = await _run_git(
+            ["git", "add", "--"] + committed, cwd=stand.path, env=env,
+        )
+        if returncode != 0:
+            raise WorkspaceSetupError(f"git add (batch) failed (exit {returncode}): {stderr}")
 
     # Check for staged changes (exit 0 = no changes, 1 = changes, >1 = error)
     returncode, stderr = await _run_git(
         ["git", "diff", "--cached", "--quiet"], cwd=stand.path, env=env,
     )
     if returncode == 0:
-        log.info("commit_files.no_changes", file_count=len(committed))
+        log.info("commit_files.no_changes", file_count=len(committed), deleted=len(removed))
         return []
     if returncode > 1:
         raise WorkspaceSetupError(f"git diff --cached failed (exit {returncode}): {stderr}")
@@ -1138,8 +1178,11 @@ async def commit_files(
             f"git push (batch) failed (exit {returncode}): {_summarise_git_push_error(stderr)}",
         )
 
-    log.info("commit_files.committed", file_count=len(committed), branch=stand.branch)
-    return committed
+    log.info(
+        "commit_files.committed",
+        file_count=len(committed), deleted=len(removed), branch=stand.branch,
+    )
+    return committed + removed
 
 
 def cleanup_stand(stand: Stand) -> None:

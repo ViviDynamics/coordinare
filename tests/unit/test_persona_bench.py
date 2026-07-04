@@ -41,6 +41,33 @@ class TestReviewerGrader:
         assert "APPROVED_BUGGY_PR" in markers
 
 
+class TestDocumenterGrader:
+    """124: the documenter contract = docs_committed + docs/wiki/ pages."""
+
+    def test_wiki_pages_present_passes(self, monkeypatch):
+        monkeypatch.setattr(persona_bench, "_docker_exec", lambda cid, sh, **k: "docs/wiki/README.md")
+        c = _ctx(status="docs_committed")
+        c.cid = "container123"
+        ok, markers, _ = persona_bench.grade_documenter(c)
+        assert ok is True
+        assert "wiki_pages_present" in markers
+
+    def test_no_wiki_pages_fails(self, monkeypatch):
+        monkeypatch.setattr(persona_bench, "_docker_exec", lambda cid, sh, **k: "")
+        c = _ctx(status="docs_committed")
+        c.cid = "container123"
+        ok, markers, _ = persona_bench.grade_documenter(c)
+        assert ok is False
+        assert markers == []
+
+    def test_wrong_status_fails_even_with_pages(self, monkeypatch):
+        monkeypatch.setattr(persona_bench, "_docker_exec", lambda cid, sh, **k: "docs/wiki/x.md")
+        c = _ctx(status="error")
+        c.cid = "container123"
+        ok, _, _ = persona_bench.grade_documenter(c)
+        assert ok is False
+
+
 class TestSecurityGrader:
     def test_flags_injection(self):
         c = _ctx(status="security_failed",

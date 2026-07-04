@@ -55,6 +55,8 @@ See AGENTS.md for all development guidelines.
 - N/A. No persisted coordinare state. The migration target is config: the live (122-litellm-backend-routing)
 - Python 3.14 (project minimum 3.12; prod on 3.14.5 via uv) + pydantic 2.x (PersistedSession model extension), structlog (observability); no new external dependencies (123-pipeline-flow-optimizations)
 - Existing single-host single-process JSON snapshot via `state_store.py`; three new fields on `PersistedSession` with defaults (123-pipeline-flow-optimizations)
+- Python 3.14 (project minimum 3.12; prod 3.14.5 via uv). Generated/invoked runtime: Node.js 22 LTS (already in `Dockerfile.base`) + the `openwiki` npm CLI. + pydantic 2.x (config/models, unchanged surface), langgraph (graph nodes), structlog (observability), gql/aiohttp (GitHub GraphQL: `check_mergeability`, `squash_merge`, `get_pr_reviews`), httpx (performer transport), docker CLI (ephemeral performers), the LiteLLM gateway. **New external dep**: `openwiki` (npm, MIT). No new Python dependencies. (124-openwiki-documenter)
+- JSON snapshot via `state_store.py` (single-host single-process). `CURRENT_SCHEMA_VERSION` bumped 12 → 13; new backward-compatible wiki-init fields on `EnvCacheStateSnapshot`. (124-openwiki-documenter)
 
 ## Recent Changes
 - 076-qa-cycle: Added Python 3.14 (project minimum: 3.12; production currently on 3.14.5 via uv) + pydantic 2.x, langgraph, structlog, docker SDK (or subprocess to `docker` CLI), fastapi (dashboard SSE), httpx (performer HTTP transport), pyyaml (config)

@@ -127,9 +127,11 @@ async def test_save_output_has_required_fields(tmp_path: Path) -> None:
     assert "schema_version" in data
     assert "snapshot_at" in data
     assert "phase" in data
-    # v12 schema (123 split bounce budget + assessor Q&A carryover) is current;
-    # v1-v11 are still readable.
-    assert data["schema_version"] == 12
+    # A saved snapshot always carries the current schema version (assert against
+    # the constant so a bump doesn't require touching this general contract test).
+    from coordinare.state_store import CURRENT_SCHEMA_VERSION
+
+    assert data["schema_version"] == CURRENT_SCHEMA_VERSION
 
 
 @pytest.mark.asyncio

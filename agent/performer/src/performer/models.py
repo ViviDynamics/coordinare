@@ -141,6 +141,17 @@ class Score(BaseModel):
     # Must be declared here or extra="ignore" silently drops it; defaults True so an
     # older/synthetic payload preserves the managed path.
     coordinare_manages_services: bool = True
+    # 124 (FR-006): documenter mode for the living docs/wiki. "init" = full
+    # wiki build (symphony bootstrap); "update" = incremental refresh (the
+    # in-card documenting stage, the default). Must be declared here or
+    # extra="ignore" silently drops it (CT1); default preserves older payloads.
+    doc_mode: Literal["init", "update"] = "update"
+    # 124 (C): performer-INTERNAL plan->write decomposition marker. None on the
+    # dispatched Score = the PLAN phase (emit the page plan). The documenting
+    # handler sets it to {"path","intent","current"} on the per-page write Scores
+    # it builds internally, which routes hermes to a minimal single-page WRITE
+    # prompt (no diff). Never sent by the coordinare; performer-local only.
+    doc_write_target: dict | None = None
 
     model_config = {"extra": "ignore"}  # silently drop unknown fields from coordinare
 
@@ -289,6 +300,14 @@ class Performance:
     qa_report: dict | None = None  # 023: pass report {criteria_checked, criteria_passed, new_tests_added}
     qa_cycle: int = 0  # 023: number of QA fix cycles
     docs_files_modified: list[str] = field(default_factory=list)  # 024: doc files committed
+    # 124 (C): performer-internal plan->write decomposition state for the
+    # documenting stage. doc_phase is None during the PLAN run, "writing" once the
+    # plan is parsed; the queue drains one page per backend run; pending files +
+    # planned deletions are committed in one batch when the queue empties.
+    doc_phase: str | None = None
+    doc_write_queue: list[dict] = field(default_factory=list)  # remaining pages [{path,intent}]
+    doc_deletions: list[str] = field(default_factory=list)  # planned page retirements
+    doc_files_pending: list[dict] = field(default_factory=list)  # accumulated {path,content}
     # 063 T026c: cached service-inference outcome from env_bootstrap so resume
     # paths replay it without re-running the (expensive) LLM agent.
     inference_state: dict[str, object] = field(default_factory=dict)

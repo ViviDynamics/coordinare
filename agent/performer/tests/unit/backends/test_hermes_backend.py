@@ -15,6 +15,7 @@ from performer.backends.hermes import (
     SUPPORTED_ROLES,
     HermesBackend,
     _build_task_prompt,
+    _env_int,
     _extract_json_object,
 )
 from performer.models import BackendEvent, BackendEventType, Score, Stand
@@ -369,6 +370,108 @@ class TestUS2CapabilityGating:
             assert parsed["approvals"]["mode"] == "off"
         finally:
             await adapter.stop()
+
+    async def test_max_tokens_and_context_window_written_into_profile_config(
+        self, tmp_path: Path, hermes_env, monkeypatch
+    ) -> None:
+        """124 (A): hermes must request an output cap (model.max_tokens) and a
+        context window (model.context_length from HERMES_CONTEXT_WINDOW). Left
+        unset the server default applies, which truncates context-heavy roles."""
+        monkeypatch.setenv("HERMES_BASE_URL", "https://litellm.example/v1")
+        monkeypatch.setenv("HERMES_CONTEXT_WINDOW", "131072")
+        proc = _fake_proc(returncode=None)
+        adapter = HermesBackend()
+        with patch(
+            "performer.backends.hermes.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=proc),
+        ):
+            # main.py passes max_tokens=score.max_tokens as a start() kwarg.
+            await adapter.start(_stand(tmp_path), _score(), max_tokens=32768)
+        try:
+            import yaml
+            parsed = yaml.safe_load((adapter._profile_dir / "config.yaml").read_text())
+            assert parsed["model"]["max_tokens"] == 32768
+            assert parsed["model"]["context_length"] == 131072
+        finally:
+            await adapter.stop()
+
+    async def test_token_budget_omitted_when_unset(
+        self, tmp_path: Path, hermes_env, monkeypatch
+    ) -> None:
+        """Backward-compatible: no max_tokens + no HERMES_CONTEXT_WINDOW → neither
+        key is written (hermes-agent's own default applies)."""
+        monkeypatch.setenv("HERMES_BASE_URL", "https://litellm.example/v1")
+        monkeypatch.delenv("HERMES_CONTEXT_WINDOW", raising=False)
+        proc = _fake_proc(returncode=None)
+        adapter = HermesBackend()
+        with patch(
+            "performer.backends.hermes.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=proc),
+        ):
+            await adapter.start(_stand(tmp_path), _score())  # no max_tokens kwarg
+        try:
+            cfg = (adapter._profile_dir / "config.yaml").read_text()
+            assert "max_tokens" not in cfg
+            assert "context_length" not in cfg
+        finally:
+            await adapter.stop()
+
+    def test_env_int_reads_positive_int_or_none(self, monkeypatch) -> None:
+        monkeypatch.setenv("HERMES_CONTEXT_WINDOW", "131072")
+        assert _env_int("HERMES_CONTEXT_WINDOW") == 131072
+        monkeypatch.setenv("HERMES_CONTEXT_WINDOW", "0")
+        assert _env_int("HERMES_CONTEXT_WINDOW") is None
+        monkeypatch.setenv("HERMES_CONTEXT_WINDOW", "nope")
+        assert _env_int("HERMES_CONTEXT_WINDOW") is None
+        monkeypatch.delenv("HERMES_CONTEXT_WINDOW", raising=False)
+        assert _env_int("HERMES_CONTEXT_WINDOW") is None
+
+    def test_tech_writer_plan_block_states_plan_contract(self) -> None:
+        """124 (B+C): the FIRST documenting call (no doc_write_target) is the PLAN
+        phase — the task prompt states the plan JSON contract and forbids the
+        observed edit-code/verify drift, independent of SOUL.md being honored."""
+        prompt = _build_task_prompt(_score(role="tech_writer"), [])
+        assert "Role Output Requirements (tech_writer)" in prompt
+        assert '{"pages"' in prompt
+        assert '"deletions"' in prompt
+        lower = prompt.lower()
+        assert "plan" in lower
+        assert "do not edit source code" in lower
+        assert "verification report" in lower
+        # PLAN emits no page content.
+        assert '"content"' not in prompt
+        # The plan must surface the AGENTS.md/CLAUDE.md wiki pointer (S3 gap fix).
+        assert "AGENTS.md" in prompt and "CLAUDE.md" in prompt
+        assert "Project Wiki" in prompt
+
+    def test_tech_writer_write_block_is_small_single_page(self) -> None:
+        """124 (C): a per-page WRITE call (doc_write_target set) gets a MINIMAL
+        prompt — one file's {files} contract, the page path, and NO PR diff (the
+        whole point of the decomposition: keep each call small)."""
+        score = _score(
+            role="tech_writer",
+            pr_diff="diff --git a/x b/x\n" + ("+big\n" * 500),  # large diff must be excluded
+            doc_write_target={"path": "docs/wiki/architecture.md", "intent": "note newsletter", "current": ""},
+        )
+        prompt = _build_task_prompt(score, [])
+        assert "docs/wiki/architecture.md" in prompt
+        assert '{"files"' in prompt
+        assert "write one page" in prompt.lower()
+        # The big diff must NOT be inlined into a per-page write prompt.
+        assert "big" not in prompt
+        assert "PR Diff Under Review" not in prompt
+
+    def test_tech_writer_write_block_json_escapes_path(self) -> None:
+        """124 (review): the write-block example JSON must escape the path
+        (json.dumps) so a path with a quote/backslash can't produce a malformed
+        example the model then mimics."""
+        import json
+        score = _score(
+            role="tech_writer",
+            doc_write_target={"path": 'docs/wiki/a"b.md', "intent": "x", "current": ""},
+        )
+        prompt = _build_task_prompt(score, [])
+        assert json.dumps('docs/wiki/a"b.md') in prompt  # properly escaped, not a raw break
 
     async def test_operator_hermes_home_is_ignored(
         self, tmp_path: Path, hermes_env, monkeypatch

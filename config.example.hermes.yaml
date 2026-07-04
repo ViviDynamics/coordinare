@@ -83,6 +83,11 @@ performer_endpoints:
       HERMES_PROVIDER: "${HERMES_PROVIDER}"   # built-in (e.g. "anthropic", "openai", "openrouter") OR any user-chosen name when HERMES_BASE_URL is set
       HERMES_API_KEY:  "${HERMES_API_KEY}"    # credential for the provider
       HERMES_MODEL:    "${HERMES_MODEL}"      # default; per-role `model:` overrides
+      # 124: optional context window (hermes writes it as model.context_length).
+      # Left unset the server default applies, which truncates context-heavy roles
+      # like the documenter. Set it to your model's served num_ctx (e.g. 131072 for
+      # a 128k model); the per-role `max_tokens` output cap is now honored too.
+      # HERMES_CONTEXT_WINDOW: "131072"
       # HERMES_BASE_URL is optional; uncomment for self-hosted endpoints.
       # Leaving it set to "${HERMES_BASE_URL}" with no shell value would
       # expand to an empty string and confuse the adapter — keep it

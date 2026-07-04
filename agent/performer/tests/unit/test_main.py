@@ -18,6 +18,7 @@ from performer.main import (
     _backfill_terminal_failure_reason,
     _doc_folder,
     _extract_pr_number,
+    _safe_doc_page_path,
     collect_metrics,
     handle_dispatch,
     handle_health,
@@ -3160,35 +3161,148 @@ class TestQAVerdictIntegrity088:
 
 
 class TestTechWriterPerformer:
+    """124 (C): the documenter runs a plan->write decomposition. The FIRST backend
+    completion is a PLAN (pages to write/retire); each later completion writes ONE
+    page; the queue drains into a single batch commit."""
+
     def _make_perf(self) -> Performance:
         stand = Stand(path=Path("/tmp/fake"), branch="feat/test")
         stand.git_env = {}
-        score = Score(title="Test", repo_url="https://github.com/acme/repo", branch="feat/test")
-        return Performance(session_id="sid", stand=stand, score=score, backend=MagicMock(), role="documenting")
+        score = Score(title="Test", repo_url="https://github.com/acme/repo",
+                      branch="feat/test", role="tech_writer")
+        backend = MagicMock()
+        backend.start = AsyncMock()
+        backend.relay_feedback = AsyncMock()
+        backend.stop = AsyncMock()
+        return Performance(session_id="sid", stand=stand, score=score, backend=backend, role="documenting")
+
+    def _done(self, perf: Performance, output: str) -> None:
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+
+    async def _status(self, perf: Performance):
+        return await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
 
     @pytest.mark.asyncio
-    async def test_docs_committed_with_files(self) -> None:
-        """044: Tech writer uses batch commit — single call for all files."""
+    async def test_plan_phase_dispatches_first_write(self) -> None:
+        """The plan completion queues pages, records deletions, and dispatches the
+        first per-page WRITE (a fresh, diff-free write Score)."""
         import json
         perf = self._make_perf()
-        output = json.dumps({"files": [
-            {"path": "CHANGELOG.md", "content": "## 1.0.0\n- New feature"},
-            {"path": "README.md", "content": "# Updated README"},
-        ]})
-        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
-        mock_batch = AsyncMock(return_value=["CHANGELOG.md", "README.md"])
-        with patch("performer.main.commit_files", new=mock_batch):
-            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
-        assert resp.status == "docs_committed"
-        assert resp.files_modified == ["CHANGELOG.md", "README.md"]
-        mock_batch.assert_called_once()
+        self._done(perf, json.dumps({"pages": [
+            {"path": "docs/wiki/README.md", "intent": "overview"},
+            {"path": "docs/wiki/architecture.md", "intent": "modules"},
+        ], "deletions": ["docs/wiki/old.md"]}))
+        resp = await self._status(perf)
+        assert resp.status == "working"
+        assert perf.doc_phase == "writing"
+        assert len(perf.doc_write_queue) == 2
+        assert perf.doc_deletions == ["docs/wiki/old.md"]
+        perf.backend.start.assert_awaited()
+        write_score = perf.backend.start.call_args[0][1]
+        assert write_score.doc_write_target["path"] == "docs/wiki/README.md"
+        assert write_score.pr_diff == ""  # per-page context kept small
+
+    def test_safe_doc_page_path_filter(self) -> None:
+        """124 (review): page paths from the plan are untrusted — accept only
+        docs/ + known root doc files; reject traversal/absolute/source paths."""
+        for ok in ("docs/wiki/README.md", "docs/cards/1/x.md", "AGENTS.md",
+                   "CLAUDE.md", "CHANGELOG.md", "README.md"):
+            assert _safe_doc_page_path(ok), ok
+        for bad in ("../../etc/passwd", "/etc/shadow", "docs/../src/x.py",
+                    "src/app.py", "config/routes.rb", "", None, 123):
+            assert not _safe_doc_page_path(bad), bad
 
     @pytest.mark.asyncio
-    async def test_docs_committed_empty_diff(self) -> None:
+    async def test_plan_drops_unsafe_page_paths(self) -> None:
+        """124 (review, HIGH): the write queue drops traversal/absolute/non-doc
+        page paths so a hallucinated path can't read or overwrite files outside
+        the documenter's surface."""
+        import json
+        perf = self._make_perf()
+        self._done(perf, json.dumps({"pages": [
+            {"path": "../../etc/passwd", "intent": "evil"},
+            {"path": "/etc/shadow", "intent": "evil"},
+            {"path": "src/app.py", "intent": "not docs"},
+            {"path": "docs/wiki/ok.md", "intent": "good"},
+            {"path": "AGENTS.md", "intent": "pointer"},
+        ], "deletions": []}))
+        resp = await self._status(perf)
+        assert resp.status == "working"
+        assert [p["path"] for p in perf.doc_write_queue] == ["docs/wiki/ok.md", "AGENTS.md"]
+        assert perf.backend.start.call_args[0][1].doc_write_target["path"] == "docs/wiki/ok.md"
+
+    @pytest.mark.asyncio
+    async def test_full_plan_write_commits_batch(self) -> None:
+        """plan(1 page) -> write -> single batch commit -> docs_committed."""
+        import json
+        perf = self._make_perf()
+        self._done(perf, json.dumps({"pages": [{"path": "docs/wiki/README.md", "intent": "x"}], "deletions": []}))
+        mock_commit = AsyncMock(return_value=["docs/wiki/README.md"])
+        with patch("performer.main.commit_files", new=mock_commit):
+            r1 = await self._status(perf)
+            assert r1.status == "working"
+            self._done(perf, json.dumps({"files": [{"path": "docs/wiki/README.md", "content": "# Wiki"}]}))
+            r2 = await self._status(perf)
+        assert r2.status == "docs_committed"
+        assert r2.files_modified == ["docs/wiki/README.md"]
+        mock_commit.assert_awaited_once()
+        committed_files = mock_commit.call_args[0][1]
+        assert committed_files[0] == {"path": "docs/wiki/README.md", "content": "# Wiki"}
+
+    @pytest.mark.asyncio
+    async def test_empty_plan_commits_deletions_only(self) -> None:
+        """A plan with no pages but a retirement commits the deletion, no writes."""
+        import json
+        perf = self._make_perf()
+        self._done(perf, json.dumps({"pages": [], "deletions": ["docs/wiki/dead.md"]}))
+        mock_commit = AsyncMock(return_value=["docs/wiki/dead.md"])
+        with patch("performer.main.commit_files", new=mock_commit):
+            resp = await self._status(perf)
+        assert resp.status == "docs_committed"
+        assert resp.files_modified == ["docs/wiki/dead.md"]
+        perf.backend.start.assert_not_awaited()  # no page writes
+        assert mock_commit.call_args.kwargs["deletions"] == ["docs/wiki/dead.md"]
+
+    @pytest.mark.asyncio
+    async def test_empty_plan_and_no_deletions_is_noop(self) -> None:
+        """The significance gate at work: empty plan -> docs_committed, no commit."""
+        import json
+        perf = self._make_perf()
+        self._done(perf, json.dumps({"pages": [], "deletions": []}))
+        mock_commit = AsyncMock(return_value=[])
+        with patch("performer.main.commit_files", new=mock_commit):
+            resp = await self._status(perf)
+        assert resp.status == "docs_committed"
+        assert resp.files_modified == []
+        mock_commit.assert_not_awaited()
+        perf.backend.start.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_legacy_single_shot_files_commits_directly(self) -> None:
+        """Backward-compat: a backend that emits the legacy {files} manifest (no
+        "pages" key — e.g. a non-hermes documenter, or an old-image hermes) commits
+        directly, NOT mis-read as an empty plan that silently writes nothing."""
+        import json
+        perf = self._make_perf()
+        self._done(perf, json.dumps({"files": [
+            {"path": "docs/wiki/README.md", "content": "# Wiki"},
+            {"path": "CHANGELOG.md", "content": "## 1.0"},
+        ], "deletions": ["docs/wiki/old.md"]}))
+        mock_commit = AsyncMock(return_value=["docs/wiki/README.md", "CHANGELOG.md", "docs/wiki/old.md"])
+        with patch("performer.main.commit_files", new=mock_commit):
+            resp = await self._status(perf)
+        assert resp.status == "docs_committed"
+        perf.backend.start.assert_not_awaited()  # direct commit, no plan->write loop
+        committed = mock_commit.call_args[0][1]
+        assert {f["path"] for f in committed} == {"docs/wiki/README.md", "CHANGELOG.md"}
+        assert mock_commit.call_args.kwargs["deletions"] == ["docs/wiki/old.md"]
+
+    @pytest.mark.asyncio
+    async def test_empty_output_docs_committed(self) -> None:
         """Empty output → docs_committed with empty files_modified (FR-010)."""
         perf = self._make_perf()
-        perf.backend.get_status.return_value = BackendStatus(state="done", output="")
-        resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+        self._done(perf, "")
+        resp = await self._status(perf)
         assert resp.status == "docs_committed"
         assert resp.files_modified == []
 
@@ -3196,59 +3310,106 @@ class TestTechWriterPerformer:
     async def test_docs_committed_is_terminal(self) -> None:
         perf = self._make_perf()
         perf.state = "docs_committed"
-        perf.docs_files_modified = ["CHANGELOG.md"]
-        resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+        perf.docs_files_modified = ["docs/wiki/README.md"]
+        resp = await self._status(perf)
         assert resp.status == "docs_committed"
-        assert resp.files_modified == ["CHANGELOG.md"]
+        assert resp.files_modified == ["docs/wiki/README.md"]
 
     @pytest.mark.asyncio
-    async def test_docs_commit_failure_returns_error(self) -> None:
-        """044: Batch commit failure returns error with diagnostic."""
+    async def test_unparsed_write_page_skipped_but_others_commit(self) -> None:
+        """A page whose write output can't be parsed is skipped; the rest commit."""
         import json
         perf = self._make_perf()
-        output = json.dumps({"files": [{"path": "README.md", "content": "new content"}]})
-        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
-        mock_batch = AsyncMock(side_effect=Exception("git push failed"))
-        with patch("performer.main.commit_files", new=mock_batch):
-            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+        self._done(perf, json.dumps({"pages": [
+            {"path": "docs/wiki/a.md", "intent": "a"},
+            {"path": "docs/wiki/b.md", "intent": "b"},
+        ], "deletions": []}))
+        mock_commit = AsyncMock(return_value=["docs/wiki/b.md"])
+        with patch("performer.main.commit_files", new=mock_commit):
+            await self._status(perf)  # plan -> dispatch write a
+            self._done(perf, "not json — a verification report")  # page a unparsed
+            r2 = await self._status(perf)  # skip a, dispatch write b
+            assert r2.status == "working"
+            self._done(perf, json.dumps({"files": [{"path": "docs/wiki/b.md", "content": "# B"}]}))
+            r3 = await self._status(perf)  # b done -> commit
+        assert r3.status == "docs_committed"
+        committed = mock_commit.call_args[0][1]
+        assert len(committed) == 1 and committed[0]["path"] == "docs/wiki/b.md"
+
+    @pytest.mark.asyncio
+    async def test_commit_failure_returns_error(self) -> None:
+        import json
+        perf = self._make_perf()
+        self._done(perf, json.dumps({"pages": [{"path": "docs/wiki/x.md", "intent": "x"}], "deletions": []}))
+        mock_commit = AsyncMock(side_effect=Exception("git push failed"))
+        with patch("performer.main.commit_files", new=mock_commit):
+            await self._status(perf)  # plan -> write
+            self._done(perf, json.dumps({"files": [{"path": "docs/wiki/x.md", "content": "# X"}]}))
+            resp = await self._status(perf)
         assert resp.status == "error"
         assert "batch-commit" in (resp.reason or "").lower() or "git push" in (resp.reason or "")
 
     @pytest.mark.asyncio
-    async def test_docs_malformed_files_skipped(self) -> None:
-        """044: Malformed file entries are filtered before batch commit."""
+    async def test_init_mode_opens_seed_pr(self) -> None:
+        """124(US2): a cardless init dispatch (doc_mode='init') opens a seed PR
+        after committing and returns its node id for WikiInitService to auto-merge.
+        A normal (update) run opens no PR."""
         import json
         perf = self._make_perf()
-        output = json.dumps({"files": [
-            "not a dict",
-            {"path": "CHANGELOG.md", "content": "# Log"},
-            {"path": "", "content": "no path"},
-            {"no_path_key": True},
-        ]})
-        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
-        mock_batch = AsyncMock(return_value=["CHANGELOG.md"])
-        with patch("performer.main.commit_files", new=mock_batch):
-            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+        perf.score.doc_mode = "init"
+        self._done(perf, json.dumps({"pages": [{"path": "docs/wiki/README.md", "intent": "x"}], "deletions": []}))
+        mock_commit = AsyncMock(return_value=["docs/wiki/README.md"])
+        mock_pr = AsyncMock(return_value=("https://github.com/acme/repo/pull/7", "PR_node_7"))
+        with patch("performer.main.commit_files", new=mock_commit), \
+             patch("performer.main.create_pull_request", new=mock_pr):
+            await self._status(perf)  # plan -> dispatch write
+            self._done(perf, json.dumps({"files": [{"path": "docs/wiki/README.md", "content": "# W"}]}))
+            resp = await self._status(perf)  # write done -> commit + open seed PR
         assert resp.status == "docs_committed"
-        assert resp.files_modified == ["CHANGELOG.md"]
-        mock_batch.assert_called_once()
-        # Only the valid file should be in the batch
-        call_files = mock_batch.call_args[0][1]
-        assert len(call_files) == 1
-        assert call_files[0]["path"] == "CHANGELOG.md"
+        mock_pr.assert_awaited_once()
+        assert resp.pr_url == "https://github.com/acme/repo/pull/7"
+        assert resp.pr_node_id == "PR_node_7"
 
     @pytest.mark.asyncio
-    async def test_docs_idempotent_commit_still_reports_file(self) -> None:
-        """044: When batch commit returns empty (no changes), files list is empty."""
+    async def test_update_mode_opens_no_pr(self) -> None:
+        """The normal in-card documenting run (doc_mode='update', the default) must
+        NOT open a PR — it commits into the card's existing PR."""
+        import json
+        perf = self._make_perf()  # default doc_mode == "update"
+        self._done(perf, json.dumps({"pages": [{"path": "docs/wiki/README.md", "intent": "x"}], "deletions": []}))
+        mock_commit = AsyncMock(return_value=["docs/wiki/README.md"])
+        mock_pr = AsyncMock(return_value=("url", "node"))
+        with patch("performer.main.commit_files", new=mock_commit), \
+             patch("performer.main.create_pull_request", new=mock_pr):
+            await self._status(perf)
+            self._done(perf, json.dumps({"files": [{"path": "docs/wiki/README.md", "content": "# W"}]}))
+            resp = await self._status(perf)
+        assert resp.status == "docs_committed"
+        mock_pr.assert_not_awaited()
+        assert resp.pr_url is None
+
+    @pytest.mark.asyncio
+    async def test_write_dispatch_failure_returns_clean_error(self) -> None:
+        """124 (review): if a per-page write dispatch (backend.start) raises, the
+        job fails fast with a clean terminal error — not an unhandled exception
+        out of handle_status that leaves perf half-set at doc_phase='writing'."""
         import json
         perf = self._make_perf()
-        output = json.dumps({"files": [{"path": "README.md", "content": "same content"}]})
-        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
-        mock_batch = AsyncMock(return_value=[])  # no-op: no actual changes
-        with patch("performer.main.commit_files", new=mock_batch):
-            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
-        assert resp.status == "docs_committed"
-        assert resp.files_modified == []
+        perf.backend.start = AsyncMock(side_effect=RuntimeError("backend down"))
+        self._done(perf, json.dumps({"pages": [{"path": "docs/wiki/x.md", "intent": "x"}], "deletions": []}))
+        resp = await self._status(perf)
+        assert resp.status == "error"
+        assert perf.state == "error"
+        assert "dispatch" in (resp.reason or "").lower()
+        assert "backend down" in (resp.reason or "")
+
+    @pytest.mark.asyncio
+    async def test_malformed_plan_does_not_crash(self) -> None:
+        """A non-JSON plan routes through the parse-failure retry, never crashes."""
+        perf = self._make_perf()
+        self._done(perf, "this is a verification report, not JSON")
+        resp = await self._status(perf)
+        assert resp.status in ("working", "error")  # retried or bubbled, not a crash
 
 
 # ---------------------------------------------------------------------------

@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-CURRENT_SCHEMA_VERSION: int = 12
+CURRENT_SCHEMA_VERSION: int = 13
 
 # Lowest schema_version we still know how to read.  v1 snapshots are upgraded
 # in-memory at load time (065 Fix 7b: active_sessions added in v2; v1 snapshots
@@ -60,6 +60,13 @@ CURRENT_SCHEMA_VERSION: int = 12
 # open_questions: list[str] blocked-card diagnostic surface).  v1-v11 snapshots
 # load with 0/0/[]; a legacy feedback_cycle_count value is migrated into
 # content_feedback_cycles on load (see the model_validator below).
+# v13 (124) adds docs/wiki wiki-init fields on EnvCacheStateSnapshot:
+# wiki_initialized (durable marker that the seed wiki merged), wiki_attempts +
+# wiki_exhausted (the FR-017 circuit breaker), and last_wiki_init_at/succeeded/
+# error. v1-v12 snapshots load with False/0/None so a symphony with no wiki yet
+# initializes on first cycle (when the gate is enabled). wiki_in_flight is
+# transient and never persisted (rederived False after restart, like
+# bootstrap_in_flight).
 MIN_SUPPORTED_SCHEMA_VERSION: int = 1
 
 WorkflowPhase = Literal[
@@ -321,6 +328,14 @@ class EnvCacheStateSnapshot(BaseModel):
     # cache reloads variables from this source file at runtime, so no literal
     # secret is ever written to disk. Old snapshots load with None (no migration).
     test_env_source: str | None = None
+    # 124 (US2, schema v13): docs/wiki wiki-init durable state. Old snapshots load
+    # with the defaults (no migration). wiki_in_flight is transient (not here).
+    wiki_initialized: bool = False
+    wiki_attempts: int = 0
+    wiki_exhausted: bool = False
+    last_wiki_init_at: datetime | None = None
+    last_wiki_init_succeeded: bool | None = None
+    last_wiki_init_error: str | None = None
 
 
 class WorkflowSnapshot(BaseModel):
