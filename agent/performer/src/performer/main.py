@@ -1778,6 +1778,167 @@ async def _poll_check_runs(perf: Performance, settings: Settings | None) -> Perf
     )
 
 
+_DOC_ROOT_FILES = frozenset({"AGENTS.md", "CLAUDE.md", "CHANGELOG.md", "README.md"})
+_MAX_DOC_PAGE_CHARS = 40_000  # cap on current-page content inlined into a write prompt
+
+
+def _safe_doc_page_path(path: object) -> bool:
+    """124(C): a page path from the MODEL's plan is untrusted. Accept only
+    repo-relative documenter targets — under ``docs/`` or a known root doc file —
+    and reject absolute paths / ``..`` traversal, so a hallucinated or malicious
+    path can never read or overwrite files outside the documenter's surface."""
+    if not isinstance(path, str) or not path:
+        return False
+    if os.path.isabs(path) or ".." in Path(path).parts:
+        return False
+    parts = Path(path).parts
+    if parts and parts[0] == "docs":
+        return True
+    return path in _DOC_ROOT_FILES
+
+
+def _doc_write_dispatch_error(
+    perf: Performance, page: dict, exc: Exception,
+) -> PerformerResponse:
+    """124(C, review): a per-page write dispatch (backend.start) failed. Fail the
+    documenting job fast with a clean terminal error + consistent perf state,
+    rather than propagating an exception out of handle_status (which would leave
+    the job half-set at doc_phase='writing' with no status response)."""
+    log.error("start_doc_write_failed", page=(page or {}).get("path"), error=str(exc))
+    perf.state = "error"
+    perf.error_reason = (
+        f"Failed to dispatch documentation page write "
+        f"({(page or {}).get('path')}): {exc}"
+    )
+    return PerformerResponse(
+        status="error", session_id=perf.session_id, reason=perf.error_reason,
+    )
+
+
+async def _start_doc_write(
+    perf: Performance, page: dict, settings: Settings | None,
+) -> None:
+    """124(C): dispatch a fresh, minimal single-page WRITE run on the same backend.
+
+    The write Score carries ``doc_write_target`` (routing hermes to a small,
+    diff-free per-page prompt) plus the page's CURRENT content so the model
+    updates rather than reinvents it. Reuses the dispatched model + token budget.
+    Because ``start()`` resets the backend status to running, the poll loop simply
+    revisits this handler when the write completes.
+    """
+    current = ""
+    rel = page["path"]
+    try:
+        base = perf.stand.path.resolve()
+        target = (perf.stand.path / rel).resolve()
+        # Containment (defense in depth — the queue is already path-filtered):
+        # never read outside the checkout, even via a residual traversal/symlink.
+        if target.is_relative_to(base) and target.is_file():
+            current = target.read_text(encoding="utf-8", errors="replace")[:_MAX_DOC_PAGE_CHARS]
+    except (OSError, ValueError):
+        current = ""
+    write_score = perf.score.model_copy(update={
+        "doc_write_target": {
+            "path": rel, "intent": page.get("intent", ""), "current": current,
+        },
+        "pr_diff": "",  # keep the per-page context small — the whole point of C
+    })
+    await perf.backend.start(
+        perf.stand, write_score,
+        model=perf.score.model or None,
+        effort=perf.score.effort or None,
+        temperature=perf.score.temperature,
+        max_tokens=perf.score.max_tokens,
+    )
+
+
+async def _commit_doc_batch(perf: Performance) -> PerformerResponse:
+    """124(C): batch-commit the accumulated page writes + planned deletions in one
+    commit, then return the terminal ``docs_committed`` (or an error)."""
+    issue_num = perf.score.issue_number
+    batch_msg = (
+        f"docs(#{issue_num}): update wiki and card documentation"
+        if issue_num else "docs: update wiki and card documentation"
+    )
+    valid_files = [
+        f for f in perf.doc_files_pending
+        if isinstance(f, dict) and f.get("path") and isinstance(f.get("content"), str)
+    ]
+    if valid_files or perf.doc_deletions:
+        try:
+            committed = await commit_files(
+                perf.stand, valid_files, batch_msg, deletions=perf.doc_deletions,
+            )
+            perf.docs_files_modified.extend(committed)
+        except Exception as exc:
+            log.error("docs_batch_commit_failed", error=str(exc))
+            perf.state = "error"
+            perf.error_reason = f"Failed to batch-commit doc files: {exc}"
+            return PerformerResponse(
+                status="error", session_id=perf.session_id, reason=perf.error_reason,
+            )
+    perf.state = "docs_committed"
+    # 124(US2): the symphony-init dispatch (doc_mode="init") is CARDLESS — there is
+    # no existing PR, so open a seed PR here (commit_files already pushed the
+    # branch) and hand its node id back so the coordinare's WikiInitService can
+    # auto-merge it. Best-effort: a PR-open failure still returns docs_committed
+    # (the branch carries the wiki); the operator can open the PR manually.
+    pr_url = pr_node_id = None
+    if getattr(perf.score, "doc_mode", "update") == "init" and perf.docs_files_modified:
+        try:
+            owner, repo = perf.score.owner_repo
+            pr_url, pr_node_id = await create_pull_request(
+                owner, repo, perf.score, perf.stand.branch,
+                perf.score.effective_github_token,
+            )
+            perf.pr_url, perf.pr_node_id = pr_url, pr_node_id
+        except Exception as exc:  # noqa: BLE001 — never fail the doc commit on PR-open
+            log.error("wiki_init.pr_open_failed", error=str(exc))
+    return PerformerResponse(
+        status="docs_committed", session_id=perf.session_id,
+        files_modified=perf.docs_files_modified, pr_url=pr_url, pr_node_id=pr_node_id,
+    )
+
+
+async def _advance_doc_writes(
+    perf: Performance, docs_raw: str, settings: Settings | None,
+) -> PerformerResponse:
+    """124(C): a per-page WRITE run finished — accumulate its file, then dispatch
+    the next queued page or batch-commit when the queue drains. A page whose
+    output can't be parsed is logged and skipped (the rest still commit) rather
+    than failing the whole documenting job."""
+    parsed = _extract_json(docs_raw) if isinstance(docs_raw, str) else docs_raw
+    entry: list[dict] = []
+    if isinstance(parsed, dict):
+        files = parsed.get("files")
+        if isinstance(files, list):
+            entry = [
+                f for f in files
+                if isinstance(f, dict) and f.get("path") and isinstance(f.get("content"), str)
+            ]
+        elif parsed.get("path") and isinstance(parsed.get("content"), str):
+            entry = [{"path": parsed["path"], "content": parsed["content"]}]
+    current_page = perf.doc_write_queue[0]["path"] if perf.doc_write_queue else "?"
+    if entry:
+        perf.doc_files_pending.extend(entry)
+    else:
+        log.warning("docs.write_page_unparsed", page=current_page)
+    if perf.doc_write_queue:
+        perf.doc_write_queue.pop(0)
+    if perf.doc_write_queue:
+        nxt = perf.doc_write_queue[0]
+        perf.parse_retry_count = 0
+        try:
+            await _start_doc_write(perf, nxt, settings)
+        except Exception as exc:
+            return _doc_write_dispatch_error(perf, nxt, exc)
+        return PerformerResponse(
+            status="working", session_id=perf.session_id,
+            progress=f"Documenting: writing {nxt['path']}",
+        )
+    return await _commit_doc_batch(perf)
+
+
 async def handle_status(
     msg: PerformerMessage,
     perf: Performance | None,
@@ -2860,60 +3021,67 @@ async def handle_status(
                 report=_fail_report,
             )
 
-        # 024: Tech writer path — commit documentation files, return docs_committed.
+        # 024/124(C): Tech-writer path — plan->write decomposition. The FIRST
+        # backend run produces a PLAN (which pages to write/retire — tiny output);
+        # each later run WRITES one page (small output); when the queue drains we
+        # batch-commit. Splitting the work keeps every model call small — the
+        # reliability fix for gpt-oss on multi-page wiki jobs.
         if perf.role == "documenting":
             docs_raw = backend_status.output or ""
+
+            # WRITE phase: a per-page write just completed → accumulate + advance.
+            if perf.doc_phase == "writing":
+                return await _advance_doc_writes(perf, docs_raw, settings)
+
+            # PLAN phase: this first completion is the page plan.
             if not docs_raw.strip():
-                # Empty diff or config-only changes — return docs_committed with empty list (FR-010)
+                # Nothing emitted — treat as "no doc changes" (FR-010).
                 perf.state = "docs_committed"
                 perf.docs_files_modified = []
                 return PerformerResponse(
-                    status="docs_committed",
-                    session_id=perf.session_id,
-                    files_modified=[],
+                    status="docs_committed", session_id=perf.session_id, files_modified=[],
                 )
-            docs_output = _extract_json(docs_raw) if isinstance(docs_raw, str) else docs_raw
-            if not isinstance(docs_output, dict):
+            plan = _extract_json(docs_raw) if isinstance(docs_raw, str) else docs_raw
+            if not isinstance(plan, dict):
                 return await _handle_backend_parse_failure(
-                    perf, docs_raw, "docs", settings,
+                    perf, docs_raw, "docs plan", settings,
                     "could not be parsed as a JSON object",
                 )
-
-            # 044: Batch-commit all documentation files in a single commit
-            # instead of per-file commits (which produced 14+ "docs: update
-            # documentation" commits on PR #94).
-            doc_files = docs_output.get("files", [])
-            if not isinstance(doc_files, list):
-                log.warning("docs.files_not_a_list", files_type=type(doc_files).__name__)
-                doc_files = []
-            valid_files = [
-                df for df in doc_files
-                if isinstance(df, dict) and df.get("path") and isinstance(df.get("content"), str)
+            raw_del = plan.get("deletions", [])
+            perf.doc_deletions = (
+                [d for d in raw_del if isinstance(d, str) and d]
+                if isinstance(raw_del, list) else []
+            )
+            # Backward-compat: only hermes is prompted to PLAN. A backend that
+            # emitted the legacy single-shot {files} manifest (e.g. a non-hermes
+            # documenter, or an old-image hermes) has no "pages" key — commit it
+            # directly instead of mis-reading it as an empty plan and silently
+            # writing nothing.
+            if "pages" not in plan and isinstance(plan.get("files"), list):
+                perf.doc_files_pending = [
+                    f for f in plan["files"]
+                    if isinstance(f, dict) and f.get("path") and isinstance(f.get("content"), str)
+                ]
+                return await _commit_doc_batch(perf)
+            raw_pages = plan.get("pages", [])
+            pages = [
+                {"path": p["path"], "intent": str(p.get("intent", "")).strip()}
+                for p in (raw_pages if isinstance(raw_pages, list) else [])
+                if isinstance(p, dict) and _safe_doc_page_path(p.get("path"))
             ]
-            if valid_files:
-                issue_num = perf.score.issue_number
-                batch_msg = (
-                    f"docs(#{issue_num}): update wiki and card documentation"
-                    if issue_num
-                    else "docs: update wiki and card documentation"
-                )
-                try:
-                    committed = await commit_files(perf.stand, valid_files, batch_msg)
-                    perf.docs_files_modified.extend(committed)
-                except Exception as exc:
-                    log.error("docs_batch_commit_failed", error=str(exc))
-                    perf.state = "error"
-                    perf.error_reason = f"Failed to batch-commit doc files: {exc}"
-                    return PerformerResponse(
-                        status="error", session_id=perf.session_id,
-                        reason=perf.error_reason,
-                    )
-
-            perf.state = "docs_committed"
+            if not pages:
+                # Nothing to write — commit any planned deletions (or no-op).
+                return await _commit_doc_batch(perf)
+            perf.doc_phase = "writing"
+            perf.doc_write_queue = pages
+            perf.parse_retry_count = 0
+            try:
+                await _start_doc_write(perf, pages[0], settings)
+            except Exception as exc:
+                return _doc_write_dispatch_error(perf, pages[0], exc)
             return PerformerResponse(
-                status="docs_committed",
-                session_id=perf.session_id,
-                files_modified=perf.docs_files_modified,
+                status="working", session_id=perf.session_id,
+                progress=f"Documenting: writing {pages[0]['path']} (1/{len(pages)})",
             )
 
         # 060/Option A: env_bootstrap path — backend ran install commands

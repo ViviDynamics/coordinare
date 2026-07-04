@@ -285,6 +285,19 @@ def grade_tech_writer(c: GradeCtx) -> tuple[bool, list[str], str]:
     return contract_ok, (["docs_reference_coupon"] if doc else []), f"status={c.status} doc_hits={bool(doc)}"
 
 
+def grade_documenter(c: GradeCtx) -> tuple[bool, list[str], str]:
+    # 124: the documenter maintains a living docs/wiki record of truth. Contract
+    # = docs_committed AND a README entrypoint plus at least one section page
+    # produced under docs/wiki/.
+    wiki = _docker_exec(
+        c.cid,
+        f"cd {c.repo_subdir} 2>/dev/null && "
+        f"(test -f docs/wiki/README.md && find docs/wiki -name '*.md' 2>/dev/null | head -3)",
+    )
+    contract_ok = c.status == "docs_committed" and bool(wiki)
+    return contract_ok, (["wiki_pages_present"] if wiki else []), f"status={c.status} wiki={bool(wiki)}"
+
+
 def grade_closer(c: GradeCtx) -> tuple[bool, list[str], str]:
     # Clean, correct PR → closer should reach a terminal review verdict.
     contract_ok = c.status in ("approved", "changes_requested", "qa_passed")
@@ -404,6 +417,21 @@ TASKS: list[RoleTask] = [
         grade_tech_writer,
         "CORRECT = adds real documentation for apply_coupon (docstring/README "
         "mentioning the coupon codes). WRONG = no docs added.",
+    ),
+    RoleTask(
+        "tech_writer", "documenting", "feat/techwriter-wiki", None,
+        "Maintain the living project wiki",
+        "Recent changes added new modules with no docs/wiki/ coverage. "
+        "Build/update the docs/wiki/ record of truth (README.md entrypoint + "
+        "section pages, and AGENTS.md/CLAUDE.md pointers) so it covers the "
+        "repository for other agents to read.",
+        ["docs/wiki/ documents the repository"],
+        "You are the documenter. Maintain docs/wiki/ as the project's living "
+        "record of truth for other agents to read.",
+        grade_documenter,
+        "CORRECT = docs/wiki/ has a README entrypoint plus accurate section pages "
+        "describing the repo (modules, workflows). WRONG = no docs/wiki/ produced "
+        "or empty/irrelevant.",
     ),
     RoleTask(
         "closer", "closing_review", "feat/closer-ready", "closer",

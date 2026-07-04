@@ -1997,9 +1997,9 @@ _REVIEW_DIFF = "diff --git a/src/app.py b/src/app.py\n+    margin = base * 0.9\n
         ("reviewing", "reviewing"),
         ("closing_review", "closing_review"),
         ("qa", "qa"),
-        # documenting is exercised separately by the US1 doc-gate tests below:
-        # its diff fetch doubles as the doc-change gate, so it does not fit this
-        # single-get_pr_diff-call parametrization.
+        # documenting is covered separately (124: it always dispatches — see
+        # test_documenting_dispatched_even_without_doc_changes); it does not fit
+        # this review-diff-injection parametrization.
     ],
 )
 async def test_review_roles_receive_pr_diff(stage, role_key) -> None:
@@ -2203,82 +2203,17 @@ async def test_dispatch_test_env_absent_when_no_source_configured(
 
 
 # ---------------------------------------------------------------------------
-# 123 US1 (T007): tech_writer doc-change gate
+# 124 (FR-006): the wiki-maintaining documenter always runs (no docs-path skip)
 # ---------------------------------------------------------------------------
 
-from coordinare.graph.nodes.dispatch_performer import _should_skip_documenting  # noqa: E402
-
-
-def test_should_skip_documenting_true_for_non_doc_diff() -> None:
-    """123 FR-001: no docs/ path in the diff → skip documenting."""
-    assert _should_skip_documenting(
-        ["src/coordinare/services/qa_verdict.py", "tests/unit/services/test_qa_verdict.py"]
-    ) is True
-
-
-def test_should_skip_documenting_false_when_docs_present() -> None:
-    """123 FR-001: a docs/ path present → do NOT skip."""
-    assert _should_skip_documenting(
-        ["src/coordinare/services/qa_verdict.py", "docs/api/qa.md"]
-    ) is False
-
-
-def test_should_skip_documenting_true_for_empty_diff() -> None:
-    """123: an empty changed-files list has nothing to document → skip."""
-    assert _should_skip_documenting([]) is True
-
 
 @pytest.mark.asyncio
-async def test_documenting_skipped_and_advances_when_no_doc_changes() -> None:
-    """123 FR-002: documenting stage with no docs/ diff is not dispatched; the
-    card advances to the next stage."""
+async def test_documenting_dispatched_even_without_doc_changes() -> None:
+    """124 FR-006: the documenter maintains the living docs/wiki from the card's
+    CODE changes, so the documenting stage runs even when the PR touches no
+    docs/ path (the 123 docs-path skip was removed for the wiki documenter)."""
     svc = _Service()
-    github = _GitHubWithDiff(diff_raw=_REVIEW_DIFF, diff_files=["src/app.py"])
-    state = _base_state(
-        github_service=github,
-        performer_services={"documenting": svc, "closing_review": _Service()},
-        performer_stage="documenting",
-        lifecycle_sequence=["documenting", "closing_review"],
-        current_card=dict(_REVIEW_CARD),
-    )
-
-    await dispatch_performer(state)
-
-    # tech_writer never dispatched; stage advanced to closing_review.
-    assert svc.dispatched == []
-    assert state["performer_stage"] == "closing_review"
-    assert state["phase"] == "dispatching"
-
-
-@pytest.mark.asyncio
-async def test_documenting_dispatched_when_doc_changes_present() -> None:
-    """123 FR-001: documenting stage WITH a docs/ diff dispatches tech_writer."""
-    svc = _Service()
-    github = _GitHubWithDiff(diff_raw=_REVIEW_DIFF, diff_files=["docs/wiki/setup.md"])
-    state = _base_state(
-        github_service=github,
-        performer_services={"documenting": svc},
-        performer_stage="documenting",
-        lifecycle_sequence=["documenting"],
-        current_card=dict(_REVIEW_CARD),
-    )
-
-    await dispatch_performer(state)
-
-    assert len(svc.dispatched) == 1
-
-
-@pytest.mark.asyncio
-async def test_documenting_dispatched_when_diff_fetch_fails() -> None:
-    """123: fail-open — if the changed files can't be fetched, dispatch anyway
-    (never skip on an unknown diff)."""
-    svc = _Service()
-
-    class _GitHubDiffRaises(_GitHubWithDiff):
-        async def get_pr_diff(self, pr_url: str):
-            raise RuntimeError("boom")
-
-    github = _GitHubDiffRaises(diff_raw="", diff_files=[])
+    github = _GitHubWithDiff(diff_raw=_REVIEW_DIFF, diff_files=["src/app.py"])  # no docs/ path
     state = _base_state(
         github_service=github,
         performer_services={"documenting": svc},

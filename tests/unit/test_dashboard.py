@@ -2209,3 +2209,57 @@ def test_config_tabs_support_keyboard_navigation() -> None:
     assert "ArrowLeft" in _DASHBOARD_HTML
     assert "Home" in _DASHBOARD_HTML
     assert "End" in _DASHBOARD_HTML
+
+
+# ---------------------------------------------------------------------------
+# 124 (US2) — "Init wiki" button endpoint (POST /api/symphonies/{name}/wiki-init)
+# ---------------------------------------------------------------------------
+
+
+def _daemon_with_symphony(wiki_in_flight: bool = False, has_cache: bool = True) -> MagicMock:
+    import types
+    daemon = _make_mock_daemon()
+    daemon.state["symphony_configs"] = {"website": object()}
+    daemon.state["env_cache"] = (
+        {"website": types.SimpleNamespace(wiki_in_flight=wiki_in_flight)} if has_cache else {}
+    )
+    daemon._wiki_init_requests = set()
+    daemon._webhook_trigger = MagicMock()
+    return daemon
+
+
+def test_wiki_init_button_present_on_symphony_detail() -> None:
+    """The 'Init wiki' button ships in the dashboard HTML next to the env-bootstrap one."""
+    assert "sym-wiki-init-btn" in _DASHBOARD_HTML
+    assert "/wiki-init" in _DASHBOARD_HTML
+
+
+def test_wiki_init_endpoint_accepts_and_records_request() -> None:
+    daemon = _daemon_with_symphony()
+    client = _make_app(daemon=daemon)
+    r = client.post("/api/symphonies/website/wiki-init")
+    assert r.status_code == 202
+    assert r.json()["status"] == "accepted"
+    assert "website" in daemon._wiki_init_requests  # queued for the daemon to drain
+    daemon._webhook_trigger.set.assert_called_once()
+
+
+def test_wiki_init_endpoint_404_for_unknown_symphony() -> None:
+    daemon = _make_mock_daemon()
+    daemon.state["symphony_configs"] = {}
+    r = _make_app(daemon=daemon).post("/api/symphonies/nope/wiki-init")
+    assert r.status_code == 404
+
+
+def test_wiki_init_endpoint_409_when_in_flight() -> None:
+    daemon = _daemon_with_symphony(wiki_in_flight=True)
+    r = _make_app(daemon=daemon).post("/api/symphonies/website/wiki-init")
+    assert r.status_code == 409
+    assert r.json()["status"] == "wiki_in_flight"
+    assert "website" not in daemon._wiki_init_requests  # not queued
+
+
+def test_wiki_init_endpoint_503_when_cache_not_ready() -> None:
+    daemon = _daemon_with_symphony(has_cache=False)
+    r = _make_app(daemon=daemon).post("/api/symphonies/website/wiki-init")
+    assert r.status_code == 503

@@ -23,10 +23,11 @@ from coordinare.state_store import (
 )
 
 
-def test_current_schema_version_is_12() -> None:
-    """Spec 123 bumps the snapshot schema to v12 (split bounce budget +
-    assessor Q&A carryover)."""
-    assert CURRENT_SCHEMA_VERSION == 12
+def test_current_schema_version_at_least_12() -> None:
+    """Spec 123 bumped the snapshot schema to v12 (split bounce budget +
+    assessor Q&A carryover). Later bumps (e.g. 124 → v13) keep the v12 fields,
+    so this migration contract only requires the current version be >= 12."""
+    assert CURRENT_SCHEMA_VERSION >= 12
 
 
 def test_min_supported_unchanged() -> None:

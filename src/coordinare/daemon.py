@@ -301,6 +301,14 @@ def _persist_env_cache(env_cache: dict[str, Any]) -> dict[str, EnvCacheStateSnap
             bootstrap_exhausted=bool(get("bootstrap_exhausted") or False),
             # 092 (FR-016/FR-017): persist the discovered test-env PATH only.
             test_env_source=get("test_env_source"),
+            # 124 (US2): docs/wiki wiki-init durable state (wiki_in_flight is
+            # transient and deliberately not persisted).
+            wiki_initialized=bool(get("wiki_initialized") or False),
+            wiki_attempts=int(get("wiki_attempts") or 0),
+            wiki_exhausted=bool(get("wiki_exhausted") or False),
+            last_wiki_init_at=get("last_wiki_init_at"),
+            last_wiki_init_succeeded=get("last_wiki_init_succeeded"),
+            last_wiki_init_error=get("last_wiki_init_error"),
         )
     return out
 
@@ -556,6 +564,14 @@ class CoordinareDaemon:
         self._config_reload_trigger: asyncio.Event = asyncio.Event()
         # 060: References to in-flight bootstrap poll tasks (prevents GC).
         self._bootstrap_poll_tasks: set[asyncio.Task[None]] = set()
+        # 124 (US2): manual wiki-init requests from the dashboard button, drained
+        # once per cycle; the WikiInitService brain (auto-merge + state) is reused,
+        # but the trigger here is operator-initiated (no auto-gate), so it never
+        # holds other dispatch. Poll-task refs kept to prevent GC.
+        self._wiki_init_requests: set[str] = set()
+        self._wiki_init_poll_tasks: set[asyncio.Task[None]] = set()
+        from coordinare.services.wiki_init import WikiInitService
+        self._wiki_init_svc = WikiInitService()  # auto-gate disabled; manual trigger only
         # 088 (US5): completion handlers (env-cache bootstrap) flush the
         # snapshot immediately — a bootstrap finishing moves no lifecycle
         # signature, so the signature-gated save above would otherwise defer
@@ -846,6 +862,14 @@ class CoordinareDaemon:
                         # 088 (FR-009): the breaker budget survives restarts.
                         live.bootstrap_attempts = persisted.bootstrap_attempts
                         live.bootstrap_exhausted = persisted.bootstrap_exhausted
+                        # 124 (US3): the wiki-init marker + breaker survive
+                        # restarts so an initialized symphony is never re-seeded.
+                        live.wiki_initialized = getattr(persisted, "wiki_initialized", False)
+                        live.wiki_attempts = getattr(persisted, "wiki_attempts", 0)
+                        live.wiki_exhausted = getattr(persisted, "wiki_exhausted", False)
+                        live.last_wiki_init_at = getattr(persisted, "last_wiki_init_at", None)
+                        live.last_wiki_init_succeeded = getattr(persisted, "last_wiki_init_succeeded", None)
+                        live.last_wiki_init_error = getattr(persisted, "last_wiki_init_error", None)
                     except Exception as exc:  # pragma: no cover — defensive
                         logger.warning(
                             "state_store.env_cache_rehydrate_failed",
@@ -2267,6 +2291,123 @@ class CoordinareDaemon:
                 error=str(exc),
             )
 
+    async def _execute_wiki_init_dispatch(self, symphony_name: str, github: Any) -> None:
+        """124(US2): dispatch a CARDLESS documenter run in init mode to seed the
+        symphony's ``docs/wiki``, then poll → auto-merge the seed PR via
+        WikiInitService. Triggered manually by the dashboard "Init wiki" button
+        (operator-initiated — no auto-gate, so it never holds other dispatch)."""
+        from coordinare.services.env_cache import sanitise_symphony_name
+        from coordinare.services.persona_service import get_effective_instructions
+
+        svc = (self._state.get("performer_services") or {}).get("documenting")
+        if svc is None:
+            logger.warning("wiki_init.no_documenting_service", symphony=symphony_name)
+            return
+        ec = (self._state.get("env_cache") or {}).get(symphony_name)
+        if ec is None or getattr(ec, "wiki_in_flight", False):
+            return
+        try:
+            org = getattr(github, "org", None) or getattr(github, "_org", "") or ""
+            repo = getattr(github, "_project_name", "") or ""
+            token = await github.get_token() if hasattr(github, "get_token") else ""
+        except Exception as exc:
+            logger.warning("wiki_init.repo_resolve_failed", symphony=symphony_name, error=str(exc))
+            return
+        if not (org and repo):
+            logger.warning("wiki_init.repo_unknown", symphony=symphony_name, org=org, repo=repo)
+            return
+
+        cfg = self._state.get("config")
+        persona, backend, model_block = "", "hermes", {}
+        if cfg is not None:
+            try:
+                persona = get_effective_instructions("tech_writer", cfg.personas)
+            except Exception:
+                persona = ""
+            rc = cfg.performers.resolved_role("tech_writer") if hasattr(cfg, "performers") else None
+            if rc is not None and getattr(rc, "backend", None):
+                backend = rc.backend
+            try:
+                model_block = cfg.resolve_performer_dispatch_model("tech_writer")
+            except Exception:
+                model_block = {}
+
+        card_context: dict[str, Any] = {
+            "card_id": f"wiki-init-{symphony_name}",
+            "role": "documenting",
+            "doc_mode": "init",
+            "repo_url": f"https://github.com/{org}/{repo}.git",
+            "branch": f"wiki-init/{sanitise_symphony_name(symphony_name)}",
+            "base_branch": "main",
+            "github_token": token,
+            "title": "Initialize the project wiki",
+            "description": (
+                "Build the initial living docs/wiki for this repository — a "
+                "README.md entrypoint plus section pages grounded in the actual "
+                "code — and add the Project Wiki pointer to AGENTS.md/CLAUDE.md."
+            ),
+            "persona_instructions": persona,
+            "backend": backend,
+            **model_block,
+        }
+        ec.wiki_in_flight = True
+        try:
+            result = await svc.dispatch_card(card_context)
+        except Exception as exc:
+            ec.wiki_in_flight = False
+            logger.warning("wiki_init.dispatch_failed", symphony=symphony_name, error=str(exc))
+            return
+        session_id = (result or {}).get("session_id") or (result or {}).get("job_id")
+        if not session_id:
+            ec.wiki_in_flight = False
+            logger.warning("wiki_init.no_session_id", symphony=symphony_name, result=str(result)[:200])
+            return
+        logger.info(
+            "wiki_init.dispatched", symphony=symphony_name,
+            branch=card_context["branch"], session_id=session_id,
+        )
+        task = asyncio.create_task(
+            self._poll_wiki_init_completion(symphony_name, svc, session_id, github)
+        )
+        self._wiki_init_poll_tasks.add(task)
+        task.add_done_callback(self._wiki_init_poll_tasks.discard)
+
+    async def _poll_wiki_init_completion(
+        self, symphony_name: str, svc: Any, session_id: str, github: Any,
+    ) -> None:
+        """Poll a wiki-init documenting job to terminal, then hand its seed PR to
+        WikiInitService for auto-merge (CI-green + trusted-bot) or record a
+        failure. Empty trusted-bot list simply leaves the PR open for human review."""
+        ec = (self._state.get("env_cache") or {}).get(symphony_name)
+        if ec is None:
+            return
+        cfg = self._state.get("config")
+        trusted = list(getattr(cfg, "trusted_bot_reviewers", []) or []) if cfg else []
+        notif = self._state.get("notification_service")
+        status: dict = {}
+        for _ in range(180):  # 30 min at 10s — a full-wiki build on a slow model
+            await asyncio.sleep(10)
+            try:
+                status = await svc.check_status(session_id)
+            except Exception as exc:
+                logger.debug("wiki_init.poll_error", symphony=symphony_name, error=str(exc))
+                continue
+            st = (status or {}).get("status") or (status or {}).get("state")
+            if st in ("docs_committed", "error", "failed", "blocked", "cancelled"):
+                break
+        st = (status or {}).get("status") or ""
+        succeeded = st == "docs_committed"
+        pr_node_id = (status or {}).get("pr_node_id") or ""
+        try:
+            await self._wiki_init_svc.handle_init_result(
+                symphony_name, ec, github, pr_node_id, trusted, notif,
+                job_succeeded=succeeded,
+                error=(None if succeeded else ((status or {}).get("reason") or st or "wiki-init failed")),
+            )
+        except Exception as exc:
+            ec.wiki_in_flight = False
+            logger.warning("wiki_init.handle_result_failed", symphony=symphony_name, error=str(exc))
+
     async def _execute_bootstrap_dispatch(
         self,
         performer_id: str,
@@ -2650,6 +2791,24 @@ class CoordinareDaemon:
                                 llm_chat=self._get_manifest_llm_chat(),
                                 clean_verify_fn=_clean_verify_fn,
                             )
+
+                        # 124(US2): drain manual wiki-init requests (dashboard
+                        # "Init wiki" button). Operator-initiated, so it dispatches
+                        # regardless of the default-off auto-gate and holds nothing.
+                        if self._wiki_init_requests:
+                            for _wsym in list(self._wiki_init_requests):
+                                self._wiki_init_requests.discard(_wsym)
+                                _wgh = _sym_gh_svcs.get(_wsym)
+                                if _wgh is not None:
+                                    await self._execute_wiki_init_dispatch(_wsym, _wgh)
+                                else:
+                                    # The symphony was removed/disabled between the
+                                    # button click (202) and this drain. Surface the
+                                    # drop rather than discarding it silently.
+                                    logger.warning(
+                                        "wiki_init.request_dropped_no_github_service",
+                                        symphony=_wsym,
+                                    )
 
                     logger.info(
                         "symphony.loop_entry",

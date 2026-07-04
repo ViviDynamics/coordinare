@@ -70,6 +70,18 @@ class EnvCacheState(BaseModel):
     # carrying baked-in secret values.
     test_env_source: str | None = None
 
+    # 124 (US2): living docs/wiki initialization gate state, co-located here
+    # (persisted subset mirrors EnvCacheStateSnapshot; wiki_in_flight is transient,
+    # reset on restart like bootstrap_in_flight). wiki_initialized is the durable
+    # marker that the seed wiki has merged to the default branch.
+    wiki_initialized: bool = False
+    wiki_in_flight: bool = False  # transient — a wiki-init job is mid-run
+    wiki_attempts: int = 0
+    wiki_exhausted: bool = False
+    last_wiki_init_at: datetime | None = None
+    last_wiki_init_succeeded: bool | None = None
+    last_wiki_init_error: str | None = None
+
 
 class BootstrapJobPayload(BaseModel):
     """Dispatch payload for an env_bootstrap performer job."""

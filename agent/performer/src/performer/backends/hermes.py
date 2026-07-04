@@ -157,9 +157,14 @@ class HermesBackend:
 
         self._api_key = api_key
         self._profile_dir = Path(tempfile.mkdtemp(prefix="hermes-job-"))
+        # 124: give the model an adequate output + input budget. max_tokens flows
+        # from the dispatched Score (config performers.<role>.max_tokens); the
+        # context window mirrors openclaw's OPENCLAW_CONTEXT_WINDOW via
+        # HERMES_CONTEXT_WINDOW (unset → hermes-agent's default applies).
         self._write_profile_config(
             self._profile_dir, provider=provider, base_url=base_url,
-            model=resolved_model,
+            model=resolved_model, max_tokens=self._max_tokens,
+            context_length=_env_int("HERMES_CONTEXT_WINDOW"),
         )
         # FR-015: route persona to hermes-agent's canonical identity slot.
         # When persona_instructions is empty we leave SOUL.md absent so
@@ -422,7 +427,8 @@ class HermesBackend:
 
     def _write_profile_config(
         self, profile_dir: Path, *, provider: str = "", base_url: str = "",
-        model: str = "",
+        model: str = "", max_tokens: int | None = None,
+        context_length: int | None = None,
     ) -> None:
         """Write ``$HERMES_HOME/config.yaml``.
 
@@ -460,6 +466,15 @@ class HermesBackend:
             ]
             if model:
                 cfg_lines.append(f"  default: {model}")
+            # 124: hermes-agent reads model.max_tokens (output cap) and
+            # model.context_length (agent_init.py:1455-1484). Left unset it uses
+            # the server default (often small), so context-heavy roles like the
+            # documenter truncate/derail. Emit both when configured so the model
+            # gets an adequate output + input budget.
+            if max_tokens:
+                cfg_lines.append(f"  max_tokens: {int(max_tokens)}")
+            if context_length:
+                cfg_lines.append(f"  context_length: {int(context_length)}")
         cfg_lines.append("")
         (profile_dir / "config.yaml").write_text("\n".join(cfg_lines))
 
@@ -606,6 +621,22 @@ class HermesBackend:
             self._finalize()
 
 
+def _env_int(name: str) -> int | None:
+    """Read a positive int from env *name*; None when unset/blank/invalid.
+
+    Used for HERMES_CONTEXT_WINDOW (the model context budget), mirroring
+    openclaw's OPENCLAW_CONTEXT_WINDOW pattern.
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
 def _extract_json_object(text: str) -> dict | None:
     """Best-effort extraction of a JSON object from hermes stdout.
 
@@ -710,6 +741,28 @@ def _build_task_prompt(
     queued relay feedback (one-shot replay) in front of any payload-side
     ``score.relay_feedback``.
     """
+    # 124 (C): write-phase of the documenter plan->write decomposition. A single
+    # focused page write, deliberately WITHOUT the PR diff / plan / card dump so
+    # the model's context stays small (that is the whole point of decomposing).
+    tgt = getattr(score, "doc_write_target", None)
+    if isinstance(tgt, dict) and tgt.get("path"):
+        wparts: list[str] = [
+            f"# Task: Write ONE documentation page — `{tgt['path']}`", "",
+            f"Intent for this page: {tgt.get('intent', 'update it to reflect the current code')}",
+            "",
+        ]
+        current = str(tgt.get("current") or "")
+        if current.strip():
+            wparts += [
+                "## Current content of this page (update it — keep what is still accurate)",
+                "", "```markdown", current.rstrip("\n"), "```", "",
+            ]
+        else:
+            wparts += ["This page does not exist yet — create it.", ""]
+        wparts += ["", "---"]
+        wparts += _role_output_block(score.role or "tech_writer", score)
+        return "\n".join(wparts)
+
     # FR-015: persona_instructions is written to `$HERMES_HOME/SOUL.md` at
     # start() so hermes-agent loads it as agent identity. Keeping it out of
     # the task prompt body avoids delivering persona twice.
@@ -784,11 +837,11 @@ def _build_task_prompt(
 
     parts += ["", "---"]
     role = score.role or "implementer"
-    parts += _role_output_block(role)
+    parts += _role_output_block(role, score)
     return "\n".join(parts)
 
 
-def _role_output_block(role: str) -> list[str]:
+def _role_output_block(role: str, score: "Score | None" = None) -> list[str]:
     """Role-specific output requirements appended to the prompt (FR-001a)."""
     if role == DIAGNOSTIC_ROLE:
         return [
@@ -796,6 +849,47 @@ def _role_output_block(role: str) -> list[str]:
             "This is a one-off diagnostic/benchmark task. Use any tools at your "
             "disposal to complete it. You do NOT need to commit, push, or open a "
             "pull request — just perform the task and report what you did.",
+        ]
+    if role == "tech_writer":
+        # 124 (B+C): the concrete contract lives IN THE TASK PROMPT (not only
+        # SOUL.md, which hermes-agent doesn't reliably honor for gpt-oss). The
+        # documenter runs as a plan->write decomposition (C): the FIRST call PLANS
+        # which pages to touch (tiny output); each later call WRITES one page
+        # (small output). Both explicitly forbid the observed edit-code/verify
+        # drift.
+        target = getattr(score, "doc_write_target", None) if score is not None else None
+        if isinstance(target, dict) and target.get("path"):
+            # WRITE phase: exactly one page.
+            return [
+                "## Role Output Requirements (tech_writer) — write one page",
+                "You are the DOCUMENTER. Do NOT edit source code, run tests, or "
+                "write a verification report.",
+                "Return ONLY JSON with EXACTLY this one file and nothing else:",
+                # json.dumps escapes the path so a quote/backslash can't produce a
+                # malformed example (the model is shown this as the exact shape).
+                '{"files": [{"path": ' + json.dumps(str(target["path"])) + ', '
+                '"content": "<the FULL markdown content of this page>"}]}',
+                '- "content" is the COMPLETE page — it REPLACES the file wholesale.',
+                "- Emit ONLY this one file. Do not add other files or a deletions key.",
+                "Do not include prose or code fences around the JSON.",
+            ]
+        # PLAN phase (default first call): decide pages, no content yet.
+        return [
+            "## Role Output Requirements (tech_writer) — plan",
+            "You are the DOCUMENTER. FIRST, PLAN the wiki changes — do NOT write "
+            "page content yet, do NOT edit source code, and do NOT write a "
+            "verification report.",
+            "Return ONLY this JSON plan and nothing else:",
+            '{"pages": [{"path": "docs/wiki/<page>.md", "intent": "<one line: what '
+            'to add/change on this page>"}], "deletions": ["docs/wiki/<dead-page>.md"]}',
+            "- List ONLY pages THIS change actually warrants creating/updating. Be "
+            'conservative: for a trivial/cosmetic change return {"pages": [], "deletions": []}.',
+            "- If `AGENTS.md` or `CLAUDE.md` does not yet contain a `## Project Wiki` "
+            "pointer to `docs/wiki/`, include that file as a page so agents can "
+            "discover the wiki (preserve its existing content when you write it).",
+            '- "deletions" (optional, docs/ only) retires dead or low-value pages.',
+            "- You will then be asked to write each planned page one at a time.",
+            "Do not include prose or code fences around the JSON.",
         ]
     if role in _JSON_ONLY_ROLES:
         return [

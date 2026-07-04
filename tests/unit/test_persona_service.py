@@ -91,6 +91,74 @@ def test_implementer_default_forbids_weakening_tests() -> None:
     assert "human" in lower
 
 
+def test_tech_writer_default_maintains_wiki_grounded() -> None:
+    """124 (US1/US3): the documenter persona maintains a source-grounded living
+    docs/wiki with a README entrypoint, and never invents facts."""
+    personas = PersonasConfig()
+    text = get_effective_instructions("tech_writer", personas)
+    lower = text.lower()
+
+    assert "docs/wiki/" in text
+    assert "docs/wiki/README.md" in text  # the entrypoint
+    # Grounding is non-negotiable: no invented facts, read the code.
+    assert "invent" in lower
+    assert "ground" in lower
+    # Still emits the standard {files} JSON commit contract.
+    assert '"files"' in text
+
+
+def test_tech_writer_default_preserves_pointer_files() -> None:
+    """124 (review): the AGENTS.md/CLAUDE.md pointer task must instruct the model
+    to PRESERVE existing file content (read-first, emit the COMPLETE file), so a
+    weaker self-hosted model cannot clobber those shared files by emitting only
+    the wiki section."""
+    personas = PersonasConfig()
+    text = get_effective_instructions("tech_writer", personas)
+    lower = text.lower()
+
+    assert "AGENTS.md" in text
+    assert "CLAUDE.md" in text
+    # Preserve existing content; never emit only the section.
+    assert "preserve" in lower
+    assert "never emit" in lower or "leave it untouched" in lower
+    # The safety escape hatch: if you can't read it, don't overwrite it.
+    assert "untouched" in lower
+
+
+def test_tech_writer_default_has_significance_gate() -> None:
+    """124 (feedback): the documenter runs on every card, so the persona must tell
+    it to be conservative — return no files for cosmetic/trivial changes, and never
+    keep a per-card changelog in the wiki. Prevents churn/noise on minor changes."""
+    personas = PersonasConfig()
+    text = get_effective_instructions("tech_writer", personas)
+    lower = text.lower()
+
+    assert "conservative" in lower
+    # No-op (empty file list) for trivial changes rather than churning the wiki.
+    assert '{"files": []}' in text
+    # Names the trivial-change classes so the model recognizes them as skip-worthy.
+    for trivial in ("typo", "cosmetic", "dependency", "test-only"):
+        assert trivial in lower, trivial
+    # The wiki is not a per-card changelog.
+    assert "per-card changelog" in lower
+
+
+def test_tech_writer_default_prunes_low_value_content() -> None:
+    """124 (feedback): the documenter is a curator, not just an author — it audits
+    the WHOLE existing wiki and trims low/no-value content (stale, thin stubs,
+    duplication, changelog cruft), pruning noise but never signal."""
+    personas = PersonasConfig()
+    text = get_effective_instructions("tech_writer", personas)
+    lower = text.lower()
+
+    assert "prune" in lower
+    assert "stale" in lower
+    # Audits the whole wiki each run, not just the changed area.
+    assert "whole wiki" in lower or "re-read the existing pages" in lower
+    # Prune noise, not signal.
+    assert "signal" in lower
+
+
 def test_implementer_default_steers_off_workflow_files() -> None:
     """The implementer persona must proactively steer the agent away from
     editing `.github/workflows/**`, since the GitHub App token lacks

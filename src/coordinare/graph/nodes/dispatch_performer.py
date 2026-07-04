@@ -310,42 +310,6 @@ async def _fetch_pr_diff_text(
     return sanitized
 
 
-def _should_skip_documenting(changed_files: list[str]) -> bool:
-    """123 US1 (FR-001/FR-002): True when the PR diff changes no ``docs/`` path.
-
-    When a PR touches no documentation, the documenting (tech_writer) stage has
-    nothing to do and can be skipped.  An empty ``changed_files`` list (no
-    textual changes — e.g. a diff of only binary/image files) also skips, since
-    there is likewise no doc content for the tech_writer to maintain.
-    """
-    return not any(str(path).startswith("docs/") for path in changed_files)
-
-
-async def _fetch_changed_files(
-    state: CoordinareState, card: dict[str, Any]
-) -> list[str] | None:
-    """Fetch the PR's changed-file paths for the doc gate, or None on failure.
-
-    Best-effort and fail-OPEN: a missing github service / ``pr_url`` or any
-    fetch error returns ``None`` so the caller does NOT skip documenting (when
-    we cannot tell what changed, dispatching tech_writer is the safe default).
-    """
-    github = state.get("github_service")
-    pr_url = str(card.get("pr_url") or "").strip()
-    if github is None or not hasattr(github, "get_pr_diff") or not pr_url:
-        return None
-    try:
-        _raw_diff, changed_files = await github.get_pr_diff(pr_url)
-    except Exception as exc:
-        logger.warning(
-            "dispatch_performer.doc_gate_diff_fetch_failed",
-            card_id=str(card.get("id", "")),
-            error_type=type(exc).__name__,
-        )
-        return None
-    return [str(f) for f in (changed_files or [])]
-
-
 async def _pre_dispatch_rebase_guard(state: CoordinareState, card_id: str) -> bool:
     """097: rebase a conflicting/behind in-flight branch before a performer starts.
 
@@ -761,27 +725,10 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
                 state[key] = value  # type: ignore[literal-required]
             return state
 
-    # 123 US1 (FR-001/FR-002): tech_writer doc-change gate. Before dispatching
-    # the documenting stage, skip it entirely when the PR diff changes no
-    # ``docs/`` path — the tech_writer has nothing to do. Advance the card as if
-    # documenting completed. Fail-open: if the changed files can't be fetched we
-    # dispatch tech_writer as usual (never skip on an unknown diff).
-    # (FR-003 content-hash dedup deferred: the existing doc_dedup.py performs
-    # markdown section-overlap merging, not content-hash-vs-last-commit dedup.)
-    if performer_stage == "documenting":
-        changed_files = await _fetch_changed_files(state, card)
-        if changed_files is not None and _should_skip_documenting(changed_files):
-            logger.info(
-                "dispatch_performer.stage_skipped",
-                reason="no_doc_changes",
-                card_id=card_id,
-                performer_stage=performer_stage,
-                changed_file_count=len(changed_files),
-            )
-            updates = _advance_stage(state)
-            for key, value in updates.items():
-                state[key] = value  # type: ignore[literal-required]
-            return state
+    # 124 (FR-006): the documenter maintains the living docs/wiki from the card's
+    # CODE changes, not just its docs/ paths — so it runs on every card and
+    # no-ops (empty {files}) when there is nothing to document. The 123 docs-path
+    # skip is therefore removed for the wiki-maintaining documenter.
 
     # 053: Guard against repeated PR churn for the same issue.
     config = state.get("config")
@@ -1308,6 +1255,7 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
         # next pickup cycle. (Supersedes the old activate.sh-only + opt-in
         # serialize_env_bootstrap gates.)
         _ec_state_for_sym = _env_cache_for_ec.get(_symphony_name_for_ec)
+
         _is_bootstrap_dispatch = performer_stage == "env_bootstrap"
         if not _is_bootstrap_dispatch and isinstance(_ec_state_for_sym, EnvCacheState):
             _current_and_verified = (
