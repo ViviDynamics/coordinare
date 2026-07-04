@@ -11,7 +11,7 @@ import uuid
 
 import pytest
 
-from tests.conftest import resolve_published_port, wait_for_status
+from tests.conftest import wait_for_status
 
 
 @pytest.mark.asyncio
@@ -77,7 +77,7 @@ async def test_dockerfile_full_advertises_all_capabilities(require_docker: None,
             backend_name = "claude" if backend == "claude_code" else backend
             run_result = subprocess.run(
                 [
-                    "docker", "run", "-d", "--rm", "-p", "0:8088",
+                    "docker", "run", "-d", "--rm",
                     "-e", f"BACKEND={backend_name}",
                     tag,
                 ],
@@ -91,12 +91,8 @@ async def test_dockerfile_full_advertises_all_capabilities(require_docker: None,
 
             container_id = run_result.stdout.strip()
 
-            port = resolve_published_port(container_id, 8088)
-
             # Poll until ready — npm/curl installs can take >10s
-            status_data = await wait_for_status(
-                port, timeout=120.0, container_id=container_id
-            )
+            status_data = await wait_for_status(container_id, timeout=120.0)
 
             backends = status_data.get("capabilities", {}).get("backends", [])
             advertised_backends.update(backends)

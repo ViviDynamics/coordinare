@@ -11,7 +11,7 @@ import uuid
 
 import pytest
 
-from tests.conftest import resolve_published_port, wait_for_status
+from tests.conftest import wait_for_status
 
 
 BACKENDS = ["claude_code", "codex", "junie", "opencode"]
@@ -83,7 +83,7 @@ async def test_dockerfile_slim_advertises_correct_backend(
 
     try:
         run_result = subprocess.run(
-            ["docker", "run", "-d", "--rm", "-p", "0:8088", tag],
+            ["docker", "run", "-d", "--rm", tag],
             capture_output=True,
             timeout=10,
             text=True,
@@ -94,9 +94,7 @@ async def test_dockerfile_slim_advertises_correct_backend(
 
         container_id = run_result.stdout.strip()
 
-        port = resolve_published_port(container_id, 8088)
-
-        status_data = await wait_for_status(port, container_id=container_id)
+        status_data = await wait_for_status(container_id)
         backends = status_data.get("capabilities", {}).get("backends", [])
 
         assert backend in backends, f"Backend {backend} not in {backends}"
@@ -154,7 +152,7 @@ async def test_dockerfile_slim_browser_toggle(
 
     try:
         run_result = subprocess.run(
-            ["docker", "run", "-d", "--rm", "-p", "0:8088", tag],
+            ["docker", "run", "-d", "--rm", tag],
             capture_output=True,
             timeout=10,
             text=True,
@@ -165,14 +163,10 @@ async def test_dockerfile_slim_browser_toggle(
 
         container_id = run_result.stdout.strip()
 
-        port = resolve_published_port(container_id, 8088)
-
         # Slim+browser is heavier than plain slim (Playwright + chromium), so
         # first-boot can exceed the 90s default. Observed flake during the 065
         # Fix 13 bin/build run; 180s gives margin without slowing the suite.
-        status_data = await wait_for_status(
-            port, timeout=180.0, container_id=container_id
-        )
+        status_data = await wait_for_status(container_id, timeout=180.0)
         tool_flags = status_data.get("capabilities", {}).get("tool_flags", [])
 
         assert "browser" in tool_flags, f"browser flag missing in {tool_flags}"

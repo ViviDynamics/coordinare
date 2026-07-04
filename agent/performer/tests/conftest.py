@@ -77,84 +77,66 @@ def anyio_backend() -> str:
     return "asyncio"
 
 
-def resolve_published_port(
-    container_id: str, internal_port: int, timeout: float = 10.0
-) -> str:
-    """Poll ``docker port`` until the ephemeral mapping is published.
-
-    ``docker run -d -p 0:<port>`` returns the container ID before the port
-    binding is actually wired through, so a naive ``docker port`` call races
-    and returns empty stdout — which then yields a malformed URL downstream
-    (curl hits ``http://127.0.0.1:/status`` and the request fails opaquely).
-    Poll briefly until docker reports the mapping.
-    """
-    deadline = time.monotonic() + timeout
-    last_stderr = ""
-    while time.monotonic() < deadline:
-        port_result = subprocess.run(
-            ["docker", "port", container_id, f"{internal_port}/tcp"],
-            capture_output=True,
-            timeout=10,
-            text=True,
-        )
-        if port_result.returncode == 0 and port_result.stdout.strip():
-            return port_result.stdout.strip().split("\n")[0].split(":")[-1]
-        last_stderr = port_result.stderr
-        time.sleep(0.2)
-    pytest.fail(
-        f"docker port never reported a mapping for {internal_port}/tcp: {last_stderr}"
-    )
-
-
 async def wait_for_status(
-    port: str, timeout: float = 90.0, container_id: str | None = None
+    container_id: str, *, timeout: float = 90.0, internal_port: int = 8088
 ) -> dict:
-    """Poll GET /status until the server responds or *timeout* seconds elapse.
+    """Poll GET /status *inside the container* until it responds or *timeout* elapses.
+
+    The probe runs ``docker exec <container_id> curl … http://127.0.0.1:<port>/status``
+    so it hits the container's own loopback, deliberately bypassing Docker's
+    host-port publishing. Host-port forwarding on a shared Docker Desktop host is
+    unreliable under container churn: an ephemeral host port assigned to this
+    container (``-p 0:8088``) can be misrouted to — or reused from — an unrelated
+    container that happens to publish the same internal port, and those foreign
+    servers routinely return HTTP 404 on ``/status``. That surfaces as a hang
+    until the full timeout wall with ``curl: (22) 404`` even though *this*
+    container's uvicorn is already serving ("Application startup complete").
+    The failure moved from backend to backend run-to-run because it tracked
+    Docker's ephemeral-port allocation, not any real defect. Probing inside the
+    container removes that entire class of race and makes the test deterministic.
 
     Raises pytest.fail (not skip) on timeout so the test counts as a failure.
     Uses a 2-second interval; the first attempt fires immediately.
 
-    If *container_id* is provided, the container's Running state is checked on
-    every poll cycle: a container that has already exited fails fast (no point
-    waiting the full timeout), and on any failure the container's stderr/stdout
-    logs are included in the pytest.fail message so the failure is diagnosable
-    instead of opaque.
+    The container's Running state is checked on every poll cycle: a container
+    that has already exited fails fast (no point waiting the full timeout), and
+    on any failure the container's stderr/stdout logs are included in the
+    pytest.fail message so the failure is diagnosable instead of opaque.
     """
+    url = f"http://127.0.0.1:{internal_port}/status"
     deadline = time.monotonic() + timeout
     last_stderr = ""
     while True:
         result = subprocess.run(
-            ["curl", "-sS", "-f", f"http://127.0.0.1:{port}/status"],
+            ["docker", "exec", container_id, "curl", "-sS", "-f", "--max-time", "5", url],
             capture_output=True,
-            timeout=5,
+            timeout=15,
             text=True,
         )
         if result.returncode == 0:
             return json.loads(result.stdout)
         last_stderr = result.stderr
 
-        if container_id:
-            inspect = subprocess.run(
-                ["docker", "inspect", "-f", "{{.State.Running}}", container_id],
-                capture_output=True,
-                timeout=5,
-                text=True,
+        inspect = subprocess.run(
+            ["docker", "inspect", "-f", "{{.State.Running}}", container_id],
+            capture_output=True,
+            timeout=5,
+            text=True,
+        )
+        if inspect.returncode == 0 and inspect.stdout.strip() == "false":
+            pytest.fail(
+                f"Container {container_id[:12]} exited before /status responded.\n"
+                f"exec curl stderr: {last_stderr}\n"
+                f"docker logs:\n{_docker_logs(container_id)}"
             )
-            if inspect.returncode == 0 and inspect.stdout.strip() == "false":
-                pytest.fail(
-                    f"Container {container_id[:12]} exited before /status responded.\n"
-                    f"curl stderr: {last_stderr}\n"
-                    f"docker logs:\n{_docker_logs(container_id)}"
-                )
 
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            logs_tail = (
-                f"\ndocker logs:\n{_docker_logs(container_id)}" if container_id else ""
-            )
             pytest.fail(
-                f"Server on port {port} did not respond within {timeout:.0f}s.\n"
-                f"curl stderr: {last_stderr}{logs_tail}"
+                f"/status inside container {container_id[:12]} did not respond "
+                f"within {timeout:.0f}s.\n"
+                f"exec curl stderr: {last_stderr}\n"
+                f"docker logs:\n{_docker_logs(container_id)}"
             )
         await asyncio.sleep(min(2.0, remaining))
 
