@@ -11,7 +11,7 @@ import uuid
 
 import pytest
 
-from tests.conftest import resolve_published_port, wait_for_status
+from tests.conftest import wait_for_status
 
 
 @pytest.mark.asyncio
@@ -69,7 +69,7 @@ async def test_dockerfile_base_advertises_universal_capabilities(require_docker:
 
     try:
         run_result = subprocess.run(
-            ["docker", "run", "-d", "--rm", "-p", "0:8088", tag],
+            ["docker", "run", "-d", "--rm", tag],
             capture_output=True,
             timeout=10,
             text=True,
@@ -80,9 +80,7 @@ async def test_dockerfile_base_advertises_universal_capabilities(require_docker:
 
         container_id = run_result.stdout.strip()
 
-        port = resolve_published_port(container_id, 8088)
-
-        status_data = await wait_for_status(port, container_id=container_id)
+        status_data = await wait_for_status(container_id)
 
         # Check that backends list is empty (base has no backend CLIs)
         assert status_data.get("capabilities", {}).get("backends", []) == []
