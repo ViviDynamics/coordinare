@@ -2298,6 +2298,7 @@ class CoordinareDaemon:
         (operator-initiated — no auto-gate, so it never holds other dispatch)."""
         from coordinare.services.env_cache import sanitise_symphony_name
         from coordinare.services.persona_service import get_effective_instructions
+        from coordinare.workspace import WorkspaceInfo
 
         svc = (self._state.get("performer_services") or {}).get("documenting")
         if svc is None:
@@ -2309,12 +2310,35 @@ class CoordinareDaemon:
         try:
             org = getattr(github, "org", None) or getattr(github, "_org", "") or ""
             repo = getattr(github, "_project_name", "") or ""
-            token = await github.get_token() if hasattr(github, "get_token") else ""
         except Exception as exc:
             logger.warning("wiki_init.repo_resolve_failed", symphony=symphony_name, error=str(exc))
             return
         if not (org and repo):
             logger.warning("wiki_init.repo_unknown", symphony=symphony_name, org=org, repo=repo)
+            return
+
+        # GITHUB_TOKEN provisioning: a cardless dispatch never flows through
+        # WorkspaceManager.prepare(), and the GitHubService itself exposes no
+        # get_token(). Fetch a fresh credential from the symphony's workspace
+        # manager (App installation token or configured PAT) — the same source
+        # the env_bootstrap dispatch uses — then fall back to the process env.
+        # Fail fast if none is available rather than dispatch a doomed job that
+        # the performer rejects with "permanent performer config error: GITHUB_TOKEN".
+        token = ""
+        sym_wm = (self._state.get("symphony_workspace_managers") or {}).get(symphony_name)
+        if sym_wm is not None and hasattr(sym_wm, "get_fresh_github_token"):
+            try:
+                token = await sym_wm.get_fresh_github_token() or ""
+            except Exception as exc:
+                logger.warning(
+                    "wiki_init.token_fetch_failed", symphony=symphony_name, error=str(exc)
+                )
+        if not token:
+            import os
+
+            token = os.environ.get("GITHUB_TOKEN", "")
+        if not token:
+            logger.warning("wiki_init.no_github_token", symphony=symphony_name)
             return
 
         cfg = self._state.get("config")
@@ -2339,7 +2363,6 @@ class CoordinareDaemon:
             "repo_url": f"https://github.com/{org}/{repo}.git",
             "branch": f"wiki-init/{sanitise_symphony_name(symphony_name)}",
             "base_branch": "main",
-            "github_token": token,
             "title": "Initialize the project wiki",
             "description": (
                 "Build the initial living docs/wiki for this repository — a "
@@ -2350,9 +2373,21 @@ class CoordinareDaemon:
             "backend": backend,
             **model_block,
         }
+        # The documenting role gets its GITHUB_TOKEN secret from
+        # workspace_info.github_token (env_bootstrap is the only role that reads
+        # card_context["_github_token"]). A cardless dispatch never flows through
+        # WorkspaceManager.prepare(), so synthesize a self-clone WorkspaceInfo
+        # (path=None) here — otherwise the performer fails "permanent performer
+        # config error: GITHUB_TOKEN" with no token to clone/push the seed PR.
+        workspace_info = WorkspaceInfo(
+            path=None,
+            branch=card_context["branch"],
+            repo_url=card_context["repo_url"],
+            github_token=token,
+        )
         ec.wiki_in_flight = True
         try:
-            result = await svc.dispatch_card(card_context)
+            result = await svc.dispatch_card(card_context, workspace_info=workspace_info)
         except Exception as exc:
             ec.wiki_in_flight = False
             logger.warning("wiki_init.dispatch_failed", symphony=symphony_name, error=str(exc))

@@ -48,11 +48,20 @@ async def _noop_poll(*_a, **_k) -> None:
     return None
 
 
+def _workspace_managers(token: str = "tok") -> dict[str, MagicMock]:
+    """A cardless wiki-init dispatch sources its GITHUB_TOKEN from the symphony's
+    workspace manager (GitHubService has no get_token()); mirror that here."""
+    wm = MagicMock()
+    wm.get_fresh_github_token = AsyncMock(return_value=token)
+    return {"sym": wm}
+
+
 @pytest.mark.asyncio
 async def test_execute_wiki_init_dispatch_builds_cardless_init_context() -> None:
     d = _daemon()
     ec = _ec()
     d._state["env_cache"] = {"sym": ec}
+    d._state["symphony_workspace_managers"] = _workspace_managers("tok")
     svc = MagicMock()
     svc.dispatch_card = AsyncMock(return_value={"session_id": "s1"})
     d._state["performer_services"] = {"documenting": svc}
@@ -66,7 +75,36 @@ async def test_execute_wiki_init_dispatch_builds_cardless_init_context() -> None
     assert cc["repo_url"] == "https://github.com/acme/repo.git"
     assert cc["branch"].startswith("wiki-init/sym")  # sanitised name may carry a hash suffix
     assert cc["title"]
+    # The GITHUB_TOKEN secret is derived from workspace_info.github_token for the
+    # documenting role (a cardless dispatch never runs WorkspaceManager.prepare()).
+    # Without this the performer fails "permanent performer config error: GITHUB_TOKEN".
+    wi = svc.dispatch_card.call_args.kwargs["workspace_info"]
+    assert wi.github_token == "tok"
+    assert wi.path is None  # performer self-clones
+    assert wi.repo_url == "https://github.com/acme/repo.git"
+    assert wi.branch == cc["branch"]
     assert ec.wiki_in_flight is True
+
+
+@pytest.mark.asyncio
+async def test_execute_wiki_init_dispatch_fails_fast_without_github_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No workspace-manager token and no GITHUB_TOKEN env => do NOT dispatch a
+    doomed job the performer rejects with 'permanent performer config error:
+    GITHUB_TOKEN'. wiki_in_flight must not be left set."""
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    d = _daemon()
+    ec = _ec()
+    d._state["env_cache"] = {"sym": ec}
+    d._state["symphony_workspace_managers"] = {}  # no token source
+    svc = MagicMock()
+    svc.dispatch_card = AsyncMock()
+    d._state["performer_services"] = {"documenting": svc}
+    d._state["config"] = None
+    await d._execute_wiki_init_dispatch("sym", _github())
+    svc.dispatch_card.assert_not_awaited()
+    assert ec.wiki_in_flight is False
 
 
 @pytest.mark.asyncio
