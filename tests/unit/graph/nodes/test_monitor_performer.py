@@ -90,6 +90,24 @@ def _make_state(
     return state
 
 
+def _strip_ledger_keys(relay: list[dict]) -> list[dict]:
+    """126: relay entries carry stamped id/raiser/re_raised keys and an
+    "[fb-N] " prefix on their text field (``body`` for review comments,
+    ``description`` for security findings) — strip both so pre-126
+    exact-equality assertions keep checking the original content."""
+    import re as _re
+
+    out = []
+    for r in relay:
+        cleaned = {k: v for k, v in r.items() if k not in ("id", "raiser", "re_raised")}
+        for text_field in ("body", "description"):
+            if isinstance(cleaned.get(text_field), str):
+                cleaned[text_field] = _re.sub(r"^\[fb-\d+\] ", "", cleaned[text_field])
+        out.append(cleaned)
+    return out
+
+
+
 # ---------------------------------------------------------------------------
 # T015-1: pr_opened triggers advancement to next stage
 # ---------------------------------------------------------------------------
@@ -1054,7 +1072,7 @@ async def test_changes_requested_routes_to_implementer() -> None:
 
     assert result["performer_stage"] == "implementing"
     assert result["phase"] == "dispatching"
-    assert result.get("relay_feedback") == [
+    assert _strip_ledger_keys(result.get("relay_feedback")) == [
         {"file": "src/main.py", "line": 10, "body": "Missing null check"},
     ]
     assert result["agent_dispatch"] == {}
@@ -1105,7 +1123,7 @@ async def test_changes_requested_with_body_only_relays_body_as_comment() -> None
     assert result["phase"] == "dispatching"
     relay = result.get("relay_feedback") or []
     assert len(relay) == 1
-    assert relay[0]["body"] == "PR scope is too broad — split into two PRs."
+    assert _strip_ledger_keys(relay)[0]["body"] == "PR scope is too broad — split into two PRs."
     assert relay[0]["author_login"] == "coordinare"
 
 
@@ -1302,7 +1320,7 @@ async def test_security_failed_routes_findings_to_implementer() -> None:
 
     assert result["performer_stage"] == "implementing"
     assert result["phase"] == "dispatching"
-    assert result.get("relay_feedback") == findings
+    assert _strip_ledger_keys(result.get("relay_feedback")) == findings
 
 
 @pytest.mark.asyncio
@@ -1321,7 +1339,7 @@ async def test_security_failed_routes_architecture_findings_to_architect() -> No
 
     assert result["performer_stage"] == "architecting"
     assert result["phase"] == "dispatching"
-    assert result.get("relay_feedback") == findings
+    assert _strip_ledger_keys(result.get("relay_feedback")) == findings
 
 
 # ---------------------------------------------------------------------------
@@ -1364,7 +1382,7 @@ async def test_scanner_critical_overrides_model_pass() -> None:
     # Overridden: routed back to the implementer, NOT advanced to qa.
     assert result["performer_stage"] == "implementing"
     assert result["phase"] == "dispatching"
-    assert scanner[0] in (result.get("relay_feedback") or [])
+    assert scanner[0] in _strip_ledger_keys(result.get("relay_feedback") or [])
 
 
 @pytest.mark.asyncio
@@ -1417,7 +1435,7 @@ async def test_scanner_unavailable_fails_closed_to_halt() -> None:
 
     assert result["phase"] == "blocked"
     assert result["performer_stage"] != "qa"
-    assert scanner[0] in (result.get("relay_feedback") or [])
+    assert scanner[0] in _strip_ledger_keys(result.get("relay_feedback") or [])
 
 
 @pytest.mark.asyncio
@@ -1442,8 +1460,8 @@ async def test_scanner_findings_merge_with_model_findings() -> None:
     result = await monitor_performer(state)
 
     relayed = result.get("relay_feedback") or []
-    assert model_finding in relayed
-    assert scanner[0] in relayed
+    assert model_finding in _strip_ledger_keys(relayed)
+    assert scanner[0] in _strip_ledger_keys(relayed)
 
 
 # ---------------------------------------------------------------------------
@@ -1467,7 +1485,7 @@ async def test_qa_failed_routes_to_implementer() -> None:
 
     assert result["performer_stage"] == "implementing"
     assert result["phase"] == "dispatching"
-    assert result.get("relay_feedback") == failures
+    assert _strip_ledger_keys(result.get("relay_feedback")) == failures
 
 
 # ---------------------------------------------------------------------------

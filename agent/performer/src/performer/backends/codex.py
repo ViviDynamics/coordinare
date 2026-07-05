@@ -657,6 +657,24 @@ def _build_task_prompt(
         ]
 
     # Relay feedback (human review comments from previous cycle)
+    # 126: disputes of this stage's own prior findings — adjudicate, don't
+    # treat as fresh work items.
+    if getattr(score, "disputed_feedback", None):
+        parts += [
+            "", "## Disputed feedback to adjudicate", "",
+            "The implementer disputed these items you previously raised. "
+            "Re-examine each one: if the dispute is valid, do NOT re-raise it "
+            "(pass if nothing else is wrong); if it is invalid, re-raise it "
+            "explicitly in your verdict.",
+            "",
+        ]
+        for _d in score.disputed_feedback:
+            if isinstance(_d, dict) and _d.get("id"):
+                parts.append(
+                    f"- {_d['id']}: {_d.get('body', '')} — implementer says: "
+                    f"{_d.get('reason', '')}"
+                )
+
     if score.relay_feedback:
         parts += [
             "", "## Human Feedback (address ALL of these issues)", "",

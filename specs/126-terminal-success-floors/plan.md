@@ -5,14 +5,14 @@
 
 ## Summary
 
-Coordinare verifies performer *failure* claims (070/072 zero-progress guards) but trusts *success* claims unconditionally. This feature adds role-aware progress floors on terminal success: (US1) an implementer completing a feedback-driven dispatch must have moved the PR head past the **feedback-origin SHA** — the head the feedback was raised against — or explicitly dispute items; (US2) feedback items get stable IDs, per-item dispositions (`addressed`/`disputed`) returned on the completion contract, dispute adjudication by the raising stage, and per-raiser re-raise tracking; (US3) a tech_writer `docs_committed` with zero modified files and no head delta advances but is never recorded as a documentation pass (which keeps 125's last-documented SHA truthful). Floor loops consume a bounded no-op allowance, never content-feedback budget. Snapshot schema v13 → v14.
+Coordinare verifies performer *failure* claims (070/072 zero-progress guards) but trusts *success* claims unconditionally. This feature adds role-aware progress floors on terminal success: (US1) an implementer completing a feedback-driven dispatch must have moved the PR head past the **feedback-origin SHA** — the head the feedback was raised against — or explicitly dispute items; (US2) feedback items get stable IDs, per-item dispositions (`addressed`/`disputed`) returned on the completion contract, dispute adjudication by the raising stage, and per-raiser re-raise tracking; (US3) a tech_writer `docs_committed` with zero modified files and no head delta advances but is never recorded as a documentation pass (which keeps 125's last-documented SHA truthful). Floor loops consume a bounded no-op allowance, never content-feedback budget. Snapshot schema v14 → v15.
 
 ## Technical Context
 
 **Language/Version**: Python 3.14 (project minimum 3.12; prod 3.14.5 via uv)
 **Primary Dependencies**: existing only — monitor_performer terminal-success block + bounce/feedback sites (`changes_requested` handler ~:3520, CI-gate bounce `bounce_updates` ~:2340, `security_failed`/`qa_failed` handlers), the 070/072 zero-progress patterns (`monitor_performer.py:4298-4340` for the strengthened-re-dispatch shape), `relay_feedback` passthrough (already `list[dict]` on the dispatch payload and performer `Score.relay_feedback` — `agent/performer/src/performer/models.py:117`; adding keys inside entries is contract-compatible), `ProtocolResponse` on both sides (`src/coordinare/protocol.py`, `agent/performer/src/performer/protocol.py`) for the new `feedback_dispositions` response field, the implementer persona (`services/persona_service.py`), 125's `_verdict_cache_check` (FR-012 dispute veto) and `_record_stage_verdict` (US3 no-op suppression). No new external dependencies.
-**Storage**: JSON snapshot via `state_store.py` — schema v14 adds on `PersistedSession`: `feedback_ledger` (list of feedback-item records: id, raiser, origin_sha, body-digest, disposition, dispute_reason, re_raised, status), `feedback_origin_sha: str | None`, `noop_success_retries: int`. All defaults empty/None/0; v1–v13 snapshots load unchanged.
-**Testing**: pytest — unit tests per contract table; contract test for v13→v14 (mirrors v12→v13); performer-side unit tests for disposition extraction (`agent/performer/tests/`).
+**Storage**: JSON snapshot via `state_store.py` — schema v15 adds on `PersistedSession`: `feedback_ledger` (list of feedback-item records: id, raiser, origin_sha, body-digest, disposition, dispute_reason, re_raised, status), `feedback_origin_sha: str | None`, `noop_success_retries: int`. All defaults empty/None/0; v1–v14 snapshots load unchanged.
+**Testing**: pytest — unit tests per contract table; contract test for v14→v15 (mirrors v12→v13); performer-side unit tests for disposition extraction (`agent/performer/tests/`).
 **Target Platform**: single-host coordinare daemon + performer container (protocol addition is backward-compatible: absent dispositions = none disputed).
 **Project Type**: single project (coordinare + colocated performer package)
 **Performance Goals**: zero new API calls; floor evaluation is in-memory comparisons. Reliability budget: a head-unmoved no-op success costs ≤1 strengthened re-dispatch before an operator hold (today: up to 5 full downstream laps × content budget).
@@ -24,7 +24,7 @@ Coordinare verifies performer *failure* claims (070/072 zero-progress guards) bu
 *GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
 
 - **I. Code Quality First**: PASS — one floor evaluator, one ledger stamp helper, one protocol field; reuses zero-progress machinery rather than a parallel loop.
-- **II. Testing Discipline**: PASS — TDD against the contract tables (floor rows, ledger rows, disposition rows); v13→v14 contract test; performer extraction tests; deterministic stubs only.
+- **II. Testing Discipline**: PASS — TDD against the contract tables (floor rows, ledger rows, disposition rows); v14→v15 contract test; performer extraction tests; deterministic stubs only.
 - **III. UX Consistency**: PASS — floor events follow existing `monitor_performer.*` naming; operator hold uses the existing blocked/notify surfaces.
 - **IV. Performance by Design**: PASS — no new I/O; ledger bounded (items for the current + previous feedback round only, superseded rounds pruned).
 - **V. Clarity Before Action**: PASS — zero NEEDS CLARIFICATION; the per-raiser re-raise simplification and weak-model tolerance (missing dispositions never hard-block when the head moved) are recorded as deliberate decisions.
@@ -43,7 +43,7 @@ specs/126-terminal-success-floors/
 ├── quickstart.md
 ├── contracts/
 │   ├── success-floors.md      # floor + ledger + disposition decision tables
-│   └── state-schema-v14.md    # persisted fields + migration contract
+│   └── state-schema-v15.md    # persisted fields + migration contract
 └── tasks.md
 ```
 

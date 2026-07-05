@@ -37,6 +37,7 @@ from coordinare.services.rebase import fetch_main_sha, repo_url_from_config, run
 from coordinare.session import _SESSION_FIELDS, session_to_state, state_to_session
 from coordinare.state_store import (
     EnvCacheStateSnapshot,
+    FeedbackItemRecord,
     PersistedSession,
     RepairDecisionRecord,
     StageVerdict,
@@ -271,6 +272,29 @@ def _persist_active_sessions(active_sessions: dict[str, Any]) -> dict[str, Persi
             if isinstance(last_comment_raw, int) and not isinstance(last_comment_raw, bool)
             else None
         )
+        # 126: terminal-success-floor state — validate ledger entries via
+        # FeedbackItemRecord and drop malformed ones (bad entry == no entry ==
+        # the floor has less to enforce, the safe direction).
+        ledger_raw = sess.get("feedback_ledger")
+        feedback_ledger: list[FeedbackItemRecord] = []
+        if isinstance(ledger_raw, (list, tuple)):
+            for fb_entry in ledger_raw:
+                if not isinstance(fb_entry, dict):
+                    continue
+                try:
+                    feedback_ledger.append(FeedbackItemRecord(**fb_entry))
+                except (ValidationError, TypeError):
+                    continue
+        origin_raw = sess.get("feedback_origin_sha")
+        feedback_origin_sha = (
+            origin_raw if isinstance(origin_raw, str) and origin_raw else None
+        )
+        noop_raw = sess.get("noop_success_retries")
+        noop_success_retries = (
+            max(0, int(noop_raw))
+            if isinstance(noop_raw, int) and not isinstance(noop_raw, bool)
+            else 0
+        )
         out[cid] = PersistedSession(
             card_id=cid,
             performer_stage=(sess.get("performer_stage") or None),
@@ -305,6 +329,9 @@ def _persist_active_sessions(active_sessions: dict[str, Any]) -> dict[str, Persi
             stage_verdicts=stage_verdicts,
             processed_issue_comment_ids=comment_ids,
             last_issue_comment_id=last_issue_comment_id,
+            feedback_ledger=feedback_ledger,
+            feedback_origin_sha=feedback_origin_sha,
+            noop_success_retries=noop_success_retries,
         )
     return out
 
@@ -840,6 +867,13 @@ class CoordinareDaemon:
                     },
                     "processed_issue_comment_ids": set(persisted.processed_issue_comment_ids),
                     "last_issue_comment_id": persisted.last_issue_comment_id,
+                    # 126: restore the terminal-success-floor state so the
+                    # feedback contract and no-op budget survive restarts.
+                    "feedback_ledger": [
+                        fb.model_dump(mode="json") for fb in persisted.feedback_ledger
+                    ],
+                    "feedback_origin_sha": persisted.feedback_origin_sha,
+                    "noop_success_retries": persisted.noop_success_retries,
                 }
                 # Seed current_card for the matching active_card_id from the
                 # top-level snapshot fields; other sessions get a stub that
@@ -883,6 +917,10 @@ class CoordinareDaemon:
                     "stage_verdicts": {},
                     "processed_issue_comment_ids": set(),
                     "last_issue_comment_id": None,
+                    # 126 (schema v15): same fresh-card defaults as above.
+                    "feedback_ledger": [],
+                    "feedback_origin_sha": None,
+                    "noop_success_retries": 0,
                 }
             }
             logger.info(

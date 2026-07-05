@@ -116,6 +116,19 @@ class TestDispatchPayloadContract:
             assert transport.captured_payload["role"] == role, f"role={role!r} was dropped"
 
     @pytest.mark.asyncio
+    async def test_disputed_feedback_is_not_dropped(self) -> None:
+        """126: disputed_feedback carries dispute-adjudication context for the
+        raising stage — must survive the boundary."""
+        transport = _CaptureTransport()
+        service = AgentService(transport)
+        disputes = [{"id": "fb-1", "body": "wrong finding", "reason": "already correct"}]
+
+        await service.dispatch_card(
+            {"disputed_feedback": disputes, "title": "test", "id": "X"}
+        )
+
+        assert transport.captured_payload["disputed_feedback"] == disputes
+
     async def test_relay_feedback_is_not_dropped(self) -> None:
         """relay_feedback carries human review comments — must survive the boundary."""
         transport = _CaptureTransport()

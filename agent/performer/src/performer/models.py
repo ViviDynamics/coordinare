@@ -115,6 +115,9 @@ class Score(BaseModel):
     base_branch: str = ""
     persona_instructions: str = ""  # role-specific behavior instructions
     relay_feedback: list[dict] = Field(default_factory=list)  # human review comments to address
+    # 126: implementer-disputed items injected ONLY into the raising stage's
+    # dispatch ({id, body, reason}); its verdict adjudicates them.
+    disputed_feedback: list[dict] = Field(default_factory=list)
     role: str = "implementing"  # performer stage (implementing, reviewing, security, etc.)
     pr_url: str = ""  # existing PR URL (for reviewer/security/QA roles)
     pr_node_id: str = ""  # existing PR node ID (for terminal status)

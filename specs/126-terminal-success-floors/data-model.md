@@ -1,6 +1,6 @@
 # Data Model: Terminal-Success Progress Floors (126)
 
-Snapshot schema **v13 → v14** (stacked on 125's v13). All additions default-empty; pre-v14 snapshots load with today's behaviour.
+Snapshot schema **v14 → v15** (stacked on 125's v13). All additions default-empty; pre-v14 snapshots load with today's behaviour.
 
 ## FeedbackItemRecord (new pydantic submodel, `state_store.py`)
 

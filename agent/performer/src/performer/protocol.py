@@ -155,3 +155,10 @@ class PerformerResponse(BaseModel):
     # distinguish reviewer/qa turns that surfaced something real from
     # silent no-op turns.
     bot_pr_comment_delta: int = 0
+    # 126: per-item feedback dispositions for the implementer completion
+    # contract — entries of {"id": "fb-N", "disposition": "addressed"|
+    # "disputed", "reason": str}. Read from the workspace's durable
+    # ``.coordinare/feedback_dispositions.json`` (the model writes it; a file
+    # contract survives long sessions where inline instructions get lost).
+    # Absent/empty means "nothing disputed" — fully backward compatible.
+    feedback_dispositions: list[dict] = Field(default_factory=list)

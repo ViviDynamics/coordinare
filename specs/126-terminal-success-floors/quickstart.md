@@ -6,7 +6,7 @@
 - Feedback items now carry stable ids end-to-end; completions return per-item dispositions; disputes are adjudicated by the stage that raised them (or the operator, for CI-raised items) — never auto-accepted.
 - A tech_writer `docs_committed` that changed nothing advances but is recorded as a no-op (it no longer mints a documentation pass, keeping 125's doc-gate baseline truthful).
 
-No config. Snapshot schema v13 → v14 (backward compatible). Performer protocol addition is optional-field only — older performer images simply return no dispositions ("nothing disputed").
+No config. Snapshot schema v14 → v15 (backward compatible). Performer protocol addition is optional-field only — older performer images simply return no dispositions ("nothing disputed").
 
 ## Unit/contract verification
 

@@ -94,6 +94,11 @@ class ProtocolResponse(BaseModel):
     # reviewer that surfaced something real (delta > 0) from one that
     # silently churned (delta == 0).
     bot_pr_comment_delta: int = 0
+    # 126: per-item feedback dispositions from the implementer completion
+    # contract ({"id", "disposition": "addressed"|"disputed", "reason"}).
+    # Consumed by monitor_performer's terminal-success floor; absent/empty
+    # means "nothing disputed" (backward compatible with older performers).
+    feedback_dispositions: list[dict] = Field(default_factory=list)
 
 
 def generate_contracts(output_dir: Path) -> None:

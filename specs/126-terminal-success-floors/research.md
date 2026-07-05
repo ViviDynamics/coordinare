@@ -46,4 +46,4 @@
 
 ## R8 — Schema/versioning
 
-**Decision**: v13 → v14: `feedback_ledger: list[FeedbackItemRecord]` (tolerant per-entry validation, mirroring `repair_audit`/`StageVerdict` handling), `feedback_origin_sha: str | None`, `noop_success_retries: int`. Ledger pruned at stamp time to the current + immediately-previous round. Contract test mirrors v12→v13. Registry updates in `specs/contracts/dispatch-payload.md`: relay_feedback entry keys (`id`, `raiser`, `re_raised`), new `disputed_feedback` context field, and the `feedback_dispositions` response field (response contract section).
+**Decision**: v14 → v15: `feedback_ledger: list[FeedbackItemRecord]` (tolerant per-entry validation, mirroring `repair_audit`/`StageVerdict` handling), `feedback_origin_sha: str | None`, `noop_success_retries: int`. Ledger pruned at stamp time to the current + immediately-previous round. Contract test mirrors v12→v13. Registry updates in `specs/contracts/dispatch-payload.md`: relay_feedback entry keys (`id`, `raiser`, `re_raised`), new `disputed_feedback` context field, and the `feedback_dispositions` response field (response contract section).

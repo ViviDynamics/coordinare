@@ -266,6 +266,42 @@ DEFAULT_INFERENCE_MAX_TOKENS = 64_000
 DEFAULT_INFERENCE_MAX_TOOL_CALLS = 50
 
 
+def _read_feedback_dispositions(stand_path: Path) -> list[dict]:
+    """126: read the implementer's per-item feedback dispositions from the
+    workspace's durable ``.coordinare/feedback_dispositions.json`` contract.
+
+    Entries are ``{"id": "fb-N", "disposition": "addressed"|"disputed",
+    "reason": str}``.  A file contract survives long sessions where inline
+    instructions get lost (the same reasoning as ``.coordinare/score.json``).
+    Any failure (no file / parse error / wrong shape) → ``[]`` — meaning
+    "nothing disputed", which the coordinare floor treats fail-open.
+    """
+    try:
+        path = Path(stand_path) / ".coordinare" / "feedback_dispositions.json"
+        if not path.is_file():
+            return []
+        raw = _json_module.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(raw, list):
+            return []
+        out: list[dict] = []
+        for entry in raw:
+            if not isinstance(entry, dict):
+                continue
+            fb_id = str(entry.get("id") or "")
+            disp = str(entry.get("disposition") or "")
+            if not fb_id or disp not in ("addressed", "disputed"):
+                continue
+            out.append({
+                "id": fb_id,
+                "disposition": disp,
+                "reason": str(entry.get("reason") or "")[:500],
+            })
+        return out
+    except Exception as exc:  # pragma: no cover - defensive
+        log.info("feedback_dispositions_unreadable", error=str(exc))
+        return []
+
+
 def _read_declared_services(stand_path: Path) -> list[dict]:
     """101: read the symphony's durably-declared services from the cloned repo's
     ``.coordinare/score.json`` (the same source service inference uses), as plain
@@ -1698,6 +1734,9 @@ async def _poll_check_runs(perf: Performance, settings: Settings | None) -> Perf
             pr_node_id=perf.pr_node_id,
             head_before=perf.head_at_start,
             head_after=head_after,
+            # 126: the implementer's per-item feedback dispositions ride the
+            # terminal success so the coordinare floor can adjudicate them.
+            feedback_dispositions=_read_feedback_dispositions(perf.stand.path),
         )
 
     if verdict == "pending":

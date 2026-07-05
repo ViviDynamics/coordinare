@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-CURRENT_SCHEMA_VERSION: int = 14
+CURRENT_SCHEMA_VERSION: int = 15
 
 # Lowest schema_version we still know how to read.  v1 snapshots are upgraded
 # in-memory at load time (065 Fix 7b: active_sessions added in v2; v1 snapshots
@@ -83,6 +83,14 @@ CURRENT_SCHEMA_VERSION: int = 14
 # the comment router reads the active card's linked issue — so restarts stop
 # re-classifying processed comments.  v1-v13 snapshots load with {}/[]/None.
 # SHAs, marker strings and numeric comment IDs only — never secret values.
+# v15 (126) adds three fields on PersistedSession: feedback_ledger (the
+# terminal-success-floor feedback contract: per-item {id, raiser, origin_sha,
+# body_digest, disposition, dispute_reason, re_raised, round_status} records,
+# pruned to the current + previous round), feedback_origin_sha (the head the
+# current feedback round was raised against — the implementer progress floor's
+# comparison reference) and noop_success_retries (bounded strengthened-
+# re-dispatch counter).  v1-v14 snapshots load with []/None/0.  Body digests
+# are capped at 200 chars — never full comment bodies, never secret values.
 MIN_SUPPORTED_SCHEMA_VERSION: int = 1
 
 WorkflowPhase = Literal[
@@ -141,6 +149,35 @@ class StageVerdict(BaseModel):
     head_sha: str = Field(min_length=1)
     verdict: str = Field(min_length=1)
     recorded_at: str  # ISO-8601 stamp (set by the node, not a pure path)
+
+
+class FeedbackItemRecord(BaseModel):
+    """One feedback item in the terminal-success-floor ledger (126).
+
+    Stamped at bounce time; disposition updated from the implementer's
+    completion contract; rounds resolved by the raising stage's next verdict.
+    ``body_digest`` is capped at stamp time (≤200 chars) — never the full
+    comment body.  ``extra="forbid"`` like StageVerdict/RepairDecisionRecord;
+    malformed entries are dropped at load (bad entry == no entry).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1)
+    raiser: str = Field(min_length=1)  # raising stage, or "ci" for CI-gate items
+    origin_sha: str = ""  # "" when unresolvable at bounce time -> floor fails open
+    body_digest: str = ""
+    disposition: Literal[
+        "open",
+        "addressed",
+        "disputed",
+        "dispute_accepted",
+        "dispute_rejected",
+        "superseded",
+    ] = "open"
+    dispute_reason: str = ""
+    re_raised: bool = False
+    round_status: Literal["current", "previous"] = "current"
 
 
 class PersistedSession(BaseModel):
@@ -317,6 +354,37 @@ class PersistedSession(BaseModel):
     # set into the session.  Numeric IDs only — never comment bodies.
     processed_issue_comment_ids: list[int] = Field(default_factory=list)
     last_issue_comment_id: int | None = None
+    # 126 (schema v15+): terminal-success-floor state.  feedback_ledger holds
+    # the per-item feedback contract (stamped at bounce, disposed by the
+    # implementer completion, adjudicated by the raiser); feedback_origin_sha
+    # is the head the CURRENT round was raised against (the implementer floor
+    # compares the completion's settled head against it); noop_success_retries
+    # bounds the strengthened re-dispatch on a no-op "done" (one retry, then
+    # operator hold).  Defaults keep v1-v13 snapshots loading unchanged.
+    feedback_ledger: list[FeedbackItemRecord] = Field(default_factory=list)
+    feedback_origin_sha: str | None = None
+    noop_success_retries: int = 0
+
+    @field_validator("feedback_ledger", mode="before")
+    @classmethod
+    def _drop_corrupt_feedback_items(cls, v: object) -> object:
+        """126: tolerate corrupted ledger entries — drop them instead of
+        failing the whole snapshot load (a dropped item means the floor simply
+        has less to enforce: the safe direction)."""
+        if not isinstance(v, list):
+            return []
+        cleaned: list[Any] = []
+        for entry in v:
+            if isinstance(entry, FeedbackItemRecord):
+                cleaned.append(entry)
+                continue
+            if not isinstance(entry, dict):
+                continue
+            try:
+                cleaned.append(FeedbackItemRecord(**entry))
+            except (ValidationError, TypeError):
+                continue
+        return cleaned
 
     @field_validator("stage_verdicts", mode="before")
     @classmethod

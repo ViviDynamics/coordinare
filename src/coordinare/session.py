@@ -212,6 +212,14 @@ class CardSession(TypedDict, total=False):
     # state_store).  MUST round-trip through session ↔ state or the skip gate
     # forgets recorded verdicts between cycles and re-dispatches passed stages.
     stage_verdicts: dict[str, dict[str, Any]]
+    # 126: terminal-success-floor state.  feedback_ledger entries are plain
+    # dicts at session/state level (typed FeedbackItemRecord lives in
+    # state_store); feedback_origin_sha is the head the current feedback round
+    # was raised against; noop_success_retries bounds the no-op-"done"
+    # strengthened re-dispatch.  MUST round-trip session ↔ state.
+    feedback_ledger: list[dict[str, Any]]
+    feedback_origin_sha: str | None
+    noop_success_retries: int
 
 
 # Fields that live on both CardSession and CoordinareState (flat).
@@ -291,6 +299,11 @@ _SESSION_FIELDS: tuple[str, ...] = (
     # 125: stage-verdict memory.  Round-trips per-card so recorded passing
     # verdicts survive cycles and daemon restarts.
     "stage_verdicts",
+    # 126: terminal-success-floor state.  Round-trips per-card so the feedback
+    # contract, origin head and no-op retry budget survive restarts.
+    "feedback_ledger",
+    "feedback_origin_sha",
+    "noop_success_retries",
 )
 
 
@@ -365,6 +378,10 @@ def create_session_from_card(card: dict[str, Any]) -> CardSession:
         assessor_open_questions=[],
         # 125: no verdicts recorded yet for a freshly-picked-up card
         stage_verdicts={},
+        # 126: no feedback rounds stamped yet for a freshly-picked-up card
+        feedback_ledger=[],
+        feedback_origin_sha=None,
+        noop_success_retries=0,
     )
 
 

@@ -46,7 +46,8 @@ authoritative schema — any field not on `Score` is silently dropped by pydanti
 |-------|------|----------|--------|---------|
 | `role` | str | yes | dispatch_performer | role-specific status handling (architect, reviewer, security, QA, assessor, etc.) |
 | `persona_instructions` | str | no | dispatch_performer | backend prompt — role-specific behavior |
-| `relay_feedback` | list[dict] | no | dispatch_performer | backend prompt — human review comments to address |
+| `relay_feedback` | list[dict] | no | dispatch_performer | backend prompt — human review comments to address. 126: entries MAY carry `id` (str, `fb-N`), `raiser` (str stage name or `ci`) and `re_raised` (bool) — the feedback-ledger contract keys the implementer echoes back via `feedback_dispositions` |
+| `disputed_feedback` | list[dict] | no | dispatch_performer | 126: `{id, body, reason}` items the implementer disputed, injected ONLY into the raising stage's dispatch so its verdict adjudicates them |
 | `pr_url` | str | no | dispatch_performer (from card) | reviewer/security post reviews to PR |
 | `pr_node_id` | str | no | dispatch_performer (from card) | terminal status response for coordinare |
 | `pr_diff` | str | no | dispatch_performer (fetched via get_pr_diff) | backend prompt — raw unified diff for review roles (reviewer/closer/qa/tech_writer) so the model has the changes inline; omitted on fetch failure |
