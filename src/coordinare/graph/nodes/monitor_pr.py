@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import contextlib
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import structlog
@@ -18,6 +18,71 @@ from coordinare.graph.state import _set_current_card
 from coordinare.models.review import ReviewerType, classify_reviewer
 
 logger = structlog.get_logger(__name__)
+
+# 127: review states that carry feedback coordinare must process before any
+# merge decision (contracts/review-routing.md).
+_ACTIONABLE_STATES = frozenset({"COMMENTED", "CHANGES_REQUESTED"})
+
+
+def _parse_submitted_at(review: dict[str, object]) -> datetime | None:
+    raw = review.get("submitted_at")
+    if isinstance(raw, str) and raw:
+        with contextlib.suppress(ValueError, TypeError):
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            # Normalise to UTC-aware: a timezone-less ISO-8601 string (some
+            # non-GitHub sources) parses naive, and comparing naive vs aware
+            # (``new_t > cur_t``, or ``max()`` over mixed reviews) raises
+            # TypeError. Assume naive timestamps are UTC.
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=UTC)
+            return parsed
+    return None
+
+
+def _latest_reviews_per_author(
+    reviews: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    """127 (FR-004): project a batch onto each reviewer's latest review.
+
+    A reviewer's later review supersedes their earlier one for both the
+    approval and deferral decisions. Timestamp ties — or an unparseable
+    ``submitted_at`` on either side — resolve conservatively: the
+    actionable-state review wins over APPROVED. Reviews without an
+    ``author_login`` are never grouped (each stays effective). Input order
+    is preserved in the returned list.
+    """
+    winner_by_author: dict[str, dict[str, object]] = {}
+    for review in reviews:
+        # ``or ""`` — author_login=None must normalise to "" (ungrouped), not
+        # the truthy string "None" that would become a shared grouping key.
+        # Group on the same normalisation classify_reviewer() uses
+        # (strip().lower()) so one reviewer's variants ("Alice", "alice ")
+        # aren't split into separate groups and thus escape supersession.
+        login = str(review.get("author_login") or "").strip().lower()
+        if not login:
+            continue
+        current = winner_by_author.get(login)
+        if current is None:
+            winner_by_author[login] = review
+            continue
+        cur_t = _parse_submitted_at(current)
+        new_t = _parse_submitted_at(review)
+        if cur_t is not None and new_t is not None and cur_t != new_t:
+            if new_t > cur_t:
+                winner_by_author[login] = review
+        elif str(review.get("state", "")) in _ACTIONABLE_STATES:
+            # Tie or unparseable timestamp: never let an APPROVED displace
+            # (or survive over) an actionable review on ordering luck.
+            winner_by_author[login] = review
+    winners = set(map(id, winner_by_author.values()))
+    # Use the SAME normalization as the grouping key so a whitespace-only
+    # author_login (which normalises to "" and is therefore ungrouped) is
+    # treated consistently as "no login" in the passthrough too.
+    return [
+        r
+        for r in reviews
+        if not str(r.get("author_login") or "").strip().lower() or id(r) in winners
+    ]
 
 
 async def monitor_pr(state: CoordinareState) -> CoordinareState:
@@ -184,8 +249,7 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
 
     processed_ids: set[str] = state.get("processed_review_ids") or set()
 
-    actionable: list[dict[str, object]] = []
-    approved = False
+    filtered: list[dict[str, object]] = []
     for review in reviews:
         review_id = str(review.get("id", ""))
         login = str(review.get("author_login", ""))
@@ -199,7 +263,6 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
         # json.dumps(..., default=str), and enum __str__ gives
         # "ReviewerType.HUMAN" instead of the intended stable "HUMAN".
         review["author_type"] = ReviewerType(reviewer_type).value
-        is_actionable_type = reviewer_type in (ReviewerType.HUMAN, ReviewerType.TRUSTED_BOT)
 
         # Skip reviews already processed in a previous dispatch cycle
         if review_id and review_id in processed_ids:
@@ -216,15 +279,60 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
                 except (ValueError, TypeError):
                     pass
 
-        # Only HUMAN approval triggers merge — trusted bots can provide
-        # feedback but cannot approve on behalf of a human.
-        if reviewer_type == ReviewerType.HUMAN and review.get("state") == "APPROVED":
-            approved = True
-        if is_actionable_type and review.get("state") in {"COMMENTED", "CHANGES_REQUESTED"}:
-            actionable.append(review)
+        filtered.append(review)
+
+    # 127 (FR-004): within the batch, each reviewer's latest review governs —
+    # a reviewer's own later APPROVED supersedes their earlier change request
+    # and vice versa. Cross-reviewer states never supersede each other.
+    effective = _latest_reviews_per_author(filtered)
+
+    actionable = [
+        r
+        for r in effective
+        if r.get("author_type")
+        in (ReviewerType.HUMAN.value, ReviewerType.TRUSTED_BOT.value)
+        and str(r.get("state", "")) in _ACTIONABLE_STATES
+    ]
+    # Only HUMAN approval triggers merge — trusted bots can provide
+    # feedback but cannot approve on behalf of a human. When several human
+    # approvals are effective, the latest one names the deferral event.
+    approvals = [
+        r
+        for r in effective
+        if r.get("author_type") == ReviewerType.HUMAN.value
+        and r.get("state") == "APPROVED"
+    ]
+    approval_review = (
+        max(
+            approvals,
+            key=lambda r: _parse_submitted_at(r)
+            or datetime.min.replace(tzinfo=UTC),
+        )
+        if approvals
+        else None
+    )
 
     state["pending_reviews"] = actionable
-    if approved:
+    if actionable:
+        # 127 (FR-001/FR-002): actionable feedback always routes to
+        # classification first. A coexisting approval is deferred — never
+        # consumed: its review ID never rides pending_reviews, so it stays
+        # unprocessed and re-surfaces to merge on a later evaluation once
+        # nothing actionable remains (FR-003).
+        if approval_review is not None:
+            logger.info(
+                "monitor_pr.merge_deferred",
+                card_id=str(card.get("id", "")),
+                approval_review_id=str(approval_review.get("id", "")),
+                actionable_review_ids=[str(r.get("id", "")) for r in actionable],
+            )
+        logger.info(
+            "monitor_pr.actionable_reviews",
+            count=len(actionable),
+            cutoff=cutoff.isoformat() if cutoff else None,
+        )
+        state["phase"] = "relay_feedback"
+    elif approval_review is not None:
         # 090 L1 (US1) — refuse to advance to merge while a REQUIRED check on
         # the PR's *base* branch is red.  Default-off and fail-open, so when the
         # gate is disabled / indeterminate this is byte-identical to going
@@ -241,13 +349,6 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
                 state[key] = value  # type: ignore[literal-required]
             return state
         state["phase"] = "merging"
-    elif actionable:
-        logger.info(
-            "monitor_pr.actionable_reviews",
-            count=len(actionable),
-            cutoff=cutoff.isoformat() if cutoff else None,
-        )
-        state["phase"] = "relay_feedback"
     else:
         state["phase"] = "monitoring_pr"
     return state
