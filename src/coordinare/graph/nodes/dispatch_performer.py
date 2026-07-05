@@ -262,52 +262,186 @@ def _sanitize_pr_diff(raw_diff: str, *, max_chars: int = _DIFF_INJECT_MAX_CHARS)
     return filtered
 
 
-async def _fetch_pr_diff_text(
+async def _fetch_pr_data(
     state: CoordinareState, card: dict[str, Any]
-) -> str | None:
-    """Fetch the raw unified PR diff for a review role, or None on any failure.
+) -> tuple[str | None, list[str] | None]:
+    """125 US3 (F1/F2): the single PR-diff fetch per dispatch evaluation.
 
-    Best-effort: a missing github service, missing ``pr_url``, or a fetch error
-    returns ``None`` so the caller simply omits the inline diff — the hardened
-    review persona instructs the model to fetch the diff itself as a fallback,
-    so dispatch must never be blocked by this.
+    Returns ``(sanitized_diff, changed_files)`` from ONE ``get_pr_diff`` call;
+    the documenting gate consumes ``changed_files`` and the review-role prompt
+    injection consumes the sanitized diff (previously two independent fetches
+    that each discarded half the result).
 
-    FR-011: the raw diff text is NEVER logged (only a length summary on
-    success and an error type on failure).
+    Best-effort, per-consumer failure semantics preserved: any failure returns
+    ``(None, None)`` so the gate fails open (dispatch) and the inline diff is
+    omitted — the hardened review persona instructs the model to fetch the
+    diff itself as a fallback, so dispatch must never be blocked by this.
+    An empty diff still yields the (possibly empty) ``changed_files`` list —
+    the 123 gate treats "no textual changes" as skippable.
+
+    FR-011: the raw diff text is NEVER logged (only length summaries at the
+    injection site and an error type on failure).
     """
     github = state.get("github_service")
     pr_url = str(card.get("pr_url") or "").strip()
     card_id = str(card.get("id", ""))
 
     if github is None or not hasattr(github, "get_pr_diff") or not pr_url:
-        return None
+        return None, None
 
     try:
-        raw_diff, _changed_files = await github.get_pr_diff(pr_url)
+        raw_diff, changed_files = await github.get_pr_diff(pr_url)
     except Exception as exc:
         logger.warning(
-            "dispatch_performer.review_diff_fetch_failed",
+            "dispatch_performer.pr_data_fetch_failed",
             card_id=card_id,
             error_type=type(exc).__name__,
         )
-        return None
+        return None, None
 
     raw_diff = raw_diff or ""
+    files = [str(f) for f in (changed_files or [])]
     if not raw_diff.strip():
-        return None
+        return None, files
 
     # Filter noise + cap so a bloated diff can't overflow the model context.
     sanitized = _sanitize_pr_diff(raw_diff)
     if not sanitized.strip():
-        return None
+        return None, files
+    return sanitized, files
 
-    logger.info(
-        "dispatch_performer.review_diff_injected",
-        card_id=card_id,
-        diff_length=len(sanitized),
-        raw_diff_length=len(raw_diff),
+
+async def _verdict_cache_check(
+    state: CoordinareState, card: dict[str, Any], stage: str
+) -> tuple[bool, str | None]:
+    """125 (contract V1-V7): decide whether a verdict stage can be skipped.
+
+    Returns ``(should_skip, live_head)``. ``live_head`` is the remote
+    ``head_ref_oid`` when it was fetched (hit or SHA-mismatch), so the
+    documenting gate can reuse it without a second mergeability call.
+
+    Skip ⇔ a recorded passing verdict for this stage matches the LIVE remote
+    head exactly, with no pending feedback and no operator override forcing a
+    run. Every uncertainty (missing record, wrong marker, unresolvable head,
+    fetch error) dispatches — the cache can only save work, never skip on
+    doubt (FR-003).
+    """
+    from coordinare.graph.nodes.monitor_performer import (
+        EXPECTED_STAGE_MARKER,
+        VERDICT_STAGES,
     )
-    return sanitized
+
+    if stage not in VERDICT_STAGES:
+        return False, None
+    card_id = str(card.get("id", ""))
+    # V1: an operator-forced restart always dispatches; the flag is one-shot.
+    if state.get("override_forced_dispatch") == stage:
+        state["override_forced_dispatch"] = None
+        logger.info(
+            "dispatch_performer.verdict_cache_bypassed",
+            reason="override_forced",
+            card_id=card_id,
+            performer_stage=stage,
+        )
+        return False, None
+    # V2: queued feedback is explicit work for the stage.
+    if state.get("relay_feedback"):
+        return False, None
+    # V3/V5: a recorded verdict must exist and carry the stage's own passing
+    # marker (cross-wired markers never skip).
+    record = (state.get("stage_verdicts") or {}).get(stage)
+    if not isinstance(record, dict):
+        return False, None
+    recorded_head = str(record.get("head_sha") or "").strip()
+    if not recorded_head or record.get("verdict") != EXPECTED_STAGE_MARKER.get(stage):
+        return False, None
+    # V4: compare against the LIVE remote head — never coordinare's own
+    # bookkeeping, so an out-of-band push can never be skipped over.
+    github = state.get("github_service")
+    pr_node_id = str(card.get("pr_node_id") or "").strip()
+    if github is None or not hasattr(github, "check_mergeability") or not pr_node_id:
+        return False, None
+    try:
+        mc = await github.check_mergeability(pr_node_id)
+    except Exception as exc:
+        logger.warning(
+            "dispatch_performer.verdict_cache_head_fetch_failed",
+            card_id=card_id,
+            performer_stage=stage,
+            error_type=type(exc).__name__,
+        )
+        return False, None
+    live_head = (
+        str((mc or {}).get("head_ref_oid") or "").strip()
+        if isinstance(mc, dict)
+        else ""
+    )
+    if not live_head:
+        return False, None
+    # V6: exact SHA match required.
+    if recorded_head != live_head:
+        return False, live_head
+    # V7: skip — distinguishable from the 123 doc gate's no_doc_changes (N3).
+    logger.info(
+        "dispatch_performer.stage_skipped",
+        reason="verdict_cached",
+        card_id=card_id,
+        performer_stage=stage,
+        head_sha=live_head,
+    )
+    return True, live_head
+
+
+def _should_skip_documenting(changed_files: list[str]) -> bool:
+    """123 US1 (FR-001/FR-002): True when the PR diff changes no ``docs/`` path.
+
+    When a PR touches no documentation, the documenting (tech_writer) stage has
+    nothing to do and can be skipped.  An empty ``changed_files`` list (no
+    textual changes — e.g. a diff of only binary/image files) also skips, since
+    there is likewise no doc content for the tech_writer to maintain.
+    """
+    return not any(str(path).startswith("docs/") for path in changed_files)
+
+
+async def _documenting_sha_gate(
+    state: CoordinareState,
+    card: dict[str, Any],
+    live_head: str | None,
+) -> tuple[bool, str, int] | None:
+    """125 US2 (contract D1-D3): the SHA-keyed documenting gate.
+
+    When a prior documentation pass exists (``stage_verdicts["documenting"]``)
+    and the live head is known, ask the compare API what changed between the
+    last documented SHA and the current head.  Returns ``(skip, reason,
+    file_count)`` when the compare ANSWERED the question (D1 skip / D2
+    dispatch), or ``None`` when it could not (no prior pass, no live head,
+    compare failure/cap) — the caller then falls back to the 123 whole-PR
+    gate (D3→D4) and ultimately to dispatch (D5).
+    """
+    verdicts = state.get("stage_verdicts") or {}
+    record = verdicts.get("documenting")
+    s_doc = (
+        str(record.get("head_sha") or "").strip()
+        if isinstance(record, dict)
+        else ""
+    )
+    if not s_doc or not live_head:
+        return None
+    github = state.get("github_service")
+    pr_url = str(card.get("pr_url") or "").strip()
+    if github is None or not hasattr(github, "compare_changed_files") or not pr_url:
+        return None
+    try:
+        delta_files = await github.compare_changed_files(pr_url, s_doc, live_head)
+    except Exception as exc:
+        logger.warning(
+            "dispatch_performer.doc_gate_compare_failed",
+            card_id=str(card.get("id", "")),
+            error_type=type(exc).__name__,
+        )
+        return None
+    skip = _should_skip_documenting(delta_files)
+    return skip, "no_doc_changes_since_last_pass", len(delta_files)
 
 
 async def _pre_dispatch_rebase_guard(state: CoordinareState, card_id: str) -> bool:
@@ -725,10 +859,66 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
                 state[key] = value  # type: ignore[literal-required]
             return state
 
-    # 124 (FR-006): the documenter maintains the living docs/wiki from the card's
-    # CODE changes, not just its docs/ paths — so it runs on every card and
-    # no-ops (empty {files}) when there is nothing to document. The 123 docs-path
-    # skip is therefore removed for the wiki-maintaining documenter.
+    # NOTE (125 rebase onto 124): spec 124 removed the docs-path skip so its
+    # living-wiki documenter always runs. Per an explicit product decision,
+    # 125 RESTORES conditional documenting with the SHA-keyed gate below —
+    # this reverses 124's always-run behaviour and needs 124-owner sign-off.
+    # Caveat: 124's documenter derives the wiki from CODE changes, so a
+    # docs/-path-only skip can under-run the wiki on code-only PRs; revisit
+    # the skip predicate with the 124 owner if that matters.
+    # 125 (contract V1-V7): verdict-cache skip. A verdict stage whose recorded
+    # passing verdict matches the LIVE remote head exactly has nothing new to
+    # verify — advance as if it completed. Fail-open everywhere: any missing
+    # record/override/pending-feedback/head uncertainty dispatches normally.
+    # ``live_head`` (when fetched) is reused by the documenting gate below so
+    # one mergeability call powers both decisions.
+    live_head: str | None = None
+    if isinstance(card, dict) and card_id:
+        cache_skip, live_head = await _verdict_cache_check(
+            state, card, performer_stage
+        )
+        if cache_skip:
+            updates = _advance_stage(state)
+            for key, value in updates.items():
+                state[key] = value  # type: ignore[literal-required]
+            return state
+
+    # Documenting gate (123 US1 + 125 US2, contract D0-D5).  D0: queued relay
+    # feedback is explicit work — never gate it away.  D1-D2: with a prior
+    # documentation pass, the compare between the last documented SHA and the
+    # live head decides (this is what stops tech_writer's own earlier commits
+    # from re-triggering the stage forever).  D3→D4: compare unavailable falls
+    # back to the 123 whole-PR gate (also the no-prior-pass path).  D5: when
+    # nothing can be fetched, dispatch — never skip on an unknown diff.
+    # ``pr_data`` is the shared single fetch (125 US3): the gate's fallback and
+    # the review-role diff injection below both consume it.
+    pr_data: tuple[str | None, list[str] | None] | None = None
+    if performer_stage == "documenting" and not state.get("relay_feedback"):
+        sha_gate = await _documenting_sha_gate(state, card, live_head)
+        skip_doc = False
+        skip_reason = ""
+        skip_count = 0
+        if sha_gate is not None:
+            skip_doc, skip_reason, skip_count = sha_gate
+        else:
+            pr_data = await _fetch_pr_data(state, card)
+            changed_files = pr_data[1]
+            if changed_files is not None and _should_skip_documenting(changed_files):
+                skip_doc = True
+                skip_reason = "no_doc_changes"
+                skip_count = len(changed_files)
+        if skip_doc:
+            logger.info(
+                "dispatch_performer.stage_skipped",
+                reason=skip_reason,
+                card_id=card_id,
+                performer_stage=performer_stage,
+                changed_file_count=skip_count,
+            )
+            updates = _advance_stage(state)
+            for key, value in updates.items():
+                state[key] = value  # type: ignore[literal-required]
+            return state
 
     # 053: Guard against repeated PR churn for the same issue.
     config = state.get("config")
@@ -1133,10 +1323,19 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
     # diff itself still has the changes to assess (drive-by fix: reviewer was
     # rejecting PRs with "no code changes were supplied for review"). Best-effort:
     # on any fetch failure the diff is omitted and the persona fallback applies.
+    # 125 US3 (F1): reuse the doc gate's fetch when it already ran — at most
+    # one get_pr_diff per dispatch evaluation.
     if role in _DIFF_REVIEW_ROLES:
-        pr_diff_text = await _fetch_pr_diff_text(state, card)
+        if pr_data is None:
+            pr_data = await _fetch_pr_data(state, card)
+        pr_diff_text = pr_data[0]
         if pr_diff_text:
             card_context["pr_diff"] = pr_diff_text
+            logger.info(
+                "dispatch_performer.review_diff_injected",
+                card_id=card_id,
+                diff_length=len(pr_diff_text),
+            )
 
     if performer_stage == "qa":
         latest_main_sha = state.get("last_known_main_sha")

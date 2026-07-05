@@ -206,6 +206,12 @@ class CardSession(TypedDict, total=False):
     # result and injected as prior_clarifications on re-dispatch.  DISTINCT from
     # open_questions: list[str] (the blocked-card diagnostic surface above).
     assessor_open_questions: list[dict[str, Any]]
+    # 125: stage-verdict memory.  One slot per verdict stage (reviewing/security/
+    # qa/documenting/closing_review): {"head_sha", "verdict", "recorded_at"}
+    # plain dicts at session/state level (typed StageVerdict lives in
+    # state_store).  MUST round-trip through session ↔ state or the skip gate
+    # forgets recorded verdicts between cycles and re-dispatches passed stages.
+    stage_verdicts: dict[str, dict[str, Any]]
 
 
 # Fields that live on both CardSession and CoordinareState (flat).
@@ -282,6 +288,9 @@ _SESSION_FIELDS: tuple[str, ...] = (
     "content_feedback_cycles",
     "transient_error_cycles",
     "assessor_open_questions",
+    # 125: stage-verdict memory.  Round-trips per-card so recorded passing
+    # verdicts survive cycles and daemon restarts.
+    "stage_verdicts",
 )
 
 
@@ -354,6 +363,8 @@ def create_session_from_card(card: dict[str, Any]) -> CardSession:
         content_feedback_cycles=0,
         transient_error_cycles=0,
         assessor_open_questions=[],
+        # 125: no verdicts recorded yet for a freshly-picked-up card
+        stage_verdicts={},
     )
 
 

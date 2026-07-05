@@ -2208,23 +2208,29 @@ async def test_dispatch_test_env_absent_when_no_source_configured(
 
 
 @pytest.mark.asyncio
-async def test_documenting_dispatched_even_without_doc_changes() -> None:
-    """124 FR-006: the documenter maintains the living docs/wiki from the card's
-    CODE changes, so the documenting stage runs even when the PR touches no
-    docs/ path (the 123 docs-path skip was removed for the wiki documenter)."""
+async def test_documenting_skipped_without_doc_changes() -> None:
+    """125 (restores conditional documenting): with no prior doc pass and a PR
+    touching no docs/ path, the documenting stage is skipped via the SHA-keyed
+    gate's whole-PR fallback (_should_skip_documenting).
+
+    NOTE: this REVERSES 124 FR-006 ("documenter always runs for the living
+    wiki"). Restoring the gate was an explicit product decision (see the
+    dispatch_performer caveat comment); it needs 124-owner sign-off, and the
+    docs/-only skip predicate may under-run 124's code-derived wiki."""
     svc = _Service()
     github = _GitHubWithDiff(diff_raw=_REVIEW_DIFF, diff_files=["src/app.py"])  # no docs/ path
     state = _base_state(
         github_service=github,
-        performer_services={"documenting": svc},
+        performer_services={"documenting": svc, "closing_review": _Service()},
         performer_stage="documenting",
-        lifecycle_sequence=["documenting"],
+        lifecycle_sequence=["documenting", "closing_review"],
         current_card=dict(_REVIEW_CARD),
     )
 
     await dispatch_performer(state)
 
-    assert len(svc.dispatched) == 1
+    assert svc.dispatched == []
+    assert state["performer_stage"] == "closing_review"
 
 
 # ---------------------------------------------------------------------------
