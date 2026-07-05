@@ -264,6 +264,315 @@ async def _teardown_workspace(state: CoordinareState) -> None:
         state.pop("_backend_stats_fetched_at", None)  # type: ignore[typeddict-unknown-key]
 
 
+_FEEDBACK_DIGEST_MAX = 200
+
+
+def _stamp_feedback_bounce(
+    state: CoordinareState,
+    items: list[dict[str, Any]],
+    raiser: str,
+    origin_sha: str,
+) -> list[dict[str, Any]]:
+    """126 (contract L1-L3): stamp a new feedback round onto the ledger.
+
+    Assigns stable per-card ids (``fb-<n>``), records the origin head the
+    raising verdict was issued against, rolls the prior round to ``previous``
+    (pruning anything older), resets the no-op retry budget ONLY when the
+    origin head changed (contract L2 — a cross-raiser bounce at the same head
+    is not progress and must not re-arm the F4/F5 floor), and returns enriched
+    copies of ``items`` (``id``/``raiser``/``re_raised`` inline) for
+    ``relay_feedback``.  New items are marked ``re_raised`` when the same
+    raiser's previous round ended in a rejected dispute (contract D3).
+    """
+    ledger = [dict(r) for r in (state.get("feedback_ledger") or []) if isinstance(r, dict)]
+
+    # D3: did this raiser's previous round end in a rejected dispute?
+    re_raised = any(
+        r.get("raiser") == raiser and r.get("disposition") == "dispute_rejected"
+        for r in ledger
+        if r.get("round_status") == "current"
+    )
+
+    # Roll rounds: current -> previous, previous -> pruned. Entries that never
+    # reached a terminal disposition are closed as superseded first.
+    rolled: list[dict[str, Any]] = []
+    for r in ledger:
+        if r.get("round_status") == "current":
+            if r.get("disposition") in ("open", "addressed", "disputed"):
+                r["disposition"] = "superseded"
+            r["round_status"] = "previous"
+            rolled.append(r)
+    next_n = 1 + max(
+        (int(str(r.get("id", "fb-0")).rsplit("-", 1)[-1]) for r in ledger
+         if str(r.get("id", "")).startswith("fb-") and str(r.get("id")).rsplit("-", 1)[-1].isdigit()),
+        default=0,
+    )
+
+    enriched: list[dict[str, Any]] = []
+    for item in items:
+        src = item if isinstance(item, dict) else {"body": str(item)}
+        fb_id = f"fb-{next_n}"
+        next_n += 1
+        body = str(src.get("body") or src.get("description") or "")
+        rolled.append({
+            "id": fb_id,
+            "raiser": raiser,
+            "origin_sha": origin_sha or "",
+            "body_digest": body[:_FEEDBACK_DIGEST_MAX],
+            "disposition": "open",
+            "dispute_reason": "",
+            "re_raised": re_raised,
+            "round_status": "current",
+        })
+        out = dict(src)
+        out["id"] = fb_id
+        out["raiser"] = raiser
+        out["re_raised"] = re_raised
+        # Prefix the id into the item's text field so the backend prompt
+        # builders surface it and the implementer can echo it back in
+        # feedback_dispositions. Review comments carry ``body``; security
+        # findings carry ``description`` — prefix whichever this item uses
+        # (prefer body). Items with neither keep their exact shape.
+        if src.get("body"):
+            out["body"] = f"[{fb_id}] {src['body']}"
+        elif src.get("description"):
+            out["description"] = f"[{fb_id}] {src['description']}"
+        enriched.append(out)
+
+    state["feedback_ledger"] = rolled  # type: ignore[typeddict-unknown-key]
+    prior_origin = str(state.get("feedback_origin_sha") or "")
+    state["feedback_origin_sha"] = origin_sha or None  # type: ignore[typeddict-unknown-key]
+    # Reset the no-op retry budget only when the origin head actually changed
+    # (contract L2). A different raiser bouncing at the SAME head is not
+    # progress — resetting would let a no-op completion escape the F5 hold by
+    # riding a cross-raiser bounce. ``!=`` already covers a new/absent origin
+    # (e.g. "abc" -> "" or "" -> "abc"); an unchanged empty origin ("" -> "")
+    # leaves the (already-unarmed) counter untouched.
+    if origin_sha != prior_origin:
+        state["noop_success_retries"] = 0  # type: ignore[typeddict-unknown-key]
+    logger.info(
+        "monitor_performer.feedback_round_stamped",
+        card_id=str((state.get("current_card") or {}).get("id", "")),
+        raiser=raiser,
+        origin_sha=(origin_sha or "")[:12],
+        item_count=len(enriched),
+        re_raised=re_raised,
+    )
+    return enriched
+
+
+def _settled_head(status: dict[str, Any]) -> str:
+    """The performer-reported settled head for a terminal response ('' if none)."""
+    raw = status.get("head_after") or status.get("head_sha")
+    return raw.strip() if isinstance(raw, str) else ""
+
+
+def _apply_feedback_dispositions(
+    state: CoordinareState,
+    dispositions: list[dict[str, Any]] | None,
+    *,
+    allow_addressed: bool = True,
+) -> list[dict[str, Any]]:
+    """126 (contract F2/F3, I4): apply per-item completion dispositions.
+
+    Returns the newly-disputed ledger records (copies).  Unknown ids, repeat
+    dispositions, and non-current-round targets are ignored with a log.  With
+    ``allow_addressed=False`` (unmoved head, F3) an ``addressed`` claim does
+    not close the item — only disputes count.
+    """
+    ledger = [dict(r) for r in (state.get("feedback_ledger") or []) if isinstance(r, dict)]
+    by_id = {str(r.get("id", "")): r for r in ledger}
+    disputed: list[dict[str, Any]] = []
+    for d in dispositions or []:
+        if not isinstance(d, dict):
+            continue
+        fb_id = str(d.get("id") or "")
+        rec = by_id.get(fb_id)
+        if rec is None or rec.get("round_status") != "current":
+            logger.info("monitor_performer.disposition_unknown_id", id=fb_id)
+            continue
+        if rec.get("disposition") != "open":
+            logger.info("monitor_performer.disposition_repeat_ignored", id=fb_id)
+            continue
+        disp = str(d.get("disposition") or "")
+        if disp == "addressed":
+            if allow_addressed:
+                rec["disposition"] = "addressed"
+            else:
+                logger.info(
+                    "monitor_performer.disposition_addressed_unverified",
+                    id=fb_id,
+                    reason="head unmoved — item stays open",
+                )
+        elif disp == "disputed":
+            rec["disposition"] = "disputed"
+            rec["dispute_reason"] = str(d.get("reason") or "")[:_FEEDBACK_DIGEST_MAX]
+            disputed.append(dict(rec))
+    state["feedback_ledger"] = ledger  # type: ignore[typeddict-unknown-key]
+    return disputed
+
+
+def _evaluate_success_floor(
+    state: CoordinareState, status: dict[str, Any]
+) -> tuple[dict[str, Any], bool]:
+    """126 (contract F1-F6, D4/D5): the implementer terminal-success floor.
+
+    Returns ``(updates, stop)``. ``stop=True`` means the completion was NOT
+    accepted (strengthened re-dispatch or operator hold); the caller applies
+    the updates and returns without advancing.  Never touches the content or
+    transient budgets (I2).  Fail-open: no stamped round or no resolvable
+    completion head accepts as today (FR-011).
+    """
+    origin = str(state.get("feedback_origin_sha") or "")
+    dispositions = status.get("feedback_dispositions")
+    if not isinstance(dispositions, list):
+        dispositions = []
+    card_id = str((state.get("current_card") or {}).get("id", ""))
+    # F1: no stamped feedback round — the floor is unarmed.
+    if not origin:
+        return {}, False
+    head = _settled_head(status)
+    # F6: cannot resolve the completion head — accept (fail-open).
+    if not head:
+        _apply_feedback_dispositions(state, dispositions)
+        return {}, False
+    # F2: real progress — accept, apply dispositions, disarm the round.
+    if head != origin:
+        _apply_feedback_dispositions(state, dispositions)
+        state["feedback_origin_sha"] = None  # type: ignore[typeddict-unknown-key]
+        state["noop_success_retries"] = 0  # type: ignore[typeddict-unknown-key]
+        return {}, False
+    # Head unmoved: only disputes carry weight (F3); addressed claims on an
+    # unverifiable completion stay open.
+    disputed = _apply_feedback_dispositions(state, dispositions, allow_addressed=False)
+    if disputed:
+        # D5: CI-raised items cannot be adjudicated by a stage — hold.
+        ci_disputes = [d for d in disputed if d.get("raiser") == "ci"]
+        # D4: a second dispute against a re-raised round gets no more laps.
+        re_raised_disputes = [d for d in disputed if d.get("re_raised")]
+        if ci_disputes or re_raised_disputes:
+            reason = (
+                "disputes a red CI check (CI cannot adjudicate)"
+                if ci_disputes
+                else "re-disputes feedback its raiser already re-raised"
+            )
+            logger.warning(
+                "monitor_performer.success_floor_hold",
+                card_id=card_id,
+                head=origin[:12],
+                cause=reason,
+                disputed_ids=[str(d.get("id")) for d in disputed],
+            )
+            return (
+                {
+                    "phase": "blocked",
+                    "open_questions": [
+                        f"The implementer completed without moving the head "
+                        f"({origin}) and {reason}: "
+                        f"{', '.join(str(d.get('id')) for d in disputed)} — "
+                        f"operator adjudication required."
+                    ],
+                    "agent_dispatch": {},
+                    "agent_dispatch_at": None,
+                },
+                True,
+            )
+        # F3: legitimate dispute path — accept; the raiser adjudicates (D1).
+        logger.info(
+            "monitor_performer.dispute_queued",
+            card_id=card_id,
+            disputed_ids=[str(d.get("id")) for d in disputed],
+        )
+        return {}, False
+    # F4/F5: no progress and nothing disputed.
+    open_items = [
+        r for r in (state.get("feedback_ledger") or [])
+        if isinstance(r, dict)
+        and r.get("round_status") == "current"
+        and r.get("disposition") == "open"
+    ]
+    item_lines = "\n".join(
+        f"- {r.get('id')}: {r.get('body_digest')}" for r in open_items
+    )
+    retries = int(state.get("noop_success_retries") or 0)
+    if retries < 1:
+        state["noop_success_retries"] = retries + 1  # type: ignore[typeddict-unknown-key]
+        logger.warning(
+            "monitor_performer.success_floor_retry",
+            card_id=card_id,
+            head=origin[:12],
+            open_item_count=len(open_items),
+        )
+        directive = (
+            "Your previous completion changed nothing: the branch head still "
+            f"matches the commit this feedback was raised against ({origin}). "
+            "Address each item below with commits, or mark it disputed with a "
+            "reason in feedback_dispositions. Do not report done without one "
+            f"or the other.\n{item_lines}"
+        )
+        return (
+            {
+                "relay_feedback": [{"body": directive, "author_login": "coordinare"}],
+                "performer_stage": "implementing",
+                "phase": "dispatching",
+                "agent_dispatch": {},
+                "agent_dispatch_at": None,
+            },
+            True,
+        )
+    logger.warning(
+        "monitor_performer.success_floor_hold",
+        card_id=card_id,
+        head=origin[:12],
+        cause="no progress after strengthened re-dispatch",
+        open_item_count=len(open_items),
+    )
+    return (
+        {
+            "phase": "blocked",
+            "open_questions": [
+                f"The implementer reported done twice without moving the head "
+                f"({origin}) and without disputing the outstanding feedback:\n"
+                f"{item_lines}\nOperator triage required."
+            ],
+            "agent_dispatch": {},
+            "agent_dispatch_at": None,
+        },
+        True,
+    )
+
+
+def _resolve_dispute_round(
+    state: CoordinareState, raiser_stage: str, *, passed: bool
+) -> None:
+    """126 (contract D2/D3): the raiser's next verdict adjudicates its disputes.
+
+    Pass ⇒ ``dispute_accepted`` (demand withdrawn); bounce ⇒
+    ``dispute_rejected`` — the subsequent stamped round is then marked
+    ``re_raised`` (see _stamp_feedback_bounce).
+    """
+    ledger = [dict(r) for r in (state.get("feedback_ledger") or []) if isinstance(r, dict)]
+    changed = False
+    for r in ledger:
+        # Scope to the CURRENT round only — a stale/corrupted previous-round
+        # ``disputed`` entry must not be re-adjudicated by a later verdict.
+        if (
+            r.get("raiser") == raiser_stage
+            and r.get("disposition") == "disputed"
+            and r.get("round_status") == "current"
+        ):
+            r["disposition"] = "dispute_accepted" if passed else "dispute_rejected"
+            changed = True
+    if changed:
+        state["feedback_ledger"] = ledger  # type: ignore[typeddict-unknown-key]
+        logger.info(
+            "monitor_performer.dispute_round_resolved",
+            card_id=str((state.get("current_card") or {}).get("id", "")),
+            raiser=raiser_stage,
+            accepted=passed,
+        )
+
+
 def _record_stage_verdict(
     state: CoordinareState, marker: str, status: dict[str, Any]
 ) -> None:
@@ -2361,7 +2670,15 @@ async def _evaluate_ci_gate(
         dump = decision_obj.model_dump(mode="json")
         _stash(dump)
         existing_rf = list(state.get("relay_feedback") or [])
-        existing_rf.append({"body": body, "author_login": "coordinare"})
+        # 126 (L1): CI-gate items are raiser="ci" — disputes of a red check
+        # route to the operator hold, never to stage adjudication (D5).
+        ci_items = _stamp_feedback_bounce(
+            state,
+            [{"body": body, "author_login": "coordinare"}],
+            raiser="ci",
+            origin_sha=head_sha,
+        )
+        existing_rf.extend(ci_items)
         # 090-L3 (US3): when L3 is enabled and at least one INHERITED failure
         # remains within the per-head repair budget, build the repair mandate to
         # thread into the re-dispatched implementer's JobInitPayload.metadata
@@ -3426,6 +3743,18 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
                 if "current_card" in _artefacts:
                     state["current_card"] = _artefacts["current_card"]
                     card = _artefacts["current_card"]
+                # 126 (contract F1-F6): the terminal-success progress floor —
+                # a feedback-driven completion must move the head past the
+                # feedback-origin SHA or explicitly dispute items. Runs BEFORE
+                # the CI gate (no point CI-gating a no-op); never touches the
+                # content/transient budgets.
+                floor_updates, floor_stop = _evaluate_success_floor(
+                    state, status if isinstance(status, dict) else {}
+                )
+                for key, value in floor_updates.items():
+                    state[key] = value  # type: ignore[literal-required]
+                if floor_stop:
+                    return state
                 pr_url_for_gate = status.get("pr_url") if status else None
                 if not pr_url_for_gate and isinstance(card, dict):
                     pr_url_for_gate = card.get("pr_url")
@@ -3454,12 +3783,36 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
                 if ci_stop:
                     return state
 
+            # 126 US3 (contract U2): a docs_committed that changed nothing —
+            # zero reported files AND no head movement this session — advances
+            # (documentation is not a gating verdict; the honest "docs already
+            # current" case is legitimate) but must NOT mint a documentation
+            # pass: 125's last-documented SHA has to mean "docs were actually
+            # produced at this head" or the doc-gate compare baseline lies.
+            _doc_noop = False
+            if stage == "documenting" and marker == "docs_committed":
+                _files = status.get("files_modified") if isinstance(status, dict) else None
+                _head_now = _settled_head(status if isinstance(status, dict) else {})
+                _head_before = str(state.get("head_at_dispatch") or "")
+                if not _files and (not _head_now or _head_now == _head_before):
+                    _doc_noop = True
+                    logger.info(
+                        "monitor_performer.documenting_noop_completion",
+                        card_id=card_id,
+                        head=_head_now[:12] if _head_now else "",
+                    )
             # 125 (contract R1-R4): record the stage's passing verdict against
             # the settled head BEFORE advancing, so the verdict-cache skip can
             # recognise this head as already verified on a later bounce.  Only
             # here — skips (persona-scope/override/cache) advance without a
             # record because nothing was verified.
-            _record_stage_verdict(state, marker, status if isinstance(status, dict) else {})
+            if not _doc_noop:
+                _record_stage_verdict(state, marker, status if isinstance(status, dict) else {})
+            # 126 (contract D2): a verdict stage passing while its disputes
+            # were pending withdraws the demand — the dispute round resolves
+            # accepted.
+            if stage in VERDICT_STAGES and marker == EXPECTED_STAGE_MARKER.get(stage):
+                _resolve_dispute_round(state, stage, passed=True)
 
             updates = _advance_stage(state, status)
 
@@ -3702,6 +4055,15 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
             exhausted = _feedback_cycle_exhausted(state, card_id, stage, "changes_requested", comments)
             if exhausted is not None:
                 return exhausted
+            # 126 (D3): a raiser bouncing again while its disputes were
+            # pending rejects them — the new round below stamps re_raised.
+            _resolve_dispute_round(state, stage, passed=False)
+            # 126 (L1): stamp the round — ids/raiser/origin head — so the
+            # implementer success floor and the disposition contract can hold
+            # this completion to account.
+            comments = _stamp_feedback_bounce(
+                state, comments, raiser=stage, origin_sha=_settled_head(status)
+            )
             state["relay_feedback"] = comments  # type: ignore[typeddict-unknown-key]
             # 123 US5 (FR-012/FR-013/FR-014): when REVIEWER feedback spans 2+
             # distinct concern categories, the work needs re-scoping — route it
@@ -3797,6 +4159,15 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
             exhausted = _feedback_cycle_exhausted(state, card_id, stage, "security_failed", relevant_findings)
             if exhausted is not None:
                 return exhausted
+            # 126 (D3 + L1): resolve pending disputes as rejected, then stamp
+            # the new round (implementer-bound only — the floor and
+            # dispositions apply to the implementing stage's completions).
+            _resolve_dispute_round(state, "security", passed=False)
+            if target_stage == "implementing":
+                relevant_findings = _stamp_feedback_bounce(
+                    state, relevant_findings, raiser="security",
+                    origin_sha=_settled_head(status),
+                )
             state["relay_feedback"] = relevant_findings  # type: ignore[typeddict-unknown-key]
             state["performer_stage"] = target_stage
             state["phase"] = "dispatching"
@@ -3818,6 +4189,12 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
             exhausted = _feedback_cycle_exhausted(state, card_id, stage, "qa_failed", failures)
             if exhausted is not None:
                 return exhausted
+            # 126 (D3): reject pending QA disputes, then stamp the new round.
+            _resolve_dispute_round(state, "qa", passed=False)
+            # 126 (L1): stamp the QA round for the implementer floor.
+            failures = _stamp_feedback_bounce(
+                state, failures, raiser="qa", origin_sha=_settled_head(status)
+            )
             state["relay_feedback"] = failures  # type: ignore[typeddict-unknown-key]
             state["performer_stage"] = "implementing"
             state["phase"] = "dispatching"

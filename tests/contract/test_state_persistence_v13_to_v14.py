@@ -1,17 +1,18 @@
 """Schema v13 → v14 migration contract test (spec 125 T002).
 
 NOTE: renumbered to v14 on rebase — spec 124 (OpenWiki) landed v13 first, so
-the 125 stage-verdict/comment-watermark fields are v14.
+the 125 stage-verdict/comment-watermark fields are v14. Later specs bump
+further (126 → v15), so the version assertion is ``>= 14``, not an exact pin.
 
-Asserts (contracts/state-schema-v13.md; FR-001/FR-010/FR-011/FR-012):
-- ``CURRENT_SCHEMA_VERSION == 14`` and ``MIN_SUPPORTED_SCHEMA_VERSION`` unchanged.
+Asserts (contracts/state-schema-v14.md; FR-001/FR-010/FR-011/FR-012):
+- ``CURRENT_SCHEMA_VERSION >= 14`` and ``MIN_SUPPORTED_SCHEMA_VERSION`` unchanged.
 - A synthetic v12 snapshot loads cleanly with ``stage_verdicts == {}`` per
   session, ``processed_issue_comment_ids == []`` and
   ``last_issue_comment_id is None``.
 - ``StageVerdict`` rejects extra keys and empty ``head_sha``/``verdict``.
 - A corrupted ``stage_verdicts`` entry is dropped on session load (bad slot ==
   no slot: dispatch), never a crashed daemon.
-- All v14 fields round-trip losslessly through ``model_dump(mode="json")`` →
+- The 125 fields round-trip losslessly through ``model_dump(mode="json")`` →
   ``model_validate``.
 """
 from __future__ import annotations
@@ -30,10 +31,11 @@ from coordinare.state_store import (
 )
 
 
-def test_current_schema_version_is_14() -> None:
-    """Spec 125 bumps the snapshot schema to v14 (stage verdict memory +
-    persisted issue-comment watermark)."""
-    assert CURRENT_SCHEMA_VERSION == 14
+def test_current_schema_version_at_least_14() -> None:
+    """Spec 125 bumped the snapshot schema to v14 (stage verdict memory +
+    persisted issue-comment watermark). Later specs bump it further (126 →
+    v15), so this only asserts v14's fields are still supported."""
+    assert CURRENT_SCHEMA_VERSION >= 14
 
 
 def test_min_supported_unchanged() -> None:
@@ -95,7 +97,7 @@ def test_corrupt_stage_verdict_entry_dropped_not_fatal() -> None:
     assert sess.stage_verdicts["reviewing"].head_sha == "abc123"
 
 
-def test_v14_fields_round_trip() -> None:
+def test_stage_verdicts_and_watermark_round_trip() -> None:
     session = PersistedSession(
         card_id="PVTI_X",
         stage_verdicts={
@@ -110,21 +112,14 @@ def test_v14_fields_round_trip() -> None:
                 recorded_at="2026-07-04T11:00:00+00:00",
             ),
         },
+        processed_issue_comment_ids=[3, 1, 2],
+        last_issue_comment_id=7,
     )
     re_loaded = PersistedSession.model_validate(session.model_dump(mode="json"))
     assert re_loaded.stage_verdicts["reviewing"].head_sha == "abc123"
     assert re_loaded.stage_verdicts["reviewing"].verdict == "approved"
     assert re_loaded.stage_verdicts["documenting"].head_sha == "def456"
-
-
-def test_comment_watermark_round_trips_per_card() -> None:
-    """US4: the comment router is per-card (it reads the active card's linked
-    issue), so the dedup watermark persists on PersistedSession."""
-    session = PersistedSession(
-        card_id="PVTI_X",
-        processed_issue_comment_ids=[3, 1, 2],
-        last_issue_comment_id=7,
-    )
-    re_loaded = PersistedSession.model_validate(session.model_dump(mode="json"))
+    # US4: the comment watermark is per-card (the router reads the active
+    # card's linked issue), so it persists on PersistedSession.
     assert re_loaded.processed_issue_comment_ids == [3, 1, 2]
     assert re_loaded.last_issue_comment_id == 7

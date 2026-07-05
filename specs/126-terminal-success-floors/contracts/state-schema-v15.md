@@ -1,11 +1,11 @@
-# Contract: snapshot schema v14 (126)
+# Contract: snapshot schema v15 (126)
 
 Consumed by `tests/contract/test_state_persistence_v13_to_v14.py` (mirrors v12→v13).
 
 ## Version
 
-- `SCHEMA_VERSION` bumps 13 → 14. The v13 pin test relaxes to `>= 13` per the established precedent.
-- v1–v13 snapshots load with `feedback_ledger == []`, `feedback_origin_sha is None`, `noop_success_retries == 0`.
+- `SCHEMA_VERSION` bumps 14 → 15. The v13 pin test relaxes to `>= 13` per the established precedent.
+- v1–v14 snapshots load with `feedback_ledger == []`, `feedback_origin_sha is None`, `noop_success_retries == 0`.
 
 ## Field Registry
 

@@ -311,6 +311,23 @@ async def _fetch_pr_data(
     return sanitized, files
 
 
+def _pending_disputes(state: CoordinareState, stage: str) -> list[dict[str, Any]]:
+    """126 (D1/D6): current-round disputed ledger records raised by ``stage``.
+
+    Scoped to ``round_status == "current"`` so a stale/corrupted previous-round
+    ``disputed`` entry can't veto the verdict-cache skip or leak into the
+    raiser's dispatch context.
+    """
+    return [
+        dict(r)
+        for r in (state.get("feedback_ledger") or [])
+        if isinstance(r, dict)
+        and r.get("raiser") == stage
+        and r.get("disposition") == "disputed"
+        and r.get("round_status") == "current"
+    ]
+
+
 async def _verdict_cache_check(
     state: CoordinareState, card: dict[str, Any], stage: str
 ) -> tuple[bool, str | None]:
@@ -346,6 +363,16 @@ async def _verdict_cache_check(
         return False, None
     # V2: queued feedback is explicit work for the stage.
     if state.get("relay_feedback"):
+        return False, None
+    # V2b (126 D6): a pending dispute for this stage must be adjudicated by a
+    # real run — a cached verdict never silently swallows a dispute.
+    if _pending_disputes(state, stage):
+        logger.info(
+            "dispatch_performer.verdict_cache_bypassed",
+            reason="pending_dispute",
+            card_id=card_id,
+            performer_stage=stage,
+        )
         return False, None
     # V3/V5: a recorded verdict must exist and carry the stage's own passing
     # marker (cross-wired markers never skip).
@@ -1336,6 +1363,19 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
                 card_id=card_id,
                 diff_length=len(pr_diff_text),
             )
+
+    # 126 (D1): a raising stage with pending disputes receives them as
+    # context — its verdict adjudicates (pass = withdrawn, bounce = rejected).
+    _disputes = _pending_disputes(state, performer_stage)
+    if _disputes:
+        card_context["disputed_feedback"] = [
+            {
+                "id": str(d.get("id", "")),
+                "body": str(d.get("body_digest", "")),
+                "reason": str(d.get("dispute_reason", "")),
+            }
+            for d in _disputes
+        ]
 
     if performer_stage == "qa":
         latest_main_sha = state.get("last_known_main_sha")

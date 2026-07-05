@@ -207,6 +207,14 @@ class CoordinareState(TypedDict, total=False):
     # deliberately NOT persisted (a crash loses only the forcing, never a
     # verdict).
     override_forced_dispatch: str | None
+    # 126: terminal-success-floor state ({id, raiser, origin_sha, body_digest,
+    # disposition, dispute_reason, re_raised, round_status} plain dicts +
+    # the current round's origin head + the bounded no-op retry counter).
+    # Written by monitor_performer's bounce stamping and floor; consumed by
+    # dispatch_performer's dispute injection and the 125 cache veto.
+    feedback_ledger: list[dict[str, Any]]
+    feedback_origin_sha: str | None
+    noop_success_retries: int
     # 046: Dependency state for the current card — list of unsatisfied blocker
     # dicts [{issue_number, title, column, issue_url, source}].  Populated by
     # check_board's dependency filtering and consumed by dashboard + notifications.
@@ -317,6 +325,10 @@ def initial_state() -> CoordinareState:
         # 125: stage-verdict memory + one-shot override forcing flag
         "stage_verdicts": {},
         "override_forced_dispatch": None,
+        # 126: terminal-success-floor state
+        "feedback_ledger": [],
+        "feedback_origin_sha": None,
+        "noop_success_retries": 0,
         "blocked_by_dependencies": [],
         "last_known_main_sha": None,
         "last_rebase_round": None,

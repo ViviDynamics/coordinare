@@ -245,6 +245,64 @@ async def test_override_forced_dispatch_bypasses_cache_and_clears_flag() -> None
 
 
 # ---------------------------------------------------------------------------
+# 126 D6 (V2b) — a pending dispute for the stage vetoes the cache skip
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pending_dispute_for_stage_vetoes_cache_skip() -> None:
+    svc = _Service()
+    github = _GitHub(head_ref_oid="abc123")
+    state = _state(
+        github, svc,
+        feedback_ledger=[{
+            "id": "fb-1",
+            "raiser": "reviewing",
+            "origin_sha": "abc123",
+            "body_digest": "wrong finding",
+            "disposition": "disputed",
+            "dispute_reason": "already correct",
+            "re_raised": False,
+            "round_status": "current",
+        }],
+    )
+
+    await dispatch_performer(state)
+
+    # Cache would have skipped (matching verdict + head) — the dispute forces
+    # the dispatch so the raiser adjudicates it.
+    assert len(svc.dispatched) == 1
+    # 126 D1: the dispute rides the raiser's dispatch context.
+    disputed = svc.dispatched[0].get("disputed_feedback")
+    assert disputed and disputed[0]["id"] == "fb-1"
+    assert disputed[0]["reason"] == "already correct"
+
+
+@pytest.mark.asyncio
+async def test_dispute_for_other_stage_does_not_veto() -> None:
+    svc = _Service()
+    github = _GitHub(head_ref_oid="abc123")
+    state = _state(
+        github, svc,
+        feedback_ledger=[{
+            "id": "fb-1",
+            "raiser": "qa",
+            "origin_sha": "abc123",
+            "body_digest": "x",
+            "disposition": "disputed",
+            "dispute_reason": "r",
+            "re_raised": False,
+            "round_status": "current",
+        }],
+    )
+
+    await dispatch_performer(state)
+
+    # reviewing's cache skip stands — the dispute belongs to qa.
+    assert svc.dispatched == []
+
+
+# ---------------------------------------------------------------------------
 # FR-004 — implementing never consults the cache
 # ---------------------------------------------------------------------------
 

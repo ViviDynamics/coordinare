@@ -7,7 +7,7 @@ Consumed by `tests/unit/graph/nodes/test_success_floor.py`, `test_feedback_ledge
 | # | Event | Required effect |
 |---|---|---|
 | L1 | Any bounce that queues implementer-bound feedback (reviewer `changes_requested`, CI-gate bounce, `security_failed`, `qa_failed`) | Each item gets a stable id (`fb-<n>`, monotonic per card) + `raiser` (stage name, or `ci` for CI-gate items); `feedback_origin_sha` set to the head the verdict was raised against; ledger records appended (body digested ≤200 chars); relay entries carry `id`/`raiser`/`re_raised` inline |
-| L2 | New feedback round stamped | prior round's open records marked superseded and pruned beyond 1 prior round; `noop_success_retries` reset to 0 |
+| L2 | New feedback round stamped | prior round's open records marked superseded and pruned beyond 1 prior round; `noop_success_retries` reset to 0 ONLY when the origin head differs from the prior round's (a cross-raiser bounce at the SAME head is not progress and must not re-arm the F4 retry — adversarial-review fix) |
 | L3 | Origin head unresolvable at bounce time | items stamped with `origin_sha=""` — the floor then fails open (F5) |
 
 ## Implementer success floor (implementing terminal success, before the CI gate)
