@@ -39,6 +39,7 @@ from coordinare.state_store import (
     EnvCacheStateSnapshot,
     PersistedSession,
     RepairDecisionRecord,
+    StageVerdict,
     StateLoadError,
     WorkflowPhase,
     WorkflowSnapshot,
@@ -236,6 +237,40 @@ def _persist_active_sessions(active_sessions: dict[str, Any]) -> dict[str, Persi
                         "question": str(item.get("question", "")),
                         "answer": str(item.get("answer", "")),
                     })
+        # 125: stage-verdict memory — validate each slot via StageVerdict and
+        # drop malformed ones here (a bad slot == no slot == dispatch), so a
+        # corrupt entry never fails the whole snapshot save/load.
+        stage_verdicts_raw = sess.get("stage_verdicts")
+        stage_verdicts: dict[str, StageVerdict] = {}
+        if isinstance(stage_verdicts_raw, dict):
+            for sv_stage, sv_entry in stage_verdicts_raw.items():
+                if not isinstance(sv_entry, dict):
+                    continue
+                try:
+                    stage_verdicts[str(sv_stage)] = StageVerdict(**sv_entry)
+                except (ValidationError, TypeError):
+                    continue
+        # 125: per-card issue-comment dedup watermark.  Bound the processed-ID
+        # list to the numerically largest 2000 (GitHub comment IDs are
+        # monotonic → largest == newest); reject bools/non-ints defensively.
+        comment_ids_raw = sess.get("processed_issue_comment_ids") or ()
+        comment_ids: list[int] = []
+        if isinstance(comment_ids_raw, (set, list, tuple)):
+            for cid_val in comment_ids_raw:
+                # GitHub comment IDs are integers. Accept only int (never
+                # bool, never float): int(42.9) would silently coerce to an
+                # unrelated id (42) and corrupt the dedup watermark. Matches
+                # the last_issue_comment_id handling just below.
+                if isinstance(cid_val, bool) or not isinstance(cid_val, int):
+                    continue
+                comment_ids.append(cid_val)
+        comment_ids = sorted(set(comment_ids))[-2000:]
+        last_comment_raw = sess.get("last_issue_comment_id")
+        last_issue_comment_id: int | None = (
+            int(last_comment_raw)
+            if isinstance(last_comment_raw, int) and not isinstance(last_comment_raw, bool)
+            else None
+        )
         out[cid] = PersistedSession(
             card_id=cid,
             performer_stage=(sess.get("performer_stage") or None),
@@ -267,6 +302,9 @@ def _persist_active_sessions(active_sessions: dict[str, Any]) -> dict[str, Persi
             content_feedback_cycles=content_feedback_cycles,
             transient_error_cycles=transient_error_cycles,
             assessor_open_questions=assessor_open_questions,
+            stage_verdicts=stage_verdicts,
+            processed_issue_comment_ids=comment_ids,
+            last_issue_comment_id=last_issue_comment_id,
         )
     return out
 
@@ -792,6 +830,16 @@ class CoordinareDaemon:
                     "content_feedback_cycles": persisted.content_feedback_cycles,
                     "transient_error_cycles": persisted.transient_error_cycles,
                     "assessor_open_questions": [dict(q) for q in persisted.assessor_open_questions],
+                    # 125: restore stage-verdict memory (plain dicts at session
+                    # level) + the per-card issue-comment dedup watermark so a
+                    # restart neither re-runs passed stages nor re-classifies
+                    # processed comments.
+                    "stage_verdicts": {
+                        sv_stage: sv.model_dump(mode="json")
+                        for sv_stage, sv in persisted.stage_verdicts.items()
+                    },
+                    "processed_issue_comment_ids": set(persisted.processed_issue_comment_ids),
+                    "last_issue_comment_id": persisted.last_issue_comment_id,
                 }
                 # Seed current_card for the matching active_card_id from the
                 # top-level snapshot fields; other sessions get a stub that
@@ -828,6 +876,13 @@ class CoordinareDaemon:
                     "head_at_dispatch": None,
                     "head_at_last_turn": None,
                     "persona_scope": None,
+                    # 125 (schema v13): synthesized v1 sessions start with the
+                    # same empty verdict/watermark state as a fresh card so the
+                    # session shape matches _SESSION_FIELDS (adversarial-review
+                    # fix — the v2+ restore path above already sets these).
+                    "stage_verdicts": {},
+                    "processed_issue_comment_ids": set(),
+                    "last_issue_comment_id": None,
                 }
             }
             logger.info(

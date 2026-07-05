@@ -1196,6 +1196,87 @@ class GitHubService:
         )
         return raw, changed_files
 
+    async def compare_changed_files(
+        self, pr_url: str, base_sha: str, head_sha: str
+    ) -> list[str]:
+        """125 — file paths touched between two commits (REST compare API).
+
+        Powers the documenting gate's "what changed since the last
+        documentation pass" decision (``base_sha`` = last documented head,
+        ``head_sha`` = current live head).  Paginates ``files`` at 100/page up
+        to 3 pages; beyond that raises so the caller falls back to the
+        whole-PR gate (a delta that large should be documented anyway, and the
+        gate fails open to dispatch).  Raises on malformed input, missing
+        token, or any non-2xx so the dispatch layer applies its fail-open
+        chain.  Never logs the token; logs only counts and short SHAs.
+        """
+        m = re.match(r"https?://[^/]+/([^/]+)/([^/]+)/pull/(\d+)", pr_url)
+        if not m:
+            raise ValueError("compare_changed_files: unrecognized PR URL")
+        owner, repo = m.group(1), m.group(2)
+        if not base_sha.strip() or not head_sha.strip():
+            raise ValueError("compare_changed_files: empty SHA")
+
+        token = await self._current_token()
+        if not token.strip():
+            raise RuntimeError("compare_changed_files: no GH token available")
+
+        base = self._rest_api_base()
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+        }
+        per_page = 100
+        max_pages = 3
+        files: list[str] = []
+        async with httpx.AsyncClient(timeout=30) as client:
+            for page in range(1, max_pages + 1):
+                resp = await client.get(
+                    f"{base}/repos/{owner}/{repo}/compare/{base_sha}...{head_sha}",
+                    params={"per_page": per_page, "page": page},
+                    headers=headers,
+                )
+                if not resp.is_success:
+                    logger.warning(
+                        "compare_changed_files.fetch_failed",
+                        status=resp.status_code,
+                        page=page,
+                    )
+                    raise RuntimeError(
+                        f"compare_changed_files: fetch failed (status {resp.status_code})"
+                    )
+                payload = resp.json() or {}
+                # The compare API returns a ``files`` list for an enumerable
+                # comparison (empty is legitimate — identical commits). A
+                # MISSING or non-list ``files`` means the API could not
+                # enumerate (e.g. a >300-file comparison omits it) — treat that
+                # as "cannot answer" and raise so the caller falls back to the
+                # whole-PR gate, rather than silently reporting zero changed
+                # files (which would wrongly skip the documenting stage).
+                page_files = payload.get("files")
+                if not isinstance(page_files, list):
+                    raise RuntimeError(
+                        "compare_changed_files: response has no enumerable 'files' list"
+                    )
+                files.extend(
+                    str(f["filename"])
+                    for f in page_files
+                    if isinstance(f, dict) and f.get("filename")
+                )
+                if len(page_files) < per_page:
+                    break
+            else:
+                # Three full pages — the delta may extend further; refuse to
+                # answer partially (the caller's fallback chain handles it).
+                raise RuntimeError("compare_changed_files: truncated beyond page cap")
+        logger.info(
+            "compare_changed_files.complete",
+            file_count=len(files),
+            base=base_sha[:7],
+            head=head_sha[:7],
+        )
+        return files
+
     @staticmethod
     def _parse_diff_paths(raw_diff: str) -> list[str]:
         """Extract post-image (``b/``) paths from a unified diff's git headers."""

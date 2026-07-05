@@ -50,6 +50,24 @@ TERMINAL_SUCCESS_STATES: frozenset[str] = frozenset({
     "docs_committed",
     "assessment_complete",
 })
+# 125: verdict stages whose passing terminal marker is recorded as a
+# stage-verdict slot ({head_sha, verdict, recorded_at}) so dispatch can skip
+# re-running a stage whose verdict already covers the current PR head.
+# implementing/assessing are deliberately absent (FR-004: never skipped, never
+# recorded). The marker↔stage map guards against a cross-wired response (e.g.
+# a stray "approved" while the stage is qa) minting a verdict for the wrong
+# stage.
+VERDICT_STAGES: frozenset[str] = frozenset(
+    {"reviewing", "security", "qa", "documenting", "closing_review"}
+)
+EXPECTED_STAGE_MARKER: dict[str, str] = {
+    "reviewing": "approved",
+    "security": "security_passed",
+    "qa": "qa_passed",
+    "documenting": "docs_committed",
+    "closing_review": "approved",
+}
+
 # 072: performer stages for which a trailing partial_progress sentinel is
 # honored. Architecting / assessing / closing-review / env_bootstrap are
 # short single-turn roles where checkpointing does not apply.
@@ -246,6 +264,46 @@ async def _teardown_workspace(state: CoordinareState) -> None:
         state.pop("_backend_stats_fetched_at", None)  # type: ignore[typeddict-unknown-key]
 
 
+def _record_stage_verdict(
+    state: CoordinareState, marker: str, status: dict[str, Any]
+) -> None:
+    """125 (contract R1-R4): record a passing verdict slot for the stage.
+
+    One slot per verdict stage, overwritten by each new passing verdict.  The
+    head is the performer-reported settled head (``head_after``, the 072
+    audit-trail field) falling back to ``head_sha``; with no resolvable head
+    nothing is recorded — a missing slot simply dispatches next time (the safe
+    direction).  Never records for implementing/assessing, marker/stage
+    mismatches, or failure markers.
+    """
+    stage = str(state.get("performer_stage") or "")
+    if stage not in VERDICT_STAGES or EXPECTED_STAGE_MARKER.get(stage) != marker:
+        return
+    head_raw = status.get("head_after") or status.get("head_sha")
+    head = head_raw.strip() if isinstance(head_raw, str) else ""
+    if not head:
+        logger.debug(
+            "monitor_performer.stage_verdict_no_head",
+            performer_stage=stage,
+            marker=marker,
+        )
+        return
+    verdicts = dict(state.get("stage_verdicts") or {})
+    verdicts[stage] = {
+        "head_sha": head,
+        "verdict": marker,
+        "recorded_at": datetime.now(UTC).isoformat(),
+    }
+    state["stage_verdicts"] = verdicts
+    logger.info(
+        "monitor_performer.stage_verdict_recorded",
+        performer_stage=stage,
+        head_sha=head,
+        verdict=marker,
+        card_id=str((state.get("current_card") or {}).get("id", "")),
+    )
+
+
 def _apply_pending_override(state: CoordinareState) -> CoordinareState | None:
     """Check for and apply a pending human override (031-human-override-controls).
 
@@ -275,6 +333,10 @@ def _apply_pending_override(state: CoordinareState) -> CoordinareState | None:
             state["phase"] = "dispatching"
             state["agent_dispatch"] = {}
             state["agent_dispatch_at"] = None
+            # 125 (V1): an operator-requested restart must always dispatch —
+            # this one-shot flag vetoes the verdict-cache skip for the target
+            # stage and is consumed (cleared) by the cache check.
+            state["override_forced_dispatch"] = target
         else:
             logger.warning("override.restart_invalid_role", target_stage=target)
         return state
@@ -3391,6 +3453,13 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
                     state["env_blocked"] = None  # type: ignore[typeddict-unknown-key]
                 if ci_stop:
                     return state
+
+            # 125 (contract R1-R4): record the stage's passing verdict against
+            # the settled head BEFORE advancing, so the verdict-cache skip can
+            # recognise this head as already verified on a later bounce.  Only
+            # here — skips (persona-scope/override/cache) advance without a
+            # record because nothing was verified.
+            _record_stage_verdict(state, marker, status if isinstance(status, dict) else {})
 
             updates = _advance_stage(state, status)
 

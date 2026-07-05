@@ -9,7 +9,9 @@ from coordinare.state_store import CURRENT_SCHEMA_VERSION, EnvCacheStateSnapshot
 
 
 def test_schema_version_bumped_to_13() -> None:
-    assert CURRENT_SCHEMA_VERSION == 13
+    # 124 bumped to v13; later specs bump further (125 → v14), and the v13 wiki
+    # fields remain supported — so assert >= 13, not an exact pin.
+    assert CURRENT_SCHEMA_VERSION >= 13
 
 
 def test_old_snapshot_loads_wiki_fields_with_safe_defaults() -> None:

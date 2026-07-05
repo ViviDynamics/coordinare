@@ -8,14 +8,21 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 import structlog
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 if TYPE_CHECKING:
     from coordinare.metrics import CoordinareMetrics
 
 logger = structlog.get_logger(__name__)
 
-CURRENT_SCHEMA_VERSION: int = 13
+CURRENT_SCHEMA_VERSION: int = 14
 
 # Lowest schema_version we still know how to read.  v1 snapshots are upgraded
 # in-memory at load time (065 Fix 7b: active_sessions added in v2; v1 snapshots
@@ -67,6 +74,15 @@ CURRENT_SCHEMA_VERSION: int = 13
 # initializes on first cycle (when the gate is enabled). wiki_in_flight is
 # transient and never persisted (rederived False after restart, like
 # bootstrap_in_flight).
+# v14 (125) adds three fields on PersistedSession: stage_verdicts
+# (per-verdict-stage {head_sha, verdict, recorded_at} slots — the stage-verdict
+# memory that lets dispatch skip re-running a stage whose passing verdict
+# already covers the current PR head), plus processed_issue_comment_ids
+# (bounded list of already-classified issue-comment IDs) and
+# last_issue_comment_id (the since_id fetch watermark) — both per-card, since
+# the comment router reads the active card's linked issue — so restarts stop
+# re-classifying processed comments.  v1-v13 snapshots load with {}/[]/None.
+# SHAs, marker strings and numeric comment IDs only — never secret values.
 MIN_SUPPORTED_SCHEMA_VERSION: int = 1
 
 WorkflowPhase = Literal[
@@ -109,6 +125,22 @@ class RepairDecisionRecord(BaseModel):
     flagged_patterns: list[str] = Field(default_factory=list)  # guard reasons, if any
     detail: str | None = None  # escalation/rejection reason, free text
     decided_at: str  # ISO-8601 stamp (set by the node, not a pure path)
+
+
+class StageVerdict(BaseModel):
+    """One recorded passing verdict for a lifecycle stage (125, FR-001).
+
+    Single slot per verdict stage on ``PersistedSession.stage_verdicts`` —
+    overwritten by each new passing verdict.  ``recorded_at`` is observability
+    only; skip decisions compare ``head_sha`` against the live remote head,
+    never times.  Frozen + ``extra="forbid"`` like RepairDecisionRecord.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    head_sha: str = Field(min_length=1)
+    verdict: str = Field(min_length=1)
+    recorded_at: str  # ISO-8601 stamp (set by the node, not a pure path)
 
 
 class PersistedSession(BaseModel):
@@ -266,6 +298,59 @@ class PersistedSession(BaseModel):
     # blocked-card diagnostic surface).  Optional / default ``[]`` keeps v1-v11
     # snapshots loading unchanged.
     assessor_open_questions: list[dict] = Field(default_factory=list)
+    # 125 (schema v13+): stage-verdict memory.  One StageVerdict slot per
+    # verdict stage (reviewing/security/qa/documenting/closing_review) holding
+    # the PR head SHA the stage's passing verdict was issued against.  Dispatch
+    # skips a stage whose slot matches the LIVE remote head exactly (fail-open
+    # on any mismatch/uncertainty).  Never holds implementing/assessing
+    # entries.  Optional / default ``{}`` keeps v1-v12 snapshots loading
+    # unchanged.  A malformed slot is dropped on load (bad slot == no slot ==
+    # dispatch), never a crashed daemon — see the field validator below.
+    stage_verdicts: dict[str, StageVerdict] = Field(default_factory=dict)
+    # 125 (schema v13+): per-card issue-comment classification dedup, persisted
+    # so a restart does not re-classify already-processed comments (US4).  The
+    # comment router (route_issue_comments) is per-card — it reads the ACTIVE
+    # card's linked issue — and both keys already round-trip session ↔ state
+    # via _SESSION_FIELDS, so persistence lives here (per-card), NOT top-level.
+    # The processed-ID list is bounded at save time (numerically largest 2000 —
+    # GitHub comment IDs are monotonic, so largest == newest); restored as a
+    # set into the session.  Numeric IDs only — never comment bodies.
+    processed_issue_comment_ids: list[int] = Field(default_factory=list)
+    last_issue_comment_id: int | None = None
+
+    @field_validator("stage_verdicts", mode="before")
+    @classmethod
+    def _drop_corrupt_stage_verdicts(cls, v: object) -> object:
+        """125: tolerate corrupted slots — drop them instead of failing the
+        whole snapshot load.  A dropped slot simply means the stage dispatches
+        (the safe direction)."""
+        if not isinstance(v, dict):
+            return {}
+        cleaned: dict[str, Any] = {}
+        for stage, entry in v.items():
+            if isinstance(entry, StageVerdict):
+                cleaned[str(stage)] = entry
+                continue
+            if not isinstance(entry, dict):
+                logger.warning(
+                    "state_store.stage_verdict_dropped",
+                    stage=str(stage),
+                    reason="not_a_dict",
+                )
+                continue
+            try:
+                cleaned[str(stage)] = StageVerdict(**entry)
+            except (ValidationError, TypeError) as exc:
+                # Surface the drop so snapshot corruption is visible rather than
+                # silently swallowed (the stage just re-dispatches — safe — but
+                # an operator should see that a recorded verdict was lost).
+                logger.warning(
+                    "state_store.stage_verdict_dropped",
+                    stage=str(stage),
+                    reason=type(exc).__name__,
+                )
+                continue
+        return cleaned
 
     @model_validator(mode="before")
     @classmethod

@@ -574,3 +574,136 @@ class TestGetPrDiff:
         blob = " ".join(str(v) for e in cap for v in e.values())
         assert "tok" not in blob
         assert "os.system" not in blob
+
+
+# ---------------------------------------------------------------------------
+# 125 — compare_changed_files: paths touched between two SHAs (REST compare)
+# ---------------------------------------------------------------------------
+
+
+def _compare_resp(status: int, filenames: list[str]) -> MagicMock:
+    r = MagicMock()
+    r.status_code = status
+    r.is_success = 200 <= status < 300
+    r.json = MagicMock(return_value={"files": [{"filename": f} for f in filenames]})
+    return r
+
+
+class TestCompareChangedFiles:
+    @pytest.mark.asyncio
+    async def test_success_returns_filenames(self) -> None:
+        svc = _make_branch_service()
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client.get = AsyncMock(
+            return_value=_compare_resp(200, ["src/app.py", "docs/readme.md"])
+        )
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            files = await svc.compare_changed_files(_PR_URL, "abc123", "def456")
+        assert files == ["src/app.py", "docs/readme.md"]
+        assert mock_client.get.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_paginates_until_short_page(self) -> None:
+        svc = _make_branch_service()
+        page1 = _compare_resp(200, [f"src/f{i}.py" for i in range(100)])
+        page2 = _compare_resp(200, ["docs/readme.md"])
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client.get = AsyncMock(side_effect=[page1, page2])
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            files = await svc.compare_changed_files(_PR_URL, "abc123", "def456")
+        assert len(files) == 101
+        assert files[-1] == "docs/readme.md"
+        assert mock_client.get.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_page_cap_overflow_raises(self) -> None:
+        svc = _make_branch_service()
+        full = [_compare_resp(200, [f"src/f{i}.py" for i in range(100)])] * 3
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client.get = AsyncMock(side_effect=full)
+        with (
+            patch("httpx.AsyncClient", return_value=mock_client),
+            pytest.raises(RuntimeError),
+        ):
+            await svc.compare_changed_files(_PR_URL, "abc123", "def456")
+
+    @pytest.mark.asyncio
+    async def test_missing_files_list_raises(self) -> None:
+        """Copilot r2: a comparison response with no enumerable 'files' list
+        (e.g. a >300-file compare omits it) must RAISE, not report zero
+        changed files — otherwise the documenting gate would wrongly skip."""
+        svc = _make_branch_service()
+        r = MagicMock()
+        r.status_code = 200
+        r.is_success = True
+        r.json = MagicMock(return_value={"status": "diverged", "total_commits": 5})
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client.get = AsyncMock(return_value=r)
+        with (
+            patch("httpx.AsyncClient", return_value=mock_client),
+            pytest.raises(RuntimeError),
+        ):
+            await svc.compare_changed_files(_PR_URL, "abc123", "def456")
+
+    @pytest.mark.asyncio
+    async def test_empty_files_list_is_valid_no_changes(self) -> None:
+        """An explicit empty 'files' list (identical commits) is legitimate —
+        returns [] without raising."""
+        svc = _make_branch_service()
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client.get = AsyncMock(return_value=_compare_resp(200, []))
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            files = await svc.compare_changed_files(_PR_URL, "abc123", "def456")
+        assert files == []
+
+    @pytest.mark.asyncio
+    async def test_non_2xx_raises(self) -> None:
+        svc = _make_branch_service()
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client.get = AsyncMock(return_value=_compare_resp(404, []))
+        with (
+            patch("httpx.AsyncClient", return_value=mock_client),
+            pytest.raises(RuntimeError),
+        ):
+            await svc.compare_changed_files(_PR_URL, "gone000", "def456")
+
+    @pytest.mark.asyncio
+    async def test_malformed_pr_url_raises(self) -> None:
+        svc = _make_branch_service()
+        with pytest.raises(ValueError):
+            await svc.compare_changed_files("https://example.com/x", "a", "b")
+
+    @pytest.mark.asyncio
+    async def test_empty_sha_raises(self) -> None:
+        svc = _make_branch_service()
+        with pytest.raises(ValueError):
+            await svc.compare_changed_files(_PR_URL, "", "def456")
+
+    @pytest.mark.asyncio
+    async def test_token_never_logged(self) -> None:
+        from structlog.testing import capture_logs
+
+        svc = _make_branch_service()
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client.get = AsyncMock(return_value=_compare_resp(200, ["src/a.py"]))
+        with (
+            capture_logs() as cap,
+            patch("httpx.AsyncClient", return_value=mock_client),
+        ):
+            await svc.compare_changed_files(_PR_URL, "abc123", "def456")
+        blob = " ".join(str(v) for e in cap for v in e.values())
+        assert "tok" not in blob

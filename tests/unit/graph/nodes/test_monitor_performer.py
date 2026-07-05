@@ -3423,6 +3423,7 @@ async def test_terminal_success_with_env_health_failed_does_not_advance() -> Non
         "status": "qa_passed",
         "report": {"criteria_checked": 2, "criteria_passed": 2},
         "env_cache_health_failed": True,
+        "head_after": "abc123",
     })
     state = _make_state(service=svc, stage="qa", sequence=["implementing", "qa"])
     env_svc = MagicMock()
@@ -3439,6 +3440,10 @@ async def test_terminal_success_with_env_health_failed_does_not_advance() -> Non
     env_svc.mark_runtime_health_failed.assert_called_once_with("sym", result)
     # Structured reason names the tainted success.
     assert "terminal_success_env_health_failed" in str(result.get("env_health_hold_reason"))
+    # 125 (contract R5): a tainted success mints NO stage verdict — recording
+    # it would let the verdict cache skip exactly the re-run this hold
+    # scheduled (the stage must genuinely re-run once the cache is repaired).
+    assert not result.get("stage_verdicts")
 
 
 @pytest.mark.asyncio
@@ -3447,6 +3452,7 @@ async def test_terminal_success_without_env_health_flag_advances_normally() -> N
     svc = _Performer(response={
         "status": "qa_passed",
         "report": {"criteria_checked": 2, "criteria_passed": 2},
+        "head_after": "abc123",
     })
     # qa_passed on a non-final stage advances to the next stage.
     state = _make_state(service=svc, stage="qa", sequence=["qa", "documenting"])
@@ -3455,6 +3461,10 @@ async def test_terminal_success_without_env_health_flag_advances_normally() -> N
 
     assert result["performer_stage"] == "documenting"
     assert result["phase"] == "dispatching"
+    # 125 (contract R1, full-flow): the untainted pass records its verdict
+    # against the settled head at the terminal-success call site.
+    assert result["stage_verdicts"]["qa"]["head_sha"] == "abc123"
+    assert result["stage_verdicts"]["qa"]["verdict"] == "qa_passed"
 
 
 # ---------------------------------------------------------------------------

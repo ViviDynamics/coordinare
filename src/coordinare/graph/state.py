@@ -196,6 +196,17 @@ class CoordinareState(TypedDict, total=False):
     # bounce cycles; injected as prior_clarifications on assessor re-dispatch.
     # Distinct from open_questions (list[str], blocked-card diagnostics) above.
     assessor_open_questions: list[dict]
+    # 125: stage-verdict memory.  {stage: {"head_sha","verdict","recorded_at"}}
+    # plain dicts; written by monitor_performer on passing terminal markers,
+    # consulted by dispatch_performer's verdict-cache skip.  Round-trips
+    # session ↔ state and persists (schema v14).
+    stage_verdicts: dict[str, dict[str, Any]]
+    # 125: one-shot veto — set to the target stage by _apply_pending_override's
+    # "restart" action so the verdict cache never suppresses an operator-
+    # requested run.  Consumed (cleared) by the cache check.  Transient:
+    # deliberately NOT persisted (a crash loses only the forcing, never a
+    # verdict).
+    override_forced_dispatch: str | None
     # 046: Dependency state for the current card — list of unsatisfied blocker
     # dicts [{issue_number, title, column, issue_url, source}].  Populated by
     # check_board's dependency filtering and consumed by dashboard + notifications.
@@ -303,6 +314,9 @@ def initial_state() -> CoordinareState:
         "content_feedback_cycles": 0,
         "transient_error_cycles": 0,
         "assessor_open_questions": [],
+        # 125: stage-verdict memory + one-shot override forcing flag
+        "stage_verdicts": {},
+        "override_forced_dispatch": None,
         "blocked_by_dependencies": [],
         "last_known_main_sha": None,
         "last_rebase_round": None,
