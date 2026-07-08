@@ -29,7 +29,7 @@ flowchart TB
   subgraph L5["⑤ MODELS"]
     M1["Frontier<br/>Claude (Anthropic)"]
     SH["SHIM / normalizers<br/>(loopback proxy)"]
-    M2["Local open models<br/>gpt-oss:120b · qwen · glm<br/>(Ollama / LiteLLM)"]
+    M2["Local open models<br/>gpt-oss:120b · qwen · glm<br/>(via LiteLLM gateway — spec 122)"]
   end
 
   D --> S1 & S2
@@ -59,11 +59,17 @@ flowchart LR
   IP -.CI bounce / changes.-> IP
   IP -.infra failure.-> BLK["BLOCKED<br/>(HOLD + notify)"]
   IR -.changes requested.-> IP
+  BLK -.blocker cleared<br/>(auto-recovery, spec 129).-> IR
 ```
 
 - **Board columns** map to workflow phases (TODO → IN_PROGRESS → IN_REVIEW → DONE; BLOCKED is a parking lot).
 - **`max_concurrent_cards`** limits how many cards are active at once (a slot model). In-review and blocked cards don't consume a working slot.
 - **Bounces** send a card back to the implementer with the failing checks; **infra failures** are parked in BLOCKED (not bounced) and the operator is notified; **only humans approve** the final merge.
+- **BLOCKED is no longer a dead end.** Each cycle, before skipping a blocked card, coordinare
+  re-evaluates whether its blocker still holds and **auto-recovers** it to the right stage when it
+  has cleared — a stale human review now addressed, or a recovered environment (spec 129,
+  default-OFF behind `COORDINARE_BLOCKED_RECOVERY`). It never auto-clears a genuine unresolved human
+  verdict.
 
 ## The harness → shim → model path (local-model parity)
 
@@ -84,7 +90,7 @@ flowchart LR
     RT --> NORM --> TR
   end
 
-  SH -->|forward verbatim| UP["Local model upstream<br/>gpt-oss:120b (Ollama)<br/>OpenAI /v1/chat/completions"]
+  SH -->|forward verbatim| UP["Local model upstream<br/>gpt-oss:120b via LiteLLM gateway<br/>OpenAI /v1/chat/completions"]
   UP -->|raw response<br/>(leaks, reasoning, bad JSON)| SH
   SH -->|repaired, frontier-shaped<br/>response| H
 ```

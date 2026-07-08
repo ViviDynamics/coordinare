@@ -44,19 +44,21 @@ human_reviewers: ["jason@…"]        # only these can APPROVE PRs
 max_concurrent_cards: 5             # global default
 
 # --- spec-080 model catalogs (unify single/dual/self-hosted/frontier) ---
+# spec-122: self-hosted models are served behind ONE LiteLLM gateway (kind:
+# litellm) — coordinare no longer points at Ollama/Spark hosts directly.
 endpoints:                          # named serving locations
-  - name: ollama-local
-    kind: ollama
-    base_url: http://<host>:11434
-    auth_env: null                  # NAME of env var, never the secret
+  - name: litellm
+    kind: litellm
+    base_url: http://<litellm-host>:4000/v1
+    auth_env: LITELLM_API_KEY       # NAME of env var, never the secret
 model_endpoints:                    # (model @ endpoint) pairs
-  - name: gptoss120-ollama
-    endpoint: ollama-local
+  - name: gptoss120
+    endpoint: litellm
     model: gpt-oss:120b
 modes:                              # orchestration strategies
-  - name: single-gptoss120-ollama
+  - name: single-gptoss120
     strategy: single                # single | always | conditional | think_once
-    tool: gptoss120-ollama
+    tool: gptoss120
 
 # --- containerized performers (spec 056) ---
 performer_endpoints:
@@ -70,7 +72,7 @@ performer_endpoints:
 
 # --- per-role defaults ---
 performers:
-  tech_writer: { backend: hermes, mode: single-gptoss120-ollama, max_tokens: 12288 }
+  tech_writer: { backend: hermes, mode: single-gptoss120, max_tokens: 12288 }
   closer:      { backend: pi, mode: single-qwen36, max_tokens: 8192 }
 
 # --- the projects ---
@@ -106,7 +108,7 @@ selfhosted_routing:
   - backend: hermes
     model: gpt-oss:120b
     target:
-      base_url: http://<host>:11434
+      base_url: http://<litellm-host>:4000   # LiteLLM gateway (spec 122)
       wire_format: openai
       strategy: normalize            # reroute | normalize | translate
       health_probe: completion       # tool_call | completion
@@ -131,6 +133,17 @@ symphonies:
 
 Plus `EnvCacheConfig.coordinare_manages_services` (default **false** — performer owns env setup;
 spec 116) and `env_bootstrap_max_attempts` (the spec-088 bootstrap circuit breaker).
+
+**Autonomy feature flags** follow the spec-090 default-OFF convention (an env var enables a
+behavior after live validation), e.g.:
+
+```bash
+COORDINARE_BLOCKED_RECOVERY=1   # spec 129: auto-recover BLOCKED cards whose blocker cleared
+                               #           (also gates the QA visual-capture HOLD path)
+```
+
+Enable these only after validating the behavior live; they route the notification through the
+`card_auto_recovered` entry in `notifications.routing`.
 
 ## Precedence summary
 

@@ -49,6 +49,6 @@ for a quick orientation or a presentation.
 | **Env-cache** | The per-symphony cached dev environment (toolchain + activation + services) mounted into performers. |
 | **Gate** | A control point between stages (CI gate, security gate, env-blocked, human approval). |
 
-> **Accuracy note:** the spec line is large and active (specs 001–119). Some behaviors below
+> **Accuracy note:** the spec line is large and active (specs 001–129). Some behaviors below
 > reference draft/in-flight specs; where a doc says "spec NNN," that's the source of truth.
 </content>

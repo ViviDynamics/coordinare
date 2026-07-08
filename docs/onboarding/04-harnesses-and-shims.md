@@ -29,7 +29,7 @@ QA). This is the "performers may run different agent harnesses" point.
 ```
 role (e.g. tech_writer)
   └─ performers.<role>.backend           → which harness (hermes)
-  └─ performers.<role>.mode              → spec-080 mode (e.g. single-gptoss120-ollama)
+  └─ performers.<role>.mode              → spec-080 mode (e.g. single-gptoss120)
         └─ modes[].tool → model_endpoints[] → endpoints[]   → which model + base_url
 ```
 
@@ -92,7 +92,7 @@ Composition example (the `tech_writer`/hermes path, spec 100):
 - backend: hermes
   model: gpt-oss:120b
   target:
-    base_url: http://<ollama-host>:11434
+    base_url: http://<litellm-host>:4000   # LiteLLM gateway (spec 122), not Ollama-direct
     wire_format: openai
     strategy: normalize
     health_probe: completion
@@ -104,9 +104,13 @@ stochastic malformed output is handled one level up by the spec-119 retry, not t
 ## Models
 
 - **Frontier:** Claude (Anthropic) via `claude_code` native — no shim on the native path.
-- **Local / self-hosted:** `gpt-oss:120b`, `qwen` variants, `glm` — served **Ollama-direct**
-  (OpenAI-compatible `/v1/chat/completions`) or via **LiteLLM**. These are the paths that need
-  the shim + normalizers to behave like frontier models.
+- **Local / self-hosted:** `gpt-oss:120b`, `qwen` variants, `glm` — served through the
+  **LiteLLM gateway** (spec 122), an OpenAI-compatible front door (`/v1/chat/completions`) that
+  fronts the underlying Ollama/vLLM backends. **All self-hosted inference now goes through this
+  one gateway** — coordinare no longer calls Ollama hosts (the "Spark" boxes) directly, so there's
+  a single place to route, observe, and swap models. These are the paths that need the shim +
+  normalizers to behave like frontier models. (During the 122 cutover a few one-shot harnesses —
+  junie/pi/hermes — needed CLI-compat fixes; the routing direction is LiteLLM-for-all.)
 
 ### Provider base-URL env per backend
 The launcher repoints exactly one env var per backend to the loopback shim (then restores it on
