@@ -322,6 +322,153 @@ def _finalize_active_card(state: CoordinareState) -> None:
     _rederive_current_card(state)
 
 
+def _blocked_recovery_enabled() -> bool:
+    """129 (US1): default-OFF gate (spec-090 autonomy-feature convention). Enable
+    with COORDINARE_BLOCKED_RECOVERY=1 after live validation."""
+    import os
+
+    return os.environ.get("COORDINARE_BLOCKED_RECOVERY", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
+async def _attempt_blocked_card_recovery(
+    state: CoordinareState, github: object, blocked: list, board: dict
+) -> None:
+    """129 (US1): before BLOCKED cards are skipped, re-evaluate whether their
+    block has cleared and auto-recover them. This increment handles the
+    stale-review case (reuses spec-128); other cleared-signals (env/CI/
+    clarification) are a follow-up. Default-off, fully fail-safe, anti-thrash
+    (one attempt per card per daemon run — in-memory marker)."""
+    if not _blocked_recovery_enabled() or not blocked or github is None:
+        return
+    import contextlib
+
+    from coordinare.models.notification import (
+        EventType,
+        NotificationEvent,
+        NotificationSeverity,
+    )
+    from coordinare.models.review import (
+        Review,
+        ReviewerType,
+        ReviewState,
+        ReviewThread,
+        StalenessClass,
+        classify_reviewer,
+    )
+    from coordinare.services.blocked_recovery import (
+        BlockReason,
+        RecoverySignals,
+        evaluate_recovery,
+    )
+    from coordinare.services.review_staleness import classify_review_staleness
+
+    markers: dict = state.setdefault("_recovery_attempts", {})  # type: ignore[assignment]
+    human_reviewers = state.get("human_reviewers") or []
+    if not isinstance(human_reviewers, list):
+        human_reviewers = []
+    content_node_ids = board.get("content_node_ids", {}) if isinstance(board, dict) else {}
+
+    for item in list(blocked):
+        cid = str(item)
+        if markers.get(cid):  # anti-thrash: one recovery attempt per card per run
+            continue
+        try:
+            issue_node = str(content_node_ids.get(cid, "") or "")
+            if not issue_node or not hasattr(github, "find_pr_for_issue"):
+                continue
+            pr = await github.find_pr_for_issue(issue_node)  # type: ignore[attr-defined]
+            pr_node_id = str((pr or {}).get("pr_node_id") or "")
+            if not pr_node_id or not hasattr(github, "get_pr_review_context"):
+                continue
+            ctx = await github.get_pr_review_context(pr_node_id)  # type: ignore[attr-defined]
+            ctx = ctx if isinstance(ctx, dict) else {}
+            review_decision = str(ctx.get("review_decision", "") or "")
+            reviews = ctx.get("reviews", []) or []
+            threads_raw = ctx.get("review_threads", []) or []
+            head_oid = str(ctx.get("head_oid", "") or "")
+
+            # Only the stale-review reason is inferred in this increment.
+            if review_decision.upper() != "CHANGES_REQUESTED":
+                continue
+            gating = None
+            for r in reviews:
+                if str(r.get("state", "")) == "CHANGES_REQUESTED" and classify_reviewer(
+                    str(r.get("author_login", "")), human_reviewers, []
+                ) == ReviewerType.HUMAN:
+                    gating = r  # last wins → latest human CR
+            if gating is None:
+                continue
+            commit_oid = str(gating.get("commit_oid", "") or "")
+            review = Review(
+                id=str(gating.get("id", "")),
+                author_login=str(gating.get("author_login", "")),
+                author_type=ReviewerType.HUMAN,
+                state=ReviewState.CHANGES_REQUESTED,
+                commit_oid=commit_oid,
+            )
+            threads = [
+                ReviewThread(
+                    id=str(t.get("id", "")),
+                    is_resolved=bool(t.get("is_resolved", False)),
+                    review_id=(str(t["review_id"]) if t.get("review_id") else None),
+                )
+                for t in threads_raw
+            ]
+            commits_behind = 1 if (commit_oid and head_oid and commit_oid != head_oid) else 0
+            staleness = classify_review_staleness(review, head_oid, commits_behind, threads)
+            markers[cid] = True  # attempted (anti-thrash)
+            # Route the decision through the pure evaluator (single decision point,
+            # applies the human-gate safety in one place).
+            decision = evaluate_recovery(
+                [BlockReason.STALE_REVIEW],
+                RecoverySignals(
+                    review_decision=review_decision,
+                    review_stale_addressed=(
+                        staleness.classification is StalenessClass.STALE_ADDRESSED
+                    ),
+                ),
+            )
+            if not decision.recover:
+                continue
+            await github.move_card(cid, decision.target_stage)  # type: ignore[attr-defined]
+            # The card is no longer BLOCKED on GitHub — drop it from the in-memory
+            # board snapshot AND the live blocked list so the downstream blocked-
+            # handling branch (which re-reads state["board_snapshot"]["BLOCKED"])
+            # does not re-adopt it as BLOCKED in this same cycle (adversarial
+            # finding: stale-snapshot re-adoption → phase/GitHub divergence).
+            _snap = state.get("board_snapshot")
+            if isinstance(_snap, dict) and isinstance(_snap.get("BLOCKED"), list):
+                _snap["BLOCKED"][:] = [b for b in _snap["BLOCKED"] if str(b) != cid]
+            with contextlib.suppress(ValueError):
+                blocked.remove(item)
+            logger.info(
+                "blocked_recovery.recovered",
+                card_id=cid,
+                target=decision.target_stage,
+                reason=decision.reason,
+            )
+            notif = state.get("notification_service")
+            if notif is not None:
+                with contextlib.suppress(Exception):
+                    await notif.dispatch(
+                        NotificationEvent(
+                            event_type=EventType.card_auto_recovered,
+                            severity=NotificationSeverity.info,
+                            source="check_board",
+                            payload={
+                                "card_id": cid,
+                                "target": decision.target_stage,
+                                "reason": decision.reason,
+                            },
+                            dedup_key=f"auto_recovered:{cid}:{head_oid}",
+                        )
+                    )
+        except Exception as exc:  # fail-safe: a card's recovery never breaks the cycle
+            logger.warning("blocked_recovery.failsafe_skip", card_id=cid, error=str(exc))
+
+
 async def check_board(state: CoordinareState) -> CoordinareState:
     """Public entry point.  Always re-derives the current_card mirror on exit
     so the I3 invariant (FR-010) holds regardless of which internal branch ran.
@@ -704,6 +851,12 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
     in_review = state["board_snapshot"].get("IN_REVIEW", [])
     blocked = state["board_snapshot"].get("BLOCKED", [])
     todo = state["board_snapshot"].get("TODO", [])
+
+    # 129 (US1): before BLOCKED cards are skipped, re-evaluate whether their
+    # block has cleared and auto-recover them (default-off, fail-safe). Recovered
+    # cards leave BLOCKED here and are picked up as normal in this/next cycle.
+    await _attempt_blocked_card_recovery(state, github, blocked, board)
+    blocked = state["board_snapshot"].get("BLOCKED", [])
 
     # 026: Detect active card removed from all known columns (cancellation)
     active_card = state.get("current_card")

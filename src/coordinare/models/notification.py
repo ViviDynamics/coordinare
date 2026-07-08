@@ -25,6 +25,7 @@ class EventType(StrEnum):
     env_blocked = "env_blocked"  # 095: infra/environment CI block (operator must act)
     wiki_init_exhausted = "wiki_init_exhausted"  # 124: wiki-init budget exhausted / auto-merge blocked
     stale_review_surfaced = "stale_review_surfaced"  # 128: stale human change-request re-surfaced (re-review/dismiss)
+    card_auto_recovered = "card_auto_recovered"  # 129: BLOCKED card auto-recovered after its blocker cleared
 
 
 class NotificationSeverity(StrEnum):
