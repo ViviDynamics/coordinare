@@ -204,9 +204,16 @@ _DIFF_REVIEW_ROLES: frozenset[str] = frozenset(
 # because noise paths like `.codex/` sort BEFORE the real change, so a blind
 # head-cut would keep the junk and drop the actual diff.
 _DIFF_INJECT_MAX_CHARS = 60_000
+# 131: agent tool-config dirs + build/vcs noise. Kept as a literal (NOT a runtime
+# import of the performer package — it need not be importable in the coordinare
+# daemon process). Canonical source of truth is
+# `performer.noise_paths.AGENT_CONFIG_DIRS`; `tests/unit/test_diff_noise_drift.py`
+# fails if this list ever drops an agent dir the canonical set carries.
 _DIFF_NOISE_PATH_MARKERS: tuple[str, ...] = (
-    ".codex/", ".tmp/", "node_modules/", "vendor/bundle/",
-    ".venv/", "__pycache__/", ".git/",
+    # agent tool-config/state dirs (spec 131)
+    ".codex/", ".claude/", ".hermes/", ".junie/", ".opencode/", ".openclaw/", ".pi/",
+    # build / vcs noise
+    ".tmp/", "node_modules/", "vendor/bundle/", ".venv/", "__pycache__/", ".git/",
 )
 
 

@@ -281,7 +281,12 @@ class TestPushBranch:
         proc_ok = MagicMock()
         proc_ok.returncode = 0
         proc_ok.communicate = AsyncMock(return_value=(b"", b""))
-        with patch("performer.workspace.asyncio.create_subprocess_exec", side_effect=[proc_fail, proc_ok]):
+        # 131: push_branch first runs the agent-artifact guard (git ls-files) —
+        # here it returns no tracked files (proc_ok, empty) → guard is a no-op.
+        with patch(
+            "performer.workspace.asyncio.create_subprocess_exec",
+            side_effect=[proc_ok, proc_fail, proc_ok],
+        ):
             await push_branch(stand, _score())  # should succeed via force fallback
 
     async def test_both_push_attempts_fail_raises_workspace_error(self, tmp_path: Path) -> None:
@@ -308,10 +313,15 @@ class TestPushBranch:
         proc_fail = MagicMock()
         proc_fail.returncode = 1
         proc_fail.communicate = AsyncMock(return_value=(b"", verbose.encode()))
+        # 131: leading no-op proc for push_branch's agent-artifact guard (git
+        # ls-files → no tracked files); then regular + force push both fail.
+        proc_ls = MagicMock()
+        proc_ls.returncode = 0
+        proc_ls.communicate = AsyncMock(return_value=(b"", b""))
         with (
             patch(
                 "performer.workspace.asyncio.create_subprocess_exec",
-                side_effect=[proc_fail, proc_fail],
+                side_effect=[proc_ls, proc_fail, proc_fail],
             ),
             pytest.raises(WorkspaceSetupError) as excinfo,
         ):

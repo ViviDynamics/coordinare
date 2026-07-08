@@ -65,6 +65,8 @@ See AGENTS.md for all development guidelines.
 - single-host JSON snapshot via `state_store.py`. A small per-card marker records that a given stale-review situation was already surfaced/re-requested (dedup across cycles), parallel to existing per-card review bookkeeping (`processed_review_ids`). Schema-version bump, backward-compatible default. (128-stale-review-handling)
 - GNU make (macOS default 3.81; Linux GNU make) — POSIX `sh` recipes. + existing `bin/` scripts (`build`, `install`, `uninstall`, `start`, (130-makefile)
 - N/A (no persisted state; the Makefile is stateless). (130-makefile)
+- Python 3.12+ (performer package `agent/performer`, coordinare `src/coordinare`). + the performer workspace/git layer (131-block-agent-config)
+- N/A — no persisted coordinare state. The exclusion is a per-clone file (131-block-agent-config)
 
 ## Recent Changes
 - 076-qa-cycle: Added Python 3.14 (project minimum: 3.12; production currently on 3.14.5 via uv) + pydantic 2.x, langgraph, structlog, docker SDK (or subprocess to `docker` CLI), fastapi (dashboard SSE), httpx (performer HTTP transport), pyyaml (config)

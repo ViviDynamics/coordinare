@@ -17,8 +17,85 @@ from pathlib import Path
 import structlog
 
 from performer.models import Score, Stand
+from performer.noise_paths import exclude_globs, path_has_agent_config
 
 log = structlog.get_logger(__name__)
+
+
+def _write_agent_ignore(stand_path: Path) -> None:
+    """131 US1: append agent-config-dir globs to the clone's ``.git/info/exclude``.
+
+    Repo-local + untracked (never touches the target repo's ``.gitignore``,
+    FR-004), so any agent's ``git add .`` / ``git add -A`` silently skips its own
+    tool-config dirs. Idempotent (won't duplicate on re-setup) and fail-safe (a
+    write error is logged, never aborts the clone).
+
+    ``clone_repository`` always produces a normal clone (``.git`` is a directory).
+    If ``.git`` is a *file* (a worktree/submodule gitlink — not produced here),
+    we skip: the ``strip_agent_artifacts`` push-time guard still covers that
+    repo, so prevention degrading to the backstop is safe."""
+    git_dir = stand_path / ".git"
+    if not git_dir.is_dir():
+        log.debug("agent_ignore.skipped_non_dir_gitdir", path=str(git_dir))
+        return
+    try:
+        exclude_file = git_dir / "info" / "exclude"
+        exclude_file.parent.mkdir(parents=True, exist_ok=True)
+        existing = exclude_file.read_text(encoding="utf-8") if exclude_file.exists() else ""
+        want = [g for g in exclude_globs() if g not in existing.split()]
+        if not want:
+            return
+        block = "\n# spec-131: never commit performer agent tool-config dirs\n" + "\n".join(want) + "\n"
+        with exclude_file.open("a", encoding="utf-8") as fh:
+            fh.write(block)
+        log.info("agent_ignore.written", count=len(want))
+    except OSError as exc:
+        log.warning("agent_ignore.write_failed", error=str(exc))
+
+
+async def strip_agent_artifacts(stand: Stand, env: dict[str, str]) -> list[str]:
+    """131 US2: remove any tracked agent-config paths from the branch before push.
+
+    Prevention (``.git/info/exclude``) handles the normal ``git add .`` case; this
+    is the backstop for ``git add -f`` and already-tracked junk. Lists tracked
+    files, strips those whose path has an agent-config segment via
+    ``git rm -r --cached`` + a removal commit (strip-and-continue; the real change
+    survives). No-op when nothing offending is tracked. Returns the stripped
+    paths (paths only — never contents, FR-007)."""
+    # git ls-files prints to STDOUT (which _run_git discards), so run it directly.
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "git", "ls-files", "-z",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=str(stand.path), env=env,
+        )
+        out_bytes, _ = await asyncio.wait_for(proc.communicate(), timeout=30.0)
+    except (TimeoutError, OSError):
+        return []
+    if proc.returncode != 0:
+        return []
+    tracked = [p for p in out_bytes.decode("utf-8", "replace").split("\0") if p]
+    offending = sorted({p for p in tracked if path_has_agent_config(p)})
+    if not offending:
+        return []
+    rc, stderr = await _run_git(
+        ["git", "rm", "-r", "--cached", "--quiet", "--"] + offending, cwd=stand.path, env=env,
+    )
+    if rc != 0:
+        raise WorkspaceSetupError(
+            f"commit guard: failed to unstage agent artifacts (exit {rc}): {stderr}"
+        )
+    rc, stderr = await _run_git(
+        ["git", "commit", "-m", "chore: remove performer agent tool-config artifacts (spec 131)"],
+        cwd=stand.path, env=env,
+    )
+    if rc != 0:
+        raise WorkspaceSetupError(
+            f"commit guard: failed to commit artifact removal (exit {rc}): {stderr}"
+        )
+    log.warning("commit_guard.agent_artifact_stripped", paths=offending, count=len(offending))
+    return offending
 
 # Matches "Authorization: Basic <token>" or "Authorization: Bearer <token>"
 # in git stderr output so credentials are never surfaced in error messages.
@@ -223,6 +300,9 @@ async def clone_repository(score: Score) -> Stand:
         ["git", "config", "user.email", "coordinare@users.noreply.github.com"],
     ]:
         await _run_git(cfg_cmd, cwd=stand_path, env=env)
+
+    # 131 US1: prevent agents from committing their own tool-config dirs.
+    _write_agent_ignore(stand_path)
 
     log.info("cloned repository", repo_url=score.repo_url, branch=score.branch)
     stand = Stand(path=stand_path, branch=score.branch)
@@ -898,6 +978,12 @@ async def push_branch(stand: Stand, score: Score) -> None:
 
     Raises WorkspaceSetupError on push failure.
     """
+    # 131 US2: last line of defence — strip any agent tool-config artifacts that
+    # got committed (e.g. an agent's `git add -f`) before they reach the PR. No-op
+    # when the tree is clean.
+    guard_env = {**os.environ, **stand.git_env} if stand.git_env else {**os.environ}
+    await strip_agent_artifacts(stand, guard_env)
+
     # 036: Derive push URL from repo_url to support GitHub Enterprise hosts
     remote_url = score.repo_url.rstrip("/")
     if not remote_url.endswith(".git"):
