@@ -804,6 +804,8 @@ notifications:
       channels: [email-team]
     - event_type: env_blocked        # 095: infra/environment block — operator must act
       channels: [slack-ops, email-team]
+    - event_type: card_auto_recovered  # 129: a BLOCKED card auto-unblocked (blocker cleared)
+      channels: [slack-ops]
 
 
 # --- Symphonies ---
