@@ -125,6 +125,7 @@
       <li><b>Sequential</b> — a stage starts only when the prior one succeeds.</li>
       <li><b>CI bounce</b> → back to the implementer with the failing checks.</li>
       <li><b>Infra failure</b> → parked in <span class="warn">BLOCKED</span> + operator notified (not bounced).</li>
+      <li><b>BLOCKED auto-recovers</b> — each cycle coordinare re-checks blocked cards and unblocks them when the blocker clears (spec 129); never past a live human verdict.</li>
       <li><b class="accent">Only humans approve</b> the final merge — bots may comment, never approve.</li>
     </ul>
   </section>
@@ -173,7 +174,7 @@
     <div class="flow" style="margin-top:14px">
       <span class="node">harness CLI</span><span class="arr">→</span>
       <span class="node k">SHIM&nbsp;(127.0.0.1)<br><span style="font-size:11px;color:var(--mut)">route · normalize · translate</span></span><span class="arr">→</span>
-      <span class="node">local model<br><span style="font-size:11px;color:var(--mut)">Ollama / LiteLLM</span></span>
+      <span class="node">local model<br><span style="font-size:11px;color:var(--mut)">via LiteLLM gateway</span></span>
     </div>
     <div class="flow">
       <span class="node b" style="font-size:12px">raw: reasoning leak · harmony tool-call leak · bad JSON · wrong wire</span>
@@ -260,6 +261,10 @@
       <tr><td><b>Core orchestration / lifecycle / config</b></td><td class="mono">001–057</td><td><span class="good">✅ implemented</span></td></tr>
       <tr><td><b>Gates &amp; autonomy</b></td><td class="mono">075·089·090·095·118·119</td><td><span class="good">✅</span> actively extended</td></tr>
       <tr><td><b>Self-hosted model parity</b> (shims)</td><td class="mono">078·084·098·099·100</td><td><span class="good">✅</span> actively extended</td></tr>
+      <tr><td><b>LiteLLM gateway consolidation</b></td><td class="mono">122</td><td><span class="good">✅</span> one gateway, no direct Ollama</td></tr>
+      <tr><td><b>Pipeline correctness &amp; PR-lifecycle</b></td><td class="mono">120·123·125–128</td><td><span class="good">✅ implemented</span></td></tr>
+      <tr><td><b>BLOCKED auto-recovery + QA capture resilience</b></td><td class="mono">129</td><td><span class="warn">✅ default-OFF</span> pending validation</td></tr>
+      <tr><td><b>Living wiki documenter</b></td><td class="mono">124</td><td><span class="good">✅</span> own tech_writer (OpenWiki dropped)</td></tr>
       <tr><td><b>Dual-model orchestration</b></td><td class="mono">080</td><td><span class="warn">🔶 in progress</span></td></tr>
       <tr><td><b>Env-cache</b></td><td class="mono">060·087·116·117</td><td><span class="good">✅ implemented</span></td></tr>
       <tr><td><b>Coordinare-managed services</b></td><td class="mono">091–115</td><td><span style="color:var(--dim)">💤 dormant (116 toggle)</span></td></tr>

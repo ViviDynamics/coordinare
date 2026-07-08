@@ -17,7 +17,7 @@ Source of truth: `src/coordinare/lifecycle.py` (`ROLE_TO_STAGE`, `CANONICAL_ORDE
 | 5 | `reviewer` | `reviewing` | review verdict (approve / changes) |
 | 6 | `security` | `security` | security verdict |
 | 7 | `qa` | `qa` | QA verdict (runs tests against the live env) |
-| 8 | `tech_writer` | `documenting` | docs committed |
+| 8 | `tech_writer` | `documenting` | maintains the living project wiki (`docs/wiki/`) — spec 124 |
 | 9 | `closer` | `closing_review` | final close-out review |
 
 > `assessing` and `closing_review` are **singleton stages** (clamped to concurrency 1).
@@ -37,7 +37,7 @@ A symphony is a **GitHub Projects v2 board**. Columns map to phases:
 | TODO | dispatching (initial) | yes |
 | IN_PROGRESS | dispatching / monitoring_performer | **yes (1 slot)** |
 | IN_REVIEW | monitoring_pr / merging | no (passive — awaiting human) |
-| BLOCKED | blocked | no (no live performer) |
+| BLOCKED | blocked / recovery | no (no live performer) |
 | DONE | idle | no |
 
 - **Pickup:** `check_board` does a "unified pickup" each cycle, bounded by
@@ -45,6 +45,11 @@ A symphony is a **GitHub Projects v2 board**. Columns map to phases:
   slot, but the daemon still re-adopts them each cycle.
 - **Human approval rule:** in `monitor_pr`, a PR advances to merge only on a **HUMAN** `APPROVED`
   review. Trusted bots may `COMMENT` / `CHANGES_REQUESTED` but cannot approve.
+- **BLOCKED auto-recovery (spec 129):** each cycle `check_board` re-evaluates every BLOCKED card
+  before skipping it and auto-recovers it when the blocker has demonstrably cleared — a stale human
+  review now addressed → IN_REVIEW, or a recovered environment → its prior working stage. Fully
+  fail-safe, anti-thrash (one attempt/card/run), one operator notification, and it **never**
+  auto-clears a genuine unresolved human verdict. Default-OFF behind `COORDINARE_BLOCKED_RECOVERY`.
 
 ## The dispatch → monitor loop
 
@@ -63,6 +68,9 @@ stateDiagram-v2
   monitoring_pr --> dispatching: CI bounce / changes requested
   monitoring_pr --> merging: HUMAN approved + base green
   merging --> idle: PR merged → DONE
+  blocked --> recovery: blocker cleared (auto-recovery, spec 129)
+  recovery --> dispatching: resume at prior stage
+  recovery --> monitoring_pr: resume at IN_REVIEW
   blocked --> dispatching: human moves card out of BLOCKED
 ```
 
@@ -85,6 +93,10 @@ stage (or move to IN_REVIEW); on terminal error block; on transient error retry.
 | **Inherited-repair (L3)** | 090 | inherited failure | bounded autonomous repair (1 attempt/head, audited, never auto-merges) |
 | **Env-blocked gate** | 095 / 118 | failure classified as infra (artifact quota, runner perms, offline runner) | **HOLD + notify** the operator — does *not* bounce the implementer |
 | **Env-cache readiness / dispatch gate** | 088 / 093 | bootstrap not yet successful | hold card dispatch until the env-cache is ready; circuit-break after N failed bootstraps |
+| **QA evidence floor** | 120 | a `qa_passed` verdict is unsubstantiated (0-of-N criteria, or missing required visual evidence) | `advance` only if substantiated; else `hold` (env signal) or `bounce` — a self-reported pass is never trusted blindly |
+| **QA visual-capture resilience** | 129 | a QA pass is unsubstantiated *only* because the capture tooling was unavailable (not the app) | recoverable **HOLD**, not a hard bounce — never a false-pass (honors the 120 floor). Gated with the recovery flag |
+| **Stale-review handling** | 128 | a human `CHANGES_REQUESTED` is stale (its feedback addressed by newer commits / resolved threads) | surface + re-request review, or move back to IN_REVIEW — don't silently sit blocked on an addressed verdict |
+| **BLOCKED auto-recovery** | 129 | a BLOCKED card's blocker (stale review / env) has cleared | auto-unblock + route to the correct stage; fail-safe, anti-thrash, never past a live human verdict (default-OFF) |
 
 The CI-gate **classification** (090-L2) is what lets coordinare tell "the implementer broke this"
 (introduced → bounce) from "the runner is broken" (env_blocked → hold). That distinction is why
