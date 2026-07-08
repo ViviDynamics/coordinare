@@ -156,6 +156,7 @@ class CoordinareState(TypedDict, total=False):
     pending_override: dict[str, Any] | None  # 031: human override queued via dashboard or PR comment
     lifecycle_completed_at: datetime | None  # Cutoff for filtering old PR reviews after lifecycle completion
     processed_review_ids: set[str]  # Review node IDs already processed — prevents re-dispatch loops
+    surfaced_stale_reviews: dict[str, str]  # 128: {review_id: head_oid} — stale-review surfacing dedup
     card_tokens_total: int  # 034: accumulated token count for current card
     card_cost_estimate: float  # 034: estimated cost in dollars
     card_budget_alert_sent: bool  # 034: True if budget exceeded notification was sent
@@ -293,6 +294,7 @@ def initial_state() -> CoordinareState:
         "last_poll_at": datetime.now(UTC),
         "error_count": 0,
         "github_field_cache": {},
+        "surfaced_stale_reviews": {},
         "open_questions": [],
         "system_error_count": 0,
         "system_error_notified": False,

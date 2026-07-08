@@ -15,7 +15,23 @@ from coordinare.graph.nodes.github_retry import (
     is_transient_github_outage_error,
 )
 from coordinare.graph.state import _set_current_card
-from coordinare.models.review import ReviewerType, classify_reviewer
+from coordinare.models.notification import (
+    EventType,
+    NotificationEvent,
+    NotificationSeverity,
+)
+from coordinare.models.review import (
+    Review,
+    ReviewerType,
+    ReviewState,
+    ReviewThread,
+    StalenessClass,
+    classify_reviewer,
+)
+from coordinare.services.review_staleness import (
+    StalenessConfig,
+    classify_review_staleness,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -83,6 +99,175 @@ def _latest_reviews_per_author(
         for r in reviews
         if not str(r.get("author_login") or "").strip().lower() or id(r) in winners
     ]
+
+
+def _latest_human_change_request(
+    reviews: list[dict[str, object]], human_reviewers: list[str]
+) -> dict[str, object] | None:
+    """The most recent human CHANGES_REQUESTED review across the FULL list
+    (not the processed-filtered subset) — GitHub gates on it regardless of what
+    coordinare has already dispatched."""
+    candidates = [
+        r
+        for r in reviews
+        if str(r.get("state", "")) == "CHANGES_REQUESTED"
+        and classify_reviewer(str(r.get("author_login", "")), human_reviewers, [])
+        == ReviewerType.HUMAN
+    ]
+    if not candidates:
+        return None
+    return max(
+        candidates,
+        key=lambda r: _parse_submitted_at(r) or datetime.min.replace(tzinfo=UTC),
+    )
+
+
+async def _surface_stale_change_request(
+    state: CoordinareState,
+    github: object,
+    card: dict[str, object],
+    card_id: str,
+    reviews: list[dict[str, object]],
+    review_threads: list[dict[str, object]],
+    head_oid: str,
+    review_decision: str,
+    human_reviewers: list[str],
+) -> None:
+    """128 (US1/US3/FR-011): when GitHub still gates on an outstanding human
+    CHANGES_REQUESTED but nothing fresh is actionable, decide stale vs fresh.
+
+    STALE_ADDRESSED  → re-request the reviewer + move the card to IN_REVIEW +
+                       one deduped notification (the card rejoins review flow).
+    STALE_UNADDRESSED→ one deduped notification; card stays parked.
+    FRESH / none     → no-op (existing behavior). Fully fail-safe.
+    """
+    surfaced: dict[str, str] = state.setdefault("surfaced_stale_reviews", {})  # type: ignore[assignment]
+
+    # FR-011: verdict cleared (approved/dismissed) → drop dedup markers so a
+    # future change-request re-surfaces, and let the normal merge path resume.
+    if review_decision.upper() != "CHANGES_REQUESTED":
+        if surfaced:
+            surfaced.clear()
+        return
+
+    # 128 (review): prune dedup markers for reviews no longer in the list
+    # (dismissed/superseded) so surfaced_stale_reviews can't grow unbounded
+    # across co-review rotations while another reviewer's CR keeps the gate up.
+    if surfaced:
+        live_ids = {str(r.get("id", "")) for r in reviews}
+        for rid in [k for k in surfaced if k not in live_ids]:
+            del surfaced[rid]
+
+    gating = _latest_human_change_request(reviews, human_reviewers)
+    if gating is None:
+        return
+    review_id = str(gating.get("id", ""))
+    commit_oid = str(gating.get("commit_oid", "") or "")
+
+    review = Review(
+        id=review_id,
+        author_login=str(gating.get("author_login", "")),
+        author_type=ReviewerType.HUMAN,
+        state=ReviewState.CHANGES_REQUESTED,
+        commit_oid=commit_oid,
+        submitted_at=_parse_submitted_at(gating) or datetime.now(UTC),
+    )
+    threads = [
+        ReviewThread(
+            id=str(t.get("id", "")),
+            is_resolved=bool(t.get("is_resolved", False)),
+            review_id=(str(t["review_id"]) if t.get("review_id") else None),
+        )
+        for t in review_threads
+    ]
+    # commits_behind: precise counting needs a compare API (see T019/limitation);
+    # for the safe default threshold (>=1 later commit) "commit != head" ⇒ >=1.
+    commits_behind = 1 if (commit_oid and head_oid and commit_oid != head_oid) else 0
+    result = classify_review_staleness(
+        review, head_oid, commits_behind, threads, config=StalenessConfig()
+    )
+
+    if result.classification is StalenessClass.FRESH:
+        return
+
+    # Dedup: act once per (review, head). Re-fires only when head advances.
+    if surfaced.get(review_id) == head_oid:
+        return
+
+    logger.info(
+        "stale_review.detected",
+        card_id=card_id,
+        review_id=review_id,
+        classification=result.classification.value,
+        reason=result.reason,
+        review_commit=commit_oid[:8],
+        head=head_oid[:8],
+    )
+
+    if result.classification is StalenessClass.STALE_ADDRESSED:
+        reviewer = str(gating.get("author_login", ""))
+        try:
+            if hasattr(github, "request_reviews"):
+                await github.request_reviews(pr_id=str(card.get("pr_node_id") or ""), reviewer_logins=[reviewer])  # type: ignore[attr-defined]
+                logger.info("stale_review.re_requested", card_id=card_id, reviewer=reviewer)
+        except Exception as exc:  # fail-safe: never crash the cycle
+            logger.warning("stale_review.re_request_failed", card_id=card_id, error=str(exc))
+        try:
+            await github.move_card(card_id, "IN_REVIEW")  # type: ignore[attr-defined]
+            card["status"] = "IN_REVIEW"
+            _set_current_card(state, card)
+            logger.info("stale_review.routed_in_review", card_id=card_id)
+        except Exception as exc:
+            logger.warning("stale_review.move_failed", card_id=card_id, error=str(exc))
+
+    await _notify_stale_review(state, card, card_id, gating, commit_oid, head_oid, result.classification)
+    surfaced[review_id] = head_oid
+
+
+async def _notify_stale_review(
+    state: CoordinareState,
+    card: dict[str, object],
+    card_id: str,
+    gating: dict[str, object],
+    commit_oid: str,
+    head_oid: str,
+    classification: StalenessClass,
+) -> None:
+    """One deduped operator notification per stale-review situation (FR-004)."""
+    notification_service = state.get("notification_service")
+    if notification_service is None:
+        return
+    review_id = str(gating.get("id", ""))
+    reviewer = str(gating.get("author_login", ""))
+    pr = str(card.get("pr_url") or card.get("pr_node_id") or "")
+    action = (
+        f"re-review or dismiss review {review_id} on {pr}"
+        if classification is StalenessClass.STALE_ADDRESSED
+        else f"feedback still open — address, then re-review/dismiss review {review_id} on {pr}"
+    )
+    try:
+        await notification_service.dispatch(
+            NotificationEvent(
+                event_type=EventType.stale_review_surfaced,
+                severity=NotificationSeverity.warning,
+                source="monitor_pr",
+                payload={
+                    "card_id": card_id,
+                    "card_title": str(card.get("title", "")),
+                    "pr": pr,
+                    "review_id": review_id,
+                    "reviewer": reviewer,
+                    "review_date": str(gating.get("submitted_at", "")),
+                    "review_commit": commit_oid[:8],
+                    "head_commit": head_oid[:8],
+                    "classification": classification.value,
+                    "next_action": action,
+                },
+                dedup_key=f"stale_review:{card.get('pr_node_id')}:{review_id}:{head_oid}",
+            )
+        )
+    except Exception as exc:  # notification must never crash the gate
+        logger.warning("stale_review.notify_failed", card_id=card_id, error=str(exc))
 
 
 async def monitor_pr(state: CoordinareState) -> CoordinareState:
@@ -211,7 +396,19 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
             )
             state["phase"] = "monitoring_pr"
             return state
-        reviews = await github.get_pr_reviews(pr_node_id)
+        # 128: prefer the richer single-query context (reviews + threads +
+        # head_oid + reviewDecision) when available; fall back to the plain
+        # reviews list so existing callers/doubles behave identically.
+        if hasattr(github, "get_pr_review_context"):
+            _ctx = await github.get_pr_review_context(pr_node_id)
+            _ctx = _ctx if isinstance(_ctx, dict) else {}
+            reviews = _ctx.get("reviews", []) or []
+            _review_threads = _ctx.get("review_threads", []) or []
+            _pr_head_oid = str(_ctx.get("head_oid", "") or "")
+            _review_decision = str(_ctx.get("review_decision", "") or "")
+        else:
+            reviews = await github.get_pr_reviews(pr_node_id)
+            _review_threads, _pr_head_oid, _review_decision = [], "", ""
         clear_deferred_github_operation(state, "monitor_pr")
     except Exception as exc:
         if is_transient_github_outage_error(exc):
@@ -350,5 +547,23 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
             return state
         state["phase"] = "merging"
     else:
+        # 128: no fresh-actionable feedback and no approval. If GitHub still
+        # gates on an outstanding human CHANGES_REQUESTED, surface it —
+        # stale-addressed → re-request + IN_REVIEW; stale-unaddressed → notify;
+        # fresh → unchanged. Fail-safe: a handler error never breaks the cycle.
+        try:
+            await _surface_stale_change_request(
+                state,
+                github,
+                card,
+                card_id,
+                reviews,
+                _review_threads,
+                _pr_head_oid,
+                _review_decision,
+                human_reviewers if isinstance(human_reviewers, list) else [],
+            )
+        except Exception as exc:
+            logger.warning("stale_review.handler_failed", error=str(exc))
         state["phase"] = "monitoring_pr"
     return state

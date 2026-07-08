@@ -37,10 +37,17 @@ _ITEM = {
 }
 
 
-def test_current_schema_version_is_15() -> None:
-    """Spec 126 bumps the snapshot schema to v15 (terminal-success floors:
-    feedback ledger + origin SHA + no-op retry counter)."""
-    assert CURRENT_SCHEMA_VERSION == 15
+def test_current_schema_version_is_16() -> None:
+    """Spec 128 bumps the snapshot schema to v16 (top-level + per-card
+    surfaced_stale_reviews stale-review dedup marker), superseding the v15 pin
+    (spec 126, terminal-success floors — still present, just no longer current)."""
+    assert CURRENT_SCHEMA_VERSION == 16
+
+
+def test_old_session_loads_with_surfaced_stale_reviews_default() -> None:
+    """128: a pre-v16 session loads with an empty surfaced_stale_reviews."""
+    sess = PersistedSession.model_validate({"card_id": "PVTI_X"})
+    assert sess.surfaced_stale_reviews == {}
 
 
 def test_min_supported_unchanged() -> None:

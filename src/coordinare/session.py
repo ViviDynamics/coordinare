@@ -128,6 +128,10 @@ class CardSession(TypedDict, total=False):
     # ``PersistedSession``.  MUST round-trip through session ↔ state or the
     # same review re-classifies every cycle until the snapshot is rewritten.
     processed_review_ids: set[str]
+    # 128: per-card stale-review surfacing dedup marker ({review_id: head_oid}).
+    # MUST round-trip through session ↔ state (via _SESSION_FIELDS) or the same
+    # stale review re-surfaces (duplicate re-request/notify) in multi-card mode.
+    surfaced_stale_reviews: dict[str, str]
     # 074 FR-011: per-card persona-scope classification.  MUST round-trip
     # through session ↔ state or the next cycle re-classifies from scratch
     # (acceptable, but loses the previous-cycle fallback chain in FR-006).
@@ -266,6 +270,7 @@ _SESSION_FIELDS: tuple[str, ...] = (
     "dispatched_notified_stages",
     "lifecycle_completed_at",
     "processed_review_ids",
+    "surfaced_stale_reviews",
     "persona_scope",
     "bounce_counter",
     "local_fix_counter",
@@ -351,6 +356,7 @@ def create_session_from_card(card: dict[str, Any]) -> CardSession:
         dispatched_notified_stages=[],
         lifecycle_completed_at=None,
         processed_review_ids=set(),
+        surfaced_stale_reviews={},
         persona_scope=None,
         bounce_counter={},
         local_fix_counter={},

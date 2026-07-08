@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-CURRENT_SCHEMA_VERSION: int = 15
+CURRENT_SCHEMA_VERSION: int = 16  # 128: + PersistedSession.surfaced_stale_reviews
 
 # Lowest schema_version we still know how to read.  v1 snapshots are upgraded
 # in-memory at load time (065 Fix 7b: active_sessions added in v2; v1 snapshots
@@ -198,6 +198,10 @@ class PersistedSession(BaseModel):
     phase: str | None = None
     lifecycle_completed_at: datetime | None = None
     processed_review_ids: list[str] = Field(default_factory=list)
+    # 128: dedup marker for stale-review surfacing — {gating_review_id: head_oid}
+    # at the moment we re-requested/notified. Re-fire only when absent or the
+    # head has advanced past the recorded oid. Backward-compatible default.
+    surfaced_stale_reviews: dict[str, str] = Field(default_factory=dict)
     open_questions: list[str] = Field(default_factory=list)
     card_clarifications: list[dict] = Field(default_factory=list)
     relay_feedback: list[dict] = Field(default_factory=list)
@@ -527,6 +531,9 @@ class WorkflowSnapshot(BaseModel):
     last_blocked_notified_at: datetime | None = None
     lifecycle_completed_at: datetime | None = None
     processed_review_ids: list[str] = Field(default_factory=list)  # stored as list, used as set
+    # 128: stale-review surfacing dedup marker for the active card (mirrors the
+    # per-card PersistedSession field). v<16 snapshots load with an empty dict.
+    surfaced_stale_reviews: dict[str, str] = Field(default_factory=dict)
     # 065 Fix 7b: multi-card session persistence.  Without this, a restart in
     # multi-card mode loses every per-card stage and re-adopts each IN_PROGRESS
     # card as a fresh "implementing" session, demoting closer cards back to the
