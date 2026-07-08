@@ -70,6 +70,40 @@ def _has_env_signal(report: dict, env_cache_health_failed: bool) -> bool:
     return bool(env_cache_health_failed) or bool(report.get("environment_error"))
 
 
+def _capture_tooling_unavailable(report: dict) -> bool:
+    """129 (US2): True when visual capture failed because the CAPTURE TOOLING /
+    runtime was unavailable (screenshot service, headless browser, display) —
+    NOT because the app failed to render. This is a recoverable environment
+    block, distinct from a real visual regression. Signalled either by an
+    explicit ``visual_capture_unavailable`` flag or an ``environment_error``
+    that names the capture tooling. Ambiguous/app-failure signals do NOT match
+    (FR-012: when unsure, fall through to a real failure)."""
+    if bool(report.get("visual_capture_unavailable")):
+        return True
+    err = str(report.get("environment_error") or "").lower()
+    if not err:
+        return False
+    # Require UNAMBIGUOUS capture-tooling phrases. Bare "browser"/"display"/
+    # "capture" collide with real app-failure messages (e.g. "browser console:
+    # assertion failed"), which would hide a real bug behind a recoverable hold
+    # — FR-012 says when unsure, fall through to a real failure.
+    phrases = (
+        "screenshot",
+        "headless browser",
+        "browser failed to start",
+        "browser could not start",
+        "no display",
+        "display server",
+        "xvfb",
+        "playwright",
+        "capture tooling",
+        "capture unavailable",
+        "visual capture unavailable",
+        "screenshot tooling",
+    )
+    return any(p in err for p in phrases)
+
+
 def qa_unsubstantiated_reason(report: dict | None) -> str | None:
     """Return a names/counts-only reason when a ``qa_passed`` is unsubstantiated.
 
@@ -91,6 +125,7 @@ def classify_qa_verdict(
     status: str,
     report: dict | None,
     env_cache_health_failed: bool = False,
+    capture_recovery_enabled: bool = False,
 ) -> QaRoute:
     """Decide advance/hold/bounce for a QA terminal verdict.
 
@@ -99,10 +134,33 @@ def classify_qa_verdict(
     returns ``"advance"`` for them (a no-op for the caller's terminal-success
     branch). A substantiated ``qa_passed`` returns ``"advance"``; an
     unsubstantiated one returns ``"hold"`` (env signal present) or ``"bounce"``.
+
+    ``capture_recovery_enabled`` (129 US2) gates the visual-capture-tooling
+    HOLD branch. It is OFF by default so the shipped behavior is unchanged: a
+    capture-unavailable pass bounces exactly as before. The spec (US2) routes
+    this HOLD to be picked up by US1's env-recovery re-check — but that
+    env-recovery gatherer is a deferred follow-up (spec-129 T008), so a HOLD
+    here would sit in BLOCKED with no auto-recovery path yet. Gating the HOLD
+    to the same operator flag that enables US1 recovery keeps the two coupled
+    and avoids a stuck-forever regression until the paired recovery lands.
     """
     if status != "qa_passed":
         return "advance"
     report = report or {}
-    if qa_unsubstantiated_reason(report) is None:
+    reason = qa_unsubstantiated_reason(report)
+    if reason is None:
         return "advance"
+    # 129 (US2, FR-010): a pass unsubstantiated ONLY because the visual-capture
+    # tooling was unavailable (not the app) is a RECOVERABLE env-block → HOLD,
+    # never a bounce — but only when capture-recovery is enabled (see docstring).
+    # (We deliberately do NOT auto-advance here — a limited-pass that waives
+    # required visual evidence risks masking a visual regression, FR-011 is
+    # left as a config-gated follow-up; HOLD is the safe default that never
+    # becomes a QA false-pass, honoring the spec-120 floor.)
+    if (
+        capture_recovery_enabled
+        and reason == "missing_visual_evidence"
+        and _capture_tooling_unavailable(report)
+    ):
+        return "hold"
     return "hold" if _has_env_signal(report, env_cache_health_failed) else "bounce"

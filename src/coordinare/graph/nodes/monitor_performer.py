@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -3386,8 +3387,20 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
             )
 
             _qa_report = status.get("report") if isinstance(status.get("report"), dict) else {}
+            # 129 US2: the capture-unavailable→HOLD branch is coupled to the same
+            # operator flag that enables US1's blocked-card recovery (which is what
+            # would pick the HOLD back up). Off → prior bounce behavior, no regression.
+            _capture_recovery = os.getenv("COORDINARE_BLOCKED_RECOVERY", "").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+                "on",
+            )
             _qa_route = classify_qa_verdict(
-                marker, _qa_report, bool(status.get("env_cache_health_failed"))
+                marker,
+                _qa_report,
+                bool(status.get("env_cache_health_failed")),
+                capture_recovery_enabled=_capture_recovery,
             )
             if _qa_route != "advance":
                 _downgrade_reason = (
