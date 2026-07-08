@@ -332,14 +332,51 @@ def _blocked_recovery_enabled() -> bool:
     )
 
 
+def _env_cache_recovered(state: CoordinareState, symphony: str) -> bool:
+    """129a: True when the symphony's env-cache is healthy again — a positive
+    'environment recovered' oracle for auto-recovering ENV_BLOCKED cards.
+
+    An env block calls ``mark_runtime_health_failed`` (setting
+    ``runtime_health_failed``), which triggers a forced cache regeneration on the
+    next env-cache cycle. When that regen succeeds the flag clears and
+    ``last_bootstrap_succeeded`` flips True — so this predicate flips on its own
+    once the environment is genuinely healthy. Env causes NOT reflected in the
+    cache (e.g. an unreachable assessor backend) leave it False → the card stays
+    blocked (safe: never a false recovery)."""
+    if not symphony:
+        return False
+    cache = state.get("env_cache") or {}
+    cs = cache.get(symphony) if isinstance(cache, dict) else None
+    return bool(
+        cs is not None
+        and getattr(cs, "cache_dir_ready", False)
+        and not getattr(cs, "runtime_health_failed", True)
+        and getattr(cs, "last_bootstrap_succeeded", None) is True
+    )
+
+
+def _prior_stage_column(sess: dict) -> str:
+    """129a: the board column an env-recovered card resumes to — the card's
+    pre-BLOCKED column when it is a genuine working column, else IN_PROGRESS
+    (re-enter the pipeline; the session's ``performer_stage`` drives what
+    actually runs)."""
+    cur = sess.get("current_card") if isinstance(sess, dict) else None
+    prev = str((cur or {}).get("previous_status", "") or "").upper()
+    return prev if prev in ("IN_PROGRESS", "IN_REVIEW", "TODO") else "IN_PROGRESS"
+
+
 async def _attempt_blocked_card_recovery(
     state: CoordinareState, github: object, blocked: list, board: dict
 ) -> None:
     """129 (US1): before BLOCKED cards are skipped, re-evaluate whether their
-    block has cleared and auto-recover them. This increment handles the
-    stale-review case (reuses spec-128); other cleared-signals (env/CI/
-    clarification) are a follow-up. Default-off, fully fail-safe, anti-thrash
-    (one attempt per card per daemon run — in-memory marker)."""
+    block has cleared and auto-recover them. Handles the stale-review case
+    (reuses spec-128) and the ENV_BLOCKED case (129a: spec-095 marker +
+    env-cache health recovery). CI-red and clarification-answered gatherers
+    remain a follow-up (no authoritative source signal yet). A card is only
+    recovered when EVERY detected active reason has cleared (FR-005); a block
+    for an undetected reason never auto-recovers (safe). Default-off, fully
+    fail-safe, anti-thrash (one attempt per card per daemon run — in-memory
+    marker)."""
     if not _blocked_recovery_enabled() or not blocked or github is None:
         return
     import contextlib
@@ -375,61 +412,105 @@ async def _attempt_blocked_card_recovery(
         if markers.get(cid):  # anti-thrash: one recovery attempt per card per run
             continue
         try:
-            issue_node = str(content_node_ids.get(cid, "") or "")
-            if not issue_node or not hasattr(github, "find_pr_for_issue"):
-                continue
-            pr = await github.find_pr_for_issue(issue_node)  # type: ignore[attr-defined]
-            pr_node_id = str((pr or {}).get("pr_node_id") or "")
-            if not pr_node_id or not hasattr(github, "get_pr_review_context"):
-                continue
-            ctx = await github.get_pr_review_context(pr_node_id)  # type: ignore[attr-defined]
-            ctx = ctx if isinstance(ctx, dict) else {}
-            review_decision = str(ctx.get("review_decision", "") or "")
-            reviews = ctx.get("reviews", []) or []
-            threads_raw = ctx.get("review_threads", []) or []
-            head_oid = str(ctx.get("head_oid", "") or "")
+            active_reasons: list[BlockReason] = []
+            sig: dict = {}
+            head_oid = ""
+            # Human-gate safety (FR-004): the env path may recover a card WITHOUT a
+            # blocking review, but only if we could POSITIVELY confirm no unaddressed
+            # human CHANGES_REQUESTED exists. This stays True when we read the review
+            # state successfully OR the issue genuinely has no PR; it flips False only
+            # when a PR exists but its review state is unreadable — in which case we
+            # must NOT env-recover (a real CR could be hidden by a transient data gap).
+            review_gate_checked = True
 
-            # Only the stale-review reason is inferred in this increment.
-            if review_decision.upper() != "CHANGES_REQUESTED":
+            # --- ENV_BLOCKED gatherer (129a; session-based, no PR required) ---
+            # spec-095 stamps a per-card ``env_blocked`` marker; the env has
+            # recovered when the symphony's env-cache is healthy again.
+            sess = (state.get("active_sessions") or {}).get(cid)
+            sess = sess if isinstance(sess, dict) else {}
+            if sess.get("env_blocked"):
+                active_reasons.append(BlockReason.ENV_BLOCKED)
+                _symphony = str(state.get("current_symphony") or "")
+                sig["env_recovered"] = _env_cache_recovered(state, _symphony)
+                sig["prior_stage"] = _prior_stage_column(sess)
+                if not sig["env_recovered"]:
+                    logger.debug(
+                        "blocked_recovery.env_not_recovered",
+                        card_id=cid,
+                        symphony=_symphony or None,
+                        has_cache=bool((state.get("env_cache") or {}).get(_symphony)),
+                    )
+
+            # --- STALE_REVIEW gatherer (spec-128; PR-based) ---
+            issue_node = str(content_node_ids.get(cid, "") or "")
+            if issue_node and hasattr(github, "find_pr_for_issue"):
+                pr = await github.find_pr_for_issue(issue_node)  # type: ignore[attr-defined]
+                pr_node_id = str((pr or {}).get("pr_node_id") or "")
+                if pr and not pr_node_id:
+                    # A PR exists but we can't read its node id → review state unknown.
+                    review_gate_checked = False
+                if pr_node_id and hasattr(github, "get_pr_review_context"):
+                    ctx = await github.get_pr_review_context(pr_node_id)  # type: ignore[attr-defined]
+                    ctx = ctx if isinstance(ctx, dict) else {}
+                    review_decision = str(ctx.get("review_decision", "") or "")
+                    if review_decision.upper() == "CHANGES_REQUESTED":
+                        reviews = ctx.get("reviews", []) or []
+                        threads_raw = ctx.get("review_threads", []) or []
+                        head_oid = str(ctx.get("head_oid", "") or "")
+                        gating = None
+                        for r in reviews:
+                            if str(r.get("state", "")) == "CHANGES_REQUESTED" and classify_reviewer(
+                                str(r.get("author_login", "")), human_reviewers, []
+                            ) == ReviewerType.HUMAN:
+                                gating = r  # last wins → latest human CR
+                        if gating is not None:
+                            commit_oid = str(gating.get("commit_oid", "") or "")
+                            review = Review(
+                                id=str(gating.get("id", "")),
+                                author_login=str(gating.get("author_login", "")),
+                                author_type=ReviewerType.HUMAN,
+                                state=ReviewState.CHANGES_REQUESTED,
+                                commit_oid=commit_oid,
+                            )
+                            threads = [
+                                ReviewThread(
+                                    id=str(t.get("id", "")),
+                                    is_resolved=bool(t.get("is_resolved", False)),
+                                    review_id=(str(t["review_id"]) if t.get("review_id") else None),
+                                )
+                                for t in threads_raw
+                            ]
+                            commits_behind = (
+                                1 if (commit_oid and head_oid and commit_oid != head_oid) else 0
+                            )
+                            staleness = classify_review_staleness(
+                                review, head_oid, commits_behind, threads
+                            )
+                            active_reasons.append(BlockReason.STALE_REVIEW)
+                            sig["review_decision"] = review_decision
+                            sig["review_stale_addressed"] = (
+                                staleness.classification is StalenessClass.STALE_ADDRESSED
+                            )
+
+            if not active_reasons:
+                # No recoverable block reason detectable → leave the card blocked
+                # (safe: a block for an undetected reason never auto-recovers).
                 continue
-            gating = None
-            for r in reviews:
-                if str(r.get("state", "")) == "CHANGES_REQUESTED" and classify_reviewer(
-                    str(r.get("author_login", "")), human_reviewers, []
-                ) == ReviewerType.HUMAN:
-                    gating = r  # last wins → latest human CR
-            if gating is None:
-                continue
-            commit_oid = str(gating.get("commit_oid", "") or "")
-            review = Review(
-                id=str(gating.get("id", "")),
-                author_login=str(gating.get("author_login", "")),
-                author_type=ReviewerType.HUMAN,
-                state=ReviewState.CHANGES_REQUESTED,
-                commit_oid=commit_oid,
-            )
-            threads = [
-                ReviewThread(
-                    id=str(t.get("id", "")),
-                    is_resolved=bool(t.get("is_resolved", False)),
-                    review_id=(str(t["review_id"]) if t.get("review_id") else None),
-                )
-                for t in threads_raw
-            ]
-            commits_behind = 1 if (commit_oid and head_oid and commit_oid != head_oid) else 0
-            staleness = classify_review_staleness(review, head_oid, commits_behind, threads)
             markers[cid] = True  # attempted (anti-thrash)
-            # Route the decision through the pure evaluator (single decision point,
-            # applies the human-gate safety in one place).
-            decision = evaluate_recovery(
-                [BlockReason.STALE_REVIEW],
-                RecoverySignals(
-                    review_decision=review_decision,
-                    review_stale_addressed=(
-                        staleness.classification is StalenessClass.STALE_ADDRESSED
-                    ),
-                ),
-            )
+            if BlockReason.ENV_BLOCKED in active_reasons and not review_gate_checked:
+                # Human-gate safety (FR-004): would recover on the env reason while
+                # the review state is unknown — a genuine unaddressed human CR could
+                # be hidden by a transient PR-lookup gap. Leave it blocked.
+                logger.info("blocked_recovery.review_gate_unknown", card_id=cid)
+                continue
+            # Reason-specific, stable dedup key so a multi-reason recovery is not
+            # confused with a single-reason one across cycles.
+            dedup_suffix = "-".join(sorted(r.value for r in active_reasons))
+            if head_oid:
+                dedup_suffix = f"{dedup_suffix}:{head_oid}"
+            # Single decision point — the pure evaluator applies the human-gate
+            # safety (FR-004) and the all-reasons-must-clear rule (FR-005).
+            decision = evaluate_recovery(active_reasons, RecoverySignals(**sig))
             if not decision.recover:
                 continue
             await github.move_card(cid, decision.target_stage)  # type: ignore[attr-defined]
@@ -462,7 +543,7 @@ async def _attempt_blocked_card_recovery(
                                 "target": decision.target_stage,
                                 "reason": decision.reason,
                             },
-                            dedup_key=f"auto_recovered:{cid}:{head_oid}",
+                            dedup_key=f"auto_recovered:{cid}:{dedup_suffix}",
                         )
                     )
         except Exception as exc:  # fail-safe: a card's recovery never breaks the cycle

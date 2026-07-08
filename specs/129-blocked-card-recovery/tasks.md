@@ -19,7 +19,7 @@ Tests included (constitution NON-NEGOTIABLE; TDD for the pure evaluator). `[P]`=
 
 - [x] T006 [US1] TDD test `tests/unit/graph/nodes/test_check_board_recovery.py` (mocked github): a recoverable BLOCKED card → moved to the correct column + one `card_auto_recovered` notification + anti-thrash marker set; a still-blocked card → untouched; re-eval error → card stays blocked, cycle continues; operator manual-move not overridden.
 - [x] T007 [US1] Implement `_attempt_blocked_card_recovery(state, github, blocked)` in `check_board.py`, hooked at the blocked-list (~L705): gather cleared-signals (review context, CI, issue answers, env-cache health), call the evaluator, `move_card` recovered cards + notify (deduped) + set anti-thrash marker. Fail-safe per card; feature-guarded — make T006 pass.
-- [ ] T008 [US1] Signal gatherers (fail-safe): review-decision/staleness (spec-128 `get_pr_review_context`), CI green (`check_mergeability`/checks), clarification-answered (issue comments), env recovered (env-cache health / `classify_failure_origin`). Unit-tested with mocks.
+- [~] T008 [US1] Signal gatherers (fail-safe): review-decision/staleness (spec-128 `get_pr_review_context`) **[done]**; env recovered (env-cache health) **[done — increment 129a]**; CI green (`check_mergeability`) and clarification-answered (issue comments) **[still deferred — no authoritative per-card source signal / ambiguous "answered" detection; recovering on a weak signal risks a wrong unblock]**. Unit-tested with mocks.
 
 ## Phase 4: US2 — QA visual-capture env resilience (P2)
 
@@ -55,3 +55,10 @@ Adversarial review (46 agents) confirmed 4 distinct defects — all fixed on-bra
 4. **Hardcoded notification target** (`check_board.py`): payload hardcoded `"IN_REVIEW"`; now uses `decision.target_stage`/`decision.reason` so it stays correct when multi-reason targets land.
 
 The T003-persistence / T008-gatherer flags the review raised are the documented increment boundary (stale-review-only), not regressions.
+
+## Notes (increment 129a — env-recovery gatherer)
+Closes the highest-value part of T008 so US2 can be safely enabled: the ENV_BLOCKED recovery gatherer.
+- A BLOCKED card carrying the spec-095 per-card `env_blocked` marker is auto-recovered when the symphony's env-cache is healthy again — `_env_cache_recovered()` = `cache_dir_ready and not runtime_health_failed and last_bootstrap_succeeded is True`. This is a **positive** oracle: an env block calls `mark_runtime_health_failed`, which forces a cache regen next cycle; on success the predicate flips on its own. Env causes not reflected in the cache (e.g. an unreachable assessor backend) leave it False → the card stays blocked (never a false recovery).
+- The recovery target is the card's pre-BLOCKED working column (`current_card.previous_status`, else IN_PROGRESS); `performer_stage` drives what re-runs.
+- The gatherer is unified with the stale-review one: per card we build the set of *detected active* reasons and pass them to the evaluator, which requires ALL to clear (FR-005). No detected reason ⇒ no recovery (safe). A card with both an env block and an unaddressed human CR stays blocked.
+- **Still deferred:** CI-red (no persisted per-card CI-block marker) and clarification-answered (ambiguous "answered" detection). Left out deliberately — not recovering is always safe; wrongly recovering is not.
