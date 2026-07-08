@@ -6,13 +6,29 @@ Python 3.12+, FastAPI, LangGraph, pydantic v2, pydantic-settings, structlog, htt
 
 ## Commands
 
+The top-level `Makefile` is the canonical entry point — run `make` (or `make help`) to see
+every task. It is a thin façade over `bin/` and `.venv` (nothing is reimplemented).
+
 ```sh
-.venv/bin/pytest tests/unit/          # run unit tests
-.venv/bin/ruff check src/ tests/      # lint
-.venv/bin/ruff check --fix src/ tests/ # auto-fix lint
+make help          # list all targets, grouped (dev / test / build / run / release / clean)
+make test          # unit tests (env-unset applied automatically)
+make test-all      # the WHOLE tests/ tree (unit + contract) — run before pushing
+make lint          # ruff check src/ tests/   (make fmt = auto-fix)
+make ci            # full CI parity — exactly what `bin/build --all` runs
+make run           # start the daemon (sources .env first, or fails loudly)
 ```
 
-Always `set -a && source .env && set +a` before launching the coordinare daemon — `config.yaml` expands `${VAR}` placeholders at load time and silently uses empty strings without the env.
+Raw fallbacks (equivalent to the make targets above):
+
+```sh
+env -u COORDINARE_INFERENCE_MAX_TOKENS -u HERMES_CONTEXT_WINDOW .venv/bin/pytest tests/unit/
+.venv/bin/ruff check src/ tests/          # lint
+.venv/bin/ruff check --fix src/ tests/    # auto-fix lint
+```
+
+Always `set -a && source .env && set +a` before launching the coordinare daemon directly —
+`config.yaml` expands `${VAR}` placeholders at load time and silently uses empty strings
+without the env. (`make run` / `make start` do this for you.)
 
 ## Architecture
 
