@@ -63,6 +63,8 @@ See AGENTS.md for all development guidelines.
 - single-host JSON snapshot via `state_store.py` — schema v14 adds three per-card `PersistedSession` fields: `stage_verdicts` (`dict[stage → {head_sha, verdict, recorded_at}]`), `processed_issue_comment_ids` (bounded `list[int]`) and `last_issue_comment_id` (`int | None`). v1–v13 snapshots load with empty defaults (FR-011). The "last documented SHA" is **derived**: `stage_verdicts["documenting"].head_sha` — no separate field. (125-stage-verdict-memory)
 - Python 3.14 (project minimum 3.12; prod 3.14.5 via uv) + existing only — gql + `AIOHTTPTransport` (GitHub GraphQL, already used by `github.py`), langgraph (`monitor_pr` node), pydantic 2.x (`models/review.py`), structlog + the existing `notify.py` layer. No new external dependencies. (128-stale-review-handling)
 - single-host JSON snapshot via `state_store.py`. A small per-card marker records that a given stale-review situation was already surfaced/re-requested (dedup across cycles), parallel to existing per-card review bookkeeping (`processed_review_ids`). Schema-version bump, backward-compatible default. (128-stale-review-handling)
+- GNU make (macOS default 3.81; Linux GNU make) — POSIX `sh` recipes. + existing `bin/` scripts (`build`, `install`, `uninstall`, `start`, (130-makefile)
+- N/A (no persisted state; the Makefile is stateless). (130-makefile)
 
 ## Recent Changes
 - 076-qa-cycle: Added Python 3.14 (project minimum: 3.12; production currently on 3.14.5 via uv) + pydantic 2.x, langgraph, structlog, docker SDK (or subprocess to `docker` CLI), fastapi (dashboard SSE), httpx (performer HTTP transport), pyyaml (config)
