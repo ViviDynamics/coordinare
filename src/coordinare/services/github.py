@@ -213,6 +213,7 @@ query GetPRReviews($prId: ID!) {
           state
           body
           submittedAt
+          commit { oid }
           comments(first: 50) {
             nodes {
               body
@@ -222,6 +223,16 @@ query GetPRReviews($prId: ID!) {
           }
         }
       }
+      reviewThreads(first: 100) {
+        nodes {
+          id
+          isResolved
+          comments(first: 1) {
+            nodes { pullRequestReview { id } }
+          }
+        }
+      }
+      headRefOid
       reviewDecision
       mergeable
       mergeStateStatus
@@ -254,6 +265,22 @@ mutation SquashMerge($pullRequestId: ID!) {
       merged
       mergeCommit { oid messageHeadline }
     }
+  }
+}
+"""
+
+# 128: re-request review from a human whose stale change-request has been
+# addressed. union:true ADDS to any existing requested reviewers (never clobbers).
+# There is deliberately NO dismiss/approve mutation — coordinare never clears a
+# human verdict on the human's behalf (FR-005).
+GET_USER_ID_QUERY = """
+query GetUserId($login: String!) { user(login: $login) { id } }
+"""
+
+REQUEST_REVIEWS_MUTATION = """
+mutation RequestReviews($prId: ID!, $userIds: [ID!]!) {
+  requestReviews(input: { pullRequestId: $prId, userIds: $userIds, union: true }) {
+    pullRequest { id }
   }
 }
 """
@@ -1520,39 +1547,121 @@ class GitHubService:
                 closed_count += 1
         return closed_count
 
+    @staticmethod
+    def _parse_review_node(review: dict[str, Any]) -> dict[str, Any]:
+        author = review.get("author", {})
+        author_login = str(author.get("login", "")) if isinstance(author, dict) else ""
+        inline_comments: list[dict[str, Any]] = []
+        raw_comments = review.get("comments", {})
+        if isinstance(raw_comments, dict):
+            for c in raw_comments.get("nodes", []):
+                if isinstance(c, dict) and c.get("body"):
+                    inline_comments.append({
+                        "body": str(c["body"]),
+                        "path": str(c.get("path", "")),
+                        "line": c.get("line"),
+                    })
+        # 128: the commit the review was submitted against (staleness signal).
+        commit = review.get("commit")
+        commit_oid = str(commit.get("oid", "")) if isinstance(commit, dict) else ""
+        return {
+            "id": str(review.get("id", "")),
+            "author_login": author_login,
+            "state": str(review.get("state", "")),
+            "body": str(review.get("body", "")),
+            "submitted_at": review.get("submittedAt"),
+            "comments": inline_comments,
+            "commit_oid": commit_oid,
+        }
+
     async def get_pr_reviews(self, pr_id: str) -> list[dict[str, Any]]:
+        """Reviews list (now carrying ``commit_oid``). Backward-compatible shape
+        for existing callers; richer PR-level context is via
+        ``get_pr_review_context``."""
+        ctx = await self.get_pr_review_context(pr_id)
+        return ctx["reviews"]
+
+    async def get_pr_review_context(self, pr_id: str) -> dict[str, Any]:
+        """128: single-query PR review context — parsed reviews (with
+        ``commit_oid``), inline review threads (``id``/``is_resolved``/attributed
+        ``review_id``), the current ``head_oid`` and ``review_decision``. Missing
+        fields degrade safely (empty defaults); a page-capped thread list is
+        logged and its unknown remainder is treated as unresolved by callers."""
         result = await self._guarded_execute(GET_PR_REVIEWS_QUERY, {"prId": pr_id})
-        nodes = result.get("node", {}).get("reviews", {}).get("nodes", [])
-        if not isinstance(nodes, list):
-            return []
-        parsed: list[dict[str, Any]] = []
-        for review in nodes:
-            if not isinstance(review, dict):
-                continue
-            author = review.get("author", {})
-            author_login = str(author.get("login", "")) if isinstance(author, dict) else ""
-            # Extract inline review comments (file-specific feedback)
-            inline_comments: list[dict[str, Any]] = []
-            raw_comments = review.get("comments", {})
-            if isinstance(raw_comments, dict):
-                for c in raw_comments.get("nodes", []):
-                    if isinstance(c, dict) and c.get("body"):
-                        inline_comments.append({
-                            "body": str(c["body"]),
-                            "path": str(c.get("path", "")),
-                            "line": c.get("line"),
-                        })
-            parsed.append(
-                {
-                    "id": str(review.get("id", "")),
-                    "author_login": author_login,
-                    "state": str(review.get("state", "")),
-                    "body": str(review.get("body", "")),
-                    "submitted_at": review.get("submittedAt"),
-                    "comments": inline_comments,
-                }
+        node = result.get("node", {})
+        if not isinstance(node, dict):
+            return {"reviews": [], "review_threads": [], "head_oid": "", "review_decision": ""}
+
+        review_nodes = node.get("reviews", {})
+        review_nodes = review_nodes.get("nodes", []) if isinstance(review_nodes, dict) else []
+        reviews = [
+            self._parse_review_node(r) for r in review_nodes if isinstance(r, dict)
+        ]
+
+        threads: list[dict[str, Any]] = []
+        rt = node.get("reviewThreads", {})
+        raw_threads = rt.get("nodes", []) if isinstance(rt, dict) else []
+        if isinstance(raw_threads, list):
+            if len(raw_threads) >= 100:
+                logger.warning(
+                    "get_pr_reviews.review_threads_page_capped",
+                    pr_id=pr_id,
+                    count=len(raw_threads),
+                )
+            for t in raw_threads:
+                if not isinstance(t, dict):
+                    continue
+                review_id: str | None = None
+                cs = t.get("comments", {})
+                cnodes = cs.get("nodes", []) if isinstance(cs, dict) else []
+                if cnodes and isinstance(cnodes[0], dict):
+                    prr = cnodes[0].get("pullRequestReview") or {}
+                    if isinstance(prr, dict) and prr.get("id"):
+                        review_id = str(prr["id"])
+                threads.append(
+                    {
+                        "id": str(t.get("id", "")),
+                        "is_resolved": bool(t.get("isResolved", False)),
+                        "review_id": review_id,
+                    }
+                )
+        return {
+            "reviews": reviews,
+            "review_threads": threads,
+            "head_oid": str(node.get("headRefOid") or ""),
+            "review_decision": str(node.get("reviewDecision") or ""),
+        }
+
+    async def request_reviews(
+        self, pr_id: str, reviewer_logins: list[str]
+    ) -> dict[str, Any]:
+        """128: re-request review from the given human reviewer(s) for a
+        stale-addressed change-request. Fail-safe — returns
+        ``{"requested": bool, "reason": str, ...}`` and never raises into the
+        poll cycle (FR-012). Resolves each login to a user node id first."""
+        try:
+            user_ids: list[str] = []
+            for login in reviewer_logins:
+                if not login:
+                    continue
+                try:
+                    res = await self._guarded_execute(GET_USER_ID_QUERY, {"login": login})
+                    uid = (res.get("user") or {}).get("id") if isinstance(res, dict) else None
+                    if uid:
+                        user_ids.append(str(uid))
+                except Exception as exc:  # per-login failure is non-fatal
+                    logger.warning(
+                        "request_reviews.user_lookup_failed", login=login, error=str(exc)
+                    )
+            if not user_ids:
+                return {"requested": False, "reason": "no resolvable reviewers"}
+            await self._guarded_execute(
+                REQUEST_REVIEWS_MUTATION, {"prId": pr_id, "userIds": user_ids}
             )
-        return parsed
+            return {"requested": True, "reason": "re-requested", "count": len(user_ids)}
+        except Exception as exc:
+            logger.warning("request_reviews.failed", pr_id=pr_id, error=str(exc))
+            return {"requested": False, "reason": str(exc)}
 
     async def check_mergeability(self, pr_id: str) -> dict[str, Any]:
         result = await self._guarded_execute(CHECK_MERGEABILITY_QUERY, {"prId": pr_id})

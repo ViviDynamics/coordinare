@@ -121,6 +121,11 @@ def _persist_active_sessions(active_sessions: dict[str, Any]) -> dict[str, Persi
             processed_ids = sorted({str(r) for r in processed_ids_raw})
         else:
             processed_ids = []
+        # 128: per-card stale-review dedup marker
+        ssr_raw = sess.get("surfaced_stale_reviews") or {}
+        surfaced_stale = (
+            {str(k): str(v) for k, v in ssr_raw.items()} if isinstance(ssr_raw, dict) else {}
+        )
         questions_raw = sess.get("open_questions") or ()
         clarifications_raw = sess.get("card_clarifications") or ()
         relay_raw = sess.get("relay_feedback") or ()
@@ -301,6 +306,7 @@ def _persist_active_sessions(active_sessions: dict[str, Any]) -> dict[str, Persi
             phase=(sess.get("phase") or None),
             lifecycle_completed_at=completed,
             processed_review_ids=processed_ids,
+            surfaced_stale_reviews=surfaced_stale,
             open_questions=[str(q) for q in questions_raw if q is not None]
             if isinstance(questions_raw, (list, tuple, set)) else [],
             card_clarifications=[dict(c) for c in clarifications_raw if isinstance(c, dict)]
@@ -763,6 +769,7 @@ class CoordinareDaemon:
             last_blocked_notified_at=last_notified if isinstance(last_notified, datetime) else None,
             lifecycle_completed_at=self._state.get("lifecycle_completed_at") if isinstance(self._state.get("lifecycle_completed_at"), datetime) else None,
             processed_review_ids=sorted(self._state.get("processed_review_ids") or set()),
+            surfaced_stale_reviews=dict(self._state.get("surfaced_stale_reviews") or {}),
             active_sessions=_persist_active_sessions(self._state.get("active_sessions") or {}),
             env_cache=_persist_env_cache(self._state.get("env_cache") or {}),
             # 096: persist the rebase baseline so a main advance that happened
@@ -785,6 +792,7 @@ class CoordinareDaemon:
         self._state["last_blocked_notified_at"] = snapshot.last_blocked_notified_at
         self._state["lifecycle_completed_at"] = snapshot.lifecycle_completed_at
         self._state["processed_review_ids"] = set(snapshot.processed_review_ids)
+        self._state["surfaced_stale_reviews"] = dict(snapshot.surfaced_stale_reviews)
         # 096: restore the rebase baseline (FR-001) so the first check_board
         # cycle compares the live main against the pre-restart value and fires
         # the rebase on genuine cross-restart drift, instead of re-baselining.
@@ -820,6 +828,7 @@ class CoordinareDaemon:
                     "phase": persisted.phase,
                     "lifecycle_completed_at": persisted.lifecycle_completed_at,
                     "processed_review_ids": set(persisted.processed_review_ids),
+                    "surfaced_stale_reviews": dict(persisted.surfaced_stale_reviews),
                     "open_questions": list(persisted.open_questions),
                     "card_clarifications": list(persisted.card_clarifications),
                     "relay_feedback": list(persisted.relay_feedback),
@@ -898,6 +907,7 @@ class CoordinareDaemon:
                     "phase": snapshot.phase,
                     "lifecycle_completed_at": snapshot.lifecycle_completed_at,
                     "processed_review_ids": set(snapshot.processed_review_ids),
+                    "surfaced_stale_reviews": dict(snapshot.surfaced_stale_reviews),
                     "open_questions": list(snapshot.open_questions),
                     "card_clarifications": list(snapshot.card_clarifications),
                     "relay_feedback": [],

@@ -24,6 +24,7 @@ class EventType(StrEnum):
     card_budget_exceeded = "card_budget_exceeded"  # 034: cost budget exceeded
     env_blocked = "env_blocked"  # 095: infra/environment CI block (operator must act)
     wiki_init_exhausted = "wiki_init_exhausted"  # 124: wiki-init budget exhausted / auto-merge blocked
+    stale_review_surfaced = "stale_review_surfaced"  # 128: stale human change-request re-surfaced (re-review/dismiss)
 
 
 class NotificationSeverity(StrEnum):
