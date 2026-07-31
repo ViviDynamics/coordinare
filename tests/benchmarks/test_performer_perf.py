@@ -100,43 +100,39 @@ def test_performer_status_poll_latency(benchmark_results_dir: Path) -> None:
     # Locally, a performer must be running on a known port.
 
     # For now, we skip this if no performer is available.
+    endpoint = "http://localhost:8088/status"
+    # Quick connectivity check
+    import socket
+
     try:
-        endpoint = "http://localhost:8088/status"
-        # Quick connectivity check
-        import socket
+        socket.create_connection(("localhost", 8088), timeout=1.0)
+    except (TimeoutError, ConnectionRefusedError):
+        pytest.skip("No performer running on localhost:8088")
 
-        try:
-            socket.create_connection(("localhost", 8088), timeout=1.0)
-        except (TimeoutError, ConnectionRefusedError):
-            pytest.skip("No performer running on localhost:8088")
-
-        async def measure_status_polls():
-            latencies_ms = []
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                for _ in range(100):
-                    start = time.perf_counter()
-                    try:
-                        resp = await client.get(endpoint)
-                        if resp.status_code != 200:
-                            continue
-                    except httpx.HTTPError:
+    async def measure_status_polls():
+        latencies_ms = []
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            for _ in range(100):
+                start = time.perf_counter()
+                try:
+                    resp = await client.get(endpoint)
+                    if resp.status_code != 200:
                         continue
-                    elapsed_ms = (time.perf_counter() - start) * 1000
-                    latencies_ms.append(elapsed_ms)
+                except httpx.HTTPError:
+                    continue
+                elapsed_ms = (time.perf_counter() - start) * 1000
+                latencies_ms.append(elapsed_ms)
 
-            return latencies_ms
+        return latencies_ms
 
-        latencies = asyncio.run(measure_status_polls())
-        if latencies:
-            benchmark.record("status_poll_p95", latencies)
-            benchmark.assert_budget("status_poll_p95", 250.0)
-        else:
-            pytest.skip("No successful /status polls recorded")
-
+    latencies = asyncio.run(measure_status_polls())
+    if latencies:
+        benchmark.record("status_poll_p95", latencies)
         benchmark.save(BENCHMARKS_DIR / "status_poll.json")
+        benchmark.assert_budget("status_poll_p95", 250.0)
+    else:
+        pytest.skip("No successful /status polls recorded")
 
-    except Exception as e:
-        pytest.skip(f"Benchmark skipped: {e}")
 
 
 @pytest.mark.benchmark
@@ -151,58 +147,53 @@ def test_performer_dispatch_ack_latency(benchmark_results_dir: Path) -> None:
     benchmark = PerformanceBenchmark()
 
     # Skip if no performer is running
+    endpoint = "http://localhost:8088"
+    import socket
+
     try:
-        endpoint = "http://localhost:8088"
-        import socket
+        socket.create_connection(("localhost", 8088), timeout=1.0)
+    except (TimeoutError, ConnectionRefusedError):
+        pytest.skip("No performer running on localhost:8088")
 
-        try:
-            socket.create_connection(("localhost", 8088), timeout=1.0)
-        except (TimeoutError, ConnectionRefusedError):
-            pytest.skip("No performer running on localhost:8088")
+    async def measure_dispatch():
+        latencies_ms = []
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            for i in range(50):  # 50 dispatch attempts (not all will succeed if performer gets busy)
+                payload = {
+                    "job_id": f"benchmark-{i}",
+                    "card_id": f"card-{i}",
+                    "role": "implementer",
+                    "backend": "claude_code",
+                    "persona": "",
+                    "repo_url": "https://github.com/bench/test",
+                    "branch": "main",
+                    "secrets": {},
+                }
+                start = time.perf_counter()
+                try:
+                    resp = await client.post(
+                        f"{endpoint}/jobs",
+                        json=payload,
+                    )
+                    # Both 202 (accepted) and 409 (busy) are valid responses;
+                    # measure latency regardless
+                    if resp.status_code in {202, 409}:
+                        elapsed_ms = (time.perf_counter() - start) * 1000
+                        latencies_ms.append(elapsed_ms)
+                except httpx.HTTPError:
+                    continue
 
-        async def measure_dispatch():
-            latencies_ms = []
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                for i in range(50):  # 50 dispatch attempts (not all will succeed if performer gets busy)
-                    payload = {
-                        "job_id": f"benchmark-{i}",
-                        "card_id": f"card-{i}",
-                        "role": "implementer",
-                        "backend": "claude_code",
-                        "persona": "",
-                        "repo_url": "https://github.com/bench/test",
-                        "branch": "main",
-                        "secrets": {},
-                    }
-                    start = time.perf_counter()
-                    try:
-                        resp = await client.post(
-                            f"{endpoint}/jobs",
-                            json=payload,
-                        )
-                        # Both 202 (accepted) and 409 (busy) are valid responses;
-                        # measure latency regardless
-                        if resp.status_code in {202, 409}:
-                            elapsed_ms = (time.perf_counter() - start) * 1000
-                            latencies_ms.append(elapsed_ms)
-                    except httpx.HTTPError:
-                        continue
+                await asyncio.sleep(0.1)  # Avoid overwhelming the performer
 
-                    await asyncio.sleep(0.1)  # Avoid overwhelming the performer
+        return latencies_ms
 
-            return latencies_ms
-
-        latencies = asyncio.run(measure_dispatch())
-        if latencies:
-            benchmark.record("dispatch_ack_p95", latencies)
-            benchmark.assert_budget("dispatch_ack_p95", 500.0)
-        else:
-            pytest.skip("No successful /jobs dispatches recorded")
-
+    latencies = asyncio.run(measure_dispatch())
+    if latencies:
+        benchmark.record("dispatch_ack_p95", latencies)
         benchmark.save(BENCHMARKS_DIR / "dispatch_ack.json")
-
-    except Exception as e:
-        pytest.skip(f"Benchmark skipped: {e}")
+        benchmark.assert_budget("dispatch_ack_p95", 500.0)
+    else:
+        pytest.skip("No successful /jobs dispatches recorded")
 
 
 @pytest.mark.benchmark
