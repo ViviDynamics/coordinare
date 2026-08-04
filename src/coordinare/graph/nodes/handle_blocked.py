@@ -296,5 +296,9 @@ async def handle_blocked(state: CoordinareState) -> CoordinareState:
         # suppressed legitimate card_blocked posts (2026-05-23 incident).
         sess["phase"] = "blocked"
 
+    from coordinare.metrics import METRICS
+    symphony = state.get("symphony_name", "__default__")
+    METRICS.cards_outcome_total.labels(symphony=symphony, outcome="blocked").inc()
+
     state["phase"] = "blocked"
     return state
