@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from coordinare.graph.state import _set_current_card
+from coordinare.metrics import METRICS
 from coordinare.services.github import PermanentGitHubError
 from coordinare.services.rebase import repo_url_from_config
 
@@ -140,6 +141,9 @@ async def merge_pr(state: CoordinareState) -> CoordinareState:
                     )
             except Exception as exc:
                 logger.warning("merge_pr.rebase_round_failed", error=str(exc))
+
+    symphony = state.get("symphony_name", "__default__")
+    METRICS.cards_outcome_total.labels(symphony=symphony, outcome="merged").inc()
 
     state["phase"] = "idle"
     return state

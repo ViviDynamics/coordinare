@@ -47,6 +47,18 @@ class CoordinareMetrics:
             registry=self.registry,
             buckets=(0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0),
         )
+        self.bounces_total = Counter(
+            "coordinare_bounces_total",
+            "Cards bounced back to implementer by role that triggered the bounce",
+            labelnames=("symphony", "role"),
+            registry=self.registry,
+        )
+        self.cards_outcome_total = Counter(
+            "coordinare_cards_outcome_total",
+            "Final outcome of cards: merged or blocked",
+            labelnames=("symphony", "outcome"),
+            registry=self.registry,
+        )
         self.daemon_up = Gauge(
             "coordinare_daemon_up",
             "1 when daemon is running, 0 after shutdown",
@@ -247,6 +259,18 @@ class CoordinareMetrics:
             "closing_review",
         ):
             self.card_tokens_total.labels(role=role)
+
+        # per-role quality metrics
+        for role in (
+            "implementing", "reviewing", "security", "qa",
+            "documenting", "architecting", "advocate", "assessing",
+            "closing_review",
+        ):
+            self.bounces_total.labels(symphony="__default__", role=role)
+
+        # card outcome tracking
+        for outcome in ("merged", "blocked"):
+            self.cards_outcome_total.labels(symphony="__default__", outcome=outcome)
 
     def observe_error(self, category: str, symphony: str = "__default__") -> None:
         self.errors_total.labels(symphony=symphony, category=category).inc()

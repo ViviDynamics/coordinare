@@ -122,6 +122,37 @@ def test_circuit_breaker_state_uses_service_name_label(fresh_metrics: Coordinare
 
 
 # ---------------------------------------------------------------------------
+# Per-role quality metrics (bounces_total, cards_outcome_total)
+# ---------------------------------------------------------------------------
+
+
+def test_bounces_total_increments_by_role(fresh_metrics: CoordinareMetrics) -> None:
+    """bounces_total counter increments for a given symphony+role combination."""
+    fresh_metrics.bounces_total.labels(symphony="__default__", role="implementing").inc()
+    val = fresh_metrics.bounces_total.labels(symphony="__default__", role="implementing")._value.get()
+    assert val >= 1
+
+
+def test_bounces_total_seeded_for_all_roles(fresh_metrics: CoordinareMetrics) -> None:
+    """All nine roles appear in /metrics output at zero before any events."""
+    rendered = fresh_metrics.render()
+    for role in (
+        "implementing", "reviewing", "security", "qa",
+        "documenting", "architecting", "advocate", "assessing",
+        "closing_review",
+    ):
+        assert f'role="{role}"' in rendered, f"Expected role={role} to be seeded in /metrics"
+
+
+def test_cards_outcome_total_increments_for_merged_and_blocked(fresh_metrics: CoordinareMetrics) -> None:
+    """cards_outcome_total counter increments for both terminal outcomes."""
+    for outcome in ("merged", "blocked"):
+        fresh_metrics.cards_outcome_total.labels(symphony="__default__", outcome=outcome).inc()
+        val = fresh_metrics.cards_outcome_total.labels(symphony="__default__", outcome=outcome)._value.get()
+        assert val >= 1
+
+
+# ---------------------------------------------------------------------------
 # SC-007: metric collection overhead (T028)
 # ---------------------------------------------------------------------------
 

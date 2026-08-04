@@ -22,6 +22,7 @@ import structlog
 from coordinare.graph.attribution import coordinare_attribution
 from coordinare.graph.state import _retire_active_session, _set_current_card
 from coordinare.lib.acceptance_criteria import parse_acceptance_criteria
+from coordinare.metrics import METRICS
 from coordinare.services.assessor_failure import classify_assessor_failure
 from coordinare.services.base_gate import evaluate_base_gate
 from coordinare.services.ci_gate import CIGateDecision, FailedCheck, FailedCheckWithSignature
@@ -2524,6 +2525,11 @@ async def _evaluate_ci_gate(
         # BOUNCE — count this attempt and decide bounce vs escalate.
         bounce_counter[head_sha] = bounce_counter.get(head_sha, 0) + 1
         count = bounce_counter[head_sha]
+
+        METRICS.bounces_total.labels(
+            symphony=state.get("symphony_name", "__default__"),
+            role=state.get("performer_stage", "unknown"),
+        ).inc()
 
         if count >= max_bounces:
             decision_obj = CIGateDecision(
