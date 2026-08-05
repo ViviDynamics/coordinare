@@ -2714,6 +2714,22 @@ class CoordinareDaemon:
                 error=_detail,
             )
 
+    def _announce_paused_symphonies(self) -> None:
+        """Emit a one-time startup line for each symphony paused via ``enabled: false``.
+
+        Called once during startup (not per poll cycle) so a disabled symphony is
+        obvious at boot without recurring per-cycle log noise (spec 132 / issue #180).
+        """
+        symphony_configs = self._state.get("symphony_configs") or {}
+        for name, cfg in symphony_configs.items():
+            if not getattr(cfg, "enabled", True):
+                logger.info(
+                    "symphony.paused",
+                    symphony=name,
+                    enabled=False,
+                    detail=f"symphony '{name}' is paused (enabled: false)",
+                )
+
     async def start(self) -> None:
         self._main_task = asyncio.current_task()
         self._running = True
@@ -2803,6 +2819,11 @@ class CoordinareDaemon:
                 poll_interval_seconds=self._poll_interval_seconds,
             )
         )
+
+        # 132 (issue #180): announce paused symphonies once at startup so a
+        # disabled symphony is obvious, without the per-cycle log noise the
+        # poll loop used to emit.
+        self._announce_paused_symphonies()
 
         # T018: Dispatch daemon_restart notification
         notification_service = self._state.get("notification_service")
@@ -2959,7 +2980,9 @@ class CoordinareDaemon:
                         if not self._running or self._stop_event.is_set():
                             break
                         if not getattr(sym_cfg, "enabled", True):
-                            logger.warning("symphony.disabled_skip", symphony=sym_name)
+                            # Paused symphonies are announced once at startup by
+                            # _announce_paused_symphonies(); skip silently here to
+                            # avoid per-cycle log noise (spec 132 / issue #180).
                             continue
                         await self._conduct_single_symphony(sym_name, sym_cfg)
                     # Rebuild aggregate active_sessions from all symphony states so

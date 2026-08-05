@@ -1,2 +1,11 @@
 #!/bin/bash
-exec ~/Workspaces/ViviDynamics/coordinare/.venv/bin/python -m performer "$@"
+# bin/performer — compatibility shim.
+#
+# The canonical, portable performer entry point is bin/run-performer (it sources
+# .env and runs via `uv run --project agent/performer`). This wrapper is kept only
+# so existing references to `bin/performer` keep working; it delegates rather than
+# duplicating any launch logic.
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+exec "$SCRIPT_DIR/run-performer" "$@"

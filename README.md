@@ -180,7 +180,9 @@ personas:
 
 ### Notifications
 
-Configure Slack and email alerts for card transitions, blocks, and circuit breaker trips:
+Notifications ship **off by default** (`channels: []`, `routing: []`) so a freshly copied
+config validates without any Slack webhook or SMTP credentials. Opt in by configuring Slack
+and/or email alerts for card transitions, blocks, and circuit breaker trips:
 
 ```yaml
 notifications:
@@ -190,7 +192,7 @@ notifications:
       webhook_url: "${COORDINARE_SLACK_WEBHOOK_URL}"
 ```
 
-See `config.example.yaml` for the full notification routing configuration.
+See `config.example.yaml` for the full, commented notification routing reference.
 
 ## Development
 
