@@ -82,7 +82,8 @@ github_org: "your-org"   # Required. The GitHub org/user that owns the repos.
 #
 # For containerized performers, use performer_endpoints instead (see below).
 agent_transport: "subprocess"         # "subprocess" | "ssh" | "kubernetes"
-agent_executable: "/usr/local/bin/performer"  # path to the performer binary
+agent_executable: "bin/run-performer"  # portable wrapper (sources .env, runs via uv); launch coordinare from the repo root
+# Alternatively, an absolute path built from your clone, e.g. /path/to/coordinare/bin/run-performer
 # transport_timeout_seconds: 30       # seconds to wait for a response; range 1–300
 
 # SSH-specific (only when agent_transport: ssh):
@@ -739,73 +740,80 @@ notifications:
   history_max_age_hours: 24             # how long to retain notification history in memory
   prolonged_idle_threshold_seconds: 1800  # fire prolonged_idle event after this many seconds with no activity
 
-  channels:
-    - name: slack-ops
-      type: slack                       # "slack" | "email"
-      webhook_url: "${COORDINARE_SLACK_WEBHOOK_URL}"  # incoming webhook URL from Slack app settings
-      rate_limit: 10                    # max messages per rate_window_seconds; 0 = unlimited
-      rate_window_seconds: 60
-      dedup_window_seconds: 600         # suppress duplicate messages within this window; 0 = off
-      retry_count: 5                    # delivery retry attempts; range 1–10
-      retry_delay_seconds: 2.0          # seconds between retries
-      message_template: "{summary}"     # template vars: {event_type} {source} {summary} {detail}
+  # Notifications ship OFF by default so a freshly copied config validates without
+  # any Slack webhook or SMTP credentials. To enable delivery, replace the empty
+  # lists below with (copies of) the commented reference channels/routing that follow.
+  channels: []
+  routing: []
 
-    - name: email-team
-      type: email
-      # Mailgun SMTP example — confirmed working with port 587 + STARTTLS.
-      # For Mailgun EU use "smtp.eu.mailgun.org". smtp_username must be the full
-      # SMTP credential email created in the Mailgun dashboard.
-      smtp_host: "smtp.mailgun.org"
-      smtp_port: 587                    # 587 (STARTTLS) | 465 (SSL) | 25 (plain)
-      smtp_username: "postmaster@mail.example.com"
-      smtp_password: "${COORDINARE_SMTP_PASSWORD}"
-      smtp_recipient: "team@example.com"
-      # smtp_sender: "coordinare@vividynamics.com"   # From address; default shown
-      # subject_template: "{event_type}: {source}"  # email subject; defaults to message_template
-      rate_limit: 5
-      rate_window_seconds: 300
-      dedup_window_seconds: 3600
-      retry_count: 3
-      retry_delay_seconds: 5.0
-
-  routing:
-    # Available event types:
-    #   card_transition     — card moved to a new phase
-    #   card_dispatched     — performer started on a card
-    #   card_blocked        — card is blocked (dependency or repeated failure)
-    #   card_stuck          — card has remained in the same phase too long (028)
-    #   card_merged         — PR was squash-merged
-    #   advocate_escalation — advocate escalated an issue to a human
-    #   daemon_restart      — coordinare process restarted
-    #   circuit_breaker_trip — a circuit breaker opened (service outage detected)
-    #   prolonged_idle      — coordinare has been idle for prolonged_idle_threshold_seconds
-    #   env_blocked         — 095: an infra/environment CI block (artifact-storage
-    #                         quota, offline runner, billing limit) no code change
-    #                         can fix. ROUTE THIS if env_blocked_gate is enabled —
-    #                         it is the operator's signal to act. (A ci_gate.
-    #                         env_blocked_hold WARNING log also fires regardless.)
-    - event_type: card_transition
-      channels: [slack-ops]
-    - event_type: card_dispatched
-      channels: [slack-ops]
-    - event_type: card_blocked
-      channels: [slack-ops, email-team]
-    - event_type: card_stuck
-      channels: [slack-ops]
-    - event_type: card_merged
-      channels: [slack-ops]
-    - event_type: advocate_escalation
-      channels: [slack-ops, email-team]
-    - event_type: daemon_restart
-      channels: [slack-ops]
-    - event_type: circuit_breaker_trip
-      channels: [slack-ops, email-team]
-    - event_type: prolonged_idle
-      channels: [email-team]
-    - event_type: env_blocked        # 095: infra/environment block — operator must act
-      channels: [slack-ops, email-team]
-    - event_type: card_auto_recovered  # 129: a BLOCKED card auto-unblocked (blocker cleared)
-      channels: [slack-ops]
+  # --- Reference: Slack + email channels (uncomment and set secrets to enable) ---
+  # channels:
+  #   - name: slack-ops
+  #     type: slack                       # "slack" | "email"
+  #     webhook_url: "${COORDINARE_SLACK_WEBHOOK_URL}"  # incoming webhook URL from Slack app settings
+  #     rate_limit: 10                    # max messages per rate_window_seconds; 0 = unlimited
+  #     rate_window_seconds: 60
+  #     dedup_window_seconds: 600         # suppress duplicate messages within this window; 0 = off
+  #     retry_count: 5                    # delivery retry attempts; range 1–10
+  #     retry_delay_seconds: 2.0          # seconds between retries
+  #     message_template: "{summary}"     # template vars: {event_type} {source} {summary} {detail}
+  #
+  #   - name: email-team
+  #     type: email
+  #     # Mailgun SMTP example — confirmed working with port 587 + STARTTLS.
+  #     # For Mailgun EU use "smtp.eu.mailgun.org". smtp_username must be the full
+  #     # SMTP credential email created in the Mailgun dashboard.
+  #     smtp_host: "smtp.mailgun.org"
+  #     smtp_port: 587                    # 587 (STARTTLS) | 465 (SSL) | 25 (plain)
+  #     smtp_username: "postmaster@mail.example.com"
+  #     smtp_password: "${COORDINARE_SMTP_PASSWORD}"
+  #     smtp_recipient: "team@example.com"
+  #     # smtp_sender: "coordinare@vividynamics.com"   # From address; default shown
+  #     # subject_template: "{event_type}: {source}"  # email subject; defaults to message_template
+  #     rate_limit: 5
+  #     rate_window_seconds: 300
+  #     dedup_window_seconds: 3600
+  #     retry_count: 3
+  #     retry_delay_seconds: 5.0
+  #
+  # routing:
+  #   # Available event types:
+  #   #   card_transition     — card moved to a new phase
+  #   #   card_dispatched     — performer started on a card
+  #   #   card_blocked        — card is blocked (dependency or repeated failure)
+  #   #   card_stuck          — card has remained in the same phase too long (028)
+  #   #   card_merged         — PR was squash-merged
+  #   #   advocate_escalation — advocate escalated an issue to a human
+  #   #   daemon_restart      — coordinare process restarted
+  #   #   circuit_breaker_trip — a circuit breaker opened (service outage detected)
+  #   #   prolonged_idle      — coordinare has been idle for prolonged_idle_threshold_seconds
+  #   #   env_blocked         — 095: an infra/environment CI block (artifact-storage
+  #   #                         quota, offline runner, billing limit) no code change
+  #   #                         can fix. ROUTE THIS if env_blocked_gate is enabled —
+  #   #                         it is the operator's signal to act. (A ci_gate.
+  #   #                         env_blocked_hold WARNING log also fires regardless.)
+  #   - event_type: card_transition
+  #     channels: [slack-ops]
+  #   - event_type: card_dispatched
+  #     channels: [slack-ops]
+  #   - event_type: card_blocked
+  #     channels: [slack-ops, email-team]
+  #   - event_type: card_stuck
+  #     channels: [slack-ops]
+  #   - event_type: card_merged
+  #     channels: [slack-ops]
+  #   - event_type: advocate_escalation
+  #     channels: [slack-ops, email-team]
+  #   - event_type: daemon_restart
+  #     channels: [slack-ops]
+  #   - event_type: circuit_breaker_trip
+  #     channels: [slack-ops, email-team]
+  #   - event_type: prolonged_idle
+  #     channels: [email-team]
+  #   - event_type: env_blocked        # 095: infra/environment block — operator must act
+  #     channels: [slack-ops, email-team]
+  #   - event_type: card_auto_recovered  # 129: a BLOCKED card auto-unblocked (blocker cleared)
+  #     channels: [slack-ops]
 
 
 # --- Symphonies ---
@@ -906,7 +914,7 @@ orchestra:
 # github_token: "${COORDINARE_GITHUB_TOKEN}"
 #
 # agent_transport: "subprocess"         # "subprocess" | "ssh" | "kubernetes"
-# agent_executable: "/usr/local/bin/performer"
+# agent_executable: "bin/run-performer"
 #
 # human_reviewers:
 #   - "your-github-login"
