@@ -20,6 +20,8 @@ import structlog
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 
+from coordinare.services.activity_log import ActivityLog
+
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
     from pathlib import Path
@@ -27,6 +29,7 @@ if TYPE_CHECKING:
     from coordinare.daemon import CoordinareDaemon
     from coordinare.metrics import CoordinareMetrics
     from coordinare.observability import HealthRegistry
+    from coordinare.services.activity_log import ActivityEntry
 
 _log = structlog.get_logger(__name__)
 
@@ -202,6 +205,20 @@ class SSEBroadcaster:
             with contextlib.suppress(asyncio.QueueFull):
                 q.put_nowait(payload)  # slow client — drop event rather than blocking daemon
 
+    def broadcast_activity(self, entries: list[ActivityEntry]) -> None:
+        """138 T011: fan out an activity batch as a tagged payload (FR-001).
+
+        Rides the existing broadcast path, so backpressure behaviour is
+        unchanged — a slow client drops the batch and recovers on its next
+        reconnect backfill (FR-004).
+        """
+        if not entries:
+            return
+        self.broadcast({
+            "_event": "activity_event",
+            "entries": [e.to_dict() for e in entries],
+        })
+
     def shutdown(self) -> None:
         """Wake all SSE generators so they exit cleanly on server shutdown.
 
@@ -241,6 +258,12 @@ class DashboardStore:
         # to notify explicitly.
         self._watcher_task: asyncio.Task | None = None
         self._watcher_fingerprint: tuple | None = None
+        # 138 T015: the activity feed's bounded history. Writers are graph nodes
+        # that hold the log but no broadcaster, so this sink wiring is the only
+        # place the log and the transport meet — without it every pushed entry
+        # would reach an open browser only on its next reconnect backfill.
+        self.activity_log = ActivityLog()
+        self.activity_log.sink = self.broadcaster.broadcast_activity
 
     def record_cycle(
         self,
@@ -321,13 +344,60 @@ class DashboardStore:
                 fp = self._active_sessions_fingerprint(daemon)
                 if fp == self._watcher_fingerprint:
                     continue
+                # 138 T024: the transition needs both sides, and the assignment
+                # below discards the old one.
+                previous = self._watcher_fingerprint
                 self._watcher_fingerprint = fp
                 with contextlib.suppress(Exception):
                     self.broadcaster.broadcast(
                         self.build_snapshot(daemon, metrics, health)
                     )
+                # After the snapshot broadcast, so the state_update a client
+                # expects from a tick still arrives first (065's 1 s contract).
+                with contextlib.suppress(Exception):
+                    self._record_stage_changes(daemon, previous, fp)
         except asyncio.CancelledError:
             return
+
+    def _record_stage_changes(
+        self,
+        daemon: CoordinareDaemon,
+        previous: tuple | None,
+        current: tuple,
+    ) -> None:
+        """138 T024/T026: derive stage_change entries from the fingerprint delta.
+
+        The watcher already fingerprints ``phase`` and ``performer_stage``, so
+        the transition is free here. It is the watcher's only recording duty
+        besides releasing dedup bookkeeping for departed cards (FR-024).
+        """
+        old = {p[0]: (p[4], p[5]) for p in (previous or ())}
+        new = {p[0]: (p[4], p[5]) for p in current}
+        active = daemon.state.get("active_sessions") or {}
+        batch: list[dict[str, Any]] = []
+        for sid, (phase, stage) in new.items():
+            was = old.get(sid)
+            if was == (phase, stage):
+                continue
+            if was is None:
+                text = f"picked up in {stage or phase or 'idle'}"
+            elif was[1] != stage:
+                text = f"stage → {stage or 'none'}"
+            else:
+                text = f"phase → {phase or 'idle'}"
+            card = (active.get(sid) or {}).get("current_card") or {}
+            batch.append({
+                "activity_type": "stage_change",
+                "card_id": sid,
+                "card_number": card.get("issue_number"),
+                "card_title": card.get("title", ""),
+                "stage": stage or "",
+                "text": text,
+            })
+        if batch:
+            self.activity_log.record_many(batch)
+        for sid in old.keys() - new.keys():
+            self.activity_log.forget_card(sid)
 
     async def sse_stream(
         self,
@@ -342,6 +412,11 @@ class DashboardStore:
         sentinel from broadcaster.shutdown() causes a clean exit.
         """
         q = self.broadcaster.subscribe()
+        # 138 T013: snapshot the backfill at subscribe time, not when the client
+        # first pulls. Everything recorded before this line is in the backfill,
+        # everything after arrives on the queue — no entry is sent twice and
+        # none is lost in the gap.
+        backfill = self.activity_log.snapshot()
         # 065 US1: lazily start the active_sessions watcher on first subscribe
         # so mid-cycle mutations are broadcast without waiting for cycle end.
         if self._watcher_task is None or self._watcher_task.done():
@@ -354,16 +429,31 @@ class DashboardStore:
             # Send current state immediately on connect (FR-011)
             snapshot = self.build_snapshot(daemon, metrics, health)
             yield f"event: state_update\ndata: {json.dumps(snapshot, default=_json_default)}\n\n"
+            # Activity backfill, always *after* the initial snapshot (FR-003).
+            # snapshot() is already oldest-first — reversing here would render
+            # the backfill upside down given the client's prepend.
+            if backfill:
+                _b = {"_event": "activity_event", "entries": backfill}
+                yield f"event: activity_event\ndata: {json.dumps(_b, default=_json_default)}\n\n"
             while True:
                 try:
                     payload = await asyncio.wait_for(q.get(), timeout=15.0)
                     if payload is None:
                         # Shutdown sentinel — exit the generator cleanly
                         break
-                    yield f"event: state_update\ndata: {json.dumps(payload, default=_json_default)}\n\n"
+                    # 138 T012: tagged payloads carry their own event name;
+                    # everything else serialises byte-identically to pre-138.
+                    _name = payload.get("_event") or "state_update"
+                    yield f"event: {_name}\ndata: {json.dumps(payload, default=_json_default)}\n\n"
                 except TimeoutError:
-                    # Keepalive comment — prevents proxy/browser timeout
+                    # Keepalive comment — prevents proxy/browser timeout.
+                    # Order is load-bearing: test_dashboard.py reads exactly one
+                    # message here and asserts this exact string (SC-007).
                     yield ": keepalive\n\n"
+                    # 138 T014: SSE comments never surface to EventSource
+                    # listeners, so the client needs a JS-visible liveness ping
+                    # to drive its silence timer (FR-026).
+                    yield 'event: heartbeat\ndata: {"_event": "heartbeat"}\n\n'
         finally:
             self.broadcaster.unsubscribe(q)
 
@@ -536,7 +626,17 @@ class DashboardStore:
             })
         active_session_count = len(active_session_summaries)
 
+        # 138 T016: the ONE key this feature adds (FR-002 is additive-only).
+        # Quiet detection's other input, agent_dispatch_at, is already on each
+        # session summary above.
+        _qt = getattr(
+            getattr(daemon.state.get("config"), "stuck_alerts", None),
+            "quiet_threshold_seconds",
+            300,
+        )
+
         return {
+            "activity_quiet_threshold_seconds": _qt if isinstance(_qt, int) else 300,
             "phase": phase,
             "phase_label": format_phase_label(phase),
             "active_card_title": snapshot.active_card_title if snapshot else None,
@@ -714,6 +814,9 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
   --color-ev-thinking:        #2a2a1a;
   --color-ev-error:           #2a1a1a;
   --color-ev-output:          #1e1e1e;
+  --color-ev-quiet:           #1e2430;
+  --color-ev-stall:           #2a2010;
+  --color-ev-stuck:           #3a1520;
   --color-bg-row-hover:       #132035;
   --color-bg-row-selected:    #1b2940;
   --color-bg-pill:            #111827;
@@ -804,6 +907,28 @@ td { padding: 4px 8px; border-bottom: 1px solid var(--color-bg-elevated); }
 .ev-cost      { background: var(--color-bg-subtle); color: var(--color-text-muted); }
 .ev-error     { background: var(--color-ev-error); color: var(--color-accent-red); }
 .ev-output    { background: var(--color-ev-output); color: var(--color-text-muted); }
+.ev-stage_change { background: var(--color-ev-progress); color: var(--color-accent-green); }
+.ev-recovered { background: var(--color-ev-progress); color: var(--color-accent-green); }
+.ev-quiet     { background: var(--color-ev-quiet); color: var(--color-text-muted); }
+.ev-stall     { background: var(--color-ev-stall); color: var(--color-accent-orange); }
+.ev-stuck     { background: var(--color-ev-stuck); color: var(--color-accent-red); }
+/* 138: activity feed */
+.af-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; font-size: 12px; }
+.af-controls label { color: var(--color-text-muted); }
+/* min-width:0 lets a long card title shrink instead of widening the row past
+   the card at the narrowest supported viewport. */
+#af-filter { background: var(--color-bg-base); color: var(--color-text-primary); border: 1px solid var(--color-border); border-radius: 4px; padding: 3px 6px; font-family: inherit; font-size: 12px; max-width: 100%; min-width: 0; }
+#af-filter:focus-visible { outline: 2px solid var(--color-accent-blue); outline-offset: 1px; }
+.af-liveness { margin-left: auto; color: var(--color-accent-green); white-space: nowrap; }
+.af-liveness.af-not-live { color: var(--color-accent-yellow); }
+.af-log { max-height: 320px; overflow-y: auto; overflow-x: hidden; background: var(--color-bg-base); border: 1px solid var(--color-bg-elevated); border-radius: 4px; font-size: 12px; }
+.af-row { display: grid; grid-template-columns: 62px minmax(0, 1fr); gap: 6px; padding: 3px 6px; border-bottom: 1px solid var(--color-bg-surface); align-items: start; }
+.af-row:last-child { border-bottom: none; }
+.af-time { color: var(--color-text-muted); white-space: nowrap; font-size: 11px; padding-top: 2px; }
+.af-body { min-width: 0; word-break: break-word; color: var(--color-text-primary); }
+.af-kind { display: inline-block; padding: 0 5px; border-radius: 3px; font-size: 10px; letter-spacing: .04em; font-weight: bold; }
+.af-card { color: var(--color-text-muted); margin: 0 4px; }
+.af-stale-note { color: var(--color-accent-yellow); font-size: 11px; padding: 5px 6px; border-bottom: 1px solid var(--color-bg-surface); }
 /* Performers card */
 .perf-header { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
 .perf-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
@@ -913,6 +1038,26 @@ td { padding: 4px 8px; border-bottom: 1px solid var(--color-bg-elevated); }
 <div id="active-performers" class="card" style="display:none">
   <h2>Active Performers</h2>
   <div id="active-performer-tiles" class="ap-tiles"></div>
+</div>
+
+<!-- 138: activity feed -->
+<div id="activity-feed-card" class="card full">
+  <h2>Activity</h2>
+  <div class="af-controls">
+    <label for="af-filter">Card</label>
+    <select id="af-filter" onchange="onActivityFilterChange()" aria-label="Filter activity by card">
+      <option value="">All cards</option>
+    </select>
+    <span id="af-liveness" class="af-liveness" role="status" aria-live="polite">Live</span>
+  </div>
+  <div id="af-stale-note" class="af-stale-note" style="display:none">
+    Stream not live &mdash; entries below may be out of date.
+  </div>
+  <div id="activity-feed" class="af-log" role="log" aria-live="polite" aria-relevant="additions"
+       aria-label="Activity feed, newest first"></div>
+  <div id="af-empty" class="empty-state">
+    No activity yet &mdash; this feed covers only the current daemon run.
+  </div>
 </div>
 
 <div class="card">
@@ -3116,6 +3261,10 @@ function renderActivePerformers(s) {
       '<div class="ap-tile-meta">' +
         '<span class="ap-pill ap-tile-elapsed">&#9201; <strong>' + esc(elapsed) + '</strong></span>' +
         '<span class="ap-pill">Card: <strong>' + esc(cardId) + '</strong></span>' +
+        // 138 FR-032: quiet marker — observation only, never a phase change.
+        // .af-kind carries no colours of its own, so .ev-quiet is not overridden
+        // by .ap-pill (equal specificity, later in the sheet).
+        (_afQuietCards[sess.card_id] ? '<span class="af-kind ev-quiet">QUIET</span>' : '') +
       '</div>' +
       '</div>';
   });
@@ -3476,9 +3625,209 @@ async function resetPersona(role) {
 // The original loadPersonas() targets #personas-section on the main page (now hidden).
 // The new loadPersonasPage() targets #personas-page-section and uses event delegation.
 
+// ---------------------------------------------------------------------------
+// 138: activity feed
+// ---------------------------------------------------------------------------
+var AF_MAX_ROWS = 2000;
+var AF_SILENCE_MS = 40000;   // ~2.5 keepalive intervals (FR-026)
+var AF_LABELS = {
+  progress: 'PROGRESS', tool_use: 'TOOL', thinking: 'THINKING', cost: 'COST',
+  stage_change: 'STAGE', recovered: 'RECOVERED', quiet: 'QUIET',
+  stall: 'STALL', stuck: 'STUCK', error: 'ERROR'
+};
+var _afEntries = [];        // retained entries, oldest-first
+var _afSeen = {};           // seq -> true; reconnect backfill must not double-insert
+var _afFilter = '';
+var _afLastMsgAt = Date.now();
+var _afLive = true;
+var _afQuietCards = {};     // card_id -> true while that card is in a quiet episode
+
+function afLabel(t) { return AF_LABELS[t] || String(t || '').toUpperCase() || 'EVENT'; }
+
+function afTime(iso) {
+  if (!iso) return '';
+  try { return new Date(iso).toLocaleTimeString(); } catch(e) { return ''; }
+}
+
+function afRowHtml(e) {
+  var who = e.card_number ? ('#' + e.card_number) : (e.card_title || e.card_id || '');
+  var where = (who ? who : '') + (e.stage ? ' ' + e.stage : '');
+  // The kind chip is a visible TEXT prefix, so severity is never carried by
+  // colour alone (WCAG 1.4.1).
+  return '<div class="af-row">' +
+    '<span class="af-time">' + esc(afTime(e.timestamp)) + '</span>' +
+    '<span class="af-body">' +
+      '<span class="af-kind ev-' + esc(e.activity_type) + '">' + esc(afLabel(e.activity_type)) + '</span>' +
+      (where ? '<span class="af-card">' + esc(where) + '</span>' : ' ') +
+      esc(e.text || '') + (e.truncated ? '&hellip;' : '') +
+    '</span>' +
+  '</div>';
+}
+
+function afMatches(e) { return !_afFilter || e.card_id === _afFilter; }
+
+function afAppend(entries) {
+  var feed = document.getElementById('activity-feed');
+  if (!feed || !entries || !entries.length) return;
+  var html = '';
+  var added = 0;
+  for (var i = 0; i < entries.length; i++) {
+    var e = entries[i];
+    if (e == null || _afSeen[e.seq]) continue;
+    _afSeen[e.seq] = true;
+    _afEntries.push(e);
+    // FR-032: any real entry ends the card's quiet episode.
+    if (e.card_id && e.activity_type !== 'quiet') delete _afQuietCards[e.card_id];
+    if (!afMatches(e)) continue;
+    html = afRowHtml(e) + html;   // batch is oldest-first; newest ends up on top
+    added++;
+  }
+  if (added) {
+    // Prepend ONLY the new rows. A full re-render would make
+    // aria-relevant="additions" re-announce every existing row.
+    feed.insertAdjacentHTML('afterbegin', html);
+    while (_afEntries.length > AF_MAX_ROWS) delete _afSeen[_afEntries.shift().seq];
+    while (feed.childElementCount > AF_MAX_ROWS) feed.removeChild(feed.lastElementChild);
+  }
+  afUpdateEmpty();
+  afUpdateFilterOptions();
+}
+
+function afRender() {
+  // Full re-render — filter changes only, never a live update.
+  var feed = document.getElementById('activity-feed');
+  if (!feed) return;
+  var html = '';
+  for (var i = 0; i < _afEntries.length; i++) {
+    if (afMatches(_afEntries[i])) html = afRowHtml(_afEntries[i]) + html;
+  }
+  feed.innerHTML = html;
+  afUpdateEmpty();
+}
+
+function afUpdateEmpty() {
+  var feed = document.getElementById('activity-feed');
+  var empty = document.getElementById('af-empty');
+  if (!feed || !empty) return;
+  empty.style.display = feed.childElementCount ? 'none' : '';
+}
+
+function afUpdateFilterOptions() {
+  var sel = document.getElementById('af-filter');
+  if (!sel) return;
+  var seen = {}, cards = [];
+  for (var i = 0; i < _afEntries.length; i++) {
+    var e = _afEntries[i];
+    if (!e.card_id || seen[e.card_id]) continue;
+    seen[e.card_id] = true;
+    cards.push(e);
+  }
+  var key = cards.map(function(e) { return e.card_id; }).join(',');
+  if (key === sel.getAttribute('data-cards')) return;
+  sel.setAttribute('data-cards', key);
+  var html = '<option value="">All cards</option>';
+  cards.forEach(function(e) {
+    var label = (e.card_number ? '#' + e.card_number + ' ' : '') + (e.card_title || e.card_id);
+    html += '<option value="' + esc(e.card_id) + '">' + esc(label) + '</option>';
+  });
+  sel.innerHTML = html;
+  sel.value = _afFilter;
+  if (sel.value !== _afFilter) { _afFilter = ''; sel.value = ''; afRender(); }
+}
+
+function onActivityFilterChange() {
+  var sel = document.getElementById('af-filter');
+  _afFilter = sel ? sel.value : '';
+  afRender();
+}
+
+function afSetLive(live) {
+  if (live === _afLive) return;
+  _afLive = live;
+  var el = document.getElementById('af-liveness');
+  if (el) {
+    el.textContent = live ? 'Live' : 'Not live';
+    if (live) el.classList.remove('af-not-live'); else el.classList.add('af-not-live');
+  }
+  // Retained entries stay visible and are marked possibly out of date; the
+  // feed is never cleared on disconnect (FR-027).
+  var note = document.getElementById('af-stale-note');
+  if (note) note.style.display = live ? 'none' : '';
+  // Reuse the existing connection indicators rather than adding a second one.
+  var dot = document.getElementById('nav-sse-dot');
+  if (dot) {
+    if (live) { dot.classList.remove('disconnected'); dot.title = 'SSE connected'; }
+    else { dot.classList.add('disconnected'); dot.title = 'SSE silent — no messages'; }
+  }
+  var bnr = document.getElementById('disconnected-banner');
+  if (bnr && !live) bnr.style.display = 'block';
+}
+
+function afNoteMessage() {
+  _afLastMsgAt = Date.now();
+  afSetLive(true);
+}
+
+function afQuietTick() {
+  var s = _lastState;
+  if (!s) return;
+  var threshold = s.activity_quiet_threshold_seconds;
+  if (!threshold || threshold <= 0) return;   // 0 disables
+  var sessions = Array.isArray(s.active_sessions) ? s.active_sessions : [];
+  var now = Date.now();
+  var newest = {};
+  for (var i = 0; i < _afEntries.length; i++) {
+    var e = _afEntries[i];
+    if (!e.card_id || e.activity_type === 'quiet') continue;
+    var t = Date.parse(e.timestamp);
+    if (!isNaN(t) && (!newest[e.card_id] || t > newest[e.card_id])) newest[e.card_id] = t;
+  }
+  var marked = false;
+  sessions.forEach(function(sess) {
+    var cid = sess.card_id;
+    if (!cid || _afQuietCards[cid]) return;
+    // Anchor on max(newest entry, agent_dispatch_at), skipping whichever is
+    // absent. Entry-only anchoring leaves a session restored after a daemon
+    // restart unmarked forever — the exact card this exists for (FR-028).
+    var lastHeard = newest[cid] || NaN;
+    var dispatched = sess.agent_dispatch_at ? Date.parse(sess.agent_dispatch_at) : NaN;
+    if (!isNaN(dispatched)) lastHeard = isNaN(lastHeard) ? dispatched : Math.max(lastHeard, dispatched);
+    if (isNaN(lastHeard)) return;   // never mark quiet off a missing timestamp
+    if ((now - lastHeard) / 1000 <= threshold) return;
+    _afQuietCards[cid] = true;
+    marked = true;
+    // One synthetic row per episode. Synthetic rows never enter the stored log
+    // on the daemon and never count as progress (FR-031, FR-033).
+    afAppend([{
+      seq: 'q:' + cid + ':' + lastHeard,
+      timestamp: new Date().toISOString(),
+      card_id: cid,
+      card_number: sess.issue_number,
+      card_title: sess.card_title,
+      stage: sess.performer_stage || '',
+      activity_type: 'quiet',
+      text: 'No activity for ' + Math.round((now - lastHeard) / 1000) + 's',
+      truncated: false
+    }]);
+  });
+  if (marked) renderActivePerformers(s);
+}
+
+function afTick() {
+  afSetLive(Date.now() - _afLastMsgAt < AF_SILENCE_MS);
+  afQuietTick();
+}
+
 var banner = document.getElementById('disconnected-banner');
 var es = new EventSource('/events');
+es.addEventListener('activity_event', function(e) {
+  afNoteMessage();
+  try { afAppend(JSON.parse(e.data).entries); }
+  catch(err) { console.error('activity parse error', err); }
+});
+es.addEventListener('heartbeat', function() { afNoteMessage(); });
 es.addEventListener('state_update', function(e) {
+  afNoteMessage();
   try {
     _lastState = JSON.parse(e.data);
     renderState(_lastState);
@@ -3505,6 +3854,7 @@ es.onopen = function() {
 
 document.addEventListener('DOMContentLoaded', function() {
   router(); // initial route
+  setInterval(afTick, 5000);   // 138: silence timer + quiet detection
 });
 
 document.addEventListener('keydown', function(e) {

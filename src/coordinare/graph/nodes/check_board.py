@@ -530,6 +530,17 @@ async def _attempt_blocked_card_recovery(
                 target=decision.target_stage,
                 reason=decision.reason,
             )
+            # 138 T040: recorded *before* the notification branch, so recovery
+            # surfaces with zero channels configured (FR-012). No gate removed.
+            _alog = state.get("activity_log")
+            if _alog is not None:
+                with contextlib.suppress(Exception):
+                    _alog.record(
+                        activity_type="recovered",
+                        card_id=cid,
+                        stage=decision.target_stage,
+                        text=f"auto-recovered to {decision.target_stage} ({decision.reason})",
+                    )
             notif = state.get("notification_service")
             if notif is not None:
                 with contextlib.suppress(Exception):

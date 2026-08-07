@@ -3060,9 +3060,9 @@ def _stalled_state(service, *, stall=600, retries=2):
     state = _make_state(service=service, stage="architecting")
     state["coordinare_config"] = _stall_cfg(stall=stall, retries=retries)
     state["last_progress_at"] = datetime.now(UTC) - timedelta(seconds=stall + 100)
-    # fingerprint matching a no-event poll ("0||0") so a no-progress poll reads as
-    # unchanged; a poll WITH events yields a different fp -> counts as progress.
-    state["last_progress_fingerprint"] = "0||0"
+    # fingerprint matching a no-event poll ("") so a no-progress poll reads as
+    # unchanged; a poll with new event TEXT yields a different fp -> progress.
+    state["last_progress_fingerprint"] = ""
     return state
 
 
@@ -3095,9 +3095,11 @@ async def test_stall_watchdog_blocks_when_budget_exhausted() -> None:
 
 @pytest.mark.asyncio
 async def test_stall_watchdog_resets_on_progress() -> None:
-    """A working turn that produced new events this poll is NOT tripped; the
+    """A working turn that produced new event TEXT this poll is NOT tripped; the
     progress timestamp is refreshed."""
-    service = _Performer({"status": "working", "events": [{"type": "tool_call"}]})
+    service = _Performer(
+        {"status": "working", "events": [{"type": "tool_call", "text": "ran pytest"}]}
+    )
     state = _stalled_state(service, stall=600, retries=2)  # last_progress far in past
     with patch("coordinare.services.dispatch_guard.drain_or_reap", new=AsyncMock()):
         result = await monitor_performer(state)
@@ -3123,16 +3125,38 @@ async def test_stall_watchdog_trips_on_stable_full_event_list() -> None:
     """Regression for the live miss: a wedged backend (codex) re-returns its
     full accumulated events list (capped) unchanged every poll. `bool(events)`
     would read that as progress forever; the fingerprint must see it as a stall."""
-    events = [{"i": k} for k in range(200)]  # full, stable list (the codex case)
+    events = [{"i": k, "text": f"step {k}"} for k in range(200)]  # stable (codex case)
     service = _Performer({"status": "working", "events": events})
     state = _stalled_state(service, stall=600, retries=2)
     # prior poll saw the SAME stable list -> fingerprint already matches it
-    state["last_progress_fingerprint"] = f"200|{repr(events[-1])[:160]}|0"
+    state["last_progress_fingerprint"] = "|".join(e["text"] for e in events[-3:])
     with patch("coordinare.services.dispatch_guard.drain_or_reap", new=AsyncMock()):
         result = await monitor_performer(state)
     assert result["phase"] == "dispatching"  # tripped -> kill + retry
     assert result["performer_stage"] == "architecting"
     assert result.get("last_progress_at") is None
+
+
+@pytest.mark.asyncio
+async def test_stall_watchdog_trips_on_repeated_identical_output() -> None:
+    """Regression for the live 2h hang: a model looping on byte-identical output
+    GROWS the event list and the token total every poll while producing no real
+    work. Fingerprinting count/tokens/repr() read that as progress forever, so
+    the watchdog never tripped and only the performer's own session timeout
+    (7202s) stopped it. Text-only fingerprinting must see it as a stall."""
+    done = {"type": "progress", "text": "## Task Complete: implemented the thing"}
+    events = [done] * 89  # the same message, re-emitted (list keeps growing)
+    service = _Performer(
+        {"status": "working", "events": events, "metrics": {"tokens_total": 250_000}}
+    )
+    state = _stalled_state(service, stall=600, retries=2)
+    # Prior poll saw a SHORTER list and FEWER tokens, but the same trailing text.
+    state["last_progress_fingerprint"] = "|".join([done["text"]] * 3)
+    state["card_tokens_total"] = 120_000
+    with patch("coordinare.services.dispatch_guard.drain_or_reap", new=AsyncMock()):
+        result = await monitor_performer(state)
+    assert result["phase"] == "dispatching"  # tripped despite growth
+    assert result["performer_stage"] == "architecting"
 
 
 # ---------------------------------------------------------------------------

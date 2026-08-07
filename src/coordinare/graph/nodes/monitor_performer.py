@@ -857,6 +857,77 @@ def _is_format_contract_error(reason: str) -> bool:
     return any(m in low for m in _FORMAT_CONTRACT_ERROR_MARKERS)
 
 
+# 138: backend event type → activity type. `output` is the backend's fallback
+# for an unrecognised line, so it reads as plain progress in the feed.
+_ACTIVITY_TYPE_BY_EVENT = {
+    "progress": "progress",
+    "tool_use": "tool_use",
+    "thinking": "thinking",
+    "cost": "cost",
+    "error": "error",
+    "output": "progress",
+}
+
+
+def _activity_attribution(state: CoordinareState, card_id: str, stage: str) -> dict[str, Any]:
+    """138: the four attribution fields every feed entry carries (FR-005).
+
+    ``card_id``/``stage`` are locals at the push sites; title and number are
+    not — they come off ``current_card``.
+    """
+    card = state.get("current_card") or {}
+    return {
+        "card_id": card_id,
+        "card_number": card.get("issue_number"),
+        "card_title": card.get("title", ""),
+        "stage": stage,
+    }
+
+
+def _record_activity(
+    state: CoordinareState,
+    activity_type: str,
+    text: str,
+    *,
+    card_id: str,
+    stage: str,
+) -> None:
+    """138: push one feed entry. No-ops without a log (tests, no dashboard)."""
+    log = state.get("activity_log")
+    if log is None:
+        return
+    with contextlib.suppress(Exception):
+        log.record(
+            activity_type=activity_type,
+            text=text,
+            **_activity_attribution(state, card_id, stage),
+        )
+
+
+def _record_activity_batch(
+    state: CoordinareState,
+    events: list[Any],
+    *,
+    card_id: str,
+    stage: str,
+) -> None:
+    """138 T023: push a poll's worth of backend events as one batch."""
+    log = state.get("activity_log")
+    if log is None:
+        return
+    attribution = _activity_attribution(state, card_id, stage)
+    with contextlib.suppress(Exception):
+        log.record_many([
+            {
+                "activity_type": _ACTIVITY_TYPE_BY_EVENT.get(str(ev.get("type", "")), "progress"),
+                "text": ev.get("text") or ev.get("detail") or "",
+                **attribution,
+            }
+            for ev in events
+            if isinstance(ev, dict)
+        ])
+
+
 def _is_workflow_push_permission_error(reason: str) -> bool:
     """True when git push was rejected because workflow writes are disallowed."""
     lowered = reason.lower()
@@ -2885,6 +2956,26 @@ async def _refresh_backend_ui(
 
 
 async def monitor_performer(state: CoordinareState) -> CoordinareState:
+    """Poll the active performer, then surface any terminal outcome in the feed.
+
+    138 T041: the body has ~15 separate terminal-error / blocked returns. One
+    wrapper covers every one of them, where patching individual sites would
+    leave the siblings silent.
+    """
+    result = await _monitor_performer_body(state)
+    if isinstance(result, dict) and result.get("phase") in {"blocked", "system_error"}:
+        reason = result.get("system_error_reason") or "no reason reported"
+        _record_activity(
+            result,
+            "error",
+            f"{result['phase']}: {reason}",
+            card_id=str((result.get("current_card") or {}).get("id", "")),
+            stage=str(result.get("performer_stage") or ""),
+        )
+    return result
+
+
+async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
     """Poll the active performer and route based on status.
 
     Reads ``performer_stage`` from state, resolves the service from
@@ -3237,6 +3328,13 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
         if isinstance(new_events, list) and new_events:
             existing = list(state.get("performer_events") or [])
             state["performer_events"] = (existing + new_events)[-100:]
+            # 138 T023: record in the same invocation that observed the batch —
+            # the earliest anything can, and what makes SC-004 measurable. Hand
+            # over the WHOLE reported list without pre-diffing: backends
+            # re-report their entire accumulated events, and suppression by
+            # content is the log's job (FR-022, FR-023). A positional cursor
+            # would break anyway — the source list is a rolling [-100:].
+            _record_activity_batch(state, new_events, card_id=card_id, stage=stage)
 
         # Store latest performer metrics for dashboard visibility.
         new_metrics = status.get("metrics")
@@ -3549,10 +3647,20 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
             # ``bool(new_events)``: backends (e.g. codex) return their full
             # accumulated events list (capped) on every poll, so it is non-empty
             # and *stable* while the turn is wedged — using bool() there made the
-            # watchdog think every poll was progress and never trip. Fingerprint
-            # the event count + last event + token total; only a change counts.
+            # watchdog think every poll was progress and never trip.
+            #
+            # Fingerprint recent event TEXT only. Deliberately NOT the event
+            # count, NOT the token total, and NOT repr(): a model looping on
+            # byte-identical output still grows the count, still burns tokens,
+            # and repr() carries a per-event timestamp — each of those makes an
+            # infinite repeat-loop read as progress on every poll, so the
+            # watchdog could never trip on it (observed: an implementer emitted
+            # the same "Task Complete" message 89+ times over 2h and was only
+            # stopped by the performer's own session timeout).
             _evs = new_events if isinstance(new_events, list) else []
-            _fp = f"{len(_evs)}|{repr(_evs[-1])[:160] if _evs else ''}|{state.get('card_tokens_total', 0)}"
+            _fp = "|".join(
+                str(e.get("text", "")) for e in _evs[-3:] if isinstance(e, dict)
+            )[:480]
             _prev_fp = state.get("last_progress_fingerprint")
             _made_progress = (_prev_fp is None) or (_fp != _prev_fp)
             state["last_progress_fingerprint"] = _fp
@@ -3569,6 +3677,16 @@ async def monitor_performer(state: CoordinareState) -> CoordinareState:
                         performer_stage=stage,
                         stalled_seconds=round(_stalled_for),
                         threshold_seconds=_stall_secs,
+                    )
+                    # 138 T039: surface the trip in the UI whether or not a
+                    # notification channel exists (FR-010).
+                    _record_activity(
+                        state,
+                        "stall",
+                        f"no progress in {stage} for {round(_stalled_for)}s "
+                        f"(threshold {_stall_secs}s)",
+                        card_id=card_id,
+                        stage=stage,
                     )
                     # Kill the wedged turn first (best-effort) — it must not linger.
                     try:
