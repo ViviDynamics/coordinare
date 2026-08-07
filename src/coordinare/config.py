@@ -313,6 +313,10 @@ class StuckAlertConfig(BaseModel):
         },
     )  # phase → seconds; 0 = disabled
     cooldown_seconds: int = Field(default=1800, ge=0)  # min interval between repeated stuck alerts
+    # 138: silence before the dashboard marks a card quiet. 0 disables. Must stay
+    # below the smallest stuck threshold (FR-029) — at 300 s it fires 6x sooner
+    # than the fastest stuck alert and 12x sooner than the monitoring-phase one.
+    quiet_threshold_seconds: int = Field(default=300, ge=0)
 
 
 # ---------------------------------------------------------------------------

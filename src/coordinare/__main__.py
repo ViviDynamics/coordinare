@@ -71,6 +71,7 @@ if TYPE_CHECKING:
     from fastapi import FastAPI
 
     from coordinare.graph.state import CoordinareState
+    from coordinare.services.activity_log import ActivityLog
     from coordinare.transport import AgentTransport
 
 
@@ -716,6 +717,7 @@ async def _bootstrap_services(
     config: ProjectConfiguration,
     circuit_breakers: dict[str, CircuitBreaker],
     config_path: Path | None = None,
+    activity_log: ActivityLog | None = None,
 ) -> CoordinareState:
     r = config.resilience
 
@@ -842,6 +844,10 @@ async def _bootstrap_services(
         "agent_service": resilient_agent,
         "conducting_backend": conducting_backend,
         "notification_service": notification_service,
+        # 138: the DashboardStore-owned log, passed in rather than constructed —
+        # dashboard and graph nodes must share one instance or pushed entries
+        # land in a log nobody serves.
+        "activity_log": activity_log,
         "human_reviewers": config.human_reviewers,
         "trusted_bot_reviewers": config.trusted_bot_reviewers,
         "blocked_reminder_hours": config.blocked_reminder_hours,
@@ -956,7 +962,12 @@ async def _run(
         dashboard_store=dashboard_store,
     )
 
-    daemon.state.update(await _bootstrap_services(config, circuit_breakers, config_path=config_path))
+    daemon.state.update(await _bootstrap_services(
+        config,
+        circuit_breakers,
+        config_path=config_path,
+        activity_log=dashboard_store.activity_log,
+    ))
 
     # 057: Initialize symphony state so the daemon loop starts in multi-symphony mode
     # without requiring a POST /api/config/reload after startup.

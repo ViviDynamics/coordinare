@@ -690,6 +690,12 @@ log_level: "info"                       # "debug" | "info" | "warning" | "error"
 # stuck_alerts:
 #   threshold_seconds: 1800             # alert when a card is stuck for this long; 0 = disabled
 #   cooldown_seconds: 1800              # minimum interval between repeated stuck alerts
+#   quiet_threshold_seconds: 300        # 138: silence before the dashboard activity feed marks
+#                                       #   a card quiet; 0 = disabled. Keep below the smallest
+#                                       #   stuck threshold — this is the only "not moving"
+#                                       #   signal that fires on a stock install, because the
+#                                       #   stall watchdog ships disabled and the monitoring-
+#                                       #   phase stuck threshold is a full hour.
 #   per_phase_thresholds:               # per-phase overrides (take precedence over threshold_seconds)
 #     monitoring_performer: 3600        # 60 min — codex sessions routinely run 30–40 min
 #     monitoring_agent: 3600

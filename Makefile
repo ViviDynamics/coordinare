@@ -16,7 +16,7 @@ RUFF   := .venv/bin/ruff
 
 .PHONY: help \
         lint fmt lint-fix \
-        test test-unit test-contract test-all \
+        test test-unit test-contract test-all test-js require-node \
         build e2e docker ci build-all \
         run start stop performer-logs \
         install uninstall version validate-version \
@@ -35,6 +35,14 @@ require-venv:
 	  echo "error: .venv not found (needed for lint/test targets)."; \
 	  echo "  create it, e.g.:  uv sync --extra dev"; \
 	  echo "               or:  python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'"; \
+	  exit 1; }
+
+require-node:
+	@command -v node >/dev/null || { \
+	  echo "error: node not found — the dashboard JS gate cannot run."; \
+	  echo "  node 22 LTS is already a project requirement (spec 124, openwiki)."; \
+	  echo "  Under 'make test' this suite SKIPS when node is absent; asking for"; \
+	  echo "  it explicitly should fail instead."; \
 	  exit 1; }
 
 require-env:
@@ -61,6 +69,12 @@ test-unit: require-venv ## run the unit test suite
 
 test-contract: require-venv ## run the contract test suite
 	$(PYTEST) tests/contract -q
+
+# Lives in tests/unit/, so `test-unit`, `test-all`, `build` and `ci` already run
+# it. This target is for iterating on the feed's browser-resident logic alone —
+# and unlike the suite, it refuses to run rather than skip when node is missing.
+test-js: require-venv require-node ## run the dashboard client-side JS checks (node, no browser)
+	$(PYTEST) tests/unit/test_138_client_js.py -v
 
 test-all: require-venv ## run the WHOLE tests/ tree (unit + contract)
 	$(PYTEST) tests/unit tests/contract -q

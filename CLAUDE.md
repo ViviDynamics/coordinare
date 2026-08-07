@@ -67,6 +67,8 @@ See AGENTS.md for all development guidelines.
 - N/A (no persisted state; the Makefile is stateless). (130-makefile)
 - Python 3.12+ (performer package `agent/performer`, coordinare `src/coordinare`). + the performer workspace/git layer (131-block-agent-config)
 - N/A — no persisted coordinare state. The exclusion is a per-clone file (131-block-agent-config)
+- Python 3.12+ (prod 3.14.5 via uv); dashboard front end is vanilla ES5-style JS inlined in `dashboard.py` + Existing only — FastAPI + Starlette (SSE), asyncio, `collections.deque`, pydantic 2.x, structlog. **No new dependency.** (138-dashboard-activity-feed)
+- None. Bounded in-memory `deque`, per-process, discarded on restart (FR-019). (138-dashboard-activity-feed)
 
 ## Recent Changes
 - 076-qa-cycle: Added Python 3.14 (project minimum: 3.12; production currently on 3.14.5 via uv) + pydantic 2.x, langgraph, structlog, docker SDK (or subprocess to `docker` CLI), fastapi (dashboard SSE), httpx (performer HTTP transport), pyyaml (config)

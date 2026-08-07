@@ -9,6 +9,9 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, TypedDict
 from coordinare.config import (
     ProjectConfiguration,  # noqa: TC001 — needed at runtime for LangGraph get_type_hints()
 )
+from coordinare.services.activity_log import (
+    ActivityLog,  # noqa: TC001 — needed at runtime for LangGraph get_type_hints()
+)
 
 if TYPE_CHECKING:
     from coordinare.models.notification import NotificationEvent
@@ -100,6 +103,9 @@ class CoordinareState(TypedDict, total=False):
     agent_service: AgentServiceProtocol
     conducting_backend: ConductingBackendProtocol
     notification_service: NotificationServiceProtocol
+    # 138: dashboard activity feed. Optional by construction (total=False) —
+    # every reader uses state.get("activity_log") and no-ops when it is None.
+    activity_log: ActivityLog | None
     advocate_service: AdvocateServiceProtocol | None
     advocate_history: set[str]
     advocate_handled_label: str

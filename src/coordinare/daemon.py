@@ -3157,7 +3157,13 @@ class CoordinareDaemon:
                 # 028: Stuck card detection (with cooldown to avoid alert spam)
                 _stuck_phase = self._state.get("phase")
                 _stuck_excluded = {"idle", "system_error"}
-                if _stuck_phase and _stuck_phase not in _stuck_excluded and notification_service is not None:
+                # 138 T038: the `notification_service is not None` gate that used
+                # to sit here is gone — detection must run so the activity feed
+                # gets its entry with zero channels configured. It was dead in
+                # production anyway (build_notification_service always returns a
+                # service); the removal only matters for tests and non-dashboard
+                # embeddings, which is why the dispatch below now guards itself.
+                if _stuck_phase and _stuck_phase not in _stuck_excluded:
                     _config = self._state.get("config")
                     _phase_entered = self._state.get("phase_entered_at")
                     if _config is not None and _phase_entered is not None and hasattr(_config, "stuck_alerts"):
@@ -3165,6 +3171,15 @@ class CoordinareDaemon:
                         _threshold = _stuck_cfg.per_phase_thresholds.get(_stuck_phase, _stuck_cfg.threshold_seconds)
                         _raw_cooldown = getattr(_stuck_cfg, "cooldown_seconds", None)
                         _cooldown = _raw_cooldown if _raw_cooldown is not None else _threshold
+                        # 138: this block used to be shielded by the (dead)
+                        # notification_service gate. Now that detection always
+                        # runs, a non-numeric threshold — a stubbed config in a
+                        # test, a hand-edited YAML — must disable it rather than
+                        # raise into the cycle. Real configs are pydantic ints.
+                        if not isinstance(_threshold, int):
+                            _threshold = 0
+                        if not isinstance(_cooldown, int):
+                            _cooldown = _threshold
                         if _threshold > 0:
                             _elapsed = (datetime.now(UTC) - _phase_entered).total_seconds()
                             _last_stuck = getattr(self, "_last_stuck_alert_at", None)
@@ -3180,26 +3195,46 @@ class CoordinareDaemon:
                                 _card_num = _card.get("issue_number", "")
                                 _card_ref = f"#{_card_num} " if _card_num else ""
                                 _summary = f"⏰ {_card_ref}{_card_title} — stuck in {_stuck_phase} for {round(_elapsed // 60)} min"
-                                try:
-                                    await notification_service.dispatch(
-                                        NotificationEvent(
-                                            event_type=EventType.card_stuck,
-                                            severity=NotificationSeverity.warning,
-                                            payload={
-                                                "phase": _stuck_phase,
-                                                "elapsed_seconds": str(round(_elapsed)),
-                                                "threshold_seconds": str(_threshold),
-                                                "card_title": str(_card.get("title", "")),
-                                                "card_id": str(_card.get("id", "")),
-                                                "summary": _summary,
-                                            },
-                                            source="daemon",
-                                            dedup_key=f"stuck:{_card.get('id', '')}:{_stuck_phase}",
+                                # 138: the destination that always exists. The bug
+                                # this closes was a *delivery* failure — detection
+                                # ran, then the decision was handed to a service
+                                # with no channel to route it to and dropped.
+                                _alog = self._state.get("activity_log")
+                                if _alog is not None:
+                                    with contextlib.suppress(Exception):
+                                        _alog.record(
+                                            activity_type="stuck",
+                                            card_id=str(_card.get("id", "")),
+                                            card_number=_card.get("issue_number"),
+                                            card_title=str(_card.get("title", "")),
+                                            stage=_stuck_phase,
+                                            text=f"stuck in {_stuck_phase} for {round(_elapsed // 60)} min",
                                         )
-                                    )
-                                    self._last_stuck_alert_at = monotonic()
+                                try:
+                                    if notification_service is not None:
+                                        await notification_service.dispatch(
+                                            NotificationEvent(
+                                                event_type=EventType.card_stuck,
+                                                severity=NotificationSeverity.warning,
+                                                payload={
+                                                    "phase": _stuck_phase,
+                                                    "elapsed_seconds": str(round(_elapsed)),
+                                                    "threshold_seconds": str(_threshold),
+                                                    "card_title": str(_card.get("title", "")),
+                                                    "card_id": str(_card.get("id", "")),
+                                                    "summary": _summary,
+                                                },
+                                                source="daemon",
+                                                dedup_key=f"stuck:{_card.get('id', '')}:{_stuck_phase}",
+                                            )
+                                        )
                                 except Exception as _exc:
                                     logger.warning("stuck_card_notification_failed", error=str(_exc))
+                                # Outside the try AND outside the dispatch guard:
+                                # the cooldown must advance whether or not a
+                                # channel exists, or the feed takes a stuck entry
+                                # every cycle (FR-013, SC-006).
+                                self._last_stuck_alert_at = monotonic()
 
                 now = monotonic()
                 if now - last_heartbeat >= self._heartbeat_interval_seconds:
