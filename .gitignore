@@ -259,3 +259,6 @@ tmp/
 
 # superpowers brainstorm scratch (visual companion sessions)
 .superpowers/
+
+# spec-134 board-simulation benchmark run artifacts
+/runs/
