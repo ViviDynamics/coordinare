@@ -17,7 +17,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import yaml
 from pydantic import BaseModel
@@ -34,6 +34,11 @@ class Fixture(BaseModel):
     solution_files: dict[str, str] = {}
     head_ref: str = ""
     ground_truth: str = ""
+    # Spec 135: the planted right terminal outcome. "merged" = correct work must
+    # merge; "blocked" = the card must NOT merge (adversarial fixtures — e.g. a
+    # planted vulnerability the pipeline is expected to hold). Default preserves
+    # the meaning of every pre-135 manifest.
+    expected_final_state: Literal["merged", "blocked"] = "merged"
 
     def branch(self) -> str:
         return self.head_ref or f"bench/{self.id}"
