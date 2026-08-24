@@ -1,0 +1,84 @@
+# Spec 136 — the shipped default search space (FR-011).
+#
+# Swept dimensions: the boolean lifecycle gates (075/089/090/095) plus board
+# concurrency and per-role model tiers. Everything not listed here is FIXED at
+# the value in baseline.yaml — there is no implicit cross-product.
+#
+# Known-not-sweepable (documented, not invented — contracts/search-space.md):
+#   - blocked-recovery (129): env-var-gated (COORDINARE_BLOCKED_RECOVERY), not a
+#     config field yet.
+#   - security-scan (083): no boolean gate field; participates via
+#     performers.security.mode like any role.
+name: default
+baseline_config: baseline.yaml
+
+dimensions:
+  - name: ci-gate
+    path: symphonies.bench.persona_scope.ci_gate.enabled
+    choices: [false, true]
+    description: "075 implementer CI gate"
+  - name: local-test-gate
+    path: symphonies.bench.persona_scope.local_test_gate.enabled
+    choices: [false, true]
+    description: "089 implementer local test gate"
+  - name: baseline-prevention
+    path: symphonies.bench.persona_scope.baseline_prevention_gate.enabled
+    choices: [false, true]
+    description: "090 baseline-repair: prevention layer"
+  - name: baseline-classification
+    path: symphonies.bench.persona_scope.baseline_classification_gate.enabled
+    choices: [false, true]
+    description: "090 baseline-repair: classification layer"
+  - name: inherited-repair
+    path: symphonies.bench.persona_scope.inherited_repair_gate.enabled
+    choices: [false, true]
+    description: "090 baseline-repair: inherited-failure repair layer"
+  - name: env-blocked-gate
+    path: symphonies.bench.persona_scope.env_blocked_gate.enabled
+    choices: [false, true]
+    description: "095 infra/environment CI-failure classification (ENV_BLOCKED)"
+  - name: concurrency
+    path: global_config.max_concurrent_cards
+    choices: [1, 2]
+    description: "035 multi-card parallelism"
+  - name: implementer-mode
+    path: global_config.performers.implementer.mode
+    choices: [single-cheap, single-premium]
+    description: "implementer model tier (080 mode catalog)"
+  - name: reviewer-mode
+    path: global_config.performers.reviewer.mode
+    choices: [single-cheap, single-premium]
+    description: "reviewer model tier (080 mode catalog)"
+
+candidates:
+  - name: conservative
+    description: "every gate on, premium models, serial"
+    overrides:
+      symphonies.bench.persona_scope.ci_gate.enabled: true
+      symphonies.bench.persona_scope.local_test_gate.enabled: true
+      symphonies.bench.persona_scope.baseline_prevention_gate.enabled: true
+      symphonies.bench.persona_scope.baseline_classification_gate.enabled: true
+      symphonies.bench.persona_scope.inherited_repair_gate.enabled: true
+      symphonies.bench.persona_scope.env_blocked_gate.enabled: true
+      global_config.performers.implementer.mode: single-premium
+      global_config.performers.reviewer.mode: single-premium
+      global_config.max_concurrent_cards: 1
+  - name: aggressive
+    description: "gates off, premium models, parallel"
+    overrides:
+      global_config.performers.implementer.mode: single-premium
+      global_config.performers.reviewer.mode: single-premium
+      global_config.max_concurrent_cards: 2
+  - name: cheap-models
+    description: "cheap tier everywhere, CI gate as the only guard"
+    overrides:
+      symphonies.bench.persona_scope.ci_gate.enabled: true
+      global_config.performers.implementer.mode: single-cheap
+      global_config.performers.reviewer.mode: single-cheap
+  - name: premium
+    description: "premium tier everywhere, CI + local-test gates on"
+    overrides:
+      symphonies.bench.persona_scope.ci_gate.enabled: true
+      symphonies.bench.persona_scope.local_test_gate.enabled: true
+      global_config.performers.implementer.mode: single-premium
+      global_config.performers.reviewer.mode: single-premium

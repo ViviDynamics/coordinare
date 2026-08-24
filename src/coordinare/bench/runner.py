@@ -49,6 +49,7 @@ from coordinare.services.fake_github import FakeGitHubService
 
 if TYPE_CHECKING:
     from coordinare.bench.fixtures import Fixture
+    from coordinare.config import CoordinareConfiguration
     from coordinare.graph.state import CoordinareState
 
 logger = structlog.get_logger(__name__)
@@ -111,7 +112,17 @@ async def _identity(state: dict[str, Any]) -> dict[str, Any]:
     return state
 
 
-def _config_fingerprint(config_path: str | Path | None) -> ConfigFingerprint:
+def _config_fingerprint(
+    config_path: str | Path | None, config: CoordinareConfiguration | None = None
+) -> ConfigFingerprint:
+    if config is not None:
+        # Spec 136: an injected (materialized) config is fingerprinted by its own
+        # canonical content — two distinct sweep points must never share a hash
+        # (incl. configs differing only in SecretStr values, which a plain
+        # model_dump_json would mask into collision).
+        from coordinare.bench.space import config_fingerprint as _space_fingerprint
+
+        return ConfigFingerprint(hash=_space_fingerprint(config), source_path="<materialized>")
     if config_path and Path(config_path).exists():
         digest = hashlib.sha256(Path(config_path).read_bytes()).hexdigest()[:16]
         return ConfigFingerprint(hash=digest, source_path=str(config_path))
@@ -127,8 +138,15 @@ async def run_board(
     max_cycles: int | None = None,
     cost_per_million_tokens: float = 3.0,
     stub: bool = True,
+    config: CoordinareConfiguration | None = None,
 ) -> RunArtifact:
-    """Run the daemon over a simulated board and return a validated RunArtifact."""
+    """Run the daemon over a simulated board and return a validated RunArtifact.
+
+    ``config`` (spec 136) injects a materialized root configuration at the same
+    seams the production daemon uses: ``state["config"]`` = the global
+    ProjectConfiguration (``__main__.py:841``) and ``state["symphony_configs"]``
+    keyed by symphony name (``__main__.py:976``), so global knobs and
+    per-symphony gates govern the run. ``None`` keeps prior behavior."""
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
     scratch = Path(tempfile.mkdtemp(prefix="bench-run-"))
@@ -169,6 +187,9 @@ async def run_board(
     daemon.state["github_service"] = fake
     daemon.state["human_reviewers"] = [human_login]
     daemon.state["lifecycle_sequence"] = ["assessing"]
+    if config is not None:
+        daemon.state["config"] = config.global_config
+        daemon.state["symphony_configs"] = {s.name: s for s in config.symphonies}
 
     run_error: str | None = None
     try:
@@ -187,6 +208,7 @@ async def run_board(
         started_at=started_at,
         finished_at=finished_at,
         config_path=config_path,
+        config=config,
         cost_rate=cost_per_million_tokens,
         run_error=run_error,
     )
@@ -215,6 +237,7 @@ def _build_artifact(
     config_path: str | Path | None,
     cost_rate: float,
     run_error: str | None,
+    config: CoordinareConfiguration | None = None,
 ) -> RunArtifact:
     run_id = started_at.strftime("%Y%m%d-%H%M%S")
     cards: list[CardOutcome] = []
@@ -279,7 +302,7 @@ def _build_artifact(
         started_at=started_at,
         finished_at=finished_at,
         wall_clock_seconds=(finished_at - started_at).total_seconds(),
-        config_fingerprint=_config_fingerprint(config_path),
+        config_fingerprint=_config_fingerprint(config_path, config),
         approver_policy="gates_green",
         fixture_manifest=",".join(fx.id for fx in fixtures_by_card.values()),
         cards=cards,

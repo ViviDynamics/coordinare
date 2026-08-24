@@ -1,0 +1,37 @@
+# Spec 136 — the minimal baseline configuration the shipped default search
+# space (default.yaml) overrides. A valid ROOT configuration
+# (CoordinareConfiguration: global_config + symphonies) — the shape the
+# production daemon splits into state["config"] / state["symphony_configs"].
+# One `bench` symphony (persona_scope present so gate paths resolve) and 080
+# catalogs so per-role mode dimensions resolve. No secrets — fingerprints must
+# be stable.
+global_config:
+  github_org: bench-org
+  github_project_number: 1
+  # Placeholder satisfying the pat-auth validator; the bench never talks to
+  # GitHub (the board is faked). NOT a credential.
+  github_token: bench-placeholder-not-a-secret
+  human_reviewers: [reviewer1]
+
+  endpoints:
+    - name: bench-endpoint
+      kind: openai
+      auth_env: BENCH_API_KEY
+
+  model_endpoints:
+    - {name: cheap,   endpoint: bench-endpoint, model: bench-cheap-model}
+    - {name: premium, endpoint: bench-endpoint, model: bench-premium-model}
+
+  modes:
+    - {name: single-cheap,   strategy: single, tool: cheap}
+    - {name: single-premium, strategy: single, tool: premium}
+
+  performers:
+    implementer: {backend: opencode, mode: single-cheap}
+    reviewer:    {backend: opencode, mode: single-cheap}
+    security:    {backend: opencode, mode: single-premium}
+
+symphonies:
+  - name: bench
+    github_project_number: 1
+    persona_scope: {}          # gates default off; dimensions flip them
