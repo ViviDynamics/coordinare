@@ -262,3 +262,16 @@ tmp/
 
 # spec-134 board-simulation benchmark run artifacts
 /runs/
+
+# Credential files (spec 142 pre-public scrub, 2026-08-27).
+# None of these has ever been committed, and the working token lives outside the
+# repository. These entries exist so a stray copy created inside the repo cannot
+# be committed by accident once the repository is public.
+.gh_token
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519
+credentials.json

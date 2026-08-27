@@ -6,6 +6,9 @@ build-backend = "setuptools.build_meta"
 name = "coordinare-service-inference"
 version = "0.1.0"
 description = "Shared env-cache service inference (manual override + LLM agent). Used by coordinare daemon and performer image."
+# Covered by the repository-root LICENSE and NOTICE (Elastic License 2.0).
+# No separate license file here, and no OSI classifier.
+license = "LicenseRef-Elastic-License-2.0"
 requires-python = ">=3.12"
 dependencies = [
     "anthropic>=0.40",

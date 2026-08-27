@@ -5,6 +5,9 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "performer"
 version = "0.1.0"
+# Covered by the repository-root LICENSE and NOTICE (Elastic License 2.0).
+# No separate license file here, and no OSI classifier.
+license = "LicenseRef-Elastic-License-2.0"
 requires-python = ">=3.12"
 dependencies = [
     "pydantic>=2.9",

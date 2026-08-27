@@ -1,0 +1,30 @@
+name: Feature request
+description: Something coordinare should be able to do and cannot.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Lead with the problem rather than the solution. We may already have a
+        better answer to the underlying problem than the feature you had in mind.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you running into?
+      placeholder: I cannot tell whether a stuck card is working or wedged without reading container logs.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What did you have in mind?
+      description: Optional. A rough shape is fine.
+  - type: textarea
+    id: workaround
+    attributes:
+      label: How are you working around it today?
+  - type: markdown
+    attributes:
+      value: |
+        Requests are read and they inform the roadmap. We do not commit to
+        building any particular one.
