@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/ViviDynamics/coordinare/security/advisories/new
+    about: Please report privately. Do not open a public issue for a vulnerability.
+  - name: Commercial licensing
+    url: https://vividynamics.com/contact
+    about: Want to offer coordinare to your own customers, or have it run for you? Talk to us.
+  - name: Contribution policy
+    url: https://github.com/ViviDynamics/coordinare/blob/main/CONTRIBUTING.md
+    about: Issues are welcome. Public pull requests are not accepted, and here is why.

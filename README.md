@@ -240,4 +240,45 @@ The coordinare and performer communicate via a transport layer (subprocess, SSH,
 
 ## License
 
-See [LICENSE](LICENSE) for details.
+Coordinare is **source-available** software, licensed under the
+[Elastic License 2.0](LICENSE). You get the source, you can run and change it,
+and one specific commercial use is reserved to us.
+
+**What you may do.** Run, copy, modify, and self-host coordinare free of charge,
+including for your own commercial work. Use it at your job, inside your company,
+on client projects, on anything you are building. You do not need our permission
+and you owe us nothing.
+
+**What you may not do.** Provide coordinare to third parties as a hosted or
+managed service, where that service gives its users access to a substantial set
+of coordinare's features. This is about providing access to coordinare itself, not
+about using coordinare to serve your own customers: building software for a client
+with coordinare is fine, while giving that client logins to your coordinare is not.
+The restriction applies whether or not money changes hands, so a free login is
+still provision of a hosted service. Reselling coordinare is likewise not
+permitted. The [LICENSE](LICENSE) governs; this paragraph is a plain-English
+summary and does not attempt to settle every edge case.
+
+**Want to offer coordinare to your own customers?** That is a conversation worth
+having rather than a wall. Commercial licensing is available, including for
+running coordinare on someone else's behalf. Get in touch at
+[vividynamics.com/contact](https://vividynamics.com/contact).
+
+**Future versions** of coordinare may be offered under different terms. Whatever
+you received under the Elastic License 2.0 stays available to you under those
+terms.
+
+## Contributing
+
+Bug reports, feature requests, and feedback are genuinely welcome, and they
+inform what gets built. Please
+[open an issue](https://github.com/ViviDynamics/coordinare/issues).
+
+Public pull requests are **not accepted**. Coordinare is an autonomous agent
+system that holds repository write credentials and executes AI-generated code, so
+all implementation happens inside the organization to keep the supply chain
+closed. Pull requests from outside the organization are closed unmerged. This is
+a deliberate security posture rather than a comment on anyone's code.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full policy, and
+[SECURITY.md](SECURITY.md) for how to report a vulnerability privately.

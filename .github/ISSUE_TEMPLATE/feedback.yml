@@ -1,0 +1,21 @@
+name: Feedback
+description: Anything else. Confusion, rough edges, or where you gave up.
+labels: ["feedback"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        No format needed. Where people abandon the setup is some of the most
+        valuable information we get, so "I gave up at step four" is a genuinely
+        useful issue.
+  - type: textarea
+    id: feedback
+    attributes:
+      label: What is on your mind?
+    validations:
+      required: true
+  - type: input
+    id: context
+    attributes:
+      label: What were you trying to do?
+      placeholder: Getting a first card through the pipeline against my own Ollama endpoint.

@@ -6,6 +6,11 @@ build-backend = "hatchling.build"
 name = "coordinare"
 version = "0.1.0"
 description = "Board orchestrator daemon that dispatches project cards to AI agents"
+# Elastic License 2.0 has no SPDX identifier (SPDX lists OSI/FSF licenses only), so
+# PEP 639's LicenseRef- form is the specified way to name it. Deliberately no
+# "License ::" classifier: every one of those asserts OSI approval.
+license = "LicenseRef-Elastic-License-2.0"
+license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.12"
 dependencies = [
     "langgraph>=0.2",

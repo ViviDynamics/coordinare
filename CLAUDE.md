@@ -71,6 +71,8 @@ See AGENTS.md for all development guidelines.
 - None. Bounded in-memory `deque`, per-process, discarded on restart (FR-019). (138-dashboard-activity-feed)
 - none new. `score.json` is written next to the `run.json` it scores; (135-board-bench-scoring)
 - none new. Sweep session dirs under `runs/<ts>-sweep/<point-id>/<repeat>/` (136-board-bench-sweep)
+- Python 3.14 (project minimum 3.12; prod 3.14.5 via uv). Workflow is YAML + None added. Enforcement uses stdlib only (`tomllib`, (142-license-and-legal-posture)
+- N/A. No persisted coordinare state, no schema change, no `state_store.py` touch. (142-license-and-legal-posture)
 
 ## Recent Changes
 - 076-qa-cycle: Added Python 3.14 (project minimum: 3.12; production currently on 3.14.5 via uv) + pydantic 2.x, langgraph, structlog, docker SDK (or subprocess to `docker` CLI), fastapi (dashboard SSE), httpx (performer HTTP transport), pyyaml (config)

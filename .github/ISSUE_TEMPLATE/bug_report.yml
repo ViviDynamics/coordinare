@@ -1,0 +1,65 @@
+name: Bug report
+description: Something in coordinare behaves incorrectly.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time. The fields below are the ones that save us the
+        most guesswork. Skip anything you genuinely cannot answer.
+  - type: textarea
+    id: expected-vs-actual
+    attributes:
+      label: What did you expect, and what happened instead?
+      placeholder: I expected the card to advance to reviewing. It stayed in implementing with no error.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Coordinare version or commit
+      placeholder: 0.1.0, or the commit SHA you are running
+    validations:
+      required: true
+  - type: dropdown
+    id: how-running
+    attributes:
+      label: How are you running coordinare?
+      options:
+        - Local process
+        - Docker
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: roles
+    attributes:
+      label: Which performer roles were involved?
+      description: Coordinare is a multi-agent system, and a failure in the assessor is usually unrelated to one in the implementer.
+      placeholder: implementer, reviewer
+  - type: input
+    id: backend
+    attributes:
+      label: Which model backend and model?
+      placeholder: Ollama / llama3.1:70b, or an OpenAI-compatible endpoint
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output
+      description: Structured log lines carrying the card or session identifier are worth far more than a screenshot.
+      render: text
+  - type: dropdown
+    id: reproduces
+    attributes:
+      label: Does it reproduce?
+      options:
+        - Every time
+        - Sometimes
+        - Happened once
+        - Have not tried again
+  - type: markdown
+    attributes:
+      value: |
+        If you already know the fix, describe it here or paste a diff. We cannot
+        merge a pull request (see CONTRIBUTING.md) but we will implement it and
+        credit you.
