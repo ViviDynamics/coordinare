@@ -1,0 +1,196 @@
+# Responds to pull requests opened from outside the ViviDynamics organization
+# with coordinare's contribution policy (see CONTRIBUTING.md), then labels and
+# closes them. Adopted from conductor spec 142 (ViviDynamics/conductor#196).
+#
+# WHY pull_request_target AND NOT pull_request
+# -------------------------------------------
+# A fork-originated `pull_request` event runs with a read-only GITHUB_TOKEN and
+# no access to secrets, so a job triggered that way physically cannot comment,
+# label, or close. `pull_request_target` runs in the base-repository context with
+# a write token, which is what this job needs.
+#
+# THE RULE THAT MAKES THAT SAFE
+# -----------------------------
+# NEVER add `actions/checkout` to this workflow, and never run anything from the
+# pull request. `pull_request_target` holds a write token in the base context;
+# checking out untrusted head code under it is the well-known privilege
+# escalation. This job reads three event fields and makes three API calls. It
+# touches nothing from the fork.
+#
+# Untrusted text (the pull request title and body) is read inside
+# github-script from `context.payload` and is NEVER interpolated through
+# `${{ }}`, which would be a shell/script injection vector independent of the
+# checkout issue.
+#
+# Runner: GitHub-hosted on purpose. An externally triggered job should not
+# interact with our self-hosted runner hosts at all. If GitHub-hosted minutes
+# ever become unavailable, this job is API-only and would remain safe on a
+# self-hosted runner, but only for as long as that stays true.
+
+name: External Contributions
+
+on:
+  pull_request_target:
+    types:
+      - opened
+      - reopened
+
+concurrency:
+  group: external-contributions-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+permissions:
+  pull-requests: write
+
+jobs:
+  policy-response:
+    name: Apply contribution policy
+    runs-on: ubuntu-latest
+    # Cheap pre-filter so insider and bot pull requests do not even start a job.
+    # The authoritative classification is re-derived in the step below; this is
+    # here to keep the Actions log quiet for first-party work, not to be the
+    # security boundary.
+    if: >-
+      github.event.pull_request.user.type != 'Bot' &&
+      github.event.pull_request.author_association != 'OWNER' &&
+      github.event.pull_request.author_association != 'MEMBER' &&
+      github.event.pull_request.author_association != 'COLLABORATOR'
+    steps:
+      - name: Comment, label, and close if the author is external
+        # SHA-pinned rather than tag-pinned, unlike the other workflows here.
+        # This is the one job that holds a write token AND is triggered by an
+        # outside party, so a repointed tag would be a live path to abusing that
+        # token. f28e40c is actions/github-script v7.1.0 (resolved 2026-08-27).
+        # When bumping, resolve the new tag to its commit and update both.
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+
+            // GitHub computes author_association and user.type. Neither can be
+            // set by the author, which is why classification is trustworthy.
+            // Note CONTRIBUTOR is treated as external: it means "has landed a
+            // commit before", which under a closed-contribution policy should
+            // not describe an outsider, but if it ever does the policy applies.
+            const INTERNAL = ['OWNER', 'MEMBER', 'COLLABORATOR'];
+            const isBot = pr.user && pr.user.type === 'Bot';
+
+            if (isBot) {
+              core.info(`Skipping: bot author (${pr.user.login})`);
+              return;
+            }
+
+            // author_association is a CHEAP pre-filter, not the authority.
+            //
+            // It under-reports: a maintainer whose organisation membership is
+            // PRIVATE arrives here as CONTRIBUTOR or NONE, not MEMBER. That is
+            // not hypothetical — it fired on PR #212, a maintainer's own pull
+            // request, which got commented and labelled before anyone noticed.
+            // The REST API reported MEMBER for the same user while the webhook
+            // payload did not.
+            //
+            // It can only ever under-report, never over-report, so trusting it
+            // to SKIP is safe. Trusting its absence to mean "outsider" is not.
+            if (INTERNAL.includes(pr.author_association)) {
+              core.info(`Skipping: author_association=${pr.author_association}`);
+              return;
+            }
+
+            // The authoritative check: does this account actually have write
+            // access to this repository? Anyone who does is internal regardless
+            // of how their membership is displayed.
+            let permission = 'none';
+            try {
+              const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                username: pr.user.login,
+              });
+              permission = data.permission;
+            } catch (err) {
+              // 404 means "not a collaborator", which is a genuine answer and
+              // means external. Any other error is unexpected: skip rather than
+              // risk scolding a maintainer because an API call had a bad day.
+              if (err.status !== 404) {
+                core.warning(
+                  `Could not resolve collaborator permission (${err.status}); skipping to avoid ` +
+                  `responding to a maintainer in error.`
+                );
+                return;
+              }
+            }
+
+            if (['admin', 'write', 'maintain'].includes(permission)) {
+              core.info(`Skipping: ${pr.user.login} has ${permission} access to this repository`);
+              return;
+            }
+
+            core.info(
+              `Treating as external: association=${pr.author_association} permission=${permission}`
+            );
+
+            // Security carve-out (FR-025). This match runs over
+            // author-controlled text, which is acceptable ONLY because its sole
+            // power is to SUPPRESS automation and escalate to a human. A false
+            // positive costs one manual close. A false negative auto-closes a
+            // vulnerability report, which is the outcome being prevented.
+            const SECURITY_PATTERN =
+              /\b(security|vulnerabilit\w*|CVE-\d|exploit\w*|RCE|XSS|CSRF|SSRF|injection|credential\w*|secret\s+leak|token\s+leak)\b/i;
+            const haystack = `${pr.title || ''}\n${pr.body || ''}`;
+            const is_security = SECURITY_PATTERN.test(haystack);
+
+            const policy = [
+              'Thanks for taking the time to open this. Quick heads up from an automation:',
+              '',
+              "This repository doesn't accept public pull requests, so this one won't be merged. That's not",
+              'a comment on your code. The Coordinare project family keeps a closed supply chain: its core',
+              'components hold GitHub write credentials and execute AI-generated code, so we do all',
+              'implementation inside the organization. See',
+              '[CONTRIBUTING.md](https://github.com/ViviDynamics/coordinare/blob/main/CONTRIBUTING.md)',
+              'for the full reasoning.',
+              '',
+              '**Your work is still wanted.** If you found a bug, please',
+              '[open an issue](https://github.com/ViviDynamics/coordinare/issues/new) and describe the',
+              'fix, or paste the diff into the issue body. We will implement it and credit you.',
+            ];
+
+            if (is_security) {
+              policy.push(
+                '',
+                '---',
+                '',
+                'This looks like it might touch on security, so we are **leaving it open** for a human to',
+                'read rather than closing it automatically. If it concerns a vulnerability, please also',
+                'report it privately via',
+                '[a security advisory](https://github.com/ViviDynamics/coordinare/security/advisories/new),',
+                'since a public pull request discloses the issue to everyone.'
+              );
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              body: policy.join('\n'),
+            });
+
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              labels: ['external-contribution'],
+            });
+
+            if (is_security) {
+              core.notice(
+                'Security-related external pull request: commented and labelled, left open for human review.'
+              );
+              return;
+            }
+
+            await github.rest.pulls.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pr.number,
+              state: 'closed',
+            });
