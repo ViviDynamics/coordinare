@@ -230,15 +230,15 @@ async def test_execute_value_error_raises_permanent() -> None:
 
 @pytest.mark.asyncio
 async def test_initialize_raises_when_project_not_found() -> None:
-    svc = _svc({"organization": {"projectV2": None}})
-    with pytest.raises(ValueError, match="Project not found"):
+    svc = _svc({"repositoryOwner": {"projectV2": None}})
+    with pytest.raises(ValueError, match="Project #1 not found for owner"):
         await svc.initialize()
 
 
 @pytest.mark.asyncio
 async def test_initialize_raises_when_fields_malformed() -> None:
     svc = _svc(
-        {"organization": {"projectV2": {"id": "PVT_1", "title": "Board"}}},
+        {"repositoryOwner": {"projectV2": {"id": "PVT_1", "title": "Board"}}},
         {"node": {"fields": {"nodes": "not-a-list"}}},
     )
     with pytest.raises(ValueError, match="malformed"):
@@ -249,7 +249,7 @@ async def test_initialize_raises_when_fields_malformed() -> None:
 async def test_initialize_handles_options_not_a_list() -> None:
     """When a Status field's options is not a list, it is skipped gracefully."""
     svc = _svc(
-        {"organization": {"projectV2": {"id": "PVT_1", "title": "Board"}}},
+        {"repositoryOwner": {"projectV2": {"id": "PVT_1", "title": "Board"}}},
         {
             "node": {
                 "fields": {
@@ -277,7 +277,7 @@ async def test_initialize_handles_options_not_a_list() -> None:
 async def test_initialize_raises_when_status_field_missing() -> None:
     """Fields list with no Status field raises ValueError."""
     svc = _svc(
-        {"organization": {"projectV2": {"id": "PVT_1", "title": "Board"}}},
+        {"repositoryOwner": {"projectV2": {"id": "PVT_1", "title": "Board"}}},
         {"node": {"fields": {"nodes": [{"id": "FLD_X", "name": "Priority", "options": []}]}}},
     )
     with pytest.raises(ValueError, match="Status field not found"):
@@ -288,7 +288,7 @@ async def test_initialize_raises_when_status_field_missing() -> None:
 async def test_initialize_skips_non_dict_nodes_and_options() -> None:
     """Non-dict nodes and options are silently skipped."""
     svc = _svc(
-        {"organization": {"projectV2": {"id": "PVT_1", "title": "Board"}}},
+        {"repositoryOwner": {"projectV2": {"id": "PVT_1", "title": "Board"}}},
         {
             "node": {
                 "fields": {
