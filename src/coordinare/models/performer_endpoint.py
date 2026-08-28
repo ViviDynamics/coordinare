@@ -8,6 +8,7 @@ from pathlib import (  # noqa: TC003 — needed at runtime for pydantic type res
     PurePosixPath,
 )
 from typing import Any, Literal
+from urllib.parse import urlparse
 
 from pydantic import (
     BaseModel,
@@ -97,6 +98,12 @@ class PerformerEndpointConfig(BaseModel):
     egress_allowlist: list[str] | None = None
     capability_overrides: CapabilityOverride | None = None
     container_devenv_root: str = "/devenv"
+    # 151 (bench-only): docker `--add-host <entry>` lines for ephemeral containers.
+    # Empty in production (no change to the run command). The board-sim real bench
+    # sets ["host.docker.internal:host-gateway"] so a bridged container resolves the
+    # host running the fake git/REST services — portable across Docker Desktop
+    # (Mac/Win/WSL2) and native Linux (host-gateway works on Docker 20.10+).
+    extra_hosts: list[str] = Field(default_factory=list)
 
     @field_validator("env", mode="before")
     @classmethod
@@ -234,11 +241,27 @@ class JobInitPayload(BaseModel):
     role: str
     backend: str
     persona: str
-    repo_url: HttpUrl
+    # 151: transport-level URL. Was HttpUrl; relaxed to also carry the bench's
+    # git:// loopback remote. https is normal; the performer's Score.repo_url
+    # validator (gated by ALLOW_INSECURE_REPO_URL) is the enforced trust boundary.
+    # Note the loss: HttpUrl also NORMALISED (scheme casing, trailing slash) and a
+    # bare str does not. Nothing depends on that today — the value is only
+    # formatted into a git remote — but don't compare repo_url for equality
+    # across the coordinare/performer boundary without normalising first.
+    repo_url: str
     branch: str
     secrets: dict[str, SecretStr] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
     env_cache_path: str | None = None
+
+    @field_validator("repo_url")
+    @classmethod
+    def _validate_repo_url_scheme(cls, v: str) -> str:
+        parsed = urlparse(v)
+        if parsed.scheme not in {"http", "https", "git"} or not parsed.netloc:
+            msg = f"repo_url must be an http(s):// or git:// URL with a host, got: {v!r}"
+            raise ValueError(msg)
+        return v
 
 
 class JobAcceptResponse(BaseModel):

@@ -70,6 +70,8 @@ def _make_config(
     cfg = MagicMock()
     cfg.github_org = github_org
     cfg.project_name = project_name
+    cfg.git_base_url = "https://github.com"  # 151: production default git host
+    cfg.performer_git_base_url = None  # 151: falls back to git_base_url in prod
     cfg.github_token = MagicMock()
     cfg.github_token.get_secret_value.return_value = github_token
     cfg.workspace_root = workspace_root
@@ -249,6 +251,29 @@ async def test_prepare_returns_correct_workspace_info(tmp_path: Path) -> None:
     assert info.branch == "coordinare/PVTI_abc/add-retry-logic"
     assert info.repo_url == "https://github.com/acme/myrepo.git"
     assert "ghp_test" not in info.repo_url
+
+
+@pytest.mark.asyncio
+async def test_prepare_splits_host_and_performer_git_base(tmp_path: Path) -> None:
+    """151: the host clones from git_base_url (127.0.0.1) while WorkspaceInfo.repo_url
+    handed to the performer uses performer_git_base_url (host.docker.internal)."""
+    clone_urls: list[str] = []
+
+    async def _fake_run_git(*args: str, **kwargs: object) -> None:
+        if args[0] == "clone":
+            clone_urls.append(args[2])  # ("clone", "--depth=1", <clone_url>, <dir>, ...)
+            Path(args[3]).mkdir(parents=True, exist_ok=True)
+
+    cfg = _make_config(workspace_root=tmp_path)
+    cfg.git_base_url = "git://127.0.0.1:9418"
+    cfg.performer_git_base_url = "git://host.docker.internal:9418"
+    mgr = WorkspaceManager(cfg)
+
+    with patch("coordinare.workspace._run_git", side_effect=_fake_run_git):
+        info = await mgr.prepare({"id": "PVTI_abc", "title": "Add retry logic"})
+
+    assert clone_urls == ["git://127.0.0.1:9418/acme/myrepo.git"]  # host clone
+    assert info.repo_url == "git://host.docker.internal:9418/acme/myrepo.git"  # performer
 
 
 @pytest.mark.asyncio

@@ -42,6 +42,15 @@ def repo_url_from_config(config: object) -> str:
     project = str(getattr(config, "project_name", "") or "")
     if not org or not project:
         return ""
+    # 151: prefer an explicitly-configured git host (the board-sim bench sets
+    # git_base_url to a loopback git:// daemon). A *defaulted* git_base_url falls
+    # through to the github_api_url-derived host so GitHub Enterprise — where the
+    # API host and git host differ — is unaffected (FR-013). pydantic's
+    # model_fields_set is what distinguishes set-to-the-default from defaulted,
+    # so an operator who explicitly writes the default host still gets this branch.
+    git_base = str(getattr(config, "git_base_url", "") or "").rstrip("/")
+    if git_base and "git_base_url" in getattr(config, "model_fields_set", ()):
+        return f"{git_base}/{org}/{project}.git"
     api_url = str(getattr(config, "github_api_url", "") or "")
     host = "github.com"
     if api_url:

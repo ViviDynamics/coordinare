@@ -26,10 +26,17 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--config", help="coordinare config YAML (fingerprinted into the artifact)")
     p.add_argument("--fixtures", help="fixture manifest YAML (default: built-in tiny fixture)")
     p.add_argument("--run-dir", default="runs", help="directory for run.json (default: runs/)")
-    p.add_argument("--max-cycles", type=int, default=None, help="hard cycle budget")
+    p.add_argument("--max-cycles", type=int, default=None,
+                   help="cycle ceiling (default: stub=3N+6; real=budget/poll). Real mode is "
+                        "bounded by --wall-clock-budget, not by this.")
     p.add_argument("--human-login", default="reviewer1", help="approving reviewer login")
     p.add_argument("--cost-rate", type=float, default=3.0, help="USD per million tokens (estimate)")
     p.add_argument("--real", action="store_true", help="dispatch real performers (default: stubbed)")
+    p.add_argument("--poll-interval", type=float, default=5.0,
+                   help="real mode: seconds between performer status polls (default: 5)")
+    p.add_argument("--wall-clock-budget", type=float, default=1200.0,
+                   help="real mode: hard deadline in seconds — the run is cancelled and the "
+                        "artifact emitted when it elapses (default: 1200)")
     return p.parse_args(argv)
 
 
@@ -47,6 +54,8 @@ async def _main_async(args: argparse.Namespace) -> int:
         max_cycles=args.max_cycles,
         cost_per_million_tokens=args.cost_rate,
         stub=not args.real,
+        real_poll_interval_seconds=args.poll_interval,
+        wall_clock_budget_seconds=args.wall_clock_budget,
     )
     t = artifact.totals
     print(f"run {artifact.run_id}: {t.cards_merged}/{t.cards_total} merged, "

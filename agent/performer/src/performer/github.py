@@ -396,7 +396,9 @@ async def resolve_pr_review_threads(
     are visible in operations.
     """
     _require_token(token, "resolve_pr_review_threads")
-    graphql_url = "https://api.github.com/graphql"
+    # 151: configurable so the board-sim bench routes this to the loopback fake
+    # instead of api.github.com (best-effort call; default remains real GitHub).
+    graphql_url = get_settings().GITHUB_GRAPHQL_URL.rstrip("/")
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github+json",

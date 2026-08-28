@@ -1,0 +1,122 @@
+# =============================================================================
+# Spec 151 — Real-mode bench config, LiteLLM-GATEWAY variant (OPT-IN, paid)
+#            claude_code backend (reports token usage; see research.md D8)
+# =============================================================================
+#
+# Same as bench-real.yaml, but routes the performer's model calls through a
+# LiteLLM gateway instead of talking to api.anthropic.com directly. Use this
+# when your model credential is a LiteLLM master key (which Anthropic-native
+# `kind: anthropic` would 401 on).
+#
+# This variant runs the `claude_code` backend (NOT opencode) because opencode
+# never surfaces `tokens_processed` — every opencode dispatch records null
+# tokens/cost (research.md D8). claude_code reports usage on its terminal
+# status, so this config exercises the artifact's cost path. The claude CLI
+# speaks the Anthropic wire format to the gateway's `/v1/messages`, so the
+# endpoint `base_url` is the proxy ROOT with **no `/v1` suffix** (mirrors
+# config.yaml's claude_code self-hosted example: base_url http://litellm:4000).
+#
+#     export ANTHROPIC_BASE_URL=<your litellm proxy base, e.g. http://host.docker.internal:4000>
+#     export ANTHROPIC_AUTH_TOKEN=<your litellm master key>
+#     python scripts/board_bench.py --real \
+#       --config specs/151-real-performers/examples/bench-real.litellm.yaml \
+#       --fixtures <fixture-manifest.yaml> --run-dir runs/
+#
+# HARD REQUIREMENTS (in addition to bench-real.yaml's):
+#   * ANTHROPIC_BASE_URL and ANTHROPIC_AUTH_TOKEN must be exported in the launching
+#     shell (they expand into this file via os.path.expandvars at load).
+#   * The gateway must be REACHABLE FROM THE BRIDGED CONTAINER. If your proxy runs
+#     on the host loopback (localhost/127.0.0.1:<port>), set
+#     ANTHROPIC_BASE_URL=http://host.docker.internal:<port> for the bench — the
+#     endpoint already maps host.docker.internal via extra_hosts. A LAN/remote URL
+#     needs no rewrite.
+#   * Set `model:` below to something your gateway actually serves.
+# =============================================================================
+
+
+# --- GitHub (fully faked; these are placeholders the runner overrides) ---
+github_org: "bench-org"
+project_name: "bench-repo"
+github_token: "fake-token"
+github_auth: "pat"
+
+human_reviewers:
+  - "reviewer1"
+
+
+# --- Containerized performer (ephemeral, one container per dispatch) ---
+performer_endpoints:
+  - id: bench-real
+    mode: ephemeral
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    env:
+      BACKEND: claude_code                              # entrypoint.sh installs the claude CLI
+      # claude_code reads its upstream from ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN,
+      # which the coordinare injects into the job's secrets from the `endpoints`
+      # catalog below (base_url + auth_env) — no provider env needed here.
+      # The claude CLI sends a `thinking` block by default; LiteLLM rejects it for
+      # self-hosted non-reasoning models ("qwen3-coder:30b does not support
+      # thinking" → 400 on EVERY call → blocked stages and 0 tokens). Off here
+      # because this bench points claude_code at a self-hosted gateway; a real
+      # Claude endpoint should keep extended thinking.
+      MAX_THINKING_TOKENS: "0"
+      ALLOW_INSECURE_REPO_URL: "1"
+      ALLOW_HOST_GATEWAY_GITHUB: "1"
+    roles:
+      - assessor
+      - architect
+      - implementer
+      - reviewer
+      - security
+      - qa
+      - tech_writer
+      - closer
+    image: coordinare-performer:full
+
+
+# --- 080 model catalog — points at the LiteLLM gateway (mirrors prod) ---
+# base_url/auth_env here make the dispatch treat the endpoint as non-native, so the
+# master key rides in as auth_token_env → injected as ANTHROPIC_AUTH_TOKEN for the
+# claude_code backend, with base_url → ANTHROPIC_BASE_URL. NOTE: no `/v1` suffix —
+# the claude CLI appends `/v1/messages` itself (config.yaml claude_code example).
+# `model` is what the gateway resolves. Swap `model:` to one your gateway serves.
+endpoints:
+  - {name: vivi-gateway, kind: litellm, base_url: "${ANTHROPIC_BASE_URL}", auth_env: ANTHROPIC_AUTH_TOKEN}
+model_endpoints:
+  - {name: bench-model, endpoint: vivi-gateway, model: "spark/qwen3-coder:30b"}
+  # A capable model for gating roles — a coder model is on the spec-083 weak-judge
+  # denylist and may NOT gate security review. Swap to one your gateway serves.
+  - {name: bench-judge, endpoint: vivi-gateway, model: "spark/gpt-oss:120b"}
+modes:
+  - {name: single, strategy: single, tool: bench-model}
+  - {name: single-judge, strategy: single, tool: bench-judge}
+
+
+# --- Performers ---
+performers:
+  default:
+    backend: claude_code
+    mode: single
+    temperature: 0.2
+    max_tokens: 8192
+  assessor:
+    temperature: 0.0
+    max_tokens: 2048
+  architect:
+    temperature: 0.0
+  implementer:
+    max_tokens: 16384
+  reviewer:
+    temperature: 0.0
+  security:
+    mode: single-judge          # spec-083: security gating needs a capable model
+    temperature: 0.0
+  qa:
+    temperature: 0.0
+    max_tokens: 12288
+  tech_writer:
+    temperature: 0.0
+  closer:
+    temperature: 0.0
+    max_tokens: 2048

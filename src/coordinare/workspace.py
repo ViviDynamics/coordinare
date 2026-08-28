@@ -218,6 +218,31 @@ class WorkspaceManager:
         self._config = config
         self._github_org: str = config.github_org
         self._project_name: str = config.project_name
+        # 151: git clone/push host (default real GitHub; bench → loopback daemon).
+        # _git_base_url is HOST-facing (the coordinare's own clone); the performer
+        # gets _performer_git_base_url in WorkspaceInfo.repo_url — same value in
+        # production, but the bridged real bench points the container at
+        # host.docker.internal while the host stays on 127.0.0.1.
+        self._git_base_url: str = config.git_base_url
+        self._performer_git_base_url: str = (
+            getattr(config, "performer_git_base_url", None) or config.git_base_url
+        )
+        if self._performer_git_base_url != self._git_base_url:
+            # Review (#206): setting performer_git_base_url alone is NOT ignored —
+            # it is honoured, which is the subtle part: the container then clones
+            # from a different host than the coordinare does. That split is correct
+            # for the bench (container → host.docker.internal, host → 127.0.0.1)
+            # and for a container-side mirror, but it is silent otherwise, so say
+            # so once at construction rather than leaving it to be discovered.
+            logger.info(
+                "workspace.split_git_base_url",
+                host_git_base_url=self._git_base_url,
+                performer_git_base_url=self._performer_git_base_url,
+                detail=(
+                    "coordinare and performer clone from different hosts; "
+                    "intended for the board-sim bench or a container-side mirror"
+                ),
+            )
         self._github_token = config.github_token  # static PAT (may be None in app mode)
         self._auth = auth  # GitHubAuth protocol — used to get current token
         self._workspace_root: Path | None = config.workspace_root
@@ -260,7 +285,8 @@ class WorkspaceManager:
         """
         org = self._github_org
         project = self._project_name
-        repo_url = f"https://github.com/{org}/{project}.git"
+        # Performer-facing remote (returned in WorkspaceInfo, handed to the container).
+        repo_url = f"{self._performer_git_base_url}/{org}/{project}.git"
         branch = make_branch_name(str(card.get("id", "")), str(card.get("title", "")))
 
         # 052: Stale branch cleanup — detect and handle pre-existing remote branch
@@ -279,9 +305,10 @@ class WorkspaceManager:
             token = self._github_token.get_secret_value()
         else:
             raise WorkspaceSetupError("No GitHub token available — configure github_token or github_auth=app")
-        # Use plain HTTPS URL — token is passed via http.extraHeader env var
-        # so it never appears in process argv or /proc/*/cmdline.
-        clone_url = f"https://github.com/{org}/{project}.git"
+        # Use plain URL — token is passed via http.extraHeader env var so it never
+        # appears in process argv or /proc/*/cmdline. 151: host is configurable
+        # (default real GitHub; bench overrides to a loopback git daemon).
+        clone_url = f"{self._git_base_url}/{org}/{project}.git"
 
         container: Path | None = None
         try:

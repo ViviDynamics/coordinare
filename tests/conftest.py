@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from datetime import UTC, datetime
@@ -9,6 +10,17 @@ import pytest
 import stamina
 
 from coordinare.models.card import Card, CardStatus
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """151: skip `real`-marked tests unless RUN_REAL_BENCH is set (opt-in paid/
+    Docker lane; the free deterministic lane must stay green — SC-006)."""
+    if os.environ.get("RUN_REAL_BENCH"):
+        return
+    skip_real = pytest.mark.skip(reason="opt-in real lane; set RUN_REAL_BENCH=1 to run")
+    for item in items:
+        if "real" in item.keywords:
+            item.add_marker(skip_real)
 
 
 def _docker_available() -> bool:

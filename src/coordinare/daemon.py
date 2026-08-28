@@ -607,7 +607,7 @@ class CoordinareDaemon:
         graph: Any,
         *,
         run_mode: str = "shell",
-        poll_interval_seconds: int = 30,
+        poll_interval_seconds: float = 30,
         heartbeat_interval_seconds: int = 30,
         max_cycles: int | None = None,
         sleep_func: Any = asyncio.sleep,

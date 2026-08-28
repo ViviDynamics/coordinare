@@ -1,0 +1,106 @@
+# =============================================================================
+# Spec 151 — Real-mode board-simulation benchmark config (OPT-IN, paid, Linux)
+# =============================================================================
+#
+# Drives ONE fixture card through the full lifecycle with REAL performers while
+# GitHub stays fully faked at the performer's own boundary (a harness-local
+# `git daemon` + REST surface on loopback). Run it with:
+#
+#     python scripts/board_bench.py --real \
+#       --config specs/151-real-performers/examples/bench-real.yaml \
+#       --fixtures <fixture-manifest.yaml> --run-dir runs/
+#
+# The runner starts the FakeGitHubServer and OVERRIDES git_base_url /
+# performer_git_base_url / github_api_url / github_graphql_url in this config at
+# runtime — the production-looking values below are only placeholders/defaults.
+#
+# HARD REQUIREMENTS (see quickstart.md / research.md D6):
+#   * Docker (any: Docker Desktop on Mac/Win/WSL2, or native Linux). The performer
+#     container runs on the default bridge and reaches the host's fake services via
+#     `host.docker.internal` (added with --add-host=...:host-gateway). No host
+#     networking, so this is portable across platforms.
+#   * github_org / project_name MUST match the FakeGitHubService identity
+#     (bench-org / bench-repo) so the cloned repo_url resolves to the served bare.
+#   * The ephemeral endpoint MUST set `extra_hosts` (host-gateway),
+#     `env.BACKEND: opencode` (so entrypoint.sh installs the backend CLI),
+#     `env.ALLOW_INSECURE_REPO_URL: "1"` and `env.ALLOW_HOST_GATEWAY_GITHUB: "1"`
+#     (below) — without them the container can't reach the fake, has no backend
+#     CLI, or rejects the git:// remote / host.docker.internal http URL.
+# =============================================================================
+
+
+# --- GitHub (fully faked; these are placeholders the runner overrides) ---
+github_org: "bench-org"          # MUST equal FakeGitHubService.org
+project_name: "bench-repo"       # MUST equal FakeGitHubService.project_name
+github_token: "fake-token"       # git:// is anonymous; a value is still required
+github_auth: "pat"
+
+human_reviewers:
+  - "reviewer1"                  # matches the runner's default approving login
+
+
+# --- Containerized performer (ephemeral, one container per dispatch) ---
+performer_endpoints:
+  - id: bench-real
+    mode: ephemeral
+    # 151 (bench-only): bridge networking + host-gateway reachability, git://
+    # remote acceptance, and host.docker.internal http-URL acceptance. Portable
+    # across Docker Desktop (Mac/Win/WSL2) and native Linux.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    env:
+      BACKEND: opencode             # entrypoint.sh:125 installs the CLI at container
+                                    # start from $BACKEND; without it no backend CLI is
+                                    # installed and the dispatch fails FileNotFoundError.
+      ALLOW_INSECURE_REPO_URL: "1"
+      ALLOW_HOST_GATEWAY_GITHUB: "1"
+    roles:                        # full lifecycle so the gates actually run (US4)
+      - assessor
+      - architect
+      - implementer
+      - reviewer
+      - security
+      - qa
+      - tech_writer
+      - closer
+    image: coordinare-performer:full   # adjust to your backend-capable image
+
+
+# --- 080 model catalogs — keep the model CHEAP (this is a verification run) ---
+endpoints:
+  - {name: anthropic-cloud, kind: anthropic, auth_env: ANTHROPIC_API_KEY}
+model_endpoints:
+  - {name: claude-haiku-4-5-20251001, endpoint: anthropic-cloud, model: claude-haiku-4-5-20251001}
+modes:
+  - {name: single-haiku, strategy: single, tool: claude-haiku-4-5-20251001}
+
+
+# --- Performers ---
+# Every gate role (reviewer/security/qa) is declared so a card reaches IN_REVIEW
+# only AFTER the real gates pass — that is what makes gates_green's IN_REVIEW
+# proxy valid in real mode (T027 / US4). Keep the model cheap across the board.
+performers:
+  default:
+    backend: opencode
+    mode: single-haiku
+    temperature: 0.2
+    max_tokens: 8192
+  assessor:
+    temperature: 0.0
+    max_tokens: 2048
+  architect:
+    temperature: 0.0
+  implementer:
+    max_tokens: 16384
+  reviewer:
+    temperature: 0.0
+  security:
+    temperature: 0.0
+  qa:
+    temperature: 0.0
+    max_tokens: 12288
+  tech_writer:
+    temperature: 0.0
+  closer:
+    temperature: 0.0
+    max_tokens: 2048

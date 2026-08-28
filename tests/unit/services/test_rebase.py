@@ -815,10 +815,14 @@ class TestRebaseBranchNonConflictFailure:
 class _Cfg:
     """Minimal stand-in for ProjectConfiguration."""
 
-    def __init__(self, org: str, project: str, api_url: str = "") -> None:
+    def __init__(self, org: str, project: str, api_url: str = "", git_base_url: str | None = None) -> None:
         self.github_org = org
         self.project_name = project
         self.github_api_url = api_url
+        # Mirror pydantic: git_base_url always has the default value, but
+        # model_fields_set records only what the operator actually wrote.
+        self.git_base_url = "https://github.com" if git_base_url is None else git_base_url
+        self.model_fields_set = frozenset() if git_base_url is None else frozenset({"git_base_url"})
 
 
 class TestRepoUrlFromConfig:
@@ -862,3 +866,20 @@ class TestRepoUrlFromConfig:
         cfg = _Cfg("myorg", "myrepo", "https://[::1]/api/v3")
         result = repo_url_from_config(cfg)
         assert result == "https://[::1]/myorg/myrepo.git"
+
+    def test_git_base_url_override_used_when_set(self) -> None:
+        # 151: the bench sets git_base_url to a loopback git:// daemon; it must
+        # win over the REST github_api_url (which would yield a bogus https URL).
+        cfg = _Cfg("bench-org", "bench-repo", "http://127.0.0.1:35377", "git://127.0.0.1:9418")
+        assert repo_url_from_config(cfg) == "git://127.0.0.1:9418/bench-org/bench-repo.git"
+
+    def test_git_base_url_default_falls_through_to_api_derivation(self) -> None:
+        # An UNSET git_base_url must NOT override GHES api-derived hosts.
+        cfg = _Cfg("myorg", "myrepo", "https://github.example.com/api/v3")
+        assert repo_url_from_config(cfg) == "https://github.example.com/myorg/myrepo.git"
+
+    def test_git_base_url_explicitly_set_to_default_still_wins(self) -> None:
+        # Explicitly writing the default host is a choice, not a fall-through:
+        # model_fields_set separates the two, so it beats the GHES derivation.
+        cfg = _Cfg("myorg", "myrepo", "https://github.example.com/api/v3", "https://github.com")
+        assert repo_url_from_config(cfg) == "https://github.com/myorg/myrepo.git"

@@ -111,6 +111,7 @@ class FakeGitHubService:
         self.project_id = "PVT_fake"  # non-None so getattr(github, "project_id") reads succeed
         self.field_cache: dict[str, Any] = {}
         self._human_reviewers = [r.lower() for r in (human_reviewers or [])]
+        self._comment_seq = 0  # monotonic issue-comment id (since_id watermarking)
         # Default approver never approves; the benchmark injects gates_green (spec-134 US3).
         self._approver: Callable[[dict[str, Any]], bool] = approver or (lambda _state: False)
         self._test_command = tuple(test_command)
@@ -325,7 +326,28 @@ class FakeGitHubService:
         return "open"
 
     async def get_issue_comments(self, issue_number: int, since_id: int | None = None) -> list[dict[str, Any]]:
-        return []
+        # 151 review fix: was `return []` while post_comment only recorded an event,
+        # so comments were write-only — the security stage's dedup read saw an empty
+        # conversation every cycle and re-posted the same advisory finding forever,
+        # and findings never reached the artifact. Now both sides share pr["comments"].
+        # Returns the COORDINARE-normalised shape (id/author/body) that the real
+        # GitHubService.get_issue_comments emits; FakeGitHubServer serves the raw
+        # GitHub wire shape to the performer from the same list.
+        pr = self._pr_by_number(issue_number)
+        if pr is None:
+            return []
+        out: list[dict[str, Any]] = []
+        for c in pr["comments"]:
+            cid = int(c.get("id", 0))
+            if since_id is not None and cid <= since_id:
+                continue
+            author = c.get("user") or {}
+            out.append({
+                "id": cid,
+                "author": str(author.get("login", "")) if isinstance(author, dict) else "",
+                "body": str(c.get("body", "")),
+            })
+        return out
 
     async def list_open_issues(self, owner: str, repo: str, first: int = 20) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
@@ -415,11 +437,26 @@ class FakeGitHubService:
         self._record("add_comment", subject_id=subject_id, body=body[:200])
         return {"id": f"IC_{len(self.events)}"}
 
-    async def post_comment(self, issue_number: int, body: str) -> dict[str, Any]:
+    async def post_comment(
+        self, issue_number: int, body: str, *, author: str = "coordinare-bot"
+    ) -> dict[str, Any]:
         # Latent, swallowed call in monitor_performer (does NOT exist on the real
         # service). We record it so the branch is observable rather than lost.
         self._record("post_comment", issue_number=issue_number, body=body[:200])
-        return {"id": f"IC_{len(self.events)}"}
+        # 151 review fix: also persist it onto the PR so get_issue_comments (and the
+        # performer's dedup read through FakeGitHubServer) can actually see it.
+        # Stored in the GitHub wire shape; int ids so `since_id` watermarking works.
+        pr = self._pr_by_number(issue_number)
+        self._comment_seq += 1
+        comment = {
+            "id": self._comment_seq,
+            "user": {"login": author},
+            "body": body,
+            "created_at": datetime.now(UTC).isoformat(),
+        }
+        if pr is not None:
+            pr["comments"].append(comment)
+        return comment
 
     async def get_pr_files(self, owner: str, repo: str, pr_number: int) -> dict[str, Any]:
         pr = self._pr_by_number(pr_number)
@@ -583,8 +620,25 @@ class FakeGitHubService:
     # ---- approval / merge internals --------------------------------------
 
     def _review_decision(self, pr: dict[str, Any]) -> str:
+        # 151 review fix: only a configured HUMAN reviewer's APPROVE counts as
+        # APPROVED. This mirrors GitHub's reviewDecision (an unrequested bot's
+        # approve does not satisfy it) and monitor_pr, which filters non-human
+        # reviews out via classify_reviewer. Without the filter, the reviewer
+        # performer's own `POST .../reviews` APPROVE (routed through
+        # FakeGitHubServer._h_create_review) marks the PR APPROVED, which makes
+        # _maybe_approve early-return forever — so the human approval is never
+        # appended, monitor_pr sees zero human approvals, and the card can never
+        # merge, while check_mergeability simultaneously reports mergeable=True.
+        # CHANGES_REQUESTED is deliberately NOT filtered: a reviewer performer
+        # must still be able to block its own PR.
+        humans = {r.strip().lower() for r in self._human_reviewers}
         states = [str(r.get("state", "")).upper() for r in pr["reviews"]]
-        if "APPROVED" in states:
+        human_states = [
+            str(r.get("state", "")).upper()
+            for r in pr["reviews"]
+            if str(r.get("author_login", "")).strip().lower() in humans
+        ]
+        if "APPROVED" in human_states:
             return "APPROVED"
         if "CHANGES_REQUESTED" in states:
             return "CHANGES_REQUESTED"

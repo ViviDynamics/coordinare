@@ -130,6 +130,17 @@ async def start_ephemeral(
 
     args: list[str] = ["run", "-d", "--rm", "--label", f"coordinare.performer.id={config.id}"]
 
+    # 151 (bench-only): `--add-host` entries (e.g. host.docker.internal:host-gateway)
+    # let a bridged container resolve the host running the harness fakes. Empty in
+    # production, so the run command is unchanged there. Containers stay BRIDGED —
+    # there is deliberately no --network knob: host networking would share the
+    # host's netns, so the entrypoint's egress iptables rules (--cap-add NET_ADMIN
+    # below) would flush and DROP the *host's* OUTPUT chain, published ports would
+    # collide 1:1 across concurrent performers, and Docker Desktop shares the VM's
+    # netns rather than the host's anyway.
+    for host_entry in config.extra_hosts:
+        args += ["--add-host", host_entry]
+
     if extra_labels:
         for k, v in extra_labels.items():
             _validate_extra_label(k, v)
@@ -323,15 +334,25 @@ async def _safe_stop(container_id: str) -> None:
         )
 
 
-async def cleanup_orphaned_containers() -> int:
+async def cleanup_orphaned_containers(performer_id: str | None = None) -> int:
     """Stop containers left behind by a previous coordinare crash.
 
     Finds all running containers with the ``coordinare.performer.id`` label and
     stops them. Returns the count stopped. Errors on individual stops are
     logged but do not abort cleanup of remaining containers.
+
+    *performer_id* narrows the sweep to one endpoint's containers
+    (``label=coordinare.performer.id=<id>``). The board-sim bench needs that: an
+    unscoped sweep would also stop a production coordinare's performers running on
+    the same host.
     """
+    label = (
+        f"label=coordinare.performer.id={performer_id}"
+        if performer_id
+        else "label=coordinare.performer.id"
+    )
     rc, stdout, _stderr = await _run_docker(
-        "ps", "--filter", "label=coordinare.performer.id", "--format", "{{.ID}}",
+        "ps", "--filter", label, "--format", "{{.ID}}",
         timeout=15.0,
     )
     if rc != 0 or not stdout:

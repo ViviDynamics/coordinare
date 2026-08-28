@@ -61,6 +61,62 @@ async def test_start_ephemeral_runs_docker_and_resolves_port(monkeypatch) -> Non
 
 
 @pytest.mark.asyncio
+async def test_start_ephemeral_never_uses_host_networking(monkeypatch) -> None:
+    # 151 review: host networking is deliberately unsupported. Sharing the host
+    # netns would let the entrypoint's egress iptables rules flush and DROP the
+    # HOST's OUTPUT chain (--cap-add NET_ADMIN is added whenever egress_allowlist
+    # is set), collide published ports 1:1 across concurrent performers, and it
+    # does not even reach the host on Docker Desktop (VM netns). Bridge + the
+    # host-gateway --add-host below is the portable path.
+    calls: list[tuple[str, ...]] = []
+
+    async def fake_run_docker(*args: str, timeout: float = 30.0) -> tuple[int, str, str]:
+        calls.append(args)
+        if args[0] == "run":
+            return 0, "abc123\n", ""
+        return 0, "0.0.0.0:49160\n", ""
+
+    monkeypatch.setattr(lifecycle, "_run_docker", fake_run_docker)
+
+    cfg = _ephemeral_config(egress_allowlist=["api.github.com"])
+    assert not hasattr(cfg, "network_mode")  # no such knob on the model
+
+    started = await start_ephemeral(cfg)
+
+    run_args = calls[0]
+    assert "--network" not in run_args
+    assert "-p" in run_args                      # always publishes into the bridge
+    assert started.endpoint == "http://127.0.0.1:49160"  # read back from `docker port`
+
+
+@pytest.mark.asyncio
+async def test_start_ephemeral_adds_extra_hosts(monkeypatch) -> None:
+    # 151: bridge networking + host-gateway — the container reaches the host fakes
+    # via host.docker.internal (portable across Docker Desktop and native Linux).
+    calls: list[tuple[str, ...]] = []
+
+    async def fake_run_docker(*args: str, timeout: float = 30.0) -> tuple[int, str, str]:
+        calls.append(args)
+        if args[0] == "run":
+            return 0, "brc\n", ""
+        if args[0] == "port":
+            return 0, "0.0.0.0:49222\n", ""
+        raise AssertionError(f"unexpected docker invocation: {args}")
+
+    monkeypatch.setattr(lifecycle, "_run_docker", fake_run_docker)
+
+    started = await start_ephemeral(
+        _ephemeral_config(extra_hosts=["host.docker.internal:host-gateway"])
+    )
+
+    run_args = calls[0]
+    assert "--add-host" in run_args
+    assert "host.docker.internal:host-gateway" in run_args
+    assert "-p" in run_args  # bridge mode still publishes the port
+    assert started.endpoint == "http://127.0.0.1:49222"
+
+
+@pytest.mark.asyncio
 async def test_start_ephemeral_fails_when_docker_run_errors(monkeypatch) -> None:
     async def fake_run_docker(*args: str, timeout: float = 30.0) -> tuple[int, str, str]:
         return 125, "", "no such image"
