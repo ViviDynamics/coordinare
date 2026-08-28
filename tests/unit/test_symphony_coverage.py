@@ -105,7 +105,7 @@ def _make_dashboard_client(daemon: MagicMock | None = None) -> TestClient:
     health = MagicMock()
     health.snapshot.return_value.probes = []
     app = create_dashboard_app(store, d, metrics, health)
-    return TestClient(app)
+    return TestClient(app, base_url="http://127.0.0.1:8090")
 
 
 # ===========================================================================

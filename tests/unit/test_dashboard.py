@@ -113,7 +113,7 @@ def _make_app(
     metrics = metrics or _make_mock_metrics()
     health = health or _make_mock_health()
     app = create_dashboard_app(store, daemon, metrics, health)
-    return TestClient(app)
+    return TestClient(app, base_url="http://127.0.0.1:8090")
 
 
 # ---------------------------------------------------------------------------
@@ -1030,7 +1030,7 @@ def test_events_endpoint_returns_text_event_stream() -> None:
     app = create_dashboard_app(store, daemon, metrics, health)
 
     with patch.object(store, "sse_stream", _finite_stream):
-        client = TestClient(app)
+        client = TestClient(app, base_url="http://127.0.0.1:8090")
         resp = client.get("/events")
 
     assert resp.status_code == 200
@@ -1067,7 +1067,7 @@ def test_performer_logs_endpoint_streams_initial_logs() -> None:
     }
     store = DashboardStore()
     app = create_dashboard_app(store, daemon, _make_mock_metrics(), _make_mock_health())
-    client = TestClient(app, raise_server_exceptions=False)
+    client = TestClient(app, raise_server_exceptions=False, base_url="http://127.0.0.1:8090")
     with patch("coordinare.dashboard.asyncio.sleep", AsyncMock()):
         resp = client.get("/api/performer-logs")
     assert resp.status_code == 200
@@ -1157,7 +1157,7 @@ def _make_personas_app(tmp_path, config_path=None):
     health = _make_mock_health()
     metrics = _make_mock_metrics()
     app = create_dashboard_app(store, daemon, metrics, health, config_path=_path)
-    return TestClient(app)
+    return TestClient(app, base_url="http://127.0.0.1:8090")
 
 
 def test_get_personas_returns_list_of_nine_roles(tmp_path) -> None:
@@ -1676,7 +1676,7 @@ def _make_symphony_app(tmp_path):
     health = _make_mock_health()
     metrics = _make_mock_metrics()
     app = create_dashboard_app(store, daemon, metrics, health, config_path=config_path)
-    return TestClient(app), daemon
+    return TestClient(app, base_url="http://127.0.0.1:8090"), daemon
 
 
 def test_symphonies_list_includes_bootstrap_status(tmp_path) -> None:
@@ -1980,7 +1980,7 @@ def test_put_global_config_unknown_field_returns_400(tmp_path) -> None:
     store = DashboardStore()
     daemon = _make_mock_daemon()
     app = create_dashboard_app(store, daemon, _make_mock_metrics(), _make_mock_health(), config_path=config_file)
-    resp = TestClient(app).put("/api/config/global", json={"not_a_real_field": "value"})
+    resp = TestClient(app, base_url="http://127.0.0.1:8090").put("/api/config/global", json={"not_a_real_field": "value"})
     assert resp.status_code == 400
     assert "not_a_real_field" in resp.json()["error"]
 
@@ -1997,7 +1997,7 @@ def test_put_global_config_persists_valid_field(tmp_path) -> None:
     store = DashboardStore()
     daemon = _make_mock_daemon()
     app = create_dashboard_app(store, daemon, _make_mock_metrics(), _make_mock_health(), config_path=config_file)
-    resp = TestClient(app).put("/api/config/global", json={"poll_interval_seconds": 60})
+    resp = TestClient(app, base_url="http://127.0.0.1:8090").put("/api/config/global", json={"poll_interval_seconds": 60})
     assert resp.status_code == 200
     assert resp.json()["status"] == "saved"
     saved = yaml.safe_load(config_file.read_text())

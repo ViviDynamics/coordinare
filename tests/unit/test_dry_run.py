@@ -263,7 +263,7 @@ class TestDryRunEndpoint:
         )
 
         app = create_dashboard_app(store, daemon, metrics, health)
-        return TestClient(app)
+        return TestClient(app, base_url="http://127.0.0.1:8090")
 
     def test_dry_run_endpoint_returns_result(self) -> None:
         config = _make_minimal_config()

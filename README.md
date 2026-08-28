@@ -2,6 +2,11 @@
 
 An autonomous software development orchestrator that manages a full-cycle development workflow on GitHub Project boards. Coordinare polls a GitHub Project for cards, dispatches them through a configurable sequence of AI-powered performer roles, and advances each card from TODO through implementation, review, security scanning, QA validation, and documentation — all before a human sees the PR.
 
+> **Security**: coordinare executes AI-generated code, holds a GitHub token with
+> write access, and feeds public issue and comment text into model prompts. Read
+> the **[threat model](docs/security/threat-model.md)** before exposing it to any
+> network. The dashboard has no authentication and is loopback-only by design.
+
 ## How It Works
 
 1. **Poll** — Coordinare watches a GitHub Project board for cards in the TODO column

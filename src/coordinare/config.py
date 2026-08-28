@@ -822,8 +822,23 @@ class ProjectConfiguration(BaseSettings):
     webhooks: WebhookConfig = Field(default_factory=WebhookConfig)
     blocked_reminder_hours: int = 24
     health_check_port: int = 8080
+    # Deliberately 0.0.0.0 and NOT loopback, unlike dashboard_host below. The health
+    # endpoints are liveness signals meant to be polled by an orchestrator or load
+    # balancer (README documents them as such), and a containerised daemon bound to
+    # loopback is unreachable from the host. Narrowing this default would be a silent
+    # breaking change for a documented deployment. It is configurable so an operator
+    # who wants the tighter posture can have it; the exposure (chiefly /metrics) is
+    # documented as residual risk in docs/security/threat-model.md. See spec 144
+    # research D4 before "fixing" this to match dashboard_host.
+    health_check_host: str = "0.0.0.0"
     dashboard_port: int = Field(default=8090)
     dashboard_host: str = "127.0.0.1"
+    # Extra hostnames permitted by the dashboard's localhost guard, for an operator
+    # who deliberately fronts it with a proxy. Empty by default so the safe posture
+    # is what you get by doing nothing; widening it requires naming an exact host,
+    # which is a moment to think about it. X-Forwarded-Host is deliberately NOT
+    # honoured (attacker-controlled). See spec 144 research D3.
+    trusted_dashboard_hosts: list[str] = Field(default_factory=list)
     output_mode: str = Field(default="human", pattern="^(human|structured)$")
     log_level: str = Field(default="info", pattern="^(debug|info|warning|error)$")
     heartbeat_interval_seconds: int = Field(default=30, ge=5, le=300)
