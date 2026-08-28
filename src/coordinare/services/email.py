@@ -30,7 +30,7 @@ class EmailService:
         *,
         username: str | None = None,
         password: str | None = None,
-        sender: str = "coordinare@vividynamics.com",
+        sender: str = "coordinare@localhost",
         circuit_breaker: Any = None,
         retry_kwargs: dict[str, Any] | None = None,
     ) -> None:

@@ -117,6 +117,10 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Treat deprecated fields as errors (exit 1)",
     )
     # Subcommand: `coordinare dry-run --card <card_id> [--config PATH]`
+    subparsers.add_parser(
+        "doctor",
+        help="Preflight: check endpoints answer, models exist, and the dashboard bind is sane",
+    )
     dry_run_parser = subparsers.add_parser(
         "dry-run",
         help="Preview what coordinare would do for a card without side effects",
@@ -155,6 +159,7 @@ def _cmd_dry_run(args: argparse.Namespace) -> None:
             raw = _load_raw_yaml(result.config_file_path)
             if is_multi_symphony_config(raw):
                 from coordinare.config import CoordinareConfiguration
+
                 config = CoordinareConfiguration(**coerce_multi_symphony_raw(raw)).global_config
             else:
                 config = ProjectConfiguration(**raw)
@@ -212,7 +217,9 @@ def _cmd_config_validate(args: argparse.Namespace) -> None:
         if result.config_file_path is not None:
             print(f"✓ Config valid — loaded from {result.config_file_path}")
         else:
-            print("✓ Config valid — no config file (all required fields supplied via environment variables)")
+            print(
+                "✓ Config valid — no config file (all required fields supplied via environment variables)"
+            )
 
         env_count = result.env_var_fields_count
         if result.config_file_path is not None:
@@ -224,7 +231,11 @@ def _cmd_config_validate(args: argparse.Namespace) -> None:
             print(f"  Fields resolved: {env_count} from environment variables")
 
         if result.warnings:
-            header = "DEPRECATION ERRORS" if strict else "DEPRECATION WARNINGS (use --strict to treat as errors)"
+            header = (
+                "DEPRECATION ERRORS"
+                if strict
+                else "DEPRECATION WARNINGS (use --strict to treat as errors)"
+            )
             print(f"\n{header}:")
             for w in result.warnings:
                 print(f"  [DEPRECATED] {w.field_name}")
@@ -239,9 +250,7 @@ def _cmd_config_validate(args: argparse.Namespace) -> None:
         print(f"✗ Config validation failed — loaded from {result.config_file_path}")
     else:
         # Check whether this is an explicit-path error or a "no file found" case
-        config_file_error = next(
-            (e for e in result.errors if e.field_path == "config_file"), None
-        )
+        config_file_error = next((e for e in result.errors if e.field_path == "config_file"), None)
         if config_file_error:
             print(f"✗ Config validation failed — {config_file_error.fix_hint}")
         else:
@@ -266,7 +275,11 @@ def _cmd_config_validate(args: argparse.Namespace) -> None:
             print(f"    {e.fix_hint}")
 
     if result.warnings:
-        header = "DEPRECATION ERRORS" if strict else "DEPRECATION WARNINGS (use --strict to treat as errors)"
+        header = (
+            "DEPRECATION ERRORS"
+            if strict
+            else "DEPRECATION WARNINGS (use --strict to treat as errors)"
+        )
         print(f"\n{header}:")
         for w in result.warnings:
             print(f"  [DEPRECATED] {w.field_name}")
@@ -347,6 +360,7 @@ def _build_circuit_breakers(config: ProjectConfiguration) -> dict[str, CircuitBr
 # 019 — Performer Lifecycle: sequence derivation and service registry
 # ---------------------------------------------------------------------------
 
+
 def _build_lifecycle_sequence(config: ProjectConfiguration) -> list[str]:
     """Derive the ordered lifecycle sequence from configured performer roles.
 
@@ -410,7 +424,9 @@ def _build_transport_for_role(
                     "subprocess transport requires an executable — set agent_executable "
                     "in config.yaml or role_config.executable"
                 )
-            return SubprocessTransport(executable, timeout, config=config, github_token=github_token)
+            return SubprocessTransport(
+                executable, timeout, config=config, github_token=github_token
+            )
         case "ssh":
             return SshTransport()
         case "kubernetes":
@@ -464,6 +480,7 @@ def _build_performer_services(
         # will cover them via the HTTP service merge step below.  This avoids
         # building a broken SubprocessTransport("") just to discard it.
         from coordinare.config import PerformerRoleConfig
+
         if isinstance(role_config, PerformerRoleConfig):
             has_explicit_transport = bool(
                 role_config.transport
@@ -571,6 +588,7 @@ def _build_http_performer_services(
         from pathlib import PurePosixPath
 
         from coordinare.models.performer_endpoint import VolumeMount
+
         try:
             Path(log_dir).mkdir(parents=True, exist_ok=True)
         except OSError as exc:
@@ -589,15 +607,11 @@ def _build_http_performer_services(
                 mode="rw",
             )
             existing_volumes = list(cfg.volumes)
-            if not any(
-                str(v.container_path) == "/var/log/performer" for v in existing_volumes
-            ):
+            if not any(str(v.container_path) == "/var/log/performer" for v in existing_volumes):
                 existing_volumes.append(mount)
             new_env = dict(cfg.env)
             new_env.setdefault("PERFORMER_LOG_DIR", "/var/log/performer")
-            cfg = cfg.model_copy(
-                update={"volumes": existing_volumes, "env": new_env}
-            )
+            cfg = cfg.model_copy(update={"volumes": existing_volumes, "env": new_env})
         service = HTTPPerformerService(cfg)
         for role in cfg.roles:
             stage = _ROLE_TO_STAGE.get(role)
@@ -629,7 +643,8 @@ def _build_http_performer_services(
 
 
 def _resolve_stage_max_concurrency(
-    config: ProjectConfiguration, stage: str,
+    config: ProjectConfiguration,
+    stage: str,
 ) -> int:
     """Read the operator-configured ``max_concurrency`` for a stage.
 
@@ -666,8 +681,7 @@ def _compose_performer_pools(
     pool is smaller than the configured cap (and logging that clamp).
     """
     stage_max_c: dict[str, int] = {
-        stage: _resolve_stage_max_concurrency(config, stage)
-        for stage in service_lists
+        stage: _resolve_stage_max_concurrency(config, stage) for stage in service_lists
     }
     performer_services_by_id: dict[str, Any] = {}
 
@@ -758,6 +772,7 @@ async def _bootstrap_services(
         cb.on_open_callback = trip_callback
 
     from coordinare.services.conducting import build_conducting_backend
+
     conducting_backend = build_conducting_backend(
         config,
         circuit_breaker=circuit_breakers["anthropic"],
@@ -772,13 +787,16 @@ async def _bootstrap_services(
 
     # 048 — Collect per-role service lists and max_concurrency before slot registration.
     service_lists: dict[str, list] = getattr(
-        _build_performer_services, "_service_lists", {},
+        _build_performer_services,
+        "_service_lists",
+        {},
     )
 
     # 056 — Merge containerized (ephemeral / persistent) performers into the same
     # service lists before slot registration so each stage is registered once.
     if any(ep.mode != "subprocess" for ep in config.performer_endpoints):
         from coordinare.services.performer_lifecycle import cleanup_orphaned_containers
+
         orphan_count = await cleanup_orphaned_containers()
         if orphan_count:
             logger.warning(
@@ -797,6 +815,7 @@ async def _bootstrap_services(
 
     # Register all pools once after subprocess + HTTP services are merged.
     from coordinare.services.slot_manager import SlotManager
+
     slot_manager = SlotManager()
     for stage, svc_list in service_lists.items():
         slot_manager.register_pool(stage, svc_list, stage_max_c[stage])
@@ -963,19 +982,24 @@ async def _run(
         dashboard_store=dashboard_store,
     )
 
-    daemon.state.update(await _bootstrap_services(
-        config,
-        circuit_breakers,
-        config_path=config_path,
-        activity_log=dashboard_store.activity_log,
-    ))
+    daemon.state.update(
+        await _bootstrap_services(
+            config,
+            circuit_breakers,
+            config_path=config_path,
+            activity_log=dashboard_store.activity_log,
+        )
+    )
 
     # 057: Initialize symphony state so the daemon loop starts in multi-symphony mode
     # without requiring a POST /api/config/reload after startup.
     if coordinare_config is not None:
         from coordinare.graph.state import SymphonyRuntimeState
+
         daemon.state["symphony_configs"] = {s.name: s for s in coordinare_config.symphonies}
-        daemon.state["symphony_states"] = {s.name: SymphonyRuntimeState(name=s.name) for s in coordinare_config.symphonies}
+        daemon.state["symphony_states"] = {
+            s.name: SymphonyRuntimeState(name=s.name) for s in coordinare_config.symphonies
+        }
         daemon.state["coordinare_config"] = coordinare_config
         daemon.state["orchestra_config"] = coordinare_config.orchestra
         daemon.state["config_mode"] = config_mode
@@ -994,7 +1018,9 @@ async def _run(
                     project_number=_eff.github_project_number,
                     endpoint=_eff.github_graphql_url,
                     circuit_breaker=circuit_breakers["github"],
-                    retry_kwargs=_retry_config_from(_eff.resilience.github_retry).to_stamina_kwargs(),
+                    retry_kwargs=_retry_config_from(
+                        _eff.resilience.github_retry
+                    ).to_stamina_kwargs(),
                 )
                 _sym_svc._project_name = _eff.project_name
                 bind_symphony(_sym.name)
@@ -1021,6 +1047,7 @@ async def _run(
         # T012/T013: Instantiate and seed the env-cache service for all symphonies
         # that have env_bootstrap_performer_id configured.
         from coordinare.services.env_cache import EnvCacheService
+
         _env_cache_service = EnvCacheService(coordinare_config)
         await _env_cache_service.initialise(
             daemon.state["env_cache"],
@@ -1066,6 +1093,7 @@ async def _run(
 
     if config.webhooks.enabled and config.webhooks.secret:
         from coordinare.dashboard import register_webhook_route
+
         register_webhook_route(
             dashboard_app,
             path=config.webhooks.path,
@@ -1112,19 +1140,24 @@ async def _run(
 
     def _dump_tasks() -> None:
         import io
+
         out = io.StringIO()
         out.write(f"=== asyncio.all_tasks() dump @ {datetime.now(UTC).isoformat()} ===\n")
         tasks = list(asyncio.all_tasks(loop))
         out.write(f"task_count={len(tasks)}\n\n")
         for t in tasks:
-            out.write(f"--- Task name={t.get_name()!r} done={t.done()} cancelled={t.cancelled()} ---\n")
+            out.write(
+                f"--- Task name={t.get_name()!r} done={t.done()} cancelled={t.cancelled()} ---\n"
+            )
             out.write(f"  coro={t.get_coro()!r}\n")
             stack = t.get_stack()
             if not stack:
                 out.write("  (no stack — task may be done or not yet started)\n")
             else:
                 for f in stack:
-                    out.write(f"  File \"{f.f_code.co_filename}\", line {f.f_lineno}, in {f.f_code.co_name}\n")
+                    out.write(
+                        f'  File "{f.f_code.co_filename}", line {f.f_lineno}, in {f.f_code.co_name}\n'
+                    )
             out.write("\n")
         # Truncate per dump so a long-lived daemon receiving repeated SIGUSR1
         # doesn't grow the file unbounded; each dump stands alone anyway.
@@ -1149,13 +1182,70 @@ async def _run(
         await dashboard_task
 
 
+def _load_project_config_for_doctor(result):  # type: ignore[no-untyped-def]
+    """Parse the validated config file into a ProjectConfiguration.
+
+    Mirrors the daemon startup path, including the multi-symphony wrapping, so
+    preflight inspects the same object the daemon would run with rather than a
+    separately-parsed approximation that could diverge.
+    """
+    from coordinare.config import ProjectConfiguration
+    from coordinare.config_validation import (
+        _load_raw_yaml,
+        coerce_multi_symphony_raw,
+        is_multi_symphony_config,
+    )
+
+    if result.config_file_path is None:
+        return ProjectConfiguration()
+    raw = _load_raw_yaml(result.config_file_path)
+    if is_multi_symphony_config(raw):
+        from coordinare.config import CoordinareConfiguration
+
+        return CoordinareConfiguration(**coerce_multi_symphony_raw(raw)).global_config
+    return ProjectConfiguration(**raw)
+
+
+def _cmd_doctor(args) -> None:  # type: ignore[no-untyped-def]
+    """Run preflight checks and exit non-zero if any failed (spec 145, FR-012)."""
+    import sys
+
+    from coordinare.doctor import run_checks
+
+    result = validate_config(getattr(args, "config", None))
+    if not result.passed:
+        print("Config did not validate, so preflight cannot run.")
+        print("Fix the configuration first:  python -m coordinare config validate")
+        sys.exit(1)
+
+    # validate_config reports pass/fail; it does not hand back the parsed object,
+    # so load it the same way the daemon startup path does.
+    config = _load_project_config_for_doctor(result)
+    if config is None:
+        print("Config validated but could not be loaded for preflight.")
+        sys.exit(1)
+
+    report = run_checks(config)
+    print(report.render())
+    sys.exit(0 if report.ok else 1)
+
+
 def main() -> None:
     args = _build_arg_parser().parse_args()
 
     # Dispatch config subcommand before any daemon startup
-    if getattr(args, "command", None) == "config" and getattr(args, "config_action", None) == "validate":
+    if (
+        getattr(args, "command", None) == "config"
+        and getattr(args, "config_action", None) == "validate"
+    ):
         _cmd_config_validate(args)
         return  # _cmd_config_validate always calls sys.exit; this is belt-and-suspenders
+
+    # Dispatch doctor before daemon startup: it is a setup gate, so it must run
+    # without requiring a working deployment.
+    if getattr(args, "command", None) == "doctor":
+        _cmd_doctor(args)
+        return
 
     # Dispatch dry-run subcommand before daemon startup
     if getattr(args, "command", None) == "dry-run":
@@ -1191,6 +1281,7 @@ def main() -> None:
             raw = _load_raw_yaml(result.config_file_path)
             if is_multi_symphony_config(raw):
                 from coordinare.config import CoordinareConfiguration
+
                 _coordinare_cfg = CoordinareConfiguration(**coerce_multi_symphony_raw(raw))
                 config = _coordinare_cfg.global_config
                 _config_mode = "multi_symphony"
@@ -1199,6 +1290,7 @@ def main() -> None:
                 # symphony_configs is populated and /api/symphonies works correctly.
                 from coordinare.config import CoordinareConfiguration
                 from coordinare.config_validation import wrap_legacy_config
+
                 config = ProjectConfiguration(**raw)
                 _coordinare_cfg = CoordinareConfiguration(**wrap_legacy_config(raw))
         else:
@@ -1255,11 +1347,13 @@ def main() -> None:
 
     # Step 5: Record build info (static metadata; set once at startup)
     _started_at = datetime.now(UTC).isoformat()
-    METRICS.build_info.info({
-        "version": _coordinare_version(),
-        "python_version": platform.python_version(),
-        "started_at": _started_at,
-    })
+    METRICS.build_info.info(
+        {
+            "version": _coordinare_version(),
+            "python_version": platform.python_version(),
+            "started_at": _started_at,
+        }
+    )
 
     # Step 6: Initialize HEALTH registry with configured subsystems
     from coordinare.observability import HealthStatus as _HealthStatus
@@ -1281,7 +1375,14 @@ def main() -> None:
     HEALTH.update("config", _HealthStatus.healthy)
 
     try:
-        asyncio.run(_run(config, config_path=result.config_file_path, coordinare_config=_coordinare_cfg, config_mode=_config_mode))
+        asyncio.run(
+            _run(
+                config,
+                config_path=result.config_file_path,
+                coordinare_config=_coordinare_cfg,
+                config_mode=_config_mode,
+            )
+        )
     except RuntimeExecutionError as exc:
         logger.error(
             "runtime_failure",
