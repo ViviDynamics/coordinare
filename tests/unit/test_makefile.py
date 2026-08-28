@@ -22,7 +22,7 @@ REQUIRED_TARGETS = {
     "test", "test-unit", "test-contract", "test-all",
     "build", "e2e", "docker", "ci", "build-all",
     "run", "start", "stop", "performer-logs",
-    "install", "uninstall", "version", "validate-version",
+    "install", "uninstall",
     "clean",
 }
 
@@ -155,8 +155,6 @@ def test_build_targets_delegate_to_bin_build(text: str) -> None:
         ("performer-logs", "bin/performer-logs"),
         ("install", "bin/install"),
         ("uninstall", "bin/uninstall"),
-        ("version", "bin/update-version"),
-        ("validate-version", "bin/validate-version"),
     ],
 )
 def test_operator_targets_delegate_to_bin(text: str, target: str, script: str) -> None:

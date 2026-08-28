@@ -15,58 +15,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  validate-version:
-    name: Validate Version
-    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
-    runs-on:
-      - self-hosted
-      - linux
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          ref: ${{ github.head_ref }}
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Fetch tags
-        run: git fetch --tags
-
-      - name: Configure git
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-      - name: Validate and auto-bump if needed
-        run: |
-          if python3 bin/validate-version; then
-            echo "Version is valid"
-          else
-            echo "Version is invalid — auto-bumping before merge"
-            # Loop until valid: on busy days the same-day tag counter may be >1
-            # above the current version, so a single bump is not always enough.
-            bumped=false
-            for attempt in $(seq 1 10); do
-              python3 bin/update-version
-              if python3 bin/validate-version 2>/dev/null; then
-                bumped=true
-                break
-              fi
-            done
-            if [ "$bumped" = "false" ]; then
-              echo "ERROR: could not find a valid version after 10 bumps"
-              python3 bin/validate-version  # hard fail with details
-            fi
-            git add version
-            git commit -m "[ci] Bump version to $(cat version)"
-            # GITHUB_TOKEN push: does not re-trigger PR CI (GitHub design).
-            # The bumped version is committed to the branch and will be included
-            # in the squash merge. Developers should git pull before merging.
-            git push
-          fi
-
   lint:
     name: Lint
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
@@ -191,7 +139,6 @@ jobs:
   docker:
     name: Docker Images
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
-    needs: validate-version
     runs-on:
       - self-hosted
       - linux
@@ -203,7 +150,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           # Check out the branch tip (not the triggering SHA) so that any version
-          # bump committed by validate-version is reflected in the image tag.
+          # image tag is derived from the commit, so no version file is involved.
           ref: ${{ github.head_ref }}
 
       - name: Log in to GHCR
@@ -243,8 +190,12 @@ jobs:
       - name: Push snapshot images to GHCR
         run: |
           REGISTRY=$(cat registry)
-          VERSION=$(cat version)
-          SNAPSHOT_TAG="${VERSION}-SNAPSHOT"
+          # Identify a PR snapshot by its commit rather than by a version file.
+          # That file was the source of the stranded-PR-head problem (#215): a
+          # CalVer string stored on the branch goes stale, so CI had to bump and
+          # push it, and a GITHUB_TOKEN push does not re-trigger CI. A snapshot
+          # is better identified by the commit it was built from in any case.
+          SNAPSHOT_TAG="$(git rev-parse --short HEAD)-SNAPSHOT"
 
           docker tag coordinare-performer:base "${REGISTRY}-base:${SNAPSHOT_TAG}"
           docker tag coordinare-performer:full "${REGISTRY}-full:${SNAPSHOT_TAG}"
@@ -304,7 +255,6 @@ jobs:
       - self-hosted
       - linux
     needs:
-      - validate-version
       - lint
       - test
       - coverage

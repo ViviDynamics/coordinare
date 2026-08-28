@@ -11,16 +11,16 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  validate-version:
-    name: Validate Version
+  derive-version:
+    name: Derive Version
     runs-on:
       - self-hosted
       - linux
     permissions:
-      contents: write
+      contents: read
     outputs:
-      version: ${{ steps.finalise.outputs.version }}
-      sha: ${{ steps.finalise.outputs.sha }}
+      version: ${{ steps.derive.outputs.version }}
+      sha: ${{ steps.derive.outputs.sha }}
     steps:
       - name: Assert main branch
         run: |
@@ -33,46 +33,51 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Fetch tags
-        run: git fetch --tags
+        run: git fetch --tags --force
 
-      - name: Configure git
+      # Derive the release version from the tags that already exist, rather than
+      # reading a file committed on the branch.
+      #
+      # The file-based approach is what produced the stranded-PR-head problem:
+      # a CalVer string stored in the repo goes stale on every branch, so PR CI
+      # had to bump and push it, and a GITHUB_TOKEN push does not re-trigger CI,
+      # leaving the PR head with zero checks and a BLOCKED state that looks like
+      # a failure. Deriving here removes the need for any branch to hold a
+      # correct version, so nothing can be stale and nothing needs bumping.
+      #
+      # Mirrors the org release.yml. See issue #215.
+      - name: Derive CalVer version from existing tags
+        id: derive
+        shell: bash
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          set -euo pipefail
 
-      - name: Validate and auto-bump if needed
-        run: |
-          if python3 bin/validate-version; then
-            echo "Version is valid — no bump needed"
+          # Reuse a tag already pointing at HEAD rather than minting a second one
+          # for the same commit: re-running this workflow must be idempotent.
+          existing="$(git tag --points-at HEAD | grep -E '^[0-9]{4}\.[0-9]{2}\.[0-9]{2}(\.[0-9]+)?$' | head -n 1 || true)"
+          if [ -n "$existing" ]; then
+            echo "Reusing existing tag on HEAD: $existing"
+            version="$existing"
           else
-            echo "Validation failed — auto-bumping version"
-            # Loop until valid: on busy days the same-day tag counter may be >1
-            # above the current version, so a single bump is not always enough.
-            bumped=false
-            for attempt in $(seq 1 10); do
-              python3 bin/update-version
-              if python3 bin/validate-version 2>/dev/null; then
-                bumped=true
-                break
-              fi
-            done
-            if [ "$bumped" = "false" ]; then
-              echo "ERROR: could not find a valid version after 10 bumps"
-              python3 bin/validate-version  # hard fail with details
+            today="$(date -u +%Y.%m.%d)"
+            # Same-day releases get a .N suffix. Sort numerically on the suffix so
+            # .10 orders after .9, which a lexical sort gets wrong.
+            latest_suffix="$(
+              git tag -l "${today}" -l "${today}.*" \
+                | sed -E "s/^${today}//; s/^\.//; s/^$/0/" \
+                | sort -n | tail -n 1 || true
+            )"
+            if [ -z "$latest_suffix" ]; then
+              version="$today"
+            else
+              version="${today}.$((latest_suffix + 1))"
             fi
-            git add version
-            git commit -m "[ci] Bump version to $(cat version)"
-            # GITHUB_TOKEN push: intentionally does not re-trigger this workflow
-            git push
+            echo "Derived new version: $version"
           fi
 
-      - name: Output final version
-        id: finalise
-        run: |
-          echo "version=$(cat version)" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
   lint:
@@ -150,7 +155,7 @@ jobs:
   create-tag:
     name: Create Release Tag
     needs:
-      - validate-version
+      - derive-version
       - lint
       - test
       - coverage
@@ -160,8 +165,8 @@ jobs:
     permissions:
       contents: write
     outputs:
-      version: ${{ needs.validate-version.outputs.version }}
-      sha: ${{ needs.validate-version.outputs.sha }}
+      version: ${{ needs.derive-version.outputs.version }}
+      sha: ${{ needs.derive-version.outputs.sha }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -170,8 +175,8 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const version = '${{ needs.validate-version.outputs.version }}';
-            const sha = '${{ needs.validate-version.outputs.sha }}';
+            const version = '${{ needs.derive-version.outputs.version }}';
+            const sha = '${{ needs.derive-version.outputs.sha }}';
 
             try {
               await github.rest.repos.getReleaseByTag({

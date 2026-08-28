@@ -503,7 +503,6 @@ INTERNAL_ASSOCIATIONS = ("OWNER", "MEMBER", "COLLABORATOR")
 EXISTING_WORKFLOWS = (
     ".github/workflows/main-branch-build.yml",
     ".github/workflows/pr-ci.yml",
-    ".github/workflows/sync-version-to-prs.yml",
 )
 
 
@@ -743,8 +742,12 @@ def test_existing_workflows_are_untouched() -> None:
     expected = {
         ".github/workflows/main-branch-build.yml": ({"push", "workflow_dispatch"}, "self-hosted"),
         ".github/workflows/pr-ci.yml": ({"pull_request"}, "self-hosted"),
-        ".github/workflows/sync-version-to-prs.yml": ({"release"}, "self-hosted"),
     }
+    # sync-version-to-prs.yml was DELETED by spec 146 (issue #215). It existed
+    # solely to re-bump a committed version file across open PRs after each
+    # release; deriving the version from git tags at release time removed the
+    # file and therefore the need for the workflow. This guard is what flagged
+    # the change, which is what it is for.
     guidance = (
         "This is spec 142's SC-009 regression guard, asserting that adding the "
         "external-contributions workflow did not disturb existing CI. If you are "

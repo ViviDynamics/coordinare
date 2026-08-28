@@ -19,7 +19,7 @@ RUFF   := .venv/bin/ruff
         test test-unit test-contract test-all test-js require-node \
         build e2e docker ci build-all \
         run start stop performer-logs \
-        install uninstall version validate-version \
+        install uninstall \
         clean require-venv require-env
 
 help: ## show this help
@@ -114,11 +114,7 @@ install: ## install coordinare as a login LaunchAgent (auto-start)
 uninstall: ## remove the coordinare LaunchAgent and stop it
 	bin/uninstall
 
-version: ## bump/update the project version
-	bin/update-version
 
-validate-version: ## validate the version file
-	bin/validate-version
 
 ##@ Clean
 clean: ## remove caches only (pycache, pytest, ruff, coverage, *.pyc)
