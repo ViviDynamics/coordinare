@@ -18,7 +18,7 @@ import yaml
 from coordinare.config import ProjectConfiguration
 
 # The weak-judge denylist (spec 083 US3). Bare model names; catalog entries may
-# carry a provider prefix (e.g. "spark/qwen3.6:35b").
+# carry a provider prefix (e.g. "local/qwen3.6:35b").
 DENYLISTED = [
     "qwen3.6:35b",
     "qwq:32b",
@@ -33,7 +33,7 @@ def _cfg(tmp_path: Path, *, model_endpoints: list[dict], performers: dict) -> Pr
         "project_name": "t", "github_org": "o", "github_project_number": 1,
         "github_token": "ghp_x", "human_reviewers": ["a"],
         "endpoints": [
-            {"name": "spark-litellm", "kind": "litellm", "base_url": "http://spark:4000",
+            {"name": "local-litellm", "kind": "litellm", "base_url": "http://localhost:4000",
              "auth_env": "LITELLM_PROXY_AUTH_TOKEN"},
             {"name": "anthropic-cloud", "kind": "anthropic", "auth_env": "ANTHROPIC_API_KEY"},
         ],
@@ -55,8 +55,8 @@ def test_security_role_rejects_denylisted_model(tmp_path, weak_model):
         _cfg(
             tmp_path,
             model_endpoints=[
-                {"name": "the-model", "endpoint": "spark-litellm",
-                 "model": f"spark/{weak_model}"},
+                {"name": "the-model", "endpoint": "local-litellm",
+                 "model": f"local/{weak_model}"},
             ],
             performers={"security": {"backend": "claude_code", "mode": "single"}},
         )
@@ -81,9 +81,9 @@ def test_non_security_roles_may_use_denylisted_model(tmp_path, other_role):
     cfg = _cfg(
         tmp_path,
         model_endpoints=[
-            {"name": "the-model", "endpoint": "spark-litellm",
-             "model": "spark/qwen3.6:35b"},
+            {"name": "the-model", "endpoint": "local-litellm",
+             "model": "local/qwen3.6:35b"},
         ],
         performers={other_role: {"backend": "claude_code", "mode": "single"}},
     )
-    assert cfg.resolve_performer_dispatch_model(other_role)["model"] == "spark/qwen3.6:35b"
+    assert cfg.resolve_performer_dispatch_model(other_role)["model"] == "local/qwen3.6:35b"

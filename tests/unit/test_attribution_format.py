@@ -44,12 +44,12 @@ def test_performer_origin_format():
         role="reviewing",
         display="Reviewer",
         harness="codex",
-        model="spark/gpt-oss:120b",
+        model="local/gpt-oss:120b",
     )
     assert out == (
         "<!-- coordinare-attribution origin=performer role=reviewing "
-        "harness=codex model=spark/gpt-oss:120b -->\n"
-        "> 🤖 **Reviewer** · harness `codex` · model `spark/gpt-oss:120b`"
+        "harness=codex model=local/gpt-oss:120b -->\n"
+        "> 🤖 **Reviewer** · harness `codex` · model `local/gpt-oss:120b`"
     )
 
 
@@ -59,12 +59,12 @@ def test_coordinare_origin_tags_stage():
         role="implementing",
         display="Implementer",
         harness="codex",
-        model="spark/qwen3.6:35b",
+        model="local/qwen3.6:35b",
     )
     assert out == (
         "<!-- coordinare-attribution origin=coordinare role=implementing "
-        "harness=codex model=spark/qwen3.6:35b -->\n"
-        "> 🎼 **Coordinare** · re: Implementer (`codex` · `spark/qwen3.6:35b`)"
+        "harness=codex model=local/qwen3.6:35b -->\n"
+        "> 🎼 **Coordinare** · re: Implementer (`codex` · `local/qwen3.6:35b`)"
     )
 
 
@@ -109,10 +109,10 @@ class _FakeConfig:
 
 def test_resolve_stage_attribution_from_config():
     config = _FakeConfig(
-        _FakePerformers({"implementer": _FakeRoleConfig("codex", "spark/qwen3.6:35b")})
+        _FakePerformers({"implementer": _FakeRoleConfig("codex", "local/qwen3.6:35b")})
     )
     display, harness, model = resolve_stage_attribution(config, "implementing")
-    assert (display, harness, model) == ("Implementer", "codex", "spark/qwen3.6:35b")
+    assert (display, harness, model) == ("Implementer", "codex", "local/qwen3.6:35b")
 
 
 def test_resolve_stage_falls_back_to_unknown():
@@ -123,13 +123,13 @@ def test_resolve_stage_falls_back_to_unknown():
 
 def test_coordinare_attribution_end_to_end():
     config = _FakeConfig(
-        _FakePerformers({"implementer": _FakeRoleConfig("codex", "spark/qwen3.6:35b")})
+        _FakePerformers({"implementer": _FakeRoleConfig("codex", "local/qwen3.6:35b")})
     )
     out = coordinare_attribution(config, "implementing")
     assert out == (
         "<!-- coordinare-attribution origin=coordinare role=implementing "
-        "harness=codex model=spark/qwen3.6:35b -->\n"
-        "> 🎼 **Coordinare** · re: Implementer (`codex` · `spark/qwen3.6:35b`)"
+        "harness=codex model=local/qwen3.6:35b -->\n"
+        "> 🎼 **Coordinare** · re: Implementer (`codex` · `local/qwen3.6:35b`)"
     )
 
 
@@ -151,9 +151,9 @@ def test_coordinare_attribution_bare_when_unresolvable():
 @pytest.mark.parametrize(
     ("role", "display", "harness", "model"),
     [
-        ("reviewing", "Reviewer", "codex", "spark/gpt-oss:120b"),
-        ("qa", "QA", "claude_code", "spark/gpt-oss:20b"),
-        ("documenting", "Tech Writer", "hermes", "spark/qwen3.6:35b"),
+        ("reviewing", "Reviewer", "codex", "local/gpt-oss:120b"),
+        ("qa", "QA", "claude_code", "local/gpt-oss:20b"),
+        ("documenting", "Tech Writer", "hermes", "local/qwen3.6:35b"),
     ],
 )
 def test_performer_and_coordinare_headers_match(role, display, harness, model):

@@ -49,7 +49,7 @@ def test_openai_sse_chunks_carry_full_envelope():
     """082 FR-013 (SSE sibling): every chat.completion.chunk MUST carry the
     id/object/created/model envelope, echoing upstream raw when present, so a
     strict streaming client accepts the synthesized stream."""
-    raw = {"id": "chatcmpl-up", "created": 111, "model": "spark/qwen3.6:35b"}
+    raw = {"id": "chatcmpl-up", "created": 111, "model": "local/qwen3.6:35b"}
     resp = LLMResponse(content="answer", reasoning="PLAN", raw=raw)
     payloads = _data_payloads(assemble_sse(resp, expose_plan_as="drop", wire_format="openai"))
     assert payloads, "expected at least one chunk"
@@ -57,7 +57,7 @@ def test_openai_sse_chunks_carry_full_envelope():
         assert p["object"] == "chat.completion.chunk"
         assert p["id"] == "chatcmpl-up"
         assert p["created"] == 111
-        assert p["model"] == "spark/qwen3.6:35b"
+        assert p["model"] == "local/qwen3.6:35b"
 
 
 # --- anthropic SSE ---------------------------------------------------------
@@ -92,8 +92,8 @@ async def test_proxy_streams_sse_when_requested():
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     orch = {
         "strategy": "always",
-        "tool": {"name": "t", "model": "qwen", "wire_format": "openai", "base_url": "http://spark/v1"},
-        "thinking": {"name": "th", "model": "gptoss", "wire_format": "openai", "base_url": "http://spark/v1"},
+        "tool": {"name": "t", "model": "qwen", "wire_format": "openai", "base_url": "http://local/v1"},
+        "thinking": {"name": "th", "model": "gptoss", "wire_format": "openai", "base_url": "http://local/v1"},
         "expose_plan_as": "thinking",
     }
     proxy = DualModelProxy(orchestration=orch, expose_plan_as="thinking", client=client)

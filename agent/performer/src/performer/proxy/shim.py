@@ -54,7 +54,7 @@ _FRONT_DOOR_PATHS = (
 )
 
 # Per-request forwarding timeout for the shim's owned client. Bounds a wedged
-# self-hosted upstream (the 077 spark/qwen runner-wedge edge) so a mid-job hang
+# self-hosted upstream (the 077 local/qwen runner-wedge edge) so a mid-job hang
 # surfaces as a clean 502 rather than stalling the card indefinitely. The read
 # timeout applies *between* streamed chunks, so it also detects a stall that
 # begins mid-stream — not just a connect/first-byte hang. Only the shim's OWNED
@@ -154,7 +154,7 @@ class SelfHostedShim:
         string, if any, is preserved.
 
         084 / Ollama-compat: when ``base_url`` already ends with ``/v1`` (e.g.
-        ``http://192.168.3.30:11434/v1``) the translated path ``/v1/chat/completions``
+        ``http://192.0.2.10:11434/v1``) the translated path ``/v1/chat/completions``
         must NOT be appended verbatim — that would produce the double-prefix
         ``…/v1/v1/chat/completions`` (Ollama 404). Strip the leading ``/v1``
         from the path when the base already carries it, matching the same

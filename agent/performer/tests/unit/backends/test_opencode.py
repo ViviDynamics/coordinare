@@ -290,12 +290,12 @@ class TestOpenCodeProviderRouting:
             new=AsyncMock(return_value=proc),
         ), patch("performer.backends.opencode._find_free_port", return_value=port):
             await OpenCodeAdapter().start(
-                _stand(tmp_path), _score(), model="spark/qwen3.6:35b"
+                _stand(tmp_path), _score(), model="local/qwen3.6:35b"
             )
 
         # modelID is provider-prefixed so opencode routes to the custom provider.
         body = json.loads(session_mock.calls[0].request.content)
-        assert body["modelID"] == "litellm/spark/qwen3.6:35b"
+        assert body["modelID"] == "litellm/local/qwen3.6:35b"
 
         # opencode.json written into the workspace with an env-interpolated key.
         cfg = json.loads((tmp_path / "opencode.json").read_text())
@@ -303,7 +303,7 @@ class TestOpenCodeProviderRouting:
         assert prov["npm"] == "@ai-sdk/openai-compatible"
         assert prov["options"]["baseURL"] == "https://litellm.example/v1"
         assert prov["options"]["apiKey"] == "{env:LITELLM_MASTER_KEY}"
-        assert "spark/qwen3.6:35b" in prov["models"]
+        assert "local/qwen3.6:35b" in prov["models"]
         # 077: headless performer containers must auto-approve tool actions, else
         # opencode blocks on permission.asked and never runs its commands.
         assert cfg["permission"] == "allow"

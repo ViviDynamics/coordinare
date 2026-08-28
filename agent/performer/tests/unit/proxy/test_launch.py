@@ -19,8 +19,8 @@ from performer.proxy.routing import RoutingEntry, RoutingTable, TargetDescriptor
 
 _ORCH = {
     "strategy": "always",
-    "tool": {"name": "t", "model": "qwen", "wire_format": "openai", "base_url": "http://spark/v1"},
-    "thinking": {"name": "th", "model": "gptoss", "wire_format": "openai", "base_url": "http://spark/v1"},
+    "tool": {"name": "t", "model": "qwen", "wire_format": "openai", "base_url": "http://local/v1"},
+    "thinking": {"name": "th", "model": "gptoss", "wire_format": "openai", "base_url": "http://local/v1"},
     "expose_plan_as": "thinking",
 }
 
@@ -124,7 +124,7 @@ async def test_reroute_launches_no_shim_and_no_normalizer(monkeypatch):
     assert env["OPENCLAW_PROVIDER_BASE_URL"] == "http://litellm:4000"
 
 
-def _junie_normalize_table(model="gpt-oss:120b", base_url="http://192.168.3.30:11434"):
+def _junie_normalize_table(model="gpt-oss:120b", base_url="http://192.0.2.10:11434"):
     return RoutingTable(
         entries=[
             RoutingEntry(
@@ -249,7 +249,7 @@ def test_verbatim_post_backends_use_a_served_proxy_path():
 
 @pytest.mark.asyncio
 async def test_claude_code_suppresses_its_own_litellm_shim():
-    env = {"LITELLM_PROXY_BASE_URL": "http://spark:4000"}
+    env = {"LITELLM_PROXY_BASE_URL": "http://localhost:4000"}
     proxy = await maybe_launch_proxy(_ORCH, "claude_code", env)
     try:
         # dual proxy takes over via ANTHROPIC_BASE_URL; claude's own shim var removed
@@ -292,12 +292,12 @@ async def test_stop_removes_env_when_absent_before():
 
 @pytest.mark.asyncio
 async def test_stop_restores_claude_litellm_shim_var():
-    env = {"LITELLM_PROXY_BASE_URL": "http://spark:4000"}
+    env = {"LITELLM_PROXY_BASE_URL": "http://localhost:4000"}
     proxy = await maybe_launch_proxy(_ORCH, "claude_code", env)
     assert "LITELLM_PROXY_BASE_URL" not in env
     await proxy.stop()
     # both the suppressed shim var and the overridden base URL are restored
-    assert env["LITELLM_PROXY_BASE_URL"] == "http://spark:4000"
+    assert env["LITELLM_PROXY_BASE_URL"] == "http://localhost:4000"
     assert "ANTHROPIC_BASE_URL" not in env
 
 
@@ -335,7 +335,7 @@ async def test_probe_prefers_upstream_auth_env_over_poisoned_openai_key(monkeypa
     monkeypatch.setenv("OPENAI_API_KEY", "sk-real-openai-poisoned")
     monkeypatch.setenv("COORDINARE_PROXY_AUTH", "sk-litellm-master")
     table = RoutingTable(entries=[RoutingEntry(
-        backend="junie", model="spark/gpt-oss:120b",
+        backend="junie", model="local/gpt-oss:120b",
         target=TargetDescriptor(
             base_url="https://litellm.example.com", wire_format="openai",
             strategy="normalize", normalizers=["strip_control_chars"],
@@ -343,7 +343,7 @@ async def test_probe_prefers_upstream_auth_env_over_poisoned_openai_key(monkeypa
         ),
     )])
     shim = await maybe_launch_proxy(
-        None, "junie", {}, routing_table=table, model="spark/gpt-oss:120b",
+        None, "junie", {}, routing_table=table, model="local/gpt-oss:120b",
         health_check=True, health_timeout=120.0,
     )
     try:

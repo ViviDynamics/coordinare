@@ -46,9 +46,9 @@ def _load_cfg(tmp_path: Path, **catalog: object) -> ProjectConfiguration:
 
 
 def test_self_hosted_endpoint_requires_base_url():
-    Endpoint(name="spark", kind="litellm", base_url="http://spark:4000")  # ok
+    Endpoint(name="local-ollama", kind="litellm", base_url="http://localhost:4000")  # ok
     with pytest.raises(ValidationError, match="requires base_url"):
-        Endpoint(name="spark", kind="ollama")
+        Endpoint(name="local-ollama", kind="ollama")
 
 
 def test_native_endpoint_must_not_set_base_url():
@@ -135,12 +135,12 @@ def test_default_error_pattern_constant_present():
 def _valid_catalogs() -> dict:
     return {
         "endpoints": [
-            {"name": "spark-litellm", "kind": "litellm", "base_url": "http://spark:4000"},
-            {"name": "spark-ollama", "kind": "ollama", "base_url": "http://spark:11434"},
+            {"name": "local-litellm", "kind": "litellm", "base_url": "http://localhost:4000"},
+            {"name": "local-ollama", "kind": "ollama", "base_url": "http://localhost:11434"},
         ],
         "model_endpoints": [
-            {"name": "gptoss-litellm", "endpoint": "spark-litellm", "model": "spark/gpt-oss:120b"},
-            {"name": "gptoss-ollama", "endpoint": "spark-ollama", "model": "gpt-oss:120b"},
+            {"name": "gptoss-litellm", "endpoint": "local-litellm", "model": "local/gpt-oss:120b"},
+            {"name": "gptoss-ollama", "endpoint": "local-ollama", "model": "gpt-oss:120b"},
         ],
         "modes": [
             {"name": "always-gptoss", "strategy": "always",
@@ -151,7 +151,7 @@ def _valid_catalogs() -> dict:
 
 def test_valid_catalogs_load_and_resolve(tmp_path):
     cfg = _load_cfg(tmp_path, **_valid_catalogs())
-    assert cfg.resolve_endpoint("spark-litellm").kind == "litellm"
+    assert cfg.resolve_endpoint("local-litellm").kind == "litellm"
     assert cfg.resolve_model_endpoint("gptoss-ollama").model == "gpt-oss:120b"
     assert cfg.resolve_mode("always-gptoss").strategy == "always"
     assert cfg.resolve_mode("missing") is None
@@ -178,6 +178,6 @@ def test_mode_dangling_model_endpoint_rejected(tmp_path):
 
 def test_duplicate_names_rejected(tmp_path):
     cat = _valid_catalogs()
-    cat["endpoints"].append({"name": "spark-litellm", "kind": "vllm", "base_url": "http://x"})
+    cat["endpoints"].append({"name": "local-litellm", "kind": "vllm", "base_url": "http://x"})
     with pytest.raises(ValidationError, match="endpoints contains duplicate name"):
         _load_cfg(tmp_path, **cat)

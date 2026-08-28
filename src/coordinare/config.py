@@ -77,7 +77,10 @@ class ChannelConfig(BaseModel):
     smtp_port: int = 587
     smtp_username: str | None = None
     smtp_password: SecretStr | None = None
-    smtp_sender: str = "coordinare@vividynamics.com"
+    # Neutral by default. A shipped default on a real domain would make every
+# self-hoster's notifications claim to come from that domain, which also
+# fails SPF/DKIM and looks like spoofing. Operators set their own.
+    smtp_sender: str = "coordinare@localhost"
     smtp_recipient: str | None = None
 
     # Rate limiting
@@ -336,7 +339,7 @@ _SELF_HOSTED_ENDPOINT_KINDS = frozenset({"litellm", "ollama", "vllm"})
 # lever; binding it to one of these models is a load-time error (fail-closed).
 # These models fail contract-bound roles across coding agents (MEMORY.md
 # project_qwen_coder_limitations) and must never gate security. Matched against
-# the bare model name (provider prefixes like "spark/" are stripped first).
+# the bare model name (provider prefixes like "local/" are stripped first).
 _SECURITY_MODEL_DENYLIST = frozenset({
     "qwen3.6:35b",
     "qwq:32b",

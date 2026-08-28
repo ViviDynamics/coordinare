@@ -1196,14 +1196,14 @@ async def test_dispatch_includes_model_from_self_hosted_mode() -> None:
         "github_token": "tok",
         "human_reviewers": ["alice"],
         "endpoints": [
-            {"name": "spark", "kind": "litellm", "base_url": "https://proxy.internal/v1",
+            {"name": "local-ollama", "kind": "litellm", "base_url": "https://proxy.internal/v1",
              "auth_env": "LITELLM_PROXY_KEY"},
         ],
         "model_endpoints": [
-            {"name": "sonnet-spark", "endpoint": "spark", "model": "claude-sonnet-4-20250514"},
+            {"name": "sonnet-local-ollama", "endpoint": "local-ollama", "model": "claude-sonnet-4-20250514"},
         ],
         "modes": [
-            {"name": "single-sonnet", "strategy": "single", "tool": "sonnet-spark"},
+            {"name": "single-sonnet", "strategy": "single", "tool": "sonnet-local-ollama"},
         ],
         "performers": PerformersConfig(
             implementer=PerformerRoleConfig(backend="claude_code", mode="single-sonnet"),
@@ -1241,12 +1241,12 @@ async def test_dispatch_includes_orchestration_block_for_multi_model_mode() -> N
         "project_name": "test", "github_org": "org", "github_project_number": 1,
         "github_token": "tok", "human_reviewers": ["alice"],
         "endpoints": [
-            {"name": "spark", "kind": "litellm", "base_url": "http://spark:4000",
+            {"name": "local-ollama", "kind": "litellm", "base_url": "http://localhost:4000",
              "auth_env": "LITELLM_PROXY_AUTH_TOKEN"},
         ],
         "model_endpoints": [
-            {"name": "gptoss", "endpoint": "spark", "model": "spark/gpt-oss:120b"},
-            {"name": "qwen", "endpoint": "spark", "model": "spark/qwen3.6:35b"},
+            {"name": "gptoss", "endpoint": "local-ollama", "model": "local/gpt-oss:120b"},
+            {"name": "qwen", "endpoint": "local-ollama", "model": "local/qwen3.6:35b"},
         ],
         "modes": [
             {"name": "always-x", "strategy": "always", "thinking": "gptoss", "tool": "qwen"},
@@ -1270,8 +1270,8 @@ async def test_dispatch_includes_orchestration_block_for_multi_model_mode() -> N
     orch = svc.dispatched[0].get("orchestration")
     assert orch is not None
     assert orch["strategy"] == "always"
-    assert orch["thinking"]["model"] == "spark/gpt-oss:120b"
-    assert orch["tool"]["model"] == "spark/qwen3.6:35b"
+    assert orch["thinking"]["model"] == "local/gpt-oss:120b"
+    assert orch["tool"]["model"] == "local/qwen3.6:35b"
 
 
 @pytest.mark.asyncio

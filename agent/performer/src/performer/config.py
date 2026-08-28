@@ -108,7 +108,7 @@ class Settings(BaseSettings):
     # healthy once warm. Threaded into maybe_launch_proxy as health_timeout=.
     # 123: raised 120→300. gpt-oss:120b cold-load (via Ollama, incl. behind the
     # LiteLLM gateway which proxies to the same Ollama) routinely takes ~120-240s
-    # on the single-request Spark; 120s still fail_closed assessing/qa cards on a
+    # on the single-request the model host; 120s still fail_closed assessing/qa cards on a
     # cold model. 300s covers the observed cold-load window with margin.
     SELFHOSTED_HEALTH_TIMEOUT: float = 300.0
 

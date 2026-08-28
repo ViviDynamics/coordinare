@@ -71,7 +71,7 @@ def main() -> int:
         print("no persona results found")
         return 1
     for r in rows:
-        r["model_key"] = (r.get("model") or "").replace("spark/", "")
+        r["model_key"] = (r.get("model") or "").replace("local/", "")
 
     models = sorted({r["model_key"] for r in rows})
     backends = sorted({r["backend"] for r in rows})

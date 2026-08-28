@@ -18,7 +18,7 @@ flaky agentic tool loop.
   `src/coordinare/services/persona_service.py`). It ships enabled by default —
   there is nothing to toggle in the operator-local `config.yaml`.
 - **Backend/model**: whatever self-hosted backend already serves `tech_writer`
-  (default `hermes` → `spark/gpt-oss:120b` via the LiteLLM gateway). **Cloud
+  (default `hermes` → `local/gpt-oss:120b` via the LiteLLM gateway). **Cloud
   models must not be used for this role.**
 - **Output contract (unchanged)**: the documenter returns the standard
   `{"files":[{"path": "...", "content": "..."}]}` JSON; `main.py`'s documenting
@@ -40,23 +40,23 @@ flaky agentic tool loop.
 1. Ship the updated persona (this PR) — it is the committed default; no
    `config.yaml` edit is required for the core behavior.
 2. Confirm `tech_writer` resolves to a **self-hosted** backend/model (default
-   `hermes` / `spark/gpt-oss:120b`). Never point it at a cloud model.
+   `hermes` / `local/gpt-oss:120b`). Never point it at a cloud model.
 3. Ensure `LITELLM_MASTER_KEY` is exported (`set -a && source .env && set +a`)
    before launching coordinare, so the gateway is reachable.
 
 > **⚠️ Migration from the OpenWiki POC.** If, during the earlier OpenWiki
 > proof-of-concept, you set `tech_writer.backend: openwiki` (and/or added an
 > `openwiki-ephemeral` endpoint) in your operator-local `config.yaml`, **revert
-> it now**: set `tech_writer.backend: hermes`, `mode: single-gptoss120-spark`,
+> it now**: set `tech_writer.backend: hermes`, `mode: single-gptoss120-local-ollama`,
 > and restore `roles: [ tech_writer ]` on your `hermes-ephemeral` endpoint. The
 > `openwiki` backend is removed from the image, so after rebuilding, a leftover
 > `backend: openwiki` makes every documenting job fail with
 > `UnsupportedBackendError`.
 
 > **LiteLLM only.** Route the documenter through the LiteLLM gateway
-> (`mode: single-gptoss120-spark` → `spark/gpt-oss:120b`), not the Ollama-direct
+> (`mode: single-gptoss120-local-ollama` → `local/gpt-oss:120b`), not the Ollama-direct
 > mode (`single-gptoss120-ollama`). The `hermes-ephemeral` endpoint's mounted
-> `routing.yaml` normalize-shim entry for `spark/gpt-oss:120b` injects the
+> `routing.yaml` normalize-shim entry for `local/gpt-oss:120b` injects the
 > LiteLLM key (`upstream_auth_env: OPENAI_API_KEY`); the Ollama-direct path
 > bypasses LiteLLM.
 

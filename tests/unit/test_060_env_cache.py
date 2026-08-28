@@ -1252,12 +1252,12 @@ class TestDaemonEnvCacheBootstrapLoop:
             "github_token": "ghp_realtokenvalue1234567890", "human_reviewers": ["a"],
             "endpoints": [
                 {"name": "ollama-direct", "kind": "ollama",
-                 "base_url": "http://192.168.3.30:11434/v1",
+                 "base_url": "http://192.0.2.10:11434/v1",
                  "auth_env": "OLLAMA_AUTH_TOKEN"},
             ],
             "model_endpoints": [
                 {"name": "qwen25coder", "endpoint": "ollama-direct",
-                 "model": "spark/qwen2.5-coder:14b-instruct-q6_K"},
+                 "model": "local/qwen2.5-coder:14b-instruct-q6_K"},
             ],
             "modes": [
                 {"name": "single-qwen25coder", "strategy": "single", "tool": "qwen25coder"},

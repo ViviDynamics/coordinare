@@ -111,7 +111,7 @@ never logs request bodies or auth headers (FR-011).
 | Model name (CLI) | Downstream provider | Date validated | Card scenario |
 |------------------|---------------------|----------------|---------------|
 | `claude-opus-4-20250514` | `anthropic/claude-opus-4-20250514` | _pending live validation_ | full-cycle dispatch |
-| `spark/qwen3.6:35b` | Spark (via `litellm.vividynamics.com`) | 2026-05-24 | SC-006 smoke gate, 5 sequential `claude --print` calls, zero parser errors |
+| `local/qwen3.6:35b` | the model host (via `litellm.example`) | 2026-05-24 | SC-006 smoke gate, 5 sequential `claude --print` calls, zero parser errors |
 
 ## SC-006 gate: smoke test
 
@@ -121,7 +121,7 @@ non-Anthropic model through LiteLLM). The script:
 
 1. Reads `LITELLM_MASTER_KEY` from `.env` at repo root.
 2. Spawns the in-process `ClaudeCodeShim` against the configured
-   upstream (defaults to `https://litellm.vividynamics.com`) and
+   upstream (defaults to `https://litellm.example`) and
    captures its ephemeral loopback port.
 3. Exports `ANTHROPIC_BASE_URL=http://127.0.0.1:<port>` and
    `ANTHROPIC_AUTH_TOKEN=<master key>` (and unsets
@@ -134,7 +134,7 @@ non-Anthropic model through LiteLLM). The script:
 Run:
 
 ```sh
-scripts/smoke_claude_via_litellm.sh                       # default: spark/qwen3.6:35b
+scripts/smoke_claude_via_litellm.sh                       # default: local/qwen3.6:35b
 scripts/smoke_claude_via_litellm.sh openrouter/qwen-3.5-72b
 ```
 

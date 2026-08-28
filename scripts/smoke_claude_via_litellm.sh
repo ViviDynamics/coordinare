@@ -8,15 +8,15 @@
 # LiteLLM proxy, and strips `thinking` content blocks the CLI parser rejects.
 #
 # Usage: scripts/smoke_claude_via_litellm.sh [model]
-#   model defaults to spark/qwen3.6:35b (matches config.claude.yaml)
+#   model defaults to local/qwen3.6:35b (matches config.claude.yaml)
 #
 # Requires LITELLM_MASTER_KEY in .env at repo root.
 
 set -u
 set -o pipefail
 
-MODEL="${1:-spark/qwen3.6:35b}"
-UPSTREAM_URL="https://litellm.vividynamics.com"
+MODEL="${1:-local/qwen3.6:35b}"
+UPSTREAM_URL="https://litellm.example"
 N_CALLS=5
 
 if [[ ! -f .env ]]; then

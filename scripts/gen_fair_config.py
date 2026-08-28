@@ -4,7 +4,7 @@
 For valid multi-backend benchmarking the backing MODEL must be held constant
 across every backend — otherwise you're comparing models, not backends. This
 rewrites every backend's model to one target, **preserving each field's route
-prefix**: LiteLLM-routed backends keep the ``spark/`` prefix, Ollama-direct
+prefix**: LiteLLM-routed backends keep the ``local/`` prefix, Ollama-direct
 backends get the bare name (the prefix must match the provider base URL).
 
 Two model-resolution mechanisms are covered:
@@ -30,13 +30,13 @@ _MODEL_RE = re.compile(r"(gpt-oss|qwen|llama|deepseek|deepcoder|glm|mistral|lagu
 
 
 def _swap(value: object, target: str) -> object:
-    """Retarget a concrete model string to ``target``, preserving any spark/ prefix.
+    """Retarget a concrete model string to ``target``, preserving any local/ prefix.
 
     Leaves ${VAR} placeholders and non-model strings unchanged.
     """
     if not isinstance(value, str) or value.startswith("${") or not _MODEL_RE.search(value):
         return value
-    return f"spark/{target}" if value.startswith("spark/") else target
+    return f"local/{target}" if value.startswith("local/") else target
 
 
 def main() -> int:

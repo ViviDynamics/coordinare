@@ -31,7 +31,7 @@ JSON is produced by ``scripts/bench_setup.sh``).
 Usage:
   scripts/persona_bench.py --repo <git_url> --prs tmp/bench_prs.json \\
       [--config config.yaml] [--roles reviewer,security,qa] \\
-      [--backends codex-ephemeral,...] [--judge-model spark/gpt-oss:120b]
+      [--backends codex-ephemeral,...] [--judge-model local/gpt-oss:120b]
 """
 from __future__ import annotations
 
@@ -842,7 +842,7 @@ def main() -> int:
     ap.add_argument("--config", default=str(REPO_ROOT / "config.yaml"))
     ap.add_argument("--roles", help="comma list of role labels (default: all)")
     ap.add_argument("--backends", help="comma list of endpoint ids (default: all)")
-    ap.add_argument("--judge-model", help="LiteLLM model for the judge, e.g. spark/gpt-oss:120b")
+    ap.add_argument("--judge-model", help="LiteLLM model for the judge, e.g. local/gpt-oss:120b")
     ap.add_argument("--out", default=str(REPO_ROOT / "specs" / "077-multi-backend-qa" / "persona_runs"),
                     help="committed results root (durable, in git)")
     ap.add_argument("--tag", default="run", help="subdir under --out (namespaces a run, e.g. the model)")
@@ -867,7 +867,7 @@ def main() -> int:
     judge_cfg = None
     if args.judge_model:
         base = (dotenv.get("COORDINARE_INFERENCE_BASE_URL") or
-                "https://litellm.vividynamics.com/v1")
+                "https://litellm.example/v1")
         judge_cfg = {"base_url": base,
                      "api_key": (dotenv.get("LITELLM_MASTER_KEY") or "").strip(),
                      "model": args.judge_model}
@@ -936,12 +936,12 @@ def main() -> int:
             if not r:
                 cells.append("-")
                 continue
-            mdl = (r.get("model") or "").replace("spark/", "")
+            mdl = (r.get("model") or "").replace("local/", "")
             cells.append(f"{short.get(r['category'], '?')} {mdl}")
         md.append(f"| {t.label} | " + " | ".join(cells) + " |")
     md += ["", "## Per-persona — which (backend, model) PASSed", ""]
     for t in tasks:
-        winners = [f"{r['endpoint'].replace('-ephemeral','')}({(r.get('model') or '').replace('spark/','')})"
+        winners = [f"{r['endpoint'].replace('-ephemeral','')}({(r.get('model') or '').replace('local/','')})"
                    for r in results if r["role"] == t.label and r["category"] == "PASS"]
         md.append(f"- **{t.label}**: {', '.join(winners) if winners else '— none passed —'}")
     md += ["", "## Totals", "", ", ".join(f"{k}={v}" for k, v in sorted(counts.items()))]

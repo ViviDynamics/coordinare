@@ -73,7 +73,7 @@ async def test_stop_reason_stop_sets_done_with_output() -> None:
         "meta": {
             "stopReason": "stop",
             "aborted": False,
-            "executionTrace": {"winnerProvider": "litellm", "winnerModel": "spark/qwen3.6:35b"},
+            "executionTrace": {"winnerProvider": "litellm", "winnerModel": "local/qwen3.6:35b"},
         },
     }
     b = OpenClawBackend()
@@ -147,7 +147,7 @@ async def test_persona_routed_to_soul_md_and_dropped_from_prompt(
     )
     stand = Stand(path=checkout, branch="main")
     b = OpenClawBackend()
-    await b.start(stand, score, model="spark/qwen3.6:35b")
+    await b.start(stand, score, model="local/qwen3.6:35b")
 
     # persona landed in SOUL.md (openclaw's identity file)
     assert (checkout / "SOUL.md").read_text() == "PERSONA_SOUL_MARKER: be a strict binary reviewer."
@@ -184,12 +184,12 @@ async def test_provider_override_writes_config_and_prefixes_model(
 
     stand = Stand(path=tmp_path, branch="main")
     b = OpenClawBackend()
-    await b.start(stand, _score(), model="spark/qwen3.6:35b")
+    await b.start(stand, _score(), model="local/qwen3.6:35b")
 
     argv = captured["argv"]
     assert argv[0] == "openclaw" and "agent" in argv and "--local" in argv and "--json" in argv
     # model is provider-prefixed so OpenClaw routes to the custom provider.
-    assert "--model" in argv and "litellm/spark/qwen3.6:35b" in argv
+    assert "--model" in argv and "litellm/local/qwen3.6:35b" in argv
 
     cfg = json.loads((tmp_path / ".openclaw" / "openclaw.json").read_text())
     assert cfg["models"]["mode"] == "merge"
@@ -197,11 +197,11 @@ async def test_provider_override_writes_config_and_prefixes_model(
     assert prov["baseUrl"] == "https://litellm.example/v1"
     assert prov["api"] == "openai-completions"
     assert prov["apiKey"] == "${LITELLM_MASTER_KEY}"  # env interpolation, not a literal
-    assert any(m["id"] == "spark/qwen3.6:35b" for m in prov["models"])
+    assert any(m["id"] == "local/qwen3.6:35b" for m in prov["models"])
     # model allowlisted (OpenClaw rejects non-allowlisted models)
-    assert "litellm/spark/qwen3.6:35b" in cfg["agents"]["defaults"]["models"]
-    # default budget preserved when no override env is set (qwen-on-spark baseline).
-    model_entry = next(m for m in prov["models"] if m["id"] == "spark/qwen3.6:35b")
+    assert "litellm/local/qwen3.6:35b" in cfg["agents"]["defaults"]["models"]
+    # default budget preserved when no override env is set (qwen on a self-hosted host baseline).
+    model_entry = next(m for m in prov["models"] if m["id"] == "local/qwen3.6:35b")
     assert model_entry["contextWindow"] == 32768
     assert model_entry["maxTokens"] == 8192
 
@@ -362,7 +362,7 @@ async def test_card_docs_written_to_workspace_and_referenced_in_prompt(
     )
     stand = Stand(path=checkout, branch="main")
     b = OpenClawBackend()
-    await b.start(stand, score, model="spark/qwen3.6:35b")
+    await b.start(stand, score, model="local/qwen3.6:35b")
 
     # CARD.md exists at the workspace root with the card context.
     card_md = checkout / "CARD.md"
@@ -413,7 +413,7 @@ async def test_large_prompt_offloaded_to_task_md(tmp_path: Path, monkeypatch) ->
         pr_diff=big_diff,
     )
     stand = Stand(path=checkout, branch="main")
-    await OpenClawBackend().start(stand, score, model="spark/qwen3.6:35b")
+    await OpenClawBackend().start(stand, score, model="local/qwen3.6:35b")
 
     # TASK.md must exist and contain the full prompt (including the diff).
     task_md = checkout / "TASK.md"
@@ -450,6 +450,6 @@ async def test_small_prompt_not_offloaded(tmp_path: Path, monkeypatch) -> None:
         pr_diff="+one line change",
     )
     stand = Stand(path=checkout, branch="main")
-    await OpenClawBackend().start(stand, score, model="spark/qwen3.6:35b")
+    await OpenClawBackend().start(stand, score, model="local/qwen3.6:35b")
 
     assert not (checkout / "TASK.md").exists(), "TASK.md must NOT be written for small prompts"

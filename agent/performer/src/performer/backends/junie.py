@@ -23,7 +23,7 @@ home is read-only) and selects it via ``--model custom:<profile_id>``.
 Two Junie-specific contract details (verified empirically — see the inline
 comments in ``_maybe_write_custom_profile``):
   - the profile's ``id`` FIELD is the upstream/wire model name (e.g.
-    ``spark/qwen3.6:35b``, from ``JUNIE_PROVIDER_MODEL``), NOT the local
+    ``local/qwen3.6:35b``, from ``JUNIE_PROVIDER_MODEL``), NOT the local
     profile id (which is the filename / ``--model custom:`` selector);
   - ``JUNIE_PROVIDER_BASE_URL`` must be the FULL endpoint URL
     (``https://host/v1/chat/completions``), not a ``/v1`` base — Junie POSTs to
@@ -91,7 +91,7 @@ def _maybe_write_custom_profile() -> str | None:
     api_type = os.environ.get("JUNIE_PROVIDER_API_TYPE", "OpenAICompletion").strip()
     # Per Junie's custom-LLM schema, the profile's `id` FIELD is "the model
     # identifier as expected by the API endpoint" — i.e. the upstream/wire model
-    # name (e.g. spark/qwen3.6:35b), NOT the local profile id. Junie sends this
+    # name (e.g. local/qwen3.6:35b), NOT the local profile id. Junie sends this
     # verbatim as the request `model`. Use the configured wire model; fall back
     # to the profile id only if unset. (Verified: setting id=<profile_id> made
     # LiteLLM 400 with "no healthy deployments for model=vivi".)

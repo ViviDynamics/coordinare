@@ -87,11 +87,11 @@ performer_endpoints:
 # When OPENCODE_PROVIDER_BASE_URL is set, OpenCodeAdapter writes an opencode.json
 # custom provider (@ai-sdk/openai-compatible) into the workspace at job start and
 # routes the session modelID as `<OPENCODE_PROVIDER_NAME>/<model>` (e.g.
-# litellm/spark/qwen3.6:35b). No ~/.opencode mount and no `compat` block are
+# litellm/local/qwen3.6:35b). No ~/.opencode mount and no `compat` block are
 # needed — the AI-SDK openai-compatible client uses standard system/user roles.
 # The API key is resolved in-container from OPENCODE_PROVIDER_ENV_KEY via
 # opencode's `{env:VAR}` syntax. Verified end-to-end against LiteLLM +
-# spark/qwen3.6:35b (research.md R-03).
+# local/qwen3.6:35b (research.md R-03).
 #
 #   - id: opencode-ephemeral
 #     mode: ephemeral

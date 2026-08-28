@@ -521,7 +521,7 @@ class TestUS2CapabilityGating:
         0.15.2 ("no providers found"). CLI must pass --provider custom."""
         monkeypatch.setenv("HERMES_PROVIDER", "litellm")
         monkeypatch.setenv("HERMES_BASE_URL", "https://provider.example/v1")
-        monkeypatch.setenv("HERMES_MODEL", "spark/qwen3.6:35b")
+        monkeypatch.setenv("HERMES_MODEL", "local/qwen3.6:35b")
         proc = _fake_proc(returncode=None)
         adapter = HermesBackend()
         with patch(
@@ -534,7 +534,7 @@ class TestUS2CapabilityGating:
             assert "model:" in cfg
             assert "provider: custom" in cfg
             assert "base_url: https://provider.example/v1" in cfg
-            assert "default: spark/qwen3.6:35b" in cfg
+            assert "default: local/qwen3.6:35b" in cfg
             # Key referenced via env, never embedded.
             assert "api_key_env: HERMES_API_KEY" in cfg
             assert "sk-test-12345" not in cfg

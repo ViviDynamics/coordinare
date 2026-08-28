@@ -1209,14 +1209,14 @@ async def test_dispatch_codex_honors_auth_token_env_for_self_hosted_mode(monkeyp
         **_card(),
         "backend": "codex",
         "auth_token_env": "LITELLM_PROXY_AUTH_TOKEN",  # as 080 dispatch emits for self-hosted
-        "base_url": "http://spark:4000",
+        "base_url": "http://localhost:4000",
     }
     svc = HTTPPerformerService(_persistent_config(), client=_client(handler))
     await svc.dispatch_card(card, _workspace())
 
     secrets = payloads[0].get("secrets", {})
     assert secrets.get("OPENAI_API_KEY") == "sk-litellm-bearer"
-    assert secrets.get("OPENAI_BASE_URL") == "http://spark:4000"
+    assert secrets.get("OPENAI_BASE_URL") == "http://localhost:4000"
     await svc.aclose()
 
 

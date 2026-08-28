@@ -45,7 +45,7 @@ max_concurrent_cards: 5             # global default
 
 # --- spec-080 model catalogs (unify single/dual/self-hosted/frontier) ---
 # spec-122: self-hosted models are served behind ONE LiteLLM gateway (kind:
-# litellm) — coordinare no longer points at Ollama/Spark hosts directly.
+# litellm) — coordinare no longer points at Ollama hosts directly.
 endpoints:                          # named serving locations
   - name: litellm
     kind: litellm

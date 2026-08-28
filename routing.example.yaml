@@ -37,13 +37,13 @@ selfhosted_routing:
   # openclaw reviewer → Ollama-direct. LiteLLM's streaming harmony→tool_calls
   # handling for gpt-oss is broken (LiteLLM #17246/#13300): it leaks raw harmony
   # text instead of structured tool_calls, so review tools never execute. Reroute
-  # repoints openclaw's provider env straight at the Spark's Ollama, bypassing the
+  # repoints openclaw's provider env straight at the model host's Ollama, bypassing the
   # lossy proxy entirely — declaratively, the same fix the OPENCLAW_PROVIDER_BASE_URL
   # override in config.yaml does manually.
   - backend: openclaw
     model: gpt-oss:120b
     target:
-      base_url: http://192.168.3.30:11434/v1   # Ollama-direct clean upstream
+      base_url: http://192.0.2.10:11434/v1   # Ollama-direct clean upstream
       wire_format: openai                       # openai | anthropic
       strategy: reroute                         # bypass the lossy proxy entirely
       reroute_upstream: null                    # already the clean path
@@ -60,7 +60,7 @@ selfhosted_routing:
   - backend: junie
     model: gpt-oss:120b
     target:
-      base_url: http://192.168.3.30:11434
+      base_url: http://192.0.2.10:11434
       wire_format: openai
       strategy: normalize
       health_probe: completion
@@ -80,7 +80,7 @@ selfhosted_routing:
   - backend: hermes
     model: gpt-oss:120b               # the Ollama model name (matches the dispatch)
     target:
-      base_url: http://192.168.3.30:11434   # bare Ollama origin, no auth
+      base_url: http://192.0.2.10:11434   # bare Ollama origin, no auth
       wire_format: openai
       strategy: normalize
       health_probe: completion
@@ -93,7 +93,7 @@ selfhosted_routing:
 # transform). Omit the entry entirely for DIRECT (no proxy hop). Repair
 # normalizers stay registered; re-add a normalize/translate entry to re-enable.
 #   - backend: claude_code
-#     model: spark/gpt-oss:120b           # the LiteLLM-served name
+#     model: local/gpt-oss:120b           # the LiteLLM-served name
 #     target:
 #       base_url: https://litellm.example.com   # BARE origin (shim appends /v1/messages)
 #       wire_format: anthropic

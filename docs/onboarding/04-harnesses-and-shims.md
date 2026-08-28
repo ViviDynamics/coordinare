@@ -107,7 +107,7 @@ stochastic malformed output is handled one level up by the spec-119 retry, not t
 - **Local / self-hosted:** `gpt-oss:120b`, `qwen` variants, `glm` — served through the
   **LiteLLM gateway** (spec 122), an OpenAI-compatible front door (`/v1/chat/completions`) that
   fronts the underlying Ollama/vLLM backends. **All self-hosted inference now goes through this
-  one gateway** — coordinare no longer calls Ollama hosts (the "Spark" boxes) directly, so there's
+  one gateway** — coordinare no longer calls Ollama hosts (the "the model host" boxes) directly, so there's
   a single place to route, observe, and swap models. These are the paths that need the shim +
   normalizers to behave like frontier models. (During the 122 cutover a few one-shot harnesses —
   junie/pi/hermes — needed CLI-compat fixes; the routing direction is LiteLLM-for-all.)

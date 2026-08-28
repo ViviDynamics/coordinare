@@ -93,13 +93,13 @@ def test_openai_envelope_echoes_upstream_id_model_created_when_present():
         "id": "chatcmpl-upstream-xyz",
         "object": "chat.completion",
         "created": 1234567890,
-        "model": "spark/qwen3.6:35b",
+        "model": "local/qwen3.6:35b",
         "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}}],
     }
     resp = LLMResponse(content="hi", raw=raw)
     body = assemble_json(resp, expose_plan_as="drop", wire_format="openai")
     assert body["id"] == "chatcmpl-upstream-xyz"
-    assert body["model"] == "spark/qwen3.6:35b"
+    assert body["model"] == "local/qwen3.6:35b"
     assert body["created"] == 1234567890
     assert body["object"] == "chat.completion"
     # the merged choices still reflect the assembled message, not the raw passthrough

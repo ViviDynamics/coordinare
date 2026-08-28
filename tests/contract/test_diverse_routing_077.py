@@ -2,7 +2,7 @@
 
 Asserts (against a representative diverse-backend config fixture):
 - T005: each lifecycle role resolves to its expected backend, and every role's
-  model is the single shared `spark/gpt-oss:120b` (FR-001, FR-002). The shared
+  model is the single shared `local/gpt-oss:120b` (FR-001, FR-002). The shared
   model must be capable enough to gate the `security` role (spec 083 denylist).
 - T006: each backend endpoint carries the LiteLLM provider-routing env its
   backend needs, so no backend can default to a vendor-hosted model
@@ -17,8 +17,8 @@ import pytest
 from coordinare.config import ProjectConfiguration
 
 # Capable shared model: NOT on the spec-083 security denylist, so the `security`
-# role may bind to it (the prior `spark/qwen3.6:35b` is now denylisted).
-SHARED_MODEL = "spark/gpt-oss:120b"
+# role may bind to it (the prior `local/qwen3.6:35b` is now denylisted).
+SHARED_MODEL = "local/gpt-oss:120b"
 
 # Expected role → backend mapping for the round (the 4 already-working backends;
 # pi/opencode land in US2/US4; openclaw in US6).
@@ -78,7 +78,7 @@ performer_endpoints:
 endpoints:
   - {name: litellm, kind: litellm, base_url: https://litellm.example/v1, auth_env: LITELLM_PROXY_AUTH_TOKEN}
 model_endpoints:
-  - {name: shared-model, endpoint: litellm, model: spark/gpt-oss:120b}
+  - {name: shared-model, endpoint: litellm, model: local/gpt-oss:120b}
 modes:
   - {name: single-shared, strategy: single, tool: shared-model}
 performers:

@@ -444,7 +444,7 @@ performers:
 #   - backend: openclaw
 #     model: gpt-oss:120b
 #     target:
-#       base_url: http://spark:11434/v1     # Ollama-direct clean upstream
+#       base_url: http://localhost:11434/v1     # Ollama-direct clean upstream
 #       wire_format: openai                 # openai | anthropic
 #       strategy: reroute                   # bypass the lossy proxy entirely
 #       reroute_upstream: null              # already the clean path
@@ -455,7 +455,7 @@ performers:
 #       wire_format: openai
 #       strategy: normalize                 # repair the response in-flight
 #       normalizers: [harmony_tool_calls]   # explicit; only these run, in order
-#       reroute_upstream: http://spark:11434/v1   # health-gate auto-reroute on probe failure
+#       reroute_upstream: http://localhost:11434/v1   # health-gate auto-reroute on probe failure
 #   - backend: claude_code
 #     model: qwen3-coder
 #     target:
@@ -774,7 +774,7 @@ notifications:
   #     smtp_username: "postmaster@mail.example.com"
   #     smtp_password: "${COORDINARE_SMTP_PASSWORD}"
   #     smtp_recipient: "team@example.com"
-  #     # smtp_sender: "coordinare@vividynamics.com"   # From address; default shown
+  #     # smtp_sender: "coordinare@your-domain.example"   # From address; set this to your own domain
   #     # subject_template: "{event_type}: {source}"  # email subject; defaults to message_template
   #     rate_limit: 5
   #     rate_window_seconds: 300

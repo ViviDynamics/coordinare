@@ -22,7 +22,7 @@ gateway_unavailable = smoke_backends.gateway_unavailable
 def _result(**kw) -> dict:
     base = {
         "endpoint": "claude-litellm", "backend": "claude_code",
-        "model": "spark/gpt-oss:120b", "launched": True, "state": "succeeded",
+        "model": "local/gpt-oss:120b", "launched": True, "state": "succeeded",
         "output_len": 500, "performer_status": "qa_passed", "error": "", "detail": "",
     }
     base.update(kw)

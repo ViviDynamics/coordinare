@@ -221,12 +221,12 @@ human_reviewers: [alice]
 github_auth: pat
 github_token: ghp_test_token
 endpoints:
-  - {name: ep-ollama, kind: ollama, base_url: "http://192.168.3.30:11434"}
+  - {name: ep-ollama, kind: ollama, base_url: "http://192.0.2.10:11434"}
   - {name: ep-litellm, kind: litellm, base_url: "https://litellm.example", auth_env: LITELLM_MASTER_KEY}
 model_endpoints:
   - {name: plan-gptoss, endpoint: ep-ollama, model: "gpt-oss:120b"}
-  - {name: exec-qwen, endpoint: ep-litellm, model: "spark/qwen3.6:35b"}
-  - {name: solo-qwen, endpoint: ep-litellm, model: "spark/qwen3.6:35b"}
+  - {name: exec-qwen, endpoint: ep-litellm, model: "local/qwen3.6:35b"}
+  - {name: solo-qwen, endpoint: ep-litellm, model: "local/qwen3.6:35b"}
 modes:
   - {name: plan-exec, strategy: always, thinking: plan-gptoss, tool: exec-qwen, expose_plan_as: thinking}
   - {name: solo, strategy: single, tool: solo-qwen}
@@ -248,17 +248,17 @@ class TestResolveRoleDispatch:
         cfg_path = _write_config(tmp_path)
         out = persona_bench.resolve_role_dispatch(cfg_path, "architect")
         # executor leg is the dispatch model (mirrors live dispatch)
-        assert out["model"] == "spark/qwen3.6:35b"
+        assert out["model"] == "local/qwen3.6:35b"
         orch = out["orchestration"]
         assert orch is not None
         assert orch["strategy"] == "always"
-        assert orch["tool"]["model"] == "spark/qwen3.6:35b"
+        assert orch["tool"]["model"] == "local/qwen3.6:35b"
         assert orch["thinking"]["model"] == "gpt-oss:120b"
 
     def test_single_model_role_has_no_orchestration(self, tmp_path):
         cfg_path = _write_config(tmp_path)
         out = persona_bench.resolve_role_dispatch(cfg_path, "closer")
-        assert out["model"] == "spark/qwen3.6:35b"
+        assert out["model"] == "local/qwen3.6:35b"
         assert out["orchestration"] is None
 
 

@@ -38,7 +38,7 @@ Making off-the-shelf harnesses work against local open models:
 - **084** Anthropic⇄OpenAI wire translation · **098** control-char normalizer + junie resilience
 - **099** health-probe modes · **100** route hermes (tech_writer) through the normalize shim
 - **122** LiteLLM consolidation — **all** self-hosted inference now goes through one LiteLLM
-  gateway (no more direct Ollama/Spark calls); a single place to route, observe, and swap models
+  gateway (no more direct Ollama/the model host calls); a single place to route, observe, and swap models
 *Active — this is the shim/normalizer line ([doc 04](04-harnesses-and-shims.md)).*
 
 ### Pipeline correctness & PR-lifecycle robustness (120, 123, 125–129)

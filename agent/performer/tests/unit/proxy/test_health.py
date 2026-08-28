@@ -219,7 +219,7 @@ async def test_unhealthy_probe_without_reroute_fails_closed():
 
 @pytest.mark.asyncio
 async def test_probe_timeout_surfaces_unhealthy_not_a_hang():
-    """A wedged upstream (the 077 spark/qwen runner hang): the bounded probe
+    """A wedged upstream (the 077 local/qwen runner hang): the bounded probe
     raises a timeout, which surfaces as ``unhealthy`` rather than hanging
     startup. With no reroute_upstream it then fails closed (SC-005, Edge Case)."""
 

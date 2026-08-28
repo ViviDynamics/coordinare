@@ -78,18 +78,18 @@ performer_endpoints:
 endpoints:
   - {name: litellm, kind: litellm, base_url: http://localhost:4000, auth_env: LITELLM_PROXY_AUTH_TOKEN}
 model_endpoints:
-  - {name: spark-qwen3-6-35b, endpoint: litellm, model: "spark/qwen3.6:35b"}
+  - {name: local-ollama-qwen3-6-35b, endpoint: litellm, model: "local/qwen3.6:35b"}
 modes:
-  - {name: single-spark-qwen3-6-35b, strategy: single, tool: spark-qwen3-6-35b}
+  - {name: single-local-ollama-qwen3-6-35b, strategy: single, tool: local-ollama-qwen3-6-35b}
 
 performers:
   default:
     backend: pi
-    mode: single-spark-qwen3-6-35b
+    mode: single-local-ollama-qwen3-6-35b
 
   closer:
     backend: pi
-    mode: single-spark-qwen3-6-35b
+    mode: single-local-ollama-qwen3-6-35b
     max_tokens: 8192
 
 

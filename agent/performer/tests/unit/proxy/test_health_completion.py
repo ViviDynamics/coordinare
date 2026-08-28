@@ -23,7 +23,7 @@ def _target(
     normalizers: list[str] | None = None,
     reroute_upstream: str | None = None,
     wire_format: str = "openai",
-    base_url: str = "http://192.168.3.30:11434",
+    base_url: str = "http://192.0.2.10:11434",
 ) -> TargetDescriptor:
     if normalizers is None:
         normalizers = ["strip_control_chars", "strip_reasoning"] if strategy == "normalize" else []
@@ -130,7 +130,7 @@ async def test_junie_style_completion_target_admitted() -> None:
     target = _target(
         strategy="normalize",
         normalizers=["strip_control_chars", "strip_reasoning"],
-        base_url="http://192.168.3.30:11434",
+        base_url="http://192.0.2.10:11434",
     )
 
     def ok(request: httpx.Request) -> httpx.Response:

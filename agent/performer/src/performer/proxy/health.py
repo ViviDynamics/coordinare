@@ -6,7 +6,7 @@ fail-*closed* surface in the layer (normalizers fail-open, FR-078-9): a broken
 or wedged upstream surfaces as ``unhealthy`` and is gated per FR-078-5 rather
 than black-holing a card mid-lifecycle.
 
-The probe is timeout-bounded (the 077 spark/qwen runner-wedge edge): a hung
+The probe is timeout-bounded (the 077 local/qwen runner-wedge edge): a hung
 upstream raises a timeout that we map to ``unhealthy`` instead of hanging
 startup. Connection refusal (the 077 hermes can't-connect edge) and a non-200
 likewise surface as ``unhealthy``.

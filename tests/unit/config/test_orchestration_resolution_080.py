@@ -14,15 +14,15 @@ def _cfg(tmp_path: Path, modes: list[dict], performers: dict) -> ProjectConfigur
         "project_name": "t", "github_org": "o", "github_project_number": 1,
         "github_token": "ghp_x", "human_reviewers": ["a"],
         "endpoints": [
-            {"name": "spark-litellm", "kind": "litellm", "base_url": "http://spark:4000",
+            {"name": "local-litellm", "kind": "litellm", "base_url": "http://localhost:4000",
              "auth_env": "LITELLM_PROXY_AUTH_TOKEN"},
-            {"name": "spark-ollama", "kind": "ollama", "base_url": "http://spark:11434"},
+            {"name": "local-ollama", "kind": "ollama", "base_url": "http://localhost:11434"},
             {"name": "anthropic-cloud", "kind": "anthropic", "auth_env": "ANTHROPIC_API_KEY"},
         ],
         "model_endpoints": [
-            {"name": "gptoss-litellm", "endpoint": "spark-litellm", "model": "spark/gpt-oss:120b"},
-            {"name": "gptoss-ollama", "endpoint": "spark-ollama", "model": "gpt-oss:120b"},
-            {"name": "qwen-litellm", "endpoint": "spark-litellm", "model": "spark/qwen3.6:35b"},
+            {"name": "gptoss-litellm", "endpoint": "local-litellm", "model": "local/gpt-oss:120b"},
+            {"name": "gptoss-ollama", "endpoint": "local-ollama", "model": "gpt-oss:120b"},
+            {"name": "qwen-litellm", "endpoint": "local-litellm", "model": "local/qwen3.6:35b"},
             {"name": "sonnet-native", "endpoint": "anthropic-cloud", "model": "claude-sonnet-4-5"},
         ],
         "modes": modes,
@@ -51,12 +51,12 @@ def test_always_orchestration_resolves_both_legs(tmp_path):
     )
     orch = cfg.resolve_performer_orchestration("architect")
     assert orch["strategy"] == "always"
-    assert orch["thinking"]["model"] == "spark/gpt-oss:120b"
-    assert orch["thinking"]["base_url"] == "http://spark:4000"
+    assert orch["thinking"]["model"] == "local/gpt-oss:120b"
+    assert orch["thinking"]["base_url"] == "http://localhost:4000"
     assert orch["thinking"]["auth_style"] == "bearer"
     assert orch["thinking"]["wire_format"] == "openai"
     assert orch["tool"]["model"] == "gpt-oss:120b"
-    assert orch["tool"]["base_url"] == "http://spark:11434"  # ollama-direct
+    assert orch["tool"]["base_url"] == "http://localhost:11434"  # ollama-direct
     assert orch["expose_plan_as"] == "thinking"
     assert orch["on_think_error"] == "fall_back_to_act"
     assert "threshold" not in orch  # not conditional
@@ -71,7 +71,7 @@ def test_conditional_includes_classifier_and_threshold(tmp_path):
     )
     orch = cfg.resolve_performer_orchestration("implementer")
     assert orch["strategy"] == "conditional"
-    assert orch["classifier"]["model"] == "spark/qwen3.6:35b"
+    assert orch["classifier"]["model"] == "local/qwen3.6:35b"
     assert orch["threshold"] == 0.7
 
 

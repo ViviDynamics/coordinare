@@ -193,7 +193,7 @@ async def test_streaming_200_passes_through_as_sse():
 
 @pytest.mark.asyncio
 async def test_wedged_upstream_surfaces_clean_502():
-    """A forwarding error (e.g. the 077 spark/qwen runner-wedge raising a read
+    """A forwarding error (e.g. the 077 local/qwen runner-wedge raising a read
     timeout) surfaces as a clean 502 — never a hang, never a leaked body."""
 
     def handler(req: httpx.Request) -> httpx.Response:
@@ -269,7 +269,7 @@ async def test_no_v1_chat_completions_is_routed_and_canonicalized():
     try:
         async with httpx.AsyncClient() as c:
             r = await c.post(f"{base}/chat/completions",
-                             json={"model": "spark/gpt-oss:120b", "messages": []})
+                             json={"model": "local/gpt-oss:120b", "messages": []})
         assert r.status_code == 200
     finally:
         await shim.stop()
@@ -289,7 +289,7 @@ async def test_v1_chat_completions_still_forwarded_unchanged():
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     shim = SelfHostedShim(
         target=TargetDescriptor(
-            base_url="http://192.168.3.30:11434", wire_format="openai",
+            base_url="http://192.0.2.10:11434", wire_format="openai",
             strategy="normalize", normalizers=["strip_control_chars"],
         ),
         client=client,
@@ -301,7 +301,7 @@ async def test_v1_chat_completions_still_forwarded_unchanged():
     finally:
         await shim.stop()
         await client.aclose()
-    assert seen["url"] == "http://192.168.3.30:11434/v1/chat/completions"
+    assert seen["url"] == "http://192.0.2.10:11434/v1/chat/completions"
 
 
 # --- 122: upstream auth injection (junie/pi/hermes key-resolution gap) ------ #

@@ -10,5 +10,5 @@ echo "=== RE-SHAKEOUT START $(date '+%H:%M:%S') ==="
   --repo https://github.com/ViviDynamics/conductor-bench.git \
   --prs tmp/bench_prs.json --config config.fair_persona120b.yaml \
   --backends opencode-ephemeral,codex-ephemeral \
-  --judge-model spark/gpt-oss:120b --tag shakeout2-120b
+  --judge-model local/gpt-oss:120b --tag shakeout2-120b
 echo "=== RE-SHAKEOUT DONE $(date '+%H:%M:%S') ==="

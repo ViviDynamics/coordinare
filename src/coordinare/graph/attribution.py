@@ -11,8 +11,8 @@ from ``performer.main._attribution_header``.  Keep the two in sync (the
 Header shape (two lines): a hidden machine-readable marker followed by a visible
 blockquote line.
 
-    <!-- coordinare-attribution origin=coordinare role=implementing harness=codex model=spark/qwen3.6:35b -->
-    > 🎼 **Coordinare** · re: Implementer (`codex` · `spark/qwen3.6:35b`)
+    <!-- coordinare-attribution origin=coordinare role=implementing harness=codex model=local/qwen3.6:35b -->
+    > 🎼 **Coordinare** · re: Implementer (`codex` · `local/qwen3.6:35b`)
 
 Per the operator's design decision, a coordinare comment **tags the stage it acted
 on**: it resolves that stage's harness/model from config and references them, so

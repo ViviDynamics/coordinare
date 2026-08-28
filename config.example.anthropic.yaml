@@ -1,0 +1,85 @@
+# ============================================================================
+# Coordinare preset: the Anthropic API
+# ============================================================================
+#
+# The shortest path from a clone to a first dispatched card. Everything you must
+# change is marked CHANGE ME. Everything else is a working default.
+#
+#   1. Put your key in .env as ANTHROPIC_API_KEY.
+#   2. Set the CHANGE ME values below.
+#   3. Validate:  .venv/bin/python -m coordinare --config config.yaml config validate
+#   4. Preflight: .venv/bin/python -m coordinare --config config.yaml doctor
+#
+# Note this sends your repository's code to Anthropic. If that is not acceptable
+# for your codebase, use the Ollama or OpenAI-compatible preset against an
+# endpoint you control. See docs/security/threat-model.md on model-endpoint trust.
+#   3. Validate the file parses:
+#        .venv/bin/python -m coordinare --config config.yaml config validate
+#   4. Preflight (checks your endpoint actually answers, models exist,
+#      and the GitHub token has the permissions each feature needs):
+#        .venv/bin/python -m coordinare --config config.yaml doctor
+#
+# This preset configures the MINIMUM set of roles needed to see a card move end
+# to end. The other roles are listed, commented, at the bottom: add them once
+# the basic loop works rather than provisioning nine roles before you have seen
+# one card succeed.
+# ============================================================================
+
+github_org: your-org-or-username        # CHANGE ME
+github_token: "${COORDINARE_GITHUB_TOKEN}"   # set in .env; never commit a token
+human_reviewers:
+  - your-github-username                # CHANGE ME  (only humans approve PRs)
+
+# Your token needs specific fine-grained permissions. The exact list, per
+# feature, is in docs/security/threat-model.md — including two that are easy to
+# miss (Issues needs WRITE, and branch-protection reads need Administration).
+
+agent_transport: subprocess
+agent_executable: bin/run-performer
+
+endpoints:
+  - name: anthropic
+    kind: anthropic
+    auth_env: ANTHROPIC_API_KEY
+
+model_endpoints:
+  - {name: coder, endpoint: anthropic, model: "claude-sonnet-4-6"}
+
+modes:
+  - {name: single-coder, strategy: single, tool: coder}
+
+# ---------------------------------------------------------------------------
+# The minimum viable role set.
+# ---------------------------------------------------------------------------
+# implementer writes the code and opens the PR; reviewer reads it back. That is
+# enough for a complete card. Unconfigured roles are skipped, not failed.
+performers:
+  default:
+    backend: claude_code
+    mode: single-coder
+    effort: medium
+    temperature: 0.2
+    max_tokens: 8192
+  implementer:
+    effort: high
+    max_tokens: 16384
+  reviewer:
+    effort: medium
+
+  # Add these once the basic loop works. Each is optional.
+  # assessor:    {effort: low}      # checks a card has enough context first
+  # architect:   {effort: high}     # commits a plan before implementation
+  # security:    {effort: medium}   # runs the security scan gate
+  # qa:          {effort: medium}   # validates acceptance criteria
+  # tech_writer: {effort: low}      # maintains docs/wiki
+  # closer:      {effort: low}      # final pass before human review
+
+symphonies:
+  - name: main
+    github_project_number: 1              # CHANGE ME  (your GitHub Project number)
+
+# Loopback only. The dashboard has NO authentication: see
+# docs/security/threat-model.md before changing dashboard_host.
+dashboard_host: 127.0.0.1
+dashboard_port: 8090
+log_level: info

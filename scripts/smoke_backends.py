@@ -392,13 +392,13 @@ def main() -> int:
         print("no matching endpoints", file=sys.stderr)
         return 2
 
-    # The Spark (Ollama) serves ~one request at a time — running backends in
+    # The the model host (Ollama) serves ~one request at a time — running backends in
     # parallel creates contention that looks like backend failures but isn't. So
     # run SEQUENTIALLY, grouped by model to minimise Ollama model-reload thrash
     # between consecutive backends.
     endpoints.sort(key=lambda e: _backend_model(cfg, e))
     print(f"Smoke-testing {len(endpoints)} backend(s) SEQUENTIALLY "
-          f"(Spark is single-request; repo={args.repo}, pr={args.pr})\n")
+          f"(the model host is single-request; repo={args.repo}, pr={args.pr})\n")
     results = []
     for e in endpoints:
         print(f"  -> {e['id']} (model={_backend_model(cfg, e) or '?'}) ...", flush=True)

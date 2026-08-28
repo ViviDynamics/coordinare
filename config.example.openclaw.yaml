@@ -25,7 +25,7 @@
 #     endpoints, so OpenAI-compatible models that reject the `developer` role
 #     (e.g. qwen) work directly.
 #   - The model is routed as `<OPENCLAW_PROVIDER_NAME>/<model>` (e.g.
-#     `litellm/spark/qwen3.6:35b`).
+#     `litellm/local/qwen3.6:35b`).
 #   - The `openclaw` CLI installs on container start via the entrypoint
 #     `openclaw)` arm (`npm install -g openclaw`) — not baked into the image.
 #   - Terminal contract: `openclaw agent --json` emits `{payloads, meta}`; the
@@ -89,18 +89,18 @@ performer_endpoints:
 endpoints:
   - {name: litellm, kind: litellm, base_url: http://localhost:4000, auth_env: LITELLM_PROXY_AUTH_TOKEN}
 model_endpoints:
-  - {name: spark-qwen3-6-35b, endpoint: litellm, model: "spark/qwen3.6:35b"}
+  - {name: local-ollama-qwen3-6-35b, endpoint: litellm, model: "local/qwen3.6:35b"}
 modes:
-  - {name: single-spark-qwen3-6-35b, strategy: single, tool: spark-qwen3-6-35b}
+  - {name: single-local-ollama-qwen3-6-35b, strategy: single, tool: local-ollama-qwen3-6-35b}
 
 performers:
   default:
     backend: openclaw
-    mode: single-spark-qwen3-6-35b
+    mode: single-local-ollama-qwen3-6-35b
 
   reviewer:
     backend: openclaw
-    mode: single-spark-qwen3-6-35b
+    mode: single-local-ollama-qwen3-6-35b
     max_tokens: 24576
 
 

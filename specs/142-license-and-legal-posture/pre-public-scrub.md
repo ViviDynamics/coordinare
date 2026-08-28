@@ -39,7 +39,7 @@ concrete command or UI step rather than an intention, and records what actually 
 
 | Check | Tracked files matching | Timing | Outcome |
 |---|---|---|---|
-| Private RFC-1918 addresses outside `specs/` | **0** | `now` | **Clean.** Earlier drift (the Spark model host) has already been removed from tracked non-spec files. |
+| Private RFC-1918 addresses outside `specs/` | ~~0~~ **12** | `at_flip` | **CORRECTED 2026-08-28. The original "0" was wrong, and the check that produced it was broken.** The grep used `\b` word boundaries, which `git grep -E` does not support (POSIX ERE), so the pattern matched nothing and was recorded as clean. Re-run without `\b`: **12 tracked non-spec files contain `192.168.3.30`**, the internal model host, including `routing.example.yaml` (which users copy), `agent/performer/src/performer/proxy/shim.py`, `scripts/pull_spark_models.sh`, and 8 performer proxy tests. Outstanding, owned by spec 145. |
 | `spark/*` internal model identifiers outside `specs/` | **48** | `at_flip` | **Outstanding, owned by spec 145.** These are internal model-roster identifiers in examples, defaults, and routing configuration. |
 | `litellm.vividynamics.com` internal gateway hostname outside `specs/` | **8** | `at_flip` | **Outstanding, owned by spec 145.** |
 
@@ -64,12 +64,27 @@ No credentials and no private addresses, so this is not a secrets problem. What 
 | No document implies a warranty, support obligation, or response commitment | working tree | `now` | **Done and enforced** (FR-026). |
 | Packaging metadata declares the ELv2 reference, with no OSI classifier | working tree | `now` | **Done.** Verified by building both distributions: the wheel metadata carries `License-Expression: LicenseRef-Elastic-License-2.0`, and the root wheel bundles `LICENSE` and `NOTICE` under `dist-info/licenses/`. |
 
+## Correction, 2026-08-28
+
+The private-address row above originally read **0 files, Clean**. That was false, and the way it
+was false is worth recording, because the same mistake is easy to repeat.
+
+The evidence was a `git grep -ilE` pattern using `\b` word boundaries. `git grep -E` uses POSIX
+ERE, which has **no `\b`**, so the expression matched nothing and produced a confident zero. The
+scrub then recorded that zero as a clean result.
+
+A check that silently matches nothing is indistinguishable from a check that passes. The
+correction is not merely the number: it is that a scrub item whose evidence is a grep must be
+verified to actually match something known-present before its zero is trusted. Spec 145 adds an
+automated guard for internal references so this stops depending on anyone running the right
+regex by hand.
+
 ## Outstanding at the time of writing
 
 A fully ticked checklist above does **not** mean the repository is ready to publish. These remain:
 
 1. **Enable private vulnerability reporting** at the flip, in the UI. `SECURITY.md` depends on it.
-2. **Spec 145 ([#199](https://github.com/ViviDynamics/coordinare/issues/199))** must remove the 48 `spark/*` references and 8 internal gateway hostnames from non-spec files.
+2. **Spec 145 ([#199](https://github.com/ViviDynamics/coordinare/issues/199))** must remove the internal references from non-spec files: **48** carrying `spark/*` model identifiers, **8** carrying the internal gateway hostname, and **12** carrying the `192.168.3.30` model-host address (the last of these missed entirely by the original scrub, see the correction above).
 3. **Decide whether the `specs/` tree is published.** 660 of 1,999 spec files carry `spark/*` model identifiers and 158 carry the internal gateway hostname (no credentials, no private addresses). Not a secrets problem, but a disclosure choice at a scale nobody has weighed yet.
 4. **Spec 144 ([#198](https://github.com/ViviDynamics/coordinare/issues/198))** threat model, which `SECURITY.md` reserves a section for and which is the other launch-blocking gate.
 5. **Live-verify the external-contribution automation** with a pull request from an account outside the organization. It cannot be tested before merge.

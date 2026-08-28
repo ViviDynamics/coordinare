@@ -97,7 +97,7 @@ class TestProtocolResponse:
             session_id="s1",
             progress="Building tests",
             backend="opencode",
-            model="spark/qwen3.6:35b",
+            model="local/qwen3.6:35b",
         )
         raw = resp.model_dump_json()
         restored = ProtocolResponse.model_validate_json(raw)

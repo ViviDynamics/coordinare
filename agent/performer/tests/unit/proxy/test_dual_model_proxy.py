@@ -19,8 +19,8 @@ from performer.proxy.strategies import (
 
 _ALWAYS_CFG = {
     "strategy": "always",
-    "tool": {"name": "tool", "model": "qwen", "wire_format": "openai", "base_url": "http://spark/v1"},
-    "thinking": {"name": "think", "model": "gptoss", "wire_format": "openai", "base_url": "http://spark/v1"},
+    "tool": {"name": "tool", "model": "qwen", "wire_format": "openai", "base_url": "http://local/v1"},
+    "thinking": {"name": "think", "model": "gptoss", "wire_format": "openai", "base_url": "http://local/v1"},
     "expose_plan_as": "thinking",
 }
 

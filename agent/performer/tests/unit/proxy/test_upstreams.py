@@ -149,11 +149,11 @@ async def test_http_upstream_openai_roundtrip_and_auth():
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     up = HttpUpstream(
         name="t", model="gpt", wire_format="openai",
-        base_url="http://spark:4000/v1", auth_token="sek", auth_style="bearer", client=client,
+        base_url="http://localhost:4000/v1", auth_token="sek", auth_style="bearer", client=client,
     )
     resp = await up.complete(_req(), tools_enabled=True)
     assert resp.content == "hi"
-    assert captured["url"] == "http://spark:4000/v1/chat/completions"
+    assert captured["url"] == "http://localhost:4000/v1/chat/completions"
     assert captured["auth"] == "Bearer sek"
     assert captured["body"]["tools"]  # tools forwarded
     await client.aclose()

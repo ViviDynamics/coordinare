@@ -20,6 +20,6 @@ echo "=== persona shakeout START $(date '+%H:%M:%S') ==="
   --prs tmp/bench_prs.json \
   --config config.fair_persona120b.yaml \
   --backends opencode-ephemeral,codex-ephemeral \
-  --judge-model spark/gpt-oss:120b \
+  --judge-model local/gpt-oss:120b \
   --tag shakeout-120b
 echo "=== persona shakeout DONE $(date '+%H:%M:%S') ==="

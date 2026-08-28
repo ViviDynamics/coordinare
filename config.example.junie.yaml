@@ -66,7 +66,7 @@ symphonies:
 #     temp dir seeded from the creds.
 #     env:
 #       JUNIE_PROVIDER_BASE_URL:   "https://litellm.example.com/v1/chat/completions"
-#       JUNIE_PROVIDER_MODEL:      "spark/qwen3.6:35b"   # wire model → profile `id`
+#       JUNIE_PROVIDER_MODEL:      "local/qwen3.6:35b"   # wire model → profile `id`
 #       JUNIE_PROVIDER_MODEL_ID:   "vivi"                # local profile id (filename)
 #       JUNIE_PROVIDER_API_TYPE:   "OpenAICompletion"    # or OpenAIResponses/Google/Anthropic
 #       JUNIE_PROVIDER_API_KEY_ENV: "LITELLM_MASTER_KEY" # env var holding the key

@@ -121,7 +121,7 @@ class OpenCodeAdapter:
         # adapter_name), write an ``opencode.json`` into the workspace declaring
         # the provider and route the model through it. Unset → the existing
         # mounted-creds flow is untouched. Verified end-to-end against LiteLLM +
-        # spark/qwen3.6:35b.
+        # local/qwen3.6:35b.
         effective_model = model
         prefix = self._adapter_name.upper()
         provider_base_url = env.get(f"{prefix}_PROVIDER_BASE_URL", "")
@@ -207,7 +207,7 @@ class OpenCodeAdapter:
         ``provider.<name>`` via ``@ai-sdk/openai-compatible``
         pointed at ``base_url``, with the API key resolved from ``env_key`` using
         opencode's ``{env:VAR}`` syntax. 077 POC: verified against LiteLLM +
-        spark/qwen3.6:35b. No ``compat`` block is needed (the AI-SDK
+        local/qwen3.6:35b. No ``compat`` block is needed (the AI-SDK
         openai-compatible client uses standard system/user roles).
         """
         provider: dict = {

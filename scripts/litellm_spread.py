@@ -26,18 +26,18 @@ from pathlib import Path
 import httpx
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_BASE = "https://litellm.vividynamics.com"
+DEFAULT_BASE = "https://litellm.example"
 # Raw control bytes excluding tab/newline/carriage-return.
 CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
 # Models the fleet routes today (the migration candidates).
 DEFAULT_MODELS = [
-    "spark/gpt-oss:120b",
-    "spark/gpt-oss:20b",
-    "spark/qwen3-coder:30b",
-    "spark/glm-4.7-flash:latest",
-    "spark/qwen2.5-coder:14b-instruct-q6_K",
-    "spark/qwen3.6:35b",
+    "local/gpt-oss:120b",
+    "local/gpt-oss:20b",
+    "local/qwen3-coder:30b",
+    "local/glm-4.7-flash:latest",
+    "local/qwen2.5-coder:14b-instruct-q6_K",
+    "local/qwen3.6:35b",
 ]
 
 

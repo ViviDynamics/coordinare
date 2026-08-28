@@ -25,7 +25,7 @@ Terminal contract: ``openclaw agent --json`` emits a single JSON object
 executionTrace: {winnerProvider, winnerModel}, aborted, ...}}``. We treat
 ``meta.stopReason == "stop"`` (rc 0) as done and surface
 ``payloads[0].text`` / ``meta.finalAssistantVisibleText`` as the output.
-Verified end-to-end against the LiteLLM proxy + spark/qwen3.6:35b (R-07).
+Verified end-to-end against the LiteLLM proxy + local/qwen3.6:35b (R-07).
 
 Timeout: bounded by ``settings.AGENT_TIMEOUT`` via performer.main's watchdog,
 which calls ``stop()`` on expiry (FR-010a); no OpenClaw-specific timer.
@@ -431,7 +431,7 @@ class OpenClawBackend:
             # refuses with "Context overflow: prompt too large for the model … use
             # a larger-context model" instead of returning a verdict — which then
             # records as CHANGES REQUESTED and exhausts the reviewer feedback-cycle
-            # budget. The 32768/8192 defaults suit qwen-on-spark, but a large model
+            # budget. The 32768/8192 defaults suit qwen on a self-hosted host, but a large model
             # (e.g. gpt-oss:120b served at 131072) must declare its true window or
             # it gets gated below its real capacity. Per-performer env overrides
             # keep the budget matched to whatever model the container routes.

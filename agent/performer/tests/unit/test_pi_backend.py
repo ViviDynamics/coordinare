@@ -139,12 +139,12 @@ async def test_provider_override_routes_to_litellm(tmp_path: Path, monkeypatch) 
     score = Score(title="Close it", repo_url="https://github.com/x/y", branch="main", github_token="t")
 
     b = PiBackend()
-    await b.start(stand, score, model="spark/qwen3.6:35b")
+    await b.start(stand, score, model="local/qwen3.6:35b")
 
     argv = captured["argv"]
     assert argv[0] == "pi" and "-p" in argv and "--mode" in argv and "json" in argv
     assert "--provider" in argv and "litellm" in argv
-    assert "--model" in argv and "spark/qwen3.6:35b" in argv
+    assert "--model" in argv and "local/qwen3.6:35b" in argv
 
     # Provider config written to Pi's default registry path, pointing at the
     # proxy with an env-interpolated key + the compat block qwen needs.
@@ -154,7 +154,7 @@ async def test_provider_override_routes_to_litellm(tmp_path: Path, monkeypatch) 
     assert prov["api"] == "openai-completions"
     assert prov["apiKey"] == "${LITELLM_MASTER_KEY}"  # env interpolation, not a literal/Pi-hosted key
     assert prov["compat"] == {"supportsDeveloperRole": False, "supportsReasoningEffort": False}
-    assert any(m["id"] == "spark/qwen3.6:35b" for m in prov["models"])
+    assert any(m["id"] == "local/qwen3.6:35b" for m in prov["models"])
 
 
 @pytest.mark.asyncio

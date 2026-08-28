@@ -14,7 +14,7 @@ Docker Desktop) and OPENAI_API_KEY / the provider key to the LiteLLM master key.
 
 Usage:
   LITELLM_MASTER_KEY=... scripts/wire_capture.py [--port 8099] [--out FILE]
-                                                 [--upstream https://litellm.vividynamics.com]
+                                                 [--upstream https://litellm.example]
 Captures are appended as JSON lines to --out (default tmp/wire_capture.jsonl)
 and echoed to stdout.
 """
@@ -150,7 +150,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8099)
     ap.add_argument("--out", default=str(REPO_ROOT / "tmp" / "wire_capture.jsonl"))
-    ap.add_argument("--upstream", default="https://litellm.vividynamics.com")
+    ap.add_argument("--upstream", default="https://litellm.example")
     ap.add_argument("--timeout", type=float, default=300.0)
     ap.add_argument("--force-auth", action="store_true",
                     help="override a wrong/unexpanded client key with the master key")

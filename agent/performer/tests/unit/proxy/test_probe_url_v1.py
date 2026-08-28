@@ -24,14 +24,14 @@ def _t(base_url: str, **over) -> TargetDescriptor:
 
 
 def test_bare_origin_openai_probe_gets_v1() -> None:
-    assert _probe_url(_t("http://192.168.3.30:11434")) == "http://192.168.3.30:11434/v1/chat/completions"
+    assert _probe_url(_t("http://192.0.2.10:11434")) == "http://192.0.2.10:11434/v1/chat/completions"
 
 
 def test_v1_terminated_openai_probe_keeps_single_v1() -> None:
     # openclaw-style reroute base already ends in /v1 — must not double it.
-    t = _t("http://192.168.3.30:11434/v1", strategy="reroute", normalizers=[])
-    assert _probe_url(t) == "http://192.168.3.30:11434/v1/chat/completions"
+    t = _t("http://192.0.2.10:11434/v1", strategy="reroute", normalizers=[])
+    assert _probe_url(t) == "http://192.0.2.10:11434/v1/chat/completions"
 
 
 def test_trailing_slash_normalized() -> None:
-    assert _probe_url(_t("http://192.168.3.30:11434/")) == "http://192.168.3.30:11434/v1/chat/completions"
+    assert _probe_url(_t("http://192.0.2.10:11434/")) == "http://192.0.2.10:11434/v1/chat/completions"

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 077: run the browser-control diagnostic matrix across a list of models, one at
-# a time (Spark is single-request). Reads "tag|model" lines from the file given
+# a time (the model host is single-request). Reads "tag|model" lines from the file given
 # as $1 (lines starting with # are skipped). Archives each model's screenshots +
 # log under tmp/model_runs/<tag>/.
 set -u

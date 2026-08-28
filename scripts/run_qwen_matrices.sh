@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # 077: run the browser-control diagnostic matrix across Qwen variants,
-# one model at a time (Spark is single-request). Archives each model's
+# one model at a time (the model host is single-request). Archives each model's
 # screenshots + log under tmp/qwen_runs/<tag>/.
 set -u
 cd "$(dirname "$0")/.."
 set -a; source .env 2>/dev/null; set +a
 
-# tag|model  (model name as the Spark/LiteLLM expects, pre-prefix; gen handles spark/)
+# tag|model  (model name as the model host/LiteLLM expects, pre-prefix; gen handles local/)
 RUNS=(
   "q36-35b|qwen3.6:35b"
   "q3coder-30b|qwen3-coder:30b"

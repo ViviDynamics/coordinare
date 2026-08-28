@@ -34,7 +34,7 @@ def _orchestration() -> dict:
 async def test_codex_wire_api_cleared_under_proxy() -> None:
     env = {
         "CODEX_PROVIDER_WIRE_API": "responses",
-        "CODEX_PROVIDER_BASE_URL": "https://litellm.vividynamics.com/v1",
+        "CODEX_PROVIDER_BASE_URL": "https://litellm.example/v1",
     }
     proxy = await maybe_launch_proxy(_orchestration(), "codex", env)
     try:
@@ -53,7 +53,7 @@ async def test_codex_wire_api_cleared_under_proxy() -> None:
 
 async def test_non_codex_backend_gets_no_wire_api_pin() -> None:
     """Only codex carries CODEX_PROVIDER_WIRE_API; other backends must not gain it."""
-    env = {"OPENCODE_PROVIDER_BASE_URL": "https://litellm.vividynamics.com/v1"}
+    env = {"OPENCODE_PROVIDER_BASE_URL": "https://litellm.example/v1"}
     proxy = await maybe_launch_proxy(_orchestration(), "opencode", env)
     try:
         assert "CODEX_PROVIDER_WIRE_API" not in env

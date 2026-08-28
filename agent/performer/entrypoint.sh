@@ -93,7 +93,7 @@ case "${BACKEND:-}" in
     # fresh install on first start (and an upgrade thereafter). Custom
     # OpenAI-compatible provider routing → LiteLLM is configured per-job by
     # PiBackend (writes ~/.pi/agent/models.json). 077 POC: verified against
-    # spark/qwen3.6:35b.
+    # local/qwen3.6:35b.
     #
     # Pinned for REPRODUCIBILITY: an unpinned `@latest`-style install drifts the
     # pi version at container start. Pin to a known-good release so the version
@@ -114,7 +114,7 @@ case "${BACKEND:-}" in
     # this is a fresh install on first start (and an upgrade thereafter).
     # Custom OpenAI-compatible provider routing → LiteLLM is configured per-job
     # by OpenClawBackend (writes ~/.openclaw/openclaw.json). 077 POC: verified
-    # against spark/qwen3.6:35b (OpenClaw 2026.5.27).
+    # against local/qwen3.6:35b (OpenClaw 2026.5.27).
     npm install -g openclaw --no-fund --no-audit 2>&1 \
       || echo "WARNING: openclaw install/upgrade failed, continuing with installed version" >&2
     ;;

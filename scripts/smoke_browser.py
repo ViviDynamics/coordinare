@@ -2,7 +2,7 @@
 """Atomic per-backend BROWSER-CONTROL smoke test (077).
 
 Challenges each backend to actually DRIVE Chrome: "take a screenshot of
-https://vividynamics.com and save it to /tmp/agent_shot.png using the tools at
+https://example.com and save it to /tmp/agent_shot.png using the tools at
 your disposal." Confirms two things per backend:
   1. the agent can write + run the code to drive a headless browser, and
   2. Chrome is present + accessible in the performer image.
@@ -13,7 +13,7 @@ Playwright cache (not on PATH as `chromium`). A direct baseline screenshot from
 the image succeeds (~1.6 MB PNG), so any failure here is the *agent's* inability
 to find/drive the browser, not a missing browser.
 
-Runs SEQUENTIALLY (the Spark serves ~one request at a time). After each job we
+Runs SEQUENTIALLY (the model host serves ~one request at a time). After each job we
 docker-exec the container to confirm the screenshot file exists + is a real PNG,
 then docker-cp it out to tmp/smoke_shots/<endpoint>.png as proof.
 
@@ -50,7 +50,7 @@ SHOT_PATH = "/tmp/agent_shot.png"
 JOB_TIMEOUT_S = 480
 
 SHOT_PERSONA = (
-    "Your ONLY task: take a screenshot of the homepage at https://vividynamics.com "
+    "Your ONLY task: take a screenshot of the homepage at https://example.com "
     f"and save it to the file {SHOT_PATH}.\n"
     "Playwright (Python) with Chromium IS installed in this environment — the "
     "Chromium binary lives under the Playwright browser cache (it is NOT on PATH as "
@@ -59,7 +59,7 @@ SHOT_PERSONA = (
     "  from playwright.sync_api import sync_playwright\n"
     "  with sync_playwright() as p:\n"
     "      b = p.chromium.launch()\n"
-    "      pg = b.new_page(); pg.goto('https://vividynamics.com', wait_until='domcontentloaded')\n"
+    "      pg = b.new_page(); pg.goto('https://example.com', wait_until='domcontentloaded')\n"
     f"      pg.screenshot(path='{SHOT_PATH}', full_page=True); b.close()\n"
     "If Playwright's python package is missing, `pip install playwright` (browsers "
     "are already downloaded). Do NOT use any third-party screenshot or "
@@ -229,7 +229,7 @@ def main() -> int:
         endpoints = [e for e in endpoints if e["id"] in wanted]
     endpoints.sort(key=lambda e: _backend_model(cfg, e))
     print(f"Browser-control smoke: {len(endpoints)} backend(s) SEQUENTIALLY "
-          f"(screenshot https://vividynamics.com -> {SHOT_PATH})\n")
+          f"(screenshot https://example.com -> {SHOT_PATH})\n")
     results = []
     for e in endpoints:
         print(f"  -> {e['id']} (model={_backend_model(cfg, e) or '?'}) ...", flush=True)

@@ -57,8 +57,8 @@ def _parse_log(model: str | None, log: Path, run_dir: Path | None) -> list[dict]
     if model is None:
         m = MODEL_RE.search(text)
         model = m.group(1) if m else log.parent.name
-    # Strip a leading "spark/" so the same logical model collapses across routes.
-    model_key = model.replace("spark/", "")
+    # Strip a leading "local/" so the same logical model collapses across routes.
+    model_key = model.replace("local/", "")
     rows = []
     for line in text.splitlines():
         m = ROW_RE.match(line)

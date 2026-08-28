@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 077: full persona benchmark sweep — persona_bench across a model list, one
-# model at a time (Spark single-request), all backends, judge on. Writes durable
+# model at a time (the model host single-request), all backends, judge on. Writes durable
 # committed results per model (specs/077-multi-backend-qa/persona_runs/<tag>/)
 # and commits after each model so a crash never loses a completed model.
 set -u
@@ -8,7 +8,7 @@ cd "$(dirname "$0")/.."
 set -a; source .env 2>/dev/null; set +a
 LIST="${1:?usage: run_persona_sweep.sh <models.list>}"
 REPO="https://github.com/ViviDynamics/conductor-bench.git"
-JUDGE="spark/gpt-oss:120b"
+JUDGE="local/gpt-oss:120b"
 while IFS= read -r line; do
   [ -z "$line" ] && continue; case "$line" in \#*) continue;; esac
   tag="${line%%|*}"; model="${line#*|}"

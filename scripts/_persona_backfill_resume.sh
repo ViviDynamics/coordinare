@@ -6,7 +6,7 @@
 set -u
 cd "$(dirname "$0")/.."
 set -a; source .env 2>/dev/null; set +a
-REPO="https://github.com/ViviDynamics/conductor-bench.git"; JUDGE="spark/gpt-oss:120b"
+REPO="https://github.com/ViviDynamics/conductor-bench.git"; JUDGE="local/gpt-oss:120b"
 for entry in "gpt-oss-120b|gpt-oss:120b" "gpt-oss-20b|gpt-oss:20b" "qwen36-35b|qwen3.6:35b"; do
   tag="${entry%%|*}"; model="${entry#*|}"
   echo "############## BACKFILL FAILURES: $tag ($model) $(date '+%m-%d %H:%M:%S') ##############"
