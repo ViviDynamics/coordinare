@@ -47,12 +47,21 @@ class RateLimitedGitHubError(TransientGitHubError):
         super().__init__(message or f"rate-limited; Retry-After={retry_after}s")
         self.retry_after = retry_after
 
+# The board owner may be either an Organization or a personal User account.
+# Both implement GitHub's ``ProjectV2Owner`` interface, and ``repositoryOwner``
+# resolves for either, so a single owner-agnostic query works for both without
+# guessing the account type. ``repositoryOwner`` returns ``null`` (not a
+# NOT_FOUND error) for an unknown login, so it does not trip the permanent-error
+# path in ``_execute``. Once the project ``id`` is resolved, every downstream
+# query keys off ``node(id:)`` and is owner-agnostic.
 FIND_PROJECT_QUERY = """
-query FindProject($org: String!, $number: Int!) {
-  organization(login: $org) {
-    projectV2(number: $number) {
-      id
-      title
+query FindProject($login: String!, $number: Int!) {
+  repositoryOwner(login: $login) {
+    ... on ProjectV2Owner {
+      projectV2(number: $number) {
+        id
+        title
+      }
     }
   }
 }
@@ -432,6 +441,47 @@ mutation AddLabels($labelableId: ID!, $labelIds: [ID!]!) {
 }
 """
 
+# The board's Status column labels → coordinare's internal card statuses.
+#
+# Anchored on GitHub's new-project default Status options — Backlog / Ready /
+# In progress / In review / Done — plus Blocked, which has no GitHub default
+# and must be added to the board by the operator. Coordinare only ever writes
+# to Blocked, so a board without it simply never receives a blocked card.
+#
+# ``Ready`` is the internal ``TODO``: it is GitHub's pick-up lane, and the only
+# lane coordinare takes work from. ``Backlog`` is the holding lane and stays out
+# of the pickup path. Labels from hand-built boards are kept as aliases so
+# existing boards keep working; comparison is on the lowercased label.
+#
+# This is the single definition of the board↔coordinare vocabulary. The write
+# side is derived from it by ``_column_candidates`` so the read and write
+# directions cannot drift apart.
+BOARD_COLUMN_TO_STATUS: dict[str, str] = {
+    # Order matters: ``_column_candidates`` derives the write-preference order
+    # from insertion order, so GitHub's default label must lead each group and
+    # the legacy aliases must trail it. Do not sort this literal.
+    "backlog": "BACKLOG",
+    "ready": "TODO",
+    "todo": "TODO",
+    "to do": "TODO",
+    "todo / backlog": "TODO",
+    "blocked": "BLOCKED",
+    "in progress": "IN_PROGRESS",
+    "in_progress": "IN_PROGRESS",
+    "in review": "IN_REVIEW",
+    "in_review": "IN_REVIEW",
+    "done": "DONE",
+}
+
+
+def _column_candidates(status: str) -> list[str]:
+    """Column labels to try when writing ``status`` to the board, best first.
+
+    Insertion order in ``BOARD_COLUMN_TO_STATUS`` is the preference order, so
+    GitHub's default label leads and the legacy aliases trail it.
+    """
+    return [label for label, mapped in BOARD_COLUMN_TO_STATUS.items() if mapped == status]
+
 
 class GitHubService:
     """Async GitHub GraphQL service with field and option caching."""
@@ -668,14 +718,35 @@ class GitHubService:
             ).inc()
             raise
 
+    @staticmethod
+    def _extract_project(result: dict[str, Any]) -> dict[str, Any] | None:
+        """Pull the ``projectV2`` node out of a FindProject response.
+
+        ``FIND_PROJECT_QUERY`` asks for ``repositoryOwner``, which resolves for
+        both personal accounts and organizations, so that is the only wrapper
+        GitHub can return. An unknown login resolves the wrapper to ``null``
+        rather than raising, which lands here as ``None``.
+        """
+        owner = result.get("repositoryOwner")
+        if isinstance(owner, dict):
+            project = owner.get("projectV2")
+            if isinstance(project, dict) and "id" in project:
+                return project
+        return None
+
     async def initialize(self) -> None:
         project_result = await self._guarded_execute(
             FIND_PROJECT_QUERY,
-            {"org": self._org, "number": self._project_number},
+            {"login": self._org, "number": self._project_number},
         )
-        project = project_result.get("organization", {}).get("projectV2")
-        if not isinstance(project, dict) or "id" not in project:
-            msg = "Project not found for provided organization and number"
+        project = self._extract_project(project_result)
+        if project is None:
+            msg = (
+                f"Project #{self._project_number} not found for owner "
+                f"'{self._org}' (checked as both user and organization). "
+                "Verify the owner login and project number, and that the "
+                "token can see the project."
+            )
             raise ValueError(msg)
 
         self.project_id = str(project["id"])
@@ -711,6 +782,22 @@ class GitHubService:
 
         if not status_field_id:
             msg = "Status field not found in project"
+            raise ValueError(msg)
+
+        # A board with no column mapping to TODO is one coordinare can never
+        # hand work back on. Every ``move_card(..., "TODO")`` caller swallows
+        # the failure and logs a warning, so without this check the operator
+        # only ever sees a card stranded mid-cycle, far from the cause. Fail
+        # at startup instead, naming the column the board is missing.
+        todo_labels = _column_candidates("TODO")
+        if not any(label in status_options for label in todo_labels):
+            msg = (
+                "Project board has no Status column that maps to TODO, so "
+                "coordinare can never hand a card back for pickup. Expected "
+                f"one of {todo_labels}; the board has "
+                f"{sorted(status_options)}. Add a Status column named "
+                f"{todo_labels[0].title()!r} to the board."
+            )
             raise ValueError(msg)
 
         self.field_cache = {
@@ -797,18 +884,9 @@ class GitHubService:
                     if not isinstance(field_value, dict):
                         continue
                     raw_name = str(field_value.get("name", "")).strip().lower()
-                    if raw_name in {"todo / backlog", "todo"}:
-                        status_name = "TODO"
-                    elif raw_name == "backlog":
-                        status_name = "BACKLOG"
-                    elif raw_name == "blocked":
-                        status_name = "BLOCKED"
-                    elif raw_name in {"in progress", "in_progress"}:
-                        status_name = "IN_PROGRESS"
-                    elif raw_name in {"in review", "in_review"}:
-                        status_name = "IN_REVIEW"
-                    elif raw_name == "done":
-                        status_name = "DONE"
+                    mapped = BOARD_COLUMN_TO_STATUS.get(raw_name)
+                    if mapped:
+                        status_name = mapped
 
             item_assignees[item_id] = []  # default empty; overwritten below if content has assignees
             content = item.get("content", {})
@@ -1434,14 +1512,7 @@ class GitHubService:
             msg = "Status options cache malformed"
             raise RuntimeError(msg)
 
-        key_map = {
-            "TODO": ["todo / backlog", "todo", "backlog"],
-            "BLOCKED": ["blocked"],
-            "IN_PROGRESS": ["in_progress", "in progress"],
-            "IN_REVIEW": ["in_review", "in review"],
-            "DONE": ["done"],
-        }
-        candidates = key_map.get(status, [status.lower()])
+        candidates = _column_candidates(status) or [status.lower()]
         option_id = ""
         for name in candidates:
             option = status_option_ids.get(name)
@@ -1450,10 +1521,25 @@ class GitHubService:
                 break
         if not option_id:
             available = list(status_option_ids.keys())
+            # Every caller catches this and logs a warning, so the card is left
+            # in whatever column it was in. Log at error level here so the
+            # stranding is visible on its own, and name the missing column so
+            # the operator can fix the board rather than read the raised text
+            # out of a swallowed traceback.
+            logger.error(
+                "board.card_stranded",
+                item_id=item_id,
+                status=status,
+                tried=candidates,
+                available=available,
+                remedy=f"add a Status column named {candidates[0].title()!r} to the board",
+            )
             msg = (
                 f"Unknown status option for {status!r}. "
                 f"Tried: {candidates}. "
-                f"Available board options: {available}"
+                f"Available board options: {available}. "
+                f"The card was not moved; add a Status column named "
+                f"{candidates[0].title()!r} to the board to fix this."
             )
             raise ValueError(msg)
 

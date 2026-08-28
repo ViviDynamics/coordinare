@@ -76,7 +76,7 @@ async def test_execute_rejects_non_object_response() -> None:
 async def test_initialize_populates_project_and_field_cache() -> None:
     client = _FakeClient(
         [
-            {"organization": {"projectV2": {"id": "PVT_1", "title": "Board"}}},
+            {"repositoryOwner": {"projectV2": {"id": "PVT_1", "title": "Board"}}},
             {
                 "node": {
                     "fields": {

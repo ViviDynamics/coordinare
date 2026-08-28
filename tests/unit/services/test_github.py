@@ -29,7 +29,7 @@ class _TestGitHubService(GitHubService):
 async def test_poll_board_returns_grouped_snapshot() -> None:
     service = _TestGitHubService(
         [
-            {"organization": {"projectV2": {"id": "P1", "title": "Board"}}},
+            {"repositoryOwner": {"projectV2": {"id": "P1", "title": "Board"}}},
             {
                 "node": {
                     "fields": {
@@ -74,10 +74,16 @@ async def test_poll_board_returns_grouped_snapshot() -> None:
 
 
 @pytest.mark.asyncio
-async def test_move_card_rejects_unknown_status_option() -> None:
+async def test_initialize_resolves_project_under_a_user_account() -> None:
+    """A board owned by a personal User (not an Organization) must resolve.
+
+    The owner-agnostic FindProject query returns the project under the
+    ``repositoryOwner`` wrapper for both users and orgs; initialize() must
+    accept that shape so personal GitHub accounts work, not just orgs.
+    """
     service = _TestGitHubService(
         [
-            {"organization": {"projectV2": {"id": "P1", "title": "Board"}}},
+            {"repositoryOwner": {"projectV2": {"id": "P_USER", "title": "My Board"}}},
             {
                 "node": {
                     "fields": {
@@ -85,7 +91,46 @@ async def test_move_card_rejects_unknown_status_option() -> None:
                             {
                                 "id": "status-field",
                                 "name": "Status",
-                                "options": [{"id": "done-opt", "name": "Done"}],
+                                "options": [{"id": "todo-opt", "name": "ToDo"}],
+                            }
+                        ]
+                    }
+                }
+            },
+        ]
+    )
+    await service.initialize()
+
+    assert service.project_id == "P_USER"
+    assert service.project_title == "My Board"
+
+
+@pytest.mark.asyncio
+async def test_initialize_raises_clear_error_when_owner_has_no_project() -> None:
+    """An unknown/absent owner resolves ``repositoryOwner: null``; the error
+    must name that it was checked as both user and organization."""
+    service = _TestGitHubService([{"repositoryOwner": None}])
+
+    with pytest.raises(ValueError, match="user and organization"):
+        await service.initialize()
+
+
+@pytest.mark.asyncio
+async def test_move_card_rejects_unknown_status_option() -> None:
+    service = _TestGitHubService(
+        [
+            {"repositoryOwner": {"projectV2": {"id": "P1", "title": "Board"}}},
+            {
+                "node": {
+                    "fields": {
+                        "nodes": [
+                            {
+                                "id": "status-field",
+                                "name": "Status",
+                                "options": [
+                                    {"id": "ready-opt", "name": "Ready"},
+                                    {"id": "done-opt", "name": "Done"},
+                                ],
                             }
                         ]
                     }
@@ -225,7 +270,7 @@ async def test_add_comment_returns_comment_node() -> None:
 async def test_move_card_succeeds_with_valid_status() -> None:
     service = _TestGitHubService(
         [
-            {"organization": {"projectV2": {"id": "P1", "title": "Board"}}},
+            {"repositoryOwner": {"projectV2": {"id": "P1", "title": "Board"}}},
             {
                 "node": {
                     "fields": {
@@ -234,6 +279,7 @@ async def test_move_card_succeeds_with_valid_status() -> None:
                                 "id": "status-field",
                                 "name": "Status",
                                 "options": [
+                                    {"id": "ready-opt", "name": "Ready"},
                                     {"id": "prog-opt", "name": "In Progress"},
                                     {"id": "done-opt", "name": "Done"},
                                 ],
@@ -254,7 +300,7 @@ async def test_move_card_succeeds_with_valid_status() -> None:
 async def test_poll_board_handles_multiple_status_columns() -> None:
     service = _TestGitHubService(
         [
-            {"organization": {"projectV2": {"id": "P1", "title": "Board"}}},
+            {"repositoryOwner": {"projectV2": {"id": "P1", "title": "Board"}}},
             {
                 "node": {
                     "fields": {
@@ -323,7 +369,7 @@ async def test_ensure_initialized_raises_when_not_initialized() -> None:
 
 def _poll_board_response_with_assignees(assignee_logins: list[str]) -> list[dict]:
     return [
-        {"organization": {"projectV2": {"id": "P1", "title": "Board"}}},
+        {"repositoryOwner": {"projectV2": {"id": "P1", "title": "Board"}}},
         {
             "node": {
                 "fields": {
@@ -389,7 +435,7 @@ async def test_poll_board_item_assignees_empty_for_unassigned() -> None:
 async def test_poll_board_item_assignees_empty_for_draft_issue() -> None:
     """DraftIssue content has no assignees field — returns empty list."""
     service = _TestGitHubService([
-        {"organization": {"projectV2": {"id": "P1", "title": "Board"}}},
+        {"repositoryOwner": {"projectV2": {"id": "P1", "title": "Board"}}},
         {"node": {"fields": {"nodes": [{"id": "sf", "name": "Status", "options": [{"id": "t", "name": "ToDo"}]}]}}},
         {
             "node": {
@@ -414,7 +460,7 @@ async def test_poll_board_item_assignees_empty_for_draft_issue() -> None:
 
 def _poll_board_response_with_timeline(timeline_events: list[dict]) -> list[dict]:
     return [
-        {"organization": {"projectV2": {"id": "P1", "title": "Board"}}},
+        {"repositoryOwner": {"projectV2": {"id": "P1", "title": "Board"}}},
         {"node": {"fields": {"nodes": [{"id": "sf", "name": "Status", "options": [{"id": "t", "name": "ToDo"}]}]}}},
         {
             "node": {
@@ -487,3 +533,148 @@ async def test_poll_board_pr_urls_empty_when_no_cross_references() -> None:
     board = await service.poll_board()
 
     assert "ITEM_1" not in board["pr_urls"]
+
+
+class _RecordingClient(_FakeClient):
+    """Fake client that records the variables sent with each call."""
+
+    def __init__(self, responses: list[dict[str, Any]], calls: list[dict[str, Any]]) -> None:
+        super().__init__(responses)
+        self._calls = calls
+
+    async def execute(self, query: object, variable_values: dict[str, Any]) -> dict[str, Any]:
+        self._calls.append(dict(variable_values or {}))
+        return await super().execute(query, variable_values)
+
+
+class _RecordingGitHubService(_TestGitHubService):
+    def __init__(self, responses: list[dict[str, Any]]) -> None:
+        super().__init__(responses)
+        self.calls: list[dict[str, Any]] = []
+
+    def _build_client(self, token: str = ""):
+        return _RecordingClient(self._responses, self.calls)
+
+
+# The Status options a brand-new GitHub project board ships with, plus Blocked,
+# which has no GitHub default and is added by the operator.
+_DEFAULT_BOARD_COLUMNS = [
+    {"id": "backlog-opt", "name": "Backlog"},
+    {"id": "ready-opt", "name": "Ready"},
+    {"id": "blocked-opt", "name": "Blocked"},
+    {"id": "progress-opt", "name": "In progress"},
+    {"id": "review-opt", "name": "In review"},
+    {"id": "done-opt", "name": "Done"},
+]
+
+
+def _init_responses(columns: list[dict[str, str]]) -> list[dict[str, Any]]:
+    """The two responses ``initialize()`` consumes for a board with ``columns``."""
+    return [
+        {"repositoryOwner": {"projectV2": {"id": "P1", "title": "Board"}}},
+        {
+            "node": {
+                "fields": {
+                    "nodes": [{"id": "status-field", "name": "Status", "options": columns}]
+                }
+            }
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_poll_board_maps_every_default_github_column() -> None:
+    """Every column of a stock GitHub board must land in the snapshot.
+
+    ``Ready`` is the live bug: it is GitHub's pick-up lane and was not in the
+    recognised set, so cards a human dragged there were silently dropped and
+    coordinare saw no work at all.
+    """
+    labels = ["Backlog", "Ready", "Blocked", "In progress", "In review", "Done"]
+    items = [
+        {
+            "id": f"ITEM_{i}",
+            "fieldValues": {"nodes": [{"name": label}]},
+            "content": {"id": f"I{i}", "number": i, "title": label, "body": ""},
+        }
+        for i, label in enumerate(labels, start=1)
+    ]
+    service = _TestGitHubService(
+        [*_init_responses(_DEFAULT_BOARD_COLUMNS), {"node": {"items": {"nodes": items}}}]
+    )
+    await service.initialize()
+
+    snapshot = (await service.poll_board())["snapshot"]
+
+    assert snapshot["BACKLOG"] == ["ITEM_1"]
+    assert snapshot["TODO"] == ["ITEM_2"]
+    assert snapshot["BLOCKED"] == ["ITEM_3"]
+    assert snapshot["IN_PROGRESS"] == ["ITEM_4"]
+    assert snapshot["IN_REVIEW"] == ["ITEM_5"]
+    assert snapshot["DONE"] == ["ITEM_6"]
+
+
+@pytest.mark.asyncio
+async def test_move_card_to_todo_targets_ready_not_backlog() -> None:
+    """TODO is the pick-up lane, so a returned card belongs in Ready."""
+    service = _RecordingGitHubService(
+        [
+            *_init_responses(_DEFAULT_BOARD_COLUMNS),
+            {"updateProjectV2ItemFieldValue": {"projectV2Item": {"id": "ITEM_1"}}},
+        ]
+    )
+    await service.initialize()
+
+    await service.move_card("ITEM_1", "TODO")
+
+    assert service.calls[-1]["optionId"] == "ready-opt"
+
+
+@pytest.mark.asyncio
+async def test_move_card_to_todo_falls_back_to_legacy_column() -> None:
+    """Hand-built boards with no Ready column still resolve via the aliases."""
+    service = _RecordingGitHubService(
+        [
+            *_init_responses([{"id": "todo-opt", "name": "ToDo / Backlog"}]),
+            {"updateProjectV2ItemFieldValue": {"projectV2Item": {"id": "ITEM_1"}}},
+        ]
+    )
+    await service.initialize()
+
+    await service.move_card("ITEM_1", "TODO")
+
+    assert service.calls[-1]["optionId"] == "todo-opt"
+
+
+@pytest.mark.asyncio
+async def test_initialize_rejects_a_board_with_no_pickup_lane() -> None:
+    """Backlog is a holding lane, not a pick-up lane.
+
+    A board with no Ready/ToDo column has nowhere to hand work back to. That
+    is a permanent, operator-fixable misconfiguration, so it is reported at
+    startup naming the missing column rather than surfacing much later as a
+    card stranded mid-cycle by a swallowed ``move_card`` failure.
+    """
+    service = _TestGitHubService(_init_responses([{"id": "backlog-opt", "name": "Backlog"}]))
+
+    with pytest.raises(ValueError, match="no Status column that maps to TODO"):
+        await service.initialize()
+
+
+@pytest.mark.asyncio
+async def test_move_card_refuses_to_dump_into_backlog() -> None:
+    """``move_card`` itself still refuses Backlog, independent of the gate.
+
+    The startup gate means a live board can no longer reach this state, so the
+    cache is built directly here to keep the guard pinned: TODO resolves only
+    through the pick-up aliases, never through ``backlog``.
+    """
+    service = _TestGitHubService([])
+    service.project_id = "P1"
+    service.field_cache = {
+        "status_field_id": "status-field",
+        "status_option_ids": {"backlog": "backlog-opt"},
+    }
+
+    with pytest.raises(ValueError, match="Unknown status option"):
+        await service.move_card("ITEM_1", "TODO")
