@@ -73,6 +73,8 @@ See AGENTS.md for all development guidelines.
 - none new. Sweep session dirs under `runs/<ts>-sweep/<point-id>/<repeat>/` (136-board-bench-sweep)
 - Python 3.14 (project minimum 3.12; prod 3.14.5 via uv). Workflow is YAML + None added. Enforcement uses stdlib only (`tomllib`, (142-license-and-legal-posture)
 - N/A. No persisted coordinare state, no schema change, no `state_store.py` touch. (142-license-and-legal-posture)
+- Python 3.14 (project minimum 3.12; prod 3.14.5 via uv). + None added. Uses FastAPI/Starlette middleware already in the stack, (144-threat-model-trust-boundaries)
+- N/A. No persisted state, no schema change. (144-threat-model-trust-boundaries)
 
 ## Recent Changes
 - 076-qa-cycle: Added Python 3.14 (project minimum: 3.12; production currently on 3.14.5 via uv) + pydantic 2.x, langgraph, structlog, docker SDK (or subprocess to `docker` CLI), fastapi (dashboard SSE), httpx (performer HTTP transport), pyyaml (config)

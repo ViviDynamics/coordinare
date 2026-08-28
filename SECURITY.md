@@ -50,25 +50,33 @@ run it from a commit you have reviewed and pin it yourself.
 
 ## Architecture and trust boundaries
 
-<!-- Reserved for spec 144 (issue #198). Do not restructure this section; the
-     threat model and trust-boundary documentation land here. -->
+**[docs/security/threat-model.md](docs/security/threat-model.md)** is the full
+document, delivered by spec 144
+([issue #198](https://github.com/ViviDynamics/coordinare/issues/198)). Read it
+before exposing coordinare to any network.
 
-Coordinare's threat model and trust-boundary documentation are tracked as
-**spec 144** ([issue #198](https://github.com/ViviDynamics/coordinare/issues/198)).
-That work documents the operator-to-daemon and daemon-to-performer boundaries,
-the prompt-injection surface created by public GitHub content, the dashboard's
-authentication posture, and the token permissions each feature needs.
+It covers the four trust boundaries, prompt injection as the defining threat
+class, the dashboard's unauthenticated posture and what defends it, what the
+health endpoints disclose, and a per-feature GitHub token permission matrix.
+Every boundary states its residual risk, not just its mitigations.
 
-Until it lands, treat these as the operating assumptions:
+The short version, if you read nothing else:
 
-- The dashboard is **unauthenticated by design** at present. Bind it to
-  loopback and never expose it to an untrusted network.
-- Coordinare's GitHub token should be fine-grained and least-privilege, scoped to
-  the project board and the single repository it works on.
-- Performer output is untrusted. So is every piece of GitHub text that reaches a
-  prompt.
-- Mounting `docker.sock` into the daemon is root-equivalent access to the host.
-  That is an explicit trust decision, not an oversight.
+- **`docker.sock` is root-equivalent.** Run the daemon on a host you are willing
+  to lose. This is an explicit trust decision, not an oversight.
+- **The dashboard has no authentication** and is loopback-only by design. A
+  localhost guard rejects foreign origins and foreign hosts, but that is a
+  locality check, not a login: anyone who can make requests from your machine has
+  full control. Authentication is spec 143
+  ([#197](https://github.com/ViviDynamics/coordinare/issues/197)).
+- **Prompt injection is mitigated structurally, not prevented.** Public issue and
+  comment text reaches prompts that hold repository write credentials. The human
+  reviewing the pull request is the last reliable line of defence. Read the diff,
+  not the summary.
+- **Performer output and all GitHub text are untrusted.** The security scan gate
+  catches known patterns in changed files, and nothing more.
+- **Use a fine-grained token** scoped to one repository plus the board. The
+  threat model lists exactly which permission each feature needs.
 
 ## Contributions
 

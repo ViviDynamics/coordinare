@@ -57,7 +57,7 @@ def _make_client(config_path: Path, raw: dict[str, Any]) -> TestClient:
         MagicMock(),
         config_path=config_path,
     )
-    return TestClient(app)
+    return TestClient(app, base_url="http://127.0.0.1:8090")
 
 
 # --- GET /api/config/all ------------------------------------------------------

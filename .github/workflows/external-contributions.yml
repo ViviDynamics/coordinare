@@ -74,15 +74,61 @@ jobs:
             // commit before", which under a closed-contribution policy should
             // not describe an outsider, but if it ever does the policy applies.
             const INTERNAL = ['OWNER', 'MEMBER', 'COLLABORATOR'];
-            const isInternal = INTERNAL.includes(pr.author_association);
             const isBot = pr.user && pr.user.type === 'Bot';
 
-            if (isInternal || isBot) {
-              core.info(
-                `Skipping: author_association=${pr.author_association} type=${pr.user && pr.user.type}`
-              );
+            if (isBot) {
+              core.info(`Skipping: bot author (${pr.user.login})`);
               return;
             }
+
+            // author_association is a CHEAP pre-filter, not the authority.
+            //
+            // It under-reports: a maintainer whose organisation membership is
+            // PRIVATE arrives here as CONTRIBUTOR or NONE, not MEMBER. That is
+            // not hypothetical — it fired on PR #212, a maintainer's own pull
+            // request, which got commented and labelled before anyone noticed.
+            // The REST API reported MEMBER for the same user while the webhook
+            // payload did not.
+            //
+            // It can only ever under-report, never over-report, so trusting it
+            // to SKIP is safe. Trusting its absence to mean "outsider" is not.
+            if (INTERNAL.includes(pr.author_association)) {
+              core.info(`Skipping: author_association=${pr.author_association}`);
+              return;
+            }
+
+            // The authoritative check: does this account actually have write
+            // access to this repository? Anyone who does is internal regardless
+            // of how their membership is displayed.
+            let permission = 'none';
+            try {
+              const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                username: pr.user.login,
+              });
+              permission = data.permission;
+            } catch (err) {
+              // 404 means "not a collaborator", which is a genuine answer and
+              // means external. Any other error is unexpected: skip rather than
+              // risk scolding a maintainer because an API call had a bad day.
+              if (err.status !== 404) {
+                core.warning(
+                  `Could not resolve collaborator permission (${err.status}); skipping to avoid ` +
+                  `responding to a maintainer in error.`
+                );
+                return;
+              }
+            }
+
+            if (['admin', 'write', 'maintain'].includes(permission)) {
+              core.info(`Skipping: ${pr.user.login} has ${permission} access to this repository`);
+              return;
+            }
+
+            core.info(
+              `Treating as external: association=${pr.author_association} permission=${permission}`
+            );
 
             // Security carve-out (FR-025). This match runs over
             // author-controlled text, which is acceptable ONLY because its sole

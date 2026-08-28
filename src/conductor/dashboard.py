@@ -20,6 +20,11 @@ import structlog
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 
+from coordinare.localhost_guard import (
+    PermittedOrigins,
+    build_permitted,
+    install_localhost_guard,
+)
 from coordinare.services.activity_log import ActivityLog
 
 if TYPE_CHECKING:
@@ -3881,6 +3886,9 @@ def create_dashboard_app(
     metrics: CoordinareMetrics,
     health: HealthRegistry,
     config_path: Path | None = None,
+    *,
+    permitted_origins: PermittedOrigins | None = None,
+    guard_exempt_paths: frozenset[str] | None = None,
 ) -> FastAPI:
     """Create the dashboard FastAPI application.
 
@@ -3890,8 +3898,24 @@ def create_dashboard_app(
         GET /api/personas          — list all role personas (018)
         PUT /api/personas/{role}   — update persona for a role (018)
         DELETE /api/personas/{role} — reset persona to defaults (018)
+
+    ``permitted_origins`` configures the localhost guard (spec 144). When omitted
+    it defaults to loopback on the default dashboard port, which is the safe
+    posture; production passes a set derived from the live configuration so the
+    operator's bind address, port, and any trusted proxy hostname are honoured.
     """
     app = FastAPI(title="coordinare-dashboard")
+
+    # Spec 144 (#198). Installed BEFORE the request logger deliberately.
+    # FastAPI middleware is outermost-last, so the logger added below wraps this
+    # guard: every request including a rejected one still appears in the request
+    # log, while the guard refuses before any route handler runs.
+    install_localhost_guard(
+        app,
+        permitted_origins
+        or build_permitted(dashboard_host="127.0.0.1", dashboard_port=8090),
+        exempt_paths=guard_exempt_paths,
+    )
 
     @app.middleware("http")
     async def _log_requests(request: Request, call_next):  # type: ignore[no-untyped-def]

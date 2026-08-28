@@ -179,7 +179,8 @@ def test_s1_html_has_required_structure() -> None:
     """S1: GET / returns HTML with all required element IDs and EventSource setup."""
     store = DashboardStore()
     client = TestClient(
-        create_dashboard_app(store, _make_mock_daemon(), _make_mock_metrics(), _make_mock_health())
+        create_dashboard_app(store, _make_mock_daemon(), _make_mock_metrics(), _make_mock_health()),
+        base_url="http://127.0.0.1:8090",
     )
 
     resp = client.get("/")

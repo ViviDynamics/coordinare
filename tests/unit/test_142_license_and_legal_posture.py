@@ -701,6 +701,39 @@ def test_external_contribution_workflow_does_not_close_security_reports() -> Non
     )
 
 
+def test_external_contribution_workflow_verifies_actual_repo_permission() -> None:
+    """FR-012 — author_association alone is not sufficient to identify insiders.
+
+    Regression test for a bug that fired in production on PR #212: a maintainer's
+    own pull request was commented on and labelled as an external contribution.
+
+    The cause is that ``author_association`` in the webhook payload UNDER-reports
+    when organisation membership is private. The same user came back as MEMBER
+    from the REST API and as something else in the event payload, so both the
+    job-level ``if:`` and the script's own check let it through.
+
+    It can only under-report, never over-report, so using it to SKIP is still
+    safe. Using its absence to conclude "outsider" is not. The authoritative
+    question is whether the account actually has write access, which is what
+    ``getCollaboratorPermissionLevel`` answers.
+    """
+    raw = _read(EXTERNAL_WORKFLOW)
+
+    assert "getCollaboratorPermissionLevel" in raw, (
+        "the workflow must verify actual repository permission; author_association "
+        "under-reports for private organisation members and scolded a maintainer's "
+        "own pull request when it was the only check"
+    )
+    for level in ("admin", "write", "maintain"):
+        assert f"'{level}'" in raw, f"write-equivalent permission {level!r} must count as internal"
+
+    # An unexpected API failure must not cause a maintainer to be scolded.
+    assert "err.status !== 404" in raw, (
+        "a non-404 error from the permission lookup must skip rather than assume "
+        "the author is external"
+    )
+
+
 def test_existing_workflows_are_untouched() -> None:
     """SC-009 — this feature must not disturb CI.
 

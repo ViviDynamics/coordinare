@@ -47,7 +47,7 @@ def _make_client(config_path: Path, raw: dict[str, Any]) -> tuple[TestClient, Ma
         MagicMock(),
         config_path=config_path,
     )
-    return TestClient(app), daemon
+    return TestClient(app, base_url="http://127.0.0.1:8090"), daemon
 
 
 def _hash(client: TestClient) -> str:

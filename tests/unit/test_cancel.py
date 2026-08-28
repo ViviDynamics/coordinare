@@ -147,7 +147,7 @@ def test_cancel_endpoint_returns_200(tmp_path) -> None:
     health.snapshot.return_value.probes = []
 
     app = create_dashboard_app(store, daemon, metrics, health)
-    client = TestClient(app)
+    client = TestClient(app, base_url="http://127.0.0.1:8090")
 
     res = client.post("/api/cancel")
     assert res.status_code == 200
@@ -290,7 +290,7 @@ def test_cancel_endpoint_idle_returns_no_active_card(tmp_path) -> None:
     health.snapshot.return_value.probes = []
 
     app = create_dashboard_app(store, daemon, metrics, health)
-    client = TestClient(app)
+    client = TestClient(app, base_url="http://127.0.0.1:8090")
 
     res = client.post("/api/cancel")
     assert res.status_code == 200

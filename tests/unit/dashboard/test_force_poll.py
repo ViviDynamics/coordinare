@@ -43,7 +43,7 @@ def _make_metrics() -> MagicMock:
 def _make_client(daemon: MagicMock) -> TestClient:
     store = MagicMock(spec=DashboardStore)
     app = create_dashboard_app(store, daemon, _make_metrics(), _make_health())
-    return TestClient(app, raise_server_exceptions=True)
+    return TestClient(app, raise_server_exceptions=True, base_url="http://127.0.0.1:8090")
 
 
 # ---------------------------------------------------------------------------

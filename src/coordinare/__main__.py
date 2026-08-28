@@ -46,6 +46,7 @@ from coordinare.graph.builder import CoordinareGraphBuilder
 from coordinare.health import create_health_app
 from coordinare.lifecycle import CANONICAL_ORDER as _CANONICAL_ORDER
 from coordinare.lifecycle import ROLE_TO_STAGE as _ROLE_TO_STAGE
+from coordinare.localhost_guard import build_permitted, warn_if_dashboard_exposed
 from coordinare.metrics import METRICS, _coordinare_version
 from coordinare.models.notification import EventType, NotificationEvent, NotificationSeverity
 from coordinare.observability import HEALTH, bind_symphony, clear_symphony
@@ -946,7 +947,7 @@ async def _run(
 
     # Probe both ports before starting any servers so a conflict produces a single
     # clean error rather than uvicorn's full asyncio traceback.
-    check_port_available("0.0.0.0", config.health_check_port, label="health")
+    check_port_available(config.health_check_host, config.health_check_port, label="health")
     check_port_available(config.dashboard_host, config.dashboard_port, label="dashboard")
 
     dashboard_store = DashboardStore()
@@ -1031,7 +1032,7 @@ async def _run(
     server = uvicorn.Server(
         uvicorn.Config(
             app,
-            host="0.0.0.0",
+            host=config.health_check_host,
             port=config.health_check_port,
             log_level="warning",
             # Disable uvicorn's own signal handlers — we install a unified
@@ -1040,7 +1041,28 @@ async def _run(
     )
     server.install_signal_handlers = lambda: None  # type: ignore[method-assign]
 
-    dashboard_app = create_dashboard_app(dashboard_store, daemon, METRICS, HEALTH, config_path=config_path)
+    # Spec 144 (#198): the localhost guard, configured from the live config so the
+    # operator's bind address, port, and any trusted proxy hostname are honoured.
+    # The webhook route is exempted because GitHub calls it from the internet and
+    # it authenticates itself with an HMAC signature; guarding it would break
+    # webhooks outright.
+    _guard_exempt: frozenset[str] = frozenset()
+    if config.webhooks.enabled and config.webhooks.secret:
+        _guard_exempt = frozenset({config.webhooks.path})
+
+    dashboard_app = create_dashboard_app(
+        dashboard_store,
+        daemon,
+        METRICS,
+        HEALTH,
+        config_path=config_path,
+        permitted_origins=build_permitted(
+            dashboard_host=config.dashboard_host,
+            dashboard_port=config.dashboard_port,
+            trusted_hosts=config.trusted_dashboard_hosts,
+        ),
+        guard_exempt_paths=_guard_exempt,
+    )
 
     if config.webhooks.enabled and config.webhooks.secret:
         from coordinare.dashboard import register_webhook_route
@@ -1050,6 +1072,9 @@ async def _run(
             secret=config.webhooks.secret.get_secret_value(),
             trigger=daemon._webhook_trigger,
         )
+
+    # Spec 144 (#198), FR-020/FR-021. Only fires for a non-loopback bind.
+    warn_if_dashboard_exposed(config.dashboard_host, config.dashboard_port, log=logger)
 
     dashboard_server = uvicorn.Server(
         uvicorn.Config(
