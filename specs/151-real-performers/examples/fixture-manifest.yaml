@@ -1,0 +1,38 @@
+# Spec 151 — example fixture manifest for the board-simulation benchmark.
+#
+#   python scripts/board_bench.py --fixtures specs/151-real-performers/examples/fixture-manifest.yaml --run-dir runs/
+#
+# A fixture is a from-scratch work item: an issue (title + body), a starting repo
+# state (`base_files`, INCLUDING the pytest suite that expresses acceptance), and —
+# for the deterministic STUB run only — a `solution_files` set the stub implementer
+# applies to make CI pass. In a real (`--real`) run the model writes the solution
+# itself, so `solution_files` is ignored.
+#
+# Constraints (134): all fixtures in a manifest share ONE repo, so keep file paths
+# distinct across fixtures. `base_files` must ship a test that FAILS until the task
+# is implemented (that is what makes red vs. green CI meaningful).
+
+fixtures:
+  - id: multiply
+    title: "Implement multiply()"
+    body: "Add a multiply(a, b) function to calc.py so the acceptance test passes."
+    base_files:
+      calc.py: |
+        def add(a, b):
+            return a + b
+      test_multiply.py: |
+        from calc import multiply
+
+
+        def test_multiply():
+            assert multiply(3, 4) == 12
+    # Applied by the STUB implementer only (deterministic run). Ignored by --real.
+    solution_files:
+      calc.py: |
+        def add(a, b):
+            return a + b
+
+
+        def multiply(a, b):
+            return a * b
+    ground_truth: "calc.multiply returns a*b; test_multiply passes"

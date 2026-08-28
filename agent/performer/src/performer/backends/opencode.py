@@ -228,6 +228,16 @@ class OpenCodeAdapter:
             "permission": "allow",
             "provider": {name: provider},
         }
+        if model:
+            # Pin BOTH the main and the small/auxiliary model to the gateway.
+            # We already pin the *session* modelID, but opencode uses a separate
+            # `small_model` for session-title/summary generation; left unset it
+            # falls back to opencode's built-in GitHub Models provider
+            # (xai/grok-3-mini → 404, endpoint retiring 2026-07-30). Pinning both
+            # closes the only path that ever resolves to GitHub Models.
+            routed = f"{name}/{model}"
+            config["model"] = routed
+            config["small_model"] = routed
         (workspace / "opencode.json").write_text(json.dumps(config, indent=2))
         log.info(
             "backend.provider_config_written",
@@ -450,6 +460,16 @@ class OpenCodeAdapter:
                 tool = part.get("toolName", part.get("tool_name", "tool"))
                 output_text = str(part.get("output", ""))[:_MAX_TEXT]
                 self._emit(BackendEventType.tool_use, f"{tool} → {output_text}", detail=tool)
+            elif part_type == "tool" and part.get("tool") == "question":
+                # opencode >=1.18 surfaces an interactive question as a `tool`
+                # part named "question" that sits in `state.status=running`
+                # until answered. Headless `opencode serve` has no approver, so
+                # left unhandled the session never goes idle and the job hangs
+                # as "running" forever (observed: architect stalled ~85 min).
+                # Flip to blocked so coordinare's clarification path takes over.
+                questions = _questions_from_tool_part(part)
+                if questions:
+                    self._status = BackendStatus(state="blocked", questions=questions)
 
         elif event_type in ("session.message", "message.updated"):
             # Check for questions/need-for-input
@@ -459,10 +479,30 @@ class OpenCodeAdapter:
                 for p in parts
                 if p.get("type") in ("question", "needsInput") and p.get("text")
             ]
+            questions += [q for p in parts for q in _questions_from_tool_part(p)]
             if questions:
                 self._status = BackendStatus(state="blocked", questions=questions)
 
         # All other event types are no-ops
+
+
+def _questions_from_tool_part(part: dict) -> list[str]:  # type: ignore[type-arg]
+    """Extract question text from an opencode `question` tool part that is still
+    awaiting an answer (`state.status` running/pending). Returns [] otherwise."""
+    if part.get("type") != "tool" or part.get("tool") != "question":
+        return []
+    state = part.get("state") or {}
+    if state.get("status") not in ("running", "pending"):
+        return []
+    out: list[str] = []
+    for q in (state.get("input") or {}).get("questions", []):
+        text = q.get("question") or q.get("header") or ""
+        opts = [o.get("label", "") for o in q.get("options", []) if o.get("label")]
+        if opts:
+            text = f"{text} (options: {'; '.join(opts)})"
+        if text:
+            out.append(text[:_MAX_TEXT])
+    return out
 
 
 def _build_task_prompt(

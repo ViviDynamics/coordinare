@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any, Literal
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, SecretStr, field_validator
 
@@ -53,11 +54,23 @@ class JobInitPayload(BaseModel):
     role: str
     backend: str
     persona: str
-    repo_url: HttpUrl
+    # 151: transport-level URL. Was HttpUrl; relaxed to also carry the bench's
+    # git:// loopback remote. The enforced trust boundary is Score.repo_url
+    # (models.py), gated by ALLOW_INSECURE_REPO_URL — this only transports.
+    repo_url: str
     branch: str
     secrets: dict[str, SecretStr] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
     env_cache_path: str | None = None
+
+    @field_validator("repo_url")
+    @classmethod
+    def _validate_repo_url_scheme(cls, v: str) -> str:
+        parsed = urlparse(v)
+        if parsed.scheme not in {"http", "https", "git"} or not parsed.netloc:
+            msg = f"repo_url must be an http(s):// or git:// URL with a host, got: {v!r}"
+            raise ValueError(msg)
+        return v
 
 
 class JobAcceptResponse(BaseModel):

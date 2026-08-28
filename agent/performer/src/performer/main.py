@@ -1465,33 +1465,12 @@ async def handle_dispatch(
     backend_name = raw_backend.replace("-", "_").lower()  # normalize kebab-case
     model_name = score.model or None
 
-    # 036: Apply GitHub API URL from dispatch payload so the performer's
-    # GitHub client connects to the same instance (e.g. GitHub Enterprise).
-    github_api_url = score.github_api_url
-    if github_api_url and isinstance(github_api_url, str) and github_api_url.strip():
-        from urllib.parse import urlparse
-        # Mirror coordinare-side validation: reject whitespace, restrict http to localhost
-        # Log only scheme+host (redacted) to avoid leaking credentials/query params
-        if any(ch.isspace() for ch in github_api_url.strip()):
-            log.warning("dispatch.invalid_github_api_url", reason="whitespace")
-        else:
-            cleaned = github_api_url.strip().rstrip("/")
-            parsed = urlparse(cleaned)
-            safe_host = f"{parsed.scheme}://{parsed.hostname or ''}"
-            if parsed.username is not None or parsed.password is not None:
-                log.warning("dispatch.invalid_github_api_url", reason="credentials", host=safe_host)
-            elif parsed.query or parsed.fragment:
-                log.warning("dispatch.invalid_github_api_url", reason="query_or_fragment", host=safe_host)
-            elif parsed.scheme == "https" and parsed.netloc:
-                settings.GITHUB_API_URL = cleaned
-            elif parsed.scheme == "http" and parsed.netloc:
-                hostname = parsed.hostname or ""
-                if hostname in ("localhost", "127.0.0.1", "::1"):
-                    settings.GITHUB_API_URL = cleaned
-                else:
-                    log.warning("dispatch.invalid_github_api_url", reason="http_non_localhost", host=safe_host)
-            else:
-                log.warning("dispatch.invalid_github_api_url", reason="invalid_scheme_or_host", host=safe_host)
+    # 036/151: Apply the GitHub REST + GraphQL URL overrides from the dispatch so
+    # the performer's client connects to the same instance (GitHub Enterprise) or,
+    # in the board-sim bench, the loopback fake. https-any / http-loopback-only.
+    from performer.config import apply_github_url_override
+    apply_github_url_override(score.github_api_url, "GITHUB_API_URL", settings)
+    apply_github_url_override(score.github_graphql_url, "GITHUB_GRAPHQL_URL", settings)
 
     stand: Stand = await clone_repository(score)
     # 080: for a non-single mode, launch the in-container dual-model proxy and
@@ -3794,6 +3773,12 @@ async def _perform_job(payload: "JobInitPayload") -> "JobResult":  # pragma: no 
                         resp.metrics if isinstance(resp.metrics, dict) else (resp.metrics.model_dump() if resp.metrics is not None else None),
                     )
                 if resp.status in TERMINAL_STATUSES:
+                    # A backend that only learns its token count at the terminal
+                    # result event (claude_code) never reports it on a `working`
+                    # response, so stamp metrics on the terminal response — this is
+                    # what coordinare's check_status returns (JobResult.summary).
+                    if resp.metrics is None:
+                        resp = resp.model_copy(update={"metrics": collect_metrics(perf.backend)})
                     break
         finally:
             try:

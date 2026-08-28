@@ -9,7 +9,10 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+import structlog
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+log = structlog.get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -66,6 +69,17 @@ if TYPE_CHECKING:
 # 036: Accept any HTTPS host with exactly owner/repo path (supports GitHub Enterprise Server)
 _GITHUB_REPO_RE = re.compile(
     r"^https://[A-Za-z0-9.\-]+(:[0-9]+)?/[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+(\.git)?$"
+)
+
+# 151 (bench-only): a harness-local `git daemon` remote over git://. Accepted by
+# _validate_repo_url ONLY when ALLOW_INSECURE_REPO_URL is set in the environment —
+# a relaxation the board-sim benchmark opts into; production defaults stay
+# https-only. Unlike _GITHUB_REPO_RE (exactly owner/repo), the path here is
+# deliberately one OR two segments: `git daemon` serves a bare repo at the root
+# of its base path, so the bench remote is git://host:9418/bench-repo — there is
+# no owner segment to require.
+_GIT_REPO_RE = re.compile(
+    r"^git://[A-Za-z0-9.\-]+(:[0-9]+)?/[A-Za-z0-9_.\-]+(/[A-Za-z0-9_.\-]+)?(\.git)?$"
 )
 
 # 077: free-form viability/benchmark probe role. A diagnostic job runs the
@@ -128,6 +142,7 @@ class Score(BaseModel):
     temperature: float | None = None  # 055: 0.0–1.0; None = backend default
     max_tokens: int | None = None  # 055: output token cap; None = unlimited
     github_api_url: str = ""  # GitHub API URL override (036)
+    github_graphql_url: str = ""  # GitHub GraphQL URL override (151)
     architecture_plan_path: str = ""  # path to architect's plan on branch
     issue_number: int = 0  # GitHub issue number for PR linkage
     issue_url: str = ""  # GitHub issue URL for PR body reference
@@ -161,13 +176,23 @@ class Score(BaseModel):
     @field_validator("repo_url")
     @classmethod
     def _validate_repo_url(cls, v: str) -> str:
-        if not _GITHUB_REPO_RE.match(v):
-            msg = (
-                f"repo_url must be an HTTPS URL with owner/repo path "
-                f"(https://{{host}}/{{owner}}/{{repo}}[.git]), got: {v!r}"
-            )
-            raise ValueError(msg)
-        return v
+        if _GITHUB_REPO_RE.match(v):
+            return v
+        # 151: the board-sim bench clones/pushes a harness-local `git daemon`
+        # over git://. That scheme is accepted ONLY when ALLOW_INSECURE_REPO_URL is
+        # set in the performer environment (the bench sets it via config.env).
+        # Default (unset) stays https-only — production trust boundary unchanged.
+        if os.environ.get("ALLOW_INSECURE_REPO_URL") and _GIT_REPO_RE.match(v):
+            # Self-announcing: the env var is process-global and otherwise
+            # invisible, so a bench config copied into a real deployment would
+            # keep accepting git:// silently. This fires only where it is wanted.
+            log.warning("score.insecure_repo_url_accepted", repo_url=v)
+            return v
+        msg = (
+            f"repo_url must be an HTTPS URL with owner/repo path "
+            f"(https://{{host}}/{{owner}}/{{repo}}[.git]), got: {v!r}"
+        )
+        raise ValueError(msg)
 
     @field_validator("branch")
     @classmethod

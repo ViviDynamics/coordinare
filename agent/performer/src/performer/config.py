@@ -2,8 +2,13 @@
 from __future__ import annotations
 
 import functools
+import os
+from urllib.parse import urlparse
 
+import structlog
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+log = structlog.get_logger(__name__)
 
 
 class Settings(BaseSettings):
@@ -33,6 +38,11 @@ class Settings(BaseSettings):
 
     # 036 — GitHub Enterprise: configurable REST API base URL
     GITHUB_API_URL: str = "https://api.github.com"
+    # 151 — configurable GraphQL endpoint (was hardcoded in github.py). Default is
+    # real GitHub; set at runtime from Score.github_graphql_url (main.py override,
+    # same https-any / http-loopback rule as GITHUB_API_URL). The board-sim bench
+    # points it at the loopback fake so resolve_pr_review_threads never leaks.
+    GITHUB_GRAPHQL_URL: str = "https://api.github.com/graphql"
     CHECK_MAX_ATTEMPTS: int = 8  # max CI fix cycles before blocking the card
     # 065 Fix 14: bail after this many consecutive identical-failure attempts;
     # if the model can't fix it in 2 tries, more grinding won't help.
@@ -120,3 +130,46 @@ def get_settings() -> Settings:
     Call ``get_settings.cache_clear()`` in tests to force reconstruction.
     """
     return Settings()
+
+
+def apply_github_url_override(raw: str | None, field: str, settings: Settings) -> None:
+    """Apply a Score-provided GitHub URL override to ``settings.<field>``.
+
+    036/151: shared by the REST (``GITHUB_API_URL``) and GraphQL
+    (``GITHUB_GRAPHQL_URL``) overrides that ``handle_dispatch`` applies at job
+    start. Accepts ``https://<any>`` or ``http://`` on loopback ONLY
+    (``localhost``/``127.0.0.1``/``::1``) — plus ``host.docker.internal`` when the
+    bench opt-in ``ALLOW_HOST_GATEWAY_GITHUB`` env is set, so a bridged container
+    can reach the harness fakes on the Docker host. Anything else — a non-loopback
+    http host, embedded credentials, a query/fragment, whitespace — is ignored
+    (logged) so the production default stands and a spoofed http host can never
+    redirect the performer into a real-GitHub leak.
+    """
+    # host.docker.internal is only http-acceptable under the explicit bench opt-in;
+    # production leaves the env unset so the loopback-only rule stands.
+    http_hosts = {"localhost", "127.0.0.1", "::1"}
+    if os.environ.get("ALLOW_HOST_GATEWAY_GITHUB"):
+        http_hosts.add("host.docker.internal")
+    if not raw or not isinstance(raw, str) or not raw.strip():
+        return
+    if any(ch.isspace() for ch in raw.strip()):
+        log.warning("dispatch.invalid_github_url", field=field, reason="whitespace")
+        return
+    cleaned = raw.strip().rstrip("/")
+    parsed = urlparse(cleaned)
+    safe_host = f"{parsed.scheme}://{parsed.hostname or ''}"
+    if parsed.username is not None or parsed.password is not None:
+        log.warning("dispatch.invalid_github_url", field=field, reason="credentials", host=safe_host)
+    elif parsed.query or parsed.fragment:
+        log.warning("dispatch.invalid_github_url", field=field, reason="query_or_fragment", host=safe_host)
+    elif parsed.scheme == "https" and parsed.netloc:
+        setattr(settings, field, cleaned)
+        log.info("dispatch.github_url_override", field=field, host=safe_host)
+    elif parsed.scheme == "http" and parsed.netloc and (parsed.hostname or "") in http_hosts:
+        setattr(settings, field, cleaned)
+        # Accepted overrides are logged too: pointing the performer away from
+        # api.github.com is what you want to see both when debugging a bench run
+        # and when the opt-in env is set somewhere it should not be.
+        log.info("dispatch.github_url_override", field=field, host=safe_host)
+    else:
+        log.warning("dispatch.invalid_github_url", field=field, reason="scheme_or_host", host=safe_host)

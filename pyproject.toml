@@ -134,6 +134,11 @@ markers = [
     "e2e: End-to-end browser tests (require Playwright browser binaries)",
     "benchmark: Performance benchmark tests (require Docker; emit JSON results)",
     "lmstudio: LM Studio integration tests (gated by LMSTUDIO_AVAILABLE=1; spec 067)",
+    # 151: the single real-model board-sim run. DELIBERATELY skipped unless
+    # RUN_REAL_BENCH is set (opt-in paid/Docker lane) — the free deterministic lane
+    # (SC-006) stays green without it. Tracked justification for Constitution II
+    # "no untracked skips": the skip is this spec's opt-in real lane, not an escape.
+    "real: Real-model board-sim benchmark (opt-in; requires RUN_REAL_BENCH + Docker + a model endpoint)",
 ]
 filterwarnings = [
     "ignore::DeprecationWarning",

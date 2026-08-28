@@ -1393,6 +1393,10 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
     config = state.get("config")
     if config is not None and hasattr(config, "github_api_url"):
         card_context["github_api_url"] = config.github_api_url
+    # 151: GraphQL URL rides the same card_context → metadata → Score path (no
+    # payload-model/env change); the performer applies it via a main.py override.
+    if config is not None and hasattr(config, "github_graphql_url"):
+        card_context["github_graphql_url"] = config.github_graphql_url
 
     # 037/055: Include per-role backend, model, and tuning params in dispatch payload.
     if config is not None and hasattr(config, "performers") and role is not None:

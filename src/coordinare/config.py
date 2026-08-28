@@ -797,6 +797,19 @@ class ProjectConfiguration(BaseSettings):
     github_api_url: str = "https://api.github.com"
     github_graphql_url: str = "https://api.github.com/graphql"
 
+    # 151 — bench: configurable git host for clone/push. Default is real GitHub;
+    # the board-sim real bench overrides it to a loopback git daemon
+    # (git://127.0.0.1:<port>). This is the HOST-facing base — WorkspaceManager's
+    # host clone + the rebase service's fetch_main_sha reach it directly.
+    git_base_url: str = "https://github.com"
+
+    # 151 — bench: the CONTAINER-facing git base handed to the performer as its
+    # clone/push remote (WorkspaceInfo.repo_url). Defaults to None → falls back to
+    # git_base_url (production: host and container reach the same real GitHub). The
+    # real bench sets it to git://host.docker.internal:<port> so a bridged
+    # container reaches the host's git daemon while the host still uses 127.0.0.1.
+    performer_git_base_url: str | None = None
+
     # Auth mode — "pat" (default) or "app"
     github_auth: Literal["pat", "app"] = "pat"
     github_token: SecretStr | None = None
@@ -1254,6 +1267,28 @@ class ProjectConfiguration(BaseSettings):
             raise ValueError(msg)
         return self
 
+    @field_validator("git_base_url", "performer_git_base_url", mode="before")
+    @classmethod
+    def _normalize_git_base_url(cls, v: Any) -> str | None:
+        # 151: git host for clone/push. https:// (production) or git:// (bench
+        # loopback daemon) only. The scheme is enforced HERE, not downstream: the
+        # performer's repo_url validator covers the container-facing clone, but
+        # WorkspaceManager builds the host-side clone URL straight from this value
+        # and hands it to `git clone`, so file://ssh:// would otherwise reach the
+        # host unvalidated.
+        if v is None:
+            return None
+        url = str(v).strip()
+        if any(ch.isspace() for ch in url):
+            msg = "git_base_url must not contain whitespace"
+            raise ValueError(msg)
+        url = url.rstrip("/")
+        scheme = urlparse(url).scheme
+        if scheme not in {"https", "git"}:
+            msg = f"git_base_url must use https:// or git://, got: {url!r}"
+            raise ValueError(msg)
+        return url
+
     @field_validator("github_api_url", "github_graphql_url", mode="before")
     @classmethod
     def _validate_github_urls(cls, v: Any) -> str:
@@ -1277,10 +1312,21 @@ class ProjectConfiguration(BaseSettings):
         if parsed.query or parsed.fragment:
             msg = f"GitHub URL must not include query parameters or fragments: {safe!r}"
             raise ValueError(msg)
-        # Restrict http to localhost/loopback to prevent credential leaks
+        # Restrict http to loopback to prevent credential leaks. 151:
+        # `host.docker.internal` is included because it is the Docker-only name for
+        # the container's host (mapped via `--add-host ...:host-gateway`) — it does
+        # not resolve to anything routable off-box, so it is loopback-equivalent
+        # from the container's point of view. The board-sim bench needs it: the
+        # container-facing github_api_url/github_graphql_url handed to a bridged
+        # performer is `http://host.docker.internal:<port>`, and without this the
+        # value is one the model itself forbids, so any path that revalidates the
+        # config (SymphonyConfig.effective_config re-runs
+        # `ProjectConfiguration(**model_dump(exclude_unset=True))`) raises
+        # mid-run. The performer applies its own opt-in gate on the same host
+        # (ALLOW_HOST_GATEWAY_GITHUB, performer/config.py).
         if parsed.scheme == "http":
             host = parsed.hostname or ""
-            if host not in ("localhost", "127.0.0.1", "::1"):
+            if host not in ("localhost", "127.0.0.1", "::1", "host.docker.internal"):
                 msg = f"GitHub URL with http scheme is only allowed for localhost, got host={host!r}: {safe}"
                 raise ValueError(msg)
         return url
