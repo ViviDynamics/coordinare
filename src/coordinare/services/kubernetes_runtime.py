@@ -253,10 +253,44 @@ class KubernetesRuntime:
                 self._api.create_namespaced_pod, namespace=self._namespace, body=manifest
             )
         except ApiException as exc:
-            raise performer_lifecycle.ContainerStartError(
-                f"could not create performer Pod {pod_name!r} in namespace "
-                f"{self._namespace!r}: {exc.status} {exc.reason}"
-            ) from exc
+            if exc.status != 409:
+                raise performer_lifecycle.ContainerStartError(
+                    f"could not create performer Pod {pod_name!r} in namespace "
+                    f"{self._namespace!r}: {exc.status} {exc.reason}"
+                ) from exc
+
+            # The name is taken. Because ``pod_name_for`` is deterministic, that
+            # means this performer's *own* predecessor, and the interesting
+            # question is whether it is on its way out.
+            #
+            # ``stop`` waits for the Pod it deleted, so the ordinary path never
+            # arrives here. Other routes do: coordinare killed between the delete
+            # request and the Pod actually going, an operator deleting a Pod by
+            # hand, an eviction. In every one of those the predecessor is
+            # terminating and the right answer is to wait for it, not to refuse
+            # work the cluster is seconds away from allowing.
+            await self._await_pod_gone(pod_name, timeout_s=config.readiness_timeout_s)
+            try:
+                await asyncio.to_thread(
+                    self._api.create_namespaced_pod, namespace=self._namespace, body=manifest
+                )
+            except ApiException as retry_exc:
+                # Still there. Either it is not terminating at all — a live
+                # performer this coordinare does not know it owns — or termination
+                # is stuck. Both are situations to report rather than to keep
+                # retrying into.
+                raise performer_lifecycle.ContainerStartError(
+                    f"performer Pod {pod_name!r} already exists in namespace "
+                    f"{self._namespace!r} and did not go away: "
+                    f"{retry_exc.status} {retry_exc.reason}. Another coordinare may be "
+                    "running against this namespace, or the Pod is stuck terminating."
+                ) from retry_exc
+            _log.info(
+                "kubernetes_runtime.pod_recreated_after_predecessor",
+                pod=pod_name,
+                performer_id=config.id,
+                detail="the previous Pod for this performer was still terminating",
+            )
 
         _log.info(
             "kubernetes_runtime.pod_created",
