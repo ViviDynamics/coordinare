@@ -805,3 +805,44 @@ class TestTheInstallGateCannotPassOnABrokenRelease:
 
     def test_it_fails_when_the_pod_never_starts_a_container(self) -> None:
         assert self._gate_with(with_statuses=False) == "failed"
+
+
+class TestTheDockerPathIsCoveredToo:
+    """Issue #223 — the Docker deployment path had no automated coverage.
+
+    It was unbuildable for months and nobody noticed, because nothing built or
+    ran that image. The Kubernetes path gained rendering tests and a live cluster
+    install in the same PR that discovered this; the asymmetry was backwards,
+    since Docker is the path most self-hosters try first.
+    """
+
+    @staticmethod
+    def _workflow() -> dict:
+        return yaml.safe_load(Path(PR_WORKFLOW).read_text())
+
+    def test_the_daemon_image_is_built_and_exercised_in_pr_ci(self) -> None:
+        jobs = self._workflow()["jobs"]
+        assert "daemon-image" in jobs, (
+            "the Docker path needs a check of its own: the image is built and "
+            "published by the release pipeline, so without this a break is only "
+            "found after merge"
+        )
+        assert "test_148_docker_daemon_image" in yaml.safe_dump(jobs["daemon-image"])
+
+    def test_it_does_not_change_what_gates_a_merge(self) -> None:
+        """Same discipline as the chart jobs: new checks are visible, not gating,
+        until they have proven steady."""
+        import subprocess
+
+        result = subprocess.run(
+            ["git", "show", f"origin/main:{PR_WORKFLOW}"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            pytest.skip("origin/main is not available to compare against")
+
+        before = yaml.safe_load(result.stdout)["jobs"]["build-success"]
+        after = self._workflow()["jobs"]["build-success"]
+        assert after["needs"] == before["needs"]
