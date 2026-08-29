@@ -100,6 +100,36 @@ jobs:
       - name: Verify the rendered chart
         run: uv run pytest tests/unit/test_147_helm_deployment.py -v
 
+  daemon-image:
+    name: Daemon Image
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    runs-on:
+      - self-hosted
+      - linux
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install coordinare
+        run: |
+          uv venv
+          uv pip install -e ".[dev]"
+
+      # The Docker deployment path had no coverage at all, and was unbuildable
+      # for months before anyone noticed (#223). The image is built and published
+      # by main-branch-build.yml, so without this a break is only discovered
+      # after merge, by the release pipeline.
+      - name: Verify the daemon image builds and runs
+        run: uv run pytest tests/integration/test_148_docker_daemon_image.py -v
+
   chart-install:
     name: Chart Install (kind)
     if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}

@@ -23,7 +23,7 @@
 #   * github_private_key_path from config.yaml is mounted read-only at the
 #     same path inside the container.
 #   * --network host is used so LAN-only DNS (e.g. litellm.example)
-#     resolves.  Health (9090) and dashboard (9091) become reachable on the
+#     resolves.  Health (8080) and dashboard (8090) become reachable on the
 #     host directly without an explicit -p.
 set -euo pipefail
 
