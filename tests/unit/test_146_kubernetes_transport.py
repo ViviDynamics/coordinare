@@ -633,3 +633,178 @@ class TestPerformerHasNoClusterCredential:
             assert not security.get("privileged")
             assert not security.get("allowPrivilegeEscalation")
             assert "NET_ADMIN" not in (security.get("capabilities", {}) or {}).get("add", [])
+
+
+class TestTheSweepCannotDeleteTheController:
+    """Issue #224 — coordinare deleted its own Pod, restarted, and did it again.
+
+    ``cleanup_orphaned`` selected on ``managed-by=coordinare`` alone. The Helm
+    chart labels the *controller* with exactly that, so the startup sweep matched
+    the Pod it was running in. The daemon killed itself on every start, and the
+    symptom gave nothing away: the log simply stopped, and the events said
+    "Killing container" with no error anywhere.
+
+    Nothing caught it because no test had ever started a real daemon on
+    Kubernetes — spec 146's tests drive the runtime directly, and spec 147's
+    smoke test stopped before startup completed.
+    """
+
+    @staticmethod
+    def _selector(performer_id=None) -> str:
+        import asyncio
+
+        from coordinare.services.kubernetes_runtime import KubernetesRuntime
+
+        captured = {}
+
+        class FakeApi:
+            def list_namespaced_pod(self, *, namespace, label_selector=None, **kwargs):
+                from types import SimpleNamespace
+
+                captured["selector"] = label_selector
+                return SimpleNamespace(items=[])
+
+        asyncio.run(KubernetesRuntime(core_v1=FakeApi()).cleanup_orphaned(performer_id))
+        return captured["selector"]
+
+    def test_the_sweep_requires_a_performer_id_label(self) -> None:
+        """The label the controller does not have, which is what excludes it."""
+        from coordinare.services.kubernetes_runtime import PERFORMER_ID_LABEL
+
+        assert PERFORMER_ID_LABEL in self._selector()
+
+    def test_the_controller_pod_does_not_match_the_sweep(self) -> None:
+        """Asserted against the chart's real labels, not a guess at them."""
+        import shutil
+        import subprocess
+
+        import yaml
+
+        # shutil.which FIRST. Checking the return code cannot help: when helm is
+        # absent, subprocess.run raises FileNotFoundError before there is a code to
+        # inspect — so the guard never fired and the job ERRORED rather than
+        # skipping. The Test job has no helm; the Chart job does, and runs this.
+        if shutil.which("helm") is None:
+            pytest.skip("helm is not installed; the Chart CI job covers this assertion")
+
+        rendered = subprocess.run(
+            ["helm", "template", "t", "deploy/helm/coordinare", "-n", "ns"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if rendered.returncode != 0:
+            pytest.skip(f"helm could not render the chart: {rendered.stderr.strip()[:200]}")
+
+        from coordinare.services.kubernetes_runtime import PERFORMER_ID_LABEL
+
+        controller_labels: dict[str, str] = {}
+        for doc in yaml.safe_load_all(rendered.stdout):
+            if doc and doc.get("kind") == "StatefulSet":
+                controller_labels = doc["spec"]["template"]["metadata"]["labels"]
+
+        assert controller_labels, "could not find the controller Pod's labels"
+        assert PERFORMER_ID_LABEL not in controller_labels, (
+            "the controller carries a performer-id label, so the orphan sweep would "
+            "delete the Pod it is running in"
+        )
+
+    def test_narrowing_to_one_performer_still_scopes_by_managed_by(self) -> None:
+        from coordinare.services.kubernetes_runtime import MANAGED_BY_LABEL
+
+        selector = self._selector("impl")
+        assert MANAGED_BY_LABEL in selector
+        assert "impl" in selector
+
+
+class TestTheDaemonCanStartWithoutASubprocessTransport:
+    """Issue #224 — with agent_transport kubernetes, coordinare could never boot.
+
+    ``_bootstrap_services`` builds an ``AgentTransport`` unconditionally and exits
+    on failure. There is no subprocess wire protocol on the Kubernetes path and
+    none is needed, since performers are Pods spoken to over HTTP — so every
+    Kubernetes deployment died at startup.
+    """
+
+    def test_an_unavailable_transport_stands_in_at_startup(self) -> None:
+        from coordinare.__main__ import _UnavailableTransport
+
+        assert hasattr(_UnavailableTransport("why"), "send")
+
+    def test_it_raises_something_the_callers_actually_catch(self) -> None:
+        """A bare RuntimeError would sail past every handler built for this.
+
+        ``TransportError`` subclasses ``RuntimeError``, and the relationship does
+        not run the other way — so ``except TransportError`` in AgentService,
+        dispatch_performer and http_performer_service does not catch a plain
+        RuntimeError. The stand-in exists to fail *like a transport failure*, so
+        it has to raise like one or it escapes the graph instead of being handled.
+        """
+        import asyncio
+
+        from coordinare.__main__ import _UnavailableTransport
+        from coordinare.transport.base import TransportError
+
+        with pytest.raises(TransportError):
+            asyncio.run(_UnavailableTransport("no transport here").send("anything"))
+
+    def test_it_fails_only_when_something_actually_uses_it(self) -> None:
+        """Deferred, not dropped.
+
+        A role genuinely configured for a wire protocol still fails — at the point
+        it needs one, where the message can say so — rather than taking down every
+        deployment that has no such role.
+        """
+        import asyncio
+
+        from coordinare.__main__ import _UnavailableTransport
+
+        transport = _UnavailableTransport("no subprocess transport on this path")
+        with pytest.raises(RuntimeError, match="no subprocess transport"):
+            asyncio.run(transport.send("anything"))
+
+
+class TestOnlyTheKubernetesCaseIsTolerated:
+    """The narrowing that keeps the startup fix from hiding real misconfiguration.
+
+    Letting startup proceed without a subprocess transport was first written as a
+    broad ``except ValueError``. ``_build_transport`` raises ValueError in three
+    places, so that also swallowed a missing ``agent_executable`` and, worse,
+    ``Unknown transport`` — an operator who misspells ``agent_transport`` would
+    have got a daemon that starts and quietly does nothing, instead of being told.
+
+    The decision is now made on the transport *name* before the call, so nothing
+    unrelated can be caught by it.
+    """
+
+    def test_a_misspelled_transport_still_raises(self) -> None:
+        from types import SimpleNamespace
+
+        from coordinare.__main__ import _build_transport
+
+        config = SimpleNamespace(
+            agent_transport="kubernets",
+            agent_executable="",
+            transport_timeout_seconds=30,
+            github_token=None,
+        )
+        with pytest.raises(ValueError, match="Unknown transport"):
+            _build_transport(config)
+
+    def test_startup_decides_on_the_name_rather_than_catching(self) -> None:
+        """Asserts on the code, ignoring comments.
+
+        An earlier version of this test matched "except ValueError" inside the
+        explanatory comment, so it could never have failed.
+        """
+        import inspect
+
+        from coordinare import __main__ as main_module
+
+        source = inspect.getsource(main_module._bootstrap_services)
+        code = "\n".join(line for line in source.splitlines() if not line.lstrip().startswith("#"))
+        assert 'config.agent_transport == "kubernetes"' in code
+        assert "except ValueError" not in code, (
+            "a broad ValueError catch here also swallows 'Unknown transport' and a "
+            "missing agent_executable, which must still stop the daemon"
+        )

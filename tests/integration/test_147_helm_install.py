@@ -66,7 +66,17 @@ def _cluster_available() -> bool:
     return _run("kubectl", "get", "nodes", check=False, timeout=15).returncode == 0
 
 
-pytestmark = pytest.mark.skipif(not _cluster_available(), reason=SKIP_REASON)
+pytestmark = [
+    pytest.mark.skipif(not _cluster_available(), reason=SKIP_REASON),
+    # The suite's default timeout is 30s (pyproject). Installing a chart, waiting
+    # for a rollout, and rescheduling a Pod do not fit in that.
+    #
+    # These passed for weeks only because I ran them with an explicit --timeout.
+    # CI runs a bare pytest, and the newer readiness tests are slower than the
+    # original ones — so the module needs its own budget rather than depending on
+    # how the command happened to be typed. Same trap as the image-build tests.
+    pytest.mark.timeout(900),
+]
 
 
 def _require_pod_is_starting_cleanly() -> None:
@@ -350,3 +360,209 @@ class TestChartRBAC:
         assert not self._can_i(release, verb, resource), (
             f"the chart's ServiceAccount can {verb} {resource} — outside the documented grant"
         )
+
+
+# ---------------------------------------------------------------------------
+# Issue #224 — the half of SC-001 the original smoke test could not reach.
+# ---------------------------------------------------------------------------
+
+STUB_PORT = 8099
+
+
+@pytest.fixture(scope="module")
+def healthy_release(tmp_path_factory) -> dict:
+    """A release whose daemon can actually finish starting.
+
+    Coordinare resolves a GitHub Project *before* the health server starts, so
+    without one there is no endpoint to probe and "the daemon reports healthy"
+    could not be tested — spec 147 narrowed SC-001 to say so rather than imply
+    otherwise. Issue #224 closed it.
+
+    **The stub is a sidecar, not a Service, and that is not incidental.**
+    Coordinare refuses a plain-http GitHub URL for any host but loopback, so the
+    token cannot be sent in cleartext to an arbitrary address. A Service would
+    have needed either TLS or that guard weakened; a sidecar shares the Pod's
+    network namespace, so ``http://127.0.0.1`` is *genuinely* loopback and the
+    guard is satisfied rather than circumvented.
+
+    It runs from the daemon image, which already contains ``src/`` and aiohttp,
+    so there is no second image to build or keep in step.
+    """
+    release = "ready"
+    values = tmp_path_factory.mktemp("helm-ready") / "values.yaml"
+    values.write_text(
+        f"""
+image:
+  repository: {IMAGE.split(":")[0]}
+  tag: {IMAGE.split(":")[1]}
+  pullPolicy: Never
+state:
+  size: 1Gi
+secrets:
+  GITHUB_TOKEN: smoke-test-token
+extraContainers:
+  - name: github-stub
+    image: {IMAGE}
+    imagePullPolicy: Never
+    command: ["/app/.venv/bin/python", "-m",
+              "coordinare.bench.coordinare_facing_github_stub"]
+config:
+  github_org: ViviDynamics
+  human_reviewers: [smoke]
+  project_name: smoke
+  github_project_number: 1
+  poll_interval_seconds: 3600
+  # An HTTP performer endpoint is required on this path: with agent_transport
+  # kubernetes there is no subprocess wire protocol, so a role without one has no
+  # way to be dispatched.
+  performer_endpoints:
+    - id: impl
+      roles: [implementer]
+      mode: ephemeral
+      image: coordinare-performer:base
+  github_api_url: http://127.0.0.1:{STUB_PORT}
+  github_graphql_url: http://127.0.0.1:{STUB_PORT}/graphql
+"""
+    )
+    _run("helm", "uninstall", release, "-n", NAMESPACE, check=False)
+    _run("helm", "install", release, CHART, "-n", NAMESPACE, "-f", str(values), timeout=180)
+    yield {"namespace": NAMESPACE, "release": release, "values": str(values)}
+
+    _run("helm", "uninstall", release, "-n", NAMESPACE, check=False)
+    _run("kubectl", "-n", NAMESPACE, "delete", "pvc", "--all", "--wait=false", check=False)
+
+
+def _wait_ready(release: str, timeout: int = 420) -> bool:
+    """Wait until the controller's own container reports Ready.
+
+    Polls the Pod rather than calling ``kubectl rollout status`` once. That call
+    answers about a *generation*, and immediately after a ``helm upgrade`` the
+    generation may still be catching up — so a single shot races the transition
+    and can report failure for a release that becomes healthy a moment later.
+
+    Checks the ``coordinare`` container specifically, not the Pod as a whole. The
+    Pod runs a stub sidecar too, and the bug this suite exists to catch produced
+    exactly a 1/2-ready Pod: sidecar up, coordinare dead. Asking "is the Pod ready"
+    would have been satisfied by the wrong half.
+    """
+    import json
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        result = _run(
+            "kubectl",
+            "-n",
+            NAMESPACE,
+            "get",
+            "pod",
+            f"{release}-coordinare-0",
+            "-o",
+            "json",
+            check=False,
+        )
+        if result.returncode == 0:
+            statuses = json.loads(result.stdout).get("status", {}).get("containerStatuses") or []
+            coordinare = next((c for c in statuses if c["name"] == "coordinare"), None)
+            if coordinare and coordinare.get("ready"):
+                return True
+        time.sleep(3)
+    return False
+
+
+class TestTheDaemonActuallyReachesReady:
+    """SC-001 in full — the part spec 147 had to narrow.
+
+    Everything else about the chart was verifiable without a board. This was not,
+    and the spec said so rather than implying otherwise. Issue #224 closed it.
+    """
+
+    def test_the_controller_becomes_ready(self, healthy_release) -> None:
+        assert _wait_ready(healthy_release["release"]), (
+            "the controller never became Ready. Its readiness probe is /ready, which "
+            "only serves once startup has resolved the project — so this failing "
+            "means startup did not complete, not that the probe is wrong."
+        )
+
+    def test_the_readiness_endpoint_answers(self, healthy_release) -> None:
+        """Ready is the orchestrator's opinion; this asks coordinare directly."""
+        release = healthy_release["release"]
+        result = _run(
+            "kubectl",
+            "-n",
+            NAMESPACE,
+            "exec",
+            f"{release}-coordinare-0",
+            "--",
+            "/app/.venv/bin/python",
+            "-c",
+            "import urllib.request;"
+            "print(urllib.request.urlopen('http://127.0.0.1:8080/ready', timeout=5).status)",
+            check=False,
+        )
+        assert "200" in result.stdout, f"/ready did not answer 200: {result.stdout} {result.stderr}"
+
+
+class TestStateSurvives:
+    """SC-004 — also unreachable before, because the daemon never got far enough to write."""
+
+    @staticmethod
+    def _write_marker(release: str, text: str) -> None:
+        _run(
+            "kubectl",
+            "-n",
+            NAMESPACE,
+            "exec",
+            f"{release}-coordinare-0",
+            "--",
+            "/app/.venv/bin/python",
+            "-c",
+            f"open('/var/lib/coordinare/marker.txt','w').write({text!r})",
+        )
+
+    @staticmethod
+    def _read_marker(release: str) -> str:
+        result = _run(
+            "kubectl",
+            "-n",
+            NAMESPACE,
+            "exec",
+            f"{release}-coordinare-0",
+            "--",
+            "/app/.venv/bin/python",
+            "-c",
+            "print(open('/var/lib/coordinare/marker.txt').read())",
+            check=False,
+        )
+        return result.stdout.strip()
+
+    def test_the_volume_survives_a_pod_reschedule(self, healthy_release) -> None:
+        """The failure this guards is silent: a relative state path writes to the
+        container filesystem and looks fine until the first restart."""
+        release = healthy_release["release"]
+        assert _wait_ready(release)
+        self._write_marker(release, "before-reschedule")
+
+        _run("kubectl", "-n", NAMESPACE, "delete", "pod", f"{release}-coordinare-0")
+        assert _wait_ready(release), "the controller did not come back"
+
+        assert self._read_marker(release) == "before-reschedule"
+
+    def test_the_claim_survives_an_upgrade(self, healthy_release) -> None:
+        release = healthy_release["release"]
+        assert _wait_ready(release)
+        self._write_marker(release, "before-upgrade")
+
+        _run(
+            "helm",
+            "upgrade",
+            release,
+            CHART,
+            "-n",
+            NAMESPACE,
+            "-f",
+            healthy_release["values"],
+            timeout=180,
+        )
+        assert _wait_ready(release)
+        assert self._read_marker(release) == "before-upgrade"
