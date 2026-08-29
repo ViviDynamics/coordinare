@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import copy
 import signal
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from time import monotonic, perf_counter
@@ -134,7 +135,9 @@ def _persist_active_sessions(active_sessions: dict[str, Any]) -> dict[str, Persi
         last_slack_raw = sess.get("last_blocked_slack_delivered_at")
         last_slack = last_slack_raw if isinstance(last_slack_raw, datetime) else None
         head_dispatch_raw = sess.get("head_at_dispatch")
-        head_dispatch = head_dispatch_raw if isinstance(head_dispatch_raw, str) and head_dispatch_raw else None
+        head_dispatch = (
+            head_dispatch_raw if isinstance(head_dispatch_raw, str) and head_dispatch_raw else None
+        )
         head_last_raw = sess.get("head_at_last_turn")
         head_last = head_last_raw if isinstance(head_last_raw, str) and head_last_raw else None
         persona_scope_raw = sess.get("persona_scope")
@@ -190,8 +193,11 @@ def _persist_active_sessions(active_sessions: dict[str, Any]) -> dict[str, Persi
                 except (ValidationError, TypeError):
                     continue
         ci_gate_rollup_sig_raw = sess.get("ci_gate_rollup_signature")
-        ci_gate_rollup_sig = ci_gate_rollup_sig_raw \
-            if isinstance(ci_gate_rollup_sig_raw, str) and ci_gate_rollup_sig_raw else None
+        ci_gate_rollup_sig = (
+            ci_gate_rollup_sig_raw
+            if isinstance(ci_gate_rollup_sig_raw, str) and ci_gate_rollup_sig_raw
+            else None
+        )
         # 095: per-card ENV_BLOCKED hold/dedup state.  Persist a dict of
         # string-valued identifiers (head_sha/pattern_id/cause/action) so a
         # still-active block does not re-notify the operator after a restart
@@ -219,6 +225,7 @@ def _persist_active_sessions(active_sessions: dict[str, Any]) -> dict[str, Persi
             _m, _h, _o = lra_raw.get("main_sha"), lra_raw.get("head_sha"), lra_raw.get("outcome")
             if all(isinstance(x, str) and x for x in (_m, _h, _o)):
                 last_rebase_attempt = {"main_sha": _m, "head_sha": _h, "outcome": _o}
+
         # 123: split bounce budget counters — coerce defensively (reject
         # bools/non-int) so a corrupt snapshot can't crash startup on int().
         def _coerce_counter(value: object) -> int:
@@ -239,10 +246,12 @@ def _persist_active_sessions(active_sessions: dict[str, Any]) -> dict[str, Persi
         if isinstance(assessor_qa_raw, (list, tuple)):
             for item in assessor_qa_raw:
                 if isinstance(item, dict) and item.get("question"):
-                    assessor_open_questions.append({
-                        "question": str(item.get("question", "")),
-                        "answer": str(item.get("answer", "")),
-                    })
+                    assessor_open_questions.append(
+                        {
+                            "question": str(item.get("question", "")),
+                            "answer": str(item.get("answer", "")),
+                        }
+                    )
         # 125: stage-verdict memory — validate each slot via StageVerdict and
         # drop malformed ones here (a bad slot == no slot == dispatch), so a
         # corrupt entry never fails the whole snapshot save/load.
@@ -291,9 +300,7 @@ def _persist_active_sessions(active_sessions: dict[str, Any]) -> dict[str, Persi
                 except (ValidationError, TypeError):
                     continue
         origin_raw = sess.get("feedback_origin_sha")
-        feedback_origin_sha = (
-            origin_raw if isinstance(origin_raw, str) and origin_raw else None
-        )
+        feedback_origin_sha = origin_raw if isinstance(origin_raw, str) and origin_raw else None
         noop_raw = sess.get("noop_success_retries")
         noop_success_retries = (
             max(0, int(noop_raw))
@@ -308,11 +315,14 @@ def _persist_active_sessions(active_sessions: dict[str, Any]) -> dict[str, Persi
             processed_review_ids=processed_ids,
             surfaced_stale_reviews=surfaced_stale,
             open_questions=[str(q) for q in questions_raw if q is not None]
-            if isinstance(questions_raw, (list, tuple, set)) else [],
+            if isinstance(questions_raw, (list, tuple, set))
+            else [],
             card_clarifications=[dict(c) for c in clarifications_raw if isinstance(c, dict)]
-            if isinstance(clarifications_raw, (list, tuple)) else [],
+            if isinstance(clarifications_raw, (list, tuple))
+            else [],
             relay_feedback=[dict(r) for r in relay_raw if isinstance(r, dict)]
-            if isinstance(relay_raw, (list, tuple)) else [],
+            if isinstance(relay_raw, (list, tuple))
+            else [],
             system_error_count=int(sess.get("system_error_count") or 0),
             system_error_reason=(sess.get("system_error_reason") or None),
             system_error_notified=bool(sess.get("system_error_notified")),
@@ -354,7 +364,11 @@ def _persist_env_cache(env_cache: dict[str, Any]) -> dict[str, EnvCacheStateSnap
         if ec_state is None:
             continue
         # Tolerate either pydantic EnvCacheState or plain dict.
-        get = (lambda k, _s=ec_state: getattr(_s, k, None)) if not isinstance(ec_state, dict) else ec_state.get
+        get = (
+            (lambda k, _s=ec_state: getattr(_s, k, None))
+            if not isinstance(ec_state, dict)
+            else ec_state.get
+        )
         sym = str(sym_name)
         if not sym:
             continue
@@ -506,9 +520,7 @@ def _compute_eligibility(
                 if col != "IN_PROGRESS" and isinstance(cards, list)
             )
             if in_other_column:
-                return SessionEligibility(
-                    card_id=card_id, eligible=False, reason="kicked_back"
-                )
+                return SessionEligibility(card_id=card_id, eligible=False, reason="kicked_back")
 
     return SessionEligibility(card_id=card_id, eligible=True, reason="eligible")
 
@@ -581,10 +593,8 @@ def _bootstrap_progress_lines(log_lines: list[str]) -> list[str]:
     output — which only changes when the bootstrap actually advances.  A frozen
     result across the idle window means the container is hung, not just slow.
     """
-    return [
-        ln for ln in log_lines
-        if "/jobs/" not in ln and not ln.lstrip().startswith("INFO:")
-    ]
+    return [ln for ln in log_lines if "/jobs/" not in ln and not ln.lstrip().startswith("INFO:")]
+
 
 _CIRCUIT_TO_HEALTH_SUBSYSTEM: dict[str, str] = {
     "github": "github",
@@ -599,6 +609,47 @@ class RuntimeExecutionError(RuntimeError):
         self.phase = phase
         self.step = step
         self.cause = cause
+
+
+#: 139 — how often a card that is still stuck is logged again. A stall that
+#: persists is worth repeating occasionally; repeating it every cycle is noise.
+_STALL_LOG_COOLDOWN_SECONDS = 3600.0
+
+#: 139 — the size at which expired stall keys are swept. Not a hard cap: memory
+#: here is bounded by how many distinct cards can be stuck within the cooldown,
+#: which is bounded by the board.
+_MAX_LOGGED_STALLS = 512
+
+
+def should_log_stall(
+    seen: dict[str, float], key: str, now: float, cooldown: float = _STALL_LOG_COOLDOWN_SECONDS
+) -> bool:
+    """Should this stall be logged now? Records the decision in *seen*.
+
+    Extracted so the policy can be tested directly. Asserting on the source text
+    of the watchdog — which is what the first version of these tests did — cannot
+    tell a correct policy from a plausible-looking one, and this policy had two
+    wrong versions before this one:
+
+    * remembering keys and clearing the dict when it grew. Once live stalls
+      exceeded the bound, every remembered key became loggable again on the next
+      cycle;
+    * evicting the oldest key instead. Same outcome by a different route, because
+      the eviction cascades — the evicted key logs, evicting the next.
+
+    Bounding by count cannot work when the working set exceeds the bound. Bounding
+    by *time* is bounded by the board instead, and a card that is still stuck
+    reminding an operator once an hour is better than one line and then silence.
+    """
+    last = seen.get(key)
+    if last is not None and now - last < cooldown:
+        return False
+    seen[key] = now
+    if len(seen) > _MAX_LOGGED_STALLS:
+        expired = [k for k, at in seen.items() if now - at >= cooldown]
+        for k in expired:
+            del seen[k]
+    return True
 
 
 class CoordinareDaemon:
@@ -626,6 +677,9 @@ class CoordinareDaemon:
         self._stop_event = asyncio.Event()
         self._webhook_trigger: asyncio.Event = webhook_trigger or asyncio.Event()
         self._state: CoordinareState = initial_state()
+        # 139: when each stall key was last logged, so a card that stays stuck
+        # reminds rather than reprints every cycle.
+        self._logged_stalls: dict[str, float] = {}
         self._cycle_active = False
         self._stop_during_cycle = False
         self._state_store = state_store
@@ -642,6 +696,7 @@ class CoordinareDaemon:
         self._wiki_init_requests: set[str] = set()
         self._wiki_init_poll_tasks: set[asyncio.Task[None]] = set()
         from coordinare.services.wiki_init import WikiInitService
+
         self._wiki_init_svc = WikiInitService()  # auto-gate disabled; manual trigger only
         # 088 (US5): completion handlers (env-cache bootstrap) flush the
         # snapshot immediately — a bootstrap finishing moves no lifecycle
@@ -676,11 +731,13 @@ class CoordinareDaemon:
         card_id = card.get("id") if isinstance(card, dict) else None
         sessions = self._state.get("active_sessions")
         if isinstance(sessions, dict):
-            session_stages: tuple = tuple(sorted(
-                (str(cid), str((s or {}).get("performer_stage") or ""))
-                for cid, s in sessions.items()
-                if isinstance(s, dict) or s is None
-            ))
+            session_stages: tuple = tuple(
+                sorted(
+                    (str(cid), str((s or {}).get("performer_stage") or ""))
+                    for cid, s in sessions.items()
+                    if isinstance(s, dict) or s is None
+                )
+            )
         else:
             session_stages = ()
         return (
@@ -742,7 +799,9 @@ class CoordinareDaemon:
         # restore after a restart doesn't dispatch with issue_number=0 (which
         # caused PRs to open without ``Closes #N`` linkage).
         raw_issue_number = card_dict.get("issue_number") if card_dict else None
-        issue_number = raw_issue_number if isinstance(raw_issue_number, int) and raw_issue_number > 0 else None
+        issue_number = (
+            raw_issue_number if isinstance(raw_issue_number, int) and raw_issue_number > 0 else None
+        )
         raw_ac = card_dict.get("acceptance_criteria") if card_dict else None
         acceptance_criteria = [str(c) for c in raw_ac] if isinstance(raw_ac, list) else []
 
@@ -755,19 +814,27 @@ class CoordinareDaemon:
             active_card_issue_id=_str_or_none(card_dict.get("issue_id")) if card_dict else None,
             active_card_issue_number=issue_number,
             active_card_issue_url=_str_or_none(card_dict.get("issue_url")) if card_dict else None,
-            active_card_description=_str_or_none(card_dict.get("description")) if card_dict else None,
+            active_card_description=_str_or_none(card_dict.get("description"))
+            if card_dict
+            else None,
             active_card_acceptance_criteria=acceptance_criteria,
             pr_url=_str_or_none(card_dict.get("pr_url")) if card_dict else None,
             pr_node_id=_str_or_none(card_dict.get("pr_node_id")) if card_dict else None,
-            agent_session_id=_str_or_none(dispatch_dict.get("session_id")) if dispatch_dict else None,
+            agent_session_id=_str_or_none(dispatch_dict.get("session_id"))
+            if dispatch_dict
+            else None,
             open_questions=questions,
             card_clarifications=clarifications,
-            performer_stage=str(performer_stage) if isinstance(performer_stage, str) and performer_stage else None,
-            lifecycle_sequence=[
-                str(stage) for stage in lifecycle_sequence
-            ] if isinstance(lifecycle_sequence, list) else [],
+            performer_stage=str(performer_stage)
+            if isinstance(performer_stage, str) and performer_stage
+            else None,
+            lifecycle_sequence=[str(stage) for stage in lifecycle_sequence]
+            if isinstance(lifecycle_sequence, list)
+            else [],
             last_blocked_notified_at=last_notified if isinstance(last_notified, datetime) else None,
-            lifecycle_completed_at=self._state.get("lifecycle_completed_at") if isinstance(self._state.get("lifecycle_completed_at"), datetime) else None,
+            lifecycle_completed_at=self._state.get("lifecycle_completed_at")
+            if isinstance(self._state.get("lifecycle_completed_at"), datetime)
+            else None,
             processed_review_ids=sorted(self._state.get("processed_review_ids") or set()),
             surfaced_stale_reviews=dict(self._state.get("surfaced_stale_reviews") or {}),
             active_sessions=_persist_active_sessions(self._state.get("active_sessions") or {}),
@@ -798,18 +865,21 @@ class CoordinareDaemon:
         # the rebase on genuine cross-restart drift, instead of re-baselining.
         self._state["last_known_main_sha"] = snapshot.last_known_main_sha
         if snapshot.active_card_id:
-            _set_current_card(self._state, {
-                "id": snapshot.active_card_id,
-                "issue_id": snapshot.active_card_issue_id or "",
-                "issue_number": snapshot.active_card_issue_number or 0,
-                "issue_url": snapshot.active_card_issue_url or "",
-                "title": snapshot.active_card_title or "",
-                "description": snapshot.active_card_description or "",
-                "acceptance_criteria": list(snapshot.active_card_acceptance_criteria),
-                "status": snapshot.active_card_column or "",
-                "pr_url": snapshot.pr_url,
-                "pr_node_id": snapshot.pr_node_id,
-            })
+            _set_current_card(
+                self._state,
+                {
+                    "id": snapshot.active_card_id,
+                    "issue_id": snapshot.active_card_issue_id or "",
+                    "issue_number": snapshot.active_card_issue_number or 0,
+                    "issue_url": snapshot.active_card_issue_url or "",
+                    "title": snapshot.active_card_title or "",
+                    "description": snapshot.active_card_description or "",
+                    "acceptance_criteria": list(snapshot.active_card_acceptance_criteria),
+                    "status": snapshot.active_card_column or "",
+                    "pr_url": snapshot.pr_url,
+                    "pr_node_id": snapshot.pr_node_id,
+                },
+            )
         if snapshot.agent_session_id:
             self._state["agent_dispatch"] = {"session_id": snapshot.agent_session_id}
 
@@ -850,9 +920,7 @@ class CoordinareDaemon:
                     # 095: restore per-card ENV_BLOCKED hold/dedup state so a
                     # still-active block does not re-notify after a restart.
                     "env_blocked": (
-                        dict(persisted.env_blocked)
-                        if persisted.env_blocked is not None
-                        else None
+                        dict(persisted.env_blocked) if persisted.env_blocked is not None else None
                     ),
                     # 096: restore the per-card auto-rebase anti-thrash marker so
                     # a BLOCKED conflict isn't re-attempted right after a restart.
@@ -971,7 +1039,9 @@ class CoordinareDaemon:
                         live.wiki_attempts = getattr(persisted, "wiki_attempts", 0)
                         live.wiki_exhausted = getattr(persisted, "wiki_exhausted", False)
                         live.last_wiki_init_at = getattr(persisted, "last_wiki_init_at", None)
-                        live.last_wiki_init_succeeded = getattr(persisted, "last_wiki_init_succeeded", None)
+                        live.last_wiki_init_succeeded = getattr(
+                            persisted, "last_wiki_init_succeeded", None
+                        )
                         live.last_wiki_init_error = getattr(persisted, "last_wiki_init_error", None)
                     except Exception as exc:  # pragma: no cover — defensive
                         logger.warning(
@@ -1302,6 +1372,7 @@ class CoordinareDaemon:
         # The flag signals per-session advocate_scan invocations to be no-ops.
         if self._state.get("advocate_service") is not None:
             from coordinare.graph.nodes.advocate import advocate_scan
+
             self._state = await advocate_scan(self._state)  # type: ignore[assignment]
         self._state["_advocate_scan_done"] = True  # type: ignore[typeddict-unknown-key]
 
@@ -1354,7 +1425,9 @@ class CoordinareDaemon:
                                 try:
                                     _sha = await fetch_main_sha(_repo_url, _token)
                                 except Exception:
-                                    logger.warning("multi_session.preflight.sha_fetch_failed", exc_info=True)
+                                    logger.warning(
+                                        "multi_session.preflight.sha_fetch_failed", exc_info=True
+                                    )
                                     _sha = None
                                 if _sha:
                                     self._state["_main_sha_cache"] = _sha  # type: ignore[typeddict-unknown-key]
@@ -1379,7 +1452,9 @@ class CoordinareDaemon:
                                                 _sha,
                                                 _repo_url,
                                                 _token,
-                                                notification_service=self._state.get("notification_service"),
+                                                notification_service=self._state.get(
+                                                    "notification_service"
+                                                ),
                                                 github=github,
                                                 human_reviewers=self._state.get("human_reviewers"),
                                             )
@@ -1391,17 +1466,24 @@ class CoordinareDaemon:
                                             from coordinare.services.rebase import (
                                                 prepare_conflict_resolution,
                                             )
+
                                             for _job in _rr.jobs:
                                                 if _job.outcome == RebaseOutcome.BLOCKED:
                                                     _sess = active_sessions.get(_job.card_id)
                                                     if isinstance(_sess, dict):
                                                         prepare_conflict_resolution(
-                                                            _job, _sess,
-                                                            human_reviewers=self._state.get("human_reviewers"),
+                                                            _job,
+                                                            _sess,
+                                                            human_reviewers=self._state.get(
+                                                                "human_reviewers"
+                                                            ),
                                                         )
                                                     break
                                         except Exception:
-                                            logger.warning("multi_session.preflight.rebase_round_failed", exc_info=True)
+                                            logger.warning(
+                                                "multi_session.preflight.rebase_round_failed",
+                                                exc_info=True,
+                                            )
                 except Exception as _poll_exc:
                     # Transient upstream GitHub failures (5xx, timeouts, DNS) are
                     # routine — log a single-line warning without the traceback so
@@ -1500,7 +1582,9 @@ class CoordinareDaemon:
                 try:
                     session_state: dict[str, Any] = dict(self._state)
                     if session_state.get("github_retry_queue") is not None:
-                        session_state["github_retry_queue"] = list(session_state["github_retry_queue"])
+                        session_state["github_retry_queue"] = list(
+                            session_state["github_retry_queue"]
+                        )
                     # Deep-copy only the session being invoked (inside the semaphore
                     # so the concurrency bound also limits peak copy memory).
                     # Siblings are shallow-copied from the stable pre-fanout
@@ -1521,7 +1605,8 @@ class CoordinareDaemon:
                     # in-place; capturing shallow copies here lets us detect
                     # real mutations post-ainvoke by value comparison.
                     pre_fanout_siblings: dict[str, dict] = {
-                        k: dict(v) for k, v in session_state["active_sessions"].items()
+                        k: dict(v)
+                        for k, v in session_state["active_sessions"].items()
                         if k != card_id
                     }
                     updated = await graph.ainvoke(session_state)
@@ -1549,18 +1634,22 @@ class CoordinareDaemon:
                     # the fanout merge.  Only keys not present before dispatch
                     # are considered new to avoid overwriting concurrent updates.
                     updated_sessions = updated.get("active_sessions") or {}
-                    new_sessions = {k: v for k, v in updated_sessions.items() if k not in active_sessions}
+                    new_sessions = {
+                        k: v for k, v in updated_sessions.items() if k not in active_sessions
+                    }
                     # Capture mutations to other existing sessions (e.g. prepare_conflict_resolution
                     # routing a BLOCKED session back to dispatching).  Only include sessions
                     # that actually changed vs the pre-fanout snapshot so that an unmodified
                     # deep-copy of a sibling can't clobber a real mutation applied by another
                     # concurrent task via last-writer-wins in cross_mutations.update(cm).
                     cross_session = {
-                        k: v for k, v in updated_sessions.items()
-                        if k != card_id and k in active_sessions
-                        and v != pre_fanout_siblings.get(k)
+                        k: v
+                        for k, v in updated_sessions.items()
+                        if k != card_id and k in active_sessions and v != pre_fanout_siblings.get(k)
                     }
-                    g_updates: dict[str, Any] = {k: updated[k] for k in _GLOBAL_STATE_KEYS if k in updated}
+                    g_updates: dict[str, Any] = {
+                        k: updated[k] for k in _GLOBAL_STATE_KEYS if k in updated
+                    }
                     if new_sessions:
                         g_updates["_new_sessions"] = new_sessions
                     if cross_session:
@@ -1612,7 +1701,13 @@ class CoordinareDaemon:
                 continue
             if not first_global_merged:
                 for k, v in result.global_updates.items():
-                    if k not in ("_new_sessions", "_cross_session_mutations", "github_retry_queue", "github_retry_after", "advocate_history"):
+                    if k not in (
+                        "_new_sessions",
+                        "_cross_session_mutations",
+                        "github_retry_queue",
+                        "github_retry_after",
+                        "advocate_history",
+                    ):
                         self._state[k] = v  # type: ignore[literal-required]
                 first_global_merged = True
             ah = result.global_updates.get("advocate_history")
@@ -1623,7 +1718,9 @@ class CoordinareDaemon:
                     merged_advocate_history |= ah
             rq = result.global_updates.get("github_retry_queue")
             if isinstance(rq, list):
-                session_ops = {e["operation"] for e in rq if isinstance(e, dict) and e.get("operation")}
+                session_ops = {
+                    e["operation"] for e in rq if isinstance(e, dict) and e.get("operation")
+                }
                 cleared_ops.update(pre_fanout_ops - session_ops)
                 if merged_retry_queue is None:
                     merged_retry_queue = list(rq)
@@ -1633,7 +1730,11 @@ class CoordinareDaemon:
                             continue
                         op = entry.get("operation")
                         existing = next(
-                            (e for e in merged_retry_queue if isinstance(e, dict) and e.get("operation") == op),
+                            (
+                                e
+                                for e in merged_retry_queue
+                                if isinstance(e, dict) and e.get("operation") == op
+                            ),
                             None,
                         )
                         if existing is None:
@@ -1669,11 +1770,16 @@ class CoordinareDaemon:
         if merged_retry_queue is not None:
             if cleared_ops:
                 merged_retry_queue = [
-                    e for e in merged_retry_queue
+                    e
+                    for e in merged_retry_queue
                     if not (isinstance(e, dict) and e.get("operation") in cleared_ops)
                 ]
             self._state["github_retry_queue"] = merged_retry_queue  # type: ignore[literal-required]
-            retry_ats = [e["retry_at"] for e in merged_retry_queue if isinstance(e, dict) and isinstance(e.get("retry_at"), datetime)]
+            retry_ats = [
+                e["retry_at"]
+                for e in merged_retry_queue
+                if isinstance(e, dict) and isinstance(e.get("retry_at"), datetime)
+            ]
             self._state["github_retry_after"] = min(retry_ats) if retry_ats else None  # type: ignore[literal-required]
         if merged_advocate_history is not None:
             self._state["advocate_history"] = merged_advocate_history  # type: ignore[literal-required]
@@ -1760,10 +1866,11 @@ class CoordinareDaemon:
                 if hasattr(symphony_config, "effective_config") and _global_cfg is not None
                 else _global_cfg
             )
-            _sym_sessions = (getattr(sym_state, "active_sessions", None) or {}) if sym_state is not None else {}
+            _sym_sessions = (
+                (getattr(sym_state, "active_sessions", None) or {}) if sym_state is not None else {}
+            )
             _active_sym_count = sum(
-                1 for sess in _sym_sessions.values()
-                if sess.get("phase") not in NON_SLOT_PHASES
+                1 for sess in _sym_sessions.values() if sess.get("phase") not in NON_SLOT_PHASES
             )
             if (
                 sym_state is not None
@@ -1802,9 +1909,7 @@ class CoordinareDaemon:
             self._state["active_sessions"] = dict(_sym_sessions)
             if sym_state is not None:
                 _sym_card = sym_state.active_card
-                _sym_card_id = (
-                    str(_sym_card.get("id", "")) if isinstance(_sym_card, dict) else ""
-                )
+                _sym_card_id = str(_sym_card.get("id", "")) if isinstance(_sym_card, dict) else ""
                 self._state["active_card_id"] = _sym_card_id or None
                 _rederive_current_card(self._state)
                 if sym_state.board_snapshot is not None:
@@ -2009,6 +2114,7 @@ class CoordinareDaemon:
 
                 # Rebuild per-symphony WorkspaceManager instances for the new config.
                 from coordinare.workspace import WorkspaceManager as _WorkspaceManager
+
                 _sym_wms: dict[str, Any] = {}
                 for _sym_name2, _sym_cfg2 in new_configs.items():
                     _wm_eff = _sym_cfg2.effective_config(coordinare_cfg.global_config)
@@ -2026,7 +2132,9 @@ class CoordinareDaemon:
             self._state["config"] = coordinare_cfg.global_config  # type: ignore
             self._state["orchestra_config"] = coordinare_cfg.orchestra  # type: ignore
             self._state["symphony_states"] = sym_states  # type: ignore
-            self._state["config_mode"] = "multi_symphony" if is_multi_symphony_config(raw) else "legacy"
+            self._state["config_mode"] = (
+                "multi_symphony" if is_multi_symphony_config(raw) else "legacy"
+            )
             self._state["config_version"] = (self._state.get("config_version") or 0) + 1  # type: ignore
 
             logger.info("config_reloaded", added=list(added), removed=list(removed))
@@ -2139,13 +2247,15 @@ class CoordinareDaemon:
             if container_id:
                 try:
                     proc = await asyncio.create_subprocess_exec(
-                        "docker", "logs", "--tail", "500", container_id,
+                        "docker",
+                        "logs",
+                        "--tail",
+                        "500",
+                        container_id,
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.STDOUT,
                     )
-                    stdout_b, _ = await asyncio.wait_for(
-                        proc.communicate(), timeout=5.0
-                    )
+                    stdout_b, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
                     snap = stdout_b.decode(errors="replace").splitlines()
                     if snap:
                         last_logs_snapshot = snap[-500:]
@@ -2169,7 +2279,9 @@ class CoordinareDaemon:
                     )
                     await self._reap_bootstrap_container(container_id, symphony_name)
                     env_cache_svc.on_bootstrap_complete(
-                        symphony_name, False, self._state,
+                        symphony_name,
+                        False,
+                        self._state,
                         error=(
                             "bootstrap hung — no progress for "
                             f"{(_attempt - _last_progress_attempt) * 10}s; reaped"
@@ -2202,7 +2314,9 @@ class CoordinareDaemon:
                     consecutive_failures=_consecutive_poll_failures,
                 )
                 env_cache_svc.on_bootstrap_complete(
-                    symphony_name, False, self._state,
+                    symphony_name,
+                    False,
+                    self._state,
                     error=f"bootstrap polling failed: {exc}",
                 )
                 return
@@ -2216,7 +2330,9 @@ class CoordinareDaemon:
                 # earlier coordinare-driven contract. Anything else is failure.
                 ok = status_result.get("status") in ("env_bootstrap_complete", "ok")
                 if not ok:
-                    logs_tail: list[str] = list(last_logs_snapshot[-60:]) if last_logs_snapshot else []
+                    logs_tail: list[str] = (
+                        list(last_logs_snapshot[-60:]) if last_logs_snapshot else []
+                    )
                     # Pull logs directly from the bootstrap container by id.
                     # The shared `_log_buffer` is unreliable here because a
                     # single HTTPPerformerService is used for both bootstrap
@@ -2235,13 +2351,15 @@ class CoordinareDaemon:
                     if bootstrap_cid and not logs_tail:
                         try:
                             proc = await asyncio.create_subprocess_exec(
-                                "docker", "logs", "--tail", "100", bootstrap_cid,
+                                "docker",
+                                "logs",
+                                "--tail",
+                                "100",
+                                bootstrap_cid,
                                 stdout=asyncio.subprocess.PIPE,
                                 stderr=asyncio.subprocess.STDOUT,
                             )
-                            stdout_b, _ = await asyncio.wait_for(
-                                proc.communicate(), timeout=5.0
-                            )
+                            stdout_b, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
                             logs_tail = [
                                 line for line in stdout_b.decode(errors="replace").splitlines()
                             ][-60:]
@@ -2324,20 +2442,15 @@ class CoordinareDaemon:
                         )
                         ok = False
                         _boot_err = (
-                            "env verification failed in a clean consumer context: "
-                            f"{_clean_detail}"
+                            f"env verification failed in a clean consumer context: {_clean_detail}"
                         )
-                env_cache_svc.on_bootstrap_complete(
-                    symphony_name, ok, self._state, error=_boot_err
-                )
+                env_cache_svc.on_bootstrap_complete(symphony_name, ok, self._state, error=_boot_err)
                 if ok:
                     from coordinare.services.http_performer_service import HTTPPerformerService
+
                     _performer_svcs = self._state.get("performer_services") or {}
                     for _pid, _psvc in _performer_svcs.items():
-                        if (
-                            isinstance(_psvc, HTTPPerformerService)
-                            and _psvc.mode == "persistent"
-                        ):
+                        if isinstance(_psvc, HTTPPerformerService) and _psvc.mode == "persistent":
                             logger.warning(
                                 "env_cache.persistent_mount_skipped",
                                 symphony=symphony_name,
@@ -2360,7 +2473,9 @@ class CoordinareDaemon:
         if container_id:
             await self._reap_bootstrap_container(container_id, symphony_name)
         env_cache_svc.on_bootstrap_complete(
-            symphony_name, False, self._state,
+            symphony_name,
+            False,
+            self._state,
             error=(
                 "bootstrap exceeded its time budget "
                 f"({_budget_s or _BOOTSTRAP_POLL_MAX_ATTEMPTS * 10}s) and was reaped"
@@ -2376,7 +2491,11 @@ class CoordinareDaemon:
         """
         try:
             proc = await asyncio.create_subprocess_exec(
-                "docker", "stop", "--time", "5", container_id,
+                "docker",
+                "stop",
+                "--time",
+                "5",
+                container_id,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
             )
@@ -2498,11 +2617,15 @@ class CoordinareDaemon:
         session_id = (result or {}).get("session_id") or (result or {}).get("job_id")
         if not session_id:
             ec.wiki_in_flight = False
-            logger.warning("wiki_init.no_session_id", symphony=symphony_name, result=str(result)[:200])
+            logger.warning(
+                "wiki_init.no_session_id", symphony=symphony_name, result=str(result)[:200]
+            )
             return
         logger.info(
-            "wiki_init.dispatched", symphony=symphony_name,
-            branch=card_context["branch"], session_id=session_id,
+            "wiki_init.dispatched",
+            symphony=symphony_name,
+            branch=card_context["branch"],
+            session_id=session_id,
         )
         task = asyncio.create_task(
             self._poll_wiki_init_completion(symphony_name, svc, session_id, github)
@@ -2511,7 +2634,11 @@ class CoordinareDaemon:
         task.add_done_callback(self._wiki_init_poll_tasks.discard)
 
     async def _poll_wiki_init_completion(
-        self, symphony_name: str, svc: Any, session_id: str, github: Any,
+        self,
+        symphony_name: str,
+        svc: Any,
+        session_id: str,
+        github: Any,
     ) -> None:
         """Poll a wiki-init documenting job to terminal, then hand its seed PR to
         WikiInitService for auto-merge (CI-green + trusted-bot) or record a
@@ -2538,9 +2665,18 @@ class CoordinareDaemon:
         pr_node_id = (status or {}).get("pr_node_id") or ""
         try:
             await self._wiki_init_svc.handle_init_result(
-                symphony_name, ec, github, pr_node_id, trusted, notif,
+                symphony_name,
+                ec,
+                github,
+                pr_node_id,
+                trusted,
+                notif,
                 job_succeeded=succeeded,
-                error=(None if succeeded else ((status or {}).get("reason") or st or "wiki-init failed")),
+                error=(
+                    None
+                    if succeeded
+                    else ((status or {}).get("reason") or st or "wiki-init failed")
+                ),
             )
         except Exception as exc:
             ec.wiki_in_flight = False
@@ -2631,11 +2767,11 @@ class CoordinareDaemon:
                         resolved = cfg.resolve_performer_dispatch_model(_probe_role) or {}
                     bootstrap_model = resolved.get("model") or getattr(rc, "model", None)
                     bootstrap_base_url = resolved.get("base_url") or getattr(rc, "base_url", None)
-                    bootstrap_api_key_env = (
-                        resolved.get("api_key_env") or getattr(rc, "api_key_env", None)
+                    bootstrap_api_key_env = resolved.get("api_key_env") or getattr(
+                        rc, "api_key_env", None
                     )
-                    bootstrap_auth_token_env = (
-                        resolved.get("auth_token_env") or getattr(rc, "auth_token_env", None)
+                    bootstrap_auth_token_env = resolved.get("auth_token_env") or getattr(
+                        rc, "auth_token_env", None
                     )
                     break
         dispatch_dict["backend"] = bootstrap_backend
@@ -2682,7 +2818,10 @@ class CoordinareDaemon:
         if job_id and hasattr(svc, "check_status"):
             bootstrap_task = asyncio.create_task(
                 self._poll_bootstrap_completion(
-                    svc, job_id, symphony_name, env_cache_svc,
+                    svc,
+                    job_id,
+                    symphony_name,
+                    env_cache_svc,
                     container_id=bootstrap_container_id,
                 ),
                 name=f"bootstrap_poll_{symphony_name}",
@@ -2710,7 +2849,9 @@ class CoordinareDaemon:
                 reason=_reason,
             )
             env_cache_svc.on_bootstrap_complete(
-                symphony_name, False, self._state,
+                symphony_name,
+                False,
+                self._state,
                 error=_detail,
             )
 
@@ -2898,9 +3039,7 @@ class CoordinareDaemon:
                         # caches that became ready during this cycle.
                         # Bootstrap dispatch looks up by performer *id* (e.g. "codex-ephemeral"),
                         # not by lifecycle stage — so use the id-keyed map populated at startup.
-                        _ec_performer_svcs = dict(
-                            self._state.get("performer_services_by_id") or {}
-                        )
+                        _ec_performer_svcs = dict(self._state.get("performer_services_by_id") or {})
                         for _ec_sym_name, _ec_sym_cfg in symphony_configs.items():
                             _ec_gh_svc = _sym_gh_svcs.get(_ec_sym_name)
                             if _ec_gh_svc is None:
@@ -2918,6 +3057,7 @@ class CoordinareDaemon:
                                 )
 
                             from coordinare.services.env_cache import DEFAULT_DEVENV_ROOT
+
                             _bootstrap_devenv_root = DEFAULT_DEVENV_ROOT
                             _bootstrap_svc = _ec_performer_svcs.get(
                                 _ec_sym_cfg.env_bootstrap_performer_id or ""
@@ -2926,6 +3066,7 @@ class CoordinareDaemon:
                                 from coordinare.services.http_performer_service import (
                                     HTTPPerformerService,
                                 )
+
                                 if isinstance(_bootstrap_svc, HTTPPerformerService):
                                     _bootstrap_devenv_root = _bootstrap_svc.devenv_root
 
@@ -2936,9 +3077,7 @@ class CoordinareDaemon:
                                 _sym_name: str,
                                 _svc: Any = _bootstrap_svc,
                             ) -> tuple[bool | None, str]:
-                                return await self._verify_env_cache_clean(
-                                    _sym_name, _svc
-                                )
+                                return await self._verify_env_cache_clean(_sym_name, _svc)
 
                             await _env_cache_svc.check_and_trigger(
                                 symphony_name=_ec_sym_name,
@@ -2973,7 +3112,9 @@ class CoordinareDaemon:
                         "symphony.loop_entry",
                         symphony_count=len(symphony_configs),
                         symphony_names=list(symphony_configs.keys()),
-                        sym_gh_keys=list((self._state.get("symphony_github_services") or {}).keys()),
+                        sym_gh_keys=list(
+                            (self._state.get("symphony_github_services") or {}).keys()
+                        ),
                         global_gh_present=self._state.get("github_service") is not None,
                     )
                     for sym_name, sym_cfg in symphony_configs.items():
@@ -3166,9 +3307,15 @@ class CoordinareDaemon:
                 if _stuck_phase and _stuck_phase not in _stuck_excluded:
                     _config = self._state.get("config")
                     _phase_entered = self._state.get("phase_entered_at")
-                    if _config is not None and _phase_entered is not None and hasattr(_config, "stuck_alerts"):
+                    if (
+                        _config is not None
+                        and _phase_entered is not None
+                        and hasattr(_config, "stuck_alerts")
+                    ):
                         _stuck_cfg = _config.stuck_alerts
-                        _threshold = _stuck_cfg.per_phase_thresholds.get(_stuck_phase, _stuck_cfg.threshold_seconds)
+                        _threshold = _stuck_cfg.per_phase_thresholds.get(
+                            _stuck_phase, _stuck_cfg.threshold_seconds
+                        )
                         _raw_cooldown = getattr(_stuck_cfg, "cooldown_seconds", None)
                         _cooldown = _raw_cooldown if _raw_cooldown is not None else _threshold
                         # 138: this block used to be shielded by the (dead)
@@ -3183,13 +3330,16 @@ class CoordinareDaemon:
                         if _threshold > 0:
                             _elapsed = (datetime.now(UTC) - _phase_entered).total_seconds()
                             _last_stuck = getattr(self, "_last_stuck_alert_at", None)
-                            _cooldown_ok = _last_stuck is None or (monotonic() - _last_stuck) >= _cooldown
+                            _cooldown_ok = (
+                                _last_stuck is None or (monotonic() - _last_stuck) >= _cooldown
+                            )
                             if _elapsed > _threshold and _cooldown_ok:
                                 from coordinare.models.notification import (
                                     EventType,
                                     NotificationEvent,
                                     NotificationSeverity,
                                 )
+
                                 _card = self._state.get("current_card") or {}
                                 _card_title = str(_card.get("title", ""))[:50]
                                 _card_num = _card.get("issue_number", "")
@@ -3199,6 +3349,31 @@ class CoordinareDaemon:
                                 # this closes was a *delivery* failure — detection
                                 # ran, then the decision was handed to a service
                                 # with no channel to route it to and dropped.
+                                # 139: the surface that survives everything being
+                                # switched off. The activity feed below needs the
+                                # dashboard to read it, and channels are optional,
+                                # so with both off a stall was previously recorded
+                                # nowhere an operator could see. The only log line
+                                # near here was about the *notification* failing —
+                                # and with no channels there is nothing to fail.
+                                _stuck_key = f"stuck:{_card.get('id', '')}:{_stuck_phase}"
+                                if should_log_stall(
+                                    self._logged_stalls, _stuck_key, time.monotonic()
+                                ):
+                                    logger.warning(
+                                        "card_stuck",
+                                        card_id=str(_card.get("id", "")),
+                                        card_number=_card_num,
+                                        card_title=_card_title,
+                                        stage=_stuck_phase,
+                                        stuck_minutes=round(_elapsed // 60),
+                                        detail=(
+                                            "no further action is being taken on this card; "
+                                            "this line appears regardless of notification "
+                                            "channels or the dashboard"
+                                        ),
+                                    )
+
                                 _alog = self._state.get("activity_log")
                                 if _alog is not None:
                                     with contextlib.suppress(Exception):
@@ -3229,7 +3404,9 @@ class CoordinareDaemon:
                                             )
                                         )
                                 except Exception as _exc:
-                                    logger.warning("stuck_card_notification_failed", error=str(_exc))
+                                    logger.warning(
+                                        "stuck_card_notification_failed", error=str(_exc)
+                                    )
                                 # Outside the try AND outside the dispatch guard:
                                 # the cooldown must advance whether or not a
                                 # channel exists, or the feed takes a stuck entry
@@ -3351,10 +3528,7 @@ class CoordinareDaemon:
         # last save: an idle daemon whose state never moved must NOT write a
         # snapshot (test_no_snapshot_write_when_phase_unchanged), and a redundant
         # rewrite of already-persisted state is pointless.
-        if (
-            self._state_store is not None
-            and self._lifecycle_signature() != previous_lifecycle_sig
-        ):
+        if self._state_store is not None and self._lifecycle_signature() != previous_lifecycle_sig:
             try:
                 await self._state_store.save(self._build_snapshot())
             except Exception as exc:  # pragma: no cover — best-effort flush

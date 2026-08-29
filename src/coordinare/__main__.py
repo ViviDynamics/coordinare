@@ -55,6 +55,10 @@ from coordinare.services.advocate import AdvocateService
 from coordinare.services.agent_service import AgentService
 from coordinare.services.github import GitHubService
 from coordinare.services.notification import NotificationService, build_notification_service
+from coordinare.services.notification_config import (
+    describe_notification_posture,
+    sanitize_notifications,
+)
 from coordinare.state_store import StateStore
 from coordinare.transport.ssh_transport import SshTransport
 from coordinare.transport.subprocess_transport import SubprocessTransport
@@ -442,6 +446,16 @@ def _build_transport_for_role(
         case _:
             msg = f"Unknown transport: {transport_type!r}"
             raise ValueError(msg)
+
+
+def _is_notification_error(field_path: str) -> bool:
+    """Is this validation error about notification configuration?
+
+    Matched on the field path rather than the message, because messages are prose
+    and change. ``validate_config`` reports these as e.g.
+    ``global_config.notifications.channels[0]``.
+    """
+    return ".notifications." in f".{field_path}."
 
 
 def _build_performer_runtime(config: ProjectConfiguration):  # type: ignore[no-untyped-def]
@@ -1295,7 +1309,22 @@ def main() -> None:
     # Step 1: Validate config (discover + parse + env var merge) in one pass
     _config_t0 = perf_counter()
     result = validate_config(getattr(args, "config", None))
-    if not result.passed:
+
+    # Spec 139: notifications are non-essential, so a channel that cannot be used
+    # makes that channel inactive rather than stopping the daemon. A half-finished
+    # Slack setup used to prevent coordinare starting at all, which reads as "Slack
+    # isn't working" and is fixed by deleting the channel — leaving the stall
+    # signal with nowhere to go, which is the failure this comes from.
+    #
+    # Only these degrade. Any other invalid configuration would have coordinare do
+    # the *wrong* work while looking healthy, so it still exits.
+    #
+    # `config validate` calls the same function and keeps reporting all of them:
+    # the tolerance is here, in the daemon, not in the rules.
+    _notification_errors = [e for e in result.errors if _is_notification_error(e.field_path)]
+    _fatal_errors = [e for e in result.errors if not _is_notification_error(e.field_path)]
+
+    if _fatal_errors or (not result.passed and not _notification_errors):
         configure_logging(
             log_level=args.log_level or "error",
             structured=getattr(args, "structured_output", False),
@@ -1315,9 +1344,15 @@ def main() -> None:
     # (validate_config already verified this succeeds; re-instantiate to get the typed object)
     _coordinare_cfg = None
     _config_mode = "legacy"
+    _skipped_channels: list = []
     try:
         if result.config_file_path is not None:
             raw = _load_raw_yaml(result.config_file_path)
+            # Remove the notification config the validation step above chose to
+            # tolerate, so the typed model can be built at all. Diagnostic commands
+            # (config validate, dry-run, doctor) deliberately do not do this: they
+            # exist to report configuration problems, not to work around them.
+            raw, _skipped_channels = sanitize_notifications(raw)
             if is_multi_symphony_config(raw):
                 from coordinare.config import CoordinareConfiguration
 
@@ -1404,6 +1439,24 @@ def main() -> None:
     for _subsystem in ("github", "agent", "config"):
         _required = _subsystem not in config.optional_subsystems
         HEALTH.register(_subsystem, required=_required)
+    # Spec 139: one line saying whether anything will tell the operator a card is
+    # stuck. Silence is otherwise indistinguishable from health — which is exactly
+    # what the developer this came from ran into after turning Slack off.
+    logger.info(
+        "notification_posture",
+        **describe_notification_posture(
+            active=[c.name for c in config.notifications.channels],
+            skipped=_skipped_channels,
+        ),
+    )
+    for _skipped in _skipped_channels:
+        logger.warning(
+            "notification_channel_skipped",
+            channel=_skipped.name,
+            reason=_skipped.reason,
+            detail="this channel is inactive; coordinare is running without it",
+        )
+
     # notifications: mark healthy at startup if channels are configured.
     # The slack/smtp circuit breakers reflect delivery failures; this probe
     # simply shows whether the notification system is configured.

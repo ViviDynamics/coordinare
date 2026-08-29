@@ -129,6 +129,45 @@ provisioning nine before you have seen one card succeed.
 
 Unconfigured roles are skipped, not failed.
 
+## Notifications are optional
+
+You do not need Slack, or email, or anything else. Coordinare runs with no channels
+configured, and that is a supported setup rather than a degraded one.
+
+**A channel you have half-configured will not stop coordinare starting.** If you add a
+Slack channel and have not pasted the webhook URL yet, that channel is inactive and
+coordinare runs without it, saying so once:
+
+```
+notification_channel_skipped  channel=team-slack  reason=webhook_url: Field required
+```
+
+This is deliberate. Notifications are not essential to coordinare's work — without
+them it does the job and tells nobody, which is recoverable. Broken GitHub or model
+configuration is different: coordinare would do the *wrong* thing while looking
+healthy, so those still refuse to start.
+
+`coordinare config validate` still reports a half-configured channel as an error. The
+daemon tolerates it; the tool for finding configuration problems keeps finding it.
+
+**Where stall warnings appear when nothing is configured.** Coordinare logs one line at
+startup telling you what will and will not reach you:
+
+```
+notification_posture  summary="no notification channels configured; stall signals
+appear in the coordinare log and the dashboard activity feed only"
+```
+
+A card that stops making progress is written to the log at warning level whatever else
+you have turned on:
+
+```
+card_stuck  card_id=...  stage=implementing  stuck_minutes=45
+```
+
+So the honest minimum is: watch the log. The dashboard activity feed shows the same
+thing more conveniently, and channels push it to you, but neither is required.
+
 ## Before you point this at anything important
 
 - **Only humans approve pull requests.** Coordinare will not merge on its own
