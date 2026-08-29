@@ -1,0 +1,57 @@
+# Minimal RBAC for coordinare's Kubernetes transport (spec 146 / issue #200).
+#
+# Namespace-scoped by design. Coordinare needs to create, observe and delete the
+# performer Pods it owns, read their logs before deleting them, and nothing else.
+# There is no ClusterRole here and there should never need to be.
+#
+# Verified rather than asserted: every verb below is exercised by the transport,
+# and tests/unit/test_146_kubernetes_transport.py checks both that the required
+# verbs are present AND that secrets and cluster-scoped resources are absent — a
+# Role that works because it is over-broad passes the first half and defeats the
+# purpose.
+#
+#   kubectl apply -n <namespace> -f deploy/kubernetes/rbac.yaml
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: coordinare
+  labels:
+    app.kubernetes.io/managed-by: coordinare
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: coordinare-performer-manager
+  labels:
+    app.kubernetes.io/managed-by: coordinare
+rules:
+  # Performer Pods: create them, poll them to Running, delete them when the work
+  # is done or when sweeping up after a crash.
+  #
+  # No "watch": readiness is polled with get, and the orphan sweep uses list.
+  # Granting a verb nothing calls would make this Role over-broad in exactly the
+  # way the comment above claims it is not, and "it might be useful later" is how
+  # a minimal Role stops being one.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "get", "list", "delete"]
+  # Logs are captured BEFORE a Pod is deleted. They are unreachable afterwards,
+  # so this is what makes a failed performer diagnosable at all.
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: coordinare-performer-manager
+  labels:
+    app.kubernetes.io/managed-by: coordinare
+subjects:
+  - kind: ServiceAccount
+    name: coordinare
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: coordinare-performer-manager

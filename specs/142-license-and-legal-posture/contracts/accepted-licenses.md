@@ -72,6 +72,23 @@ project's runtime dependencies, so it is never conveyed to a recipient and carri
 distribution obligation. It is a useful illustration of why the closure is walked from declared
 runtime dependencies rather than from whatever happens to be installed.
 
+## Metadata that cannot classify a package
+
+Some packages publish a `License` value that names the *arrangement* rather than a licence.
+`python-dateutil` declares `Dual License`: short enough to look like an identifier, and
+informative about nothing. Such values are refused and the package is resolved **by hand**,
+by reading the licence text it actually ships, with the result and its verification recorded
+in the checker's `VERIFIED_LICENSES` table. The audit reports the metadata field as `verified`
+so these are visible rather than blended in.
+
+**The inference this deliberately does not make.** It is tempting to read several
+`License ::` classifiers as "dual licensed" and OR them together — and for `python-dateutil`
+that happens to give the right answer. `orjson` shows why it is unsound: it publishes Apache,
+MIT *and* MPL-2.0 classifiers, while its actual expression is `MPL-2.0 AND (Apache-2.0 OR MIT)`,
+which is Tier 2. OR-ing them would drop a real MPL obligation and promote it to Tier 1. Since
+`OR` resolves to its most permissive operand, a wrong guess fails **open**, so this is exactly
+the place not to guess.
+
 ## Platform-conditional packages
 
 A package reachable only through a marker-gated edge may legitimately be absent from the

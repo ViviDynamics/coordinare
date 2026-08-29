@@ -56,7 +56,6 @@ from coordinare.services.agent_service import AgentService
 from coordinare.services.github import GitHubService
 from coordinare.services.notification import NotificationService, build_notification_service
 from coordinare.state_store import StateStore
-from coordinare.transport.kubernetes_transport import KubernetesTransport
 from coordinare.transport.ssh_transport import SshTransport
 from coordinare.transport.subprocess_transport import SubprocessTransport
 from coordinare.workspace import WorkspaceManager
@@ -430,10 +429,41 @@ def _build_transport_for_role(
         case "ssh":
             return SshTransport()
         case "kubernetes":
-            return KubernetesTransport()
+            # Kubernetes performers speak HTTP, not the subprocess wire protocol,
+            # so there is no AgentTransport for them; _build_performer_runtime
+            # chooses the runtime that starts them. Failing loudly here beats
+            # returning a stub that pretends to be an extension point.
+            msg = (
+                "agent_transport: kubernetes runs performers as Pods over HTTP and has "
+                "no subprocess transport. This role is configured for a wire-protocol "
+                "transport, which the Kubernetes path does not provide."
+            )
+            raise ValueError(msg)
         case _:
             msg = f"Unknown transport: {transport_type!r}"
             raise ValueError(msg)
+
+
+def _build_performer_runtime(config: ProjectConfiguration):  # type: ignore[no-untyped-def]
+    """Choose how ephemeral performers are started (spec 146).
+
+    Separate from ``_build_transport`` on purpose. That factory builds an
+    ``AgentTransport`` — the subprocess *wire protocol* — while this chooses the
+    *runtime* that starts a containerised performer. Issue #200 conflated the two,
+    which is why it described the Kubernetes work as filling in a stub in
+    ``transport/`` that HTTP performers never touch.
+    """
+    from coordinare.services.docker_runtime import DockerRuntime
+
+    if config.agent_transport == "kubernetes":
+        from coordinare.services.kubernetes_runtime import KubernetesRuntime
+
+        return KubernetesRuntime(
+            namespace=config.kubernetes_namespace,
+            cache_claim=config.kubernetes_cache_claim,
+            image_pull_secrets=list(config.kubernetes_image_pull_secrets),
+        )
+    return DockerRuntime()
 
 
 def _build_performer_services(
@@ -612,7 +642,7 @@ def _build_http_performer_services(
             new_env = dict(cfg.env)
             new_env.setdefault("PERFORMER_LOG_DIR", "/var/log/performer")
             cfg = cfg.model_copy(update={"volumes": existing_volumes, "env": new_env})
-        service = HTTPPerformerService(cfg)
+        service = HTTPPerformerService(cfg, runtime=_build_performer_runtime(config))
         for role in cfg.roles:
             stage = _ROLE_TO_STAGE.get(role)
             if stage is None:
@@ -722,7 +752,16 @@ def _build_transport(config: ProjectConfiguration) -> AgentTransport:
         case "ssh":
             return SshTransport()
         case "kubernetes":
-            return KubernetesTransport()
+            # Kubernetes performers speak HTTP, not the subprocess wire protocol,
+            # so there is no AgentTransport for them; _build_performer_runtime
+            # chooses the runtime that starts them. Failing loudly here beats
+            # returning a stub that pretends to be an extension point.
+            msg = (
+                "agent_transport: kubernetes runs performers as Pods over HTTP and has "
+                "no subprocess transport. This role is configured for a wire-protocol "
+                "transport, which the Kubernetes path does not provide."
+            )
+            raise ValueError(msg)
         case _:
             msg = f"Unknown transport: {config.agent_transport!r}"
             raise ValueError(msg)
