@@ -1,0 +1,30 @@
+{{/*
+In-cluster address for the dashboard.
+
+ClusterIP only: nothing is reachable from outside the cluster by default. This
+Service works because _helpers.tpl adds its own DNS name to the daemon's
+trusted-host list -- without that the spec-144 guard would refuse every request
+and this object would ship broken.
+*/}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "coordinare.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "coordinare.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.dashboard.service.type }}
+  selector:
+    {{- include "coordinare.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: dashboard
+      port: {{ .Values.dashboard.port }}
+      targetPort: dashboard
+    {{- if .Values.metrics.expose }}
+    # /metrics discloses card counts, model identifiers and error rates to
+    # anyone who can reach it. Exposed only because you asked.
+    - name: metrics
+      port: {{ .Values.health.port }}
+      targetPort: health
+    {{- end }}

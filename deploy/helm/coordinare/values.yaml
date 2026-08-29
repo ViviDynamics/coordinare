@@ -1,0 +1,150 @@
+# Values for the coordinare chart.
+#
+# Nothing in this file is a secret. Credentials reach the daemon through a
+# Secret; the configuration references environment-variable *names* only. This
+# file is the thing you commit to git.
+
+# --- The controller ---------------------------------------------------------
+
+# Coordinare supports EXACTLY ONE replica. Its state is a single-process JSON
+# snapshot on one volume; a second replica races on that file and corrupts it.
+# Any other value fails the render, with the reason, unless you set the override
+# below. This is a correctness constraint, not a performance default.
+replicaCount: 1
+
+# Set true only if you have read the above and accept that state may be lost.
+# The name is the warning.
+allowUnsafeMultiReplica: false
+
+image:
+  repository: ghcr.io/vividynamics/coordinare-daemon
+  # Pinned on purpose. A floating tag means a Pod reschedule can silently change
+  # the running version, which is not something you want to discover from
+  # behaviour. Defaults to the chart's appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # The controller KEEPS its ServiceAccount token: it manages performer Pods
+  # through the Kubernetes API and cannot work without one. Performer Pods are
+  # the opposite case and suppress theirs (spec 146), because they run
+  # AI-generated code.
+  name: ""
+
+resources: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  fsGroup: 10001
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+
+# --- State ------------------------------------------------------------------
+
+state:
+  # Required. Unlike the performer cache below, the controller cannot run
+  # without somewhere durable to keep its snapshot.
+  size: 8Gi
+  # Leave empty to use the cluster's default StorageClass. Name one explicitly
+  # if your cluster has storage but no default — common on minikube/microk8s.
+  storageClass: ""
+  mountPath: /var/lib/coordinare
+
+# --- Performers -------------------------------------------------------------
+
+performers:
+  # Where performer Pods are created. Defaults to this release's namespace, so
+  # Pods do not scatter into an unrelated one.
+  namespace: ""
+
+  # Optional ON PURPOSE. An environment cache makes performers faster; its
+  # absence makes them cold, not broken. Requiring it would fail to install on
+  # exactly the small clusters this is meant to support.
+  cacheClaim: ""
+
+  # Registry credentials for the performer image, if your registry needs them.
+  imagePullSecrets: []
+
+# --- Dashboard --------------------------------------------------------------
+
+dashboard:
+  port: 8090
+
+  service:
+    # ClusterIP only. Nothing is reachable from outside the cluster by default.
+    type: ClusterIP
+
+  # EXTRA trusted hostnames, beyond the ones the chart adds for you.
+  #
+  # Read this before adding to it. The dashboard has NO AUTHENTICATION (spec 143
+  # will add it). Spec 144 guards it by refusing any request whose Host header is
+  # not loopback, and leaves this list empty by default so the safe posture is
+  # what you get by doing nothing.
+  #
+  # This chart adds three entries automatically -- the Service's own DNS name and
+  # the short forms Kubernetes resolves it by -- because otherwise the Service it
+  # ships would return 403 on every request. That is a real widening of a control
+  # that was deliberately opt-in, which is why it is written here rather than
+  # hidden in a template.
+  #
+  # Add only exact hostnames. A wildcard hands the guard away entirely.
+  trustedHosts: []
+
+  ingress:
+    # Off by default, and think hard before turning it on: an Ingress publishes
+    # an UNAUTHENTICATED dashboard. Anyone who reaches it can rewrite
+    # configuration, cancel work, and delete symphonies.
+    enabled: false
+    className: ""
+    annotations: {}
+    hosts: []
+    tls: []
+
+# --- Health -----------------------------------------------------------------
+
+health:
+  port: 8080
+
+metrics:
+  # /metrics discloses card counts, model identifiers and error rates to anyone
+  # who can reach the port. Off by default.
+  expose: false
+
+# --- Credentials ------------------------------------------------------------
+
+# Name of a Secret you manage yourself (External Secrets, Vault, sealed-secrets).
+# When set, the chart creates no Secret of its own.
+existingSecret: ""
+
+# Credentials for the chart to put in a Secret it creates. Prefer existingSecret
+# above for anything you would not want in a values file.
+secrets: {}
+#  GITHUB_TOKEN: ghp_...
+#  OPENAI_API_KEY: sk-...
+
+# A GitHub App private key is a FILE, not an environment variable, so it is
+# mounted from a Secret rather than injected. Name the Secret and its key here.
+githubAppPrivateKey:
+  existingSecret: ""
+  key: private-key.pem
+  mountPath: /etc/coordinare/github-app
+
+# --- Coordinare configuration ------------------------------------------------
+
+# Merged into the rendered config.yaml. Put your board, endpoints and roles here.
+# Reference credentials as ${ENV_VAR_NAME} -- coordinare expands them at load time
+# from the environment the Secret supplies. Never put a credential value here.
+config: {}

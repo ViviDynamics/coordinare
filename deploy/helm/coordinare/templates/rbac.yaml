@@ -1,0 +1,50 @@
+{{/*
+Namespace-scoped permissions for managing performer Pods.
+
+This mirrors deploy/kubernetes/rbac.yaml, which remains the standalone artefact
+for operators not using Helm. Helm cannot include a file outside the chart
+directory, so the duplication is real -- and a test asserts the two grant
+identical verbs, because the copy that drifts is always the one nobody reads.
+
+No "watch": readiness is polled with get and the orphan sweep uses list. Spec
+146 removed that verb after finding nothing called it, and a test there traces
+every granted verb to the client call that uses it.
+*/}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "coordinare.serviceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "coordinare.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "coordinare.fullname" . }}-performer-manager
+  namespace: {{ .Values.performers.namespace | default .Release.Namespace }}
+  labels:
+    {{- include "coordinare.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "get", "list", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "coordinare.fullname" . }}-performer-manager
+  namespace: {{ .Values.performers.namespace | default .Release.Namespace }}
+  labels:
+    {{- include "coordinare.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "coordinare.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "coordinare.fullname" . }}-performer-manager

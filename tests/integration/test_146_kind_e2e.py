@@ -31,6 +31,16 @@ SKIP_REASON = (
 
 
 def _cluster_available() -> bool:
+    """Whether a cluster is reachable. Deliberately not whether the image is loaded.
+
+    An earlier version checked ``node.status.images`` too, so that a missing image
+    skipped with the ``kind load`` command rather than failing on a pull. That was
+    a mistake: kubelet reports its image list on a cycle, so the check reads
+    "absent" for a while after a successful load — in CI it skipped an entire
+    suite seconds after loading the image, and the job went green having verified
+    nothing. A silent skip is a worse failure mode than a confusing error, and
+    ``classify_pod_failure`` already names an image-pull reason clearly.
+    """
     try:
         from kubernetes import client, config
     except ImportError:

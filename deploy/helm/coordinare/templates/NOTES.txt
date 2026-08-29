@@ -1,0 +1,44 @@
+coordinare {{ .Chart.AppVersion }} is installed as {{ include "coordinare.fullname" . }}.
+
+Watch it come up:
+
+  kubectl -n {{ .Release.Namespace }} rollout status statefulset/{{ include "coordinare.fullname" . }}
+  kubectl -n {{ .Release.Namespace }} logs statefulset/{{ include "coordinare.fullname" . }} -f
+
+Reach the dashboard:
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "coordinare.fullname" . }} {{ .Values.dashboard.port }}:{{ .Values.dashboard.port }}
+  open http://127.0.0.1:{{ .Values.dashboard.port }}
+
+  THE DASHBOARD HAS NO AUTHENTICATION. Anyone who can reach it can rewrite
+  configuration, cancel work, and delete symphonies. Nothing is exposed outside
+  the cluster by default. Keep it that way until you have put authentication in
+  front of it.
+
+One replica is correct and is not a misconfiguration. Coordinare's state is a
+single-process snapshot on one volume; a second replica would race on that file.
+
+{{- if not .Values.existingSecret }}
+{{- if not .Values.secrets }}
+
+WARNING: no credentials were supplied. The daemon needs a GitHub token to do
+anything. Either set `existingSecret` to a Secret you manage, or pass
+`secrets.GITHUB_TOKEN`.
+{{- end }}
+{{- end }}
+{{- if .Values.dashboard.ingress.enabled }}
+
+WARNING: you have enabled an Ingress in front of an unauthenticated dashboard.
+Put authentication at the ingress layer, and treat that hostname as a trust
+boundary. See docs/security/threat-model.md.
+{{- end }}
+{{- if .Values.allowUnsafeMultiReplica }}
+
+WARNING: allowUnsafeMultiReplica is set. Replicas beyond the first will race on
+the same state file. State corruption or loss is expected, not hypothetical.
+{{- end }}
+
+Your state lives on a PersistentVolumeClaim and SURVIVES `helm uninstall`, so an
+uninstall cannot destroy your work by accident. Remove it deliberately:
+
+  kubectl -n {{ .Release.Namespace }} delete pvc -l app.kubernetes.io/instance={{ .Release.Name }}

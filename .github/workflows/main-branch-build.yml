@@ -278,12 +278,46 @@ jobs:
           docker push "${REGISTRY}-full:${VERSION}"
           echo "Pushed ${REGISTRY}-full:${VERSION}"
 
+  build-daemon:
+    name: Build and Push Daemon Image
+    needs: create-tag
+    runs-on:
+      - self-hosted
+      - linux
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Check out the release tag so the image always matches the exact
+          # commit that was validated — not the moving branch head.
+          ref: ${{ needs.create-tag.outputs.version }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push daemon image
+        run: |
+          REGISTRY=$(cat registry-daemon)
+          VERSION=${{ needs.create-tag.outputs.version }}
+
+          docker build -t "${REGISTRY}:${VERSION}" -f Dockerfile.daemon .
+          docker push "${REGISTRY}:${VERSION}"
+          echo "Pushed ${REGISTRY}:${VERSION}"
+
   tag-latest:
     name: Tag Latest
     needs:
       - create-tag
       - build-base
       - build-full
+      - build-daemon
     runs-on:
       - self-hosted
       - linux
@@ -301,9 +335,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Tag base and full images as latest
+      - name: Tag base, full and daemon images as latest
         run: |
           REGISTRY=$(cat registry)
+          DAEMON_REGISTRY=$(cat registry-daemon)
           VERSION=${{ needs.create-tag.outputs.version }}
 
           docker pull "${REGISTRY}-base:${VERSION}"
@@ -314,5 +349,10 @@ jobs:
           docker tag "${REGISTRY}-full:${VERSION}" "${REGISTRY}-full:latest"
           docker push "${REGISTRY}-full:latest"
 
+          docker pull "${DAEMON_REGISTRY}:${VERSION}"
+          docker tag "${DAEMON_REGISTRY}:${VERSION}" "${DAEMON_REGISTRY}:latest"
+          docker push "${DAEMON_REGISTRY}:latest"
+
           echo "Tagged ${REGISTRY}-base:latest → ${VERSION}"
           echo "Tagged ${REGISTRY}-full:latest → ${VERSION}"
+          echo "Tagged ${DAEMON_REGISTRY}:latest → ${VERSION}"

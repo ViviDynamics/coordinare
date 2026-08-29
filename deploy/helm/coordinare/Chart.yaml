@@ -1,0 +1,22 @@
+apiVersion: v2
+name: coordinare
+description: Runs the coordinare daemon in-cluster, managing performers as Pods without a Docker socket
+type: application
+
+# Chart version. Bumped on chart changes; independent of the app version below.
+version: 0.1.0
+
+# The coordinare release this chart installs by default. values.yaml pins image.tag
+# to this, so a Pod reschedule cannot silently change the running version.
+appVersion: "2026.8.29"
+
+keywords:
+  - coordinare
+  - orchestration
+home: https://github.com/ViviDynamics/coordinare
+sources:
+  - https://github.com/ViviDynamics/coordinare
+
+annotations:
+  # Not an OSI licence. See LICENSE at the repository root.
+  licenses: LicenseRef-Elastic-License-2.0
