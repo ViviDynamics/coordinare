@@ -98,7 +98,12 @@ jobs:
         run: helm lint deploy/helm/coordinare
 
       - name: Verify the rendered chart
-        run: uv run pytest tests/unit/test_147_helm_deployment.py -v
+        # Both files. test_146 asserts the controller Pod cannot match the orphan
+        # sweep, which it checks by RENDERING the chart — so it needs helm, skips in
+        # the Test job that lacks it, and would otherwise be verified nowhere.
+        run: |
+          uv run pytest tests/unit/test_147_helm_deployment.py \
+                        tests/unit/test_146_kubernetes_transport.py -v
 
   daemon-image:
     name: Daemon Image

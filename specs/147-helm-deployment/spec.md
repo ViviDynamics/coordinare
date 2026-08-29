@@ -230,13 +230,13 @@ one and the daemon resumes from it.
 ### Measurable Outcomes
 
 - **SC-001**: An operator installs coordinare into a clean cluster with a single command and a
-  minimal values file: every object is created, the mounted configuration is parsed, the
-  injected credential authenticates, and the state volume is bound and mounted where the
-  configuration expects it. **Reaching "healthy" additionally requires a resolvable GitHub
-  Project**, because coordinare's startup bootstrap exits before the health server starts —
-  that is coordinare's dependency, not a property of the chart, so the automated check stops
-  at the last point the chart is responsible for rather than pointing a test at a live board
-  and acting on real cards.
+  minimal values file, and the controller reports itself healthy without further intervention.
+  *(Narrowed when this shipped, because startup resolves a GitHub Project before the health
+  server starts and a test had no board to resolve. Restored in full by issue #224, which
+  answers that lookup from a stub running as a sidecar — so `/ready` is now asserted against a
+  live cluster. Closing that gap surfaced four defects that had made a Kubernetes deployment
+  unable to start at all.)*
+
 - **SC-002**: A performer is dispatched and runs as a Pod under the spec-146 permissions, with no
   Docker socket anywhere in the deployment.
 - **SC-003**: No credential value appears anywhere in the rendered output except inside a Secret,

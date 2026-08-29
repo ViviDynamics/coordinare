@@ -751,6 +751,30 @@ def _compose_performer_pools(
     return service_lists, stage_max_c, performer_services_by_id
 
 
+class _UnavailableTransport:
+    """Stands in where no subprocess transport exists, and fails only if used.
+
+    Coordinare builds a transport during startup unconditionally, but the
+    Kubernetes path has none and needs none: performers are Pods spoken to over
+    HTTP. Returning this keeps startup honest — nothing pretends a wire protocol
+    is available — while letting a deployment that never needs one actually run.
+    """
+
+    def __init__(self, reason: str) -> None:
+        self._reason = reason
+
+    async def send(self, *args: Any, **kwargs: Any) -> Any:
+        # TransportError, not RuntimeError. Every consumer — AgentService,
+        # dispatch_performer, http_performer_service — catches TransportError, and
+        # since TransportError *subclasses* RuntimeError the relationship does not
+        # run the other way: a bare RuntimeError sails straight past `except
+        # TransportError` and out of the graph. The whole point of this stand-in is
+        # to fail like a transport failure, so it has to raise like one.
+        from coordinare.transport.base import TransportError
+
+        raise TransportError(self._reason)
+
+
 def _build_transport(config: ProjectConfiguration) -> AgentTransport:
     github_token = (
         config.github_token.get_secret_value() if config.github_token is not None else None
@@ -802,15 +826,39 @@ async def _bootstrap_services(
     if config.github_project_number:
         await github.initialize()
 
-    try:
-        transport = _build_transport(config)
-    except NotImplementedError as exc:
-        logger.error(
-            "transport_not_implemented",
+    # Decided on the transport NAME, not caught as an exception. An earlier
+    # version wrapped this in a broad `except ValueError`, which also swallowed the
+    # two other ValueErrors _build_transport raises: a missing agent_executable on
+    # the subprocess path, and "Unknown transport" for a typo. Both must still stop
+    # the daemon — an operator who misspells agent_transport should be told, not
+    # left with a process that starts and quietly does nothing.
+    if config.agent_transport == "kubernetes":
+        # No subprocess wire protocol exists here and none is needed: performers
+        # are Pods reached over HTTP. This call is unconditional, so demanding one
+        # meant coordinare could never boot with agent_transport: kubernetes at all.
+        #
+        # Deferred, not dropped: a role genuinely configured for a wire protocol
+        # still fails, at the point it tries to use one, where the message names it.
+        logger.info(
+            "transport_unavailable_for_http_performers",
             transport=config.agent_transport,
-            message=str(exc),
+            detail="performers are Pods over HTTP; no subprocess transport is used",
         )
-        sys.exit(1)
+        transport = _UnavailableTransport(
+            "agent_transport: kubernetes runs performers as Pods over HTTP and has "
+            "no subprocess transport. This role is configured for a wire-protocol "
+            "transport, which the Kubernetes path does not provide."
+        )
+    else:
+        try:
+            transport = _build_transport(config)
+        except NotImplementedError as exc:
+            logger.error(
+                "transport_not_implemented",
+                transport=config.agent_transport,
+                message=str(exc),
+            )
+            sys.exit(1)
 
     agent_service = AgentService(transport)
     resilient_agent = ResilientAgentService(
@@ -848,14 +896,19 @@ async def _bootstrap_services(
     # 056 — Merge containerized (ephemeral / persistent) performers into the same
     # service lists before slot registration so each stage is registered once.
     if any(ep.mode != "subprocess" for ep in config.performer_endpoints):
-        from coordinare.services.performer_lifecycle import cleanup_orphaned_containers
-
-        orphan_count = await cleanup_orphaned_containers()
+        # Through the runtime seam, not straight to Docker. This called
+        # ``cleanup_orphaned_containers`` directly, which meant startup shelled out
+        # to ``docker`` even with agent_transport: kubernetes — where there is no
+        # Docker, so the daemon died here with "No such file or directory:
+        # 'docker'". Spec 146 introduced the seam precisely so callers stop naming
+        # a runtime, and missed this one; nothing caught it because no test started
+        # a daemon in that mode until issue #224.
+        orphan_count = await _build_performer_runtime(config).cleanup_orphaned()
         if orphan_count:
             logger.warning(
                 "performer_lifecycle.orphans_cleaned",
                 count=orphan_count,
-                hint="containers left by a previous coordinare crash",
+                hint="performers left by a previous coordinare crash",
             )
     http_services_by_stage, bootstrap_services_by_id = _build_http_performer_services(config)
     service_lists, stage_max_c, performer_services_by_id = _compose_performer_pools(

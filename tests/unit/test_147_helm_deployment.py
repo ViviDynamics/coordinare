@@ -798,3 +798,21 @@ class TestTheDockerPathIsCoveredToo:
             "found after merge"
         )
         assert "test_148_docker_daemon_image" in yaml.safe_dump(jobs["daemon-image"])
+
+
+class TestTheChartJobRunsEveryHelmDependentAssertion:
+    """A test that needs helm must run somewhere that has it.
+
+    ``test_146``'s "the controller Pod cannot match the orphan sweep" check renders
+    the chart, so it skips on the Test job, which has no helm. If the Chart job does
+    not run that file either, the assertion is verified nowhere — a security
+    property held only by a skip. This repo has produced that shape three times now.
+    """
+
+    def test_the_chart_job_runs_the_kubernetes_transport_tests_too(self) -> None:
+        job = yaml.safe_load(Path(PR_WORKFLOW).read_text())["jobs"]["chart"]
+        body = yaml.safe_dump(job)
+        assert "test_146_kubernetes_transport" in body, (
+            "test_146's chart-rendering assertion needs helm; without it in the Chart "
+            "job it skips in Test and runs nowhere"
+        )

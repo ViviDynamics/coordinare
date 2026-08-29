@@ -26,6 +26,27 @@ image:
 
 imagePullSecrets: []
 
+# Additional containers to run alongside coordinare in the same Pod.
+#
+# They share the Pod's network namespace, so coordinare reaches them on
+# 127.0.0.1 — which is what makes this useful rather than decorative. Coordinare
+# refuses a plain-http GitHub or model URL for any host other than loopback, so
+# a proxy or gateway it should talk to over http has to be a sidecar rather than
+# a separate Service. The integration tests use this to run a GitHub stub the
+# daemon can resolve its project against.
+#
+# Rendered verbatim as Kubernetes container specs — including any volumeMounts
+# they declare. A sidecar that mounts the `state` volume can read and modify
+# coordinare.state.json, which holds session state, board cards, PR metadata and
+# decision history. That is inherent to running a container in the same Pod, not
+# something the chart can prevent, so treat anything you add here as being as
+# trusted as coordinare itself.
+extraContainers: []
+#  - name: model-proxy
+#    image: ghcr.io/example/proxy:1.2.3
+#    ports:
+#      - containerPort: 4000
+
 nameOverride: ""
 fullnameOverride: ""
 

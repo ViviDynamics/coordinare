@@ -495,9 +495,17 @@ class KubernetesRuntime:
 
         from kubernetes.client.rest import ApiException
 
-        selector = f"{MANAGED_BY_LABEL}={MANAGED_BY_VALUE}"
+        # Both labels, and the second is what makes this safe rather than tidy.
+        # Every performer Pod carries a performer-id; nothing else coordinare
+        # deploys does. Selecting on managed-by ALONE swept up the controller's own
+        # Pod, because the Helm chart labels it managed-by=coordinare too — so on
+        # startup coordinare deleted itself, restarted, and deleted itself again.
+        # Requiring the performer-id label to exist excludes the controller by
+        # construction, whatever else happens to share the managed-by label.
+        selector = f"{MANAGED_BY_LABEL}={MANAGED_BY_VALUE},{PERFORMER_ID_LABEL}"
         if performer_id:
-            selector += f",{PERFORMER_ID_LABEL}={performer_id}"
+            # Narrow the existence check to one id.
+            selector = f"{MANAGED_BY_LABEL}={MANAGED_BY_VALUE},{PERFORMER_ID_LABEL}={performer_id}"
 
         try:
             pods = await asyncio.to_thread(
