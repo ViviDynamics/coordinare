@@ -13,6 +13,10 @@ tell us.
 [Open an issue.](https://github.com/ViviDynamics/coordinare/issues/new/choose)
 There are separate forms for bugs, feature requests, and open-ended feedback.
 
+When you open an issue it is forwarded to the maintainers directly, so nothing
+depends on someone happening to be watching the repository that day. That is a
+statement about delivery, not about response: see below.
+
 Submissions are read, and they inform the roadmap. We are not going to promise
 you a reply, a triage decision, or that any particular request gets built. What
 you send genuinely influences the direction; it does not obligate us to

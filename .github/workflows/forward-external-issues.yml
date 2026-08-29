@@ -1,0 +1,110 @@
+# Forward external issue submissions to the maintainers (spec 152 / issue #210).
+#
+# Public issues are the only contribution channel coordinare accepts — spec 142
+# closed public pull requests by design. This is what makes that promise real:
+# somebody sees a stranger's report without watching the repository by hand.
+#
+# Runs on a GitHub-hosted runner on purpose. Every other workflow here is
+# self-hosted, and a workflow an outsider can trigger should not touch that host.
+# It also never checks out the repository: nothing from the submission is
+# fetched, written, or executed.
+#
+# Secrets are available here because `issues` events run in the base-repository
+# context. That is the contrast with spec 142's external-PR automation, which
+# uses `pull_request_target` precisely because fork `pull_request` events get no
+# secrets and a read-only token.
+
+name: Forward External Issues
+
+on:
+  issues:
+    types: [opened]
+
+# Read-only. The forwarder writes nothing: no labels, no comments, no triage.
+# That judgment already lives in the advocate role, and duplicating it here would
+# create a second, worse one.
+permissions:
+  contents: read
+
+jobs:
+  forward:
+    name: Forward to maintainers
+    runs-on: ubuntu-latest
+    steps:
+      - name: Decide whether the author is external
+        id: author
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const association = context.payload.issue.author_association;
+
+            // author_association is a CHEAP PRE-FILTER, NOT THE AUTHORITY.
+            //
+            // It under-reports: a maintainer whose organisation membership is
+            // private reports NONE. Spec 142 hit exactly this — its bot scolded a
+            // maintainer's own pull request — so the permission level is asked for
+            // directly rather than inferred.
+            if (["OWNER", "MEMBER", "COLLABORATOR"].includes(association)) {
+              core.info(`author_association=${association}; internal, nothing to forward`);
+              core.setOutput("external", "false");
+              return;
+            }
+
+            try {
+              const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                username: context.payload.issue.user.login,
+              });
+              if (["admin", "write", "maintain"].includes(data.permission)) {
+                core.info(`permission=${data.permission}; internal, nothing to forward`);
+                core.setOutput("external", "false");
+                return;
+              }
+            } catch (error) {
+              // A non-collaborator returns 404, which is the common case and means
+              // external. Any other failure is treated as external too: forwarding
+              // a maintainer's issue by mistake costs a notification, while
+              // swallowing a stranger's costs the report this feature exists for.
+              core.info(`permission lookup: ${error.status || error.message}`);
+            }
+
+            core.setOutput("external", "true");
+
+      - name: Set up Python
+        if: steps.author.outputs.external == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # No checkout. The script is fetched from the API at the ref this workflow
+      # is running from, so nothing the submitter controls is downloaded.
+      - name: Fetch the forwarder
+        if: steps.author.outputs.external == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/contents/.github/scripts/forward_external_issue.py?ref=${GITHUB_SHA}" \
+            --jq '.content' | base64 -d > forward_external_issue.py
+
+          # A failed or empty fetch would leave a zero-byte file, and python exits 0
+          # on an empty script — a green run that forwarded nothing, which is the
+          # exact failure this whole workflow exists to prevent. `set -o pipefail`
+          # catches gh failing; this catches it succeeding with nothing useful.
+          if ! grep -q "^def main() -> int:" forward_external_issue.py; then
+            echo "::error::the forwarder script was not fetched intact; refusing to run" >&2
+            echo "fetched $(wc -c < forward_external_issue.py) bytes" >&2
+            exit 1
+          fi
+
+      - name: Forward the submission
+        if: steps.author.outputs.external == 'true'
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          ISSUE_FORWARD_EMAIL_API_KEY: ${{ secrets.ISSUE_FORWARD_EMAIL_API_KEY }}
+          ISSUE_FORWARD_EMAIL_TO: ${{ secrets.ISSUE_FORWARD_EMAIL_TO }}
+          ISSUE_FORWARD_EMAIL_FROM: ${{ secrets.ISSUE_FORWARD_EMAIL_FROM }}
+        run: |
+          set -euo pipefail
+          python forward_external_issue.py
