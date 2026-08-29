@@ -8,6 +8,16 @@ host, and it is the largest single trust liability in the Docker deployment (see
 [the threat model](../../docs/security/threat-model.md)). On Kubernetes the daemon
 needs a namespace-scoped ServiceAccount and nothing else.
 
+## Two ways in
+
+This directory is the **raw-manifest** path: apply `rbac.yaml`, run the daemon
+however you like, and point it at the cluster.
+
+If you want coordinare itself running in-cluster, use the **Helm chart** at
+[`deploy/helm/coordinare`](../helm/coordinare/README.md) instead. It templates this
+same RBAC, adds the StatefulSet, state volume, config and credential wiring, and
+is the shorter path to a working deployment.
+
 ## Requirements
 
 Any conformant cluster: EKS, GKE, vanilla Kubernetes, k3s, microk8s, minikube,

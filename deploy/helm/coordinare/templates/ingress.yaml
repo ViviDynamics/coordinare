@@ -1,0 +1,45 @@
+{{/*
+DISABLED BY DEFAULT, and the default is the right answer for almost everyone.
+
+Turning this on publishes an UNAUTHENTICATED dashboard. Coordinare has no login
+(spec 143 will add one); anyone who reaches this endpoint can rewrite
+configuration, cancel work, and delete symphonies. The loopback guard that
+normally prevents that is precisely what an Ingress routes around.
+
+If you enable it, put authentication in front of it at the ingress layer and
+treat the hostname as a trust boundary. See docs/security/threat-model.md.
+*/}}
+{{- if .Values.dashboard.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "coordinare.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "coordinare.labels" . | nindent 4 }}
+  {{- with .Values.dashboard.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.dashboard.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- with .Values.dashboard.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    {{- range .Values.dashboard.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          - path: {{ .path | default "/" }}
+            pathType: {{ .pathType | default "Prefix" }}
+            backend:
+              service:
+                name: {{ include "coordinare.fullname" $ }}
+                port:
+                  name: dashboard
+    {{- end }}
+{{- end }}

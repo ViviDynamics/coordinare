@@ -76,6 +76,8 @@ See AGENTS.md for all development guidelines.
 - Python 3.14 (project minimum 3.12; prod 3.14.5 via uv). + None added. Uses FastAPI/Starlette middleware already in the stack, (144-threat-model-trust-boundaries)
 - N/A. No persisted state, no schema change. (144-threat-model-trust-boundaries)
 - None new in coordinare. Reuses 134's harness-owned run dir for the (151-real-performers)
+- Python 3.14 (project minimum 3.12; prod 3.14.5 via uv) for tests; the + None added to the Python project. Build/CI tooling: `helm` (3.13.3 (147-helm-deployment)
+- A `volumeClaimTemplate` on the StatefulSet holds `coordinare.state.json` and artifacts. (147-helm-deployment)
 
 ## Recent Changes
 - 076-qa-cycle: Added Python 3.14 (project minimum: 3.12; production currently on 3.14.5 via uv) + pydantic 2.x, langgraph, structlog, docker SDK (or subprocess to `docker` CLI), fastapi (dashboard SSE), httpx (performer HTTP transport), pyyaml (config)

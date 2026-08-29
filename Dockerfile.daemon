@@ -1,14 +1,24 @@
-# Dockerfile.daemon — containerized coordinare daemon (spec 065)
+# Dockerfile.daemon — the coordinare daemon image (spec 065; refreshed by spec 147)
 #
-# The daemon needs the Docker CLI because it spawns sibling performer
-# containers via the host's Docker socket (DooD).  Bind-mount
-# /var/run/docker.sock from the host at runtime — see bin/start --container.
+# One image, two deployments:
 #
-# Path translation note: the daemon writes config.yaml paths that the
-# *host* docker engine has to resolve when starting performers.  The
-# convention is to bind-mount the project at the same absolute path inside
-# this container, so anything in config.yaml referring to host paths "just
-# works" without rewriting.
+#   Docker      bin/start --container bind-mounts /var/run/docker.sock, and the
+#               daemon starts sibling performer containers through it (DooD).
+#               That socket mount is root-equivalent access to the host and is
+#               the largest trust liability in that deployment.
+#
+#   Kubernetes  the Helm chart (deploy/helm/coordinare) runs this image with NO
+#               socket at all. The daemon manages performer Pods through the
+#               Kubernetes API under a namespace-scoped Role. That is the point
+#               of spec 146.
+#
+# The Docker CLI below is installed for the first case. Its presence is not the
+# liability — mounting the socket is — so the Kubernetes deployment is unaffected
+# by it being here.
+#
+# Path translation (Docker path only): the daemon writes config.yaml paths that
+# the *host* engine must resolve when starting performers, so bin/start
+# bind-mounts the project at the same absolute path inside this container.
 
 FROM python:3.12-slim
 
@@ -16,9 +26,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     UV_LINK_MODE=copy
 
-# Docker CLI (client only — daemon socket comes from the host mount) + git
-# (used by the coordinare for log/branch inspection).  curl is needed to
-# fetch the uv installer below.
+# docker.io is the CLI only (the engine socket comes from the host mount, and
+# only on the Docker path). git is used for log and branch inspection; curl
+# fetches the uv installer below.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
@@ -27,7 +37,6 @@ RUN apt-get update \
         docker.io \
     && rm -rf /var/lib/apt/lists/*
 
-# uv — matches bin/run-coordinare's local invocation
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
     && mv /root/.local/bin/uv /usr/local/bin/uv \
     && mv /root/.local/bin/uvx /usr/local/bin/uvx
@@ -36,17 +45,32 @@ WORKDIR /app
 
 COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
+# A local path dependency (coordinare-service-inference) that uv.lock resolves from
+# the working tree. Omitting it made this image unbuildable — "Distribution not
+# found at file:///app/packages/service_inference" — from the moment that
+# package was added, which is why bin/start --container was broken too.
+COPY packages ./packages
 
 # Resolve deps into a project-local .venv so runtime uses the lock.
-RUN uv sync --frozen --no-dev
+RUN uv sync --frozen --no-dev \
+    # World-readable so the chart can run this as an arbitrary non-root UID.
+    # The daemon writes nothing under /app: its state goes to the mounted
+    # volume, and the entrypoint below runs the interpreter directly rather than
+    # through uv, so nothing needs a writable cache here.
+    && chmod -R a+rX /app
 
-# Health (9090) and dashboard (9091).  bin/start --container publishes
-# these; --network host makes them reachable via the host directly.
-EXPOSE 9090 9091
+# Health 8080, dashboard 8090 — the defaults in src/coordinare/config.py.
+# These said 9090/9091 until spec 147; EXPOSE is documentation-only, so that was
+# misleading rather than broken, but misleading in a way that sends someone
+# debugging the wrong layer.
+EXPOSE 8080 8090
 
 ENV COORDINARE_RUN_MODE=container
 
-# config.yaml + .env are mounted by bin/start --container.  --config
-# defaults to /app/config.yaml (the bind-mount target).
-ENTRYPOINT ["uv", "run", "--no-sync", "python", "-m", "coordinare"]
+# The venv interpreter directly, not `uv run`: uv at runtime wants writable
+# cache and lock paths, which a read-only or non-root filesystem does not have.
+# The default user stays root so the Docker path can reach the mounted socket;
+# the Helm chart overrides it with runAsNonRoot, which this image supports
+# because nothing above needs to be written at runtime.
+ENTRYPOINT ["/app/.venv/bin/python", "-m", "coordinare"]
 CMD ["--config", "/app/config.yaml"]

@@ -30,6 +30,7 @@ which is the current posture.
 from __future__ import annotations
 
 import ipaddress
+import socket
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -113,6 +114,44 @@ def _is_loopback_address(host: str) -> bool:
         return ipaddress.ip_address(host).is_loopback
     except ValueError:
         return False
+
+
+def _is_wildcard_bind(host: str) -> bool:
+    """Is this a bind-all address rather than a hostname a client would send?
+
+    ``0.0.0.0`` and ``::`` mean "listen on every interface". They are not names
+    anyone legitimately puts in a ``Host`` header, so they must never become
+    permitted origins.
+
+    This matters because browsers on macOS and Linux let a page reach
+    ``http://0.0.0.0:<port>``, which routes to loopback — the "0.0.0.0 day"
+    quirk. Trusting the bind address would therefore hand an attacker's page a
+    ``Host`` value that passes this guard and reaches a dashboard the operator
+    has port-forwarded, which is precisely the request this guard exists to
+    refuse.
+    """
+    candidate = host.strip().strip("[]").lower()
+    if candidate in {"*", ""}:
+        return True
+
+    # Resolved, not string-matched. The first version of this compared against a
+    # hand-written set of spellings and missed four that a server will happily
+    # bind to: "::0", "0:0:0:0:0:0:0:0", the fully-expanded IPv6 zero, and the
+    # bare "0" (which the resolver expands to 0.0.0.0, as do "00.00.00.00" and
+    # "0x0"). Any of those as ``dashboard_host`` would have put the hole straight
+    # back. Enumerating spellings of a number is a losing game; asking what the
+    # value resolves to is not.
+    #
+    # AI_NUMERICHOST keeps this to pure parsing: no DNS lookup can be triggered
+    # by a configuration value, and a real hostname is simply rejected here and
+    # left to the trusted-host list where it belongs.
+    try:
+        resolved = socket.getaddrinfo(
+            candidate, None, type=socket.SOCK_STREAM, flags=socket.AI_NUMERICHOST
+        )
+    except (socket.gaierror, UnicodeError, ValueError):
+        return False
+    return any(ipaddress.ip_address(info[4][0]).is_unspecified for info in resolved)
 
 
 def is_loopback_bind(host: str) -> bool:
@@ -305,8 +344,18 @@ def build_permitted(
     ``X-Forwarded-Host`` is deliberately not consulted anywhere: it is
     attacker-controlled unless a proxy overwrites it, and honouring it by default
     would silently undo this guard.
+
+    **A bind-all ``dashboard_host`` is not added.** Binding to ``0.0.0.0`` says
+    where to listen; it is not a name a client would ever legitimately send.
+    Admitting it re-opened the exact hole this guard closes, because browsers on
+    macOS and Linux route ``http://0.0.0.0:<port>`` to loopback, so a malicious
+    page could reach a port-forwarded dashboard with a ``Host`` the guard
+    accepted. Anyone who genuinely needs a non-loopback name must still name it
+    in ``trusted_hosts``, which is the deliberate, visible opt-in.
     """
-    hosts = {_LOCALHOST_NAME, dashboard_host.strip().lower()}
+    hosts = {_LOCALHOST_NAME}
+    if not _is_wildcard_bind(dashboard_host):
+        hosts.add(dashboard_host.strip().lower())
     hosts.update(host.strip().lower() for host in (trusted_hosts or []) if host.strip())
     return PermittedOrigins(hosts=frozenset(hosts), port=dashboard_port)
 

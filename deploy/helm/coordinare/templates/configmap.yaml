@@ -1,0 +1,59 @@
+{{/*
+The daemon's config.yaml.
+
+Contains ${VAR} placeholders only -- coordinare expands them over the whole file
+at load time (config.py), which is how it already separates configuration from
+credentials. No credential value may appear here, and a test renders with a
+sentinel to prove none does.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "coordinare.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "coordinare.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    {{- $cfg := deepCopy .Values.config }}
+
+    {{/*
+      state_file_path is the highest-consequence line in this chart.
+      Coordinare's default is RELATIVE (./coordinare.state.json), which in a
+      container resolves onto the container filesystem: the daemon runs
+      correctly, persists nothing durable, and loses everything on the first
+      reschedule, with no symptom until that moment.
+    */}}
+    {{- $_ := set $cfg "state_file_path" (printf "%s/coordinare.state.json" (.Values.state.mountPath | trimSuffix "/")) }}
+
+    {{/* A loopback bind is unreachable from a Service. The spec-144 guard, not
+         the bind address, is what constrains access here. */}}
+    {{- $_ := set $cfg "dashboard_host" "0.0.0.0" }}
+    {{- $_ := set $cfg "dashboard_port" (int .Values.dashboard.port) }}
+    {{- $_ := set $cfg "health_check_port" (int .Values.health.port) }}
+    {{- $_ := set $cfg "trusted_dashboard_hosts" (include "coordinare.trustedHosts" . | fromYamlArray) }}
+
+    {{/*
+      Wire the credential indirection by default, since coordinare always needs a
+      token and an operator should not have to know the placeholder syntax to get
+      a working install. The NAME goes in the config; the Secret supplies the
+      value; config.py expands it at load time. Overridable by setting
+      config.github_token yourself.
+    */}}
+    {{- if not (hasKey $cfg "github_token") }}
+    {{- $_ := set $cfg "github_token" "${GITHUB_TOKEN}" }}
+    {{- end }}
+
+    {{/* Spec 146: performers as Pods, never a Docker socket. */}}
+    {{- $_ := set $cfg "agent_transport" "kubernetes" }}
+    {{- $_ := set $cfg "kubernetes_namespace" (.Values.performers.namespace | default .Release.Namespace) }}
+    {{- if .Values.performers.cacheClaim }}
+    {{- $_ := set $cfg "kubernetes_cache_claim" .Values.performers.cacheClaim }}
+    {{- end }}
+    {{- $_ := set $cfg "kubernetes_image_pull_secrets" (.Values.performers.imagePullSecrets | default list) }}
+
+    {{- if .Values.githubAppPrivateKey.existingSecret }}
+    {{- $_ := set $cfg "github_private_key_path" (printf "%s/%s" (.Values.githubAppPrivateKey.mountPath | trimSuffix "/") .Values.githubAppPrivateKey.key) }}
+    {{- end }}
+
+    {{ toYaml $cfg | nindent 4 }}

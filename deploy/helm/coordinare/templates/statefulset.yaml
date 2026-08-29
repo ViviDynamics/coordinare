@@ -1,0 +1,118 @@
+{{- include "coordinare.checkReplicas" . -}}
+{{/*
+The controller.
+
+A StatefulSet rather than a Deployment for two reasons that both matter:
+the volumeClaimTemplate binds state to the workload's identity, so an upgrade
+keeps it and a reschedule reattaches the same volume; and OrderedReady
+terminates the old Pod before starting the new one, where a Deployment's rolling
+update would briefly run two. Two coordinare processes on one state file is the
+corruption this chart exists to prevent.
+*/}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "coordinare.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "coordinare.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  serviceName: {{ include "coordinare.fullname" . }}
+  podManagementPolicy: OrderedReady
+  selector:
+    matchLabels:
+      {{- include "coordinare.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "coordinare.labels" . | nindent 8 }}
+      annotations:
+        # Roll the Pod when the rendered config changes; without this a
+        # `helm upgrade` that only alters config leaves the old one running.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "coordinare.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: coordinare
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          args: ["--config", "/etc/coordinare/config.yaml"]
+          ports:
+            - name: dashboard
+              containerPort: {{ .Values.dashboard.port }}
+            - name: health
+              containerPort: {{ .Values.health.port }}
+          envFrom:
+            - secretRef:
+                name: {{ .Values.existingSecret | default (include "coordinare.fullname" .) }}
+                optional: true
+          livenessProbe:
+            httpGet:
+              path: /live
+              port: health
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: config
+              mountPath: /etc/coordinare
+              readOnly: true
+            - name: state
+              mountPath: {{ .Values.state.mountPath }}
+            {{- if .Values.githubAppPrivateKey.existingSecret }}
+            - name: github-app-key
+              mountPath: {{ .Values.githubAppPrivateKey.mountPath }}
+              readOnly: true
+            {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "coordinare.fullname" . }}
+        {{- if .Values.githubAppPrivateKey.existingSecret }}
+        # A private key is a file, not an environment variable. Projecting it as
+        # one would mean writing it to disk at runtime.
+        - name: github-app-key
+          secret:
+            secretName: {{ .Values.githubAppPrivateKey.existingSecret }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  volumeClaimTemplates:
+    - metadata:
+        name: state
+        labels:
+          {{- include "coordinare.labels" . | nindent 10 }}
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.state.storageClass }}
+        storageClassName: {{ .Values.state.storageClass | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.state.size }}

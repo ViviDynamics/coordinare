@@ -890,3 +890,105 @@ def test_exposed_bind_warning_explains_the_guard_consequence() -> None:
         "the warning must name the setting, or the operator has no way to find it"
     )
     assert "403" in action, "it should say what the failure looks like, so it is recognisable"
+
+
+class TestBindAllIsNeverAPermittedHost:
+    """A bind address is not a hostname, and trusting it re-opens the hole.
+
+    Found while reviewing spec 147: the Helm chart must set ``dashboard_host`` to
+    ``0.0.0.0`` for an in-cluster Service to reach the dashboard at all, and
+    ``build_permitted`` used to add whatever ``dashboard_host`` said to the
+    permitted set. That admitted ``Host: 0.0.0.0``.
+
+    Which is not academic. Browsers on macOS and Linux route
+    ``http://0.0.0.0:<port>`` to loopback — the "0.0.0.0 day" quirk — so a
+    malicious page open in the operator's browser could reach a dashboard they
+    had port-forwarded, with a Host the guard accepted. That is exactly the
+    cross-origin request this guard exists to refuse.
+    """
+
+    def test_a_bind_all_dashboard_host_is_not_trusted(self) -> None:
+        from coordinare.localhost_guard import build_permitted
+
+        permitted = build_permitted(dashboard_host="0.0.0.0", dashboard_port=8090)
+        assert not permitted.is_host_allowed("0.0.0.0:8090")
+        assert not permitted.is_host_allowed("0.0.0.0")
+        assert not permitted.is_origin_allowed("http://0.0.0.0:8090")
+
+    def test_the_ipv6_bind_all_is_not_trusted_either(self) -> None:
+        from coordinare.localhost_guard import build_permitted
+
+        permitted = build_permitted(dashboard_host="::", dashboard_port=8090)
+        assert not permitted.is_host_allowed("[::]:8090")
+        assert not permitted.is_host_allowed("::")
+
+    @pytest.mark.parametrize(
+        "spelling",
+        [
+            "::0",
+            "0:0:0:0:0:0:0:0",
+            "0000:0000:0000:0000:0000:0000:0000:0000",
+            "::ffff:0.0.0.0",
+            "0",
+            "00.00.00.00",
+            "0x0",
+        ],
+    )
+    def test_every_spelling_of_a_bind_all_address_is_caught(self, spelling: str) -> None:
+        """Not spellings anyone would choose, but ones a server really binds.
+
+        The first version of this guard compared ``dashboard_host`` against a
+        hand-written set of strings, and every value here slipped past it while
+        still resolving to an unspecified address — so setting any of them would
+        have restored the hole in full. Enumerating the spellings of a number is a
+        losing game; the guard now asks what the value resolves to.
+        """
+        from coordinare.localhost_guard import build_permitted
+
+        permitted = build_permitted(dashboard_host=spelling, dashboard_port=8090)
+        assert not permitted.is_host_allowed(spelling), (
+            f"{spelling!r} resolves to a bind-all address and must never be trusted"
+        )
+
+    def test_a_hostname_is_not_mistaken_for_a_bind_address(self) -> None:
+        """Resolution must not reach the network, nor swallow real hostnames.
+
+        A hostname is rejected by the numeric-only parse and left to the
+        trusted-host list, which is where an operator's deliberate opt-in belongs.
+        """
+        from coordinare.localhost_guard import _is_wildcard_bind
+
+        for name in ("coordinare.ns.svc.cluster.local", "localhost", "example.com"):
+            assert not _is_wildcard_bind(name)
+
+    def test_a_specific_bind_address_is_still_trusted(self) -> None:
+        """Only the *unspecified* address is refused, not any non-loopback bind.
+
+        An operator who binds to one real interface has named a reachable host,
+        and that remains as trusted as it was before this change.
+        """
+        from coordinare.localhost_guard import build_permitted
+
+        permitted = build_permitted(dashboard_host="192.168.1.5", dashboard_port=8090)
+        assert permitted.is_host_allowed("192.168.1.5:8090")
+
+    def test_binding_wide_does_not_stop_loopback_callers(self) -> None:
+        """The operator's own access must survive the fix.
+
+        Binding to every interface is exactly what a containerised deployment
+        does, and `kubectl port-forward` reaches it as 127.0.0.1.
+        """
+        from coordinare.localhost_guard import build_permitted
+
+        permitted = build_permitted(dashboard_host="0.0.0.0", dashboard_port=8090)
+        assert permitted.is_host_allowed("127.0.0.1:8090")
+        assert permitted.is_host_allowed("localhost:8090")
+
+    def test_a_real_hostname_is_still_trusted_when_named(self) -> None:
+        """The opt-in path is unaffected; only the bind-all shortcut is closed."""
+        from coordinare.localhost_guard import build_permitted
+
+        permitted = build_permitted(
+            dashboard_host="0.0.0.0", dashboard_port=8090, trusted_hosts=["coordinare.ns.svc"]
+        )
+        assert permitted.is_host_allowed("coordinare.ns.svc:8090")
