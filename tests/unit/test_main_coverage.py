@@ -203,10 +203,18 @@ def test_build_transport_ssh_raises_not_implemented() -> None:
         _build_transport(cfg)
 
 
-def test_build_transport_kubernetes_raises_not_implemented() -> None:
-    """Line 267: 'kubernetes' transport → KubernetesTransport() raises NotImplementedError (stub transport)."""
+def test_build_transport_kubernetes_rejects_a_wire_protocol_role() -> None:
+    """'kubernetes' has no subprocess transport, and says so (spec 146 FR-004).
+
+    It used to raise ``NotImplementedError`` from a ``KubernetesTransport`` stub
+    in ``transport/``. That stub is deleted: it implied the Kubernetes work meant
+    filling in a wire protocol, when Kubernetes performers are reached over HTTP
+    and never touch ``AgentTransport`` at all. Reaching here now means a role is
+    configured for a transport the Kubernetes path does not provide, which is a
+    configuration error rather than an unfinished feature.
+    """
     cfg = SimpleNamespace(agent_transport="kubernetes", agent_executable="", transport_timeout_seconds=30, github_token=None)
-    with pytest.raises(NotImplementedError, match="Kubernetes transport"):
+    with pytest.raises(ValueError, match="no subprocess transport"):
         _build_transport(cfg)
 
 
@@ -433,7 +441,9 @@ def _http_config(
             return SimpleNamespace(max_concurrency=mc)
 
         performers = SimpleNamespace(resolved_role=_resolved_role)
-    return SimpleNamespace(performer_endpoints=endpoints, performers=performers)
+    return SimpleNamespace(
+        performer_endpoints=endpoints, performers=performers, agent_transport="docker"
+    )
 
 
 def test_build_http_services_ephemeral_replicates_by_max_concurrency(
@@ -449,7 +459,7 @@ def test_build_http_services_ephemeral_replicates_by_max_concurrency(
     # Patch HTTPPerformerService to a no-op factory so we don't validate cfg.
     import coordinare.services.http_performer_service as hps_mod
     monkeypatch.setattr(
-        hps_mod, "HTTPPerformerService", lambda cfg: SimpleNamespace(_cfg=cfg)
+        hps_mod, "HTTPPerformerService", lambda cfg, **_kw: SimpleNamespace(_cfg=cfg)
     )
 
     ep = SimpleNamespace(id="impl-pool", mode="ephemeral", roles=["implementer"])
@@ -470,7 +480,7 @@ def test_build_http_services_persistent_does_not_replicate(
     """Persistent endpoints map to a single slot regardless of max_concurrency."""
     import coordinare.services.http_performer_service as hps_mod
     monkeypatch.setattr(
-        hps_mod, "HTTPPerformerService", lambda cfg: SimpleNamespace(_cfg=cfg)
+        hps_mod, "HTTPPerformerService", lambda cfg, **_kw: SimpleNamespace(_cfg=cfg)
     )
 
     ep = SimpleNamespace(id="impl", mode="persistent", roles=["implementer"])
@@ -488,7 +498,7 @@ def test_build_http_services_ephemeral_singleton_stage_clamps_to_one(
     when max_concurrency is higher."""
     import coordinare.services.http_performer_service as hps_mod
     monkeypatch.setattr(
-        hps_mod, "HTTPPerformerService", lambda cfg: SimpleNamespace(_cfg=cfg)
+        hps_mod, "HTTPPerformerService", lambda cfg, **_kw: SimpleNamespace(_cfg=cfg)
     )
 
     ep = SimpleNamespace(id="assessor", mode="ephemeral", roles=["assessor"])
@@ -505,7 +515,7 @@ def test_build_http_services_skips_subprocess(
     """Subprocess endpoints are handled by the legacy pipeline and skipped here."""
     import coordinare.services.http_performer_service as hps_mod
     monkeypatch.setattr(
-        hps_mod, "HTTPPerformerService", lambda cfg: SimpleNamespace(_cfg=cfg)
+        hps_mod, "HTTPPerformerService", lambda cfg, **_kw: SimpleNamespace(_cfg=cfg)
     )
 
     ep = SimpleNamespace(id="legacy", mode="subprocess", roles=["implementer"])
@@ -522,7 +532,7 @@ def test_build_http_services_ephemeral_no_performers_config_defaults_to_one(
     """When config.performers is None, ephemeral endpoints default to 1 copy."""
     import coordinare.services.http_performer_service as hps_mod
     monkeypatch.setattr(
-        hps_mod, "HTTPPerformerService", lambda cfg: SimpleNamespace(_cfg=cfg)
+        hps_mod, "HTTPPerformerService", lambda cfg, **_kw: SimpleNamespace(_cfg=cfg)
     )
 
     ep = SimpleNamespace(id="impl", mode="ephemeral", roles=["implementer"])
@@ -542,7 +552,7 @@ def test_env_bootstrap_endpoint_registered_by_id_not_as_stage(
     can never rebuild (which silently froze the cache and blocked Chrome install)."""
     import coordinare.services.http_performer_service as hps_mod
     monkeypatch.setattr(
-        hps_mod, "HTTPPerformerService", lambda cfg: SimpleNamespace(_cfg=cfg, _config=cfg)
+        hps_mod, "HTTPPerformerService", lambda cfg, **_kw: SimpleNamespace(_cfg=cfg, _config=cfg)
     )
 
     ep = SimpleNamespace(id="opencode-ephemeral", mode="ephemeral", roles=["env_bootstrap"])

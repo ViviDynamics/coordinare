@@ -40,6 +40,31 @@ and take over the machine. Coordinare does not sandbox itself away from this and
 containers is what it does. Run the daemon on a host you are willing to lose, or on one dedicated
 to it. Do not run it on a workstation holding credentials for anything else you care about.
 
+### Operator host to daemon container, on Kubernetes
+
+**What crosses**: nothing. This is the boundary's absence, and it is spec 146's
+headline result.
+
+**Trusted assumption**: the daemon may create and delete Pods in **one namespace**.
+
+**Mitigations**: the daemon runs under a namespace-scoped ServiceAccount granted
+`pods` and `pods/log` only — no ClusterRole, no access to secrets, no Docker
+socket. The root-equivalent trust decision described above **does not apply on
+this path**. See [deploy/kubernetes/README.md](../../deploy/kubernetes/README.md).
+
+**Residual risk**: anyone who can create Pods in that namespace can run containers
+there, so the namespace is a trust boundary and should not be shared with
+unrelated workloads. The grant is also only as small as the cluster makes it: a
+Role bound to the same ServiceAccount under a different name keeps granting
+whatever it lists, and reading `rbac.yaml` will not show it — verify with
+`kubectl auth can-i --list`, which is what coordinare's own integration test does.
+Performer Pods set `automountServiceAccountToken: false`, so the AI-generated code
+inside them holds no credential for the cluster API. Egress allowlisting is **not available** on Kubernetes: the
+Docker path's in-container iptables needs `NET_ADMIN`, and the native NetworkPolicy
+equivalent only applies if the cluster's CNI enforces it, which several common
+distributions do not by default. Nothing silently substitutes for it, so a
+performer on Kubernetes can reach whatever the cluster's network permits.
+
 ### Daemon to performer containers
 
 **What crosses**: task payloads out, model-authored code and structured results back. Performers

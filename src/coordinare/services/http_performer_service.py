@@ -10,9 +10,10 @@ Mode handling:
 * ``persistent`` — ``endpoint`` is fixed at registration; ``dispatch_card``
   sends ``POST /jobs`` directly.
 * ``ephemeral``  — ``dispatch_card`` first calls
-  :func:`performer_lifecycle.start_ephemeral` + ``wait_ready`` to acquire a
+  the injected :class:`PerformerRuntime` (Docker by default, Kubernetes when
+  configured) + the shared ``performer_lifecycle.wait_ready`` to acquire a
   one-shot container, then dispatches. The container_id is recorded so
-  :meth:`check_status` can call :func:`performer_lifecycle.stop` when the
+  :meth:`check_status` can call the runtime's ``stop`` when the
   job reaches a terminal state, regardless of success/failure (FR-003).
 """
 
@@ -31,6 +32,7 @@ import structlog
 
 from coordinare.graph.nodes.handle_system_error import classify_upstream
 from coordinare.services import performer_lifecycle
+from coordinare.services.docker_runtime import DockerRuntime
 from coordinare.transport.base import TransportError, TransportTimeoutError
 from coordinare.transport.http_transport import (
     PerformerAuthError,
@@ -45,6 +47,7 @@ if TYPE_CHECKING:
         PerformerEndpointConfig,
         VolumeMount,
     )
+    from coordinare.services.performer_runtime import PerformerRuntime
     from coordinare.workspace import WorkspaceInfo
 
 logger = structlog.get_logger(__name__)
@@ -119,9 +122,14 @@ class HTTPPerformerService:
         config: PerformerEndpointConfig,
         *,
         client: PerformerHTTPClient | None = None,
+        runtime: PerformerRuntime | None = None,
     ) -> None:
         self._config = config
         self._injected_client = client
+        # Spec 146: which runtime starts performers. Defaults to Docker so every
+        # existing deployment and test behaves exactly as before; the Kubernetes
+        # runtime is opted into via agent_transport config.
+        self._runtime: PerformerRuntime = runtime or DockerRuntime()
         # Persistent: endpoint is known at construction time.
         # Ephemeral:  per-job state tracked in _active_jobs keyed by job_id.
         self._persistent_endpoint: str | None = (
@@ -195,9 +203,7 @@ class HTTPPerformerService:
         # Persistent: use shared client.
         if self._persistent_client is None:
             if self._persistent_endpoint is None:
-                raise TransportError(
-                    f"performer {self._config.id} has no endpoint resolved yet"
-                )
+                raise TransportError(f"performer {self._config.id} has no endpoint resolved yet")
             self._persistent_client = PerformerHTTPClient(
                 self._persistent_endpoint,
                 auth_token=self._auth_token(),
@@ -230,7 +236,9 @@ class HTTPPerformerService:
             client = self._ensure_client()
             status = await client.get_status()
         except PerformerAuthError as exc:
-            logger.warning("http_performer.auth_failed", performer_id=self._config.id, error=str(exc))
+            logger.warning(
+                "http_performer.auth_failed", performer_id=self._config.id, error=str(exc)
+            )
             return {"status": "error", "reason": str(exc)}
         except PerformerUnreachableError as exc:
             logger.warning(
@@ -251,7 +259,11 @@ class HTTPPerformerService:
             return {"status": "unknown", "availability": availability, "capabilities": caps}
         if availability == "draining":
             return {"status": "draining", "availability": availability, "capabilities": caps}
-        return {"status": "unknown", "availability": availability, "capabilities": caps}  # pragma: no cover — PerformerStatus.availability is Literal["starting","idle","busy","draining"], all handled above
+        return {
+            "status": "unknown",
+            "availability": availability,
+            "capabilities": caps,
+        }  # pragma: no cover — PerformerStatus.availability is Literal["starting","idle","busy","draining"], all handled above
 
     async def dispatch_card(
         self,
@@ -292,6 +304,7 @@ class HTTPPerformerService:
             # 076 (T015 + FR-009): build the 5 coordinare.* labels the
             # reconciliation pass requires on every performer container.
             from coordinare.daemon import get_daemon_started_at
+
             extra_labels: dict[str, str] = {
                 "coordinare.session_id": session_id,
                 "coordinare.daemon_started_at": get_daemon_started_at(),
@@ -313,7 +326,7 @@ class HTTPPerformerService:
                 extra_labels["coordinare.performer_stage"] = stage_label
 
             try:
-                started = await performer_lifecycle.start_ephemeral(
+                started = await self._runtime.start_ephemeral(
                     effective_config, extra_labels=extra_labels
                 )
             except performer_lifecycle.LifecycleError as exc:
@@ -330,7 +343,13 @@ class HTTPPerformerService:
                 auth_token=self._auth_token(),
             )
             ephemeral_job = _EphemeralJob(
-                container_id=started.container_id,
+                # StartedPerformer.handle is the opaque runtime handle: a
+                # container id under Docker, a Pod name under Kubernetes. The
+                # internal field keeps its name for now so Phase 1 changes
+                # nothing observable — line ~422 surfaces "container_id" in a
+                # status payload. Renaming it belongs with the Kubernetes
+                # runtime, where it stops being a container id in fact.
+                container_id=started.handle,
                 endpoint=started.endpoint,
                 client=ep_client,
             )
@@ -434,8 +453,12 @@ class HTTPPerformerService:
         # _active_jobs); the HTTP URLs need the job-runner's job_id, which
         # we stored on _EphemeralJob.  For persistent mode the two are the
         # same value (no _EphemeralJob); preserve that fallback.
-        ephemeral_job = self._active_jobs.get(session_id) if self._config.mode == "ephemeral" else None
-        url_job_id = ephemeral_job.job_id if (ephemeral_job and ephemeral_job.job_id) else session_id
+        ephemeral_job = (
+            self._active_jobs.get(session_id) if self._config.mode == "ephemeral" else None
+        )
+        url_job_id = (
+            ephemeral_job.job_id if (ephemeral_job and ephemeral_job.job_id) else session_id
+        )
         # Forward refreshed secrets (e.g. github_token from monitor_performer)
         # to the running job before polling status. Best-effort: a PATCH
         # failure is logged but must not block the status poll, because the
@@ -512,7 +535,11 @@ class HTTPPerformerService:
         is_terminal = status.state in _TERMINAL_JOB_STATES
         if is_terminal:
             error_reason: str | None = None
-            if status.state in ("failed", "error") and status.result is not None and status.result.summary:
+            if (
+                status.state in ("failed", "error")
+                and status.result is not None
+                and status.result.summary
+            ):
                 try:
                     parsed_summary = json.loads(status.result.summary)
                     if isinstance(parsed_summary, dict):
@@ -522,16 +549,13 @@ class HTTPPerformerService:
                         # other diagnostic fields before degrading to the status
                         # token (and finally the raw summary) so a terminal failure
                         # never logs error_reason=None and discards every signal.
-                        error_reason = (
-                            parsed_summary.get("reason")
-                            or parsed_summary.get("inference_skipped_reason")
+                        error_reason = parsed_summary.get("reason") or parsed_summary.get(
+                            "inference_skipped_reason"
                         )
                         if not error_reason:
                             status_token = parsed_summary.get("status")
                             error_reason = (
-                                f"status={status_token}"
-                                if status_token
-                                else status.result.summary
+                                f"status={status_token}" if status_token else status.result.summary
                             )
                 except (json.JSONDecodeError, TypeError):
                     error_reason = status.result.summary
@@ -578,7 +602,11 @@ class HTTPPerformerService:
             return {"status": "error", "reason": status.result.summary, "state": status.state}
 
         if not is_terminal:
-            result: dict[str, Any] = {"status": "working", "job_id": session_id, "job_state": status.state}
+            result: dict[str, Any] = {
+                "status": "working",
+                "job_id": session_id,
+                "job_state": status.state,
+            }
             if status.events:
                 result["events"] = status.events
             if status.metrics is not None:
@@ -586,7 +614,12 @@ class HTTPPerformerService:
             return result
 
         # Terminal but no result (cancelled or internal failure).
-        return {"status": "error", "reason": f"job ended in state '{status.state}' with no result", "job_id": session_id, "state": status.state}
+        return {
+            "status": "error",
+            "reason": f"job ended in state '{status.state}' with no result",
+            "job_id": session_id,
+            "state": status.state,
+        }
 
     def _log_upstream_http_error(self, response: dict[str, Any]) -> None:
         """Emit verbatim upstream-body log line when the performer reports a
@@ -677,17 +710,19 @@ class HTTPPerformerService:
         return list(self._log_buffer)
 
     async def _poll_container_logs(self, container_id: str, job_id: str) -> None:
-        """Background task: poll `docker logs` every 5 seconds until the job ends."""
+        """Background task: poll the runtime's logs every 5 seconds until the job ends.
+
+        Goes through ``PerformerRuntime.tail_logs`` rather than ``docker logs``
+        directly. The handle is a container id under Docker and a Pod name under
+        Kubernetes, so the direct call failed on every poll under Kubernetes while
+        the buffer simply stayed empty — a silent hole in the dashboard's live log
+        view rather than anything that announced itself.
+        """
         while job_id in self._active_jobs:
             try:
-                proc = await asyncio.create_subprocess_exec(
-                    "docker", "logs", "--tail", "200", container_id,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.STDOUT,
-                )
-                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10.0)
-                lines = stdout.decode(errors="replace").splitlines()
-                self._log_buffer = lines[-200:]
+                lines = await self._runtime.tail_logs(container_id, lines=200)
+                if lines:
+                    self._log_buffer = lines
             except Exception as exc:  # pragma: no cover — best-effort
                 logger.debug(
                     "http_performer.log_poll_failed",
@@ -698,13 +733,9 @@ class HTTPPerformerService:
             await asyncio.sleep(5.0)
         # One final capture after job completes
         try:
-            proc = await asyncio.create_subprocess_exec(
-                "docker", "logs", "--tail", "200", container_id,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-            )
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10.0)
-            self._log_buffer = stdout.decode(errors="replace").splitlines()[-200:]
+            lines = await self._runtime.tail_logs(container_id, lines=200)
+            if lines:
+                self._log_buffer = lines
         except Exception:  # pragma: no cover
             pass
 
@@ -719,7 +750,7 @@ class HTTPPerformerService:
                 host_log_dir = vol.host_path
                 break
         try:
-            await performer_lifecycle.stop(
+            await self._runtime.stop(
                 job.container_id,
                 host_log_dir=host_log_dir,
                 performer_id=self._config.id,
@@ -877,9 +908,7 @@ class HTTPPerformerService:
         )
 
     @staticmethod
-    def _render_service_install_block(
-        declared_services: list[Any], cache_mount_path: str
-    ) -> str:
+    def _render_service_install_block(declared_services: list[Any], cache_mount_path: str) -> str:
         """Render the SYSTEM SERVICES install block for declared stateful services (091).
 
         A declared service with a coordinare-known kind (postgres, redis) contributes
@@ -923,17 +952,17 @@ class HTTPPerformerService:
             "downloaded even if an earlier step already installed those libs into THIS "
             "ephemeral container (a skipped lib never reaches the persistent cache and the "
             "server then can't load it at QA time). Run: `cd "
-            f"\"{cache_mount_path}/debs\" && apt-get update && "
-            "_stat=/opt/coordinare-base-dpkg-status; [ -f \"$_stat\" ] || "
+            f'"{cache_mount_path}/debs" && apt-get update && '
+            '_stat=/opt/coordinare-base-dpkg-status; [ -f "$_stat" ] || '
             "_stat=/var/lib/dpkg/status; apt-get install -y --download-only "
-            "-o Dir::State::status=\"$_stat\" "
-            f"-o Dir::Cache::archives=\"{cache_mount_path}/debs/\" {pkgs}` "
+            '-o Dir::State::status="$_stat" '
+            f'-o Dir::Cache::archives="{cache_mount_path}/debs/" {pkgs}` '
             "(--download-only resolves + downloads the full install set without installing "
             "into the live system; resolving against the base snapshot keeps it targeted — "
             "base OS libs already shipped in the image are not re-fetched), then extract "
             "every fetched .deb into a "
-            f"concrete cache subdir (`for d in \"{cache_mount_path}/debs/\"*.deb; do dpkg-deb "
-            f"-x \"$d\" \"{cache_mount_path}/services-extract\"; done` — dpkg-deb -x recreates "
+            f'concrete cache subdir (`for d in "{cache_mount_path}/debs/"*.deb; do dpkg-deb '
+            f'-x "$d" "{cache_mount_path}/services-extract"; done` — dpkg-deb -x recreates '
             f"each deb's absolute layout, so the server binaries land in "
             f"{cache_mount_path}/services-extract/usr/bin) so the daemon and its tooling "
             "land on PATH via the auto-discovering activate.sh (it adds every */usr/bin "
@@ -944,9 +973,7 @@ class HTTPPerformerService:
             f"{pkgs}.\n\n"
         )
 
-    def _build_env_bootstrap_payload(
-        self, card_context: dict[str, Any]
-    ) -> JobInitPayload:
+    def _build_env_bootstrap_payload(self, card_context: dict[str, Any]) -> JobInitPayload:
         """Synthesize a JobInitPayload for an env_bootstrap dispatch.
 
         BootstrapJobPayload is coordinare-internal and does not carry the
@@ -962,9 +989,7 @@ class HTTPPerformerService:
         symphony_org = str(card_context.get("symphony_org") or "")
         symphony_repo = str(card_context.get("symphony_repo") or "")
         if not symphony_org or not symphony_repo:
-            raise ValueError(
-                "env_bootstrap card_context missing symphony_org or symphony_repo"
-            )
+            raise ValueError("env_bootstrap card_context missing symphony_org or symphony_repo")
 
         repo_url = f"https://github.com/{symphony_org}/{symphony_repo}.git"
         # Synthetic branch — bootstrap never pushes/PRs. clone_repository fetches
@@ -976,9 +1001,7 @@ class HTTPPerformerService:
 
         cache_mount_path = str(card_context.get("cache_mount_path") or "")
         env_spec_files = list(card_context.get("env_spec_files") or [])
-        env_spec_contents: dict[str, str] = dict(
-            card_context.get("env_spec_contents") or {}
-        )
+        env_spec_contents: dict[str, str] = dict(card_context.get("env_spec_contents") or {})
         # 077: coordinare-derived authoritative manifest artifacts.
         dependency_checklist = str(card_context.get("dependency_checklist") or "").strip()
         verify_provided = bool(card_context.get("verify_provided"))
@@ -1034,8 +1057,7 @@ class HTTPPerformerService:
                     secrets[key] = val
 
         spec_block = "\n\n".join(
-            f"=== {path} ===\n{content}"
-            for path, content in env_spec_contents.items()
+            f"=== {path} ===\n{content}" for path, content in env_spec_contents.items()
         )
         # 077: feedback-injection — if the previous bootstrap failed verification,
         # put the exact failure FIRST so the agent fixes those specific checks
@@ -1352,9 +1374,7 @@ class HTTPPerformerService:
         # 092: also drop test_env_vars — secret-like values ride the redacted
         # `secrets` channel, never the unredacted metadata.
         meta_src = {
-            k: v
-            for k, v in card_context.items()
-            if k not in ("_github_token", "test_env_vars")
+            k: v for k, v in card_context.items() if k not in ("_github_token", "test_env_vars")
         }
         # Score (performer-side dispatch payload model) requires a `title`
         # field; BootstrapJobPayload doesn't carry one, so synthesize it from

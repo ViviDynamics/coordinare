@@ -825,10 +825,39 @@ LICENSE_ALIASES = {
     "apache software license": "Apache-2.0",
     "apache license 2.0": "Apache-2.0",
     "apache license, version 2.0": "Apache-2.0",
+    "apache license version 2.0": "Apache-2.0",
     "apache 2.0": "Apache-2.0",
     "mozilla public license 2.0 (mpl 2.0)": "MPL-2.0",
     "python software foundation license": "PSF-2.0",
     "isc license (iscl)": "ISC",
+}
+
+#: Free-text ``License`` values that describe the *arrangement* rather than name
+#: a licence. They are short enough to pass the length filter but carry no
+#: identifier, so trusting them would classify a package on a string that says
+#: nothing. A package whose metadata lands here must be resolved by hand into
+#: ``VERIFIED_LICENSES`` below.
+UNINFORMATIVE_LICENSE_VALUES = frozenset({"dual license", "see license", "see license file"})
+
+#: Packages whose published metadata cannot classify them, resolved by reading
+#: the licence text the package actually ships and recording the result here.
+#:
+#: **Why this is a hand-verified table and not an inference.** The tempting rule
+#: is "multiple ``License ::`` classifiers means dual-licensed, so OR them
+#: together", and ``python-dateutil`` would come out right. ``orjson`` proves the
+#: rule unsound: it publishes ``Apache``, ``MIT`` *and* ``MPL-2.0`` classifiers,
+#: yet its real expression is ``MPL-2.0 AND (Apache-2.0 OR MIT)`` — Tier 2. OR-ing
+#: its classifiers would silently promote it to Tier 1 and drop the MPL
+#: obligation. Since ``OR`` resolves to the most permissive operand, a wrong
+#: guess here fails open, which is the direction that must never be guessed.
+#:
+#: Each entry records how it was verified, so the claim can be re-checked rather
+#: than taken on trust.
+VERIFIED_LICENSES = {
+    # Metadata says only "Dual License". Its LICENSE file carries the Apache-2.0
+    # text and the 3-clause BSD text in full, and its classifiers name both.
+    # Verified 2026-08-28 against python_dateutil-2.9.0.post0.dist-info/LICENSE.
+    "python-dateutil": "Apache-2.0 OR BSD-3-Clause",
 }
 
 #: Bare family names that appear in real metadata without a variant. Every
@@ -895,10 +924,18 @@ def _resolve_license(dist_name: str) -> tuple[str, str]:
     """``(license_id, source_field)`` for an installed distribution.
 
     Precedence follows how reliable each field actually is:
+    A hand-verified entry is a **fallback, never an override**. Consulting it
+    first would be fail-open: a package that later publishes a real
+    ``License-Expression`` — including a rejected one after a relicensing — would
+    have it masked by a note somebody wrote once, and the gate would keep passing
+    a dependency it should now reject. So the authoritative fields win, and the
+    table only answers where they say nothing usable.
+
     ``License-Expression`` (PEP 639 SPDX) beats a short free-text ``License``,
     which beats a ``License ::`` classifier. Long free-text values are rejected
     because in practice they are the entire licence text pasted into a header,
-    not an identifier.
+    not an identifier; short ones that name an arrangement rather than a licence
+    ("Dual License") are refused for the same reason and fall through.
     """
     from importlib import metadata
 
@@ -909,8 +946,16 @@ def _resolve_license(dist_name: str) -> tuple[str, str]:
         return expression, "License-Expression"
 
     free_text = (meta.get("License") or "").strip()
-    if free_text and len(free_text) <= 40 and "\n" not in free_text:
+    if (
+        free_text
+        and len(free_text) <= 40
+        and "\n" not in free_text
+        and free_text.lower() not in UNINFORMATIVE_LICENSE_VALUES
+    ):
         return free_text, "License"
+
+    if dist_name in VERIFIED_LICENSES:
+        return VERIFIED_LICENSES[dist_name], "verified"
 
     for classifier in meta.get_all("Classifier") or []:
         if classifier.startswith("License ::"):
@@ -1132,6 +1177,63 @@ def test_tier_classification_handles_real_world_expressions() -> None:
 
 AUDIT = "specs/142-license-and-legal-posture/dependency-license-audit.md"
 SCRUB = "specs/142-license-and-legal-posture/pre-public-scrub.md"
+
+
+def test_uninformative_license_metadata_is_not_trusted() -> None:
+    """A ``License`` value naming an arrangement is not an identifier.
+
+    ``python-dateutil`` publishes ``License: Dual License``, which is short
+    enough to pass the length filter and says nothing. Classifying on it would
+    reject a permissively-licensed package; classifying by OR-ing its
+    classifiers would be a guess that ``orjson`` disproves. It is resolved by
+    hand instead, and this pins that.
+    """
+    assert "dual license" in UNINFORMATIVE_LICENSE_VALUES
+    license_id, source = _resolve_license("python-dateutil")
+    assert source == "verified", "an uninformative License value must not be trusted"
+    assert _tier_of(license_id) == "permitted"
+
+
+def test_verified_licenses_is_a_fallback_and_never_overrides_real_metadata() -> None:
+    """The hand table must not mask what a package actually publishes.
+
+    Consulting it first would be fail-open in the one direction that matters: a
+    package that relicenses and publishes a rejected ``License-Expression`` would
+    keep passing the gate on the strength of a note written before the change.
+
+    The second assertion keeps the table from outliving its reason to exist. An
+    entry is only justified while the package's own metadata still cannot
+    classify it; once upstream publishes something usable, the entry is stale and
+    must go, or it becomes an unreviewed override in waiting.
+    """
+    from importlib import metadata
+
+    for dist_name, recorded in VERIFIED_LICENSES.items():
+        meta = metadata.metadata(dist_name)
+        expression = (meta.get("License-Expression") or "").strip()
+        assert not expression, (
+            f"{dist_name} now publishes License-Expression {expression!r}; drop its "
+            "VERIFIED_LICENSES entry so the authoritative field is what the gate reads"
+        )
+        free_text = (meta.get("License") or "").strip()
+        assert free_text.lower() in UNINFORMATIVE_LICENSE_VALUES or len(free_text) > 40, (
+            f"{dist_name} publishes a usable License value {free_text!r}; its "
+            "VERIFIED_LICENSES entry is stale and would now be masking real metadata"
+        )
+        assert _tier_of(recorded) != "rejected"
+
+
+def test_multiple_license_classifiers_are_never_or_joined() -> None:
+    """The unsound shortcut this table exists to avoid, pinned by its counterexample.
+
+    ``orjson`` carries Apache, MIT *and* MPL-2.0 classifiers while its true
+    expression is ``MPL-2.0 AND (Apache-2.0 OR MIT)``. Because ``OR`` resolves to
+    the most permissive operand, inferring an expression from classifiers fails
+    *open* — it would drop orjson's MPL obligation and promote it out of Tier 2.
+    """
+    assert _tier_of("MPL-2.0 AND (Apache-2.0 OR MIT)") == "exception"
+    assert _tier_of("Apache-2.0 OR MIT OR MPL-2.0") == "permitted"
+    assert _resolve_license("orjson")[1] != "Classifier"
 
 
 def test_audit_is_dated_and_covers_the_whole_closure() -> None:

@@ -855,6 +855,14 @@ class ProjectConfiguration(BaseSettings):
     # which is a moment to think about it. X-Forwarded-Host is deliberately NOT
     # honoured (attacker-controlled). See spec 144 research D3.
     trusted_dashboard_hosts: list[str] = Field(default_factory=list)
+    # Spec 146 (#200): Kubernetes transport. Namespace-scoped by design — the
+    # daemon never needs cluster-wide permissions.
+    kubernetes_namespace: str = "default"
+    # Optional on purpose: a cluster with no default StorageClass must still run
+    # performers, with a cold cache, rather than failing to schedule them. That
+    # describes most minikube and microk8s installs.
+    kubernetes_cache_claim: str | None = None
+    kubernetes_image_pull_secrets: list[str] = Field(default_factory=list)
     output_mode: str = Field(default="human", pattern="^(human|structured)$")
     log_level: str = Field(default="info", pattern="^(debug|info|warning|error)$")
     heartbeat_interval_seconds: int = Field(default=30, ge=5, le=300)
