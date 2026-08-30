@@ -121,30 +121,49 @@ class TestClassifyIssueCommentAI:
 
 
 class TestFetchNewIssueComments:
-    @pytest.mark.asyncio
-    async def test_fetch_with_zero_issue_number_returns_empty(self) -> None:
-        class FakeGithubService:
-            async def get_issue_comments(self, issue_number, since_id=None):
-                raise AssertionError("should not call github")
+    """153: comments are fetched from the board, addressed by card id.
 
-        service = FakeGithubService()
-        result = await fetch_new_issue_comments(0, None, service, "card-1")
-        assert result == []
+    These fakes are boards, not GitHub services. That is the change: the function
+    no longer knows what a GitHub issue number is, so a board that has none can
+    still be read.
+    """
 
     @pytest.mark.asyncio
-    async def test_fetch_with_none_issue_number_returns_empty(self) -> None:
-        class FakeGithubService:
-            async def get_issue_comments(self, issue_number, since_id=None):
-                raise AssertionError("should not call github")
+    async def test_fetch_with_no_card_id_returns_empty(self) -> None:
+        class FakeBoard:
+            async def get_card_comments(self, card_id, since_id=None):
+                raise AssertionError("should not reach the board without a card id")
 
-        service = FakeGithubService()
-        result = await fetch_new_issue_comments(None, None, service, "card-1")
-        assert result == []
+        assert await fetch_new_issue_comments("", None, FakeBoard()) == []
+
+    @pytest.mark.asyncio
+    async def test_fetch_with_no_board_returns_empty(self) -> None:
+        """A state with no board at all skips, rather than failing the cycle."""
+        assert await fetch_new_issue_comments("card-1", None, None) == []
+
+    @pytest.mark.asyncio
+    async def test_a_card_with_no_issue_number_is_still_read(self) -> None:
+        """The old gate keyed on the issue number; a Jira card would have routed nothing."""
+
+        class FakeBoard:
+            def __init__(self):
+                self.asked_for = None
+
+            async def get_card_comments(self, card_id, since_id=None):
+                self.asked_for = card_id
+                return [{"id": "7", "author": "a", "body": "b", "created_at": "c"}]
+
+        board = FakeBoard()
+        result = await fetch_new_issue_comments("PROJ-123", None, board)
+
+        assert board.asked_for == "PROJ-123"
+        assert len(result) == 1
+        assert result[0].issue_number == 0, "no number is known, and none is invented"
 
     @pytest.mark.asyncio
     async def test_fetch_new_comments_parses_response(self) -> None:
-        class FakeGithubService:
-            async def get_issue_comments(self, issue_number, since_id=None):
+        class FakeBoard:
+            async def get_card_comments(self, card_id, since_id=None):
                 return [
                     {
                         "id": "12345",
@@ -160,8 +179,7 @@ class TestFetchNewIssueComments:
                     },
                 ]
 
-        service = FakeGithubService()
-        result = await fetch_new_issue_comments(42, 10000, service, "card-1")
+        result = await fetch_new_issue_comments("card-1", 10000, FakeBoard(), 42)
 
         assert len(result) == 2
         assert isinstance(result[0], IssueCommentEvent)
@@ -176,8 +194,8 @@ class TestFetchNewIssueComments:
 
     @pytest.mark.asyncio
     async def test_fetch_handles_missing_fields(self) -> None:
-        class FakeGithubService:
-            async def get_issue_comments(self, issue_number, since_id=None):
+        class FakeBoard:
+            async def get_card_comments(self, card_id, since_id=None):
                 return [
                     {
                         "id": "99999",
@@ -185,8 +203,7 @@ class TestFetchNewIssueComments:
                     }
                 ]
 
-        service = FakeGithubService()
-        result = await fetch_new_issue_comments(99, None, service, "card-x")
+        result = await fetch_new_issue_comments("card-x", None, FakeBoard(), 99)
 
         assert len(result) == 1
         assert result[0].comment_id == 99999
@@ -196,21 +213,19 @@ class TestFetchNewIssueComments:
 
     @pytest.mark.asyncio
     async def test_fetch_exception_returns_empty(self) -> None:
-        class FakeGithubService:
-            async def get_issue_comments(self, issue_number, since_id=None):
-                raise ValueError("GitHub API error")
+        class FakeBoard:
+            async def get_card_comments(self, card_id, since_id=None):
+                raise ValueError("board unreachable")
 
-        service = FakeGithubService()
-        result = await fetch_new_issue_comments(42, 100, service, "card-1")
-        assert result == []
+        assert await fetch_new_issue_comments("card-1", 100, FakeBoard(), 42) == []
 
     @pytest.mark.asyncio
     async def test_fetch_with_since_id(self) -> None:
-        class FakeGithubService:
+        class FakeBoard:
             def __init__(self):
                 self.last_since_id = None
 
-            async def get_issue_comments(self, issue_number, since_id=None):
+            async def get_card_comments(self, card_id, since_id=None):
                 self.last_since_id = since_id
                 return [
                     {
@@ -221,8 +236,8 @@ class TestFetchNewIssueComments:
                     }
                 ]
 
-        service = FakeGithubService()
-        result = await fetch_new_issue_comments(15, 4999, service, "card-2")
+        board = FakeBoard()
+        result = await fetch_new_issue_comments("card-2", 4999, board, 15)
 
         assert len(result) == 1
-        assert service.last_since_id == 4999
+        assert board.last_since_id == 4999, "the watermark must survive the move to the board"

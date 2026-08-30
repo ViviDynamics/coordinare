@@ -4,6 +4,7 @@ import pytest
 
 from coordinare.graph.nodes.route_issue_comments import route_issue_comments
 from coordinare.graph.state import initial_state
+from coordinare.services.card_identity import CardIdentityMap
 from coordinare.services.issue_comment_service import (
     CommentClassification,
     classify_issue_comment,
@@ -14,11 +15,26 @@ from coordinare.services.issue_comment_service import (
 # ---------------------------------------------------------------------------
 
 
-class _GitHub:
+class _GitHub(CardIdentityMap):
+    """Stands in for the GitHub service, translating card ids as the real one does.
+
+    153: the node now reads comments through the board, and the GitHub board
+    provider resolves a card id to an issue number. Inheriting the production
+    mixin rather than stubbing the lookup means these tests exercise the real
+    translation -- the same reason the bench's fake inherits it.
+    """
+
     def __init__(self, comments: list[dict] | None = None):
         self._comments = comments or []
+        self.asked_for: list[int] = []
+        # What a board poll would have supplied for the card these tests use.
+        self._remember_issue_numbers({"ITEM_1": 42})
+
+    async def get_issue_details(self, card_id: str):
+        return {}
 
     async def get_issue_comments(self, issue_number: int, since_id: int | None = None):
+        self.asked_for.append(issue_number)
         return [c for c in self._comments if since_id is None or c["id"] > since_id]
 
 
@@ -61,11 +77,19 @@ async def test_no_card_returns_state_unchanged():
 
 
 @pytest.mark.asyncio
-async def test_no_issue_number_returns_unchanged():
+async def test_a_card_with_no_issue_number_is_still_read():
+    """153: this used to be a reason to skip, and that was the seam's last leak.
+
+    The node gated on the card's GitHub issue number, so a board whose cards have
+    none -- every board that is not GitHub -- routed nothing every cycle, however
+    correct the provider beneath it was. The card id is the gate now.
+    """
     state = initial_state()
-    state["github_service"] = _GitHub()
+    github = _GitHub()
+    state["github_service"] = github
     state["current_card"] = {"id": "ITEM_1", "issue_number": 0}
     result = await route_issue_comments(state)
+    assert github.asked_for == [42], "the card was skipped instead of resolved"
     assert result.get("card_clarifications") in (None, [])
 
 

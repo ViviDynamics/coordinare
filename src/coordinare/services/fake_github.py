@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import structlog
 
+from coordinare.services.card_identity import CardIdentityMap
 from coordinare.services.pr_checks_service import CheckEntry, CheckRollup
 
 if TYPE_CHECKING:
@@ -91,7 +92,7 @@ class _FakePrChecks:
         return None
 
 
-class FakeGitHubService:
+class FakeGitHubService(CardIdentityMap):
     """In-process GitHub API stand-in backed by a local bare git repo."""
 
     def __init__(
@@ -289,6 +290,10 @@ class FakeGitHubService:
             pr_item = card.get("pr_item_id")
             if pr_item and pr_item in self._prs:
                 pr_urls[item_id] = self._prs[pr_item]["url"]
+        # 153: mirror production, so the bench translates card ids the same way.
+        # Without this the bench routed no comments while every unit test passed.
+        self._remember_issue_numbers(issue_numbers)
+
         return {
             "snapshot": snapshot,
             "titles": titles,

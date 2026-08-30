@@ -29,15 +29,14 @@ equivalent is a different feature rather than a different implementation. Puttin
 them here would mean every future provider implementing something meaningless to
 it.
 
-Reading a card's comments is not here either, and that one is a genuine gap
-rather than a category error. Coordinare addresses comment reads by GitHub *issue
-number* (``get_issue_comments(issue_number)``) while it addresses every other
-card operation by node id. A protocol method taking ``card_id`` would therefore
-be a lie on GitHub unless the adapter resolved node id to number, which costs an
-API call per cycle -- a behaviour change, and this extraction's whole warrant is
-that it makes none. So comment routing stays on the code host for now, and a
-non-GitHub board cannot yet route issue comments. Tracked separately; the fix is
-to give cards a single id model, not to widen this protocol.
+Reading a card's comments *is* here, but it was not always, and the reason is
+worth keeping. GitHub calls one card two things: a node id everywhere, and an
+issue number for the comments API. Spec 149 removed the operation rather than
+ship a ``card_id`` parameter that was false on the only implementation. Spec 153
+(#232) closed it by noticing that ``poll_board`` already fetches the pairing, so
+the adapter can translate for nothing -- which is why the translation lives in
+the adapter and the map lives on the service, and why no caller above this file
+has ever heard of an issue number.
 """
 
 from __future__ import annotations
@@ -121,6 +120,25 @@ class BoardProvider(Protocol):
         """
         ...
 
+    async def get_card_comments(
+        self, card_id: str, since_id: int | None = None
+    ) -> list[dict[str, Any]]:
+        """Comments on the card, oldest first, optionally only those after *since_id*.
+
+        The watermark keeps coordinare from reprocessing feedback it has already
+        acted on.
+
+        Each comment is ``{"id", "author", "body", "created_at"}`` -- four plain
+        fields, not a host's payload. That is already the shape coordinare works
+        in, so a provider normalises to it rather than coordinare learning a new
+        one per board.
+
+        Returns ``[]`` rather than raising when the card cannot be found or the
+        read fails. Comment routing is how a human redirects work in flight; a
+        board hiccup should delay that, not stall the cycle.
+        """
+        ...
+
 
 class GitHubProjectsBoardProvider:
     """Today's behaviour, reached through the protocol.
@@ -169,6 +187,21 @@ class GitHubProjectsBoardProvider:
     async def add_card_comment(self, card_id: str, body: str) -> dict[str, Any]:
         posted: dict[str, Any] = await self._github.add_comment(card_id, body)
         return posted
+
+    async def get_card_comments(
+        self, card_id: str, since_id: int | None = None
+    ) -> list[dict[str, Any]]:
+        # The one place that knows GitHub calls a card two things. Callers pass the
+        # same card id they use for every other operation; the translation happens
+        # here and is free for any card the last poll saw.
+        number = await self._github.issue_number_for_card(card_id)
+        if number is None:
+            logger.warning("board.card_not_resolvable", card_id=card_id)
+            return []
+        comments: list[dict[str, Any]] = await self._github.get_issue_comments(
+            number, since_id=since_id
+        )
+        return comments
 
 
 def board_of(state: Any, service: Any = None) -> BoardProvider | None:

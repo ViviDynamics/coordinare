@@ -15,6 +15,8 @@ from gql import Client, gql
 from gql.transport.aiohttp import AIOHTTPTransport
 from gql.transport.exceptions import TransportQueryError, TransportServerError
 
+from coordinare.services.card_identity import CardIdentityMap
+
 logger = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -483,7 +485,7 @@ def _column_candidates(status: str) -> list[str]:
     return [label for label, mapped in BOARD_COLUMN_TO_STATUS.items() if mapped == status]
 
 
-class GitHubService:
+class GitHubService(CardIdentityMap):
     """Async GitHub GraphQL service with field and option caching."""
 
     _DEFAULT_RETRY_KWARGS: ClassVar[dict[str, Any]] = {
@@ -942,6 +944,13 @@ class GitHubService:
 
             if status_name:  # skip items with unknown/unmapped status
                 snapshot.setdefault(status_name, []).append(item_id)
+
+        # 153: GitHub is the only host that calls one card two things -- a node id
+        # everywhere else, an issue number for the comments REST API. Remembering the
+        # pairing we have just fetched lets the board provider honour a card-id
+        # contract without spending another request. Additive: the dict returned below
+        # is unchanged, so no caller sees a difference.
+        self._remember_issue_numbers(issue_numbers)
 
         return {
             "snapshot": snapshot,

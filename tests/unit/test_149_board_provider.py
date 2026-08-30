@@ -30,6 +30,9 @@ EXPECTED_SURFACE = {
     "move_card",
     "get_card",
     "add_card_comment",
+    # 153 (#232): restored once cards had one id model. Spec 149 removed it
+    # because GitHub needed an issue number here and a node id everywhere else.
+    "get_card_comments",
 }
 
 
@@ -240,6 +243,10 @@ class TestAStubProviderCanDriveCoordinare:
         async def add_card_comment(self, card_id, body):
             self.calls.append("add_card_comment")
             return {}
+
+        async def get_card_comments(self, card_id, since_id=None):
+            self.calls.append("get_card_comments")
+            return []
 
     class ExplodingGitHub:
         """Fails loudly if board work is routed to the code host.
@@ -489,26 +496,30 @@ class TestCancellationUsesTheConfiguredBoard:
         assert not github.move_card.called, "cancellation wrote to GitHub, not the board"
 
 
-class TestTheCommentGapIsStatedRatherThanHidden:
-    """SC-002 held honestly: the protocol dropped what nothing calls.
+class TestTheCommentGapWasClosedRatherThanForgotten:
+    """Spec 149 left this gap on purpose; spec 153 (#232) closed it.
 
-    ``get_card_comments`` was in the protocol and called from nowhere. Keeping it
-    would have advertised a capability the graph never exercises, and its GitHub
-    adapter had to take an issue *number* where every other method takes a card
-    id — a contract that was already false. Removing it leaves a real limitation,
-    so the limitation is written down.
+    The assertions are inverted rather than deleted. A deleted test would let the
+    protocol quietly regrow -- and the reason the operation was ever missing is
+    worth keeping asserted, because it is the reason the translation belongs in
+    the adapter rather than in a caller.
     """
 
-    def test_the_protocol_does_not_carry_an_uncalled_method(self) -> None:
-        assert "get_card_comments" not in EXPECTED_SURFACE
-        assert not hasattr(BoardProvider, "get_card_comments")
+    def test_the_protocol_carries_the_operation_again(self) -> None:
+        assert "get_card_comments" in EXPECTED_SURFACE
+        assert hasattr(BoardProvider, "get_card_comments")
 
-    def test_the_limitation_is_documented(self) -> None:
+    def test_it_takes_a_card_id_and_not_an_issue_number(self) -> None:
+        """The reason it was absent: the parameter would have been false on GitHub."""
+        params = set(inspect.signature(BoardProvider.get_card_comments).parameters)
+        assert "card_id" in params
+        assert "issue_number" not in params
+
+    def test_the_docstring_no_longer_claims_a_gap(self) -> None:
         import coordinare.services.board_provider as mod
 
-        doc = " ".join((mod.__doc__ or "").lower().split())
-        assert "comment" in doc, "the comment-routing gap must be stated, not silently left"
-        assert "issue number" in doc, (
-            "the gap is the id model — say so, so the next reader does not "
-            "'fix' it by widening the protocol"
+        doc = " ".join((mod.__doc__ or "").split())
+        assert "cannot yet route issue comments" not in doc, (
+            "the module still describes a limitation that no longer exists"
         )
+        assert "153" in doc, "the history of why it was absent should survive the fix"
