@@ -251,3 +251,119 @@ def run_checks(config: ProjectConfiguration) -> DoctorReport:
     report.results.extend(check_models(config))
     report.results.extend(check_dashboard_binding(config))
     return report
+
+
+def check_kubernetes_egress_enforcement(config: ProjectConfiguration) -> list[CheckResult]:
+    """Issue #225 — does this cluster actually enforce NetworkPolicy egress?
+
+    Opt-in (``--check egress``) rather than part of every run, because unlike the
+    other checks this one **creates Pods**. A preflight that quietly schedules
+    workloads every time somebody runs it would be a surprise.
+
+    It runs the experiment rather than inferring from the CNI's name. Which CNI is
+    installed is a poor proxy: support is frequently *partial*, and measured on
+    kind, kindnet enforces ingress but not egress. A guess in the optimistic
+    direction tells an operator they are contained when they are not.
+    """
+    import asyncio
+
+    if config.agent_transport != "kubernetes":
+        return [
+            CheckResult(
+                name="egress enforcement",
+                status=Status.SKIP,
+                detail=(
+                    f"agent_transport is '{config.agent_transport}'; egress on the "
+                    "Docker path is enforced in-container with iptables, not by a "
+                    "NetworkPolicy"
+                ),
+            )
+        ]
+
+    try:
+        from kubernetes import client
+        from kubernetes import config as kube_config
+
+        from coordinare.services.kubernetes_egress import probe_network_policy_enforcement
+    except ImportError as exc:  # pragma: no cover - defensive
+        return [
+            CheckResult(
+                name="egress enforcement",
+                status=Status.FAIL,
+                detail=f"the Kubernetes client is unavailable: {exc}",
+                fix="install coordinare with its Kubernetes extra",
+            )
+        ]
+
+    image = next(
+        (ep.image for ep in config.performer_endpoints if getattr(ep, "image", None)), None
+    )
+    if not image:
+        return [
+            CheckResult(
+                name="egress enforcement",
+                status=Status.SKIP,
+                detail="no performer endpoint declares an image, so there is nothing to probe with",
+            )
+        ]
+
+    try:
+        kube_config.load_incluster_config()
+    except Exception:
+        try:
+            kube_config.load_kube_config()
+        except Exception as exc:
+            return [
+                CheckResult(
+                    name="egress enforcement",
+                    status=Status.FAIL,
+                    detail=f"no usable Kubernetes credentials: {exc}",
+                    fix="set KUBECONFIG, or run this inside the cluster",
+                )
+            ]
+
+    verdict = asyncio.run(
+        probe_network_policy_enforcement(
+            core_v1=client.CoreV1Api(),
+            networking_v1=client.NetworkingV1Api(),
+            namespace=config.kubernetes_namespace,
+            image=image,
+        )
+    )
+
+    if not verdict.conclusive:
+        return [
+            CheckResult(
+                name="egress enforcement",
+                status=Status.WARN,
+                detail=verdict.detail,
+                fix=(
+                    "re-run when the cluster can schedule Pods in "
+                    f"'{config.kubernetes_namespace}'. Until this answers, do not assume "
+                    "performers are contained."
+                ),
+            )
+        ]
+
+    if verdict.enforced:
+        return [
+            CheckResult(
+                name="egress enforcement",
+                status=Status.OK,
+                detail=verdict.detail,
+            )
+        ]
+
+    return [
+        CheckResult(
+            name="egress enforcement",
+            status=Status.WARN,
+            detail=verdict.detail,
+            fix=(
+                "leave performers.egress.enabled off, and do not treat performers as "
+                "network-restricted here. To gain the restriction, move to a CNI that "
+                "enforces egress policy (Calico, Cilium) or place an egress proxy in "
+                "front of them."
+            ),
+        )
+    ]

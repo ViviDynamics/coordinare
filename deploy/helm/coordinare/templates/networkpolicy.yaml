@@ -1,0 +1,61 @@
+{{/*
+Egress restriction for performer Pods. OFF by default, and the default is the
+honest one.
+
+A NetworkPolicy is inert unless your CNI implements it, and support is often
+partial rather than absent: kind's kindnet enforces INGRESS but not EGRESS, which
+is measured, not assumed. Applying this on such a cluster gives you no protection
+while looking as though it does — which is why spec 146 shipped nothing here
+rather than shipping this quietly.
+
+So before you rely on it, prove your cluster enforces the direction you need:
+
+    coordinare doctor --check egress
+
+Selects performer Pods by the performer-id label, so it never applies to the
+controller. Selecting on managed-by alone would catch the controller too — the
+mistake the orphan sweep made before issue #224.
+
+Egress only. Coordinare reaches each performer's HTTP port, so a default-deny
+INGRESS rule would cut the connection the whole system depends on.
+
+CIDRs, not hostnames: `egress.to` accepts only ipBlock and selectors, so this
+cannot express "allow api.github.com". The Docker path's allowlist is
+hostname-based and these are NOT equivalent. For hostname-level control you need
+a CNI with FQDN policies, or an egress proxy.
+*/}}
+{{- if .Values.performers.egress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "coordinare.fullname" . }}-performer-egress
+  namespace: {{ .Values.performers.namespace | default .Release.Namespace }}
+  labels:
+    {{- include "coordinare.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/managed-by: coordinare
+    matchExpressions:
+      - key: coordinare.vividynamics.com/performer-id
+        operator: Exists
+  policyTypes:
+    - Egress
+  egress:
+    # DNS first. Without it nothing resolves, and every allowed destination fails
+    # in a way that looks like the allowlist is wrong rather than incomplete.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.performers.egress.dnsNamespace }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    {{- range .Values.performers.egress.allowedCIDRs }}
+    - to:
+        - ipBlock:
+            cidr: {{ . | quote }}
+    {{- end }}
+{{- end }}

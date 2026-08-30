@@ -103,7 +103,8 @@ jobs:
         # the Test job that lacks it, and would otherwise be verified nowhere.
         run: |
           uv run pytest tests/unit/test_147_helm_deployment.py \
-                        tests/unit/test_146_kubernetes_transport.py -v
+                        tests/unit/test_146_kubernetes_transport.py \
+                        tests/unit/test_225_kubernetes_egress.py -v
 
   daemon-image:
     name: Daemon Image

@@ -99,6 +99,32 @@ performers:
   # Registry credentials for the performer image, if your registry needs them.
   imagePullSecrets: []
 
+  # Restrict what performer Pods can reach. OFF by default, deliberately.
+  #
+  # PROVE YOUR CLUSTER ENFORCES THIS BEFORE RELYING ON IT:
+  #
+  #     coordinare doctor --check egress
+  #
+  # A NetworkPolicy does nothing unless the CNI implements it, and support is
+  # often PARTIAL rather than absent — kind's kindnet enforces ingress but not
+  # egress, which was measured rather than assumed. Turning this on where it is
+  # not enforced gives you no protection while looking as though it does, which
+  # is worse than leaving it off.
+  #
+  # CIDRs, not hostnames. A NetworkPolicy cannot express "allow api.github.com":
+  # `egress.to` accepts only ipBlock and selectors. The Docker path's allowlist IS
+  # hostname-based, so these are not equivalent and should not be treated as such.
+  # For hostname-level control you need a CNI with FQDN policies, or an egress
+  # proxy.
+  egress:
+    enabled: false
+    # Where kube-dns lives. DNS is always permitted; without it nothing resolves.
+    dnsNamespace: kube-system
+    # Everything else a performer may reach, as CIDRs.
+    allowedCIDRs: []
+    #  - 140.82.112.0/20   # github.com
+    #  - 10.0.0.0/8        # your internal model gateway
+
 # --- Dashboard --------------------------------------------------------------
 
 dashboard:

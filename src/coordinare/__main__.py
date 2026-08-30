@@ -120,9 +120,20 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Treat deprecated fields as errors (exit 1)",
     )
     # Subcommand: `coordinare dry-run --card <card_id> [--config PATH]`
-    subparsers.add_parser(
+    doctor_parser = subparsers.add_parser(
         "doctor",
         help="Preflight: check endpoints answer, models exist, and the dashboard bind is sane",
+    )
+    doctor_parser.add_argument(
+        "--check",
+        choices=["egress"],
+        action="append",
+        default=[],
+        help=(
+            "Run an additional check that is not part of the default run. "
+            "'egress' measures whether this cluster enforces NetworkPolicy egress, "
+            "and CREATES Pods to do it — which is why it is opt-in."
+        ),
     )
     dry_run_parser = subparsers.add_parser(
         "dry-run",
@@ -1316,7 +1327,7 @@ def _cmd_doctor(args) -> None:  # type: ignore[no-untyped-def]
     """Run preflight checks and exit non-zero if any failed (spec 145, FR-012)."""
     import sys
 
-    from coordinare.doctor import run_checks
+    from coordinare.doctor import check_kubernetes_egress_enforcement, run_checks
 
     result = validate_config(getattr(args, "config", None))
     if not result.passed:
@@ -1332,6 +1343,12 @@ def _cmd_doctor(args) -> None:  # type: ignore[no-untyped-def]
         sys.exit(1)
 
     report = run_checks(config)
+
+    # Opt-in extras. Kept out of the default run because this one creates Pods,
+    # and a preflight that quietly schedules workloads is a surprise.
+    if "egress" in (getattr(args, "check", None) or []):
+        report.results.extend(check_kubernetes_egress_enforcement(config))
+
     print(report.render())
     sys.exit(0 if report.ok else 1)
 

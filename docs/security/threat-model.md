@@ -59,11 +59,10 @@ Role bound to the same ServiceAccount under a different name keeps granting
 whatever it lists, and reading `rbac.yaml` will not show it — verify with
 `kubectl auth can-i --list`, which is what coordinare's own integration test does.
 Performer Pods set `automountServiceAccountToken: false`, so the AI-generated code
-inside them holds no credential for the cluster API. Egress allowlisting is **not available** on Kubernetes: the
+inside them holds no credential for the cluster API. Egress allowlisting is **opt-in and unverified by default** on Kubernetes (`performers.egress.enabled`, off unless you turn it on), and is CIDR-level rather than hostname-level: the
 Docker path's in-container iptables needs `NET_ADMIN`, and the native NetworkPolicy
 equivalent only applies if the cluster's CNI enforces it, which several common
-distributions do not by default. Nothing silently substitutes for it, so a
-performer on Kubernetes can reach whatever the cluster's network permits.
+distributions do not by default. Nothing silently substitutes for it. Support is often *partial*: measured on kind, kindnet enforces ingress but not egress, so a policy there is inert in the direction that matters. `coordinare doctor --check egress` measures enforcement rather than inferring it, and until it reports enforcement a performer on Kubernetes can reach whatever the cluster's network permits.
 
 ### Daemon to performer containers
 
