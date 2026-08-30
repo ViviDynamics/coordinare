@@ -372,6 +372,28 @@ def _is_scalar_field(field_info: FieldInfo) -> bool:
     return True
 
 
+#: What ``PUT /api/config/global`` will actually accept. Narrower than the section's
+#: scalar fields on purpose -- most of them are not safely editable while running.
+#:
+#: 155 (#202): lifted here from a closure inside ``create_dashboard_app`` so the config
+#: assistant validates proposals against the same set the endpoint enforces. When those
+#: two disagreed, a proposal could pass validation and then be refused at Apply, making
+#: the button the place errors surface.
+GLOBAL_EDITABLE_FIELDS: tuple[str, ...] = (
+    "poll_interval_seconds",
+    "heartbeat_interval_seconds",
+    "max_concurrent_cards",
+    "max_feedback_cycles",
+    "max_closed_pr_attempts_per_issue",
+    "log_level",
+    "output_mode",
+    "assignee_filter",
+    "human_reviewers",
+    "trusted_bot_reviewers",
+    "env_cache_root",
+)
+
+
 def scalar_field_names(section: str) -> frozenset[str]:
     """Return the editable scalar field names belonging to a scalar-group section.
 
