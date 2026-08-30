@@ -1031,6 +1031,7 @@ td { padding: 4px 8px; border-bottom: 1px solid var(--color-bg-elevated); }
     <a href="/symphonies" class="nav-link" onclick="navigate(event,'/symphonies')">Symphonies</a>
     <a href="/admin/config" class="nav-link" onclick="navigate(event,'/admin/config')">Global Config</a>
     <a href="/config" class="nav-link" onclick="navigate(event,'/config')">Config</a>
+    <a href="/assistant" id="nav-assistant" class="nav-link" style="display:none" onclick="navigate(event,'/assistant')">Assistant</a>
   </div>
   <span class="nav-spacer"></span>
   <span role="status" aria-live="polite"><span id="nav-sse-dot" class="nav-status-dot" title="SSE connected"></span><span id="project-link" style="font-size:12px;color:var(--color-text-muted)"></span></span>
@@ -1750,7 +1751,7 @@ var _performersDetailOpen = false;
 
 // 049: Client-side router
 function showPage(pageId) {
-  var pages = ['dashboard-page','performers-page','personas-page','history-page','symphonies-page','admin-config-page','config-page'];
+  var pages = ['dashboard-page','performers-page','personas-page','history-page','symphonies-page','admin-config-page','config-page','assistant-page'];
   pages.forEach(function(id) {
     var el = document.getElementById(id);
     if (el) el.style.display = id === pageId ? '' : 'none';
@@ -2956,6 +2957,9 @@ function router() {
   } else if (path === '/config') {
     showPage('config-page');
     loadConfigPage();
+  } else if (path === '/assistant') {
+    showPage('assistant-page');
+    if (typeof initAssistant === 'function') initAssistant();
   } else {
     showPage('dashboard-page');
     if (_lastState) renderDashboardExtras(_lastState);
@@ -3859,6 +3863,7 @@ es.onopen = function() {
 
 document.addEventListener('DOMContentLoaded', function() {
   router(); // initial route
+  assistantAvailable(); // 155: reveals the Assistant link only when enabled
   setInterval(afTick, 5000);   // 138: silence timer + quiet detection
 });
 
@@ -3878,6 +3883,261 @@ _ACTIVE_PHASES = {"monitoring_performer", "monitoring_agent", "dispatching"}
 # ---------------------------------------------------------------------------
 # FastAPI app factory
 # ---------------------------------------------------------------------------
+
+
+
+#: 155 (#202): the assistant's page and behaviour, kept OUT of ``_DASHBOARD_HTML``
+#: and spliced in only when the feature is enabled. Two reasons, and the second is
+#: the better one: the shared page has a size budget that a whole extra page would
+#: blow, and a deployment with the assistant off should serve the byte-identical
+#: page it served before this feature existed -- "off" meaning absent rather than
+#: merely inert.
+_ASSISTANT_FRAGMENT = """<!-- 155 (#202): the config assistant. Proposes; the operator applies. -->
+<div id="assistant-page" style="display:none">
+  <div class="card">
+    <h2>Config Assistant</h2>
+    <p class="empty-state" id="assistant-note">
+      Ask for help configuring coordinare. The assistant proposes changes &mdash; you apply them.
+    </p>
+    <p class="empty-state">
+      Your stored secrets are masked before coordinare sends anything. What you type here is not
+      &mdash; it goes to the model endpoint as written, so do not paste tokens or keys.
+    </p>
+    <div id="assistant-log" aria-live="polite" style="max-height:52vh;overflow-y:auto;margin-bottom:12px"></div>
+    <div style="display:flex;gap:8px">
+      <input id="assistant-input" type="text" style="flex:1" placeholder="e.g. how many cards should run at once?"
+             onkeydown="if(event.key==='Enter'){assistantSend();}">
+      <button id="assistant-send" onclick="assistantSend()">Send</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// 155 (#202): config assistant. The conversation lives here and nowhere else —
+// the server keeps nothing between requests, so session-scoped is structural.
+var _asstHistory = [];
+var _asstBusy = false;
+var _asstCurrent = {};   // current editable global values, for the "before" side of a diff
+var _asstBaseHash = null; // the config hash the model's context was built from
+
+function assistantAvailable() {
+  // Nav link appears only when enabled; disabled shows no trace of the feature.
+  fetch('/api/assistant/status').then(function(r) {
+    if (!r.ok) return null;
+    return r.json();
+  }).then(function(d) {
+    if (!d || !d.enabled) return;
+    var link = document.getElementById('nav-assistant');
+    if (link) link.style.display = '';
+  }).catch(function() { /* route absent = disabled */ });
+}
+
+function initAssistant() {
+  fetch('/api/assistant/status').then(function(r) { return r.json(); }).then(function(d) {
+    var note = document.getElementById('assistant-note');
+    if (note && d && !d.ready) {
+      note.textContent = 'The assistant is enabled but not ready: ' + (d.reason || 'unknown');
+    } else if (d && d.opening) {
+      var log = document.getElementById('assistant-log');
+      if (log && !log.childNodes.length) assistantAppend('assistant', d.opening);
+    }
+  }).catch(function() {});
+  assistantRefreshBaseline();
+}
+
+function assistantAppend(role, text) {
+  var log = document.getElementById('assistant-log');
+  if (!log) return null;
+  var row = document.createElement('div');
+  row.className = 'assistant-row assistant-' + role;
+  row.style.margin = '8px 0';
+  var who = document.createElement('strong');
+  who.textContent = (role === 'operator' ? 'You' : 'Assistant') + ': ';
+  row.appendChild(who);
+  var body = document.createElement('span');
+  body.textContent = text;
+  row.appendChild(body);
+  log.appendChild(row);
+  log.scrollTop = log.scrollHeight;
+  return row;
+}
+
+function assistantRefreshBaseline() {
+  // Returns a promise, and the turn waits on it. Fire-and-forget meant a proposal
+  // could be rendered before the hash it belongs to was known, and then applied
+  // with whatever happened to be in the variable — or with nothing.
+  var a = fetch('/api/config/all').then(function(r) { return r.json(); }).then(function(d) {
+    _asstBaseHash = (d && d.content_hashes) ? d.content_hashes.config_yaml : null;
+  }).catch(function() { _asstBaseHash = null; });
+  var b = fetch('/api/config/global').then(function(r) { return r.json(); }).then(function(d) {
+    _asstCurrent = d || {};
+  }).catch(function() { _asstCurrent = {}; });
+  return Promise.all([a, b]);
+}
+
+function assistantRenderProposal(proposal) {
+  // A diff, so applying is a decision made by reading rather than by trusting.
+  var log = document.getElementById('assistant-log');
+  if (!log || !proposal) return;
+  var card = document.createElement('div');
+  card.className = 'card';
+  card.style.margin = '8px 0';
+
+  var head = document.createElement('div');
+  head.innerHTML = '<strong>Proposed change to ' + esc(proposal.section) + '</strong>';
+  card.appendChild(head);
+
+  if (proposal.reason) {
+    var why = document.createElement('div');
+    why.className = 'empty-state';
+    why.textContent = proposal.reason;
+    card.appendChild(why);
+  }
+
+  var table = document.createElement('table');
+  table.style.margin = '8px 0';
+  Object.keys(proposal.values).forEach(function(k) {
+    var tr = document.createElement('tr');
+    var before = (_asstCurrent && k in _asstCurrent) ? _asstCurrent[k] : '(unset)';
+    tr.innerHTML = '<td style="padding-right:12px"><code>' + esc(k) + '</code></td>' +
+                   '<td style="padding-right:12px">' + esc(String(before)) + '</td>' +
+                   '<td>&rarr; <strong>' + esc(String(proposal.values[k])) + '</strong></td>';
+    table.appendChild(tr);
+  });
+  card.appendChild(table);
+
+  var apply = document.createElement('button');
+  apply.textContent = 'Apply';
+  // Captured now, not at click time: this is the config the model actually saw.
+  var baseHash = _asstBaseHash;
+  apply.onclick = function() { assistantApply(proposal, baseHash, card, apply); };
+  card.appendChild(apply);
+
+  log.appendChild(card);
+  log.scrollTop = log.scrollHeight;
+}
+
+function assistantApply(proposal, baseHash, card, button) {
+  // Sends the hash this was built against; a concurrent edit refuses the write.
+  if (!baseHash) {
+    // Fail closed. The baseline fetch is asynchronous and can fail or still be in
+    // flight, and without it this would write with no guard at all — silently, and
+    // exactly when the dashboard is already having trouble talking to the server.
+    // "Applying always goes through the guard" has to be true or it is not a claim.
+    var blocked = document.createElement('div');
+    blocked.textContent = 'Not applied: could not read the current configuration '
+                        + 'version, so this cannot be applied safely. Reload and ask again.';
+    card.appendChild(blocked);
+    assistantRefreshBaseline();
+    return;
+  }
+  button.disabled = true;
+  button.textContent = 'Applying...';
+  var body = {};
+  Object.keys(proposal.values).forEach(function(k) { body[k] = proposal.values[k]; });
+  body.expected_hash = baseHash;
+
+  fetch('/api/config/global', {
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body)
+  }).then(function(r) {
+    return r.json().then(function(d) { return {ok: r.ok, status: r.status, body: d}; });
+  }).then(function(res) {
+    var note = document.createElement('div');
+    if (res.ok) {
+      note.textContent = 'Applied.';
+      button.textContent = 'Applied';
+      assistantRefreshBaseline();  // everything proposed before this is now stale
+    } else if (res.status === 409) {
+      note.textContent = 'Not applied: the configuration changed since this was proposed. '
+                       + 'Reload the Config page and ask again.';
+      button.disabled = false;
+      button.textContent = 'Apply';
+    } else {
+      note.textContent = 'Not applied: ' + ((res.body && res.body.error) || 'unknown error');
+      button.disabled = false;
+      button.textContent = 'Apply';
+    }
+    card.appendChild(note);
+  }).catch(function(e) {
+    button.disabled = false;
+    button.textContent = 'Apply';
+    var note = document.createElement('div');
+    note.textContent = 'Not applied: ' + e;
+    card.appendChild(note);
+  });
+}
+
+function assistantSend() {
+  if (_asstBusy) return;
+  var input = document.getElementById('assistant-input');
+  if (!input) return;
+  var message = (input.value || '').trim();
+  if (!message) return;
+  input.value = '';
+  _asstBusy = true;
+  document.getElementById('assistant-send').disabled = true;
+
+  assistantAppend('operator', message);
+  var pending = assistantAppend('assistant', 'thinking...');
+
+  // The applied hash must be the one the model's context was built from, not the
+  // newest at click time — that would defeat the guard by always agreeing. Also
+  // means arriving here without opening Config still gets a guarded write.
+  assistantRefreshBaseline().then(function() {
+  return fetch('/api/assistant/message', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({message: message, history: _asstHistory})
+  }).then(function(r) { return r.json(); }).then(function(d) {
+    if (pending && pending.parentNode) pending.parentNode.removeChild(pending);
+    if (d.reply) assistantAppend('assistant', d.reply);
+    if (d.error) assistantAppend('assistant', '(' + d.error + ')');
+    if (d.proposal) assistantRenderProposal(d.proposal);
+    _asstHistory.push({role: 'operator', text: message});
+    if (d.reply) _asstHistory.push({role: 'assistant', text: d.reply});
+    if (_asstHistory.length > 20) _asstHistory = _asstHistory.slice(-20);
+  }).catch(function(e) {
+    if (pending && pending.parentNode) pending.parentNode.removeChild(pending);
+    assistantAppend('assistant', '(the assistant is unreachable: ' + e + ')');
+  }).then(function() {
+    _asstBusy = false;
+    document.getElementById('assistant-send').disabled = false;
+  });
+  });
+}
+
+</script>
+"""
+
+
+def _page_html(enabled: bool) -> str:
+    """The dashboard page, with the assistant spliced in when it is switched on."""
+    if not enabled:
+        return _DASHBOARD_HTML
+    return _DASHBOARD_HTML.replace("</body>", _ASSISTANT_FRAGMENT + "</body>", 1)
+
+
+def _config_assistant_enabled(daemon: Any) -> bool:
+    """Is the config assistant switched on for this deployment?
+
+    Reads the live config rather than a captured value so a reload does not leave
+    the flag stale. Defaults to off on anything unexpected: a feature that talks to
+    a model endpoint and reads configuration should require a deliberate yes, not
+    survive an ambiguous one.
+    """
+    try:
+        cfg = daemon.state.get("coordinare_config")
+    except Exception:
+        return False
+    if cfg is None:
+        return False
+    # CoordinareConfiguration is the multi-symphony root; the global settings live on
+    # its `global_config`. Accept either shape so a caller holding a
+    # ProjectConfiguration directly is not silently treated as "disabled".
+    holder = getattr(cfg, "global_config", cfg)
+    return bool(getattr(holder, "config_assistant_enabled", False))
 
 
 def create_dashboard_app(
@@ -3936,41 +4196,41 @@ def create_dashboard_app(
 
     @app.get("/", response_class=HTMLResponse)
     async def dashboard() -> HTMLResponse:
-        return HTMLResponse(_DASHBOARD_HTML)
+        return HTMLResponse(_page_html(_assistant_on))
 
     # 049: Multi-page routes — same HTML shell, JS router handles rendering
     @app.get("/performers", response_class=HTMLResponse)
     async def dashboard_performers() -> HTMLResponse:
-        return HTMLResponse(_DASHBOARD_HTML)
+        return HTMLResponse(_page_html(_assistant_on))
 
     @app.get("/personas", response_class=HTMLResponse)
     async def dashboard_personas() -> HTMLResponse:
-        return HTMLResponse(_DASHBOARD_HTML)
+        return HTMLResponse(_page_html(_assistant_on))
 
     @app.get("/history", response_class=HTMLResponse)
     async def dashboard_history() -> HTMLResponse:
-        return HTMLResponse(_DASHBOARD_HTML)
+        return HTMLResponse(_page_html(_assistant_on))
 
     # 057: Symphony management routes
     @app.get("/symphonies", response_class=HTMLResponse)
     async def dashboard_symphonies() -> HTMLResponse:
         """Display the symphonies list page (Task 8)."""
-        return HTMLResponse(_DASHBOARD_HTML)
+        return HTMLResponse(_page_html(_assistant_on))
 
     @app.get("/symphonies/{name}", response_class=HTMLResponse)
     async def dashboard_symphony_detail(name: str) -> HTMLResponse:
         """Display the detail page for a specific symphony (Task 8)."""
-        return HTMLResponse(_DASHBOARD_HTML)
+        return HTMLResponse(_page_html(_assistant_on))
 
     @app.get("/admin/config", response_class=HTMLResponse)
     async def dashboard_admin_config() -> HTMLResponse:
         """Display the admin configuration page (Task 11)."""
-        return HTMLResponse(_DASHBOARD_HTML)
+        return HTMLResponse(_page_html(_assistant_on))
 
     @app.get("/config", response_class=HTMLResponse)
     async def dashboard_config() -> HTMLResponse:
         """Display the full live-config view (spec 081-config-ui)."""
-        return HTMLResponse(_DASHBOARD_HTML)
+        return HTMLResponse(_page_html(_assistant_on))
 
     @app.get("/api/performer-logs")
     async def performer_logs_stream() -> StreamingResponse:
@@ -4835,19 +5095,9 @@ def create_dashboard_app(
             "message": "Configuration reload in progress",
         }, status_code=202)
 
-    _global_cfg_editable = (
-        "poll_interval_seconds",
-        "heartbeat_interval_seconds",
-        "max_concurrent_cards",
-        "max_feedback_cycles",
-        "max_closed_pr_attempts_per_issue",
-        "log_level",
-        "output_mode",
-        "assignee_filter",
-        "human_reviewers",
-        "trusted_bot_reviewers",
-        "env_cache_root",
-    )
+    from coordinare.config_descriptors import GLOBAL_EDITABLE_FIELDS
+
+    _global_cfg_editable = GLOBAL_EDITABLE_FIELDS
 
     @app.get("/api/config/global")
     async def get_global_config() -> JSONResponse:
@@ -4883,6 +5133,28 @@ def create_dashboard_app(
 
         if not isinstance(body, dict):
             return JSONResponse({"error": "Request body must be a JSON object"}, status_code=400)
+
+        # 155 (#202): optional optimistic-concurrency guard. The catalog and routing
+        # endpoints have carried one since spec 081; this one never did, so two
+        # dashboards open on the same config could silently overwrite each other
+        # (#237). Optional rather than required so no existing caller changes
+        # behaviour -- the config assistant's Apply always sends one, so every
+        # assistant-driven write is guarded even while the older UI is not.
+        expected_hash = body.pop("expected_hash", None)
+        if expected_hash is not None:
+            from coordinare.services.config_write_service import (
+                ConcurrencyConflictError,
+                guard_concurrency,
+            )
+
+            if not isinstance(expected_hash, str):
+                return JSONResponse(
+                    {"error": "expected_hash must be a string"}, status_code=400
+                )
+            try:
+                guard_concurrency(config_path, expected_hash)
+            except ConcurrencyConflictError as err:
+                return JSONResponse({"error": str(err), "conflict": True}, status_code=409)
 
         unknown = set(body) - set(_global_cfg_editable)
         if unknown:
@@ -5397,6 +5669,85 @@ def create_dashboard_app(
             return JSONResponse({"error": f"Failed to write config: {exc}"}, status_code=500)
 
         return Response(status_code=204)
+
+    # ---- 155 (#202): the config assistant --------------------------------------
+    # Registered only when enabled, so a disabled deployment does not merely refuse
+    # these routes -- it does not have them (FR-013/FR-014). "Off" should mean the
+    # dashboard is the dashboard it was before the feature existed.
+    # Captured once, and used for BOTH the routes and the page. Routes cannot be
+    # added to a running app, so a per-request page check would drift from them: a
+    # config reload flipping the flag would serve a panel whose endpoints do not
+    # exist, or hide a panel whose endpoints do. One value means the two can never
+    # disagree — at the cost of a restart to change it, which is the honest trade.
+    _assistant_on = _config_assistant_enabled(daemon)
+
+    if _assistant_on:
+
+        @app.get("/api/assistant/status")
+        async def assistant_status() -> JSONResponse:
+            """Whether the panel can be used, and if not, why."""
+            from coordinare.services.config_assistant import opening_guidance
+
+            backend = daemon.state.get("conducting_backend")
+            cfg = daemon.state.get("coordinare_config")
+            return JSONResponse(
+                {
+                    "enabled": True,
+                    "ready": backend is not None,
+                    "reason": None if backend is not None else "no conducting backend configured",
+                    # 155: the panel opens on whatever is actually missing rather than
+                    # on a blank prompt, which is the same problem as the YAML.
+                    "opening": opening_guidance(cfg) if cfg is not None else "",
+                }
+            )
+
+        @app.post("/api/assistant/message")
+        async def assistant_message(request: Request) -> JSONResponse:
+            """One turn. The conversation lives in the client, so nothing is stored.
+
+            Session-scoped memory (FR-015) is structural here rather than a policy
+            about a cache: the server keeps nothing between requests, so there is
+            nothing to persist, expire, or leak into a later conversation.
+            """
+            from coordinare.services.config_assistant import run_turn
+
+            try:
+                body = await request.json()
+            except Exception:
+                return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+            if not isinstance(body, dict):
+                return JSONResponse({"error": "Request body must be a JSON object"}, status_code=400)
+
+            message = body.get("message")
+            if not isinstance(message, str) or not message.strip():
+                return JSONResponse({"error": "message is required"}, status_code=400)
+
+            history = body.get("history")
+            if not isinstance(history, list):
+                history = []
+
+            coordinare_cfg = daemon.state.get("coordinare_config")
+            if coordinare_cfg is None:
+                return JSONResponse({"error": "configuration is not loaded"}, status_code=503)
+
+            turn = await run_turn(
+                message=message,
+                history=[h for h in history if isinstance(h, dict)][-20:],
+                config=coordinare_cfg,
+                backend=daemon.state.get("conducting_backend"),
+            )
+
+            proposal = None
+            if turn.proposal is not None:
+                proposal = {
+                    "section": turn.proposal.section,
+                    "values": turn.proposal.values,
+                    "reason": turn.proposal.reason,
+                }
+
+            return JSONResponse(
+                {"reply": turn.reply, "proposal": proposal, "error": turn.error}
+            )
 
     return app
 

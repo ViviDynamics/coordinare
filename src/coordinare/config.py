@@ -855,6 +855,12 @@ class ProjectConfiguration(BaseSettings):
     # which is a moment to think about it. X-Forwarded-Host is deliberately NOT
     # honoured (attacker-controlled). See spec 144 research D3.
     trusted_dashboard_hosts: list[str] = Field(default_factory=list)
+    # Spec 155 (#202): the config assistant. Off by default and off even when on
+    # if no conducting backend exists, because the flag alone would only let an
+    # operator enable the feature into a failure. Every existing deployment has a
+    # conducting backend, so keying it on that alone would switch the feature on
+    # for all of them without anyone choosing it.
+    config_assistant_enabled: bool = False
     # Spec 146 (#200): Kubernetes transport. Namespace-scoped by design — the
     # daemon never needs cluster-wide permissions.
     kubernetes_namespace: str = "default"
