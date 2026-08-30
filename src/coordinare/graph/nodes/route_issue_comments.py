@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from coordinare.services.board_provider import board_of
 from coordinare.services.issue_comment_service import (
     CommentClassification,
     classify_issue_comment,
@@ -28,20 +29,26 @@ logger = structlog.get_logger(__name__)
 
 
 async def route_issue_comments(state: CoordinareState) -> CoordinareState:
-    github = state.get("github_service")
+    board = board_of(state)
     card = state.get("current_card")
-    if github is None or not isinstance(card, dict):
-        return state
-
-    issue_number = int(card.get("issue_number") or 0)
-    if not issue_number:
+    if board is None or not isinstance(card, dict):
         return state
 
     card_id = str(card.get("id", ""))
+    # 153: gated on the card id, not on a GitHub issue number. The old gate meant a
+    # board whose cards have no issue number -- every board that is not GitHub --
+    # returned here every cycle and routed nothing, however correct the provider
+    # beneath it was.
+    if not card_id:
+        return state
+
+    # Metadata only: it rides along on the events for the logs and the dashboard.
+    # Nothing fetches with it.
+    issue_number = int(card.get("issue_number") or 0)
     since_id: int | None = state.get("last_issue_comment_id")
     processed: set[int] = set(state.get("processed_issue_comment_ids") or ())
 
-    events = await fetch_new_issue_comments(issue_number, since_id, github, card_id)
+    events = await fetch_new_issue_comments(card_id, since_id, board, issue_number)
     if not events:
         return state
 

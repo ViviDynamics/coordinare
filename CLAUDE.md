@@ -78,6 +78,8 @@ See AGENTS.md for all development guidelines.
 - None new in coordinare. Reuses 134's harness-owned run dir for the (151-real-performers)
 - Python 3.14 (project minimum 3.12; prod 3.14.5 via uv) for tests; the + None added to the Python project. Build/CI tooling: `helm` (3.13.3 (147-helm-deployment)
 - A `volumeClaimTemplate` on the StatefulSet holds `coordinare.state.json` and artifacts. (147-helm-deployment)
+- Python 3.14 (project minimum 3.12; prod 3.14.5 via uv) + existing only — `BoardProvider`/`GitHubProjectsBoardProvider`/`board_of` (153-card-id-model)
+- N/A. No persisted state, no `state_store.py` schema change. The identifier map is (153-card-id-model)
 
 ## Recent Changes
 - 076-qa-cycle: Added Python 3.14 (project minimum: 3.12; production currently on 3.14.5 via uv) + pydantic 2.x, langgraph, structlog, docker SDK (or subprocess to `docker` CLI), fastapi (dashboard SSE), httpx (performer HTTP transport), pyyaml (config)

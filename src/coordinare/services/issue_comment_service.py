@@ -178,19 +178,27 @@ async def classify_issue_comment_ai(
 
 
 async def fetch_new_issue_comments(
-    issue_number: int,
-    since_id: int | None,
-    github_service: Any,
     card_id: str,
+    since_id: int | None,
+    board: Any,
+    issue_number: int = 0,
 ) -> list[IssueCommentEvent]:
-    """Fetch comments on issue_number posted after since_id.
+    """Fetch comments on the card posted after since_id.
 
-    Returns [] if issue_number is 0/None or on any error.
+    153: addressed by card id, like every other board operation. The board
+    resolves it; on GitHub that means a node id becomes an issue number inside
+    the provider, and nothing here needs to know.
+
+    *issue_number* is carried only as metadata on the events it builds, for the
+    logs and the dashboard. Nothing reads it to fetch anything, and a board that
+    has no such number can leave it at 0.
+
+    Returns [] if there is no card id or on any error.
     """
-    if not issue_number:
+    if not card_id or board is None:
         return []
     try:
-        raw = await github_service.get_issue_comments(issue_number, since_id=since_id)
+        raw = await board.get_card_comments(card_id, since_id=since_id)
     except Exception:
         logger.exception(
             "fetch_new_issue_comments.failed",

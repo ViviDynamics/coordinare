@@ -117,10 +117,11 @@ coordinare source change.
 ### Key Entities
 
 - **BoardProvider**: the protocol — poll, move, read a card, post a card comment. Reading a
-  card's comments is deliberately absent: coordinare addresses comment reads by GitHub issue
-  number while every other operation uses a node id, so the method could not honour a
-  `card_id` contract without an extra lookup per cycle, which would be a behaviour change.
-  A non-GitHub board therefore cannot yet route issue comments (tracked as #232).
+  card's comments was deliberately absent here: coordinare addressed comment reads by GitHub
+  issue number while every other operation used a node id, so the method could not honour a
+  `card_id` contract without an extra lookup per cycle. **Closed by spec 153 (#232)**, which
+  gave cards one id model and put the translation inside the GitHub adapter, where the pairing
+  `poll_board` already fetches makes it free.
 - **GitHub Projects provider**: today's behaviour, relocated.
 - **Move outcome**: succeeded, or refused with a reason. Consumed through `move_card_or_warn`,
   which every call site uses instead of `move_card` directly — a returned outcome that nobody
