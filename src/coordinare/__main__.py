@@ -53,6 +53,7 @@ from coordinare.observability import HEALTH, bind_symphony, clear_symphony
 from coordinare.resilience import CircuitBreaker, ResilientAgentService, RetryConfig
 from coordinare.services.advocate import AdvocateService
 from coordinare.services.agent_service import AgentService
+from coordinare.services.board_provider import GitHubProjectsBoardProvider
 from coordinare.services.github import GitHubService
 from coordinare.services.notification import NotificationService, build_notification_service
 from coordinare.services.notification_config import (
@@ -978,6 +979,10 @@ async def _bootstrap_services(
         "config": config,
         "config_path": config_path,
         "github_service": github,
+        # 149: the board seam. Both are present because they answer different
+        # questions — where the work is tracked, and where the code lives. A Jira
+        # board would replace only the first.
+        "board_provider": GitHubProjectsBoardProvider(github),
         "agent_service": resilient_agent,
         "conducting_backend": conducting_backend,
         "notification_service": notification_service,

@@ -28,6 +28,7 @@ from coordinare.models.review import (
     StalenessClass,
     classify_reviewer,
 )
+from coordinare.services.board_provider import board_of, move_card_or_warn
 from coordinare.services.review_staleness import (
     StalenessConfig,
     classify_review_staleness,
@@ -141,6 +142,7 @@ async def _surface_stale_change_request(
     STALE_UNADDRESSED→ one deduped notification; card stays parked.
     FRESH / none     → no-op (existing behavior). Fully fail-safe.
     """
+    board_provider = board_of(state)
     surfaced: dict[str, str] = state.setdefault("surfaced_stale_reviews", {})  # type: ignore[assignment]
 
     # FR-011: verdict cleared (approved/dismissed) → drop dedup markers so a
@@ -213,7 +215,7 @@ async def _surface_stale_change_request(
         except Exception as exc:  # fail-safe: never crash the cycle
             logger.warning("stale_review.re_request_failed", card_id=card_id, error=str(exc))
         try:
-            await github.move_card(card_id, "IN_REVIEW")  # type: ignore[attr-defined]
+            await move_card_or_warn(board_provider, card_id, "IN_REVIEW")
             card["status"] = "IN_REVIEW"
             _set_current_card(state, card)
             logger.info("stale_review.routed_in_review", card_id=card_id)
@@ -272,6 +274,7 @@ async def _notify_stale_review(
 
 async def monitor_pr(state: CoordinareState) -> CoordinareState:
     github = state.get("github_service")
+    board_provider = board_of(state)
     card = state.get("current_card")
     if github is None or not isinstance(card, dict):
         state["phase"] = "idle"
@@ -374,7 +377,7 @@ async def monitor_pr(state: CoordinareState) -> CoordinareState:
                     pr_url=pr_url,
                 )
                 with contextlib.suppress(Exception):
-                    await github.move_card(card_id, "IN_PROGRESS")
+                    await move_card_or_warn(board_provider, card_id, "IN_PROGRESS")
                 card["status"] = "IN_PROGRESS"
                 _set_current_card(state, card)
             else:

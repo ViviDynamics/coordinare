@@ -12,9 +12,13 @@ from coordinare.config import (
 from coordinare.services.activity_log import (
     ActivityLog,  # noqa: TC001 — needed at runtime for LangGraph get_type_hints()
 )
+from coordinare.services.board_provider import (
+    BoardProvider,  # get_type_hints() on this TypedDict, so it must resolve at runtime
+)
 
 if TYPE_CHECKING:
     from coordinare.models.notification import NotificationEvent
+    from coordinare.services.board_provider import BoardProvider
     from coordinare.workspace import WorkspaceInfo
 
 
@@ -165,6 +169,9 @@ class CoordinareState(TypedDict, total=False):
     github_field_cache: dict[str, Any]
 
     github_service: GitHubServiceProtocol
+    # 149: where the work is tracked, as opposed to where the code lives. Both are
+    # GitHub today; a Jira board would replace only this one.
+    board_provider: BoardProvider
     agent_service: AgentServiceProtocol
     conducting_backend: ConductingBackendProtocol
     notification_service: NotificationServiceProtocol

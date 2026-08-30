@@ -8,6 +8,7 @@ import structlog
 
 from coordinare.models.notification import EventType, NotificationEvent, NotificationSeverity
 from coordinare.services.assessor_failure import classify_assessor_failure
+from coordinare.services.board_provider import board_of, move_card_or_warn
 
 if TYPE_CHECKING:
     from coordinare.graph.state import CoordinareState
@@ -229,10 +230,10 @@ async def handle_system_error(state: CoordinareState) -> CoordinareState:
                 "action": action,
             }
 
-        github = state.get("github_service")
-        if github is not None and card_id:
+        board_provider = board_of(state)
+        if board_provider is not None and card_id:
             try:
-                await github.move_card(card_id, "BLOCKED")
+                await move_card_or_warn(board_provider, card_id, "BLOCKED")
             except Exception as exc:
                 logger.warning("handle_system_error.move_card_failed", error=str(exc))
 

@@ -13,6 +13,7 @@ from coordinare.graph.nodes.github_retry import (
     github_operation_ready,
     is_transient_github_outage_error,
 )
+from coordinare.services.board_provider import board_of, move_card_or_warn
 
 if TYPE_CHECKING:
     from coordinare.graph.state import CoordinareState
@@ -83,6 +84,7 @@ def _questions_from_card(title: str, description: str) -> list[str]:
 
 async def handle_blocked(state: CoordinareState) -> CoordinareState:
     github = state.get("github_service")
+    board_provider = board_of(state)
     card = state.get("current_card")
     if github is None or not isinstance(card, dict):
         state["phase"] = "blocked"
@@ -110,7 +112,7 @@ async def handle_blocked(state: CoordinareState) -> CoordinareState:
             msg="Assessor re-asking already-answered questions — re-queuing for dispatch",
         )
         try:
-            await github.move_card(card_id, "TODO")
+            await move_card_or_warn(board_provider, card_id, "TODO")
         except Exception as exc:
             logger.warning("handle_blocked.move_card_todo_failed", card_id=card_id, error=str(exc))
         state["open_questions"] = []
@@ -152,7 +154,7 @@ async def handle_blocked(state: CoordinareState) -> CoordinareState:
                 msg="No questions generated — re-queuing card for dispatch",
             )
             try:
-                await github.move_card(card_id, "TODO")
+                await move_card_or_warn(board_provider, card_id, "TODO")
             except Exception as exc:
                 logger.warning("handle_blocked.move_card_todo_failed", card_id=card_id, error=str(exc))
             state["phase"] = "idle"
@@ -162,7 +164,7 @@ async def handle_blocked(state: CoordinareState) -> CoordinareState:
     move_ready, move_retry_in = github_operation_ready(state, "handle_blocked_move")
     if move_ready:
         try:
-            await github.move_card(card_id, "BLOCKED")
+            await move_card_or_warn(board_provider, card_id, "BLOCKED")
             clear_deferred_github_operation(state, "handle_blocked_move")
         except Exception as exc:
             if is_transient_github_outage_error(exc):
@@ -240,7 +242,7 @@ async def handle_blocked(state: CoordinareState) -> CoordinareState:
         if issue_id:
             try:
                 header = coordinare_attribution(state.get("config"), stage)
-                await github.add_comment(
+                await board_provider.add_card_comment(
                     issue_id,
                     f"{header}\n\n**{role_label}** — Needs input:\n{question_lines}",
                 )

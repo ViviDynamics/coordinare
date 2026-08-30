@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from coordinare.graph.state import _set_current_card
+from coordinare.services.board_provider import board_of
 from coordinare.services.persona_service import get_effective_instructions, load_personas_hot
 
 if TYPE_CHECKING:
@@ -16,6 +17,7 @@ logger = structlog.get_logger(__name__)
 async def assess_card(state: CoordinareState) -> CoordinareState:
     card = state.get("current_card")
     github = state.get("github_service")
+    board_provider = board_of(state)
     backend = state.get("conducting_backend")
     if not isinstance(card, dict) or github is None or backend is None:
         state["phase"] = "idle"
@@ -52,7 +54,7 @@ async def assess_card(state: CoordinareState) -> CoordinareState:
             return state
 
     try:
-        details = await github.get_issue_details(str(card.get("issue_id", "")))
+        details = await board_provider.get_card(str(card.get("issue_id", "")))
         # Work with a mutable copy before attaching additional metadata.
         details = dict(details)
 

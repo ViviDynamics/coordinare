@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from coordinare.graph.state import _retire_active_session
+from coordinare.services.board_provider import board_of, move_card_or_warn
 
 if TYPE_CHECKING:
     from coordinare.graph.state import CoordinareState
@@ -62,10 +63,10 @@ async def cancel_active_card(
             logger.warning("cancel_active_card.workspace_cleanup_failed", error=str(exc))
 
     # Move card back to TODO on the board (if requested)
-    github = state.get("github_service")
-    if move_to_todo and github is not None and card_id:
+    board_provider = board_of(state)
+    if move_to_todo and board_provider is not None and card_id:
         try:
-            await github.move_card(card_id, "TODO")
+            await move_card_or_warn(board_provider, card_id, "TODO")
         except Exception as exc:
             logger.warning("cancel_active_card.move_to_todo_failed", card_id=card_id, error=str(exc))
 

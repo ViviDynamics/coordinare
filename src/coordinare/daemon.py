@@ -33,6 +33,10 @@ from coordinare.metrics import METRICS
 from coordinare.models.dependency import DependencyStatus
 from coordinare.observability import HEALTH, HealthStatus, bind_cycle_id, clear_cycle_id
 from coordinare.resilience import CircuitOpenError
+from coordinare.services.board_provider import (
+    GitHubProjectsBoardProvider,
+    board_of,
+)
 from coordinare.services.dependency import build_graph as _build_dep_graph
 from coordinare.services.rebase import fetch_main_sha, repo_url_from_config, run_rebase_round
 from coordinare.session import _SESSION_FIELDS, session_to_state, state_to_session
@@ -1100,7 +1104,7 @@ class CoordinareDaemon:
             if github is None:
                 return
         try:
-            board = await github.poll_board()
+            board = await board_of(self._state, github).poll_board()
             board_snapshot = board.get("snapshot", {})
             found_column: str | None = None
             for column, card_ids in board_snapshot.items():
@@ -1390,7 +1394,7 @@ class CoordinareDaemon:
                 )
             else:
                 try:
-                    board = await github.poll_board()
+                    board = await board_of(self._state, github).poll_board()
                     self._state["_board_cache"] = board  # type: ignore[typeddict-unknown-key]
                     clear_deferred_github_operation(self._state, "poll_board")
                     self._state["last_poll_at"] = datetime.now(UTC)
@@ -1922,6 +1926,10 @@ class CoordinareDaemon:
                 self._state["config"] = _effective_cfg
             if _sym_github is not None:
                 self._state["github_service"] = _sym_github
+                # 149: the board follows the symphony's service. Leaving it behind
+                # would have a multi-symphony run reading one board and writing
+                # another — silently, since both are GitHub today.
+                self._state["board_provider"] = GitHubProjectsBoardProvider(_sym_github)
             if _sym_workspace_manager is not None:
                 self._state["workspace_manager"] = _sym_workspace_manager
             try:
@@ -1933,6 +1941,7 @@ class CoordinareDaemon:
                 self._state["config"] = _prev_config
                 if _sym_github is not None:
                     self._state["github_service"] = _prev_github
+                    self._state["board_provider"] = GitHubProjectsBoardProvider(_prev_github)
                 if _sym_workspace_manager is not None:
                     self._state["workspace_manager"] = _prev_workspace_manager
 

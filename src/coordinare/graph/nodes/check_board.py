@@ -15,6 +15,7 @@ from coordinare.graph.nodes.github_retry import (
 from coordinare.graph.state import _rederive_current_card, _retire_active_session
 from coordinare.lib.acceptance_criteria import parse_acceptance_criteria
 from coordinare.models.dependency import DependencyStatus
+from coordinare.services.board_provider import board_of, move_card_or_warn
 from coordinare.services.dependency import build_graph, resolve_off_board_dependencies
 from coordinare.services.dependency import filter_eligible_todo as _dep_filter
 from coordinare.services.rebase import repo_url_from_config
@@ -377,6 +378,7 @@ async def _attempt_blocked_card_recovery(
     for an undetected reason never auto-recovers (safe). Default-off, fully
     fail-safe, anti-thrash (one attempt per card per daemon run — in-memory
     marker)."""
+    board_provider = board_of(state, github)
     if not _blocked_recovery_enabled() or not blocked or github is None:
         return
     import contextlib
@@ -513,7 +515,7 @@ async def _attempt_blocked_card_recovery(
             decision = evaluate_recovery(active_reasons, RecoverySignals(**sig))
             if not decision.recover:
                 continue
-            await github.move_card(cid, decision.target_stage)  # type: ignore[attr-defined]
+            await move_card_or_warn(board_provider, cid, decision.target_stage)
             # The card is no longer BLOCKED on GitHub — drop it from the in-memory
             # board snapshot AND the live blocked list so the downstream blocked-
             # handling branch (which re-reads state["board_snapshot"]["BLOCKED"])
@@ -602,6 +604,7 @@ async def check_board(state: CoordinareState) -> CoordinareState:
 
 async def _check_board_impl(state: CoordinareState) -> CoordinareState:
     github = state.get("github_service")
+    board_provider = board_of(state)
     logger.info(
         "check_board.entered",
         github_present=github is not None,
@@ -635,7 +638,7 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
             # Keep running without crashing; a later cycle will retry.
             return state
         try:
-            board = await github.poll_board()
+            board = await board_provider.poll_board()
             clear_deferred_github_operation(state, "poll_board")
         except Exception as exc:
             if is_transient_github_outage_error(exc):
@@ -1244,7 +1247,7 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
             issue_node_id = str(content_node_ids.get(item, ""))
             if last_notified is not None and isinstance(last_notified, datetime):
                 try:
-                    details = await github.get_issue_details(issue_node_id or item)
+                    details = await board_provider.get_card(issue_node_id or item)
                 except Exception as exc:
                     logger.warning("check_board.get_issue_details_failed", card_id=item, error=str(exc))
                     state["phase"] = "blocked"
@@ -1295,7 +1298,7 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
                             state["open_questions"] = []
                             state["agent_dispatch"] = {}
 
-                            await github.move_card(item, "IN_PROGRESS")
+                            await move_card_or_warn(board_provider, item, "IN_PROGRESS")
                             # 066 T018/FR-011: write through the session entry only.
                             # The session map is authoritative;
                             # _rederive_current_card at end of check_board
@@ -1403,6 +1406,7 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
             # This upgrades UNRESOLVABLE → SATISFIED for closed issues that
             # were removed from the project board after completion.
             github = state.get("github_service")
+            board_provider = board_of(state)
             config = state.get("config")
             repo_slug = ""
             if config is not None:
@@ -1454,6 +1458,7 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
                 # only ONCE per (item_id, blocker-set) so a card stuck for
                 # many cycles doesn't accumulate duplicate comments.
                 github_svc = state.get("github_service")
+                board_provider = board_of(state)
                 announced: dict[str, str] = state.get("_dep_announcements") or {}  # type: ignore[typeddict-unknown-key]
                 if github_svc is not None:
                     for item_id in filtered_ids:
@@ -1473,12 +1478,12 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
                         import contextlib
                         dep_labels = ", ".join(f"#{d.blocker_issue_number}" for d in unresolvable)
                         with contextlib.suppress(Exception):
-                            await github_svc.move_card(item_id, "BLOCKED")
+                            await move_card_or_warn(board_provider, item_id, "BLOCKED")
                         issue_node = content_node_ids.get(item_id)
                         if issue_node:
                             with contextlib.suppress(Exception):
                                 header = coordinare_attribution(state.get("config"), None)
-                                await github_svc.add_comment(
+                                await board_provider.add_card_comment(
                                     issue_node,
                                     f"{header}\n\n"
                                     f"🔗 **Unresolvable dependency**: {dep_labels}\n\n"
@@ -1516,6 +1521,7 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
                 # the cards stay in TODO but still won't be dispatched (the
                 # filter already removed them).
                 github = state.get("github_service")
+                board_provider = board_of(state)
                 content_node_ids = board.get("content_node_ids", {})
                 import contextlib
 
@@ -1538,12 +1544,12 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
                         if cycle_announced.get(iid) == signature:
                             continue  # already announced this exact cycle
                         with contextlib.suppress(Exception):
-                            await github.move_card(iid, "BLOCKED")
+                            await move_card_or_warn(board_provider, iid, "BLOCKED")
                         issue_node_id = content_node_ids.get(iid)
                         if issue_node_id:
                             with contextlib.suppress(Exception):
                                 header = coordinare_attribution(state.get("config"), None)
-                                await github.add_comment(
+                                await board_provider.add_card_comment(
                                     issue_node_id,
                                     f"{header}\n\n"
                                     f"🔄 **Circular dependency detected** involving: {cycle_desc}\n\n"

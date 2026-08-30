@@ -25,6 +25,7 @@ from coordinare.lib.acceptance_criteria import parse_acceptance_criteria
 from coordinare.metrics import METRICS
 from coordinare.services.assessor_failure import classify_assessor_failure
 from coordinare.services.base_gate import evaluate_base_gate
+from coordinare.services.board_provider import board_of, move_card_or_warn
 from coordinare.services.ci_gate import CIGateDecision, FailedCheck, FailedCheckWithSignature
 from coordinare.services.env_signature import match_env_signature
 from coordinare.services.failure_classification import BaselineFailure, classify_failure_origin
@@ -2990,6 +2991,7 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
 
     card = state.get("current_card")
     github = state.get("github_service")
+    board_provider = board_of(state)
 
     # 031: Check for a pending human override before polling status.
     # Done after card/github extraction so skip-final-stage can move the card.
@@ -3009,7 +3011,7 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
             pr_node_id = effective_card.get("pr_node_id")
             if pr_url and pr_node_id:
                 try:
-                    await github.move_card(card_id, "IN_REVIEW")
+                    await move_card_or_warn(board_provider, card_id, "IN_REVIEW")
                 except Exception:
                     logger.warning("override.skip_move_card_failed", card_id=card_id)
             else:
@@ -3244,7 +3246,7 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
                     )
                     if github is not None:
                         try:
-                            await github.move_card(card_id, "BLOCKED")
+                            await move_card_or_warn(board_provider, card_id, "BLOCKED")
                         except Exception:
                             logger.warning(
                                 "move_card_to_blocked_failed", card_id=card_id
@@ -3312,7 +3314,7 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
             )
             if github is not None:
                 try:
-                    await github.move_card(card_id, "BLOCKED")
+                    await move_card_or_warn(board_provider, card_id, "BLOCKED")
                 except Exception:
                     logger.warning("move_card_to_blocked_failed", card_id=card_id)
             state["phase"] = "blocked"
@@ -3588,7 +3590,7 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
             issue_id = str(issue_id_raw).strip() if issue_id_raw is not None else ""
             if issue_id:
                 try:
-                    fresh = await github.get_issue_details(issue_id)
+                    fresh = await board_provider.get_card(issue_id)
                     old_desc = str(card.get("description", ""))
                     new_desc = fresh.get("body") or fresh.get("description") or ""
                     has_new_field = ("body" in fresh) or ("description" in fresh)
@@ -3995,7 +3997,7 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
 
                 if github is not None:
                     try:
-                        await github.move_card(card_id, "IN_REVIEW")
+                        await move_card_or_warn(board_provider, card_id, "IN_REVIEW")
                     except Exception:
                         logger.warning("move_card_to_in_review_failed", card_id=card_id)
                     # Request human reviewers configured on the project
@@ -4672,7 +4674,7 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
                 _set_current_card(state, card)
                 if github is not None:
                     try:
-                        await github.move_card(card_id, "IN_REVIEW")
+                        await move_card_or_warn(board_provider, card_id, "IN_REVIEW")
                     except Exception as exc:
                         logger.warning(
                             "session_expired.move_card_in_review_failed",
@@ -4700,7 +4702,7 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
                 )
                 if github is not None:
                     try:
-                        await github.move_card(card_id, "TODO")
+                        await move_card_or_warn(board_provider, card_id, "TODO")
                     except Exception:
                         logger.warning("move_card_to_todo_failed", card_id=card_id)
                 state["agent_dispatch"] = {}
