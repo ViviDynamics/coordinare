@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from coordinare.graph.state import _set_current_card
+from coordinare.services.board_provider import board_of, move_card_or_warn
 
 if TYPE_CHECKING:
     from coordinare.graph.state import CoordinareState
@@ -338,11 +339,12 @@ async def classify_human_feedback(state: CoordinareState) -> CoordinareState:
     # Move card to IN_PROGRESS on the board so the next check_board cycle
     # routes to dispatching (not back to monitoring_pr).
     github = state.get("github_service")
+    board_provider = board_of(state)
     card = state.get("current_card")
     if github is not None and isinstance(card, dict):
         card_id = str(card.get("id", ""))
         try:
-            await github.move_card(card_id, "IN_PROGRESS")
+            await move_card_or_warn(board_provider, card_id, "IN_PROGRESS")
         except Exception:
             logger.warning("classify_human_feedback.move_card_failed", card_id=card_id)
         card["previous_status"] = card.get("status", "IN_REVIEW")

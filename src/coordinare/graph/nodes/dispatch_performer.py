@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from coordinare.graph.state import _set_current_card
+from coordinare.services.board_provider import board_of, move_card_or_warn
 from coordinare.services.env_cache import verify_env_cache_clean
 from coordinare.services.github import PermanentGitHubError
 from coordinare.services.persona_service import get_effective_instructions, load_personas_hot
@@ -788,6 +789,7 @@ async def _apply_override_terminal(
     body itself never sees an override-finalising state.  Mirrors the
     pre-076 behaviour exactly.
     """
+    board_provider = board_of(override_result, github)
     new_phase = override_result.get("phase")
     if new_phase == "monitoring_pr" and github is not None:
         effective_card = override_result.get("current_card", card)
@@ -798,7 +800,7 @@ async def _apply_override_terminal(
         pr_node_id = effective_card.get("pr_node_id")
         if pr_url and pr_node_id:
             try:
-                await github.move_card(card_id, "IN_REVIEW")
+                await move_card_or_warn(board_provider, card_id, "IN_REVIEW")
             except Exception:
                 logger.warning("override.skip_move_card_failed", card_id=card_id)
         else:
@@ -843,6 +845,7 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
 
     card: dict[str, Any] | None = state.get("current_card")
     github = state.get("github_service")
+    board_provider = board_of(state)
 
     # 076 (T034): The pending-override handler used to live here.  It has
     # been hoisted into the public ``dispatch_performer`` wrapper so the
@@ -1014,7 +1017,7 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
                     limit=closed_pr_limit,
                 )
                 try:
-                    await github.move_card(card_id, "BLOCKED")
+                    await move_card_or_warn(board_provider, card_id, "BLOCKED")
                 except Exception as exc:
                     logger.warning(
                         "dispatch_performer.move_card_to_blocked_failed",
@@ -1223,7 +1226,7 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
                 error=str(exc),
             )
             try:
-                await github.move_card(card_id, "BLOCKED")
+                await move_card_or_warn(board_provider, card_id, "BLOCKED")
             except Exception as move_exc:
                 logger.warning(
                     "dispatch_performer.move_card_to_blocked_failed",
@@ -1250,7 +1253,7 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
                 error=f"{type(exc).__name__}: {exc}",
             )
             try:
-                await github.move_card(card_id, "BLOCKED")
+                await move_card_or_warn(board_provider, card_id, "BLOCKED")
             except Exception as move_exc:
                 logger.warning(
                     "dispatch_performer.move_card_to_blocked_failed",
@@ -1285,7 +1288,7 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
                     missing=missing,
                 )
                 try:
-                    await github.move_card(card_id, "BLOCKED")
+                    await move_card_or_warn(board_provider, card_id, "BLOCKED")
                 except Exception as move_exc:
                     logger.warning(
                         "dispatch_performer.move_card_to_blocked_failed",
@@ -1676,7 +1679,7 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
                     card_context["test_env_vars"] = _test_env_vars
 
     try:
-        await github.move_card(card_id, "IN_PROGRESS")
+        await move_card_or_warn(board_provider, card_id, "IN_PROGRESS")
         _dispatch_kwargs: dict = {"workspace_info": workspace_info}
         if _extra_volumes is not None:
             from coordinare.services.http_performer_service import HTTPPerformerService
@@ -1691,7 +1694,7 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
             error=str(exc),
         )
         try:
-            await github.move_card(card_id, "BLOCKED")
+            await move_card_or_warn(board_provider, card_id, "BLOCKED")
         except Exception as move_exc:
             logger.warning(
                 "dispatch_performer.move_card_to_blocked_failed",
@@ -1750,7 +1753,7 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
             error=str(exc),
         )
         try:
-            await github.move_card(card_id, "BLOCKED")
+            await move_card_or_warn(board_provider, card_id, "BLOCKED")
         except Exception as move_exc:
             logger.warning(
                 "dispatch_performer.move_card_to_blocked_failed",

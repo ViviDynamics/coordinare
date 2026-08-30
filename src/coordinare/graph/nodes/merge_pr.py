@@ -6,6 +6,7 @@ import structlog
 
 from coordinare.graph.state import _set_current_card
 from coordinare.metrics import METRICS
+from coordinare.services.board_provider import board_of, move_card_or_warn
 from coordinare.services.github import PermanentGitHubError
 from coordinare.services.rebase import repo_url_from_config
 
@@ -17,6 +18,7 @@ logger = structlog.get_logger(__name__)
 
 async def merge_pr(state: CoordinareState) -> CoordinareState:
     github = state.get("github_service")
+    board_provider = board_of(state)
     card = state.get("current_card")
     if github is None or not isinstance(card, dict):
         state["phase"] = "idle"
@@ -71,7 +73,7 @@ async def merge_pr(state: CoordinareState) -> CoordinareState:
         state["commit_summary"] = None
 
     try:
-        await github.move_card(str(card.get("id", "")), "DONE")
+        await move_card_or_warn(board_provider, str(card.get("id", "")), "DONE")
     except Exception as exc:
         logger.warning("merge_pr.move_card_failed", error=str(exc))
     card["previous_status"] = card.get("status", "IN_REVIEW")
