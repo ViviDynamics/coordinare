@@ -119,14 +119,15 @@ def test_the_verdict_matches_what_the_cluster_actually_does(clients) -> None:
         timeout=60,
         check=True,
     )
-    try:
+    def _manual_attempt(name: str) -> bool:
+        """True if this attempt was blocked. One hand-run Pod under the deny-all."""
         result = subprocess.run(
             [
                 "kubectl",
                 "-n",
                 NAMESPACE,
                 "run",
-                "manual-probe",
+                name,
                 "--image",
                 IMAGE,
                 "--restart=Never",
@@ -136,7 +137,7 @@ def test_the_verdict_matches_what_the_cluster_actually_does(clients) -> None:
                 "--labels",
                 "manual-egress-probe=yes",
                 "--overrides",
-                '{"spec":{"containers":[{"name":"manual-probe","image":"' + IMAGE + '",'
+                '{"spec":{"containers":[{"name":"' + name + '","image":"' + IMAGE + '",'
                 '"imagePullPolicy":"Never","command":["/app/.venv/bin/python","-c",'
                 "\"import socket;socket.create_connection(('10.96.0.1',443),timeout=8);"
                 "print('REACHED')\"]}]}}",
@@ -145,7 +146,19 @@ def test_the_verdict_matches_what_the_cluster_actually_does(clients) -> None:
             text=True,
             timeout=300,
         )
-        manually_blocked = "REACHED" not in result.stdout
+        return "REACHED" not in result.stdout
+
+    try:
+        # 154 (#233): this comparison used to race exactly as the probe did — apply a
+        # policy, measure immediately, and read the CNI's programming window as "not
+        # enforced". A racy check cannot referee a probe that no longer races: it
+        # would fail a correct probe roughly as often as it caught a broken one.
+        #
+        # It stays an independent check. It applies its own policy and runs its own
+        # Pods; only the discipline of not concluding from a single reach is shared.
+        manually_blocked = _manual_attempt("manual-probe")
+        if not manually_blocked:
+            manually_blocked = _manual_attempt("manual-probe-again")
     finally:
         subprocess.run(
             [
@@ -160,11 +173,12 @@ def test_the_verdict_matches_what_the_cluster_actually_does(clients) -> None:
             capture_output=True,
             timeout=60,
         )
-        subprocess.run(
-            ["kubectl", "-n", NAMESPACE, "delete", "pod", "manual-probe", "--ignore-not-found"],
-            capture_output=True,
-            timeout=60,
-        )
+        for leftover in ("manual-probe", "manual-probe-again"):
+            subprocess.run(
+                ["kubectl", "-n", NAMESPACE, "delete", "pod", leftover, "--ignore-not-found"],
+                capture_output=True,
+                timeout=60,
+            )
 
     assert verdict.enforced == manually_blocked, (
         f"the probe says enforced={verdict.enforced} but a hand-run deny-all "

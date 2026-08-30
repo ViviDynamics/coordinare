@@ -167,6 +167,17 @@ async def probe_network_policy_enforcement(
     3. apply a deny-all **egress** policy to the client and try again.
 
     Blocked at step 3 having succeeded at step 2 is the only evidence that counts.
+
+    Step 3 is measured twice when the first attempt gets through, because applying a
+    policy and having the CNI program it are different events, and traffic in the
+    window between them is not evidence of anything. Twice, never more: "this cluster
+    does not enforce NetworkPolicy" is a true answer and must not arrive as a timeout.
+
+    Worst case is therefore four Pod lifetimes -- target, control, and two restricted
+    -- each bounded by *timeout_s*: twelve minutes at the default 180s, up from nine,
+    and only on a cluster where every Pod hangs to its deadline. The second restricted
+    Pod runs only when the first let traffic through, so a cluster that enforces (the
+    reassuring case) is no slower than before.
     """
     import asyncio
 
@@ -350,13 +361,16 @@ async def probe_network_policy_enforcement(
         )
         created.policies.append(policy_name)
 
-        await _create_pod(
-            denied_name,
-            ["/app/.venv/bin/python", "-c", reach_script],
-            {"coordinare-np-probe": "denied"},
-        )
-        denied_outcome = await _outcome(denied_name)
-        if denied_outcome == "never_ran":
+        async def _measure_under_policy(name: str) -> str:
+            """One Pod's attempt to reach the control target with the deny-all in place."""
+            await _create_pod(
+                name,
+                ["/app/.venv/bin/python", "-c", reach_script],
+                {"coordinare-np-probe": "denied"},
+            )
+            return await _outcome(name)
+
+        def _never_ran(which: str) -> EnforcementVerdict:
             # The Pod that was supposed to demonstrate blocking never ran, so there
             # is nothing to conclude. Reporting "enforced" here would be the exact
             # failure this probe exists to avoid.
@@ -364,26 +378,79 @@ async def probe_network_policy_enforcement(
                 enforced=False,
                 baseline_reachable=True,
                 detail=(
-                    "the probe's restricted Pod never ran, so whether the policy would "
-                    "have blocked it is unknown. Reporting inconclusive rather than "
+                    f"the probe's {which} restricted Pod never ran, so whether the policy "
+                    "would have blocked it is unknown. Reporting inconclusive rather than "
                     "'enforced': a Pod that never started produces no traffic, and "
                     "reading that as containment would claim protection you do not have."
                 ),
                 measured_under_policy=False,
             )
 
-        blocked = denied_outcome == "blocked"
+        first = await _measure_under_policy(denied_name)
+        if first == "never_ran":
+            return _never_ran("first")
+
+        if first == "blocked":
+            return EnforcementVerdict(
+                enforced=True,
+                baseline_reachable=True,
+                detail=(
+                    "a deny-all egress policy blocked traffic that flowed without it: this "
+                    "cluster enforces NetworkPolicy"
+                ),
+            )
+
+        # 154 (#233): traffic got through, and that has two causes that look identical
+        # at this instant -- a cluster that does not enforce, and a cluster whose CNI
+        # had not programmed the policy yet. Applying a policy and having it take
+        # effect are different events. They are distinguishable over time rather than
+        # at a point: a cluster that ignores policy lets traffic through every time.
+        # So measure once more before telling an operator they have no protection.
+        #
+        # Once, not in a loop. "Your cluster does not enforce NetworkPolicy" is a true
+        # and useful answer, and a loop would deliver it as a timeout.
+        second = await _measure_under_policy(f"{denied_name}-again")
+        if second == "never_ran":
+            # Deliberately inconclusive, and worth spelling out because it reads at a
+            # glance like enough evidence. Traffic did get through once -- but that is
+            # precisely what a policy the CNI has not programmed yet looks like, which
+            # is the whole reason a second measurement exists. Reporting "not enforced"
+            # from the first reach alone would be the bug this function was changed to
+            # fix, arrived at by another route.
+            return EnforcementVerdict(
+                enforced=False,
+                baseline_reachable=True,
+                detail=(
+                    "traffic got through immediately after the deny-all egress policy "
+                    "was applied, and the second Pod sent to confirm it never ran. That "
+                    "first attempt is not enough on its own: a policy the CNI has not "
+                    "programmed yet looks exactly like one that is never enforced. "
+                    "Reporting inconclusive; re-run the check."
+                ),
+                measured_under_policy=False,
+            )
+
+        if second == "blocked":
+            return EnforcementVerdict(
+                enforced=True,
+                baseline_reachable=True,
+                detail=(
+                    "traffic got through immediately after the deny-all egress policy was "
+                    "applied, but a second attempt was blocked: this cluster enforces "
+                    "NetworkPolicy, and takes a moment to settle after one is created. "
+                    "Anything that measures enforcement the instant a policy is applied "
+                    "will get the wrong answer here."
+                ),
+            )
 
         return EnforcementVerdict(
-            enforced=blocked,
+            enforced=False,
             baseline_reachable=True,
             detail=(
-                "a deny-all egress policy blocked traffic that flowed without it: this "
-                "cluster enforces NetworkPolicy"
-                if blocked
-                else "traffic flowed THROUGH a deny-all egress policy: this cluster does "
-                "not enforce NetworkPolicy, and applying one here would give you no "
-                "protection while looking as though it had"
+                "traffic flowed THROUGH a deny-all egress policy twice, the second time "
+                "well after it was applied: this cluster does not enforce NetworkPolicy, "
+                "and applying one here would give you no protection while looking as "
+                "though it had"
             ),
         )
     finally:
