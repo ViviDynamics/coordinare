@@ -365,3 +365,170 @@ class TestCleanupIsExhaustiveAndLoud:
         assert any("coordinare-np-probe" in d for d in deleted), (
             "the NetworkPolicy was left behind when a Pod deletion failed"
         )
+
+
+class TestTheProbeDoesNotConcludeFromASingleReach:
+    """Spec 154 / issue #233 — applying a policy is not the same as it being programmed.
+
+    The probe applied a deny-all and immediately measured. In the window before the
+    CNI had programmed the rule, traffic flowed, and the probe read that as "this
+    cluster does not enforce NetworkPolicy". Observed once in a full-suite run, then
+    absent on a re-run — a flake whose content was the probe being wrong.
+
+    The two cases are distinguishable over time and not at a point: a cluster that
+    does not enforce lets traffic through every time, one whose policy had not landed
+    lets it through once. So a reach under policy is measured again.
+    """
+
+    @staticmethod
+    def _run(denied_sequence: list[tuple[str, str]]):
+        """Drive the probe with a scripted outcome per denied Pod, in creation order.
+
+        ``denied_sequence`` is [(phase, logs), ...]. Running out of entries means the
+        probe measured more times than the test expected, which is itself a failure —
+        an unbounded retry would turn "does not enforce" into a timeout.
+        """
+        import asyncio
+        from types import SimpleNamespace
+
+        from coordinare.services.kubernetes_egress import probe_network_policy_enforcement
+
+        created_denied: list[str] = []
+        deleted: list[str] = []
+
+        class FakeCore:
+            def create_namespaced_pod(self, *, namespace, body):
+                name = body["metadata"]["name"]
+                if "denied" in name:
+                    created_denied.append(name)
+                return body
+
+            def _denied_script(self, name):
+                idx = created_denied.index(name)
+                assert idx < len(denied_sequence), (
+                    f"the probe measured under policy {idx + 1} times; the test scripted "
+                    f"{len(denied_sequence)}. An unbounded retry makes 'does not enforce' "
+                    "arrive as a timeout instead of an answer."
+                )
+                return denied_sequence[idx]
+
+            def read_namespaced_pod(self, *, name, namespace):
+                if "target" in name:
+                    return SimpleNamespace(
+                        status=SimpleNamespace(phase="Running", pod_ip="10.0.0.9")
+                    )
+                if "control" in name:
+                    return SimpleNamespace(
+                        status=SimpleNamespace(phase="Succeeded", pod_ip="10.0.0.8")
+                    )
+                phase, _ = self._denied_script(name)
+                return SimpleNamespace(status=SimpleNamespace(phase=phase, pod_ip=None))
+
+            def read_namespaced_pod_log(self, *, name, namespace):
+                if "control" in name:
+                    return "ATTEMPTED\nREACHED"
+                return self._denied_script(name)[1]
+
+            def delete_namespaced_pod(self, *, name, **kwargs):
+                deleted.append(name)
+                return None
+
+        class FakeNet:
+            def create_namespaced_network_policy(self, **kwargs):
+                return None
+
+            def delete_namespaced_network_policy(self, **kwargs):
+                return None
+
+        verdict = asyncio.run(
+            probe_network_policy_enforcement(
+                core_v1=FakeCore(),
+                networking_v1=FakeNet(),
+                namespace="ns",
+                image="img",
+                timeout_s=4,
+            )
+        )
+        return verdict, created_denied, deleted
+
+    REACHED = ("Succeeded", "ATTEMPTED\nREACHED")
+    BLOCKED = ("Succeeded", "ATTEMPTED")
+    NEVER_RAN = ("Pending", "")
+
+    def test_a_policy_that_lands_late_is_still_enforcement(self) -> None:
+        """SC-001 — the defect. Reached once, blocked after: the cluster does enforce."""
+        verdict, denied, _ = self._run([self.REACHED, self.BLOCKED])
+
+        assert verdict.enforced, (
+            "the probe concluded from the measurement taken before the CNI had "
+            "programmed the policy, and told the operator they have no protection"
+        )
+        assert len(denied) == 2, "a reach under policy must be measured again"
+
+    def test_a_cluster_that_never_enforces_is_still_reported(self) -> None:
+        """SC-002 — the over-correction guard.
+
+        Turning a true negative into "inconclusive" would trade a rare wrong answer
+        for a common useless one. kindnet genuinely does not enforce egress, and an
+        operator on kindnet needs to be told so.
+        """
+        verdict, denied, _ = self._run([self.REACHED, self.REACHED])
+
+        assert not verdict.enforced
+        assert verdict.conclusive, "reaching twice is an answer, not an absence of one"
+        assert len(denied) == 2
+
+    def test_blocked_first_time_costs_no_second_measurement(self) -> None:
+        """FR-003 — the common path on a working cluster must not get slower."""
+        verdict, denied, _ = self._run([self.BLOCKED])
+
+        assert verdict.enforced
+        assert len(denied) == 1, "nothing needed re-measuring; the first answer was the answer"
+
+    def test_a_re_measurement_that_never_ran_is_inconclusive(self) -> None:
+        """FR-005 — silence is not containment, on the second Pod as on the first."""
+        verdict, _denied, _ = self._run([self.REACHED, self.NEVER_RAN])
+
+        assert not verdict.enforced
+        assert not verdict.measured_under_policy
+        assert not verdict.conclusive
+
+    def test_the_second_pod_is_cleaned_up(self) -> None:
+        """SC-005 — re-measuring means more to clean, on every path."""
+        _, denied, deleted = self._run([self.REACHED, self.REACHED])
+
+        assert len(denied) == 2
+        for name in denied:
+            assert name in deleted, f"{name} was left behind in the namespace"
+
+    def test_each_outcome_says_what_was_observed(self) -> None:
+        """FR-009 / SC-003 — a probe that quietly retried would be one nobody could audit."""
+        late, _, _ = self._run([self.REACHED, self.BLOCKED])
+        never, _, _ = self._run([self.BLOCKED])
+        open_, _, _ = self._run([self.REACHED, self.REACHED])
+
+        details = {late.detail, never.detail, open_.detail}
+        assert len(details) == 3, "three different observations must not read identically"
+        assert "again" in late.detail or "second" in late.detail or "settl" in late.detail, (
+            "the operator should be told the first attempt got through"
+        )
+
+    def test_a_failed_confirmation_says_what_it_saw(self) -> None:
+        """Raised in review as "you already have proof"; kept inconclusive on purpose.
+
+        A first reach looks like enough evidence, and it is not: an unprogrammed
+        policy and an unenforced one are identical at that instant, which is why the
+        confirming measurement exists. Concluding from the first reach alone would be
+        the original bug reached by a different route. So the verdict stays
+        inconclusive and the detail says exactly what happened, rather than reusing
+        the generic "the Pod never ran" wording that fits the other case.
+        """
+        verdict, _, _ = self._run([self.REACHED, self.NEVER_RAN])
+        first_never, _, _ = self._run([self.NEVER_RAN])
+
+        assert not verdict.conclusive
+        assert verdict.detail != first_never.detail, (
+            "the two inconclusive outcomes saw different things and must not read alike"
+        )
+        assert "got through" in verdict.detail, "the operator should be told what was observed"
+        assert "never ran" in verdict.detail, "and what was missing"
