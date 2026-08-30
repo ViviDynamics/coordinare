@@ -142,12 +142,14 @@ You should see `pods` and `pods/log`, and nothing else.
 
 ## Known limits
 
-- **No egress restriction for performers.** The Docker path restricts egress with
-  in-container iptables via `NET_ADMIN`. The Kubernetes equivalent is a
-  NetworkPolicy, which only applies if your CNI enforces them — kind, minikube and
-  microk8s defaults often do not. Nothing here silently substitutes for it. Apply
-  your own policy against `app.kubernetes.io/managed-by=coordinare` if you need it,
-  having confirmed your CNI enforces it.
+- **Egress restriction is available but off by default** (`performers.egress.enabled`). A NetworkPolicy is inert unless your CNI implements
+  it, and turning it on where it is not enforced gives you no protection while
+  looking as though it does. **Support is often partial, not absent.** Measured on kind: kindnet enforces *ingress* but not *egress*, so a policy applied there is silently inert in exactly the direction that matters here. That is why the question to ask is not "does my CNI support NetworkPolicy" but "does it enforce the direction I am relying on" — and `coordinare doctor --check egress` measures it rather than inferring it from the CNI's name.
+
+  It restricts by **CIDR, not hostname**: `egress.to` accepts only `ipBlock` and
+  selectors, so it cannot express "allow api.github.com". The Docker path's
+  allowlist *is* hostname-based, so the two are **not equivalent**. For
+  hostname-level control you need a CNI with FQDN policies, or an egress proxy.
 - **The dashboard is unauthenticated** until spec 143.
 - **The daemon must run in-cluster.** Pod IPs are generally not routable from
   outside, so coordinare could not reach the performers it starts.

@@ -812,6 +812,10 @@ class TestTheChartJobRunsEveryHelmDependentAssertion:
     def test_the_chart_job_runs_the_kubernetes_transport_tests_too(self) -> None:
         job = yaml.safe_load(Path(PR_WORKFLOW).read_text())["jobs"]["chart"]
         body = yaml.safe_dump(job)
+        assert "test_225_kubernetes_egress" in body, (
+            "test_225's chart-rendering assertions need helm; without them in the "
+            "Chart job they skip in Test and run nowhere"
+        )
         assert "test_146_kubernetes_transport" in body, (
             "test_146's chart-rendering assertion needs helm; without it in the Chart "
             "job it skips in Test and runs nowhere"

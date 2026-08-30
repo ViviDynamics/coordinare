@@ -106,7 +106,11 @@ support.
 The Docker path can restrict a performer's egress with an allowlist, implemented
 as iptables rules inside the container via `NET_ADMIN`.
 
-**That does not carry over, and nothing silently replaces it.** The
+**That does not carry over, and nothing silently replaces it.** The Helm chart now
+offers an opt-in NetworkPolicy (`performers.egress.enabled`); this raw-manifest path
+does not, and neither gives you hostname-level control.
+
+**Support is often partial, not absent.** Measured on kind: kindnet enforces *ingress* but not *egress*, so a policy applied there is silently inert in exactly the direction that matters here. That is why the question to ask is not "does my CNI support NetworkPolicy" but "does it enforce the direction I am relying on" — and `coordinare doctor --check egress` measures it rather than inferring it from the CNI's name. The
 Kubernetes-native equivalent is a NetworkPolicy, which only does anything if your
 CNI enforces them — kind, minikube and microk8s defaults often do not. Shipping a
 policy that quietly fails to apply would be worse than shipping none, because you
