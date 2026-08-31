@@ -593,7 +593,10 @@ def test_legacy_put_config_global_persists_and_reports_saved(temp_config_path, m
     monkeypatch.setenv("COORDINARE_GITHUB_TOKEN", "ghp_realtoken")
     raw = yaml.safe_load(temp_config_path.read_text())
     client = _make_client(temp_config_path, raw)
-    resp = client.put("/api/config/global", json={"poll_interval_seconds": 33})
+    etag = client.get("/api/config/global").headers["etag"]  # 157: version required
+    resp = client.put(
+        "/api/config/global", json={"poll_interval_seconds": 33, "expected_hash": etag}
+    )
     assert resp.status_code == 200
     assert resp.json()["status"] == "saved"
     assert yaml.safe_load(temp_config_path.read_text())["poll_interval_seconds"] == 33
@@ -602,7 +605,8 @@ def test_legacy_put_config_global_persists_and_reports_saved(temp_config_path, m
 def test_legacy_put_config_global_rejects_unknown_field_400(temp_config_path):
     raw = yaml.safe_load(temp_config_path.read_text())
     client = _make_client(temp_config_path, raw)
-    resp = client.put("/api/config/global", json={"not_a_field": 1})
+    etag = client.get("/api/config/global").headers["etag"]  # 157: version required
+    resp = client.put("/api/config/global", json={"not_a_field": 1, "expected_hash": etag})
     assert resp.status_code == 400
 
 

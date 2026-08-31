@@ -127,6 +127,12 @@ class TestAConcurrentEditIsRefusedRatherThanLost:
         assert resp.status_code == 200, resp.text
         assert yaml.safe_load(temp_config_path.read_text())["max_concurrent_cards"] == 4
 
+    def test_the_page_refuses_to_save_without_a_version(self) -> None:
+        """157: the page fails closed rather than collecting a 428 from the server."""
+        from coordinare.dashboard import _DASHBOARD_HTML
+
+        assert "this page did not load a configuration version" in _DASHBOARD_HTML
+
     def test_the_page_sends_the_hash_it_loaded_with(self) -> None:
         """FR-003, asserted on the page's own code.
 
@@ -139,7 +145,7 @@ class TestAConcurrentEditIsRefusedRatherThanLost:
         assert "_adminCfgHash = res.headers.get('ETag')" in page, (
             "the page never captures the version it is editing"
         )
-        assert "if (_adminCfgHash) payload.expected_hash = _adminCfgHash;" in page, (
+        assert "payload.expected_hash = _adminCfgHash;" in page, (
             "the page captures a hash and then does not send it"
         )
 
@@ -157,7 +163,14 @@ class TestTheRemainingGapIsVisible:
     def _events(logs):
         return [entry.get("event") for entry in logs]
 
-    def test_an_unguarded_write_is_logged(self, temp_config_path) -> None:
+    def test_an_unguarded_write_is_now_refused_and_logged(self, temp_config_path) -> None:
+        """Spec 157 answered the contract question this test was posed to inform.
+
+        156 accepted these and logged them, because refusing is a contract change
+        and nobody could weigh it without knowing how often they happened. The answer
+        was to refuse: silently losing an edit is worse than a loud failure a script
+        can be taught to handle.
+        """
         from structlog.testing import capture_logs
 
         client = _client(temp_config_path)
@@ -165,11 +178,12 @@ class TestTheRemainingGapIsVisible:
         with capture_logs() as logs:
             resp = client.put("/api/config/global", json={"max_concurrent_cards": 4})
 
-        assert resp.status_code == 200, "an existing caller's behaviour changed"
-        assert "config.global_write_unguarded" in self._events(logs), (
-            "whether to refuse these is a contract decision, and nobody can weigh it "
-            "without knowing how often they happen"
+        assert resp.status_code == 428
+        assert resp.json()["precondition_required"] is True
+        assert "expected_hash" in resp.json()["error"], (
+            "a refusal should say what to send, not only that something was wrong"
         )
+        assert "config.global_write_refused_unguarded" in self._events(logs)
 
     def test_a_guarded_write_is_not_logged(self, temp_config_path) -> None:
         from structlog.testing import capture_logs
@@ -256,8 +270,12 @@ class TestTheGuardHoldsForEverySaveNotJustTheFirst:
     def test_the_status_key_is_unchanged_for_existing_callers(self, temp_config_path) -> None:
         """Adding a key is safe; changing one is not. Existing tests read `status`."""
         client = _client(temp_config_path)
+        current = client.get("/api/config/global").headers["etag"]
 
-        body = client.put("/api/config/global", json={"max_concurrent_cards": 4}).json()
+        body = client.put(
+            "/api/config/global",
+            json={"max_concurrent_cards": 4, "expected_hash": current},
+        ).json()
 
         assert body["status"] == "saved"
 

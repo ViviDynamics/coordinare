@@ -2265,7 +2265,16 @@ async function loadGlobalConfigPage() {
       else payload[k] = v === '' ? null : v;
     });
     try {
-      if (_adminCfgHash) payload.expected_hash = _adminCfgHash;
+      if (!_adminCfgHash) {
+        // Fail closed, like the assistant's Apply: without a version to write
+        // against the server will refuse anyway, and saying so here explains what
+        // to do instead of surfacing a bare 428.
+        msg.textContent = 'Cannot save: this page did not load a configuration version. '
+                        + 'Reload the page and try again.';
+        msg.style.color = 'var(--color-accent-red)';
+        return;
+      }
+      payload.expected_hash = _adminCfgHash;
       var r = await fetch('/api/config/global', {
         method: 'PUT',
         headers: {'Content-Type':'application/json'},
@@ -5174,15 +5183,31 @@ def create_dashboard_app(
         # assistant-driven write is guarded even while the older UI is not.
         expected_hash = body.pop("expected_hash", None)
         if expected_hash is None:
-            # 156 (#237): still accepted, so no existing caller changes behaviour --
-            # but no longer invisible. Every first-party caller now sends a hash, so
-            # anything reaching here is automation writing config with no protection
-            # against overwriting a concurrent edit. Whether to refuse it outright is
-            # a contract decision, and one nobody can weigh without knowing how often
-            # it happens.
+            # 157: required, not merely accepted. Spec 156 logged these instead of
+            # refusing them, because refusing is a contract change and nobody could
+            # weigh it without knowing how often it happened. Every first-party
+            # caller now sends one, so what remains is automation writing config with
+            # no protection against overwriting a concurrent edit -- and silently
+            # losing someone's change is worse than a loud failure a script can be
+            # taught to handle.
+            #
+            # 428 rather than 400: the request is well-formed, and what is missing is
+            # a precondition. RFC 6585 §3 exists for exactly this, and it tells a
+            # caller *what* to do rather than only that they were wrong.
             _log.warning(
-                "config.global_write_unguarded",
-                hint="no expected_hash sent; a concurrent edit would be overwritten",
+                "config.global_write_refused_unguarded",
+                hint="no expected_hash sent; refusing rather than risking a lost edit",
+            )
+            return JSONResponse(
+                {
+                    "error": (
+                        "expected_hash is required. GET /api/config/global returns the "
+                        "current version as an ETag; send it back as expected_hash so a "
+                        "concurrent edit is refused rather than overwritten."
+                    ),
+                    "precondition_required": True,
+                },
+                status_code=428,
             )
         if expected_hash is not None:
             from coordinare.services.config_write_service import (
