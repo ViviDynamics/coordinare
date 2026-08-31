@@ -1,0 +1,30 @@
+# Spec 150 (#204) spike: the smallest escalation route that can be observed.
+# Targets point at the stub upstream so replies are chosen by the test rather than
+# by a model, and `confirmations = 2` is the value the upstream docs use.
+schema_version = 1
+
+[llm_clients.stub]
+format = "openai_chat"
+base_url = "http://host.docker.internal:8770/v1"
+api_key_env = "STUB_API_KEY"
+
+[targets.judge]
+id = "judge-model"
+llm_client = "stub"
+
+[targets.strong]
+id = "strong-model"
+llm_client = "stub"
+
+[targets.weak]
+id = "weak-model"
+llm_client = "stub"
+
+[routes.agent]
+id = "agent"
+type = "llm_classifier"
+mode = "escalation"
+classifier_target = "judge"
+strong_target = "strong"
+weak_target = "weak"
+escalation = { confirmations = 2, recent_turn_window = 28, window_message_chars = 500 }
