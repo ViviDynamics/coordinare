@@ -2175,6 +2175,9 @@ async function loadGlobalConfigPage() {
   var res, data;
   try {
     res = await fetch('/api/config/global');
+    // 156: the version this page is about to edit. Sent back on save so a
+    // colleague's edit landing in between is refused rather than overwritten.
+    _adminCfgHash = res.headers.get('ETag');
     data = await res.json();
   } catch(e) {
     el.innerHTML = '<div class="empty-state">Failed to load config</div>';
@@ -2262,6 +2265,7 @@ async function loadGlobalConfigPage() {
       else payload[k] = v === '' ? null : v;
     });
     try {
+      if (_adminCfgHash) payload.expected_hash = _adminCfgHash;
       var r = await fetch('/api/config/global', {
         method: 'PUT',
         headers: {'Content-Type':'application/json'},
@@ -2271,6 +2275,14 @@ async function loadGlobalConfigPage() {
       if (r.ok) {
         msg.textContent = 'Saved — reload triggered';
         msg.style.color = 'var(--color-accent-green)';
+        // Carry the new version forward, so a second save without reloading is
+        // guarded too. Setting this to null would have made the guard hold exactly
+        // once per page load while looking as though it always held.
+        _adminCfgHash = d.new_hash || null;
+      } else if (r.status === 409) {
+        msg.textContent = 'Not saved: the configuration changed since this page loaded. '
+                        + 'Reload to see the current values, then make your change again.';
+        msg.style.color = 'var(--color-accent-red)';
       } else {
         msg.textContent = d.error || ('Error ' + r.status);
         msg.style.color = 'var(--color-accent-red)';
@@ -2309,6 +2321,7 @@ var CFG_HINT = 'font-size:11px;color:var(--color-text-muted);margin-top:2px';
 var CFG_INPUT = 'width:100%;box-sizing:border-box;background:var(--color-bg-base);border:1px solid var(--color-border);'
   + 'border-radius:4px;color:var(--color-text-primary);font-family:var(--font-mono,monospace);font-size:12px;padding:5px 7px';
 var _cfgHash = null;      // optimistic-concurrency baseline (content_hashes.config_yaml)
+var _adminCfgHash = null; // 156: the same, for the older Global Config page (from its ETag)
 var _cfgVersion = null;
 var _cfgRoutingHash = null;     // optimistic-concurrency baseline (routing.yaml, spec-078)
 var _cfgRoutingAvail = false;   // whether a routing table is mounted+present on this host
@@ -5109,7 +5122,24 @@ def create_dashboard_app(
         def _serialize(v: object) -> object:
             from pathlib import Path as _Path
             return str(v) if isinstance(v, _Path) else v
-        return JSONResponse({k: _serialize(getattr(cfg, k, None)) for k in _global_cfg_editable})
+
+        body = {k: _serialize(getattr(cfg, k, None)) for k in _global_cfg_editable}
+        headers: dict[str, str] = {}
+        # 156 (#237): the page needs the file's content hash to save safely, and had
+        # no way to get one -- this endpoint returns values only, and the hash lives
+        # in the far heavier /api/config/all. It cannot go in the body either: an
+        # existing test pins this response's exact key set, correctly, because that
+        # is a values contract. An ETag is what the header is for, and adds nothing
+        # to the body.
+        if config_path is not None and config_path.is_file():
+            from coordinare.services.config_write_service import compute_content_hash
+
+            # Quoted, per RFC 7232 §2.3: an entity-tag is a DQUOTE-enclosed opaque
+            # tag. A bare sha256:... happens to work for our own string comparison
+            # and is still a malformed header, which is the kind of thing that works
+            # until something between us and the browser starts caring.
+            headers["ETag"] = f'"{compute_content_hash(config_path)}"'
+        return JSONResponse(body, headers=headers)
 
     @app.put("/api/config/global")
     async def update_global_config(request: Request) -> JSONResponse:
@@ -5119,6 +5149,8 @@ def create_dashboard_app(
         import tempfile
 
         import yaml
+
+        from coordinare.services.config_write_service import compute_content_hash
 
         if config_path is None or not config_path.is_file():
             return JSONResponse(
@@ -5141,6 +5173,17 @@ def create_dashboard_app(
         # behaviour -- the config assistant's Apply always sends one, so every
         # assistant-driven write is guarded even while the older UI is not.
         expected_hash = body.pop("expected_hash", None)
+        if expected_hash is None:
+            # 156 (#237): still accepted, so no existing caller changes behaviour --
+            # but no longer invisible. Every first-party caller now sends a hash, so
+            # anything reaching here is automation writing config with no protection
+            # against overwriting a concurrent edit. Whether to refuse it outright is
+            # a contract decision, and one nobody can weigh without knowing how often
+            # it happens.
+            _log.warning(
+                "config.global_write_unguarded",
+                hint="no expected_hash sent; a concurrent edit would be overwritten",
+            )
         if expected_hash is not None:
             from coordinare.services.config_write_service import (
                 ConcurrencyConflictError,
@@ -5151,6 +5194,11 @@ def create_dashboard_app(
                 return JSONResponse(
                     {"error": "expected_hash must be a string"}, status_code=400
                 )
+            # A client that read the hash from the ETag sends it back with its
+            # quotes, and a client holding it from `new_hash` sends it bare. Both
+            # are the same version, so both are accepted -- otherwise quoting the
+            # header correctly would have made every save from the page 409.
+            expected_hash = expected_hash.removeprefix("W/").strip('"')
             try:
                 guard_concurrency(config_path, expected_hash)
             except ConcurrencyConflictError as err:
@@ -5201,7 +5249,21 @@ def create_dashboard_app(
             if hasattr(daemon, "_webhook_trigger"):
                 daemon._webhook_trigger.set()
 
-        return JSONResponse({"status": "saved", "reload_triggered": hasattr(daemon, "_config_reload_trigger")})
+        # 156: hand back the new version, the way the catalog endpoints already do
+        # (`new_hash`, consumed at the 081 page's save). Without it a page that saved
+        # successfully would have no current hash, and its NEXT save would go
+        # unguarded -- the guard would hold exactly once per page load, which is
+        # worse than useless because it looks like it holds always.
+        saved_hash = (
+            compute_content_hash(config_path)
+            if config_path is not None and config_path.is_file()
+            else None
+        )
+        return JSONResponse({
+            "status": "saved",
+            "reload_triggered": hasattr(daemon, "_config_reload_trigger"),
+            "new_hash": saved_hash,
+        })
 
     # -----------------------------------------------------------------------
     # 081 — Live config editing: section save + spec-080 catalog CRUD
