@@ -1969,7 +1969,13 @@ def test_get_global_config_no_config_returns_500() -> None:
 def test_put_global_config_no_config_path_returns_503() -> None:
     """PUT /api/config/global returns 503 when no config file is configured."""
     client = _make_app()
-    resp = client.put("/api/config/global", json={"max_concurrent_cards": 3})
+    # 157: the endpoint requires the version being written against.
+    # 157: a version is required, but the 503 for "no config file" is checked first,
+    # so this only has to be present. There is no file here to take a real hash of.
+    resp = client.put(
+        "/api/config/global",
+        json={"max_concurrent_cards": 3, "expected_hash": "sha256:placeholder"},
+    )
     assert resp.status_code == 503
 
 
@@ -1980,7 +1986,13 @@ def test_put_global_config_unknown_field_returns_400(tmp_path) -> None:
     store = DashboardStore()
     daemon = _make_mock_daemon()
     app = create_dashboard_app(store, daemon, _make_mock_metrics(), _make_mock_health(), config_path=config_file)
-    resp = TestClient(app, base_url="http://127.0.0.1:8090").put("/api/config/global", json={"not_a_real_field": "value"})
+    client = TestClient(app, base_url="http://127.0.0.1:8090")
+    from coordinare.services.config_write_service import compute_content_hash
+
+    resp = client.put(
+        "/api/config/global",
+        json={"not_a_real_field": "value", "expected_hash": compute_content_hash(config_file)},
+    )
     assert resp.status_code == 400
     assert "not_a_real_field" in resp.json()["error"]
 
@@ -1997,7 +2009,13 @@ def test_put_global_config_persists_valid_field(tmp_path) -> None:
     store = DashboardStore()
     daemon = _make_mock_daemon()
     app = create_dashboard_app(store, daemon, _make_mock_metrics(), _make_mock_health(), config_path=config_file)
-    resp = TestClient(app, base_url="http://127.0.0.1:8090").put("/api/config/global", json={"poll_interval_seconds": 60})
+    client = TestClient(app, base_url="http://127.0.0.1:8090")
+    from coordinare.services.config_write_service import compute_content_hash
+
+    resp = client.put(
+        "/api/config/global",
+        json={"poll_interval_seconds": 60, "expected_hash": compute_content_hash(config_file)},
+    )
     assert resp.status_code == 200
     assert resp.json()["status"] == "saved"
     saved = yaml.safe_load(config_file.read_text())

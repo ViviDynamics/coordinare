@@ -434,16 +434,22 @@ class TestApplyingGoesThroughTheGuardedWritePath:
 
         assert yaml.safe_load(temp_config_path.read_text())["max_concurrent_cards"] == 5
 
-    def test_without_a_hash_the_endpoint_behaves_as_before(self, temp_config_path) -> None:
-        """SC-008 — the guard is optional precisely so no existing caller changes."""
+    def test_without_a_hash_the_write_is_now_refused(self, temp_config_path) -> None:
+        """Spec 157 changed this contract deliberately, so the test is inverted.
+
+        It was written to pin the guard as *optional*, which is what spec 155 needed:
+        the assistant could be guarded without changing any existing caller. Once
+        every first-party caller sent a version, leaving it optional only preserved
+        a way to silently lose someone's edit.
+        """
         client = self._client(temp_config_path)
 
         resp = client.put("/api/config/global", json={"max_concurrent_cards": 6})
 
-        assert resp.status_code == 200, resp.text
+        assert resp.status_code == 428, resp.text
         import yaml
 
-        assert yaml.safe_load(temp_config_path.read_text())["max_concurrent_cards"] == 6
+        assert yaml.safe_load(temp_config_path.read_text())["max_concurrent_cards"] != 6
 
     def test_expected_hash_is_not_written_into_the_config(self, temp_config_path) -> None:
         """It is a request header in spirit, not a setting."""
