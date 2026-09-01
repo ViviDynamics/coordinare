@@ -126,7 +126,10 @@ async def _run_ci_check(stand_path: Path, label: str = "performer") -> tuple[boo
         log.info("ci_check.passed", label=label, command=result.lint_command, duration=run_result.duration_seconds)
         return True, ""
 
-    error_output = (run_result.stderr + "\n" + run_result.stdout).strip()
+    # Stripped once, here, so every reader below -- the signature matcher, the
+    # runner-summary precedence, the failure count, and the excerpt that reaches
+    # the implementer -- sees the same plain text.
+    error_output = _strip_ansi((run_result.stderr + "\n" + run_result.stdout).strip())
     log.warning(
         "ci_check.failed",
         label=label,
@@ -152,7 +155,9 @@ class LocalTestResult:
     test command that ran (None when skipped/passed-through).  ``output`` is the
     truncated failure tail (empty on success).  ``env_blocked`` is True only when
     a failure is attributable to an environment signal (089 US2); ``env_reason``
-    carries the human-readable cause in that case.
+    carries the human-readable cause in that case.  ``exit_code`` is the test
+    command's exit status (None when skipped/passed-through), surfaced in the
+    failure feedback so the implementer sees how the run terminated.
     """
 
     passed: bool
@@ -161,6 +166,203 @@ class LocalTestResult:
     duration_seconds: float
     env_blocked: bool = False
     env_reason: str | None = None
+    exit_code: int | None = None
+    #: True when the gate re-ran the suite before concluding a defect.
+    retried: bool = False
+    #: Attempt 1's output, carried only when the two attempts failed
+    #: *differently*. A non-idempotent suite can fail two ways, and reporting
+    #: only the second leaves the implementer with no sign the first differed.
+    first_attempt_output: str | None = None
+
+
+# Substrings (matched case-insensitively against the failure output) that
+# attribute a local test failure to the *environment* rather than the diff.
+# Deliberately conservative: ambiguous signatures that frequently indicate a
+# real code defect — ModuleNotFoundError / ImportError (a forgotten dependency
+# in the diff IS a defect), AssertionError, SyntaxError — are EXCLUDED so a
+# genuine bug is never masked as an environment block.  These cover the failure
+# modes that surface only in test stdout/stderr (a refused service socket, a
+# port collision, a missing toolchain binary) and which spec-088's single-shot
+# env signals do not always flag.
+_ENV_FAILURE_SIGNATURES: tuple[str, ...] = (
+    "connection refused",
+    "could not connect to",
+    "couldn't connect to",
+    "failed to connect to",
+    "address already in use",
+    "errno 98",  # EADDRINUSE (Linux)
+    "errno 48",  # EADDRINUSE (macOS)
+    "errno 111",  # ECONNREFUSED (Linux)
+    "errno 61",  # ECONNREFUSED (macOS)
+    "no such host",
+    "name or service not known",
+    "temporary failure in name resolution",
+    "no space left on device",
+)
+# Deliberately NOT here: "command not found". Review was right that it is the
+# shell-level twin of ModuleNotFoundError, excluded a few lines above on the
+# grounds that a forgotten dependency in the diff IS a defect. An implementer
+# that calls a script it did not commit, or a CLI it did not add to the
+# manifest, produces exactly this string and can fix it. It is genuinely
+# ambiguous -- a toolchain binary missing from the cache produces it too -- and
+# the gate's stated bias settles ambiguity the same way every time: never mask a
+# real defect, remote CI is the backstop. The env-cache health signal still
+# catches the cache case before the gate is reached.
+
+
+# A test runner reporting *failed tests* (as opposed to erroring out before it
+# could run them) is decisive evidence of a code defect, and it outranks any
+# environment signature found in the same output.  Without this precedence a
+# signature in incidental output masks a real red test: assertion diffs and
+# fixture data routinely embed environment-shaped phrases — this repo's own
+# suite has 20 files containing the literal "connection refused" (e.g.
+# ``assert "connection refused" in result["system_error_reason"]``), so a
+# genuine failure of one of those tests prints the phrase and would otherwise
+# be held as env_blocked instead of being handed back to the implementer.
+#
+# Deliberately matches only *failures*, never *errors*: pytest reports a fixture
+# that could not reach Postgres as an ERROR ("1 error"), and that IS the
+# environment case this gate exists to catch, so error counts must not suppress
+# the signature.  Zero-counts ("0 failed") are excluded via the [1-9] lead.
+# Matched against a runner's own summary line or per-failure header — NOT against
+# exception names. A bare "AssertionError" (or pytest's "E   assert …" detail) is
+# not evidence of a failed test: it is equally what a *fixture* prints when it
+# asserts that a service came up, e.g. "E assert wait_for_port(5432)" →
+# "AssertionError: connection refused". Treating that as a code defect bounces
+# the implementer on an environment problem it cannot fix — the very failure
+# spec-089 US2 exists to prevent. Every runner ci_detection can select prints a
+# non-zero failure COUNT in its summary, and truncate="tail" guarantees that
+# summary survives, so the counts below are both sufficient and safe.
+_TEST_FAILURE_MARKERS = re.compile(
+    # Anchored the same way the `failures?` alternative below is, and for the
+    # same reason review gave: `\b` after "failed" matches before a space, so
+    # "2 failed to connect to postgres:5432" and "1 failed attempt to reach
+    # redis" read as test results. Both were reproduced against the previous
+    # pattern. pytest always follows its count with a comma or " in ";
+    # mocha prints its count alone on a line.
+    r"[1-9]\d*\s+failed(?:,|\s+in\s)"  # pytest "1 failed, 12 passed" / "1 failed in 3.2s"
+    r"|^\s*[1-9]\d*\s+failing\s*$"  # mocha "  1 failing", alone on its line
+    # rspec "3 examples, 1 failure" / minitest "…, 1 failures, 0 errors". The
+    # leading comma anchors these to a summary line so prose such as
+    # "3 failures to connect, giving up" cannot masquerade as a test result.
+    r"|,\s*[1-9]\d*\s+failures?\b"
+    r"|failures:\s*[1-9]"  # maven / gradle "Failures: 1"
+    r"|^\s*\d+\)\s+Failure:"  # minitest per-failure header
+    r"|^\s*Failure/Error:"  # rspec per-failure detail
+    r"|^FAILED\s+\S+::",  # pytest per-test failure line
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+#: CSI/OSC escape sequences. A runner told to colour its output (``--color=yes``,
+#: ``FORCE_COLOR``, a project's own pytest.ini) writes "\x1b[31m1 failed\x1b[0m,"
+#: -- and every pattern below reads "failed" followed by a comma or " in ". The
+#: escape sits between them, so the summary becomes invisible while the env
+#: signatures, which are plain substrings, still match. That combination fails in
+#: the direction this gate exists to prevent: a genuinely red suite is held as an
+#: environment block and the implementer never hears about its own bug.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+
+
+def _strip_ansi(text: str) -> str:
+    """Output as the runner meant it, for anything that reads it as text."""
+    return _ANSI_RE.sub("", text)
+
+
+#: Above this many reported failing tests the gate stops treating a red run as a
+#: possible flake. A few failures can be timing; a wall of them is the diff.
+_RETRY_MAX_FAILING = 3
+
+#: Counts as reported by the runners ci_detection can select. Anchored the same
+#: way _TEST_FAILURE_MARKERS is, so prose cannot supply a count.
+_FAILURE_COUNT_PATTERNS = (
+    re.compile(r"([1-9]\d*)\s+failed(?:,|\s+in\s)", re.IGNORECASE),
+    re.compile(r"^\s*([1-9]\d*)\s+failing\s*$", re.IGNORECASE | re.MULTILINE),
+    re.compile(r",\s*([1-9]\d*)\s+failures?\b", re.IGNORECASE),
+    re.compile(r"failures:\s*([1-9]\d*)", re.IGNORECASE),
+)
+
+
+def _reported_failure_count(output: str) -> int | None:
+    """How many failing tests the runner said there were, if it said.
+
+    None when no summary could be read — a crashed runner, an unfamiliar
+    format — which the caller treats as "might be a flake" rather than
+    "definitely broad", because guessing the other way would remove flake
+    recovery from every runner this cannot parse.
+    """
+    # The LAST count in the output, not the largest. A runner prints its summary
+    # when it finishes, and run_command tail-truncates, so the final match is the
+    # run that just happened; an earlier one is captured output from something
+    # else -- a nested suite, a subprocess under test, a prior summary echoed
+    # into stderr. Taking the max let a stale "15 failed" from captured output
+    # override the real "3 failed" and skip the retry, bouncing a flake as a
+    # broken diff.
+    matches = [
+        (match.end(), int(match.group(1)))
+        for pattern in _FAILURE_COUNT_PATTERNS
+        for match in pattern.finditer(output)
+    ]
+    if not matches:
+        return None
+    return max(matches)[1]
+
+
+def _match_env_signature(output: str) -> str | None:
+    """Return the first :data:`_ENV_FAILURE_SIGNATURES` substring present in
+    *output* (case-insensitive), or None when the failure looks like a genuine
+    code defect.
+
+    A runner-reported test failure (:data:`_TEST_FAILURE_MARKERS`) short-circuits
+    to None: the suite ran and tests failed on their own assertions, so this is
+    the implementer's bug even when the output also mentions an environment-shaped
+    string.
+    """
+    if _TEST_FAILURE_MARKERS.search(output):
+        return None
+    haystack = output.lower()
+    for sig in _ENV_FAILURE_SIGNATURES:
+        if sig in haystack:
+            return sig
+    return None
+
+
+def _env_signature_reason(signature: str, output: str) -> str:
+    """Build the env-block reason for a signature-classified failure.
+
+    Signature matching is a heuristic, and it routes the card to a HOLD that a
+    human has to judge. Naming only the matched phrase makes that judgement
+    impossible without going and finding the performer log, so carry a bounded
+    excerpt of the output that triggered it. Bounded because this string travels
+    into the operator notification.
+    """
+    excerpt = _format_failure_excerpt(output, limit=400)
+    reason = f"local test output matched environment-failure signature: '{signature}'"
+    return f"{reason}\n{excerpt}" if excerpt else reason
+
+
+def _format_failure_excerpt(output: str, *, limit: int = 1500) -> str:
+    """Clamp failure output for the implementer feedback comment.
+
+    The output is already tail-truncated by ``run_command`` (the test summary is
+    the most diagnostic part); if it is still over *limit* chars, keep the head
+    and tail with an elision marker so both the first failure and the final
+    summary survive."""
+    from performer.workspace import _redact_auth_headers
+
+    # Redacted here rather than at the call sites: this function is the single
+    # place arbitrary test output becomes a string bound for a PR comment or an
+    # operator notification. Review's point was that this change widened that
+    # surface -- from a 500-char head slice to a 1500-char head+tail, so the end
+    # of the output, where config dumps and connection strings land, is now
+    # included -- and that inheriting "pre-existing" was the wrong call in the
+    # change that did the widening.
+    output = _redact_auth_headers(output.strip())
+    if len(output) <= limit:
+        return output
+    head = output[: limit // 3]
+    tail = output[-(limit - limit // 3) :]
+    return f"{head}\n…[truncated]…\n{tail}"
 
 
 async def _run_test_check(
@@ -184,7 +386,9 @@ async def _run_test_check(
         return LocalTestResult(passed=True, command=None, output="", duration_seconds=0.0)
 
     log.info("test_check.running", label=label, command=result.test_command, stack=result.stack)
-    run_result = await run_command(result.test_command, stand_path, timeout=timeout_seconds)
+    run_result = await run_command(
+        result.test_command, stand_path, timeout=timeout_seconds, truncate="tail"
+    )
     if run_result.success:
         log.info(
             "test_check.passed",
@@ -197,9 +401,13 @@ async def _run_test_check(
             command=result.test_command,
             output="",
             duration_seconds=run_result.duration_seconds,
+            exit_code=run_result.exit_code,
         )
 
-    error_output = (run_result.stderr + "\n" + run_result.stdout).strip()
+    # Stripped once, here, so every reader below -- the signature matcher, the
+    # runner-summary precedence, the failure count, and the excerpt that reaches
+    # the implementer -- sees the same plain text.
+    error_output = _strip_ansi((run_result.stderr + "\n" + run_result.stdout).strip())
 
     # 089 US2: a failure coinciding with a spec-088 env signal is an environment
     # block, not a code defect — consult both single-shot consumers (drain both,
@@ -212,14 +420,26 @@ async def _run_test_check(
 
     services_failure = consume_services_start_failure()
     health_failed = consume_env_cache_health_failure()
-    if services_failure or health_failed:
-        env_reason = services_failure or "env-cache health probe failed before local tests"
+    # Tiebreaker when no explicit spec-088 signal fired: inspect the failure
+    # output itself for an environment signature (refused socket, port clash,
+    # missing toolchain).  Without this, an env failure that surfaces only in
+    # test output is relayed to the implementer as a code defect and spins it
+    # on a problem it cannot fix.
+    signature = None if (services_failure or health_failed) else _match_env_signature(error_output)
+    if services_failure or health_failed or signature:
+        if services_failure:
+            env_reason = services_failure
+        elif health_failed:
+            env_reason = "env-cache health probe failed before local tests"
+        else:
+            env_reason = _env_signature_reason(signature, error_output)
         log.warning(
             "test_check.env_blocked",
             label=label,
             command=result.test_command,
             duration=run_result.duration_seconds,
             env_reason=env_reason,
+            matched_signature=signature,
         )
         return LocalTestResult(
             passed=False,
@@ -228,22 +448,170 @@ async def _run_test_check(
             duration_seconds=run_result.duration_seconds,
             env_blocked=True,
             env_reason=env_reason,
+            exit_code=run_result.exit_code,
+        )
+
+    # A timed-out run is not retried: it already consumed the full
+    # timeout_seconds budget, so a second attempt would double the gate's
+    # worst-case wall clock (2×600s by default) for a suite that is hanging
+    # rather than flaking — and a hang reproduces by nature.
+    #
+    # It is held as an environment block rather than handed back as a defect.
+    # Review's point, and it is the stronger reading: a suite that hangs to a
+    # 600s deadline is more likely waiting on an unreachable service (a wedged
+    # connection with a long socket timeout is the textbook case) than failing an
+    # assertion, which returns quickly. And run_command's timeout path discards
+    # both streams, so error_output here is only "Command timed out after 600s" —
+    # _match_env_signature has nothing to match on and cannot rescue it. The case
+    # with the strongest prior for being environmental is the one where the
+    # classifier is guaranteed blind, so the prior has to decide it.
+    #
+    # A human HOLD is also the outcome an operator wants for a hung suite: it is
+    # actionable by a person and not by an implementer re-reading its own diff.
+    if run_result.timed_out:
+        env_reason = (
+            f"the test command did not finish within {timeout_seconds}s and was killed. "
+            "A suite that hangs to its deadline is usually waiting on a service that "
+            "never came up; no test output survives a timeout, so this is a held "
+            "environment blocker rather than a reported defect."
+        )
+        log.warning(
+            "test_check.timed_out",
+            label=label,
+            command=result.test_command,
+            duration=run_result.duration_seconds,
+            timeout_seconds=timeout_seconds,
+        )
+        return LocalTestResult(
+            passed=False,
+            command=result.test_command,
+            output=error_output,
+            duration_seconds=run_result.duration_seconds,
+            env_blocked=True,
+            env_reason=env_reason,
+            exit_code=run_result.exit_code,
+        )
+
+    # No env signal and no env signature: this looks like a real code failure.
+    # Re-run once before bouncing the implementer — a single flaky failure
+    # (timing-sensitive test, transient resource) should not cost a self-fix
+    # cycle.  A second green run clears the gate; a second red run confirms it.
+    #
+    # But only when the suite looks flaky rather than broken. Review's point:
+    # the retry was unconditional, so the *expected* outcome paid the cost of
+    # the rare one — every genuine red suite ran twice in full, ten extra
+    # minutes on a ten-minute suite, to recover something uncommon by
+    # definition. A handful of failing tests is a plausible flake; forty is a
+    # broken diff, and re-running it is pure latency before feedback the
+    # implementer could already have had.
+    #
+    # An unparseable count still retries: that is the conservative direction,
+    # since it covers runners whose summary this cannot read.
+    failing = _reported_failure_count(error_output)
+    if failing is not None and failing > _RETRY_MAX_FAILING:
+        log.info(
+            "test_check.retry_skipped_broad_failure",
+            label=label,
+            command=result.test_command,
+            failing=failing,
+            threshold=_RETRY_MAX_FAILING,
+        )
+        log.warning(
+            "test_check.failed",
+            label=label,
+            command=result.test_command,
+            duration=run_result.duration_seconds,
+            exit_code=run_result.exit_code,
+            output_preview=error_output[:200],
+        )
+        return LocalTestResult(
+            passed=False,
+            command=result.test_command,
+            output=error_output,
+            duration_seconds=run_result.duration_seconds,
+            env_blocked=False,
+            exit_code=run_result.exit_code,
+        )
+
+    log.info(
+        "test_check.retrying",
+        label=label,
+        command=result.test_command,
+        first_exit_code=run_result.exit_code,
+        first_output_preview=error_output[:200],
+    )
+    retry_result = await run_command(
+        result.test_command, stand_path, timeout=timeout_seconds, truncate="tail"
+    )
+    if retry_result.success:
+        log.info(
+            "test_check.flake_recovered",
+            label=label,
+            command=result.test_command,
+            duration=retry_result.duration_seconds,
+        )
+        return LocalTestResult(
+            passed=True,
+            command=result.test_command,
+            output="",
+            duration_seconds=run_result.duration_seconds + retry_result.duration_seconds,
+            exit_code=retry_result.exit_code,
+        )
+
+    retry_output = _strip_ansi((retry_result.stderr + "\n" + retry_result.stdout).strip())
+    total_duration = run_result.duration_seconds + retry_result.duration_seconds
+    # An environment signature may surface only on the retry — re-check before
+    # concluding a code defect.
+    retry_signature = _match_env_signature(retry_output)
+    if retry_signature:
+        env_reason = _env_signature_reason(retry_signature, retry_output)
+        log.warning(
+            "test_check.env_blocked",
+            label=label,
+            command=result.test_command,
+            duration=total_duration,
+            env_reason=env_reason,
+            matched_signature=retry_signature,
+            on_retry=True,
+        )
+        return LocalTestResult(
+            passed=False,
+            command=result.test_command,
+            output=retry_output,
+            duration_seconds=total_duration,
+            env_blocked=True,
+            env_reason=env_reason,
+            exit_code=retry_result.exit_code,
         )
 
     log.warning(
         "test_check.failed",
         label=label,
         command=result.test_command,
-        duration=run_result.duration_seconds,
-        exit_code=run_result.exit_code,
-        output_preview=error_output[:200],
+        duration=total_duration,
+        exit_code=retry_result.exit_code,
+        output_preview=retry_output[:200],
     )
+    # Two red attempts that read differently means a non-idempotent suite, and
+    # reporting only the second hides that from whoever has to act on it.
+    differed = retry_output.strip() != error_output.strip()
+    if differed:
+        log.info(
+            "test_check.attempts_differed",
+            label=label,
+            command=result.test_command,
+            first_preview=error_output[:200],
+            second_preview=retry_output[:200],
+        )
     return LocalTestResult(
         passed=False,
         command=result.test_command,
-        output=error_output,
-        duration_seconds=run_result.duration_seconds,
+        output=retry_output,
+        duration_seconds=total_duration,
         env_blocked=False,
+        exit_code=retry_result.exit_code,
+        retried=True,
+        first_attempt_output=error_output if differed else None,
     )
 
 
@@ -3402,7 +3770,18 @@ async def handle_status(
                     command=test_result.command,
                     output_preview=test_result.output[:200],
                 )
-                body = f"Local tests failed before push:\n{test_result.output[:500]}"
+                cmd_label = test_result.command or "(unknown command)"
+                code_label = (
+                    ""
+                    if test_result.exit_code is None
+                    else f" (exit code {test_result.exit_code})"
+                )
+                excerpt = _format_failure_excerpt(test_result.output)
+                body = (
+                    f"Local tests failed before push.\n"
+                    f"Command: `{cmd_label}`{code_label}\n\n"
+                    f"```\n{excerpt}\n```"
+                )
                 perf.state = "changes_requested"
                 perf.review_comments = [{"body": body}]
                 # 089 US3: carry the current HEAD so the coordinare can key the

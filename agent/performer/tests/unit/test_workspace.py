@@ -701,6 +701,33 @@ class TestRunCommand:
         with pytest.raises(AttributeError):
             result.success = False  # type: ignore[misc]
 
+    @pytest.mark.asyncio
+    async def test_truncate_head_keeps_start_of_output(self, tmp_path: Path) -> None:
+        """Default truncation keeps the FIRST _MAX_OUTPUT chars."""
+        script = "python3 -c \"print('A' * 3000 + 'ZZEND')\""
+        result = await run_command(script, tmp_path)
+        assert len(result.stdout) <= 2000
+        assert result.stdout.startswith("A")
+        assert "ZZEND" not in result.stdout
+
+    @pytest.mark.asyncio
+    async def test_truncate_tail_keeps_end_of_output(self, tmp_path: Path) -> None:
+        """089: test runs use truncate="tail" so the failure summary at the END
+        of the stream survives instead of being clipped away."""
+        script = "python3 -c \"print('A' * 3000 + 'ZZEND')\""
+        result = await run_command(script, tmp_path, truncate="tail")
+        assert len(result.stdout) <= 2000
+        assert "ZZEND" in result.stdout
+
+    @pytest.mark.asyncio
+    async def test_timed_out_flag_set_only_on_timeout(self, tmp_path: Path) -> None:
+        """``timed_out`` distinguishes a killed-at-deadline run from an ordinary
+        non-zero exit, so the local-test gate can decline to retry a hang."""
+        timed = await run_command("sleep 10", tmp_path, timeout=1)
+        assert timed.timed_out is True
+        ordinary = await run_command("exit 1", tmp_path)
+        assert ordinary.timed_out is False
+
 
 class TestActivateEnvCache:
     """Tests for _activate_env_cache (spec 060 Option B)."""
