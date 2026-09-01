@@ -11,6 +11,7 @@ import httpx
 import structlog
 
 from coordinare.lib.redaction import redact_secrets
+from coordinare.lib.subprocess_env import inherited_host_env
 from coordinare.protocol import ProtocolMessage, ProtocolResponse
 from coordinare.session import SessionStats
 from coordinare.transport.base import TransportError, TransportTimeoutError
@@ -162,11 +163,11 @@ class SubprocessTransport:
         and git identity are injected explicitly so the performer never picks
         up the host user's credentials or git config.
         """
-        allowlist = ("PATH", "HOME", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL", "LC_CTYPE")
-        env: dict[str, str] = {}
-        for key in allowlist:
-            if key in os.environ:
-                env[key] = os.environ[key]
+        # Shared with workspace's git env rather than copied: this list had two
+        # literal copies, and the Windows fix that added SystemRoot to the other
+        # one left this one -- the performer's own env, which does the cloning --
+        # unable to resolve a hostname.
+        env: dict[str, str] = inherited_host_env()
         env["GIT_TERMINAL_PROMPT"] = "0"
 
         # self._github_token is the static PAT captured at construction time (None

@@ -1,0 +1,152 @@
+# Proves the claim behind the Windows env allowlist (PR #219) on real Windows,
+# rather than trusting the comment that explains it.
+#
+# The claim: coordinare strips the environment to an allowlist before running git
+# (spec 051), and on Windows that dropped SystemRoot. Winsock reads SystemRoot to
+# locate its DNS provider DLLs, so every lookup inside the subprocess failed with
+# "Could not resolve host" on a healthy network.
+#
+# Not a PR gate. There is one Windows runner in the org and it is shared, so this
+# runs on demand and on pushes that touch the env-building code.
+name: Windows git env
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "src/coordinare/lib/subprocess_env.py"
+      - "src/coordinare/workspace.py"
+      - "src/coordinare/transport/subprocess_transport.py"
+      - ".github/workflows/windows-git-env.yml"
+      - ".github/scripts/windows_git_env_probe.py"
+
+# One Windows runner exists org-wide. Never queue two of these behind each other.
+concurrency:
+  group: windows-git-env
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  windows-git-env:
+    # TWOSCOOPS, the org's self-hosted Windows box. Label matching is
+    # case-insensitive. GPU is deliberately not required: this needs Windows,
+    # not a GPU, and asking for one narrows the pool for no reason.
+    runs-on:
+      - self-hosted
+      - windows
+      - x64
+    timeout-minutes: 20
+    defaults:
+      run:
+        # Windows PowerShell 5.1, execution policy Restricted, so bypass it for
+        # the temp script GitHub generates rather than depending on the box.
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "& '{0}'"
+    steps:
+      # actions/checkout@v4 fails its own temp-dir cleanup on this runner every
+      # time -- "EBUSY: resource busy or locked, rmdir _work/_temp/<uuid>" --
+      # after the checkout itself has succeeded. the in-house scheme's Windows workflows hit the
+      # same thing and clone manually; the same is done here rather than
+      # rediscovering it. Their note records that a Defender exclusion did not
+      # fix it either.
+      - name: Checkout (manual git clone)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $src = Join-Path $env:GITHUB_WORKSPACE "src"
+          if (Test-Path $src) { Remove-Item -Recurse -Force $src }
+
+          # The token travels in GIT_CONFIG_* rather than in the clone URL, which
+          # is how coordinare's own git calls authenticate (see workspace.py). A
+          # URL-embedded token is visible in the process listing while git runs
+          # and is written into .git/config afterwards, so it then depends on a
+          # cleanup step succeeding. This way there is nothing to clean up.
+          $pair = [Text.Encoding]::UTF8.GetBytes("x-access-token:$($env:GH_TOKEN)")
+          $env:GIT_CONFIG_COUNT = "1"
+          $env:GIT_CONFIG_KEY_0 = "http.extraheader"
+          $env:GIT_CONFIG_VALUE_0 = "AUTHORIZATION: basic $([Convert]::ToBase64String($pair))"
+          $env:GIT_TERMINAL_PROMPT = "0"
+
+          # --branch takes a ref name, and this branch has a slash in it; that is
+          # fine, but the ref must be a branch. On a pull_request event
+          # GITHUB_REF_NAME is "<n>/merge", which is not, so use the head SHA the
+          # event carries and fetch it directly.
+          git init --quiet $src
+          git -C $src remote add origin "https://github.com/$($env:GITHUB_REPOSITORY).git"
+          git -C $src fetch --depth 1 --quiet origin $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) { throw "fetch failed" }
+          git -C $src checkout --quiet FETCH_HEAD
+          if ($LASTEXITCODE -ne 0) { throw "checkout failed" }
+
+          Remove-Item Env:GIT_CONFIG_COUNT, Env:GIT_CONFIG_KEY_0, Env:GIT_CONFIG_VALUE_0
+          # Nothing here needs history, and this proves no credential was left in
+          # the clone: the config carries no header and no remote URL with a token.
+          $leaked = Select-String -Path (Join-Path $src ".git\config") -Pattern "AUTHORIZATION|x-access-token" -Quiet
+          if ($leaked) { throw ".git/config carries a credential" }
+          Remove-Item -Recurse -Force (Join-Path $src ".git")
+          if (Test-Path (Join-Path $src ".git")) { throw ".git survived removal" }
+
+      - name: Find an interpreter
+        run: |
+          $candidates = @("python", "python3", "py")
+          $found = $null
+          foreach ($c in $candidates) {
+            $cmd = Get-Command $c -ErrorAction SilentlyContinue
+            if ($cmd) {
+              $version = & $c --version 2>&1
+              Write-Host "$c -> $version"
+              if ($null -eq $found) { $found = $cmd.Source }
+            } else {
+              Write-Host "$c -> not present"
+            }
+          }
+          if ($null -eq $found) {
+            Write-Host "::error::no Python on this runner; the probe cannot run"
+            exit 1
+          }
+          Write-Host "using $found"
+          "PYEXE=$found" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Runner identity
+        run: |
+          Write-Host "RUNNER_NAME = $env:RUNNER_NAME"
+          Write-Host "RUNNER_OS   = $env:RUNNER_OS"
+          Write-Host "SystemRoot  = $env:SystemRoot"
+          git --version
+
+      # The experiment, in the order that makes it an experiment: show the
+      # failure first, so a pass on the second step means something.
+      - name: A stripped env with no SystemRoot cannot resolve a host
+        working-directory: src
+        run: |
+          $env:PYTHONIOENCODING = "utf-8"
+          & $env:PYEXE .github/scripts/windows_git_env_probe.py --without-systemroot
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::the probe did not behave as expected -- read its output above"
+            exit 1
+          }
+
+      # Review asked whether the user-directory names reopen the hole spec 051
+      # exists to close. Whether git needs them is a fact about Windows, so it
+      # is measured here.
+      - name: Are the user-directory vars needed, and what do they expose
+        working-directory: src
+        run: |
+          $env:PYTHONIOENCODING = "utf-8"
+          & $env:PYEXE .github/scripts/windows_git_env_probe.py --credential-boundary
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::git needs the user-directory vars on this host; read the output"
+            exit 1
+          }
+
+      - name: The allowlist coordinare actually builds does resolve
+        working-directory: src
+        run: |
+          $env:PYTHONIOENCODING = "utf-8"
+          & $env:PYEXE .github/scripts/windows_git_env_probe.py --with-coordinare-env
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::coordinare's Windows env still cannot resolve a host"
+            exit 1
+          }

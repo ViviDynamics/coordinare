@@ -69,6 +69,28 @@ without the env. (`make run` / `make start` do this for you.)
 
 <!-- MANUAL ADDITIONS START -->
 
+## Running a deployment
+
+Read before starting the daemon, editing `config.yaml`, or diagnosing a failure. Most
+problems found while skipping this step are setup, not code.
+
+- `README.md` — the Quick Start and its numbered steps
+- `docs/onboarding/` — overview, architecture, performer lifecycle, harnesses and shims,
+  configuration, env cache
+- `docs/quickstart-selfhosted.md` and `docs/operators/litellm-proxy.md` — the
+  self-hosted / OpenAI-compatible path and the validated model matrix
+- `config.example.yaml`, or the `config.example.<backend>.yaml` that matches the deployment
+
+Follow the README's steps in order. Copy an example config rather than writing one from
+memory (the examples are the authoritative format), create `.env` from `.env.example`, and
+run `python -m coordinare config validate` before starting the daemon.
+
+On Windows, prefer `docker-compose up` to running the daemon natively. The git and
+container plumbing assumes POSIX; the compose container sidesteps CRLF line endings in
+container scripts and the rest of it. Coordinare's own subprocess env allowlist does now
+carry the Windows variables git needs (`coordinare/lib/subprocess_env.py`), so a native
+run resolves hostnames — that fixed one specific failure, not the class.
+
 ## Model selection (080 — dual-model orchestration)
 
 Model selection is unified behind three root-level config catalogs, referenced by name:

@@ -21,6 +21,8 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 import structlog
 
+from coordinare.lib.subprocess_env import BASE_ENV_ALLOWLIST, inherited_host_env
+
 if TYPE_CHECKING:
     from coordinare.config import ProjectConfiguration
 
@@ -39,7 +41,11 @@ def _redact_tokens(text: str) -> str:
 # 051 — Minimal subprocess environment
 # ---------------------------------------------------------------------------
 
-_ENV_ALLOWLIST = ("PATH", "HOME", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL", "LC_CTYPE")
+#: Kept as a name because tests and callers refer to it; the list itself, and
+#: the platform-dependent part of it, live in one place for both env builders.
+#: A Windows fix applied here alone left the performer's own env still
+#: stripping SystemRoot -- see coordinare.lib.subprocess_env.
+_ENV_ALLOWLIST = BASE_ENV_ALLOWLIST
 
 
 def _build_minimal_env(config: Any) -> dict[str, str]:
@@ -56,10 +62,7 @@ def _build_minimal_env(config: Any) -> dict[str, str]:
     The performer subprocess uses _build_subprocess_env() which does inject
     GITHUB_TOKEN for the performer's own git/API calls.
     """
-    env: dict[str, str] = {}
-    for key in _ENV_ALLOWLIST:
-        if key in os.environ:
-            env[key] = os.environ[key]
+    env: dict[str, str] = inherited_host_env()
     env["GIT_TERMINAL_PROMPT"] = "0"
 
     identity = getattr(config, "bot_identity", None) if config is not None else None
