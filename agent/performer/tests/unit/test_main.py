@@ -2610,6 +2610,91 @@ class TestQAPerformer:
         assert (resp.report or {}).get("env_limited") is True
 
     @pytest.mark.asyncio
+    async def test_qa_services_start_failure_folds_into_env_blocked(self) -> None:
+        """088 US6 (FR-013): a coordinare-recorded env-cache services-start
+        failure (e.g. Postgres could not start without a password) must join the
+        environment_error channel even when the agent's own QA JSON omits it.
+        Otherwise a zero-evidence pass claim classifies as unsubstantiated FAILED
+        (a code defect) instead of qa_env_blocked (a held environment blocker)."""
+        import json
+        perf = self._make_perf()
+        # Agent self-reports a clean pass with NO environment_error and zero
+        # execution evidence — the verdict hinges on whether the recorded
+        # services-start failure reaches env_error.
+        output = json.dumps({
+            "failures": [],
+            "criteria_checked": 3,
+            "criteria_passed": 3,
+        })
+        perf.backend.get_status.return_value = BackendStatus(state="done", output=output)
+        with (
+            patch("performer.main.commit_file", new=AsyncMock()),
+            patch(
+                "performer.workspace.consume_services_start_failure",
+                return_value=(
+                    "env-cache services-start failed: services-start.sh "
+                    "(returncode=1): could not create PostgreSQL test database "
+                    "without a password"
+                ),
+            ),
+        ):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+        assert resp.status == "qa_env_blocked"
+        assert (resp.report or {}).get("env_limited") is True
+        assert (resp.report or {}).get("evidence_count") == 0
+
+    @pytest.mark.asyncio
+    async def test_qa_unparseable_output_with_services_failure_is_env_blocked(self) -> None:
+        """088 US6 (FR-013): a recorded services-start failure must classify
+        qa_env_blocked even when the agent's output is unusable.
+
+        The fold-in sits after the JSON parse, so this path missed it entirely.
+        An agent that could not reach the database is MORE likely to emit
+        degenerate output — and routing that to malformed_output loses the env
+        blocker, skips the cache invalidation, and spends the bounded retries
+        against the same broken cache.
+        """
+        perf = self._make_perf()
+        perf.backend.get_status.return_value = BackendStatus(
+            state="done", output="I could not run any tests. Sorry!"
+        )
+        with (
+            patch("performer.main.commit_file", new=AsyncMock()),
+            patch(
+                "performer.workspace.consume_services_start_failure",
+                return_value=(
+                    "env-cache services-start failed: services-start.sh "
+                    "(returncode=1): postgres could not start"
+                ),
+            ),
+        ):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+        assert resp.status == "qa_env_blocked"
+        assert "postgres could not start" in (resp.reason or "")
+        assert (resp.report or {}).get("env_limited") is True
+
+    @pytest.mark.asyncio
+    async def test_qa_unparseable_output_without_services_failure_still_malformed(self) -> None:
+        """The complement: with no recorded env blocker, unusable output must
+        still take the malformed-output path (spec-119 bounded retry) — the new
+        env branch must not swallow genuine backend format failures."""
+        perf = self._make_perf()
+        perf.backend.get_status.return_value = BackendStatus(
+            state="done", output="I could not run any tests. Sorry!"
+        )
+        # The malformed path restarts the backend for its bounded retry.
+        perf.backend.stop = AsyncMock()
+        perf.backend.start = AsyncMock()
+        with (
+            patch("performer.main.commit_file", new=AsyncMock()),
+            patch("performer.workspace.consume_services_start_failure", return_value=None),
+        ):
+            resp = await handle_status(_msg("status", session_id="sid"), perf, Settings(AGENT_BACKEND="opencode"))
+        assert resp.status != "qa_env_blocked"
+        # Restarting the backend is the malformed-output retry path (spec-119).
+        perf.backend.start.assert_awaited()
+
+    @pytest.mark.asyncio
     async def test_qa_real_defect_still_blocks(self) -> None:
         """A genuine (non-environmental) acceptance-criterion failure must still
         gate the lifecycle — tolerance applies ONLY to environmental limits."""

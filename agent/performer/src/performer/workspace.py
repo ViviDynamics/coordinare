@@ -590,6 +590,22 @@ def consume_services_start_failure() -> str | None:
     return failure
 
 
+def reset_services_start_failure() -> None:
+    """Clear any stored services-start failure.
+
+    Called at the start of every workspace setup so the failure is scoped to a
+    single job. The failure is consumed only by the QA verdict path; a non-QA
+    job (implementer, reviewer, security, docs) records a failure it never
+    consumes, so on a persistent HTTP performer that reuses the process across
+    jobs the stale string would otherwise leak into the NEXT job's QA verdict
+    as a false ``qa_env_blocked``. Resetting per setup keeps each job's QA
+    verdict reflecting only its own services-start outcome.
+    """
+    global _SERVICES_START_FAILURE
+    with _SERVICES_START_LOCK:
+        _SERVICES_START_FAILURE = None
+
+
 def _record_services_start_failure(
     script: str, returncode: int | str, output_tail: str
 ) -> None:
@@ -632,6 +648,12 @@ async def _start_env_cache_services(
     A failure is logged but does not abort workspace setup — the agent will
     surface a degraded run rather than crash the cache mount.
     """
+    # Scope the services-start failure to this job before (re)running: a prior
+    # job on a reused performer process may have left a stale failure that was
+    # never consumed (only the QA verdict path consumes it). See
+    # reset_services_start_failure. Done before the early-return guards so a
+    # no-cache job also clears a predecessor's failure.
+    reset_services_start_failure()
     if not env_cache_path:
         return
     start = Path(env_cache_path) / "services" / "services-start.sh"

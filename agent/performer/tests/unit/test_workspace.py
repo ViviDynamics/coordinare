@@ -1213,6 +1213,63 @@ class TestServicesStartFailureVisibility:
         await _start_env_cache_services(str(tmp_path), {})
         assert consume_services_start_failure() is None
 
+    @pytest.mark.asyncio
+    async def test_clean_start_clears_prior_job_stale_failure(
+        self, tmp_path: Path
+    ) -> None:
+        """A later job's clean services-start must not inherit a prior job's failure.
+
+        Regression: only the QA verdict path consumes the services-start
+        failure; a non-QA job (implementer/reviewer/...) records a failure it
+        never consumes. On a reused performer process the stale string would
+        otherwise leak into the NEXT job's QA verdict as a false
+        qa_env_blocked. Each setup must scope the failure to its own job.
+        """
+        import performer.workspace as ws
+        from performer.workspace import (
+            _start_env_cache_services,
+            consume_services_start_failure,
+        )
+        self._clear()
+        # Simulate a prior non-QA job that recorded a failure and never drained it.
+        ws._SERVICES_START_FAILURE = "env-cache services-start failed: prior job"
+
+        # This job's services start cleanly.
+        services = tmp_path / "services"
+        services.mkdir()
+        start = services / "services-start.sh"
+        start.write_text("#!/usr/bin/env bash\nexit 0\n")
+        start.chmod(0o755)
+        await _start_env_cache_services(str(tmp_path), {})
+
+        assert consume_services_start_failure() is None, (
+            "clean start must clear the prior job's stale services-start failure"
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_cache_job_clears_prior_job_stale_failure(
+        self, tmp_path: Path
+    ) -> None:
+        """A no-cache job must still clear a predecessor's stale failure.
+
+        The reset runs before the early-return guard so a job with no env-cache
+        cannot inherit a prior job's un-consumed services-start failure.
+        """
+        import performer.workspace as ws
+        from performer.workspace import (
+            _start_env_cache_services,
+            consume_services_start_failure,
+        )
+        self._clear()
+        ws._SERVICES_START_FAILURE = "env-cache services-start failed: prior job"
+
+        # No env_cache_path → function returns early, but only AFTER reset.
+        await _start_env_cache_services("", {})
+
+        assert consume_services_start_failure() is None, (
+            "no-cache job must clear the prior job's stale services-start failure"
+        )
+
 
 class TestDevenvProfileActivationStartsServices:
     """117: the devenv profile (BASH_ENV activation entrypoint) starts declared
@@ -1285,3 +1342,70 @@ class TestDevenvProfileActivationStartsServices:
         assert res.returncode == 0
         assert "SHELL_ALIVE" in res.stdout
         assert "services-start for" not in res.stderr
+
+
+class TestTheServicesFailureCannotOutliveItsJob:
+    """Review of #115: pin the effect, not the mechanism.
+
+    The two tests alongside this both go through ``_start_env_cache_services``,
+    so they pin *where* the reset is called from. The bug being fixed is an
+    invariant about a persistent HTTP performer that reuses its process: a job
+    which records a services-start failure and never consumes it (implementer,
+    reviewer, security, docs -- only the QA verdict path consumes) must not leak
+    that string into the NEXT job's QA verdict as a false ``qa_env_blocked``.
+
+    Asserted from the consumer's side, so it survives a refactor that moves
+    where the reset happens.
+    """
+
+    def test_an_unconsumed_failure_does_not_reach_the_next_jobs_verdict(self) -> None:
+        from performer.workspace import (
+            _record_services_start_failure,
+            consume_services_start_failure,
+            reset_services_start_failure,
+        )
+
+        # Job 1: an implementer run records a failure and never consumes it.
+        reset_services_start_failure()
+        _record_services_start_failure("services-start.sh", 1, "postgres refused to start")
+        assert consume_services_start_failure() is not None, "the fixture recorded nothing"
+
+        _record_services_start_failure("services-start.sh", 1, "postgres refused to start")
+
+        # Job 2 begins on the same process.
+        reset_services_start_failure()
+
+        assert consume_services_start_failure() is None, (
+            "a previous job's services-start failure reached this job's QA verdict; "
+            "it would surface as a false qa_env_blocked on work that never saw it"
+        )
+
+    def test_a_failure_recorded_by_this_job_still_reaches_the_verdict(self) -> None:
+        """The reset must scope the failure, not swallow it."""
+        from performer.workspace import (
+            _record_services_start_failure,
+            consume_services_start_failure,
+            reset_services_start_failure,
+        )
+
+        reset_services_start_failure()
+        _record_services_start_failure("services-start.sh", 1, "postgres refused to start")
+
+        assert consume_services_start_failure() is not None
+
+    def test_consuming_it_twice_yields_nothing_the_second_time(self) -> None:
+        """Single-shot: two consumers must not both act on one failure."""
+        from performer.workspace import (
+            _record_services_start_failure,
+            consume_services_start_failure,
+            reset_services_start_failure,
+        )
+
+        reset_services_start_failure()
+        _record_services_start_failure("services-start.sh", 1, "postgres refused to start")
+
+        first = consume_services_start_failure()
+        second = consume_services_start_failure()
+
+        assert first is not None
+        assert second is None
