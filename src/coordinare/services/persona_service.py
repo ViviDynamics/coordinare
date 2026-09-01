@@ -782,7 +782,11 @@ def save_persona(role: str, instructions: str, config_path: Path) -> None:
         raise ValueError(msg)
 
     if not config_path.exists():
-        msg = f"Config file does not exist: {config_path}"
+        # 158 (#241): no path in the message. Every caller of this already knows the
+        # path, and the dashboard returns ValueError from here verbatim as a 400 body,
+        # so naming the file here put the deployment's config location on the wire to
+        # anyone who could race the endpoint's own is_file() check.
+        msg = "Config file does not exist"
         raise ValueError(msg)
 
     loaded = yaml.safe_load(config_path.read_text())

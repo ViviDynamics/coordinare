@@ -105,6 +105,31 @@ def compute_content_hash(path: Path) -> str:
     return "sha256:" + hashlib.sha256(raw).hexdigest()
 
 
+def safe_failure_reason(exc: BaseException) -> str:
+    """A reason for a config read/write failure with no filesystem path in it.
+
+    158 (#241): these messages reach the browser, and the obvious
+    ``f"...: {exc}"`` puts the absolute path on the wire --
+    ``[Errno 13] Permission denied: '/etc/coordinare/config.yaml'`` for an
+    :class:`OSError`, and ``in "/etc/coordinare/config.yaml", line 3, column 1`` for a
+    :class:`yaml.YAMLError`. Both name where the deployment keeps its config, to
+    anyone who can reach the endpoint.
+
+    ``strerror`` is the useful half of an OSError ("Permission denied") and carries no
+    path. Nothing else here has a comparably safe field, so those get a description of
+    the failure rather than the exception's own words. The full exception still goes to
+    the log, which is where an operator debugging this should be looking.
+    """
+    strerror = getattr(exc, "strerror", None)
+    if isinstance(strerror, str) and strerror:
+        return strerror
+    if isinstance(exc, UnicodeDecodeError):
+        return "the file is not valid UTF-8"
+    if isinstance(exc, yaml.YAMLError):
+        return "the file is not valid YAML"
+    return "the file could not be read"
+
+
 def guard_concurrency(path: Path, base_hash: str) -> None:
     """Re-read ``path``, recompute its hash, raise :class:`ConcurrencyConflictError`
     if it differs from ``base_hash`` (research D4). Call immediately before swap.
@@ -198,7 +223,10 @@ def _safe_atomic_write(
                 FieldError(
                     key=key,
                     code="forbidden",
-                    message=f"Could not write configuration file: {exc}",
+                    message=(
+                        f"Could not write the configuration file: "
+                        f"{safe_failure_reason(exc)}"
+                    ),
                 )
             ],
         )
@@ -331,13 +359,20 @@ def _conflict_result(path: Path, base_hash: str) -> SaveResult | None:
         # The baseline re-read can fail operationally (unreadable path, a directory
         # where a file is expected due to a mount glitch). Surface a structured
         # forbidden result, consistent with the other tolerant read/write paths.
+        #
+        # 158 (#241): `str(exc)` on an OSError includes the absolute path, and this
+        # message reaches the browser. Found because 158 copied this line for
+        # consistency and a review caught the copy; the original had it too.
         return SaveResult(
             ok=False,
             errors=[
                 FieldError(
                     key=None,
                     code="forbidden",
-                    message=f"Could not read configuration file: {exc}",
+                    message=(
+                        f"Could not read the configuration file: "
+                        f"{safe_failure_reason(exc)}"
+                    ),
                 )
             ],
         )
@@ -516,7 +551,10 @@ def _safe_read_config_dict(
                 FieldError(
                     key=key,
                     code="forbidden",
-                    message=f"Could not read configuration file: {exc}",
+                    message=(
+                        f"Could not read the configuration file: "
+                        f"{safe_failure_reason(exc)}"
+                    ),
                 )
             ],
         )
