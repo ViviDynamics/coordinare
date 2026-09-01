@@ -23,6 +23,18 @@ from coordinare.config_descriptors import SECRET_MASK
 from coordinare.config_validation import coerce_multi_symphony_raw
 from coordinare.dashboard import DashboardStore, create_dashboard_app
 
+
+def _version_header(config_path) -> dict[str, str]:
+    """The ``If-Match`` a write needs after spec 158 (#241).
+
+    Every route that writes ``config.yaml`` now requires the version it is writing
+    against, so a concurrent edit is refused rather than silently overwritten.
+    """
+    from coordinare.services.config_write_service import compute_content_hash
+
+    return {"If-Match": compute_content_hash(config_path)}
+
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -649,14 +661,20 @@ def test_legacy_persona_put_then_delete_round_trip(temp_config_path, monkeypatch
     monkeypatch.setenv("COORDINARE_GITHUB_TOKEN", "ghp_realtoken")
     raw = yaml.safe_load(temp_config_path.read_text())
     client = _make_client(temp_config_path, raw)
-    put = client.put("/api/personas/reviewer", json={"instructions": "Be thorough."})
+    put = client.put(
+        "/api/personas/reviewer",
+        json={"instructions": "Be thorough."},
+        headers=_version_header(temp_config_path),
+    )
     assert put.status_code == 200
     body = put.json()
     assert body["role"] == "reviewer"
     assert body["is_default"] is False
     assert "Be thorough." in body["instructions"]
 
-    delete = client.delete("/api/personas/reviewer")
+    delete = client.delete(
+        "/api/personas/reviewer", headers=_version_header(temp_config_path)
+    )
     assert delete.status_code == 204
 
 

@@ -24,6 +24,18 @@ from coordinare.dashboard import (
 )
 
 
+def _version_header(config_path) -> dict[str, str]:
+    """The ``If-Match`` a config write needs after spec 158 (#241).
+
+    Every route that writes ``config.yaml`` now requires the version it is writing
+    against, so a concurrent edit is refused rather than silently overwritten.
+    """
+    from coordinare.services.config_write_service import compute_content_hash
+
+    return {"If-Match": compute_content_hash(config_path)}
+
+
+
 def test_json_default_handles_set_path_and_datetime() -> None:
     """Regression: SSE snapshots carry PosixPath (workspace_path), sets
     (processed_issue_comment_ids), and datetimes — _json_default must encode
@@ -1199,6 +1211,7 @@ def test_put_persona_valid_instructions_returns_200(tmp_path) -> None:
     res = client.put(
         "/api/personas/implementer",
         json={"instructions": "Write tests first."},
+        headers=_version_header(config_path),
     )
     assert res.status_code == 200
     data = res.json()
@@ -1238,7 +1251,7 @@ def test_delete_persona_returns_204(tmp_path) -> None:
         "human_reviewers": ["alice"],
     }))
     client = _make_personas_app(tmp_path, config_path=config_path)
-    res = client.delete("/api/personas/assessor")
+    res = client.delete("/api/personas/assessor", headers=_version_header(config_path))
     assert res.status_code == 204
 
 
@@ -1270,6 +1283,7 @@ def test_put_persona_save_oserror_returns_500(tmp_path) -> None:
         res = client.put(
             "/api/personas/implementer",
             json={"instructions": "Write tests."},
+            headers=_version_header(config_path),
         )
     assert res.status_code == 500
     assert "error" in res.json()
@@ -1296,6 +1310,7 @@ def test_put_persona_responds_under_two_seconds(tmp_path) -> None:
     res = client.put(
         "/api/personas/implementer",
         json={"instructions": "Write tests first."},
+        headers=_version_header(config_path),
     )
     elapsed = time.perf_counter() - t0
 
@@ -1712,7 +1727,11 @@ def test_symphonies_list_includes_bootstrap_status(tmp_path) -> None:
 def test_post_symphony_creates_new_entry(tmp_path) -> None:
     """058 FR-008: POST /api/symphonies creates a new symphony and returns 201."""
     client, daemon = _make_symphony_app(tmp_path)
-    res = client.post("/api/symphonies", json={"name": "gamma", "github_project_number": 30})
+    res = client.post(
+        "/api/symphonies",
+        json={"name": "gamma", "github_project_number": 30},
+        headers=_version_header(tmp_path / "config.yaml"),
+    )
     assert res.status_code == 201
     data = res.json()
     assert data["name"] == "gamma"
@@ -1753,7 +1772,11 @@ def test_post_symphony_cycle_active_returns_409(tmp_path) -> None:
 def test_put_symphony_updates_enabled_flag(tmp_path) -> None:
     """058 FR-009: PUT /api/symphonies/{name} with enabled=False disables the symphony."""
     client, daemon = _make_symphony_app(tmp_path)
-    res = client.put("/api/symphonies/alpha", json={"enabled": False})
+    res = client.put(
+        "/api/symphonies/alpha",
+        json={"enabled": False},
+        headers=_version_header(tmp_path / "config.yaml"),
+    )
     assert res.status_code == 200
     data = res.json()
     assert data["enabled"] is False
@@ -1763,7 +1786,11 @@ def test_put_symphony_updates_enabled_flag(tmp_path) -> None:
 def test_put_symphony_updates_overrides(tmp_path) -> None:
     """058 FR-009: PUT /api/symphonies/{name} accepts and persists overrides."""
     client, _daemon = _make_symphony_app(tmp_path)
-    res = client.put("/api/symphonies/beta", json={"overrides": {"poll_interval_seconds": 45}})
+    res = client.put(
+        "/api/symphonies/beta",
+        json={"overrides": {"poll_interval_seconds": 45}},
+        headers=_version_header(tmp_path / "config.yaml"),
+    )
     assert res.status_code == 200
     data = res.json()
     assert data["overrides"]["poll_interval_seconds"] == 45

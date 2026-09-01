@@ -25,6 +25,18 @@ from coordinare.daemon import CoordinareDaemon
 from coordinare.dashboard import DashboardStore, create_dashboard_app
 from coordinare.graph.state import SymphonyRuntimeState
 
+
+def _version_header(config_path) -> dict[str, str]:
+    """The ``If-Match`` a write needs after spec 158 (#241).
+
+    Every route that writes ``config.yaml`` now requires the version it is writing
+    against, so a concurrent edit is refused rather than silently overwritten.
+    """
+    from coordinare.services.config_write_service import compute_content_hash
+
+    return {"If-Match": compute_content_hash(config_path)}
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
