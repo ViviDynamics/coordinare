@@ -951,6 +951,36 @@ _QA_ENV_FAILURE_PATTERNS = re.compile(
 )
 
 
+def _env_blocked_qa_response(perf: Any, env_error: str) -> "PerformerResponse":
+    """The qa_env_blocked verdict, in one place.
+
+    Review of #115: the recorded services-start failure is consumed on two paths
+    -- here, when the backend's output cannot be parsed at all, and in the
+    verdict path, where it is folded into ``environment_error``. Both were
+    correct and each built its own report shape, so the next field added to a QA
+    report had to be added twice with nothing failing if only one was done.
+
+    The zeroes are not arbitrary: ``qa_verdict.py`` reads ``criteria_checked``
+    for its zero-evidence floor, so this shape is what makes coordinare treat the
+    verdict as "could not verify" rather than "verified nothing". Do not tidy a
+    field out of it without reading that gate.
+    """
+    perf.qa_report = {
+        "criteria_checked": 0,
+        "criteria_passed": 0,
+        "evidence_count": 0,
+        "env_limited": True,
+        "environment_error": env_error,
+    }
+    perf.state = "qa_env_blocked"
+    return PerformerResponse(
+        status="qa_env_blocked",
+        session_id=perf.session_id,
+        reason=env_error,
+        report=perf.qa_report,
+    )
+
+
 def _qa_failure_is_environmental(f: dict) -> bool:
     """077: True if a QA failure reflects the container's inability to VERIFY
     (no DB/browser/binary on PATH, read-only fs, capture blocked) rather than a
@@ -2582,15 +2612,34 @@ async def handle_status(
         # 023: QA performer path — validate acceptance criteria, commit new tests, pass or fail.
         if perf.role == "qa":
             qa_raw = backend_status.output or ""
-            if not qa_raw.strip():
-                return await _handle_backend_parse_failure(
-                    perf, qa_raw, "QA", settings, "was empty",
-                )
-            qa_output = _extract_json(qa_raw) if isinstance(qa_raw, str) else qa_raw
+            qa_output = (
+                _extract_json(qa_raw) if isinstance(qa_raw, str) and qa_raw.strip() else None
+            )
             if not isinstance(qa_output, dict):
+                # 088 US6 (FR-013): the fold-in below never runs on this path, so
+                # consult the recorded services-start failure HERE too. An agent
+                # that could not reach the database is MORE likely to emit
+                # degenerate output, not less — and treating that as a malformed
+                # backend response loses the env blocker, skips the cache
+                # invalidation, and burns the bounded malformed-output retries
+                # against the same broken cache. A recorded env blocker is the
+                # better explanation for unusable output, so it wins.
+                from performer.workspace import consume_services_start_failure
+                services_start_failure = consume_services_start_failure()
+                if services_start_failure:
+                    log.warning(
+                        "qa.env_blocked_unparseable_output",
+                        session_id=perf.session_id,
+                        env_error=services_start_failure[:200],
+                        output_preview=qa_raw[:200],
+                    )
+                    return _env_blocked_qa_response(perf, services_start_failure)
+                reason = (
+                    "was empty" if not qa_raw.strip()
+                    else "could not be parsed as a JSON object"
+                )
                 return await _handle_backend_parse_failure(
-                    perf, qa_raw, "QA", settings,
-                    "could not be parsed as a JSON object",
+                    perf, qa_raw, "QA", settings, reason,
                 )
 
             # Commit new test files written by the backend (FR-005)
@@ -2662,6 +2711,21 @@ async def handle_status(
             raw_failures = qa_output.get("failures", [])
             failures = [f for f in (raw_failures if isinstance(raw_failures, list) else []) if isinstance(f, dict)]
             env_error = str(qa_output.get("environment_error", "")).strip()
+            # 088 US6 (FR-013): fold any coordinare-recorded env-cache
+            # services-start failure (e.g. Postgres could not start without a
+            # password) into the environment_error channel. The agent's own QA
+            # JSON may omit a setup-time failure it never saw; without this the
+            # blocker is lost and a zero-evidence pass misclassifies as an
+            # unsubstantiated FAILED (a code defect) instead of qa_env_blocked
+            # (a held environment blocker the coordinare repairs, not the code).
+            from performer.workspace import consume_services_start_failure
+            services_start_failure = consume_services_start_failure()
+            if services_start_failure:
+                env_error = (
+                    f"{env_error}\n{services_start_failure}".strip()
+                    if env_error
+                    else services_start_failure
+                )
             failures.extend(
                 _qa_visual_evidence_failures(
                     required=visual_validation_required,

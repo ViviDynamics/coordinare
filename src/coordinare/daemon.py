@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from time import monotonic, perf_counter
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
 
 import structlog
@@ -72,13 +72,42 @@ def get_daemon_started_at() -> str:
     return _DAEMON_STARTED_AT
 
 
+#: Eligibility verdicts. Named because two of them are compared against string
+#: literals at call sites: review noted that a bare "blocked_column" in the
+#: fanout and in _compute_eligibility are two spellings that must agree, with
+#: nothing to catch a typo -- the branch would simply never match, and the
+#: blocked-card recovery this exists for would silently stop happening.
+ELIGIBLE = "eligible"
+BLOCKED_COLUMN = "blocked_column"
+DEPENDENCY_BLOCKED = "dependency_blocked"
+MISSING_CARD = "missing_card"
+KICKED_BACK = "kicked_back"
+
+#: Typed, so a new verdict has to be added here rather than appearing as a
+#: string nothing matches. The comment this replaces listed four and the code
+#: already had five.
+EligibilityReason = Literal[
+    "eligible", "blocked_column", "dependency_blocked", "missing_card", "kicked_back"
+]
+
+#: How many BLOCKED sessions may run their graph in one cycle. Each one is a
+#: full graph tick with a state deep-copy and a fanout permit, and the whole
+#: point of polling them is to notice an un-block comment -- which is not
+#: latency-sensitive. Without a cap the per-cycle cost grows with the blocked
+#: backlog, which is exactly the board this feature exists to recover, so N
+#: blocked cards would crowd out the eligible siblings they run alongside.
+#: Rotating the window means every blocked card is still polled within
+#: ceil(N / BLOCKED_POLL_MAX_PER_CYCLE) cycles.
+BLOCKED_POLL_MAX_PER_CYCLE = 3
+
+
 @dataclass
 class SessionEligibility:
     """Per-cycle eligibility verdict for one active session."""
 
     card_id: str
     eligible: bool
-    reason: str  # "eligible" | "blocked_column" | "dependency_blocked" | "missing_card"
+    reason: EligibilityReason
     blockers: list[int] = field(default_factory=list)
 
 
@@ -486,14 +515,14 @@ def _compute_eligibility(
     """Derive per-cycle eligibility for a session from board state."""
     card = session.get("current_card") or {}
     if not card:
-        return SessionEligibility(card_id=card_id, eligible=False, reason="missing_card")
+        return SessionEligibility(card_id=card_id, eligible=False, reason=MISSING_CARD)
     card_item_id = str(card.get("content_id") or card.get("id") or "")
     if not card_item_id:
-        return SessionEligibility(card_id=card_id, eligible=False, reason="missing_card")
+        return SessionEligibility(card_id=card_id, eligible=False, reason=MISSING_CARD)
 
     blocked_cards = board_snapshot.get("BLOCKED", [])
     if card_item_id in blocked_cards:
-        return SessionEligibility(card_id=card_id, eligible=False, reason="blocked_column")
+        return SessionEligibility(card_id=card_id, eligible=False, reason=BLOCKED_COLUMN)
 
     if dep_graph is not None:
         deps = dep_graph.by_dependent.get(card_item_id, [])
@@ -502,7 +531,7 @@ def _compute_eligibility(
             return SessionEligibility(
                 card_id=card_id,
                 eligible=False,
-                reason="dependency_blocked",
+                reason=DEPENDENCY_BLOCKED,
                 blockers=[d.blocker_issue_number for d in unresolved],
             )
 
@@ -524,9 +553,9 @@ def _compute_eligibility(
                 if col != "IN_PROGRESS" and isinstance(cards, list)
             )
             if in_other_column:
-                return SessionEligibility(card_id=card_id, eligible=False, reason="kicked_back")
+                return SessionEligibility(card_id=card_id, eligible=False, reason=KICKED_BACK)
 
-    return SessionEligibility(card_id=card_id, eligible=True, reason="eligible")
+    return SessionEligibility(card_id=card_id, eligible=True, reason=ELIGIBLE)
 
 
 def _log_session_skip(
@@ -541,7 +570,7 @@ def _log_session_skip(
     naming the stranded performer.  Other skip reasons emit the existing
     ``session_skipped`` info log unchanged.
     """
-    if elig.reason == "kicked_back":
+    if elig.reason == KICKED_BACK:
         # The session dict doesn't persist a separate performer_id; the
         # performer_stage uniquely identifies the responsible pool slot.
         logger.warning(
@@ -671,6 +700,8 @@ class CoordinareDaemon:
         dashboard_store: DashboardStore | None = None,
         webhook_trigger: asyncio.Event | None = None,
     ) -> None:
+        # Rotates the BLOCKED-session poll window; see _blocked_sessions_to_poll.
+        self._blocked_poll_cursor: int = 0
         self._graph = graph
         self._run_mode = run_mode
         self._poll_interval_seconds = poll_interval_seconds
@@ -1331,6 +1362,53 @@ class CoordinareDaemon:
             return max(1, int(config.max_concurrent_cards))
         return 1
 
+    def _blocked_sessions_to_poll(
+        self, eligibilities: dict[str, SessionEligibility]
+    ) -> set[str]:
+        """Which BLOCKED sessions get a graph tick this cycle.
+
+        A blocked session is ineligible for a dispatch slot, but its graph must
+        still run for check_board's un-block comment poll to execute -- otherwise
+        a blocked card can never be un-blocked by a fresh issue comment while any
+        sibling is eligible, because the all-ineligible fallback that would run
+        the poll never fires.
+
+        Running every blocked session every cycle makes that cost grow with the
+        blocked backlog, without bound. Since an un-block comment is not
+        latency-sensitive, a rotating window of at most
+        ``BLOCKED_POLL_MAX_PER_CYCLE`` is enough: every blocked card is still
+        polled within ceil(n / BLOCKED_POLL_MAX_PER_CYCLE) cycles, and the cost
+        per cycle is constant however long the backlog gets.
+
+        Sorted, so the rotation order is deterministic rather than dependent on
+        dict insertion, which is what makes "every card is polled within N
+        cycles" true rather than probable.
+        """
+        blocked = sorted(
+            card_id
+            for card_id, elig in eligibilities.items()
+            if not elig.eligible and elig.reason == BLOCKED_COLUMN
+        )
+        if not blocked:
+            return set()
+        if len(blocked) <= BLOCKED_POLL_MAX_PER_CYCLE:
+            return set(blocked)
+
+        start = self._blocked_poll_cursor % len(blocked)
+        window = {
+            blocked[(start + offset) % len(blocked)]
+            for offset in range(BLOCKED_POLL_MAX_PER_CYCLE)
+        }
+        # Advance by the window size rather than to the window's end, so the
+        # cursor stays meaningful when the backlog shrinks between cycles.
+        self._blocked_poll_cursor = start + BLOCKED_POLL_MAX_PER_CYCLE
+        logger.debug(
+            "daemon.blocked_poll_window",
+            blocked_total=len(blocked),
+            polled=sorted(window),
+        )
+        return window
+
     async def _invoke_multi_session(self) -> None:
         """Process each active session through the graph concurrently.
 
@@ -1568,10 +1646,25 @@ class CoordinareDaemon:
 
         graph = self._graph
         semaphore = asyncio.Semaphore(self._max_concurrent_cards())
+        blocked_to_poll = self._blocked_sessions_to_poll(eligibilities)
 
         async def _invoke_one(card_id: str, session: dict) -> AsyncSessionTickResult:
             elig = eligibilities[card_id]
-            if not elig.eligible:
+            # A BLOCKED-column session is ineligible for a dispatch slot, but its
+            # graph must still run each cycle so check_board's un-block
+            # comment-poll executes: otherwise a blocked card can never be
+            # un-blocked by a fresh issue comment while any sibling is eligible
+            # (the all-ineligible fallback that would run the poll never fires).
+            # phase=blocked keeps it exempt from the *dispatch-slot* accounting
+            # in NON_SLOT_PHASES, so it never occupies a performer slot. It does
+            # take a fanout permit and pay a state deep-copy, and review pointed
+            # out that the part which scales is the count, not the latency: every
+            # blocked card is still an active session, so an accumulating blocked
+            # backlog -- the exact board this recovers -- would add an unbounded
+            # number of graph ticks per cycle. _blocked_sessions_to_poll caps and
+            # rotates them instead. Skipped ones stay recorded in
+            # session_skip_reasons for operator visibility.
+            if not elig.eligible and card_id not in blocked_to_poll:
                 return AsyncSessionTickResult(
                     card_id=card_id, ok=True, session_state=session, skipped=True
                 )
@@ -1802,7 +1895,7 @@ class CoordinareDaemon:
             if result.skipped:
                 # missing_card sessions have no card to resume — remove them so
                 # the slot doesn't linger forever.
-                if eligibilities[result.card_id].reason == "missing_card":
+                if eligibilities[result.card_id].reason == MISSING_CARD:
                     logger.warning("session_missing_card_evicted", card_id=result.card_id)
                     completed_ids.append(result.card_id)
                 continue

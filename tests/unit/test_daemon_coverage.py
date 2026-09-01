@@ -1184,6 +1184,59 @@ async def test_invoke_multi_session_blocked_column_fallback_invoked() -> None:
 
 
 @pytest.mark.asyncio
+async def test_invoke_multi_session_blocked_card_polled_alongside_eligible_sibling() -> None:
+    """A BLOCKED card's graph must still run when an eligible sibling exists.
+
+    Regression for the multi-session starvation bug: the all-ineligible
+    fallback (which runs the blocked-card un-block comment poll) only fires
+    when *every* session is ineligible. With ≥1 eligible sibling the fanout
+    path runs and previously skipped the blocked session's graph entirely —
+    so a blocked card could never be un-blocked by a fresh issue comment
+    while any sibling was actively implementing. The blocked session must be
+    invoked alongside the eligible one (its phase=blocked keeps it slot-exempt
+    via NON_SLOT_PHASES, so this does not consume a dispatch slot).
+    """
+    invoked: list[str] = []
+
+    async def _tracked_ainvoke(state: dict) -> dict:
+        invoked.append((state.get("current_card") or {}).get("id", "?"))
+        return state
+
+    graph = MagicMock()
+    graph.ainvoke = AsyncMock(side_effect=_tracked_ainvoke)
+
+    daemon = _make_daemon()
+    daemon._graph = graph
+    daemon._state["github_service"] = None
+
+    daemon._state["active_sessions"] = {
+        "card-a": _make_session("card-a", phase="monitoring_performer"),
+        "card-b": _make_session("card-b", phase="blocked"),
+    }
+    daemon._state["board_snapshot"] = {
+        "IN_PROGRESS": ["card-a"],
+        "BLOCKED": ["card-b"],
+    }
+    daemon._state["_board_cache"] = {
+        "snapshot": {"IN_PROGRESS": ["card-a"], "BLOCKED": ["card-b"]},
+        "titles": {}, "descriptions": {}, "issue_numbers": {},
+        "issue_urls": {}, "content_node_ids": {},
+    }
+
+    await daemon._invoke_multi_session()
+
+    # Both the eligible sibling AND the blocked card must have run their graph.
+    assert "card-a" in invoked, "eligible sibling must be invoked"
+    assert "card-b" in invoked, (
+        "blocked card's graph must run so its un-block comment poll executes "
+        "even while a sibling is eligible"
+    )
+    # The blocked card stays recorded as a skip reason for operator visibility.
+    skip = daemon._state.get("session_skip_reasons", {})
+    assert skip.get("card-b", {}).get("reason") == "blocked_column"
+
+
+@pytest.mark.asyncio
 async def test_invoke_multi_session_dep_blocked_not_invoked() -> None:
     """Sessions with unresolved dependencies must be skipped."""
     board = {
@@ -1767,3 +1820,177 @@ def test_restore_env_cache_skips_symphony_not_in_live_state() -> None:
     # Must not raise.
     daemon._restore_from_snapshot(snap)
     assert daemon._state["env_cache"] == {}
+
+
+# ---------------------------------------------------------------------------
+# Review of #115: the blocked-session poll is bounded and rotates
+# ---------------------------------------------------------------------------
+
+
+def _elig(card_id: str, reason: str):
+    """An ineligible verdict, or an eligible one when reason is ELIGIBLE."""
+    from coordinare.daemon import ELIGIBLE, SessionEligibility
+
+    return SessionEligibility(
+        card_id=card_id, eligible=(reason == ELIGIBLE), reason=reason  # type: ignore[arg-type]
+    )
+
+
+def _daemon_for_poll():
+    from unittest.mock import MagicMock
+
+    from coordinare.daemon import CoordinareDaemon
+
+    return CoordinareDaemon(MagicMock())
+
+
+def test_blocked_poll_runs_them_all_when_the_backlog_is_small() -> None:
+    """Under the cap nothing rotates: every blocked card polls every cycle."""
+    from coordinare.daemon import BLOCKED_COLUMN, BLOCKED_POLL_MAX_PER_CYCLE, ELIGIBLE
+
+    daemon = _daemon_for_poll()
+    eligibilities = {f"c{i}": _elig(f"c{i}", BLOCKED_COLUMN) for i in range(BLOCKED_POLL_MAX_PER_CYCLE)}
+    eligibilities["hot"] = _elig("hot", ELIGIBLE)
+
+    polled = daemon._blocked_sessions_to_poll(eligibilities)
+
+    assert polled == {f"c{i}" for i in range(BLOCKED_POLL_MAX_PER_CYCLE)}
+
+
+def test_blocked_poll_is_capped_when_the_backlog_grows() -> None:
+    """The cost per cycle is constant however long the backlog gets.
+
+    Review's point: every blocked card is still an active session, so without a
+    cap a board with twenty blocked cards runs twenty extra graph ticks a cycle,
+    each with a state deep-copy and a fanout permit -- on exactly the board this
+    recovery path exists for.
+    """
+    from coordinare.daemon import BLOCKED_COLUMN, BLOCKED_POLL_MAX_PER_CYCLE
+
+    daemon = _daemon_for_poll()
+    eligibilities = {f"c{i:02d}": _elig(f"c{i:02d}", BLOCKED_COLUMN) for i in range(20)}
+
+    polled = daemon._blocked_sessions_to_poll(eligibilities)
+
+    assert len(polled) == BLOCKED_POLL_MAX_PER_CYCLE
+
+
+def test_every_blocked_card_is_polled_within_a_bounded_number_of_cycles() -> None:
+    """A cap that never rotated would strand the cards past the window.
+
+    This is the property that makes the cap safe rather than merely cheap: a
+    fixed window would mean cards 4..20 are never polled, and their un-block
+    comment would never be seen.
+    """
+    from coordinare.daemon import BLOCKED_COLUMN, BLOCKED_POLL_MAX_PER_CYCLE
+
+    daemon = _daemon_for_poll()
+    ids = [f"c{i:02d}" for i in range(20)]
+    eligibilities = {cid: _elig(cid, BLOCKED_COLUMN) for cid in ids}
+
+    seen: set[str] = set()
+    cycles = -(-len(ids) // BLOCKED_POLL_MAX_PER_CYCLE)  # ceil
+    for _ in range(cycles):
+        seen |= daemon._blocked_sessions_to_poll(eligibilities)
+
+    assert seen == set(ids), f"never polled within {cycles} cycles: {sorted(set(ids) - seen)}"
+
+
+def test_the_rotation_does_not_stall_when_the_backlog_shrinks() -> None:
+    """The cursor keeps advancing as cards leave the blocked column."""
+    from coordinare.daemon import BLOCKED_COLUMN
+
+    daemon = _daemon_for_poll()
+    ids = [f"c{i:02d}" for i in range(10)]
+    seen: set[str] = set()
+    for round_index in range(6):
+        # Two cards get un-blocked each round; whoever remains must still rotate.
+        remaining = ids[: max(4, len(ids) - round_index)]
+        seen |= daemon._blocked_sessions_to_poll(
+            {cid: _elig(cid, BLOCKED_COLUMN) for cid in remaining}
+        )
+
+    assert len(seen) > 3, f"the window stalled on {sorted(seen)}"
+
+
+def test_an_ineligible_non_blocked_session_is_never_polled() -> None:
+    """The exemption is for the BLOCKED column, not for ineligibility."""
+    from coordinare.daemon import DEPENDENCY_BLOCKED, MISSING_CARD
+
+    daemon = _daemon_for_poll()
+
+    polled = daemon._blocked_sessions_to_poll(
+        {"dep": _elig("dep", DEPENDENCY_BLOCKED), "gone": _elig("gone", MISSING_CARD)}
+    )
+
+    assert polled == set()
+
+
+def test_the_eligibility_reasons_are_named_not_spelled() -> None:
+    """Review: two string literals that must agree, with nothing checking them.
+
+    A typo in either spelling makes the branch silently never match, which stops
+    blocked-card recovery without failing anything.
+
+    Checks every reason, not just the one this change happened to touch. The
+    first version of this test asserted on BLOCKED_COLUMN alone and passed while
+    `"kicked_back"` and `"missing_card"` were still spelled out two screens away
+    -- a test that pinned the instance in front of it rather than the rule it was
+    named for, which is the same shape it exists to catch.
+    """
+    import ast
+    from pathlib import Path
+
+    from coordinare.daemon import (
+        BLOCKED_COLUMN,
+        DEPENDENCY_BLOCKED,
+        ELIGIBLE,
+        KICKED_BACK,
+        MISSING_CARD,
+    )
+
+    reasons = {BLOCKED_COLUMN, DEPENDENCY_BLOCKED, ELIGIBLE, KICKED_BACK, MISSING_CARD}
+    source = Path("src/coordinare/daemon.py").read_text()
+    tree = ast.parse(source)
+
+    # The constants' own definitions are the only place these strings belong.
+    definitions = {
+        node.value.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and isinstance(node.value, ast.Constant)
+        and node.value.value in reasons
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
+    assert definitions == reasons, f"a reason has no constant: {sorted(reasons - definitions)}"
+
+    definition_lines = {
+        node.value.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and isinstance(node.value, ast.Constant)
+        and node.value.value in reasons
+    }
+    # The Literal type spells them out too, by construction.
+    literal_lines = {
+        inner.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Subscript)
+        for inner in ast.walk(node)
+        if isinstance(inner, ast.Constant) and inner.value in reasons
+    }
+
+    offenders = [
+        f"{node.value!r} at :{node.lineno}"
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and node.value in reasons
+        and node.lineno not in definition_lines
+        and node.lineno not in literal_lines
+    ]
+
+    assert not offenders, (
+        f"eligibility reasons are spelled out at {offenders}; use the constants so "
+        "a typo is a NameError rather than a branch that never matches"
+    )
