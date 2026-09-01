@@ -3871,17 +3871,26 @@ class TestPersonaTag:
 # ---------------------------------------------------------------------------
 
 
-def _ci_run_result(success: bool, *, stdout: str = "", stderr: str = "", command: str = "pytest", duration: float = 1.5):
+def _ci_run_result(
+    success: bool,
+    *,
+    stdout: str = "",
+    stderr: str = "",
+    command: str = "pytest",
+    duration: float = 1.5,
+    timed_out: bool = False,
+):
     """Build a CIRunResult for mocking run_command."""
     from performer.workspace import CIRunResult
 
     return CIRunResult(
         success=success,
-        exit_code=0 if success else 1,
+        exit_code=-1 if timed_out else (0 if success else 1),
         stdout=stdout,
         stderr=stderr,
         command=command,
         duration_seconds=duration,
+        timed_out=timed_out,
     )
 
 
@@ -3945,6 +3954,604 @@ class TestRunTestCheck:
         assert result.env_blocked is False
         assert "AssertionError" in result.output or "3 failed" in result.output
 
+    async def test_env_signature_in_output_classifies_env_blocked(self) -> None:
+        """No spec-088 signal, but the failure output carries an environment
+        signature (refused socket) → env_blocked=True, not a code defect."""
+        from performer.main import _run_test_check
+
+        with (
+            patch("coordinare.services.ci_detection.detect", return_value=_detection("pytest")),
+            patch(
+                "performer.main.run_command",
+                new=AsyncMock(
+                    return_value=_ci_run_result(
+                        False, stderr="ConnectionError: Connection refused (localhost:5432)"
+                    )
+                ),
+            ),
+            patch("performer.workspace.consume_services_start_failure", return_value=None),
+            patch("performer.workspace.consume_env_cache_health_failure", return_value=False),
+        ):
+            result = await _run_test_check(Path("/tmp/x"))
+        assert result.passed is False
+        assert result.env_blocked is True
+        assert result.env_reason is not None
+        assert "connection refused" in result.env_reason
+
+    async def test_ambiguous_signature_not_env_blocked(self) -> None:
+        """ModuleNotFoundError is a plausible code defect (forgotten dependency in
+        the diff) — it MUST NOT be classified as env_blocked, or a real bug is
+        masked.  Both attempts fail with it → code failure."""
+        from performer.main import _run_test_check
+
+        with (
+            patch("coordinare.services.ci_detection.detect", return_value=_detection("pytest")),
+            patch(
+                "performer.main.run_command",
+                new=AsyncMock(
+                    return_value=_ci_run_result(
+                        False, stderr="ModuleNotFoundError: No module named 'foo'"
+                    )
+                ),
+            ),
+            patch("performer.workspace.consume_services_start_failure", return_value=None),
+            patch("performer.workspace.consume_env_cache_health_failure", return_value=False),
+        ):
+            result = await _run_test_check(Path("/tmp/x"))
+        assert result.passed is False
+        assert result.env_blocked is False
+
+    async def test_flake_recovers_on_retry(self) -> None:
+        """First run red (code-shaped), retry green → passed=True (a single flaky
+        failure does not cost a self-fix cycle)."""
+        from performer.main import _run_test_check
+
+        run_command = AsyncMock(
+            side_effect=[
+                _ci_run_result(False, stdout="1 failed", duration=2.0),
+                _ci_run_result(True, duration=2.0),
+            ]
+        )
+        with (
+            patch("coordinare.services.ci_detection.detect", return_value=_detection("pytest")),
+            patch("performer.main.run_command", new=run_command),
+            patch("performer.workspace.consume_services_start_failure", return_value=None),
+            patch("performer.workspace.consume_env_cache_health_failure", return_value=False),
+        ):
+            result = await _run_test_check(Path("/tmp/x"))
+        assert result.passed is True
+        assert run_command.await_count == 2
+
+    async def test_code_failure_confirmed_after_retry(self) -> None:
+        """Both attempts red with code-shaped output → passed=False, env_blocked=False."""
+        from performer.main import _run_test_check
+
+        run_command = AsyncMock(
+            side_effect=[
+                _ci_run_result(False, stdout="1 failed: assert 1 == 2"),
+                _ci_run_result(False, stdout="1 failed: assert 1 == 2"),
+            ]
+        )
+        with (
+            patch("coordinare.services.ci_detection.detect", return_value=_detection("pytest")),
+            patch("performer.main.run_command", new=run_command),
+            patch("performer.workspace.consume_services_start_failure", return_value=None),
+            patch("performer.workspace.consume_env_cache_health_failure", return_value=False),
+        ):
+            result = await _run_test_check(Path("/tmp/x"))
+        assert result.passed is False
+        assert result.env_blocked is False
+        assert run_command.await_count == 2
+        assert result.exit_code == 1
+
+    async def test_env_signature_surfaces_only_on_retry(self) -> None:
+        """First attempt code-shaped, retry surfaces an env signature → env_blocked."""
+        from performer.main import _run_test_check
+
+        run_command = AsyncMock(
+            side_effect=[
+                _ci_run_result(False, stdout="1 failed"),
+                _ci_run_result(False, stderr="OSError: [Errno 98] Address already in use"),
+            ]
+        )
+        with (
+            patch("coordinare.services.ci_detection.detect", return_value=_detection("pytest")),
+            patch("performer.main.run_command", new=run_command),
+            patch("performer.workspace.consume_services_start_failure", return_value=None),
+            patch("performer.workspace.consume_env_cache_health_failure", return_value=False),
+        ):
+            result = await _run_test_check(Path("/tmp/x"))
+        assert result.passed is False
+        assert result.env_blocked is True
+        assert "address already in use" in (result.env_reason or "")
+
+    async def test_env_signal_short_circuits_before_retry(self) -> None:
+        """A spec-088 services-start signal env-blocks immediately — no retry."""
+        from performer.main import _run_test_check
+
+        run_command = AsyncMock(return_value=_ci_run_result(False, stdout="1 failed"))
+        with (
+            patch("coordinare.services.ci_detection.detect", return_value=_detection("pytest")),
+            patch("performer.main.run_command", new=run_command),
+            patch(
+                "performer.workspace.consume_services_start_failure",
+                return_value="postgres failed to start",
+            ),
+            patch("performer.workspace.consume_env_cache_health_failure", return_value=False),
+        ):
+            result = await _run_test_check(Path("/tmp/x"))
+        assert result.env_blocked is True
+        assert result.env_reason == "postgres failed to start"
+        assert run_command.await_count == 1
+
+    async def test_exit_code_propagated_on_green(self) -> None:
+        from performer.main import _run_test_check
+
+        with (
+            patch("coordinare.services.ci_detection.detect", return_value=_detection("pytest")),
+            patch(
+                "performer.main.run_command",
+                new=AsyncMock(return_value=_ci_run_result(True)),
+            ),
+        ):
+            result = await _run_test_check(Path("/tmp/x"))
+        assert result.exit_code == 0
+
+    async def test_real_failure_with_env_phrase_in_assertion_not_env_blocked(self) -> None:
+        """A red test whose assertion text embeds an env-shaped phrase is a CODE
+        defect, not an environment block.
+
+        This repo's own suite asserts on the literal "connection refused" in 20
+        files (e.g. ``assert "connection refused" in
+        result["system_error_reason"]``), so a genuine failure of one of those
+        tests prints the phrase in pytest's assertion diff.  A naive substring
+        match would hold the card as env_blocked and never hand the real red
+        test back to the implementer — the exact inverse of the bug this gate
+        was hardened to fix.
+        """
+        from performer.main import _run_test_check
+
+        failure = (
+            "=================================== FAILURES ==========================\n"
+            "_______________________ test_monitor_reports_reason ___________________\n"
+            'E       assert "connection refused" in result["system_error_reason"]\n'
+            "E       AssertionError\n"
+            "========================= 1 failed, 402 passed in 12.3s ===============\n"
+        )
+        run_command = AsyncMock(return_value=_ci_run_result(False, stdout=failure))
+        with (
+            patch("coordinare.services.ci_detection.detect", return_value=_detection("pytest")),
+            patch("performer.main.run_command", new=run_command),
+            patch("performer.workspace.consume_services_start_failure", return_value=None),
+            patch("performer.workspace.consume_env_cache_health_failure", return_value=False),
+        ):
+            result = await _run_test_check(Path("/tmp/x"))
+        assert result.passed is False
+        assert result.env_blocked is False, (
+            "a runner-reported test failure must outrank an env signature found "
+            "in the same output"
+        )
+        assert result.env_reason is None
+
+    async def test_env_signature_still_wins_on_collection_error(self) -> None:
+        """The complement: when the suite ERRORS out before running tests (no
+        ``N failed``), the env signature must still classify env_blocked — a
+        fixture that cannot reach Postgres is the case this gate exists for."""
+        from performer.main import _run_test_check
+
+        failure = (
+            "ERROR tests/conftest.py::db - OperationalError: connection refused\n"
+            "========================= 1 error in 0.42s ===========================\n"
+        )
+        with (
+            patch("coordinare.services.ci_detection.detect", return_value=_detection("pytest")),
+            patch(
+                "performer.main.run_command",
+                new=AsyncMock(return_value=_ci_run_result(False, stdout=failure)),
+            ),
+            patch("performer.workspace.consume_services_start_failure", return_value=None),
+            patch("performer.workspace.consume_env_cache_health_failure", return_value=False),
+        ):
+            result = await _run_test_check(Path("/tmp/x"))
+        assert result.env_blocked is True
+        assert "connection refused" in (result.env_reason or "")
+
+    async def test_env_blocked_reason_carries_output_evidence(self) -> None:
+        """A signature-classified env block sends the card to a human HOLD, so the
+        reason must carry the output that triggered the (heuristic) call — naming
+        only the matched phrase leaves the operator unable to judge it without
+        digging out the performer log."""
+        from performer.main import _run_test_check
+
+        failure = (
+            "ERROR tests/conftest.py::db\n"
+            "psycopg.OperationalError: connection refused: host=localhost port=5432\n"
+            "1 error in 0.42s\n"
+        )
+        with (
+            patch("coordinare.services.ci_detection.detect", return_value=_detection("pytest")),
+            patch(
+                "performer.main.run_command",
+                new=AsyncMock(return_value=_ci_run_result(False, stdout=failure)),
+            ),
+            patch("performer.workspace.consume_services_start_failure", return_value=None),
+            patch("performer.workspace.consume_env_cache_health_failure", return_value=False),
+        ):
+            result = await _run_test_check(Path("/tmp/x"))
+        assert result.env_blocked is True
+        reason = result.env_reason or ""
+        assert "connection refused" in reason
+        assert "port=5432" in reason, "the triggering output must reach the operator"
+        assert len(reason) < 700, "reason travels into notifications — keep it bounded"
+
+    async def test_env_signature_precedence_across_runners(self) -> None:
+        """The failure-vs-environment split must hold for every runner
+        ci_detection can hand us (pytest, jest/mocha, rspec, minitest via
+        ``bundle exec rake test``, and make-wrapped maven/gradle).
+
+        Minitest was the concrete gap: it reports "1 failures" (plural) and
+        "1) Failure:" (singular header), so a count pattern covering only
+        "failed"/"failing" let a red Ruby test whose output mentions Postgres
+        be misclassified as env_blocked.
+        """
+        from performer.main import _TEST_FAILURE_MARKERS, _match_env_signature
+
+        red_tests = {
+            "rspec": (
+                "Failures:\n  1) Api connects\n     Failure/Error: "
+                "expect(e).to eq 'connection refused'\n\n3 examples, 1 failure\n"
+            ),
+            "minitest": (
+                "  1) Failure:\nFooTest#test_x [test/foo.rb:12]:\n"
+                "Expected 'connection refused' to equal 'ok'.\n\n"
+                "5 runs, 6 assertions, 1 failures, 0 errors, 0 skips\n"
+            ),
+            "jest": (
+                "Tests:       1 failed, 4 passed, 5 total\n"
+                "  expect(msg).toBe('connection refused')\n"
+            ),
+            "pytest": (
+                "E       assert 'connection refused' in reason\n"
+                "===== 1 failed, 402 passed =====\n"
+            ),
+            "maven": "Tests run: 5, Failures: 1, Errors: 0\n  expected 'connection refused'\n",
+        }
+        for runner, output in red_tests.items():
+            assert _match_env_signature(output) is None, (
+                f"{runner}: a runner-reported test failure must stay a code defect "
+                "even though the output mentions an environment-shaped phrase"
+            )
+
+        env_failures = {
+            "rspec load error": (
+                "An error occurred while loading ./spec/api_spec.rb.\n"
+                "PG::ConnectionBad: connection refused\n0 examples, 0 failures\n"
+            ),
+            "rake aborted": (
+                "rake aborted!\nPG::ConnectionBad: could not connect to server: "
+                "connection refused\n"
+            ),
+            "pytest collection": (
+                "ERROR tests/conftest.py::db - OperationalError: connection refused\n"
+                "1 error in 0.42s\n"
+            ),
+            "port clash": "OSError: [Errno 98] Address already in use\n",
+            # An env failure can surface THROUGH an assertion: a fixture or setup
+            # helper asserting that a service came up. The exception name
+            # "AssertionError" (and pytest's "E   assert" detail line) is
+            # therefore NOT evidence of a failed test, and must not outrank the
+            # signature — doing so bounces the implementer on an environment
+            # problem it cannot fix.
+            "fixture asserts db is up": (
+                "ERROR tests/conftest.py::db_ready\n"
+                "E       assert wait_for_port('localhost', 5432)\n"
+                "E       AssertionError: connection refused\n"
+                "1 error in 3.10s\n"
+            ),
+            "setup helper asserts": (
+                "AssertionError: redis not reachable: connection refused\n"
+                "rake aborted!\n"
+            ),
+            # Prose that merely contains a number and the word "failures" is not
+            # a runner summary; only a comma-anchored count is.
+            "healthcheck prose": (
+                "waiting for postgres...\n3 failures to connect, giving up\n"
+                "could not connect to server\n"
+            ),
+        }
+        for scenario, output in env_failures.items():
+            assert _match_env_signature(output) is not None, (
+                f"{scenario}: the suite never reported a test failure, so the "
+                "environment signature must still classify this env_blocked"
+            )
+
+        # Deliberately NOT environment signatures. Review's point, accepted: a
+        # missing executable is the shell-level twin of ModuleNotFoundError,
+        # which this gate already excludes because a forgotten dependency in the
+        # diff IS a defect the implementer can fix. Ambiguous both ways, and the
+        # gate settles ambiguity toward handing it back, with remote CI as the
+        # backstop.
+        not_env = {
+            "missing toolchain": "bundle: command not found\n",
+            "missing script": "./scripts/migrate.sh: command not found\n",
+        }
+        for scenario, output in not_env.items():
+            assert _match_env_signature(output) is None, (
+                f"{scenario}: this is as likely a code defect as an environment "
+                "problem, and the gate must not mask a defect"
+            )
+
+        # Prose that contains a count and a failure word is not a runner summary.
+        # Every one of these matched the pattern before review anchored it, so an
+        # environment failure was being handed to the implementer as a red suite.
+        prose_not_a_test_result = (
+            "2 failed to connect to postgres:5432",
+            "1 failed attempt to reach redis, retrying",
+            "5 failing attempts to bind port 5432",
+            "3 failures to connect, giving up",
+            "connection refused after 3 failed retries in the pool",
+        )
+        for text in prose_not_a_test_result:
+            assert not _TEST_FAILURE_MARKERS.search(text), (
+                f"{text!r} is prose, not a runner summary; treating it as a test "
+                "result bounces the implementer onto an environment problem"
+            )
+
+        # ...while every real runner summary still reads as one.
+        real_summaries = (
+            "=== 1 failed, 12 passed in 3.2s ===",
+            "== 1 failed in 3.21s ==",
+            "  1 failing",
+            "3 examples, 1 failure",
+            "Tests run: 4, Failures: 1, Errors: 0",
+            "  1) Failure:",
+            "  Failure/Error: expect(x).to eq(1)",
+            "FAILED tests/unit/test_x.py::test_y - AssertionError",
+        )
+        for text in real_summaries:
+            assert _TEST_FAILURE_MARKERS.search(text), (
+                f"{text!r} is a runner summary and must outrank any signature"
+            )
+
+    async def test_a_coloured_red_suite_is_not_held_as_an_environment_block(self) -> None:
+        """The dangerous direction, found by review.
+
+        A runner told to colour its output writes "\x1b[31m1 failed\x1b[0m," --
+        the escape sits between "failed" and the comma every summary pattern
+        looks for, so the precedence check goes blind while the env signatures,
+        being plain substrings, still match. A genuinely red suite was therefore
+        held as an environment block and the implementer never heard about its
+        own bug, which is precisely what the precedence rule exists to prevent.
+        """
+        from performer.main import _run_test_check
+
+        coloured = (
+            "\x1b[31m1 failed\x1b[0m, 99 passed in 3.20s\n"
+            "E   ConnectionError: connection refused\n"
+        )
+        run_command = AsyncMock(side_effect=[
+            _ci_run_result(False, stdout=coloured),
+            _ci_run_result(False, stdout=coloured),
+        ])
+        with (
+            patch("coordinare.services.ci_detection.detect", return_value=_detection("pytest")),
+            patch("performer.main.run_command", new=run_command),
+            patch("performer.workspace.consume_services_start_failure", return_value=None),
+            patch("performer.workspace.consume_env_cache_health_failure", return_value=False),
+        ):
+            result = await _run_test_check(Path("/tmp/x"))
+
+        assert result.env_blocked is False, (
+            "a red suite with coloured output was held as an environment block; "
+            "the implementer never hears about a real defect"
+        )
+        assert "\x1b[" not in result.output, "escape codes reached the feedback body"
+
+    async def test_the_failure_count_reads_the_run_that_just_happened(self) -> None:
+        """Review: max() across the output let a stale count win.
+
+        A runner prints its summary when it finishes and the output is
+        tail-truncated, so the last count is the real one. An earlier, larger
+        count is captured output from something else -- a nested suite, a
+        subprocess under test -- and letting it win skipped the retry, bouncing
+        a flake as a broken diff.
+        """
+        from performer.main import _reported_failure_count
+
+        embedded = "captured stderr: 15 failed, 10 passed\n---\n3 failed, 9 passed in 1.2s"
+
+        assert _reported_failure_count(embedded) == 3
+
+    async def test_the_count_survives_colour(self) -> None:
+        from performer.main import _reported_failure_count
+
+        assert _reported_failure_count("\x1b[31m2 failed\x1b[0m, 9 passed in 1.0s") is None, (
+            "raw ANSI is expected to defeat the count; _run_test_check strips first"
+        )
+
+    async def test_a_broad_failure_is_not_retried(self) -> None:
+        """Review: the expected outcome was paying the cost of the rare one.
+
+        Every genuine red suite ran twice in full before the implementer heard
+        anything -- ten extra minutes on a ten-minute suite -- to recover a flake
+        that is uncommon by definition. A wall of failing tests is the diff, not
+        timing.
+        """
+        from performer.main import _run_test_check
+
+        run_command = AsyncMock(
+            return_value=_ci_run_result(False, stdout="40 failed, 2 passed in 91.02s")
+        )
+        with (
+            patch("coordinare.services.ci_detection.detect", return_value=_detection("pytest")),
+            patch("performer.main.run_command", new=run_command),
+            patch("performer.workspace.consume_services_start_failure", return_value=None),
+            patch("performer.workspace.consume_env_cache_health_failure", return_value=False),
+        ):
+            result = await _run_test_check(Path("/tmp/x"))
+
+        assert result.passed is False
+        assert result.env_blocked is False
+        assert run_command.await_count == 1, (
+            "40 failing tests is a broken diff; re-running it is latency before "
+            "feedback the implementer could already have had"
+        )
+
+    async def test_a_narrow_failure_is_still_retried(self) -> None:
+        """The flake path survives the gating: one failure is plausibly timing."""
+        from performer.main import _run_test_check
+
+        run_command = AsyncMock(
+            side_effect=[
+                _ci_run_result(False, stdout="1 failed, 12 passed in 3.20s"),
+                _ci_run_result(True, stdout="13 passed in 3.10s"),
+            ]
+        )
+        with (
+            patch("coordinare.services.ci_detection.detect", return_value=_detection("pytest")),
+            patch("performer.main.run_command", new=run_command),
+            patch("performer.workspace.consume_services_start_failure", return_value=None),
+            patch("performer.workspace.consume_env_cache_health_failure", return_value=False),
+        ):
+            result = await _run_test_check(Path("/tmp/x"))
+
+        assert result.passed is True, "a recovered flake must clear the gate"
+        assert run_command.await_count == 2
+
+    async def test_an_unreadable_summary_still_retries(self) -> None:
+        """Unknown count is the conservative direction.
+
+        Guessing "broad" would remove flake recovery from every runner whose
+        summary this cannot parse, including a runner that crashed outright.
+        """
+        from performer.main import _run_test_check
+
+        run_command = AsyncMock(
+            side_effect=[
+                _ci_run_result(False, stderr="Segmentation fault (core dumped)"),
+                _ci_run_result(True, stdout="ok"),
+            ]
+        )
+        with (
+            patch("coordinare.services.ci_detection.detect", return_value=_detection("pytest")),
+            patch("performer.main.run_command", new=run_command),
+            patch("performer.workspace.consume_services_start_failure", return_value=None),
+            patch("performer.workspace.consume_env_cache_health_failure", return_value=False),
+        ):
+            result = await _run_test_check(Path("/tmp/x"))
+
+        assert result.passed is True
+        assert run_command.await_count == 2
+
+    async def test_two_different_red_attempts_keep_the_first(self) -> None:
+        """A non-idempotent suite can fail two ways; reporting only the second
+        leaves nothing to say the first differed."""
+        from performer.main import _run_test_check
+
+        run_command = AsyncMock(
+            side_effect=[
+                _ci_run_result(False, stdout="1 failed, 9 passed in 2.0s\ntest_alpha failed"),
+                _ci_run_result(False, stdout="1 failed, 9 passed in 2.0s\ntest_beta failed"),
+            ]
+        )
+        with (
+            patch("coordinare.services.ci_detection.detect", return_value=_detection("pytest")),
+            patch("performer.main.run_command", new=run_command),
+            patch("performer.workspace.consume_services_start_failure", return_value=None),
+            patch("performer.workspace.consume_env_cache_health_failure", return_value=False),
+        ):
+            result = await _run_test_check(Path("/tmp/x"))
+
+        assert result.retried is True
+        assert result.first_attempt_output and "test_alpha" in result.first_attempt_output
+        assert "test_beta" in result.output
+
+    async def test_two_identical_red_attempts_do_not_duplicate_the_output(self) -> None:
+        """Carrying the first attempt only matters when it differs."""
+        from performer.main import _run_test_check
+
+        same = "1 failed, 9 passed in 2.0s\ntest_alpha failed"
+        run_command = AsyncMock(
+            side_effect=[_ci_run_result(False, stdout=same), _ci_run_result(False, stdout=same)]
+        )
+        with (
+            patch("coordinare.services.ci_detection.detect", return_value=_detection("pytest")),
+            patch("performer.main.run_command", new=run_command),
+            patch("performer.workspace.consume_services_start_failure", return_value=None),
+            patch("performer.workspace.consume_env_cache_health_failure", return_value=False),
+        ):
+            result = await _run_test_check(Path("/tmp/x"))
+
+        assert result.retried is True
+        assert result.first_attempt_output is None
+
+    async def test_the_feedback_excerpt_redacts_an_auth_header(self) -> None:
+        """Review: this change widened the excerpt window, so it closes the leak.
+
+        The body went from a 500-char head slice to a 1500-char head+tail, which
+        newly includes the end of the output where config dumps and connection
+        strings land.
+        """
+        from performer.main import _env_signature_reason, _format_failure_excerpt
+
+        leaky = "GET /repos\nAuthorization: Bearer ghp_secrettoken\nconnection refused"
+
+        assert "ghp_secrettoken" not in _format_failure_excerpt(leaky)
+        assert "ghp_secrettoken" not in _env_signature_reason("connection refused", leaky)
+
+    async def test_timeout_is_not_retried(self) -> None:
+        """A timed-out run already burned the whole timeout budget; retrying it
+        would double the gate's worst case (2×600s by default) for a suite that
+        is hanging rather than flaking."""
+        from performer.main import _run_test_check
+
+        run_command = AsyncMock(
+            return_value=_ci_run_result(
+                False, stderr="Command timed out after 600s", timed_out=True
+            )
+        )
+        with (
+            patch("coordinare.services.ci_detection.detect", return_value=_detection("pytest")),
+            patch("performer.main.run_command", new=run_command),
+            patch("performer.workspace.consume_services_start_failure", return_value=None),
+            patch("performer.workspace.consume_env_cache_health_failure", return_value=False),
+        ):
+            result = await _run_test_check(Path("/tmp/x"))
+        assert result.passed is False
+        assert run_command.await_count == 1, "a timeout must not be retried"
+
+    async def test_a_timeout_is_held_not_handed_back(self) -> None:
+        """Review: the classification went the wrong way for the likeliest cause.
+
+        A suite that hangs to its deadline is more often waiting on a service
+        that never came up than failing an assertion, which returns quickly --
+        and the timeout path discards both streams, so the signature matcher has
+        nothing to work with. The case with the strongest prior for being
+        environmental is the one where the classifier is blind, so the prior
+        decides it: a human HOLD, which is the outcome an operator wants for a
+        hung suite, rather than an implementer re-reading its own diff.
+        """
+        from performer.main import _run_test_check
+
+        run_command = AsyncMock(
+            return_value=_ci_run_result(
+                False, stderr="Command timed out after 600s", timed_out=True
+            )
+        )
+        with (
+            patch("coordinare.services.ci_detection.detect", return_value=_detection("pytest")),
+            patch("performer.main.run_command", new=run_command),
+            patch("performer.workspace.consume_services_start_failure", return_value=None),
+            patch("performer.workspace.consume_env_cache_health_failure", return_value=False),
+        ):
+            result = await _run_test_check(Path("/tmp/x"))
+
+        assert result.env_blocked is True, (
+            "a hung suite was handed to the implementer as a code defect"
+        )
+        assert result.env_reason and "did not finish" in result.env_reason
+        assert "600" in result.env_reason, "the reason should name the deadline it hit"
+
 
 @pytest.mark.asyncio
 class TestImplementerLocalTestGateDonePath:
@@ -4002,6 +4609,34 @@ class TestImplementerLocalTestGateDonePath:
         assert resp.head_after == "headsha1"
         push.assert_not_awaited()
 
+    async def test_failure_body_includes_command_and_exit_code(self) -> None:
+        """Feedback body names the command and exit code so the implementer sees
+        how the run terminated, not just an opaque output tail."""
+        perf = self._impl_perf()
+        with (
+            patch("performer.main._run_ci_check", new=AsyncMock(return_value=(True, ""))),
+            patch(
+                "performer.main._run_test_check",
+                new=AsyncMock(
+                    return_value=_local_test_result(
+                        passed=False,
+                        command="uv run pytest",
+                        output="E AssertionError: boom",
+                        env_blocked=False,
+                        exit_code=1,
+                    )
+                ),
+            ),
+            patch("performer.main.push_branch", new=AsyncMock()),
+            patch("performer.main.create_pull_request", new=AsyncMock()),
+            patch("performer.main.get_head_sha", new=AsyncMock(return_value="headsha1")),
+        ):
+            resp = await handle_status(_msg("status", session_id="sid"), perf)
+        body = resp.comments[0]["body"]
+        assert "uv run pytest" in body
+        assert "exit code 1" in body
+        assert "boom" in body
+
     async def test_gate_dormant_when_unconfigured(self) -> None:
         """SC-005: no local_test_gate on score → no _run_test_check call, push proceeds."""
         perf = self._impl_perf()
@@ -4029,6 +4664,7 @@ def _local_test_result(
     output: str = "",
     env_blocked: bool = False,
     env_reason: str | None = None,
+    exit_code: int | None = None,
 ):
     from performer.main import LocalTestResult
 
@@ -4039,6 +4675,7 @@ def _local_test_result(
         duration_seconds=1.0,
         env_blocked=env_blocked,
         env_reason=env_reason,
+        exit_code=exit_code,
     )
 
 

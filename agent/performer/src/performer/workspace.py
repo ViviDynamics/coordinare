@@ -13,6 +13,7 @@ import threading
 import time as _time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import structlog
 
@@ -1317,7 +1318,12 @@ def cleanup_stand(stand: Stand) -> None:
 
 @dataclass(frozen=True)
 class CIRunResult:
-    """Result of running a CI command in the workspace."""
+    """Result of running a CI command in the workspace.
+
+    ``timed_out`` distinguishes "the command was killed at the timeout" from an
+    ordinary non-zero exit, so callers can decline to re-run a command that has
+    already consumed its full time budget.
+    """
 
     success: bool
     exit_code: int
@@ -1325,12 +1331,15 @@ class CIRunResult:
     stderr: str
     command: str
     duration_seconds: float
+    timed_out: bool = False
 
 
 _MAX_OUTPUT = 2000  # truncate stdout/stderr to this many chars
 
 
-def _fail_result(cmd: str, start: float, stderr_msg: str) -> CIRunResult:
+def _fail_result(
+    cmd: str, start: float, stderr_msg: str, *, timed_out: bool = False
+) -> CIRunResult:
     """Build a failure CIRunResult — shared by timeout and exception paths."""
     return CIRunResult(
         success=False,
@@ -1339,6 +1348,7 @@ def _fail_result(cmd: str, start: float, stderr_msg: str) -> CIRunResult:
         stderr=stderr_msg[:_MAX_OUTPUT],
         command=cmd,
         duration_seconds=_time.monotonic() - start,
+        timed_out=timed_out,
     )
 
 
@@ -1349,16 +1359,32 @@ async def _kill_proc(proc: asyncio.subprocess.Process | None) -> None:
         await proc.wait()
 
 
+def _truncate(text: str, *, mode: Literal["head", "tail"]) -> str:
+    """Clamp *text* to ``_MAX_OUTPUT`` chars, keeping the head or the tail.
+
+    Test runners print the failure summary (assertion diffs, the failing test
+    names, the traceback) at the *end* of the run, so ``mode="tail"`` preserves
+    the most diagnostic portion when output overflows.
+    """
+    if len(text) <= _MAX_OUTPUT:
+        return text
+    return text[-_MAX_OUTPUT:] if mode == "tail" else text[:_MAX_OUTPUT]
+
+
 async def run_command(
     cmd: str,
     cwd: Path,
     timeout: int = 120,
+    *,
+    truncate: Literal["head", "tail"] = "head",
 ) -> CIRunResult:
     """Run a shell command in *cwd* and return a structured result.
 
     Used by the performer to execute lint/test commands before committing.
     Truncates stdout/stderr to ``_MAX_OUTPUT`` chars to prevent oversized
-    payloads in error reports.
+    payloads in error reports.  ``truncate="tail"`` keeps the last
+    ``_MAX_OUTPUT`` chars instead of the first — use it for test runs, whose
+    failure summary lands at the end of the stream.
     """
     start = _time.monotonic()
     proc: asyncio.subprocess.Process | None = None
@@ -1377,15 +1403,17 @@ async def run_command(
         raise
     except asyncio.TimeoutError:
         await _kill_proc(proc)
-        return _fail_result(cmd, start, f"Command timed out after {timeout}s")
+        return _fail_result(
+            cmd, start, f"Command timed out after {timeout}s", timed_out=True
+        )
     except Exception as exc:
         await _kill_proc(proc)
         return _fail_result(cmd, start, str(exc))
     return CIRunResult(
         success=proc.returncode == 0,
         exit_code=proc.returncode if proc.returncode is not None else -1,
-        stdout=(stdout_bytes.decode("utf-8", errors="replace"))[:_MAX_OUTPUT],
-        stderr=(stderr_bytes.decode("utf-8", errors="replace"))[:_MAX_OUTPUT],
+        stdout=_truncate(stdout_bytes.decode("utf-8", errors="replace"), mode=truncate),
+        stderr=_truncate(stderr_bytes.decode("utf-8", errors="replace"), mode=truncate),
         command=cmd,
         duration_seconds=_time.monotonic() - start,
     )
