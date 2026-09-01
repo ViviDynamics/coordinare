@@ -35,6 +35,10 @@ htmlcov/
 # Runtime and secrets
 *.log*
 .env*
+# ...but the example is part of the image: the root Dockerfile COPYs it, and
+# `.env*` above silently excluded it, so `docker compose up --build` failed at
+# that COPY with "/.env.example: not found" before it reached anything else.
+!.env.example
 config.yaml
 config.*.yaml
 !config.example.yaml
