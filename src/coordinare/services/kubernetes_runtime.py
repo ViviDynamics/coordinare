@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -33,8 +34,6 @@ from coordinare.services import performer_lifecycle
 from coordinare.services.performer_runtime import StartedPerformer
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from pathlib import Path
-
     from coordinare.models.performer_endpoint import PerformerEndpointConfig
 
 _log = structlog.get_logger(__name__)
@@ -165,8 +164,60 @@ def build_pod_manifest(
         "containers": [container],
     }
 
-    if cache_claim:
-        container["volumeMounts"] = [{"name": "devenv-cache", "mountPath": "/devenv"}]
+    # 159: mirror the Docker path rather than inventing a policy here.
+    # get_env_volume_for_symphony has already decided which symphony this
+    # performer may see and whether it may write: rw for the bootstrap dispatch
+    # that BUILDS the cache, ro for every consumer that reads it. Mounting the
+    # claim root read-write for everybody was safe on a local disk with one
+    # performer and is not on a shared NFS claim, where several performers can
+    # write one tree at once.
+    #
+    # The subpath and the mount path come from ONE source, the container path.
+    # Review found the first version taking the subpath from `host_path.name`
+    # while the mount path came from `container_path` -- two sources for one
+    # relationship, and two symphonies whose cache directories shared a basename
+    # collided on a single subpath with the second mounted read-write. That
+    # performer would write into the other symphony's cache, which is precisely
+    # what this mount exists to prevent.
+    #
+    # getattr rather than attribute access: this function is documented as pure
+    # and testable without a cluster, and its tests pass minimal duck-typed
+    # configs that carry only what the case needs. Defaults match the model's.
+    devenv_root = str(getattr(config, "container_devenv_root", None) or "/devenv").rstrip("/")
+    devenv_mounts: list[dict[str, Any]] = []
+    # A configured root of "/" rstrips to "", and `relative_to("")` refuses every
+    # absolute path -- so nothing is treated as a cache mount, which is the right
+    # answer: with the root at "/" there is no symphony segment to name, and a
+    # string-prefix filter would have admitted every volume the performer has,
+    # including a secrets mount. Verified rather than assumed; an explicit
+    # empty-root guard here was dead code no test could distinguish.
+    for volume in getattr(config, "volumes", None) or []:
+        container_path = PurePosixPath(str(volume.container_path))
+        try:
+            relative = container_path.relative_to(devenv_root)
+        except ValueError:
+            # Not under the root at all. `/devenvil/x` starts with `/devenv`
+            # as a string and is a different directory.
+            continue
+        parts = relative.parts
+        if len(parts) != 1:
+            raise ValueError(
+                f"cache volume {container_path} has no single-segment subpath under "
+                f"{devenv_root}: the claim holds one directory per symphony, and a "
+                f"path {'at the root' if not parts else 'nested deeper'} names no "
+                f"symphony to mount"
+            )
+        devenv_mounts.append(
+            {
+                "name": "devenv-cache",
+                "mountPath": str(container_path),
+                "subPath": parts[0],
+                "readOnly": volume.mode == "ro",
+            }
+        )
+
+    if cache_claim and devenv_mounts:
+        container["volumeMounts"] = devenv_mounts
         spec["volumes"] = [
             {"name": "devenv-cache", "persistentVolumeClaim": {"claimName": cache_claim}}
         ]

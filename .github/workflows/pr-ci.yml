@@ -172,6 +172,15 @@ jobs:
           docker build -t coordinare-daemon:dev -f Dockerfile.daemon .
           kind load docker-image coordinare-daemon:dev --name coordinare-ci
 
+      # 159: the pod-level e2e needs the performer image in the cluster. Built
+      # from Dockerfile.base rather than :full -- the test starts a Pod and talks
+      # to its /status, which base serves, and full adds several minutes of
+      # toolchain to every PR for nothing this test asserts.
+      - name: Build and load the performer image
+        run: |
+          docker build -t coordinare-performer:base -f agent/performer/Dockerfile.base .
+          kind load docker-image coordinare-performer:base --name coordinare-ci
+
       - name: Install coordinare
         run: |
           uv venv
@@ -179,6 +188,51 @@ jobs:
 
       - name: Install the chart and verify it
         run: uv run pytest tests/integration/test_147_helm_install.py -v
+
+      # Spec 146's SC-001 lives here. Until now the Kubernetes performer path was
+      # exercised by nothing that runs on its own, so "it works on Kubernetes"
+      # rested on a hand-run spike.
+      #
+      # -rs and the grep are load-bearing: this file SKIPS when no cluster is
+      # reachable, and a skip in CI is indistinguishable from a pass. Its own
+      # docstring names that as the failure mode it exists to avoid.
+      - name: Verify performers run as Pods
+        # The runner is itself a Pod in the cluster cluster (ARC), so
+        # load_incluster_config() SUCCEEDS here and wins over the kind kubeconfig
+        # -- the runtime under test would talk to cluster with the runner's own
+        # service account. It surfaced as sixteen 403s from
+        # system:serviceaccount:github-actions:... rather than anything about
+        # coordinare. Blanking these two makes in-cluster detection fail, so the
+        # client falls back to the kubeconfig kind-action wrote, which is the
+        # cluster this job built.
+        #
+        # Worth knowing beyond CI: coordinare's k8s runtime prefers in-cluster
+        # credentials by design (that is its supported deployment), so anything
+        # exercising it from inside a cluster targets THAT cluster whatever the
+        # kubeconfig says.
+        env:
+          KUBERNETES_SERVICE_HOST: ""
+          KUBERNETES_SERVICE_PORT: ""
+        run: |
+          set -euo pipefail
+          # A per-run file: "${RUNNER_TEMP}" is scoped to the job, where /tmp is
+          # whatever the runner host shares.
+          log="${RUNNER_TEMP:-/tmp}/e2e-${GITHUB_RUN_ID:-local}-${GITHUB_JOB:-job}.txt"
+          uv run pytest tests/integration/test_146_kind_e2e.py -v -rs 2>&1 | tee "$log"
+
+          # Every way this file can report having proved nothing. A skip is the
+          # one it is designed to do when no cluster is reachable, but a suite
+          # that xfails, deselects or collects nothing is equally vacuous and
+          # equally green.
+          if grep -qE "^SKIPPED|[0-9]+ (skipped|xfailed|xpassed|deselected)|no tests ran|collected 0 items" "$log"; then
+            echo "::error::the Kubernetes pod e2e did not actually run here; it proves nothing"
+            exit 1
+          fi
+          # And it must have positively passed something.
+          if ! grep -qE "[0-9]+ passed" "$log"; then
+            echo "::error::the Kubernetes pod e2e reported no passing tests"
+            exit 1
+          fi
 
   coverage:
     name: Coverage
