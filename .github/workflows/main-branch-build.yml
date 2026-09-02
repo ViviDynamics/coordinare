@@ -54,26 +54,25 @@ jobs:
         run: |
           set -euo pipefail
 
+          # 159: YYYY.M.N, the scheme other in-house projects already mint, so every repo
+          # in the org versions the same way. It is valid SemVer, which the old
+          # YYYY.MM.DD[.N] was not (four components, zero-padded month) -- and that
+          # is what lets the chart below be published at this exact string instead
+          # of a mapping of it.
+          #
           # Reuse a tag already pointing at HEAD rather than minting a second one
-          # for the same commit: re-running this workflow must be idempotent.
-          existing="$(git tag --points-at HEAD | grep -E '^[0-9]{4}\.[0-9]{2}\.[0-9]{2}(\.[0-9]+)?$' | head -n 1 || true)"
+          # for the same commit: re-running this workflow must be idempotent. Both
+          # shapes are accepted here, because the pre-159 tags are real releases
+          # whose images are published under those names.
+          existing="$(git tag --points-at HEAD | grep -E '^v?[0-9]{4}\.[0-9]{1,2}\.[0-9]{1,2}(\.[0-9]+)?$' | head -n 1 || true)"
           if [ -n "$existing" ]; then
             echo "Reusing existing tag on HEAD: $existing"
-            version="$existing"
+            version="${existing#v}"
           else
-            today="$(date -u +%Y.%m.%d)"
-            # Same-day releases get a .N suffix. Sort numerically on the suffix so
-            # .10 orders after .9, which a lexical sort gets wrong.
-            latest_suffix="$(
-              git tag -l "${today}" -l "${today}.*" \
-                | sed -E "s/^${today}//; s/^\.//; s/^$/0/" \
-                | sort -n | tail -n 1 || true
-            )"
-            if [ -z "$latest_suffix" ]; then
-              version="$today"
-            else
-              version="${today}.$((latest_suffix + 1))"
-            fi
+            # The counter ignores the legacy four-component tags: 2026.09.01.3
+            # parsed loosely offers a patch of 01, and the next mint would collide
+            # with a tag that is already pushed. See tests/unit/test_159_calver.py.
+            version="$(python3 .github/scripts/next_calver.py)"
             echo "Derived new version: $version"
           fi
 
@@ -310,6 +309,63 @@ jobs:
           docker build -t "${REGISTRY}:${VERSION}" -f Dockerfile.daemon .
           docker push "${REGISTRY}:${VERSION}"
           echo "Pushed ${REGISTRY}:${VERSION}"
+
+  publish-chart:
+    name: Publish Chart
+    # Consumes the version derive-version minted; derives nothing itself. The in-house scheme's
+    # #2700 is the cautionary tale: its chart publish lived in a second workflow
+    # computing 0.1.<commit-count>, so two versions existed for one push. Reading
+    # needs.*.outputs.version is what keeps the tag, the images and the chart the
+    # same string.
+    needs:
+      - derive-version
+      - create-tag
+      - build-daemon
+    runs-on:
+      - self-hosted
+      - linux
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.derive-version.outputs.sha }}
+
+      - name: Install helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.2
+
+      - name: Log in to ghcr
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # appVersion is the release version, not the commit SHA that in-house uses:
+      # values.yaml pins image.tag to appVersion, and coordinare's images are
+      # tagged with the release, so a SHA here would name an image that does not
+      # exist.
+      - name: Publish the chart at the minted version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version='${{ needs.derive-version.outputs.version }}'
+
+          # Re-running this workflow on a pre-159 commit reuses that commit's
+          # legacy tag, and Helm refuses a four-component version. Skip with a
+          # reason rather than failing the build red: those releases predate the
+          # chart being published at all, so there is nothing to publish for them.
+          if ! printf '%s' "$version" | grep -qE '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+            echo "::notice::$version is a pre-159 release version and is not SemVer; skipping the chart publish"
+            exit 0
+          fi
+
+          out="$(mktemp -d)"
+          echo "== packaging coordinare ${version} =="
+          helm package deploy/helm/coordinare \
+            --version "${version}" --app-version "${version}" -d "${out}"
+          helm push "${out}"/coordinare-*.tgz oci://ghcr.io/vividynamics/charts
 
   tag-latest:
     name: Tag Latest

@@ -277,10 +277,27 @@ class TestPodManifest:
         assert not m["spec"].get("volumes"), "no cache means no volume, not a failure"
 
     def test_mounts_the_cache_when_one_is_available(self) -> None:
+        """159 narrowed this: the claim is mounted for the symphony whose cache
+        this performer was given, not wholesale whenever a claim exists. A
+        performer with no env cache now gets no mount rather than the claim root,
+        which is what stops every performer seeing every symphony's cache on a
+        shared NFS volume. See TestTheCacheMountMirrorsTheDockerPath."""
+        from coordinare.models.performer_endpoint import VolumeMount
         from coordinare.services.kubernetes_runtime import build_pod_manifest
 
         m = build_pod_manifest(
-            _config(), pod_name="p-1", performer_id="i", cache_claim="devenv-cache"
+            _config(
+                volumes=[
+                    VolumeMount(
+                        host_path="/var/lib/coordinare/devenv/website",
+                        container_path="/devenv/website",
+                        mode="ro",
+                    )
+                ]
+            ),
+            pod_name="p-1",
+            performer_id="i",
+            cache_claim="devenv-cache",
         )
         vols = m["spec"]["volumes"]
         assert any(
@@ -808,3 +825,224 @@ class TestOnlyTheKubernetesCaseIsTolerated:
             "a broad ValueError catch here also swallows 'Unknown transport' and a "
             "missing agent_executable, which must still stop the daemon"
         )
+
+
+class TestTheCacheMountMirrorsTheDockerPath:
+    """Spec 159 US2 — one writer per symphony, enforced by the mount.
+
+    The Docker path gives read-write to the bootstrap performer and read-only to
+    consumers. This builder mounted one claim read-write for everybody, which is
+    safe on a local disk with one performer and unsafe on a shared NFS claim with
+    several.
+    """
+
+    @staticmethod
+    def _config(volumes):
+        from coordinare.models.performer_endpoint import PerformerEndpointConfig
+
+        return PerformerEndpointConfig(
+            id="perf-1", mode="ephemeral", roles=["implementer"],
+            image="coordinare-performer:full", port=8080, volumes=volumes,
+        )
+
+    @staticmethod
+    def _mount(sanitised, mode):
+        from coordinare.models.performer_endpoint import VolumeMount
+
+        return VolumeMount(
+            host_path=f"/var/lib/coordinare/devenv/{sanitised}",
+            container_path=f"/devenv/{sanitised}",
+            mode=mode,
+        )
+
+    def _built(self, volumes, cache_claim="coordinare-devenv-cache"):
+        from coordinare.services.kubernetes_runtime import build_pod_manifest
+
+        return build_pod_manifest(
+            self._config(volumes), pod_name="p", performer_id="perf-1",
+            cache_claim=cache_claim,
+        )
+
+    def test_a_bootstrap_mount_is_read_write_at_its_own_subpath(self) -> None:
+        manifest = self._built([self._mount("website", "rw")])
+        mounts = manifest["spec"]["containers"][0]["volumeMounts"]
+
+        assert len(mounts) == 1
+        assert mounts[0]["mountPath"] == "/devenv/website"
+        assert mounts[0]["subPath"] == "website"
+        assert not mounts[0].get("readOnly", False)
+
+    def test_a_consumer_mount_is_read_only(self) -> None:
+        mounts = self._built([self._mount("website", "ro")])["spec"]["containers"][0]["volumeMounts"]
+
+        assert mounts[0]["readOnly"] is True, (
+            "a consumer holding a read-write mount is how two performers end up "
+            "writing one cache tree on NFS"
+        )
+
+    def test_one_symphony_cannot_reach_another_through_its_mount(self) -> None:
+        mounts = self._built([self._mount("website", "ro")])["spec"]["containers"][0]["volumeMounts"]
+
+        assert mounts[0]["subPath"] == "website"
+        assert all(m["mountPath"] != "/devenv" for m in mounts), (
+            "mounting the claim root exposes every symphony's cache to every performer"
+        )
+
+    def test_several_symphonies_each_get_their_own_subpath(self) -> None:
+        mounts = self._built(
+            [self._mount("website", "ro"), self._mount("inhouse", "ro")]
+        )["spec"]["containers"][0]["volumeMounts"]
+
+        assert {m["subPath"] for m in mounts} == {"website", "inhouse"}
+        assert len({m["name"] for m in mounts}) == 1, "one claim, several subpaths"
+
+    def test_the_claim_is_declared_once_however_many_mounts(self) -> None:
+        manifest = self._built([self._mount("website", "ro"), self._mount("inhouse", "ro")])
+        volumes = manifest["spec"]["volumes"]
+
+        assert len(volumes) == 1
+        assert volumes[0]["persistentVolumeClaim"]["claimName"] == "coordinare-devenv-cache"
+
+    def test_no_claim_means_no_mounts_and_no_failure(self) -> None:
+        """Spec 146 FR-012: a cluster with no cache runs cold, not broken."""
+        manifest = self._built([self._mount("website", "ro")], cache_claim=None)
+
+        assert "volumeMounts" not in manifest["spec"]["containers"][0]
+        assert "volumes" not in manifest["spec"]
+
+    def test_a_claim_with_no_volumes_mounts_nothing(self) -> None:
+        """A performer with no env cache yet must not get the claim root."""
+        manifest = self._built([])
+
+        assert "volumeMounts" not in manifest["spec"]["containers"][0]
+        assert "volumes" not in manifest["spec"]
+
+    def test_a_workspace_volume_never_reaches_the_nfs_claim(self) -> None:
+        """Spec FR-008. Git trees and node_modules on NFS is the worst case for
+        many-small-files and locking, and the claim is not where they belong.
+        Only devenv paths translate; anything else is ignored here."""
+        from coordinare.models.performer_endpoint import VolumeMount
+
+        workspace = VolumeMount(
+            host_path="/var/lib/coordinare/work/card-1",
+            container_path="/workspace",
+            mode="rw",
+        )
+        manifest = self._built([workspace, self._mount("website", "ro")])
+        mounts = manifest["spec"]["containers"][0]["volumeMounts"]
+
+        assert [m["mountPath"] for m in mounts] == ["/devenv/website"], (
+            "a non-devenv volume was mounted onto the shared NFS claim"
+        )
+
+
+class TestTheCacheMountCannotBeTalkedIntoTheWrongPlace:
+    """Review of #159: two ways the translation could betray its own purpose.
+
+    Both were reproduced against the committed code, and both put a performer
+    somewhere it must not be — which is the whole thing this mount exists to
+    prevent, not a hardening extra.
+    """
+
+    @staticmethod
+    def _config(volumes, devenv_root="/devenv"):
+        from coordinare.models.performer_endpoint import PerformerEndpointConfig
+
+        return PerformerEndpointConfig(
+            id="perf-1", mode="ephemeral", roles=["implementer"],
+            image="coordinare-performer:full", port=8080,
+            container_devenv_root=devenv_root, volumes=volumes,
+        )
+
+    @staticmethod
+    def _vol(host, container, mode="ro"):
+        from coordinare.models.performer_endpoint import VolumeMount
+
+        return VolumeMount(host_path=host, container_path=container, mode=mode)
+
+    def _built(self, volumes, devenv_root="/devenv"):
+        from coordinare.services.kubernetes_runtime import build_pod_manifest
+
+        return build_pod_manifest(
+            self._config(volumes, devenv_root), pod_name="p", performer_id="perf-1",
+            cache_claim="coordinare-devenv-cache",
+        )
+
+    def test_a_root_of_slash_does_not_mount_the_whole_filesystem(self) -> None:
+        """`"/".rstrip("/")` is the empty string, and everything startswith("").
+
+        With that, the filter admits every volume the performer has, and each
+        one is mounted onto the shared cache claim — so a secrets mount would be
+        served out of the env cache.
+        """
+        mounts = self._built(
+            [
+                self._vol("/var/lib/coordinare/devenv/website", "/devenv/website"),
+                self._vol("/etc/secrets", "/secrets"),
+            ],
+            devenv_root="/",
+        )["spec"]["containers"][0].get("volumeMounts", [])
+
+        assert "/secrets" not in [m["mountPath"] for m in mounts], (
+            "a non-devenv volume was mounted onto the cache claim"
+        )
+
+    def test_two_symphonies_cannot_be_given_the_same_subpath(self) -> None:
+        """Unconstructable now, rather than detected.
+
+        The subPath used to come from `host_path.name` while the mount path came
+        from `container_path` — two sources for one relationship. Cache
+        directories sharing a basename then collided on a single subPath with
+        the second mounted read-write, so that performer wrote into the other
+        symphony's cache. Deriving both from the container path means two
+        different mounts cannot share a subPath at all, which is why this asserts
+        the property rather than an exception.
+        """
+        mounts = self._built(
+            [
+                self._vol("/var/lib/coordinare/devenv/website", "/devenv/website", "ro"),
+                self._vol("/mnt/other/website", "/devenv/website-2", "rw"),
+            ]
+        )["spec"]["containers"][0]["volumeMounts"]
+
+        by_path = {m["mountPath"]: m for m in mounts}
+        assert by_path["/devenv/website"]["subPath"] == "website"
+        assert by_path["/devenv/website-2"]["subPath"] == "website-2"
+        assert len({m["subPath"] for m in mounts}) == len(mounts), (
+            "two mounts share a subPath; one symphony is inside another's cache"
+        )
+        # And the writer is not pointed at the reader's directory.
+        writer = next(m for m in mounts if not m["readOnly"])
+        reader = next(m for m in mounts if m["readOnly"])
+        assert writer["subPath"] != reader["subPath"]
+
+    def test_the_subpath_matches_the_directory_the_mount_path_names(self) -> None:
+        """Derived from one source, so the two cannot disagree."""
+        mounts = self._built(
+            [self._vol("/anywhere/at/all", "/devenv/website")]
+        )["spec"]["containers"][0]["volumeMounts"]
+
+        assert mounts[0]["subPath"] == "website"
+        assert mounts[0]["mountPath"] == "/devenv/website"
+
+    def test_a_path_that_merely_starts_with_the_root_is_not_under_it(self) -> None:
+        """`/devenvil/x`.startswith(`/devenv`) is True and means nothing."""
+        mounts = self._built(
+            [self._vol("/x/y", "/devenvil/x"), self._vol("/a/b", "/devenv/website")]
+        )["spec"]["containers"][0]["volumeMounts"]
+
+        assert [m["mountPath"] for m in mounts] == ["/devenv/website"]
+
+    def test_a_nested_path_under_the_root_is_refused(self) -> None:
+        """The claim is laid out one directory per symphony. A deeper path has
+        no subPath that means the same thing."""
+        import pytest
+
+        with pytest.raises(ValueError, match="subpath"):
+            self._built([self._vol("/a/b", "/devenv/website/inner")])
+
+    def test_the_root_itself_is_not_a_symphony(self) -> None:
+        import pytest
+
+        with pytest.raises(ValueError, match="subpath"):
+            self._built([self._vol("/a/b", "/devenv")])
