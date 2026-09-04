@@ -449,6 +449,41 @@ def _derive_global_phase(active_sessions: dict) -> str:
 # Global state keys mutated by graph nodes (e.g. check_board) that are shared
 # across all sessions in a cycle.  After the concurrent fanout, these are merged
 # back into self._state from the first successful result so they're not lost.
+#: Per-cycle bookkeeping dicts that `check_board` creates with
+#: ``state.setdefault(key, {})`` and that MUST be shared across the concurrent fanout.
+#:
+#: `check_board` is a graph node, so it runs once per session, and each session gets a
+#: SHALLOW copy of the daemon state (``session_state = dict(self._state)``). If one of
+#: these keys is absent before the fanout, every session's ``setdefault`` builds its own
+#: dict and no session can see another's marks — issue #247, where two sessions recovered
+#: the same blocked card in one cycle and made duplicate GitHub calls.
+#:
+#: Seeding them here fixes both halves at once. A shallow copy shares the VALUE object, so
+#: every session mutates one dict: marks are visible immediately within the cycle, and the
+#: daemon's own state carries them to the next cycle with no merge step. That matters
+#: because the global merge-back is first-writer-wins, not a union, so merging alone would
+#: still have dropped every session but one.
+SHARED_CYCLE_MARKER_KEYS: tuple[str, ...] = (
+    # 129: anti-thrash marker, so a blocked card is recovered once per daemon run.
+    "_recovery_attempts",
+    # dependency-announcement latch, so a blocked-by note is posted once, not per cycle.
+    "_dep_announcements",
+)
+
+
+def seed_shared_cycle_markers(state: dict[str, Any]) -> None:
+    """Ensure every shared per-cycle marker map exists BEFORE the fanout.
+
+    Idempotent, and deliberately non-destructive: an existing dict is left in place (it
+    holds live marks) rather than replaced. A non-mapping value — which a restored
+    snapshot could carry — is repaired to an empty dict, because ``setdefault`` would
+    otherwise hand the node back a scalar it then tries to index.
+    """
+    for key in SHARED_CYCLE_MARKER_KEYS:
+        if not isinstance(state.get(key), dict):
+            state[key] = {}
+
+
 _GLOBAL_STATE_KEYS: tuple[str, ...] = (
     "last_known_main_sha",
     "last_rebase_round",
@@ -1457,6 +1492,14 @@ class CoordinareDaemon:
 
             self._state = await advocate_scan(self._state)  # type: ignore[assignment]
         self._state["_advocate_scan_done"] = True  # type: ignore[typeddict-unknown-key]
+
+        # Pre-fanout: give every session ONE shared marker map per per-cycle key.
+        # `dict(self._state)` is a shallow copy, so seeding here means every session
+        # mutates the same dict instead of each setdefault-ing a private one (#247).
+        # Placed AFTER advocate_scan on purpose: that call REASSIGNS self._state, so
+        # seeding earlier would risk the replacement dropping the seeded keys. This is
+        # still before the fanout, which is all the fix requires.
+        seed_shared_cycle_markers(self._state)  # type: ignore[arg-type]
 
         # Pre-flight: poll board once so all concurrent sessions share the cache
         # and eligibility can be computed before the fanout.  Respect the same
