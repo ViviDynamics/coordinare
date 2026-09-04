@@ -2,6 +2,12 @@
 # with coordinare's contribution policy (see CONTRIBUTING.md), then labels and
 # closes them. Adopted from conductor spec 142 (ViviDynamics/conductor#196).
 #
+# THIS IS A BACKSTOP, NOT THE PRIMARY CONTROL. The repository setting
+# `pullRequestCreationPolicy: COLLABORATORS_ONLY` prevents non-collaborators
+# from opening a pull request at all, so in the normal case this job never
+# fires on an outsider. It stays because a settings change is one click and
+# this job is the thing that notices.
+#
 # WHY pull_request_target AND NOT pull_request
 # -------------------------------------------
 # A fork-originated `pull_request` event runs with a read-only GITHUB_TOKEN and
@@ -150,8 +156,8 @@ jobs:
               'for the full reasoning.',
               '',
               '**Your work is still wanted.** If you found a bug, please',
-              '[open an issue](https://github.com/ViviDynamics/coordinare/issues/new) and describe the',
-              'fix, or paste the diff into the issue body. We will implement it and credit you.',
+              '[start a discussion](https://github.com/ViviDynamics/coordinare/discussions) and describe',
+              'the fix, or paste the diff into the thread. We will implement it and credit you.',
             ];
 
             if (is_security) {
