@@ -26,6 +26,7 @@ from coordinare.localhost_guard import (
     install_localhost_guard,
 )
 from coordinare.services.activity_log import ActivityLog
+from coordinare.services.card_ownership import ownership_policy
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -100,6 +101,35 @@ def compute_overall_health(subsystems: list[dict]) -> str:
         return "unavailable"
     return "degraded"
 
+
+def ownership_hint(config: Any) -> str:
+    """Name the card-ownership policy in force, for the dashboard (160 FR-010).
+
+    Asks ``ownership_policy`` rather than reading the config fields directly, so
+    the hint cannot drift from the gate it describes: whatever makes
+    ``check_board`` narrow the board is exactly what makes this return a string.
+
+    Eligibility is a union, so the hint has three shapes, and the empty one is a
+    claim too -- it says no policy is in force and every card is coordinare's.
+    Rendering the login alone was correct only while ``include_unassigned`` was a
+    modifier that did nothing without it; as an independent opt-in it can be the
+    whole policy, which is the shape a deployment authenticating as a GitHub App
+    must use, since an App cannot be assigned to an issue.
+
+    The login is shown as the operator spelled it. Matching lowercases both
+    sides, but echoing their own configuration back at them is what makes a
+    typo'd login findable.
+    """
+    policy = ownership_policy(config)
+    if not policy.active:
+        return ""
+    raw = getattr(config, "assignee_filter", None)
+    login = raw.strip() if isinstance(raw, str) else ""
+    if login and policy.include_unassigned:
+        return f"{login} + unassigned"
+    if login:
+        return login
+    return "unassigned"
 
 # ---------------------------------------------------------------------------
 # Performer pool widget (spec 056, T040)
@@ -690,6 +720,17 @@ class DashboardStore:
             "role_utilization": self._build_role_utilization(daemon),
             # 050: Active assignee filter for dashboard idle-state hint.
             "assignee_filter": getattr(daemon.state.get("config"), "assignee_filter", None),
+            # 160: whether that filter also admits unassigned cards. Without it
+            # the hint reads "Filter: coordinare-bot" on a board that is in fact
+            # picking up everything nobody claimed -- true as far as it goes and
+            # wrong about what coordinare will do next.
+            "include_unassigned": bool(
+                getattr(daemon.state.get("config"), "include_unassigned", False)
+            ),
+            # 160: the policy named as one string, computed from the same
+            # ownership_policy() the gate consults. The two raw fields above are
+            # kept for consumers that predate this key; the UI reads only this.
+            "ownership_hint": ownership_hint(daemon.state.get("config")),
             # 053: Idle observability summary from board snapshot + poll timing.
             "board_summary": board_summary,
             "last_poll_at": last_poll_at,
@@ -1452,7 +1493,8 @@ function renderState(s) {
       var idleInProg = bCount('IN_PROGRESS');
       var idlePoll = s.last_poll_at ? esc(fmtTime(s.last_poll_at)) : '\\u2014';
       var idleCycles = s.cycles_completed != null ? esc(String(s.cycles_completed)) : '\\u2014';
-      var idleFilter = s.assignee_filter ? ' <span style="color:var(--color-text-muted);font-size:12px">(filter: ' + esc(s.assignee_filter) + ')</span>' : '';
+      var idleFilterText = s.ownership_hint ? esc(s.ownership_hint) : '';
+      var idleFilter = idleFilterText ? ' <span style="color:var(--color-text-muted);font-size:12px">(filter: ' + idleFilterText + ')</span>' : '';
       document.getElementById('idle-panel-content').innerHTML =
         '<table style="border-collapse:collapse;font-size:13px">' +
           '<tr><td style="padding:4px 12px 4px 0;color:var(--color-text-muted)">Board total</td>' +
@@ -3285,7 +3327,7 @@ function renderActivePerformers(s) {
       return Number.isFinite(value) ? value : 0;
     }
     var pollHint = s.last_poll_at ? esc(fmtTime(s.last_poll_at)) : '—';
-    var filterHint = s.assignee_filter ? esc(s.assignee_filter) : '';
+    var filterHint = s.ownership_hint ? esc(s.ownership_hint) : '';
     container.innerHTML =
       '<div class="ap-idle">' +
         '<div class="ap-idle-title">No active performers</div>' +

@@ -513,7 +513,20 @@ performers:
 # --- Card Selection ---
 
 # Only consider cards assigned to this GitHub login. Omit to process all cards.
+# The filter governs every card coordinare adopts, not only new pickups: a card
+# someone else owns is left alone in In progress, In review and Blocked too.
+# Work already in flight is unaffected -- unassigning a card coordinare is
+# already working does not abandon it mid-branch.
 # assignee_filter: "coordinare-bot"
+
+# Also adopt cards with NO assignee at all. Eligibility is the union of the two
+# opt-ins: a card assigned to somebody else is in neither. Set on its own (no
+# assignee_filter) this means "unassigned only" -- work what nobody has claimed,
+# leave what a human has claimed, so assigning a card to yourself takes it off
+# coordinare. That is the setting for a deployment authenticating as a GitHub
+# App, which has no assignable login of its own: an App cannot be assigned to an
+# issue. Usually set per symphony.
+# include_unassigned: false
 
 # Priority-aware card selection from the TODO column.
 # priority:
@@ -846,6 +859,7 @@ symphonies:
     #   poll_interval_seconds: 60
     #   max_closed_pr_attempts_per_issue: 5
     #   assignee_filter: "backend-bot"
+    #   include_unassigned: true      # also take cards nobody has claimed
     # personas:
     #   implementer:
     #     instructions: "Follow the backend coding standards in CONTRIBUTING.md."

@@ -888,6 +888,14 @@ class ProjectConfiguration(BaseSettings):
     priority: PriorityConfig = Field(default_factory=PriorityConfig)
     # 050 — Only dispatch cards assigned to this GitHub login. None = no filter.
     assignee_filter: str | None = Field(default=None)
+    # 160 — Opt in cards carrying NO assignee. Eligibility is the union of the
+    # two opt-ins: ``assignee_filter`` admits cards assigned to a login, this
+    # admits cards nobody has claimed, and a card claimed by somebody else is in
+    # neither. Set on its own it is a complete policy ("unassigned only"), which
+    # is what a deployment authenticating as a GitHub App needs: an App cannot be
+    # assigned to an issue, so it has no login to name. Per-symphony via
+    # ``overrides``.
+    include_unassigned: bool = False
     # 051 — Git commit identity and subprocess env pass-through
     bot_identity: BotIdentityConfig = Field(default_factory=BotIdentityConfig)
     env_passthrough: list[str] = Field(default_factory=list)
