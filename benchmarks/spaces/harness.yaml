@@ -1,0 +1,51 @@
+# Spec 161 — the harness-comparison search space (FR-014).
+#
+# Purpose: with the model held FIXED, rank backend harnesses per role. The gateway now
+# serves a single self-hosted model, so the harness is the only variable left between
+# roles, and the shipped role-to-harness mapping was chosen for a retired fleet.
+#
+# This space deliberately sweeps ONE role's harness at a time (ablation, not a
+# cross-product). Two points differ only by that role's harness, which is what makes the
+# result attributable to the harness rather than to an interaction.
+#
+# The `role:` shorthand expands to global_config.performers.<role>.backend. Harness names
+# are validated against performer.backends.SUPPORTED_BACKENDS when this file loads, so a
+# typo fails immediately instead of partway through a long sweep.
+#
+# Only the roles the benchmark baseline actually declares can be swept
+# (implementer / reviewer / security). Adding a role here that the baseline does not
+# declare is rejected at load time by the path walk, naming the offending role.
+name: harness
+baseline_config: baseline.yaml
+
+dimensions:
+  # reviewer: the role where harness quality matters most and is most measurable. A
+  # reviewer must produce a structured verdict; harnesses with strict JSON parsers or
+  # leaky reasoning channels fail visibly here. Note a `changes_requested` verdict is
+  # CREDIT, not a defect — a reviewer that correctly rejects bad code is working, and
+  # ranking must not mistake discernment for failure.
+  - name: reviewer-harness
+    role: reviewer
+    choices: [openclaw, claude_code, codex, junie]
+    description: "161: which harness serves the reviewer role best"
+
+  # security: same contract as reviewer (structured verdict) but a different persona and
+  # prompt shape, so it is swept separately rather than assumed to match.
+  - name: security-harness
+    role: security
+    choices: [openclaw, claude_code, codex]
+    description: "161: which harness serves the security role best"
+
+  # implementer: the long agentic role. Failures here are usually endurance rather than
+  # formatting — the harness idling or losing the loop partway through a task.
+  - name: implementer-harness
+    role: implementer
+    choices: [opencode, codex, claude_code]
+    description: "161: which harness serves the implementer role best"
+
+# Deliberately NOT swept here:
+#   - hermes / pi: single-role harnesses in the live config (tech_writer / closer). The
+#     benchmark baseline declares neither role, so a dimension for them would be rejected
+#     at load. Add the role to the baseline first if they need ranking.
+#   - opencode_compat: a compatibility shim for opencode rather than an independent
+#     harness, so ranking it against opencode compares a wrapper to what it wraps.

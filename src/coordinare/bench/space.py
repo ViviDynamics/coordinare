@@ -40,11 +40,50 @@ class SpaceError(ValueError):
     """A definition that cannot be fully validated fails loudly (FR-002)."""
 
 
+#: Dotted-path template for a role's harness (spec 161). Every consumer keys on
+#: ``Dimension.path``, so the ``role:`` shorthand is normalized into this at load time
+#: rather than branching downstream.
+HARNESS_PATH_TEMPLATE = "global_config.performers.{role}.backend"
+
+
+def _is_harness_path(path: str) -> bool:
+    """True when *path* targets a performer's harness (backend) selection."""
+    parts = path.split(".")
+    return (
+        len(parts) == 4
+        and parts[0] == "global_config"
+        and parts[1] == "performers"
+        and parts[3] == "backend"
+    )
+
+
 class Dimension(BaseModel):
     name: str
-    path: str
+    path: str = ""
+    #: Shorthand for a harness dimension: ``role: reviewer`` expands to
+    #: ``global_config.performers.reviewer.backend`` (spec-161 FR-014). Exactly one of
+    #: ``path`` or ``role`` must be given.
+    role: str = ""
     choices: list[Any] = Field(min_length=1)
     description: str = ""
+
+    @model_validator(mode="after")
+    def _exactly_one_target(self) -> Dimension:
+        if bool(self.path) == bool(self.role):
+            msg = (
+                f"dimension {self.name!r}: give exactly one of 'path' or 'role' "
+                "(role is shorthand for the performer's backend path)"
+            )
+            raise ValueError(msg)
+        if self.role:
+            # Normalize immediately so sweep/optimizer/reporting keep reading `path`.
+            self.path = HARNESS_PATH_TEMPLATE.format(role=self.role)
+            # Clear `role` once consumed, or the model carries BOTH fields and fails its
+            # own exactly-one-of check when dumped and reloaded — breaking every
+            # round-trip (persisting a space, model_copy, revalidating a dumped dict).
+            # `role` is shorthand for authoring, not state to keep afterwards.
+            self.role = ""
+        return self
 
     @field_validator("choices")
     @classmethod
@@ -181,6 +220,30 @@ def config_fingerprint(config: CoordinareConfiguration) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()[:16]
 
 
+def _validate_harness_choices(dim: Dimension) -> None:
+    """Reject an unknown harness name at load time (spec-161 FR-017).
+
+    Necessary because the coordinare config schema does NOT constrain ``backend`` to the
+    known harness set: ``materialize`` happily accepts ``backend: not_a_harness``, so a
+    typo would expand into a sweep point, run, and only fail once a performer tried to
+    dispatch it — partway through what may be a long sweep, with the earlier points'
+    budget already spent.
+
+    An unknown *role* needs no handling here: ``_walk`` already rejects it while resolving
+    the path, naming the offending segment.
+    """
+    from performer.backends import SUPPORTED_BACKENDS
+
+    unknown = [c for c in dim.choices if c not in SUPPORTED_BACKENDS]
+    if unknown:
+        supported = ", ".join(sorted(SUPPORTED_BACKENDS))
+        msg = (
+            f"dimension {dim.name!r}: unknown harness "
+            f"{', '.join(repr(u) for u in unknown)} in choices; supported: {supported}"
+        )
+        raise SpaceError(msg)
+
+
 def load_space(path: str | Path) -> LoadedSpace:
     """Load + fully validate a space definition (FR-001/FR-002)."""
     space_path = Path(path)
@@ -210,6 +273,8 @@ def load_space(path: str | Path) -> LoadedSpace:
 
     for dim in definition.dimensions:
         resolve_path(baseline_dump, dim.path)  # path must exist (raises naming it)
+        if _is_harness_path(dim.path):
+            _validate_harness_choices(dim)
         for choice in dim.choices:
             try:
                 materialize(baseline_dump, {dim.path: choice})

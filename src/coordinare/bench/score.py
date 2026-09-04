@@ -11,18 +11,47 @@ Contract: ``specs/135-board-bench-scoring/contracts/score-object.md``.
 from __future__ import annotations
 
 from datetime import datetime  # noqa: TC003 — needed at runtime for pydantic model building
+from enum import StrEnum
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field
 
-SCORE_SCHEMA_VERSION = 1
+#: Bumped 1 → 2 by spec 161, which adds the `view` discriminator below.
+#:
+#: The addition is behaviour-preserving but NOT byte-preserving: a new field changes the
+#: serialized document, so the version moves and `view` defaults to CONFIG_COMPARISON.
+#: What spec-161 FR-011 guarantees is that the computed `scalar` and component VALUES are
+#: numerically unchanged for a fixed-harness sweep — a value guarantee, not byte identity,
+#: which would be impossible alongside a new field.
+SCORE_SCHEMA_VERSION = 2
 
 # Artifact schema versions this scorer knows how to grade (spec-135 FR-001).
 KNOWN_ARTIFACT_VERSIONS = frozenset({1})
 
 VerdictCategory = Literal["PASS", "FAIL_MODEL", "FAIL_HARNESS", "ERROR"]
 ExpectedFinalState = Literal["merged", "blocked"]
+
+
+class ScoringView(StrEnum):
+    """Which objective produced a score (spec-161 FR-012).
+
+    The two views treat harness failure in OPPOSITE ways, so a scalar from one is
+    meaningless against a scalar from the other:
+
+    * ``CONFIG_COMPARISON`` — harness failure is quarantined out of ``correctness_rate``
+      and surfaced separately, so optimization is never steered by infrastructure noise
+      (spec-135 FR-005). This is the pre-existing behaviour and the default.
+    * ``HARNESS_COMPARISON`` — harness failure counts AGAINST the harness, because when
+      the harness is the thing under test its defects are the signal, not noise
+      (spec-161 FR-010).
+
+    Carried alongside the embedded ``Weights``, extending the existing rule that scalars
+    compare only within matching weights to also require a matching view.
+    """
+
+    CONFIG_COMPARISON = "config_comparison"
+    HARNESS_COMPARISON = "harness_comparison"
 
 
 class Weights(BaseModel):
@@ -80,6 +109,9 @@ class ScoreObject(BaseModel):
     judged: bool = False
     judge_model: str | None = None
     deterministic_only: bool = True
+    #: Defaults to CONFIG_COMPARISON so every score written before spec 161 — and every
+    #: fixed-harness config sweep after it — keeps exactly the meaning it always had.
+    view: ScoringView = ScoringView.CONFIG_COMPARISON
     weights: Weights = Weights()
     cards: list[CardVerdict] = []
     components: ComponentVector = ComponentVector()
