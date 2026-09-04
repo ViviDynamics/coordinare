@@ -152,6 +152,10 @@ performers:
 
 # --- Card Selection (optional) ---
 # assignee_filter: "coordinare-bot"
+# Also adopt cards with no assignee at all. On its own (no filter above) this
+# means "unassigned only", which is what a GitHub App deployment needs -- an App
+# cannot be assigned to an issue. Never admits somebody else's cards either way.
+# include_unassigned: false
 
 
 # --- Concurrency (optional) ---

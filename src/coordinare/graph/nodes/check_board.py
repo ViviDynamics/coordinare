@@ -16,6 +16,11 @@ from coordinare.graph.state import _rederive_current_card, _retire_active_sessio
 from coordinare.lib.acceptance_criteria import parse_acceptance_criteria
 from coordinare.models.dependency import DependencyStatus
 from coordinare.services.board_provider import board_of, move_card_or_warn
+from coordinare.services.card_ownership import (
+    filter_owned,
+    ownership_policy,
+    owns_card,
+)
 from coordinare.services.dependency import build_graph, resolve_off_board_dependencies
 from coordinare.services.dependency import filter_eligible_todo as _dep_filter
 from coordinare.services.rebase import repo_url_from_config
@@ -947,11 +952,75 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
     blocked = state["board_snapshot"].get("BLOCKED", [])
     todo = state["board_snapshot"].get("TODO", [])
 
+    # 160: which of these cards are this coordinare's at all. Resolved once here
+    # and consulted by every path below that adopts a card it has no session
+    # for -- TODO pickup, the IN_REVIEW / IN_PROGRESS re-adoption loops, and
+    # BLOCKED handling. Spec 050 gated only the first of those, so a card a
+    # human dragged into In progress was worked regardless of who owned it.
+    # Work already in flight is untouched. The gate decides only whether a NEW
+    # session is created; the column lists themselves stay unfiltered, so a card
+    # that loses its assignee mid-cycle keeps its session, keeps its
+    # current_card branch below, and is not read as having left the board.
+    _ownership = ownership_policy(state.get("config"))
+    _assignees = board.get("item_assignees", {}) if isinstance(board, dict) else {}
+    _all_cards = [*todo, *in_progress, *in_review, *blocked]
+    # Not "no card carries an assignee" but "no card is coordinare's". Measured on
+    # a real board (ViviDynamics/website: 73 cards, 8 with any assignee), the
+    # narrower condition never fires on the case an operator actually hits --
+    # setting a filter on a board where other people are assigned and coordinare
+    # is not, which takes it from 73 workable cards to zero while saying nothing
+    # above info level.
+    _nothing_owned = (
+        _ownership.active
+        and bool(_all_cards)
+        and not any(owns_card(_ownership, cid, _assignees) for cid in _all_cards)
+    )
+    # Warn on ENTERING that state, not while it persists. check_board runs once
+    # per poll with no sessions adopted (daemon.py's no-sessions branch), which
+    # is exactly the situation this warns about -- so an unlatched warning is
+    # 120 identical lines an hour, forever, at the default interval. The latch
+    # re-arms when the condition clears, so a board that goes wrong again says
+    # so again. Same shape as `_dep_announcements` and `_recovery_attempts`
+    # elsewhere in this node. The latch is also what makes it safe to warn on a
+    # shared board where the filter is legitimately excluding everything: once
+    # per episode is a signal, every cycle would be noise.
+    if _nothing_owned and not state.get("_ownership_nothing_owned_warned"):
+        # A filter is configured and not one card on the board is coordinare's,
+        # so it stops dead looking idle on a full board. Name it rather than
+        # leaving an operator to work out why.
+        _with_assignee = sum(1 for cid in _all_cards if _assignees.get(cid))
+        logger.warning(
+            "card_ownership.no_cards_owned",
+            assignee_filter=_ownership.login,
+            include_unassigned=_ownership.include_unassigned,
+            cards_on_board=len(_all_cards),
+            # Separates the three shapes an operator has to tell apart: nobody is
+            # assigned anywhere (answered by include_unassigned), other people are
+            # assigned but coordinare is not (answered by assigning cards to it, or
+            # by a wrong login in the filter), and the provider reports no assignee
+            # data at all (a provider or config problem).
+            cards_with_an_assignee=_with_assignee,
+            assignee_data_present=bool(_assignees),
+        )
+    state["_ownership_nothing_owned_warned"] = _nothing_owned  # type: ignore[typeddict-unknown-key]
+
     # 129 (US1): before BLOCKED cards are skipped, re-evaluate whether their
     # block has cleared and auto-recover them (default-off, fail-safe). Recovered
     # cards leave BLOCKED here and are picked up as normal in this/next cycle.
-    await _attempt_blocked_card_recovery(state, github, blocked, board)
-    blocked = state["board_snapshot"].get("BLOCKED", [])
+    # 160: only coordinare's own blocked cards -- recovery MOVES cards on the
+    # board, which it has no business doing to somebody else's.
+    await _attempt_blocked_card_recovery(
+        state,
+        github,
+        filter_owned(_ownership, blocked, _assignees, context="blocked_recovery"),
+        board,
+    )
+    # 160: `all_blocked` keeps every blocked card for the disappeared-card check
+    # below, which asks "is the active card still ANYWHERE on the board". Asking
+    # that of the filtered list would read an unassignment as a deletion and
+    # cancel live work.
+    all_blocked = state["board_snapshot"].get("BLOCKED", [])
+    blocked = filter_owned(_ownership, all_blocked, _assignees, context="blocked")
 
     # 026: Detect active card removed from all known columns (cancellation)
     active_card = state.get("current_card")
@@ -960,7 +1029,7 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
         active_id = str(active_card.get("id", ""))
         all_known_ids = {
             str(item_id) for col in (
-                in_progress, in_review, blocked, todo,
+                in_progress, in_review, all_blocked, todo,
                 state["board_snapshot"].get("DONE", []),
                 state["board_snapshot"].get("BACKLOG", []),
             ) for item_id in col
@@ -1006,6 +1075,8 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
         for item in in_review:
             if item in already_active_ids:
                 continue
+            if not owns_card(_ownership, item, _assignees):
+                continue  # 160: someone else's PR to shepherd
             card_dict = _build_card_dict(item, board, "IN_REVIEW")
             sess = create_session_from_card(card_dict)
             sess["phase"] = "monitoring_pr"
@@ -1105,6 +1176,8 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
         for item in in_progress:
             if item in already_active_ids:
                 continue
+            if not owns_card(_ownership, item, _assignees):
+                continue  # 160: a human moved someone else's card here
             # 066 FR-002: when the flat current_card matches the card we are
             # readopting (post-restart restore path), reuse it as the seed so
             # PR-specific fields (pr_url, pr_node_id) persist through readopt.
@@ -1353,24 +1426,9 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
             if not (set(item_labels.get(item_id, [])) & advocate_labels)
         ]
 
-        # 050: Filter by assignee when assignee_filter is configured
+        # 050/160: only cards this coordinare owns (see card_ownership).
         config = state.get("config")
-        assignee_filter = getattr(config, "assignee_filter", None) if config is not None else None
-        filter_login = str(assignee_filter).strip().lower() if isinstance(assignee_filter, str) else ""
-        if filter_login:
-            item_assignees = board.get("item_assignees", {})
-            pre_assignee_count = len(eligible_todo)
-            eligible_todo = [
-                item_id for item_id in eligible_todo
-                if filter_login in item_assignees.get(item_id, [])
-            ]
-            skipped = pre_assignee_count - len(eligible_todo)
-            if skipped:
-                logger.info(
-                    "check_board.assignee_filtered",
-                    skipped=skipped,
-                    assignee_filter=filter_login,
-                )
+        eligible_todo = filter_owned(_ownership, eligible_todo, _assignees, context="todo")
 
         # 025: Sort by priority field if configured
         if config is not None and hasattr(config, "priority"):

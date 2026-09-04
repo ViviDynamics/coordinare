@@ -128,9 +128,32 @@ def test_state_update_shape_additive_only() -> None:
     missing = set(_PRE_138_KEYS) - set(snapshot)
     assert not missing, f"pre-138 keys removed: {sorted(missing)}"
     added = set(snapshot) - set(_PRE_138_KEYS)
-    assert added == {"activity_quiet_threshold_seconds"}, f"unplanned additions: {sorted(added)}"
+    # 160 added include_unassigned and ownership_hint beside the pre-existing
+    # assignee_filter.
+    assert added == {
+        "activity_quiet_threshold_seconds",
+        "include_unassigned",
+        "ownership_hint",
+    }, f"unplanned additions: {sorted(added)}"
     for key, expected in _PRE_138_KEYS.items():
         assert isinstance(snapshot[key], expected), f"{key} changed type"
+
+
+def test_ownership_hint_is_computed_from_the_daemon_config() -> None:
+    """160 FR-010: the snapshot carries the policy, not the raw fields alone.
+
+    Pinned here because this is where the snapshot helpers live. Without it, the
+    call in build_snapshot could be replaced by a constant "" and every test of
+    the hint function itself would stay green.
+    """
+    daemon = _make_mock_daemon()
+    daemon.state["config"] = MagicMock(assignee_filter=None, include_unassigned=True)
+    snapshot = DashboardStore().build_snapshot(daemon, _make_mock_metrics(), _make_mock_health())
+    assert snapshot["ownership_hint"] == "unassigned"
+
+    daemon.state["config"] = MagicMock(assignee_filter="bot", include_unassigned=False)
+    snapshot = DashboardStore().build_snapshot(daemon, _make_mock_metrics(), _make_mock_health())
+    assert snapshot["ownership_hint"] == "bot"
 
 
 def test_state_update_has_no_underscore_event_key() -> None:

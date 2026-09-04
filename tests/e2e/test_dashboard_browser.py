@@ -12,12 +12,13 @@ Each test is marked @pytest.mark.e2e; the default addopts excludes that marker.
 from __future__ import annotations
 
 import re
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from playwright.sync_api import Page, expect
 
-from coordinare.dashboard import DashboardStore
+from coordinare.dashboard import DashboardStore, ownership_hint
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -69,6 +70,8 @@ def _full_snapshot(**overrides: Any) -> dict:
         "role_utilization": [],
         # 050
         "assignee_filter": None,
+        # 160
+        "include_unassigned": False,
         # 053
         "board_summary": {
             "TODO": 0,
@@ -83,6 +86,19 @@ def _full_snapshot(**overrides: Any) -> dict:
         "session_stats": None,
     }
     base.update(overrides)
+    # 160: the browser renders the policy, it no longer derives it. Deriving the
+    # hint here with the production function keeps this fixture from drifting
+    # into a snapshot the server would never send -- which is exactly what an
+    # explicit "ownership_hint": None in the base dict would have allowed.
+    base.setdefault(
+        "ownership_hint",
+        ownership_hint(
+            SimpleNamespace(
+                assignee_filter=base["assignee_filter"],
+                include_unassigned=base["include_unassigned"],
+            )
+        ),
+    )
     return base
 
 
