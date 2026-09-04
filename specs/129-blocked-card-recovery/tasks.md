@@ -12,6 +12,13 @@ Tests included (constitution NON-NEGOTIABLE; TDD for the pure evaluator). `[P]`=
 
 - [x] T002 [P] `EventType.card_auto_recovered` in `src/coordinare/models/notification.py`.
 - [ ] T003 [P] Per-card block-reason record + anti-thrash marker on `PersistedSession` (`state_store.py`) + `CardSession`/`_SESSION_FIELDS` (`session.py`) + `CoordinareState`/`initial_state` (`graph/state.py`); schema v16→17 (backward-compat). Update `workflow-snapshot.schema.json` (top-level + per-card) + `schema_version` enum + move the current-version pin to 17.
+  - **Note (2026-09-04, #247): still open, and NOT closed by that fix.** #247 fixed the
+    marker diverging across the concurrent fanout, by seeding the map before the fanout
+    so all sessions share one dict (`seed_shared_cycle_markers` in `daemon.py`). That is
+    **in-memory, per daemon run**. T003 is the DURABLE record on `PersistedSession`, which
+    survives a restart. A restart today clears the marker and a blocked card becomes
+    eligible for recovery again — which may well be the behaviour you want, but it is a
+    decision T003 should make explicitly rather than inherit.
 - [x] T004 [P] TDD tests FIRST `tests/unit/test_blocked_recovery.py`: STILL_BLOCKED vs RECOVER for each reason (stale-review-addressed→IN_REVIEW, env-recovered→prior stage, CI red→green, clarification answered), multi-reason (all must clear), anti-thrash cooldown, safety (unresolved verdict/open clarification never recovers).
 - [x] T005 Implement pure `services/blocked_recovery.py` `evaluate_recovery(block_record, signals, config)` → `StillBlocked | Recover(target_stage, reason)` (FR-001..006, reuses spec-128 `classify_review_staleness`) — make T004 pass.
 
