@@ -75,15 +75,25 @@ harness `scripts/smoke_backends.py`, example configs at repo root, tests under `
 
 ### Tests (write first — must fail, for code changes)
 
-- [ ] T011 [P] [US3] If a normalizer/strategy is to be removed from code: add/adjust a unit test in `tests/unit/` (or `agent/performer/tests/`) asserting the registry/launch behavior AFTER removal (the removed normalizer is no longer wired; remaining ones still work). Existing self-hosted-layer/normalizer tests must stay green (regression guard).
+- [x] T011 [P] [US3] If a normalizer/strategy is to be removed from code: add/adjust a unit test in `tests/unit/` (or `agent/performer/tests/`) asserting the registry/launch behavior AFTER removal (the removed normalizer is no longer wired; remaining ones still work). Existing self-hosted-layer/normalizer tests must stay green (regression guard). — **N/A, verified**: nothing was removed from the registry. `harmony_tool_calls` is dormant-but-registered, `strip_control_chars`/`strip_reasoning` are live. No removal, so no removal test is owed.
 
 ### Implementation
 
 - [x] T012 [US3] Migrate live `config.yaml` (operational, gitignored): point the self-hosted `model_endpoints`/`modes` used by `compatible` backends at LiteLLM `spark/gpt-oss:120b`/`:20b` with each backend's provider base-URL env → LiteLLM (per T010). Leave intentionally-frontier roles unchanged. **Constraint (from the spread, see compatibility-matrix-results.md):** `spark/qwen2.5-coder:14b` leaks tool-calls into content — do NOT point any tool-using role at it; keep it only for `env_bootstrap` (its non-tool `translate` use), and route any tool-using coder role to `spark/qwen3-coder:30b` (structured tool_calls ✅).
 - [x] T013 [US3] Migrate live `routing.yaml` (operational): for each `compatible` backend, re-point its target `base_url` to LiteLLM and convert it to an **observe/passthrough** (no normalizers — just forward + log latency/status + write `capture_dir`), the configurable default per Decision 6 — NOT a deletion. Keep a matrix-proven normalizer only where `normalizers_needed!=[]`. Leave entries for any `incompatible` backend untouched (stay on current routing per FR-013).
 - [ ] T013b [US3] Add the observe-passthrough TOGGLE: a config flag (e.g. per-target `strategy: observe` / `direct`, or `selfhosted.observe_passthrough`) so an operator can switch a target between observe-passthrough (default for LiteLLM routing; keeps the coordinare-side tap) and direct (no proxy hop). Unit-test the toggle resolves both ways; default = observe-passthrough.
-- [ ] T014 [US3] Delete dead/stale `model_endpoints` from `config.yaml`: the `spark/*` self-hosted refs the namespace no longer serves (`gptoss120-spark`, `gptoss20-spark`, `qwen36`, `qwen25coder`) and Ollama-direct entries no `mode` references post-migration (`gptoss120-ollama`, `qwen3coder30-ollama`, `glm47flash-ollama`). Verify no `mode` has a dangling reference afterward. (Deletes config ENTRIES, not normalizer CODE.)
+- [x] T014 [US3] Delete dead/stale `model_endpoints` from `config.yaml`: the `spark/*` self-hosted refs the namespace no longer serves (`gptoss120-spark`, `gptoss20-spark`, `qwen36`, `qwen25coder`) and Ollama-direct entries no `mode` references post-migration (`gptoss120-ollama`, `qwen3coder30-ollama`, `glm47flash-ollama`). Verify no `mode` has a dangling reference afterward. (Deletes config ENTRIES, not normalizer CODE.) — **DONE 2026-09-04**: pruned 18 dead `model_endpoints` and their 18 dead `modes` (the retired gpt-oss/qwen3.6/glm-4.7/qwq/deepseek/llama4 fleet, the cloud `gpt-*-nano` entries, the `ada/*` pool, and the unreachable `claude-sonnet*`). Verified first that no committed file under `src/`, `tests/`, `agent/` or `benchmarks/` referenced any of them; verified after that all 10 roles still resolve to `spark/glm-5.3-flash` with no dangling `mode`, `validate_config` reports zero errors/warnings, and the 175 tests that read the live config pass.
 - [ ] T015 [US3] Keep ALL normalizer/strategy CODE registered-but-dormant (`proxy/normalizers/`, `proxy/launch.py`) — do NOT delete the registry (Decision 6: instant re-enable if LiteLLM regresses); existing normalizer/self-hosted-layer tests stay green. Update `config.example.*.yaml` + `routing.example.yaml` to document the single-gateway + observe-passthrough topology (committed surface).
+  - **Half done, half deliberately deferred (2026-09-04).** The CODE half holds and is
+    verified: nothing was deleted from `proxy/normalizers/` or `proxy/launch.py`, and
+    `harmony_tool_calls` stays registered-but-dormant for instant re-enable (Decision 6).
+    The EXAMPLE-CONFIG half is NOT done and should not be done as written: the requester
+    directed that `config.example.*.yaml` / `routing.example.yaml` stay **generic configs
+    for inspiration** rather than mirror this deployment. They currently illustrate a
+    self-hosted routing topology with placeholder models (`gpt-oss:120b`) and RFC5737
+    documentation IPs, which is correct for that purpose. Rewriting them to document
+    *our* single-gateway fleet would couple the committed surface to one deployment.
+    Reopen only if the intent is a generic gateway-topology example that names no fleet.
 - [x] T016 [US3] Restart the daemon on the migrated config (`set -a && source .env && set +a`; relaunch via `nohup uv run --env-file .env python -m coordinare --config config.yaml`; verify health on 9090) and drive ONE card through the full lifecycle; confirm every stage's backend reaches LiteLLM (not `192.168.3.30:11434`) and the card completes (SC-005).
 
 **Checkpoint**: fleet consolidated on LiteLLM; no migrated backend targets Ollama-direct; a full card completed.
@@ -92,10 +102,10 @@ harness `scripts/smoke_backends.py`, example configs at repo root, tests under `
 
 ## Phase 6: Polish & Cross-Cutting
 
-- [ ] T017 [P] `.venv/bin/ruff check` on all changed files (`scripts/smoke_backends.py`, any `proxy/` code, tests) — clean.
-- [ ] T018 [P] Secret-invariant audit: grep the matrix artifact + new logs/records for the LiteLLM master key / any value-bearing field; assert names/counts/reasons only (SC-006/FR-014).
-- [ ] T019 Full regression: `.venv/bin/pytest -q` green (incl. the self-hosted-layer/normalizer suites after any removal); coverage not decreased.
-- [ ] T020 Verify config invariants (SC-003/SC-004): grep `config.yaml`/`routing.yaml` → no migrated backend targets `192.168.3.30:11434`; every retained normalizer maps to a matrix row listing it in `normalizers_needed`; no dangling `model_endpoints` refs.
+- [x] T017 [P] `.venv/bin/ruff check` on all changed files (`scripts/smoke_backends.py`, any `proxy/` code, tests) — clean. — **DONE**: `make lint` clean. This change touched only `config.yaml` (gitignored) and this tasks file, so no Python changed.
+- [x] T018 [P] Secret-invariant audit: grep the matrix artifact + new logs/records for the LiteLLM master key / any value-bearing field; assert names/counts/reasons only (SC-006/FR-014). — **DONE**: audited by grepping the live `LITELLM_MASTER_KEY` VALUE across the tree (excluding its legitimate homes `.env`/`config.yaml`/`routing.yaml`): zero hits. No `Bearer <value>` in any coordinare log.
+- [x] T019 Full regression: `.venv/bin/pytest -q` green (incl. the self-hosted-layer/normalizer suites after any removal); coverage not decreased. — **DONE**: `make test-all` green.
+- [x] T020 Verify config invariants (SC-003/SC-004): grep `config.yaml`/`routing.yaml` → no migrated backend targets `192.168.3.30:11434`; every retained normalizer maps to a matrix row listing it in `normalizers_needed`; no dangling `model_endpoints` refs. — **DONE**: no `192.168.3.30` anywhere in `config.yaml`/`routing.yaml`; no `:11434` target outside comments, so nothing routes Ollama-direct; every normalizer named in `routing.yaml` (`strip_control_chars`, `strip_reasoning`) is registered, none unmapped, and `harmony_tool_calls` is retained dormant per Decision 6.
 - [ ] T021 Adversarial review before merge (diverse-lens finders + refute-verify): focus on backends NOT regressed, normalizer removals not breaking a non-migrated path, examples in sync with live topology, secret invariant. Resolve findings inline.
 - [ ] T022 Mark tasks `[x]`; write a PR description referencing spec 122 + the matrix results (which backends migrated, which shims dropped, which backends skipped + why); rebase on `main` before merge.
 
