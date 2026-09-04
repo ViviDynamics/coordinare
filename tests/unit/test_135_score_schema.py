@@ -55,7 +55,17 @@ class TestScoreSchema:
         assert '"w_correctness"' in s.to_validated_json()
 
     def test_schema_version_is_current_and_artifact_versions_known(self) -> None:
-        assert _score().schema_version == SCORE_SCHEMA_VERSION == 1
+        """The score schema version is pinned so a bump is always a deliberate act.
+
+        Moved 1 → 2 by spec 161, which adds the `view` discriminator to ScoreObject.
+        Adding a field changes the serialized document, so the version moves with it.
+        The change is backward-compatible: `view` defaults to CONFIG_COMPARISON, so a
+        v1 document loads and keeps exactly the meaning it always had (pinned by
+        tests/unit/test_161_score_regression.py).
+
+        KNOWN_ARTIFACT_VERSIONS is unchanged — the RUN-artifact schema did not move.
+        """
+        assert _score().schema_version == SCORE_SCHEMA_VERSION == 2
         assert frozenset({1}) == KNOWN_ARTIFACT_VERSIONS
 
     def test_rejects_bad_category(self) -> None:
