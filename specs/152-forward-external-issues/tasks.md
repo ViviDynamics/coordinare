@@ -36,4 +36,21 @@ destination value in a tracked file; no push or PR without approval.
 
 ## Phase 5: Review (mandatory)
 
-- [ ] T018 Adversarial `Workflow` review over the full branch diff before merge, per the repo's issue workflow. Lenses to include: injection through issue text, secret leakage into logs, membership-gate bypass, and test honesty.
+- [x] T018 Adversarial `Workflow` review over the full branch diff before merge, per the repo's issue workflow. Lenses to include: injection through issue text, secret leakage into logs, membership-gate bypass, and test honesty.
+  - **Done 2026-09-04, and it found two live defects in already-merged code.** Spec 152
+    shipped as `936c442` (PR #229), so the review ran against `main` rather than a
+    pre-merge branch. Six findings survived refute-oriented verification: labels were
+    interpolated unescaped into Slack's mrkdwn framing (a label named `<!channel>` pinged
+    everyone; `<https://evil/|github.com>` rendered as a trustworthy link, in the
+    forwarder's own voice), and `html_url` had no scheme validation, so a `javascript:`
+    or `data:text/html` value landed live in an email `href`.
+  - The other four findings were test gaps, and they are **why the Slack defect survived
+    the earlier review**: the label-escaping test only covered the email renderer, and
+    the injection parametrize only ever varied `body`. Both closed.
+  - Fixed in PR #254. The mrkdwn framing now carries only our own words plus the issue
+    number; labels and author moved to `plain_text`, applying this function's own
+    documented lesson that a delimiter with no meaning beats escaping every variation.
+  - Note for the next reviewer: the lens that earned its keep was **test honesty**, and
+    the decisive step was mutation testing. One of my own fixes (mrkdwn-escaping the URL)
+    initially passed every test with the escaping removed — an unpinned guard I would
+    otherwise have believed was covered.

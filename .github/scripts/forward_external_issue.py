@@ -93,6 +93,36 @@ def build_extract(issue: dict[str, Any]) -> Extract:
     )
 
 
+#: The only URL schemes allowed to reach a rendered link. `html_url` comes from the
+#: GitHub API today, but this renderer must not depend on that staying true: an
+#: attacker-supplied `javascript:` or `data:text/html` value would otherwise land live in
+#: an `href` in a maintainer's inbox. `_escape_html` does not help — it escapes the
+#: delimiters, not the scheme.
+_SAFE_URL_SCHEMES = ("https://", "http://")
+
+
+def _safe_url(url: str) -> str:
+    """*url* if it carries an allowed scheme, else a visible placeholder.
+
+    Fails to a placeholder rather than to the raw value, so a rejected URL is obvious to
+    the reader instead of silently dropped.
+    """
+    if url.startswith(_SAFE_URL_SCHEMES):
+        return url
+    return "(link omitted: unrecognised URL scheme)"
+
+
+def _escape_slack(text: str) -> str:
+    """Escape the three characters Slack itself specifies for mrkdwn.
+
+    This is what stops `<!channel>` pinging everyone and `<https://evil/|github.com>`
+    rendering as a trustworthy link. Slack documents no escape for the FORMATTING
+    characters (`*`, `_`, `~`, backtick), which is why submitter-influenced text belongs
+    in ``plain_text`` rather than being escaped into ``mrkdwn`` — see render_slack.
+    """
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def render_slack(extract: Extract) -> dict[str, Any]:
     """A Slack payload. Submission text goes in ``plain_text``, which Slack never parses.
 
@@ -103,18 +133,39 @@ def render_slack(extract: Extract) -> dict[str, Any]:
     every variation; ``plain_text`` means the delimiter has no meaning at all.
 
     Only our own framing is ``mrkdwn``. Nothing the submitter wrote is.
+
+    That claim used to be false. Labels were interpolated straight into the mrkdwn
+    framing, so a label named ``<!channel>`` pinged the whole channel and
+    ``<https://evil/|github.com>`` rendered as a trustworthy link — from the forwarder's
+    own voice. The email renderer had already been hardened against exactly this, with a
+    comment about not relying on GitHub's own label validation; the Slack path was missed.
+
+    The fix applies this function's existing lesson rather than a new one: submitter text
+    goes in ``plain_text``, where the delimiters have no meaning, instead of being escaped
+    into ``mrkdwn``, where winning means winning every variation. So the mrkdwn framing now
+    carries only OUR words and the issue number (an int). Labels and author — both
+    influenced by the submitter — moved to ``plain_text``. The URL keeps its own line and
+    is scheme-checked, because a bare validated https URL is the one thing Slack can
+    usefully autolink without being able to lie about where it points.
     """
-    labels = f" [{', '.join(extract.labels)}]" if extract.labels else ""
-    framing = (
-        f"*New external issue* #{extract.number}{labels}\n"
-        f"submitted by `{extract.author}` — {extract.url}"
-    )
+    framing = f"*New external issue* #{extract.number}"
+    attribution = f"submitted by {extract.author}"
+    if extract.labels:
+        attribution += f" [{', '.join(extract.labels)}]"
     return {
         # Notification fallback. Deliberately carries no submitter text: it is the
         # one string Slack renders outside the blocks.
         "text": f"New external issue #{extract.number}",
         "blocks": [
             {"type": "section", "text": {"type": "mrkdwn", "text": framing}},
+            {
+                "type": "section",
+                "text": {"type": "plain_text", "text": attribution},
+            },
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": _escape_slack(_safe_url(extract.url))},
+            },
             {
                 "type": "section",
                 "text": {"type": "plain_text", "text": f"Title: {extract.title}"},
@@ -146,7 +197,8 @@ def render_email(extract: Extract) -> str:
     return (
         f"<p><strong>New external issue</strong> #{extract.number}{labels}<br>"
         f"submitted by <code>{_escape_html(extract.author)}</code><br>"
-        f'<a href="{_escape_html(extract.url)}">{_escape_html(extract.url)}</a></p>'
+        f'<a href="{_escape_html(_safe_url(extract.url))}">'
+        f"{_escape_html(_safe_url(extract.url))}</a></p>"
         f"<p><strong>Title</strong></p><pre>{_escape_html(extract.title)}</pre>"
         f"<p><strong>Issue body (verbatim, may be truncated)</strong></p>"
         f"<pre>{_escape_html(extract.body)}</pre>"
