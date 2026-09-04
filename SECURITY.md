@@ -18,7 +18,8 @@ Private vulnerability reporting is a feature of public repositories. If the
 route above is not available to you, coordinare is not yet public, and the
 channel opens when it is.
 
-If you cannot use private advisories at all, open a regular issue asking us to
+If you cannot use private advisories at all, start a
+[discussion](https://github.com/ViviDynamics/coordinare/discussions) asking us to
 open a private channel with you, and **do not include any detail about the
 vulnerability in it**: not the affected component, not the reproduction, not
 the impact. Just ask for the channel.
