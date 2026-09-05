@@ -82,6 +82,8 @@ See AGENTS.md for all development guidelines.
 - N/A. No persisted state, no `state_store.py` schema change. The identifier map is (153-card-id-model)
 - Python 3.14 (project minimum 3.12; prod 3.14.5 via uv) + existing only — pydantic 2.x (rollup/ranking models), (161-board-bench-harness)
 - N/A for coordinare state. Outputs are files beside the artifacts they (161-board-bench-harness)
+- Python 3.14 (project minimum 3.12; prod 3.14.5 via uv) + existing only — pydantic 2.x (step/finding/plan models), (164-qa-role-workflow)
+- N/A. A workflow run is one-shot and dies with the container. No (164-qa-role-workflow)
 
 ## Recent Changes
 - 076-qa-cycle: Added Python 3.14 (project minimum: 3.12; production currently on 3.14.5 via uv) + pydantic 2.x, langgraph, structlog, docker SDK (or subprocess to `docker` CLI), fastapi (dashboard SSE), httpx (performer HTTP transport), pyyaml (config)

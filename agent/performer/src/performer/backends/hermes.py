@@ -36,7 +36,7 @@ from pathlib import Path
 import psutil
 import structlog
 
-from performer.backends._card_docs import card_doc_folder, card_docs_prompt_section
+from performer.backends._card_docs import card_doc_folder, card_docs_prompt_section, qa_findings_prompt_section
 from performer.backends._env_policy import build_subprocess_env
 from performer.backends.base import BackendStatus
 from performer.models import DIAGNOSTIC_ROLE, BackendEvent, BackendEventType, Score, Stand
@@ -770,6 +770,7 @@ def _build_task_prompt(
     if score.description:
         parts += [score.description, ""]
     parts += card_docs_prompt_section(score, stand_path)
+    parts += qa_findings_prompt_section(score)
     if score.acceptance_criteria:
         parts += ["## Acceptance Criteria", ""]
         parts.extend(f"- {c}" for c in score.acceptance_criteria)

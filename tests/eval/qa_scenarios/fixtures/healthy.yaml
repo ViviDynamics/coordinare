@@ -1,0 +1,43 @@
+name: healthy
+summary: Feature added cleanly, nothing broken.
+base_files:
+  app.py: "\"\"\"Minimal sign-in app. Python only: already in the image, boots in\nmilliseconds, and these\
+    \ scenarios test QA's reasoning not a web framework.\"\"\"\nimport os\nfrom http.server import BaseHTTPRequestHandler,\
+    \ HTTPServer\n\nFIELDS = ['Email', 'Password']\n\n\ndef _control(name):\n    # \"Workspace selector\"\
+    \ in the criteria means a real <select>. A fixture that\n    # renders a text input claims a feature\
+    \ it does not implement, and QA is\n    # right to fail it.\n    if name == \"Workspace\":\n     \
+    \   return '<select name=\"workspace\"><option>Acme HQ</option><option>Acme EU</option></select>'\n\
+    \    if name == \"Password\":\n        return '<input type=\"password\" name=\"password\">'\n    return\
+    \ '<input name=\"%s\">' % name.lower()\n\n\ndef render():\n    rows = \"\".join(\n        '<label>%s</label>%s'\
+    \ % (f, _control(f)) for f in FIELDS\n    )\n    return (\n        \"<html><body><h1>Sign in</h1><form>\"\
+    \n        + rows\n        + \"<button>Continue</button></form></body></html>\"\n    )\n\n\nclass H(BaseHTTPRequestHandler):\n\
+    \    def do_GET(self):\n        self.send_response(200)\n        self.send_header(\"Content-Type\"\
+    , \"text/html\")\n        self.end_headers()\n        self.wfile.write(render().encode())\n\n    def\
+    \ log_message(self, *a):\n        pass\n\n\nif __name__ == \"__main__\":\n    HTTPServer((\"127.0.0.1\"\
+    , int(os.environ.get(\"PORT\", \"8000\"))), H).serve_forever()\n"
+  test_app.py: "import app\n\n\ndef test_sign_in_form_has_the_expected_fields():\n    html = app.render()\n\
+    \    for field in ['Email', 'Password']:\n        assert field in html, field + \" missing from the\
+    \ sign-in form\"\n"
+head_files:
+  app.py: "\"\"\"Minimal sign-in app. Python only: already in the image, boots in\nmilliseconds, and these\
+    \ scenarios test QA's reasoning not a web framework.\"\"\"\nimport os\nfrom http.server import BaseHTTPRequestHandler,\
+    \ HTTPServer\n\nFIELDS = ['Email', 'Password', 'Workspace']\n\n\ndef _control(name):\n    # \"Workspace\
+    \ selector\" in the criteria means a real <select>. A fixture that\n    # renders a text input claims\
+    \ a feature it does not implement, and QA is\n    # right to fail it.\n    if name == \"Workspace\"\
+    :\n        return '<select name=\"workspace\"><option>Acme HQ</option><option>Acme EU</option></select>'\n\
+    \    if name == \"Password\":\n        return '<input type=\"password\" name=\"password\">'\n    return\
+    \ '<input name=\"%s\">' % name.lower()\n\n\ndef render():\n    rows = \"\".join(\n        '<label>%s</label>%s'\
+    \ % (f, _control(f)) for f in FIELDS\n    )\n    return (\n        \"<html><body><h1>Sign in</h1><form>\"\
+    \n        + rows\n        + \"<button>Continue</button></form></body></html>\"\n    )\n\n\nclass H(BaseHTTPRequestHandler):\n\
+    \    def do_GET(self):\n        self.send_response(200)\n        self.send_header(\"Content-Type\"\
+    , \"text/html\")\n        self.end_headers()\n        self.wfile.write(render().encode())\n\n    def\
+    \ log_message(self, *a):\n        pass\n\n\nif __name__ == \"__main__\":\n    HTTPServer((\"127.0.0.1\"\
+    , int(os.environ.get(\"PORT\", \"8000\"))), H).serve_forever()\n"
+  test_app.py: "import app\n\n\ndef test_sign_in_form_has_the_expected_fields():\n    html = app.render()\n\
+    \    for field in ['Email', 'Password', 'Workspace']:\n        assert field in html, field + \" missing\
+    \ from the sign-in form\"\n"
+criteria:
+- The sign-in form offers a Workspace selector
+claimed_change: Add a Workspace selector to the sign-in form
+expected_verdict: pass
+must_name: []

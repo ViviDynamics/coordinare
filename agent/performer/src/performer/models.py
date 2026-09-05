@@ -136,6 +136,17 @@ class Score(BaseModel):
     pr_url: str = ""  # existing PR URL (for reviewer/security/QA roles)
     pr_node_id: str = ""  # existing PR node ID (for terminal status)
     pr_diff: str = ""  # raw unified PR diff injected for review roles (reviewer/closer/qa/tech_writer)
+    # 164: optional role workflow name. Score uses extra="ignore", so this MUST
+    # be declared or the field is silently dropped and the role runs the pre-164
+    # single-backend path while looking correctly configured.
+    workflow: str = ""
+    # 164: operator-supplied env for the role workflow (app start/seed command,
+    # PORT). Declared here or extra="ignore" drops it in transit.
+    workflow_env: dict[str, str] = Field(default_factory=dict)
+    # 164: structured repair brief from the previous QA round (shape mirrors
+    # scanner_findings). Reports what failed and how to reproduce; never
+    # prescribes a fix.
+    qa_findings: list[dict] = Field(default_factory=list)
     backend: str = ""  # AI backend override (037)
     model: str = ""  # AI model override (037)
     effort: str = ""  # 055: low/medium/high effort hint for backend
@@ -172,6 +183,31 @@ class Score(BaseModel):
     doc_write_target: dict | None = None
 
     model_config = {"extra": "ignore"}  # silently drop unknown fields from coordinare
+
+    @field_validator("workflow_env", mode="before")
+    @classmethod
+    def _coerce_workflow_env(cls, value: Any) -> Any:
+        """Env vars are strings; accept the scalars YAML naturally produces.
+
+        An operator writes ``PORT: 3000`` and ``QA_APP_BOOT_TIMEOUT: 180`` --
+        unquoted, the way everyone writes YAML -- and gets ints. Rejecting them
+        makes the natural spelling a validation error. Nested values are still
+        refused: a dict or list is not an environment variable.
+        """
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise ValueError("workflow_env must be a mapping of NAME: value")
+        out: dict[str, str] = {}
+        for k, v in value.items():
+            if isinstance(v, (dict, list, tuple, set)):
+                raise ValueError(
+                    f"workflow_env[{k!r}] must be a scalar; got {type(v).__name__}"
+                )
+            if isinstance(v, bool):
+                v = "1" if v else "0"
+            out[str(k)] = "" if v is None else str(v)
+        return out
 
     @field_validator("repo_url")
     @classmethod

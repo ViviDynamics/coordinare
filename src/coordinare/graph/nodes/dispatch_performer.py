@@ -131,6 +131,31 @@ def _scanner_unavailable_finding(reason: str) -> dict[str, Any]:
     }
 
 
+
+def inject_qa_findings(
+    card_context: dict[str, Any], state: Any, *, role: str | None
+) -> None:
+    """164 (FR-012): carry the previous QA round's repair brief to the implementer.
+
+    Only the implementer receives it: handing QA its own prior findings would
+    have it grade its own round, and the brief exists for the stage that can act
+    on it.  Absent findings leave the key off entirely rather than setting an
+    empty list, so the payload stays the same size it was before 164 on the
+    common path.
+
+    Registered in specs/contracts/dispatch-payload.md and declared on ``Score``
+    (``extra="ignore"`` would otherwise drop it in transit).
+    """
+    if role != "implementing":
+        return
+    raw = state.get("qa_findings") if hasattr(state, "get") else None
+    if not isinstance(raw, list):
+        return
+    findings = [f for f in raw if isinstance(f, dict)]
+    if findings:
+        card_context["qa_findings"] = findings
+
+
 async def _run_security_floor(
     state: CoordinareState, card: dict[str, Any]
 ) -> list[dict[str, Any]]:
@@ -1356,6 +1381,9 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
         state["scanner_findings"] = scanner_findings
         card_context["scanner_findings"] = scanner_findings
 
+    # 164: hand the previous QA round's repair brief to the implementer.
+    inject_qa_findings(card_context, state, role=role)
+
     # Inject the raw PR diff for review roles so a model that does not fetch the
     # diff itself still has the changes to assess (drive-by fix: reviewer was
     # rejecting PRs with "no code changes were supplied for review"). Best-effort:
@@ -1407,6 +1435,12 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
         if role_config is not None:
             from coordinare.services.performer_tuning import translate_tuning
             card_context["backend"] = role_config.backend
+            # 164: role workflow, when configured. Absent/empty means the
+            # pre-164 path. Registered in specs/contracts/dispatch-payload.md.
+            if getattr(role_config, "workflow", None):
+                card_context["workflow"] = role_config.workflow
+            if getattr(role_config, "workflow_env", None):
+                card_context["workflow_env"] = dict(role_config.workflow_env)
             # 080: model + endpoint come from the role's mode (modes → model_endpoints
             # → endpoints), resolved against the root catalogs. Yields the same
             # card_context keys the downstream payload builder already consumes.

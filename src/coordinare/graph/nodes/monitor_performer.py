@@ -3493,6 +3493,16 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
             )
 
             _qa_report = status.get("report") if isinstance(status.get("report"), dict) else {}
+            # 164: stash the QA repair brief for the next implementer dispatch,
+            # mirroring how scanner_findings already travels. Reports what failed
+            # and how to reproduce it; never prescribes a fix (FR-014).
+            _qa_findings = _qa_report.get("qa_findings")
+            if isinstance(_qa_findings, list):
+                state["qa_findings"] = [f for f in _qa_findings if isinstance(f, dict)]
+            # No else: a QA role WITHOUT a workflow emits no qa_findings, and
+            # writing an empty list would add a state key that did not exist
+            # before 164. FR-005 promises the no-workflow path behaves exactly
+            # as it did, and "exactly" includes not growing state.
             # 129 US2: the capture-unavailable→HOLD branch is coupled to the same
             # operator flag that enables US1's blocked-card recovery (which is what
             # would pick the HOLD back up). Off → prior bounce behavior, no regression.

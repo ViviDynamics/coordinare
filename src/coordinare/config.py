@@ -474,6 +474,16 @@ class Mode(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+#: Workflow names the performer can run (spec 164).
+#:
+#: Mirrors ``performer.workflows.SUPPORTED_WORKFLOWS``.  It is duplicated rather
+#: than imported because coordinare and the performer are separately deployed and
+#: coordinare cannot import the performer package in production — the same reason
+#: ``cdn_upload`` exists on both sides.  ``test_config_workflow_field.py`` asserts
+#: the two stay in step wherever both packages are installed.
+KNOWN_WORKFLOWS: frozenset[str] = frozenset({"noop", "qa"})
+
+
 class PerformerRoleConfig(BaseModel):
     """Configuration for a single performer role's backend.
 
@@ -482,6 +492,18 @@ class PerformerRoleConfig(BaseModel):
     """
 
     backend: str = "opencode"
+    # 164: optional role workflow. None (default) means the pre-164 path —
+    # one backend invocation plus role post-processing — so existing configs
+    # are unaffected (FR-005). A name here selects a multi-step workflow that
+    # runs entirely inside the performer; the backend above is still used, as
+    # a step primitive rather than as the whole run.
+    workflow: str | None = None
+    # 164: environment handed to the role's workflow (e.g. QA_APP_START_COMMAND,
+    # QA_APP_SEED_COMMAND, PORT for the app under test). Layered over the env
+    # cache's activation env, so an operator can name the app's start command
+    # for a project infer_app_start_command does not recognise -- previously
+    # this override existed only as an env var nothing in production set.
+    workflow_env: dict[str, str] = Field(default_factory=dict)
     # 080: model selection moved to the root-level catalogs. A role references a
     # `mode` (modes → model_endpoints → endpoints); inline `model`/`base_url`/
     # `api_key_env`/`auth_token_env` are removed (hard cut, see validator below).
@@ -505,6 +527,51 @@ class PerformerRoleConfig(BaseModel):
     effort: Literal["low", "medium", "high"] | None = None
     temperature: float | None = None
     max_tokens: int | None = None
+
+    @field_validator("workflow_env", mode="before")
+    @classmethod
+    def _coerce_workflow_env(cls, value: Any) -> Any:
+        """Env vars are strings; accept the scalars YAML naturally produces.
+
+        An operator writes ``PORT: 3000`` and ``QA_APP_BOOT_TIMEOUT: 180`` --
+        unquoted, the way everyone writes YAML -- and gets ints. Rejecting them
+        makes the natural spelling a validation error. Nested values are still
+        refused: a dict or list is not an environment variable.
+        """
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise ValueError("workflow_env must be a mapping of NAME: value")
+        out: dict[str, str] = {}
+        for k, v in value.items():
+            if isinstance(v, (dict, list, tuple, set)):
+                raise ValueError(
+                    f"workflow_env[{k!r}] must be a scalar; got {type(v).__name__}"
+                )
+            if isinstance(v, bool):
+                v = "1" if v else "0"
+            out[str(k)] = "" if v is None else str(v)
+        return out
+
+    @field_validator("workflow", mode="before")
+    @classmethod
+    def _validate_workflow(cls, value: Any) -> Any:
+        """Reject a typo'd workflow name while the operator is still looking.
+
+        Coordinare's config schema does not constrain ``backend``, and spec 161
+        added a supported-names constant precisely so a typo fails at load
+        rather than mid-run.  A workflow name gets the same treatment: an
+        unrecognised one would otherwise produce a role that looks configured
+        and never runs its workflow.
+        """
+        if value is None or value == "":
+            return None
+        if value not in KNOWN_WORKFLOWS:
+            supported = ", ".join(sorted(KNOWN_WORKFLOWS))
+            raise ValueError(
+                f"unknown workflow {value!r}; supported: {supported}"
+            )
+        return value
 
     @model_validator(mode="before")
     @classmethod
