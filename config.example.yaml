@@ -362,6 +362,20 @@ performers:
     effort: high
     temperature: 0.0
     max_tokens: 12288
+    # 164: run QA as a multi-step workflow (plan -> boot -> baseline -> execute
+    # -> observe -> judge -> report) instead of a single prompt. Opt-in; remove
+    # the line to restore the single-prompt path exactly. See
+    # specs/164-qa-role-workflow/quickstart.md.
+    # workflow: qa
+    # How the app under test boots. Layered over the env cache's activation env
+    # (PORT, toolchain PATH, POSTGRESQL_*/REDIS_*); these values win. Needed
+    # whenever infer_app_start_command cannot recognise the project (it knows
+    # Rails, Django and Node only). Unquoted numbers are fine.
+    # workflow_env:
+    #   PORT: 3000
+    #   QA_APP_START_COMMAND: "bin/rails s -b 127.0.0.1 -p 3000 -e test"
+    #   QA_APP_SEED_COMMAND: "bin/rails db:migrate db:seed"   # runs BEFORE start
+    #   QA_APP_BOOT_TIMEOUT: 180                               # seconds; default 60
 
   tech_writer:
     effort: medium

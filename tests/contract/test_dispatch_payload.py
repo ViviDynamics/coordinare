@@ -58,6 +58,12 @@ def _full_card_context() -> dict[str, Any]:
         "model": "claude-sonnet-4-20250514",
         # GitHub Enterprise (036)
         "github_api_url": "https://github.example.com/api/v3",
+        # 164: role workflow fields -- the "all fields survive" test must cover
+        # them too, not only their dedicated tests (round-one finding that never
+        # received a verdict; dispositioned by hand).
+        "workflow": "qa",
+        "workflow_env": {"PORT": "3000", "QA_APP_START_COMMAND": "python app.py"},
+        "qa_findings": [{"file": "a.py", "line": 1, "category": "unmet_criterion", "severity": "high"}],
     }
 
 
@@ -114,6 +120,55 @@ class TestDispatchPayloadContract:
         for role in ["implementing", "reviewing", "security", "qa", "documenting", "architecting", "assessing"]:
             await service.dispatch_card({"role": role, "title": "test", "id": "X"})
             assert transport.captured_payload["role"] == role, f"role={role!r} was dropped"
+
+    @pytest.mark.asyncio
+    async def test_workflow_is_not_dropped(self) -> None:
+        """164: the workflow name selects a multi-step role workflow inside the
+        performer.  Score uses extra="ignore", so an unregistered field is
+        dropped in transit — the role would look configured and never run its
+        workflow, with no error anywhere.  Registered in the payload contract."""
+        transport = _CaptureTransport()
+        service = AgentService(transport)
+
+        await service.dispatch_card({"workflow": "qa", "title": "test", "id": "X"})
+
+        assert transport.captured_payload["workflow"] == "qa"
+
+    @pytest.mark.asyncio
+    async def test_workflow_env_is_not_dropped(self) -> None:
+        """164: the operator's app boot settings for a role workflow. Before
+        this, QA_APP_START_COMMAND was an env var nothing in production set."""
+        transport = _CaptureTransport()
+        service = AgentService(transport)
+        env = {"QA_APP_START_COMMAND": "bin/rails s -p 3000", "PORT": "3000"}
+
+        await service.dispatch_card({"workflow_env": env, "title": "test", "id": "X"})
+
+        assert transport.captured_payload["workflow_env"] == env
+
+    @pytest.mark.asyncio
+    async def test_qa_findings_are_not_dropped(self) -> None:
+        """164: the repair brief from the previous QA round, carried into the
+        implementer's dispatch the way scanner_findings already is."""
+        transport = _CaptureTransport()
+        service = AgentService(transport)
+        findings = [
+            {
+                "file": "app/models/user.rb",
+                "line": 42,
+                "category": "unexpected_regression",
+                "severity": "high",
+                "criterion": "Users can sign in",
+                "expected": "password field present",
+                "observed": "password field absent",
+            }
+        ]
+
+        await service.dispatch_card(
+            {"qa_findings": findings, "title": "test", "id": "X"}
+        )
+
+        assert transport.captured_payload["qa_findings"] == findings
 
     @pytest.mark.asyncio
     async def test_disputed_feedback_is_not_dropped(self) -> None:

@@ -1902,7 +1902,17 @@ async def handle_dispatch(
         cleanup_stand(stand)
         raise
     try:
-        backend = get_backend(backend_name)
+        # 164: a role with a configured workflow runs that workflow, presented
+        # as a BackendAdapter so every downstream mechanism (Performance, the
+        # monitor loop, role post-processing, cleanup) is unchanged. An absent
+        # or empty name takes the pre-164 single-backend path exactly (FR-005).
+        workflow_name = (getattr(score, "workflow", "") or "").strip()
+        if workflow_name:
+            from performer.workflows.adapter import WorkflowAdapter
+
+            backend = WorkflowAdapter(workflow_name)
+        else:
+            backend = get_backend(backend_name)
         await backend.start(
             stand, score,
             model=model_name,

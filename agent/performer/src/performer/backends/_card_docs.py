@@ -67,3 +67,65 @@ def card_docs_prompt_section(
         "- prior role outputs (assessment, QA notes, etc.)",
         "",
     ]
+
+
+def qa_findings_prompt_section(score: Score) -> list[str]:
+    """Build the ``## QA Findings`` prompt block (spec 164 FR-012).
+
+    The repair brief from the previous QA round. It was registered in the
+    payload contract, carried into card_context, and declared on Score -- and
+    then never rendered into any prompt, so the implementer received it and
+    ignored it. The contract's Change Protocol step 4 ("add the field to the
+    relevant _build_task_prompt if the AI needs it") is the step that was
+    skipped; this is that step, shared so all backends render it identically.
+
+    Only the implementer gets it: handing QA its own prior findings would have
+    it grade its own round. Duplicates (one per surface plus the judge's note)
+    collapse on (category, criterion, expected). Reports; never prescribes a
+    fix (FR-014) -- the section renders what failed and how to reproduce it,
+    and nothing else.
+    """
+    findings = getattr(score, "qa_findings", None) or []
+    if getattr(score, "role", "") != "implementing" or not findings:
+        return []
+
+    seen: set[tuple[str, str, str]] = set()
+    lines: list[str] = [
+        "",
+        "## QA Findings (from the previous QA round — address ALL of these)",
+        "",
+        "Each entry says what failed and how to reproduce it. Fix the cause; the "
+        "reproducing command is how you confirm the fix before handing back.",
+        "",
+    ]
+    for f in findings:
+        if not isinstance(f, dict):
+            continue
+        key = (
+            str(f.get("category", "")),
+            str(f.get("criterion", "")),
+            str(f.get("expected", "")),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+
+        head = f"- [{f.get('severity', 'high')}] {f.get('category', 'finding')}"
+        if f.get("criterion"):
+            head += f" — criterion: {f['criterion']}"
+        lines.append(head)
+        if f.get("expected"):
+            lines.append(f"  - expected: {f['expected']}")
+        if f.get("observed"):
+            lines.append(f"  - observed: {f['observed']}")
+        loc = f.get("file")
+        if loc:
+            lines.append(f"  - where: `{loc}`" + (f":{f['line']}" if f.get("line") else ""))
+        ev = f.get("evidence")
+        if isinstance(ev, dict) and ev.get("command"):
+            lines.append(
+                f"  - evidence: `{ev['command']}` exited {ev.get('exit_code')}"
+            )
+        if f.get("repro_command"):
+            lines.append(f"  - reproduce: `{f['repro_command']}`")
+    return lines

@@ -117,6 +117,60 @@ The launcher repoints exactly one env var per backend to the loopback shim (then
 stop): `ANTHROPIC_BASE_URL` (claude_code), `CODEX_PROVIDER_BASE_URL`, `OPENCODE_PROVIDER_BASE_URL`,
 `JUNIE_PROVIDER_BASE_URL`, `PI_PROVIDER_BASE_URL`, `OPENCLAW_PROVIDER_BASE_URL`, `HERMES_BASE_URL`.
 
+## Role workflows (spec 164)
+
+A **harness** runs a general-purpose coding agent and hands it a persona. That is
+the right shape for "implement this card". It is the wrong shape for QA, which is
+a multi-step reasoning job — read the diff, decide what to check, boot the app,
+check it, compare before and after, judge — and which had been compressed into
+one prompt plus ~500 lines of post-hoc parsing in `main.py`.
+
+A **role workflow** sits between the coordinare/performer contract and the work.
+It runs entirely inside the performer, presented to `main.py` as an ordinary
+`BackendAdapter` (`workflows/adapter.py`), so dispatch, the monitor loop, role
+post-processing and cleanup are untouched. Coordinare still sends one task and
+receives one response.
+
+QA is the first workflow (`workflows/qa/`): **plan → boot → baseline → execute →
+observe → judge → report**. The organising rule is *the model plans and
+witnesses; code decides and verifies*. Anything the DOM, an exit code or a file
+on disk can answer is taken from there; a criterion passes only when bound to an
+executed check with a real exit code. The baseline boots the merge-base commit
+as a second process from a git worktree, so a before/after DOM comparison can
+catch a field that silently disappeared. QA also emits a structured repair brief
+(`qa_findings`) that is rendered into the next implementer's prompt.
+
+Turning it on is per role and default-off:
+
+```yaml
+performers:
+  qa:
+    workflow: qa
+    workflow_env:                      # how the app under test boots
+      PORT: 3000
+      QA_APP_START_COMMAND: "bin/rails s -b 127.0.0.1 -p 3000 -e test"
+      QA_APP_SEED_COMMAND: "bin/rails db:migrate db:seed"
+      QA_APP_BOOT_TIMEOUT: 180
+```
+
+The boot env is layered: process env, then the env cache's activation delta
+(`activate.sh` — `PORT`, toolchain `PATH`, `POSTGRESQL_*`/`REDIS_*`), then
+`workflow_env`, which wins. `QA_APP_START_COMMAND` is needed whenever
+`infer_app_start_command` (Rails, Django, Node only) cannot recognise the
+project. Removing the `workflow:` line restores the single-prompt path exactly.
+
+Two things to know when it misbehaves. Every step emits a `BackendEvent`
+(`qa.plan`, `qa.boot`, …) so the dashboard shows where a run is, and
+`workflow_metrics` on the report carries model-call, retry and per-step timing
+counts. And a boot failure names the setting that fixes it — a missing `PORT`,
+an unrecognised project, a crashed process and a slow start are four different
+problems and are reported as four different reasons.
+
+The scenario eval (`python -m coordinare.eval.qa_scenarios`) scores the workflow
+against six generated repositories with a live model. It is a measurement, not a
+CI gate: see `tests/eval/qa_scenarios/README.md` for why, and do not wire it into
+CI.
+
 ## The end-to-end picture
 
 ```mermaid
