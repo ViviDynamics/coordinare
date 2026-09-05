@@ -191,6 +191,11 @@ class AppBoot:
             result = await toolkit.run_command(seed, cwd=self.workspace, timeout_s=300)
             if not result.passed:
                 log.warning("qa.boot.seed_failed", exit_code=result.exit_code)
+                excerpt = (getattr(result, "output_excerpt", "") or "").strip()
+                self.failure_reason = (
+                    f"seed command exited {result.exit_code}: {seed}"
+                    + (f" -- {excerpt[-300:]}" if excerpt else "")
+                )
                 return None
 
         cmd = start_command_for(self.workspace, self.env)
