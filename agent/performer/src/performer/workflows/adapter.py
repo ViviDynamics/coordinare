@@ -191,6 +191,9 @@ class WorkflowAdapter:
             self._current_step = text[3:]
 
     async def _run(self, stand, score, toolkit) -> None:
+        import time
+
+        started = time.monotonic()
         try:
             self._result = await self._workflow.run(stand, score, toolkit)
         except BaseException as exc:  # noqa: BLE001 - recorded, re-read by get_status
@@ -198,7 +201,24 @@ class WorkflowAdapter:
             log.warning(
                 "workflow.failed", workflow=self.workflow_name, error=str(exc),
                 error_type=type(exc).__name__,
+                total_ms=int((time.monotonic() - started) * 1000),
+                step_durations_ms=dict(self._metrics.step_durations_ms),
             )
+            return
+        # T001b: the container's stderr is the one durable record of a live
+        # run (coordinare mounts it under performer_log_dir), so the timing the
+        # budgets are supposed to be measured from has to land there.
+        log.info(
+            "workflow.completed",
+            workflow=self.workflow_name,
+            total_ms=int((time.monotonic() - started) * 1000),
+            step_durations_ms=dict(self._metrics.step_durations_ms),
+            model_calls=self._metrics.model_calls,
+            truncation_retries=self._metrics.truncation_retries,
+            schema_reprompts=self._metrics.schema_reprompts,
+            baseline_skipped=self._metrics.baseline_skipped,
+            adopted_existing_server=self._metrics.adopted_existing_server,
+        )
 
     def get_status(self) -> BackendStatus:
         if self._task is None:

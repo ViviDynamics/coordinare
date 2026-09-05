@@ -221,7 +221,11 @@ class OpenAiApiBackend:
     by setting ``base_url``.  Auth comes from OPENAI_API_KEY.
     """
 
-    _TIMEOUT: float = 60.0
+    # 180s, not 60: the gateway's only self-hosted model (glm-5.3-flash) is a
+    # reasoning model and spent 29s on a short assessment probe; a real card
+    # body thinks longer. A timeout here returns a synthetic 'insufficient'
+    # assessment, so a cap that is too tight silently stalls every card.
+    _TIMEOUT: float = 180.0
 
     def __init__(
         self,

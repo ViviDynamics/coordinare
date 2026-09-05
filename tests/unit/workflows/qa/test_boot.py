@@ -134,6 +134,36 @@ async def test_a_seed_command_runs_before_the_server_starts():
     assert order and order[0] == "python seed.py", "seed must precede boot"
 
 
+@pytest.mark.asyncio
+async def test_a_failed_seed_names_itself_in_the_failure_reason():
+    spawned: list[str] = []
+
+    class _TK:
+        async def run_command(self, cmd, **kw):
+            class R:
+                passed = False
+                exit_code = 1
+                output_excerpt = "PG::UniqueViolation: duplicate key value"
+
+            return R()
+
+    boot = AppBoot(
+        env={"PORT": "8000", "QA_APP_SEED_COMMAND": "bin/rails db:seed",
+             "QA_APP_START_COMMAND": "python app.py"},
+        workspace=Path("/w"),
+        port_check=lambda h, p: False,
+        spawn=lambda cmd, cwd, env: spawned.append(cmd) or _FakeProc(),
+        sleep=lambda _s: None,
+        boot_timeout=0.0,
+    )
+    assert await boot.ensure_serving(_TK()) is None
+    assert spawned == [], "the server must not start on top of a failed seed"
+    assert boot.failure_reason is not None
+    assert "seed command exited 1" in boot.failure_reason
+    assert "bin/rails db:seed" in boot.failure_reason
+    assert "UniqueViolation" in boot.failure_reason
+
+
 class _FakeProc:
     def terminate(self): pass
     def kill(self): pass
