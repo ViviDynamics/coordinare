@@ -17,6 +17,9 @@ from performer.workflows.qa import report as report_step
 from performer.workflows.qa.models import CriterionVerdict, VisualDelta
 
 MAIN = Path(__file__).resolve().parents[4] / "agent/performer/src/performer/main.py"
+# T049 moved the QA post-processing out of main.py; the consumed-key guard now
+# reads the module that actually consumes the report.
+QA_POST = Path(__file__).resolve().parents[4] / "agent/performer/src/performer/qa_postprocess.py"
 
 
 def _consumed_keys() -> set[str]:
@@ -62,9 +65,7 @@ def test_the_report_is_json_serialisable_as_the_adapter_sends_it():
 def test_every_consumed_key_is_either_emitted_or_safely_defaulted():
     """A key the post-processing reads must either be present, or be read with
     a default. This fails loudly if someone adds a required read."""
-    source = MAIN.read_text()
-    block = source[source.index('if perf.role == "qa":'):]
-    block = block[: block.index('if perf.role == "documenting":')]
+    block = QA_POST.read_text()
 
     emitted = set(_report(visual_required=True))
     for key in _consumed_keys():
@@ -99,7 +100,7 @@ def test_a_visual_run_emits_app_boot_check_backed_by_an_executed_check():
     import sys
 
     sys.path.insert(0, str(MAIN.parents[2]))
-    from performer.main import _qa_app_boot_evidence
+    from performer.qa_postprocess import _qa_app_boot_evidence
 
     boot_check = ExecutedCheck(
         plan_check_id="app-boot",
@@ -123,7 +124,7 @@ def test_boot_proof_is_absent_when_no_boot_happened():
     import sys
 
     sys.path.insert(0, str(MAIN.parents[2]))
-    from performer.main import _qa_app_boot_evidence
+    from performer.qa_postprocess import _qa_app_boot_evidence
 
     report = _report(visual_required=True)
     _parsed, ok = _qa_app_boot_evidence(report, report["executed_checks"])

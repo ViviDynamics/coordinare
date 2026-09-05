@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from performer.main import _qa_env_limited_without_verification
+from performer.qa_postprocess import _qa_env_limited_without_verification
 
 
 def test_zero_criteria_under_env_limit_is_blocked():

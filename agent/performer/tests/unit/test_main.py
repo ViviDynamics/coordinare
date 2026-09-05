@@ -2534,7 +2534,7 @@ class TestQAPerformer:
         (captured from PR ViviDynamics/website#159) MUST classify as environmental so
         they stay advisory instead of blocking the card. A FAILED verdict must mean
         'checked and broken', not 'couldn't check'."""
-        from performer.main import _qa_failure_is_environmental
+        from performer.qa_postprocess import _qa_failure_is_environmental
         environmental = [
             {"criterion": "Run rubocop", "actual": "Rubocop could not be executed (bundle missing)"},
             {"criterion": "Run rspec", "actual": "RSpec could not be executed (bundle missing)"},
@@ -2552,7 +2552,7 @@ class TestQAPerformer:
     def test_qa_real_defect_not_misclassified_as_environmental(self) -> None:
         """The broadened environmental detection must NOT swallow genuine defects:
         a concrete assertion failure stays a blocking defect."""
-        from performer.main import _qa_failure_is_environmental
+        from performer.qa_postprocess import _qa_failure_is_environmental
         assert _qa_failure_is_environmental({
             "criterion": "margin is 0 on mobile", "expected": "0px",
             "actual": "16px still present", "message": "assertion failed: margin not removed",
@@ -2560,7 +2560,7 @@ class TestQAPerformer:
 
     def test_has_local_visual_artifact_true_for_existing_file(self, tmp_path) -> None:
         """A local path the QA agent genuinely produced counts — no re-capture."""
-        from performer.main import _has_local_visual_artifact
+        from performer.qa_postprocess import _has_local_visual_artifact
         f = tmp_path / "shot.png"
         f.write_bytes(b"\x89PNG" + b"x" * 32)
         assert _has_local_visual_artifact([
@@ -2569,7 +2569,7 @@ class TestQAPerformer:
 
     def test_has_local_visual_artifact_true_for_uploaded_url(self) -> None:
         """An already-uploaded URL counts — nothing to re-capture."""
-        from performer.main import _has_local_visual_artifact
+        from performer.qa_postprocess import _has_local_visual_artifact
         assert _has_local_visual_artifact([
             {"label": "e", "kind": "screenshot",
              "path_or_url": "https://cdn.example.com/a.png", "note": ""},
@@ -2578,7 +2578,7 @@ class TestQAPerformer:
     def test_has_local_visual_artifact_false_for_claimed_absent_path(self) -> None:
         """A path the capture never created must NOT count — this is exactly the
         faked-screenshot case the deterministic backstop exists to cover."""
-        from performer.main import _has_local_visual_artifact
+        from performer.qa_postprocess import _has_local_visual_artifact
         assert _has_local_visual_artifact([
             {"label": "e", "kind": "screenshot",
              "path_or_url": "/tmp/does-not-exist-qa.png", "note": ""},
@@ -2925,7 +2925,7 @@ class TestQAVerdictIntegrity088:
         """FR-001: a pass claim with zero evidence is unsubstantiated regardless
         of environment_error — the env_limited early-return is gone (the caller
         decides the *classification*, never the *exemption*)."""
-        from performer.main import _qa_unsubstantiated_pass
+        from performer.qa_postprocess import _qa_unsubstantiated_pass
         assert _qa_unsubstantiated_pass(
             qa_passed_flag=True,
             criteria_passed=4,
