@@ -40,10 +40,21 @@ inherits that property for free.
 it removes the operator's ability to run a role the old way, which is the entire
 rollout strategy (FR-005).
 
-## R3 — Observation pooling key
+## R3 — Observation identity *(revised in the second review round)*
 
-**Decision**: pool repeated observations on `(kind, document_position)`. Read
-labels from the DOM, never from the model.
+**Original decision**: pool repeated model descriptions on `(kind,
+document_position)`, reading labels from the DOM, never from the model.
+
+**Superseded**: observation now reads the DOM directly (`workflows/qa/dom.py`);
+the model-description pooling path was never wired in and was removed as dead
+code. Two lessons survive in `observe._diff_key`. First, the original one --
+never key anything on model-supplied labels. Second, one the pooling rule
+itself caused when applied to the before/after DIFF: keying on position made an
+inserted field look like every element below it had been removed (a false
+failure), while ignoring labels made a password field replaced by a workspace
+field at the same position look unchanged (a false pass -- the worst outcome
+this feature exists to prevent). The diff identity is therefore `(kind, label)`,
+with `position` breaking ties only among unlabelled elements of one kind.
 
 **Rationale**: measured during design. Three description runs saw the same new
 dropdown and named it `workspace`, `workspace / acme hq`, and `acme hq`;

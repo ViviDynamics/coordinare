@@ -149,8 +149,11 @@ Setup (T001-T003)
                           └─> Polish (T049-T053)
 ```
 
-T049 depends on US2 being complete and verified; deleting the old block before
-the new steps are proven would remove the fallback.
+T049 was sequenced after US2 because the `main.py` QA block was the fallback while
+the workflow was unproven. It was then **extracted, not deleted** (PR #259): the
+block is load-bearing for the workflow path too -- the adapter's report lands in
+it for evidence upload and the PR comment -- so it moved verbatim to
+`performer/qa_postprocess.py` where it is unit-testable for the first time.
 
 ## Parallel opportunities
 
