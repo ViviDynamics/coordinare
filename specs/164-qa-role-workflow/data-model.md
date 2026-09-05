@@ -80,12 +80,15 @@ Declarative on purpose: the model decides *what*, our Playwright code owns *how*
 
 ## Observation *(QA step 4 output)*
 
+Read from the DOM by the reader in `workflows/qa/dom.py`; no model is involved
+(the model-description pooling path was removed as dead code in the second review
+round -- see R3).
+
 | Field | Type | Notes |
 |---|---|---|
-| `kind` | closed enum | Element kind. Out-of-enum ⇒ one reprompt, then loud failure (FR-010). |
-| `position` | `int` | Document order. With `kind`, forms the pooling key (R3). |
-| `label` | `str \| None` | **From the DOM**, never from the model. |
-| `seen_in` | `int` | How many description runs produced it. Retained when ≥ threshold. |
+| `kind` | closed enum | Element kind, from the reader's tag mapping (`select`⇒`dropdown`, `input[type=password]`⇒`password_input`, …). |
+| `position` | `int` | Document order. Breaks ties between unlabelled elements of one kind only; never part of the identity of a labelled element, or an inserted field makes everything below it look removed. |
+| `label` | `str \| None` | **From the DOM**, never from the model. With `kind`, the diff identity. |
 
 ## VisualDelta *(QA step 5 input)*
 

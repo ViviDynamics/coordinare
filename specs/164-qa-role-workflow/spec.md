@@ -13,7 +13,7 @@ complete. None of that fits in one instruction, and the evidence says it does no
 fit today:
 
 - QA is the second-hardest persona in the 077 sweep (~2% pass rate).
-- The QA role already carries **498 lines of post-processing** in
+- The QA role carried **498 lines of post-processing** (since extracted, T049) in
   `agent/performer/src/performer/main.py:2981-3479`, inside a 4,316-line file.
   The logic did not fail to exist; it outgrew the persona and spilled into an
   if-chain, where it can only parse what the agent happened to return.
@@ -279,9 +279,13 @@ in that order, with the layer landing default-off and inert until QA uses it.
 ## Rollout
 
 Opt-in per role, default off. Reviewer, security and documenter keep working
-unchanged while QA is rebuilt. The 498 lines in `main.py` are not deleted; they
-are distributed into the steps that should have owned them, where each piece
-becomes testable on its own.
+unchanged while QA is rebuilt. The 498 lines of QA post-processing in `main.py`
+were **extracted verbatim** into `performer/qa_postprocess.py` (`finalize_qa`,
+PR #259) rather than deleted or redistributed: they are load-bearing for the
+workflow path too -- the workflow adapter surfaces its report as
+`backend_status.output`, which that code consumes to commit tests, upload
+evidence and post the PR comment. Extraction made them unit-testable for the
+first time; `main.py` shrank 4,326 to 3,332 lines.
 
 **Known cost**: this introduces a second way for a role to execute, and two paths
 mean two things to maintain. Acceptable while QA proves the mechanism;

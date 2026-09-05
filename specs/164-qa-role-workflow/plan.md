@@ -37,7 +37,7 @@ unit-testable on the host without a container.
 **Constraints**: all model traffic through the LiteLLM gateway; workflows load
 only from the performer's trusted package directory, never from a cloned repo.
 **Scale/Scope**: one layer, one workflow, six steps, six scenario fixtures.
-Redistributes ~498 existing lines from `main.py` rather than adding net logic.
+Extracts ~498 existing lines from `main.py` into `qa_postprocess.py` (T049) rather than adding net logic.
 
 ## Constitution Check
 
@@ -145,7 +145,9 @@ agent/performer/src/performer/
 │       ├── judge.py          # step 5  (model, text only)
 │       ├── report.py         # step 6  (assembles PerformerResponse + qa_findings)
 │       └── personas.py       # the six per-step personas
-├── main.py                   # dispatch: use workflow when configured, else today's path
+├── main.py                   # dispatch: WorkflowAdapter when configured, else today's path;
+│                             # QA branch delegates to qa_postprocess.finalize_qa (T049)
+├── qa_postprocess.py         # T049: the QA post-processing, extracted verbatim from main.py
 └── backends/                 # unchanged; workflows call these as primitives
 
 src/coordinare/
