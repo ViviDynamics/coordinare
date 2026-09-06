@@ -70,7 +70,7 @@ These were defined in `plan.md`'s Constitution Check and are back-filled here
 | Visual cards | Workflow p50 ≤ 3× measured current QA p50 (accounts for the merge-base boot) | Provisional |
 | Baseline skip | Baseline MUST NOT run when the plan has no visual or flow checks | **Enforced by test** |
 | Model-call ceiling | ≤ 12 model calls per QA run, enforced in code | **Enforced by test** |
-| Per-call token budget | Judgment ≥ 3000 max_tokens, observation ≥ 1500 | **Enforced by test** |
+| Per-call token budget | Plan and judgment ≥ 8000 max_tokens, observation ≥ 3000 (design measured 500 truncated / 3000 clean; the first live run on glm-5.3-flash spent 3000 entirely on reasoning, so the floors were raised) | **Enforced by test** |
 | Scenario verdicts | All six scenarios produce the correct verdict class for the correct reason | **Met** — 6/6 on the live eval |
 | Outcome metric | Rounds-to-green per issue, emitted by the workflow | **Emitted** (`WorkflowMetrics.round_number` / `reached_green`) |
 

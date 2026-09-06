@@ -60,3 +60,81 @@ async def test_failure_logs_timings_but_never_completed():
     assert "total_ms" in failed
     assert failed["step_durations_ms"] == {}
     assert adapter.get_status().state == "error"
+
+
+def test_model_read_timeout_outlasts_a_doubled_reasoning_budget():
+    """The first live QA run died at 300 s: a doubled 6000-token budget on a
+    reasoning model needs longer than that at the gateway's generation rate.
+    Connect stays short so a dead gateway still fails fast."""
+    from performer.workflows.adapter import _MODEL_CONNECT_TIMEOUT_S, _MODEL_READ_TIMEOUT_S
+
+    assert _MODEL_READ_TIMEOUT_S >= 900
+    assert _MODEL_CONNECT_TIMEOUT_S <= 60
+
+
+def test_step_budget_is_capped_by_the_role_max_tokens():
+    from performer.workflows.adapter import _effective_max_tokens
+
+    assert _effective_max_tokens(16000, 12288) == 12288
+    assert _effective_max_tokens(8000, 32768) == 8000
+    assert _effective_max_tokens(8000, 0) == 8000
+    assert _effective_max_tokens(8000, None) == 8000
+    assert _effective_max_tokens(8000, "not a number") == 8000
+
+
+@pytest.mark.asyncio
+async def test_model_call_logs_timing_and_parses_the_response_once(monkeypatch):
+    import performer.workflows.adapter as adapter_mod
+    from performer.config import get_settings
+
+    parses = {"n": 0}
+
+    class _Resp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            parses["n"] += 1
+            return {
+                "choices": [{"message": {"content": "{}", "reasoning_content": "r"}, "finish_reason": "stop"}],
+                "usage": {"completion_tokens": 42},
+            }
+
+    sent = {}
+
+    class _Client:
+        def __init__(self, *a, **kw):
+            sent["timeout"] = kw.get("timeout")
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def post(self, url, headers=None, content=None):
+            import json as _json
+
+            sent["body"] = _json.loads(content)
+            return _Resp()
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)  # adapter imports httpx inside the caller
+    monkeypatch.setenv("LITELLM_PROXY_BASE_URL", "https://gateway.test")
+    get_settings.cache_clear()
+
+    class _S:
+        model = "m"
+        max_tokens = 12288
+
+    with capture_logs() as logs:
+        reply = await adapter_mod._model_caller(_S())("persona", [{"type": "text", "text": "hi"}], 16000)
+
+    get_settings.cache_clear()
+    assert reply.finish_reason == "stop" and reply.reasoning_content == "r"
+    assert sent["body"]["max_tokens"] == 12288, "doubled budget must be capped by the role"
+    assert parses["n"] == 1, "the response body is parsed once"
+    entry = next(e for e in logs if e["event"] == "workflow.model_call")
+    assert entry["completion_tokens"] == 42 and entry["max_tokens"] == 12288
+    assert isinstance(entry["elapsed_ms"], int)

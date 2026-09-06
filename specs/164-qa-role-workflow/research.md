@@ -85,7 +85,7 @@ step raises in between).
 
 ## R5 — Token budgets
 
-**Decision**: judgment steps ≥ 3000 `max_tokens`, observation steps ≥ 1500.
+**Decision**: plan and judgment steps ≥ 8000 `max_tokens`, observation steps ≥ 3000 (raised from 3000/1500 after the first live run: a plan call on glm-5.3-flash spent the whole 3000 on reasoning and finished with `length`; see `budget.py`). The model caller's read timeout is 900 s.
 Retry once at double the budget on `finish_reason: length`. Cap a run at 12 model
 calls.
 

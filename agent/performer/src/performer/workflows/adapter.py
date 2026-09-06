@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import json
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -32,6 +33,27 @@ if TYPE_CHECKING:
     from performer.models import BackendEvent, Score, Stand
 
 log = structlog.get_logger(__name__)
+
+# Read timeout for one model call. 300 s killed the first live QA run: a
+# reasoning model producing a doubled 6000-token plan budget needs longer
+# than that at the Spark's generation rate. Connect stays short so a dead
+# gateway still fails fast.
+_MODEL_READ_TIMEOUT_S = 900.0
+_MODEL_CONNECT_TIMEOUT_S = 30.0
+
+
+def _effective_max_tokens(requested: int, role_cap: object) -> int:
+    """A step budget never exceeds the role's configured output cap.
+
+    Budgets double on a truncation retry (plan/judge reach 16000), and an
+    operator may have set ``performers.<role>.max_tokens`` lower than that.
+    The role cap is the operator's word; 0/None/invalid means no cap.
+    """
+    try:
+        cap = int(role_cap)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return requested
+    return min(requested, cap) if cap > 0 else requested
 
 
 def _command_runner(workspace: "Path"):
@@ -70,6 +92,7 @@ def _model_caller(score: "Score"):
         headers = {"Content-Type": "application/json"}
         if token:
             headers["Authorization"] = f"Bearer {token}"
+        max_tokens = _effective_max_tokens(max_tokens, getattr(score, "max_tokens", None))
         body = {
             "model": score.model or "",
             "max_tokens": max_tokens,
@@ -78,12 +101,23 @@ def _model_caller(score: "Score"):
                 {"role": "user", "content": content},
             ],
         }
-        async with httpx.AsyncClient(timeout=300) as client:
+        started = time.monotonic()
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(_MODEL_READ_TIMEOUT_S, connect=_MODEL_CONNECT_TIMEOUT_S)
+        ) as client:
             resp = await client.post(
                 f"{base}/chat/completions", headers=headers, content=_json.dumps(body)
             )
             resp.raise_for_status()
-            choice = resp.json()["choices"][0]
+            payload = resp.json()
+        choice = payload["choices"][0]
+        log.info(
+            "workflow.model_call",
+            max_tokens=max_tokens,
+            elapsed_ms=int((time.monotonic() - started) * 1000),
+            finish_reason=choice.get("finish_reason"),
+            completion_tokens=(payload.get("usage") or {}).get("completion_tokens"),
+        )
         message = choice.get("message") or {}
         return ModelReply(
             content=message.get("content") or "",
@@ -191,8 +225,6 @@ class WorkflowAdapter:
             self._current_step = text[3:]
 
     async def _run(self, stand, score, toolkit) -> None:
-        import time
-
         started = time.monotonic()
         try:
             self._result = await self._workflow.run(stand, score, toolkit)

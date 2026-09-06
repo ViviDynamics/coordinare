@@ -102,3 +102,24 @@ async def test_the_excerpt_is_length_capped():
     with pytest.raises(SchemaViolation) as exc:
         await validate_with_reprompt(caller, Reply, WorkflowMetrics())
     assert len(str(exc.value)) < 1200
+
+
+@pytest.mark.asyncio
+async def test_a_reprompt_is_logged_with_the_problem():
+    from performer.workflows.base import WorkflowMetrics
+    from structlog.testing import capture_logs
+
+    class _M(BaseModel):
+        ok: bool
+
+    answers = iter(['not json at all', '{"ok": true}'])
+
+    async def call(correction):
+        return next(answers)
+
+    with capture_logs() as logs:
+        result = await validate_with_reprompt(call, _M, WorkflowMetrics())
+
+    assert result.ok is True
+    entry = next(e for e in logs if e["event"] == "schema_guard.reprompt")
+    assert "no JSON object" in entry["problem"]

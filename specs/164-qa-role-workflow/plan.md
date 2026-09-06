@@ -93,7 +93,7 @@ and MUST be back-filled into the spec's Success Criteria before implementation:
 | Visual cards | Workflow p50 ≤ 3× measured current QA p50 (accounts for the merge-base boot). |
 | Baseline skip | Baseline step MUST NOT run when the plan contains no visual or flow checks; verified by test, not by inspection. |
 | Model-call ceiling | ≤ 12 model calls per QA run, enforced in code. A runaway workflow fails loudly rather than burning the gateway. |
-| Per-call token budget | Judgment steps ≥ 3000 max_tokens, observation steps ≥ 1500. Measured during design: 500 truncated mid-JSON, 3000 completed cleanly. |
+| Per-call token budget | Plan and judgment steps ≥ 8000 max_tokens, observation steps ≥ 3000. Measured during design: 500 truncated mid-JSON, 3000 completed cleanly; the first live run (website #162, glm-5.3-flash, 2026-09-06) spent all 3000 on reasoning (13,391 chars, finish=length) and the doubled retry outran a 300 s read timeout, so the floors rose and the model caller waits 900 s. |
 | Outcome metric | Rounds-to-green per issue, emitted by the workflow (spec success metric). |
 
 Regression prevention: the model-call ceiling and the baseline-skip rule are
