@@ -147,6 +147,15 @@ class Score(BaseModel):
     # scanner_findings). Reports what failed and how to reproduce; never
     # prescribes a fix.
     qa_findings: list[dict] = Field(default_factory=list)
+    # 165: reader-specific projections of the architect's blueprint, derived by
+    # coordinare at dispatch. Each reader gets only its own slice (data-model.md
+    # disjointness rule). Declared here or extra="ignore" drops them in transit.
+    implementation_brief: dict = Field(default_factory=dict)
+    documentation_brief: dict = Field(default_factory=dict)
+    verification_brief: dict = Field(default_factory=dict)
+    # 165: a small blueprint dispatches the implementer for one turn with no
+    # milestone loop.
+    implementer_single_turn: bool = False
     backend: str = ""  # AI backend override (037)
     model: str = ""  # AI model override (037)
     effort: str = ""  # 055: low/medium/high effort hint for backend

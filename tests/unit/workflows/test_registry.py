@@ -46,3 +46,13 @@ def test_unknown_name_is_rejected_before_dispatch_not_during():
     assert is_supported_workflow("nope") is False
     assert is_supported_workflow("") is False
     assert is_supported_workflow(None) is False  # type: ignore[arg-type]
+
+
+def test_architect_is_a_registered_workflow_resolving_inside_the_trusted_root():
+    """165: the second consumer of the layer resolves like the first."""
+    from performer.workflows import get_workflow, is_supported_workflow
+
+    assert is_supported_workflow("architect") is True
+    wf = get_workflow("architect")
+    assert wf.name == "architect"
+    assert not is_supported_workflow("architec"), "a typo is still unknown"

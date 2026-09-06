@@ -9,6 +9,7 @@ the lifecycle pipeline and the persona system.
 from __future__ import annotations
 
 import asyncio
+import copy
 import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -154,6 +155,68 @@ def inject_qa_findings(
     findings = [f for f in raw if isinstance(f, dict)]
     if findings:
         card_context["qa_findings"] = findings
+
+
+# 165: which blueprint fields each reader receives (data-model.md). Nothing
+# outside a reader's tuple ever reaches it: docs never reach the implementer
+# or QA, milestones never reach the documenter or QA, criteria reach QA only.
+_IMPLEMENTATION_BRIEF_FIELDS: tuple[str, ...] = (
+    "summary", "milestones", "modules", "data_model", "interfaces", "risks", "size",
+)
+_DOCUMENTATION_BRIEF_FIELDS: tuple[str, ...] = ("summary", "docs", "modules")
+_VERIFICATION_BRIEF_FIELDS: tuple[str, ...] = ("summary", "criteria")
+_BRIEF_FOR_ROLE: dict[str, tuple[str, tuple[str, ...]]] = {
+    "implementing": ("implementation_brief", _IMPLEMENTATION_BRIEF_FIELDS),
+    "documenting": ("documentation_brief", _DOCUMENTATION_BRIEF_FIELDS),
+    "qa": ("verification_brief", _VERIFICATION_BRIEF_FIELDS),
+}
+
+
+def project_brief(blueprint: dict[str, Any], fields: tuple[str, ...]) -> dict[str, Any]:
+    """The reader-specific slice of *blueprint*: listed fields only, copied."""
+    return {k: copy.deepcopy(blueprint[k]) for k in fields if k in blueprint}
+
+
+def reset_blueprint_for_architect(state: Any, performer_stage: str | None) -> bool:
+    """Dispatching the architect means a new blueprint is coming: drop the old
+    one (and its documenter side-run record) so a round that fails to report
+    can never leave a stale plan for the implementer, documenter or QA to
+    consume (review of #266). Returns True when something was cleared."""
+    if performer_stage != "architecting":
+        return False
+    had = bool(state.get("blueprint")) or state.get("documenting_side") is not None
+    state["blueprint"] = None
+    state["documenting_side"] = None
+    if had:
+        logger.info("blueprint.reset_for_architect", card_id=state.get("card_id"))
+    return had
+
+
+def inject_briefs(card_context: dict[str, Any], state: Any, *, role: str | None) -> None:
+    """165 (FR-010, FR-013): hand each reader its slice of the blueprint.
+
+    The implementer receives the implementation brief (plus
+    ``implementer_single_turn`` when the blueprint is small), the documenter
+    side run the documentation brief, QA the verification brief. Absent a
+    blueprint every key stays off the payload, so the pre-165 dispatch is
+    unchanged in shape and size. Registered in specs/contracts/dispatch-payload.md
+    and declared on ``Score``.
+    """
+    blueprint = state.get("blueprint") if hasattr(state, "get") else None
+    if not isinstance(blueprint, dict) or not blueprint.get("milestones"):
+        return
+    target = _BRIEF_FOR_ROLE.get(role or "")
+    if target is None:
+        return
+    key, fields = target
+    card_context[key] = project_brief(blueprint, fields)
+    if role == "implementing" and blueprint.get("size") == "small":
+        card_context["implementer_single_turn"] = True
+
+
+def documenter_side_run_wanted(blueprint: dict[str, Any] | None) -> bool:
+    """165 (FR-014): a documenter runs only for a non-empty documentation brief."""
+    return isinstance(blueprint, dict) and bool(blueprint.get("docs"))
 
 
 async def _run_security_floor(
@@ -1383,6 +1446,10 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
 
     # 164: hand the previous QA round's repair brief to the implementer.
     inject_qa_findings(card_context, state, role=role)
+    # 165: a re-dispatched architect replaces the blueprint; until it reports,
+    # there is none. Then hand each reader its slice.
+    reset_blueprint_for_architect(state, performer_stage)
+    inject_briefs(card_context, state, role=role)
 
     # Inject the raw PR diff for review roles so a model that does not fetch the
     # diff itself still has the changes to assess (drive-by fix: reviewer was

@@ -37,11 +37,11 @@ _ITEM = {
 }
 
 
-def test_current_schema_version_is_16() -> None:
+def test_current_schema_version_is_17() -> None:
     """Spec 128 bumps the snapshot schema to v16 (top-level + per-card
     surfaced_stale_reviews stale-review dedup marker), superseding the v15 pin
     (spec 126, terminal-success floors — still present, just no longer current)."""
-    assert CURRENT_SCHEMA_VERSION == 16
+    assert CURRENT_SCHEMA_VERSION == 17  # 165: + blueprint, documenting_side
 
 
 def test_old_session_loads_with_surfaced_stale_reviews_default() -> None:

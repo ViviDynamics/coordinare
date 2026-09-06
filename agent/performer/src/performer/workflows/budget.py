@@ -44,6 +44,10 @@ _STEP_BUDGETS: dict[str, int] = {
     "observe": 3000,
     "judge": 8000,
     "report": 0,    # no model call
+    # 165 architect workflow: the survey proposal is a short list; the
+    # blueprint is plan-sized, so it takes the plan floor.
+    "survey": 3000,
+    "blueprint": 8000,
 }
 _DEFAULT_BUDGET = 8000
 

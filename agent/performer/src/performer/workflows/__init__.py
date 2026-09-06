@@ -33,6 +33,7 @@ class UnsupportedWorkflowError(ValueError):
 SUPPORTED_WORKFLOWS: dict[str, tuple[str, str]] = {
     "noop": ("performer.workflows.noop", "NoopWorkflow"),
     "qa": ("performer.workflows.qa", "QAWorkflow"),
+    "architect": ("performer.workflows.architect", "ArchitectWorkflow"),
 }
 
 

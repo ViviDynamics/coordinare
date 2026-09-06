@@ -105,9 +105,14 @@ async def test_the_excerpt_is_length_capped():
 
 
 @pytest.mark.asyncio
-async def test_a_reprompt_is_logged_with_the_problem():
+async def test_a_reprompt_is_logged_with_the_problem(monkeypatch):
+    import performer.workflows.schema_guard as sg
     from performer.workflows.base import WorkflowMetrics
-    from structlog.testing import capture_logs
+
+    from tests.unit.workflows._fakelog import FakeLog
+
+    fake = FakeLog()
+    monkeypatch.setattr(sg, "log", fake)
 
     class _M(BaseModel):
         ok: bool
@@ -117,9 +122,8 @@ async def test_a_reprompt_is_logged_with_the_problem():
     async def call(correction):
         return next(answers)
 
-    with capture_logs() as logs:
-        result = await validate_with_reprompt(call, _M, WorkflowMetrics())
+    result = await validate_with_reprompt(call, _M, WorkflowMetrics())
 
     assert result.ok is True
-    entry = next(e for e in logs if e["event"] == "schema_guard.reprompt")
+    entry = next(e for e in fake.entries if e["event"] == "schema_guard.reprompt")
     assert "no JSON object" in entry["problem"]

@@ -41,6 +41,7 @@ from coordinare.services.dependency import build_graph as _build_dep_graph
 from coordinare.services.rebase import fetch_main_sha, repo_url_from_config, run_rebase_round
 from coordinare.session import _SESSION_FIELDS, session_to_state, state_to_session
 from coordinare.state_store import (
+    DocumentingSideRun,
     EnvCacheStateSnapshot,
     FeedbackItemRecord,
     PersistedSession,
@@ -340,6 +341,20 @@ def _persist_active_sessions(active_sessions: dict[str, Any]) -> dict[str, Persi
             if isinstance(noop_raw, int) and not isinstance(noop_raw, bool)
             else 0
         )
+        # 165: the blueprint is a plain dict (validated on the performer side);
+        # the side-run record is validated here so a corrupt entry drops to
+        # None instead of failing the snapshot save.
+        blueprint_raw = sess.get("blueprint")
+        blueprint = dict(blueprint_raw) if isinstance(blueprint_raw, dict) and blueprint_raw else None
+        side_raw = sess.get("documenting_side")
+        documenting_side: DocumentingSideRun | None = None
+        if isinstance(side_raw, DocumentingSideRun):
+            documenting_side = side_raw
+        elif isinstance(side_raw, dict) and side_raw.get("blueprint_hash"):
+            try:
+                documenting_side = DocumentingSideRun(**side_raw)
+            except (ValidationError, TypeError):
+                documenting_side = None
         out[cid] = PersistedSession(
             card_id=cid,
             performer_stage=(sess.get("performer_stage") or None),
@@ -376,6 +391,8 @@ def _persist_active_sessions(active_sessions: dict[str, Any]) -> dict[str, Persi
             transient_error_cycles=transient_error_cycles,
             assessor_open_questions=assessor_open_questions,
             stage_verdicts=stage_verdicts,
+            blueprint=blueprint,
+            documenting_side=documenting_side,
             processed_issue_comment_ids=comment_ids,
             last_issue_comment_id=last_issue_comment_id,
             feedback_ledger=feedback_ledger,
@@ -765,6 +782,8 @@ class CoordinareDaemon:
         # holds other dispatch. Poll-task refs kept to prevent GC.
         self._wiki_init_requests: set[str] = set()
         self._wiki_init_poll_tasks: set[asyncio.Task[None]] = set()
+        # 165: completion polls for documenter side runs (out-of-lifecycle).
+        self._documenting_side_tasks: set[asyncio.Task[Any]] = set()
         from coordinare.services.wiki_init import WikiInitService
 
         self._wiki_init_svc = WikiInitService()  # auto-gate disabled; manual trigger only
@@ -1021,6 +1040,15 @@ class CoordinareDaemon:
                     ],
                     "feedback_origin_sha": persisted.feedback_origin_sha,
                     "noop_success_retries": persisted.noop_success_retries,
+                    # 165: the blueprint and the documenter side run survive a
+                    # restart so the remaining briefs and the side run's
+                    # once-per-hash rule still hold.
+                    "blueprint": dict(persisted.blueprint) if persisted.blueprint else None,
+                    "documenting_side": (
+                        persisted.documenting_side.model_dump(mode="json")
+                        if persisted.documenting_side is not None
+                        else None
+                    ),
                 }
                 # Seed current_card for the matching active_card_id from the
                 # top-level snapshot fields; other sessions get a stub that
@@ -1069,6 +1097,9 @@ class CoordinareDaemon:
                     "feedback_ledger": [],
                     "feedback_origin_sha": None,
                     "noop_success_retries": 0,
+                    # 165: fresh-card defaults.
+                    "blueprint": None,
+                    "documenting_side": None,
                 }
             }
             logger.info(
@@ -2658,6 +2689,89 @@ class CoordinareDaemon:
                 error=str(exc),
             )
 
+    async def _dispatch_documenting_side_runs(self, sym_gh_svcs: dict[str, Any] | None) -> None:
+        """165 (FR-014/FR-015): run the documenter beside the lifecycle.
+
+        One dispatch per blueprint hash, only for sessions past architecting
+        whose blueprint carries documentation topics; polled to a recorded
+        outcome on the session (persisted as ``documenting_side``). Never
+        blocks or advances the main lifecycle.
+        """
+        from coordinare.services import documenting_side as _ds
+
+        svc = (self._state.get("performer_services") or {}).get("documenting")
+        sessions = self._state.get("active_sessions") or {}
+        if svc is None or not sessions:
+            return
+
+        async def _resolve(card_id: str, session: dict[str, Any]) -> tuple[dict[str, Any], Any] | None:
+            return await self._resolve_documenting_side(card_id, session, sym_gh_svcs or {})
+
+        def _spawn(coro: Any) -> None:
+            task = asyncio.create_task(coro)
+            self._documenting_side_tasks.add(task)
+            task.add_done_callback(self._documenting_side_tasks.discard)
+
+        try:
+            await _ds.run_cycle(sessions, svc=svc, resolve=_resolve, spawn=_spawn)
+        except Exception as exc:
+            logger.warning("documenting_side.cycle_failed", error=str(exc)[:200])
+
+    async def _resolve_documenting_side(
+        self, card_id: str, session: dict[str, Any], sym_gh_svcs: dict[str, Any]
+    ) -> tuple[dict[str, Any], Any] | None:
+        """Turn a session into the documenter's dispatch payload, or None when
+        the repo, token or branch cannot be resolved (retried next cycle)."""
+        from coordinare.services import documenting_side as _ds
+        from coordinare.services.persona_service import get_effective_instructions
+        from coordinare.workspace import WorkspaceInfo
+
+        card = session.get("current_card") or {}
+        symphony = str(session.get("current_symphony") or card.get("symphony") or self._state.get("current_symphony") or "")
+        github = sym_gh_svcs.get(symphony) if symphony else None
+        if github is None:
+            github = self._state.get("github_service")
+        org = getattr(github, "org", None) or getattr(github, "_org", "") or ""
+        repo = getattr(github, "_project_name", "") or ""
+        branch = str(session.get("workspace_branch") or card.get("branch") or "")
+        if not (org and repo and branch):
+            logger.info("documenting_side.unresolved", card_id=card_id, org=bool(org), repo=bool(repo), branch=bool(branch))
+            return None
+        token = ""
+        sym_wm = (self._state.get("symphony_workspace_managers") or {}).get(symphony)
+        if sym_wm is not None and hasattr(sym_wm, "get_fresh_github_token"):
+            try:
+                token = await sym_wm.get_fresh_github_token() or ""
+            except Exception as exc:
+                logger.warning("documenting_side.token_fetch_failed", card_id=card_id, error=str(exc)[:200])
+        if not token:
+            import os
+
+            token = os.environ.get("GITHUB_TOKEN", "")
+        if not token:
+            return None
+        cfg = self._state.get("config")
+        persona, backend, model_block = "", "codex", {}
+        if cfg is not None:
+            try:
+                persona = get_effective_instructions("tech_writer", cfg.personas)
+            except Exception:
+                persona = ""
+            rc = cfg.performers.resolved_role("tech_writer") if hasattr(cfg, "performers") else None
+            if rc is not None and getattr(rc, "backend", None):
+                backend = rc.backend
+            try:
+                model_block = cfg.resolve_performer_dispatch_model("tech_writer")
+            except Exception:
+                model_block = {}
+        repo_url = f"https://github.com/{org}/{repo}.git"
+        ctx = _ds.build_card_context(
+            card, session, persona=persona, backend=backend, model_block=model_block,
+            repo_url=repo_url, base_branch=str(card.get("base_branch") or "main"),
+        )
+        workspace_info = WorkspaceInfo(path=None, branch=branch, repo_url=repo_url, github_token=token)
+        return ctx, workspace_info
+
     async def _execute_wiki_init_dispatch(self, symphony_name: str, github: Any) -> None:
         """124(US2): dispatch a CARDLESS documenter run in init mode to seed the
         symphony's ``docs/wiki``, then poll → auto-merge the seed PR via
@@ -3238,6 +3352,9 @@ class CoordinareDaemon:
                         # 124(US2): drain manual wiki-init requests (dashboard
                         # "Init wiki" button). Operator-initiated, so it dispatches
                         # regardless of the default-off auto-gate and holds nothing.
+                        # 165: documenter side runs for cards whose blueprint has a
+                        # documentation brief and that have moved past architecting.
+                        await self._dispatch_documenting_side_runs(_sym_gh_svcs)
                         if self._wiki_init_requests:
                             for _wsym in list(self._wiki_init_requests):
                                 self._wiki_init_requests.discard(_wsym)

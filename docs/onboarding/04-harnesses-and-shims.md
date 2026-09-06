@@ -171,6 +171,43 @@ against six generated repositories with a live model. It is a measurement, not a
 CI gate: see `tests/eval/qa_scenarios/README.md` for why, and do not wire it into
 CI.
 
+### The architect workflow and the blueprint hand-off (spec 165)
+
+The second consumer of the layer. The architect had a prose contract (write
+`plan.md` and `tasks.md`), and on the live fleet it drifted into implementer
+work: 55 tool calls, a migration, `bundle install`, and no plan after two hours.
+`workflow: architect` replaces that with five steps that only code advances:
+
+1. **intake**: card, criteria, the assessment, answered clarifications, the repo's agent instructions. No model call.
+2. **survey**: the model proposes read-only commands; an allow-list (`workflows/architect/allowlist.py`) runs only `ls`, `cat`, `head`, `tail`, `sed -n`, `rg`, `grep`, `find` (no `-exec`/`-delete`), `wc`, and read-only `git`. Twelve commands, 4000 characters each; refusals are recorded and still cost budget.
+3. **blueprint**: one schema-guarded call producing milestones, modules, data model changes, interfaces, risks, testable criteria and documentation topics, every list and string bounded.
+4. **size**: a pure function. One milestone with no data model or interface change is small.
+5. **report**: the blueprint plus an executed `git status --porcelain` proving the tree is clean. A dirty tree is an error, not a plan.
+
+The architect commits nothing. Coordinare lifts the blueprint into the card's
+session (persisted, schema v17) and slices it at dispatch: the implementer gets
+the implementation brief (and a SINGLE TURN note when small), the documenter
+gets the documentation brief, QA gets the verification brief and plans from
+those criteria. No reader sees another reader's slice, and the implementer no
+longer writes documentation of any kind.
+
+The documenter runs as a **side run** beside the lifecycle (the env-bootstrap
+and wiki-init pattern), dispatched once per blueprint hash as soon as the card
+passes architecting and the brief is non-empty, concurrently with
+implementation. It may commit only under the documentation tree (`docs/` by
+default, `DOCUMENTER_TREE` to change it). Because two performers now share one
+branch, `push_branch` fetches and rebases onto the remote before pushing and
+never force-pushes over a divergence; `--force` survives only for the first
+push of a branch the remote does not have.
+
+Turning it on:
+
+```yaml
+performers:
+  architect:
+    workflow: architect
+```
+
 ## The end-to-end picture
 
 ```mermaid

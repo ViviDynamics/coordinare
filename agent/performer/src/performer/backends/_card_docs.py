@@ -129,3 +129,87 @@ def qa_findings_prompt_section(score: Score) -> list[str]:
         if f.get("repro_command"):
             lines.append(f"  - reproduce: `{f['repro_command']}`")
     return lines
+
+
+def brief_prompt_sections(score: Score) -> list[str]:
+    """Render the architect's briefs into the reader's prompt (spec 165 FR-010).
+
+    The implementer receives the implementation brief (authoritative over any
+    ``docs/cards`` plan files) and, for a small blueprint, the single-turn
+    instruction; the documenter receives the documentation brief. Every other
+    role renders nothing, and so does a dispatch without a blueprint, so the
+    pre-165 prompt is unchanged byte for byte. Shared so all backends render
+    the same text (the 164 lesson: a field that reaches Score but no prompt is
+    a field the model never saw).
+    """
+    role = getattr(score, "role", "") or ""
+    if role == "implementing":
+        return _implementation_brief_lines(
+            getattr(score, "implementation_brief", None) or {},
+            bool(getattr(score, "implementer_single_turn", False)),
+        )
+    if role == "documenting":
+        return _documentation_brief_lines(getattr(score, "documentation_brief", None) or {})
+    return []
+
+
+def _implementation_brief_lines(brief: dict, single_turn: bool) -> list[str]:
+    if not brief or not brief.get("milestones"):
+        return []
+    lines: list[str] = [
+        "",
+        "## Implementation Brief (from the architect's blueprint; authoritative)",
+        "",
+        "This brief REPLACES any plan.md or tasks.md under docs/cards/: milestones "
+        "come from here. You write code and tests only. Do not create or edit "
+        "documentation of any kind (docs/, wiki, README); the documenter owns it.",
+        "",
+    ]
+    if brief.get("summary"):
+        lines += [f"**Summary:** {brief['summary']}", ""]
+    lines.append("### Milestones (in order)")
+    for i, m in enumerate(brief.get("milestones") or [], start=1):
+        scope = ", ".join(str(x) for x in (m.get("scope") or [])) or "(scope per goal)"
+        lines.append(f"{i}. **{m.get('goal', '')}**  scope: {scope}  done when: {m.get('done_when', '')}")
+    modules = brief.get("modules") or []
+    if modules:
+        lines += ["", "### Affected modules"] + [f"- `{x.get('path', '')}`: {x.get('note', '')}" for x in modules]
+    changes = (brief.get("data_model") or {}).get("changes") or []
+    if changes:
+        lines += ["", "### Data model changes"] + [f"- {c.get('kind', '')} `{c.get('name', '')}`: {c.get('note', '')}" for c in changes]
+    interfaces = brief.get("interfaces") or []
+    if interfaces:
+        lines += ["", "### Interfaces"] + [f"- {i.get('kind', '')} `{i.get('name', '')}`: {i.get('contract', '')}" for i in interfaces]
+    risks = brief.get("risks") or []
+    if risks:
+        lines += ["", "### Risks"] + [f"- {r}" for r in risks]
+    if single_turn:
+        lines += [
+            "",
+            "### SINGLE TURN",
+            "This card is small: implement the whole brief in this turn, with tests, "
+            "and finish with DONE. Do not emit PARTIAL_PROGRESS.",
+        ]
+    return lines
+
+
+def _documentation_brief_lines(brief: dict) -> list[str]:
+    docs = brief.get("docs") or []
+    if not docs:
+        return []
+    lines: list[str] = [
+        "",
+        "## Documentation Brief (from the architect's blueprint)",
+        "",
+        "Write exactly these topics, each where it says, and nothing else. Commit "
+        "only under the documentation tree; any other path is rejected before push.",
+        "",
+    ]
+    if brief.get("summary"):
+        lines += [f"**What changed:** {brief['summary']}", ""]
+    for i, d in enumerate(docs, start=1):
+        lines.append(f"{i}. **{d.get('topic', '')}** in `{d.get('location', '')}`: {d.get('say', '')}")
+    modules = brief.get("modules") or []
+    if modules:
+        lines += ["", "Modules involved: " + ", ".join(f"`{x.get('path', '')}`" for x in modules)]
+    return lines

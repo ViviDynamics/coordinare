@@ -29,7 +29,7 @@ import aiohttp
 import psutil
 import structlog
 
-from performer.backends._card_docs import card_docs_prompt_section, qa_findings_prompt_section
+from performer.backends._card_docs import card_docs_prompt_section, qa_findings_prompt_section, brief_prompt_sections
 from performer.backends._env_policy import build_subprocess_env
 from performer.backends.base import BackendStatus
 from performer.io_utils import iter_lines_chunked
@@ -666,6 +666,7 @@ def _build_task_prompt(
         parts += [score.description, ""]
     parts += card_docs_prompt_section(score, stand_path)
     parts += qa_findings_prompt_section(score)
+    parts += brief_prompt_sections(score)
     if score.acceptance_criteria:
         parts += ["## Acceptance Criteria", ""]
         parts.extend(f"- {c}" for c in score.acceptance_criteria)

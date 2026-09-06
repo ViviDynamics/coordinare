@@ -216,6 +216,8 @@ class CardSession(TypedDict, total=False):
     # state_store).  MUST round-trip through session ↔ state or the skip gate
     # forgets recorded verdicts between cycles and re-dispatches passed stages.
     stage_verdicts: dict[str, dict[str, Any]]
+    blueprint: dict[str, Any] | None
+    documenting_side: dict[str, Any] | None
     # 126: terminal-success-floor state.  feedback_ledger entries are plain
     # dicts at session/state level (typed FeedbackItemRecord lives in
     # state_store); feedback_origin_sha is the head the current feedback round
@@ -292,6 +294,10 @@ _SESSION_FIELDS: tuple[str, ...] = (
     # action). Round-trips per-card so multi-card holds don't collide and the
     # operator-notification dedup survives a daemon restart.
     "env_blocked",
+    # 165: the architect blueprint (source of the three briefs) and the
+    # documenter side-run record; both per-card and restart-safe.
+    "blueprint",
+    "documenting_side",
     # 096: per-card auto-rebase anti-thrash marker (main_sha, head_sha, outcome).
     # Round-trips per-card so a BLOCKED/FAILED conflict isn't re-attempted every
     # cycle, and the marker survives a daemon restart.
@@ -384,6 +390,8 @@ def create_session_from_card(card: dict[str, Any]) -> CardSession:
         assessor_open_questions=[],
         # 125: no verdicts recorded yet for a freshly-picked-up card
         stage_verdicts={},
+        blueprint=None,
+        documenting_side=None,
         # 126: no feedback rounds stamped yet for a freshly-picked-up card
         feedback_ledger=[],
         feedback_origin_sha=None,

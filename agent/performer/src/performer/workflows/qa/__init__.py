@@ -31,7 +31,7 @@ from performer.workflows.qa.observe import diff_observations
 from performer.workflows.qa.baseline import cleanup_worktree, run_baseline_step
 from performer.qa_capture import app_base_url
 from performer.workflows.qa.boot import AppBoot
-from performer.workflows.qa.plan import EmptyPlan, run_plan_step
+from performer.workflows.qa.plan import effective_criteria, EmptyPlan, run_plan_step
 
 if TYPE_CHECKING:
     from performer.models import Score, Stand
@@ -277,7 +277,7 @@ class QAWorkflow:
         metrics.step_durations_ms["observe"] = int((time.monotonic() - started) * 1000)
 
         # --- 5. judge ----------------------------------------------------
-        criteria = list(getattr(score, "acceptance_criteria", []) or [])
+        criteria, _criteria_source = effective_criteria(score)  # 165: the same list the plan used
         self._step(toolkit, "judge")
         started = time.monotonic()
         model_verdict = await self._judge(toolkit, plan, executed, delta, criteria)

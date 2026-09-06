@@ -344,6 +344,17 @@ performers:
   architect:
     effort: high
     max_tokens: 12288
+    # 165: run the architect as a bounded role WORKFLOW (intake -> survey ->
+    # blueprint -> size -> report) instead of the single-prompt persona. The
+    # survey runs only read-only commands through an allow-list; the output is
+    # one structured blueprint that coordinare slices into the implementer's,
+    # documenter's and QA's briefs. Nothing is committed by the architect and
+    # no plan.md/tasks.md is written. Default off: remove the line to restore
+    # the prose path exactly. See specs/165-architect-blueprint-workflow/quickstart.md.
+    # workflow: architect
+    # workflow_env:
+    #   ARCHITECT_SURVEY_MAX_COMMANDS: 12       # read-only commands the survey may run
+    #   ARCHITECT_SURVEY_MAX_OUTPUT_CHARS: 4000 # per-command output cap
 
   implementer:
     effort: high

@@ -219,6 +219,36 @@ async def _run_git(
     return proc.returncode, _redact_auth_headers(stderr_bytes.decode(errors="replace"))
 
 
+async def _run_git_stdout(
+    args: list[str],
+    cwd: Path | None,
+    env: dict[str, str],
+    timeout: float = 120.0,
+) -> tuple[int, str]:
+    """Run a git command and return (returncode, stdout).
+
+    :func:`_run_git` returns stderr, which is what every error path wants; the
+    documenter tree guard needs the *listing* ``git diff --name-only`` prints,
+    so it goes through this sibling. Same timeout and kill semantics.
+    """
+    proc = await asyncio.create_subprocess_exec(
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=str(cwd) if cwd else None,
+        env=env,
+    )
+    try:
+        stdout_bytes, _stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise WorkspaceSetupError(
+            f"git command timed out after {timeout}s: {' '.join(args)}"
+        ) from None
+    return proc.returncode, stdout_bytes.decode(errors="replace")
+
+
 async def clone_repository(score: Score) -> Stand:
     """Clone *score.repo_url* into a fresh temp directory and return a Stand.
 
@@ -992,14 +1022,71 @@ def stop_all_env_cache_services() -> None:
         stop_env_cache_services(path, env)
 
 
+DEFAULT_DOCUMENTER_TREE = "docs/"
+
+
+def _documenter_tree(score: Score) -> str | None:
+    """The only path prefix a documenter side run may commit under, or None
+    when this dispatch is not a documenter side run (165 FR-015)."""
+    if getattr(score, "role", "") != "documenting":
+        return None
+    if not (getattr(score, "documentation_brief", None) or {}):
+        return None
+    env = getattr(score, "workflow_env", None) or {}
+    tree = str(env.get("DOCUMENTER_TREE") or DEFAULT_DOCUMENTER_TREE).strip().lstrip("/")
+    return tree if tree.endswith("/") else tree + "/"
+
+
+def paths_outside_tree(changed: list[str], tree: str) -> list[str]:
+    """Pure: the changed paths not under *tree*."""
+    return [p for p in changed if p and not p.startswith(tree)]
+
+
+async def _enforce_documenter_tree(
+    git_out, upstream: str, tree: str, branch: str
+) -> None:
+    """Refuse to push a documenter side run whose commits touch anything
+    outside the documentation tree. The implementer owns code and tests; two
+    performers on one branch must never edit the same files.
+
+    *git_out* must return ``(returncode, stdout)``: the guard reads the path
+    listing, not stderr (a review of #266 found the first version wired to
+    the stderr-returning runner, which made the guard blind in production).
+    """
+    # Three dots: paths changed between the merge base and HEAD, i.e. by OUR
+    # commits only. Two dots would also list whatever the other performer
+    # pushed since we branched and refuse the documenter for the implementer's
+    # files (caught by the real-git test in test_push_path_shared.py).
+    rc, out = await git_out(["diff", "--name-only", f"{upstream}...HEAD"], "diff")
+    if rc != 0:
+        raise WorkspaceSetupError(f"documenter.tree_check_failed: git diff exited {rc}: {out[:200]}")
+    outside = paths_outside_tree([line.strip() for line in out.splitlines()], tree)
+    if outside:
+        log.warning("documenter.tree_violation", branch=branch, tree=tree, paths=outside[:10])
+        raise WorkspaceSetupError(
+            "documenter.tree_violation: the documenter may only commit under "
+            f"{tree}; refused paths: {', '.join(outside[:10])}"
+        )
+
+
 async def push_branch(stand: Stand, score: Score) -> None:
-    """Push *stand.branch* to the remote.
+    """Push *stand.branch* to the remote without ever overwriting someone else's work.
 
-    Tries a regular push first to preserve PR history. Falls back to
-    ``--force`` only if the regular push fails (e.g., first push to a
-    new branch, or history has diverged).
+    165: two performers can now commit to one branch at the same time (the
+    implementer and the documenter side run), so the old "regular push, then
+    ``--force`` on any failure" is unsafe: a non-fast-forward rejection is the
+    other performer's commits, and forcing over them destroys real work.
 
-    Raises WorkspaceSetupError on push failure.
+    Sequence:
+
+    1. Ask the remote whether the branch exists (``git ls-remote --exit-code``).
+    2. If it exists: fetch it, rebase our commits onto it, then push WITHOUT
+       ``--force``. A rebase conflict aborts the rebase and raises
+       ``WorkspaceSetupError`` naming ``rebase_conflict``; nothing is pushed.
+    3. If it does not exist yet (first push): plain push, and only then the
+       ``--force`` fallback the first-push case has always needed.
+
+    Raises WorkspaceSetupError on any failure.
     """
     # 131 US2: last line of defence — strip any agent tool-config artifacts that
     # got committed (e.g. an agent's `git add -f`) before they reach the PR. No-op
@@ -1011,31 +1098,83 @@ async def push_branch(stand: Stand, score: Score) -> None:
     remote_url = score.repo_url.rstrip("/")
     if not remote_url.endswith(".git"):
         remote_url += ".git"
-    # Try regular push first to preserve commit history for existing PRs
-    cmd = ["git", "-C", str(stand.path), "push", remote_url, f"HEAD:{stand.branch}"]
     env = _git_credential_env(score.effective_github_token)
-    try:
-        returncode, err = await _run_git(cmd, cwd=None, env=env)
-    except OSError as exc:
-        if exc.errno == errno.ENOSPC:
-            raise WorkspaceSetupError("insufficient disk space") from exc
-        raise WorkspaceSetupError(f"git push failed: {exc}") from exc
+    git = ["git", "-C", str(stand.path)]
 
-    if returncode != 0:
-        # Regular push failed — fall back to force push for new branches
-        # or when history has diverged (e.g., first push after fresh clone)
-        log.info("push_branch.regular_push_failed_trying_force", branch=stand.branch, error=err[:200])
-        force_cmd = ["git", "-C", str(stand.path), "push", "--force", remote_url, f"HEAD:{stand.branch}"]
+    async def _git(args: list[str], what: str) -> tuple[int, str]:
         try:
-            returncode, err = await _run_git(force_cmd, cwd=None, env=env)
+            return await _run_git(git + args, cwd=None, env=env)
         except OSError as exc:
-            raise WorkspaceSetupError(f"git force-push failed: {exc}") from exc
-        if returncode != 0:
-            raise WorkspaceSetupError(
-                f"git push failed (exit {returncode}): {_summarise_git_push_error(err)}",
-            )
+            if exc.errno == errno.ENOSPC:
+                raise WorkspaceSetupError("insufficient disk space") from exc
+            raise WorkspaceSetupError(f"git {what} failed: {exc}") from exc
 
-    log.info("pushed branch", branch=stand.branch, remote_url=remote_url)
+    async def _git_out(args: list[str], what: str) -> tuple[int, str]:
+        try:
+            return await _run_git_stdout(git + args, cwd=None, env=env)
+        except OSError as exc:
+            raise WorkspaceSetupError(f"git {what} failed: {exc}") from exc
+
+    await _push_head_without_clobbering(
+        _git, _git_out, remote=remote_url, branch=stand.branch, score=score
+    )
+
+
+async def _push_head_without_clobbering(
+    git_run, git_out, *, remote: str, branch: str, score: Score | None
+) -> None:
+    """The one push path every performer write goes through (165 FR-013, FR-015).
+
+    *git_run* returns ``(rc, stderr)``, *git_out* returns ``(rc, stdout)``; both
+    take ``(args, what)``. *remote* is a URL or a remote name. *score* enables
+    the documenter tree guard when the dispatch is a documenter side run; None
+    (or any other role) means no guard.
+    """
+    # 0 = branch exists, 2 = no matching ref. Any other code means the question
+    # could not be answered; treat that as "exists" so we never force-push
+    # blind.
+    ls_rc, _ = await git_run(["ls-remote", "--exit-code", "--heads", remote, branch], "push")
+    remote_branch_missing = ls_rc == 2
+    tree = _documenter_tree(score) if score is not None else None
+
+    if not remote_branch_missing:
+        fetch_rc, fetch_err = await git_run(["fetch", remote, branch], "fetch")
+        if fetch_rc != 0:
+            raise WorkspaceSetupError(
+                f"git fetch before push failed: {_summarise_git_push_error(fetch_err)}"
+            )
+        if tree is not None:
+            await _enforce_documenter_tree(git_out, "FETCH_HEAD", tree, branch)
+        rebase_rc, rebase_err = await git_run(["rebase", "FETCH_HEAD"], "rebase")
+        if rebase_rc != 0:
+            await git_run(["rebase", "--abort"], "rebase --abort")
+            log.warning("push_branch.rebase_conflict", branch=branch, error=rebase_err[:300])
+            raise WorkspaceSetupError(
+                "push_branch.rebase_conflict: the remote branch has commits this "
+                f"performer's work conflicts with; nothing was pushed. {rebase_err[:300]}"
+            )
+        log.info("push_branch.rebased", branch=branch)
+        push_rc, push_err = await git_run(["push", remote, f"HEAD:{branch}"], "push")
+        if push_rc != 0:
+            raise WorkspaceSetupError(f"git push failed: {_summarise_git_push_error(push_err)}")
+        return
+
+    # First push of a new branch: no one else can have commits on it.
+    if tree is not None:
+        base = getattr(score, "base_branch", "") or "main"
+        base_rc, _ = await git_run(["fetch", remote, base], "fetch")
+        if base_rc != 0:
+            raise WorkspaceSetupError(f"documenter.tree_check_failed: could not fetch {base}")
+        await _enforce_documenter_tree(git_out, "FETCH_HEAD", tree, branch)
+    push_rc, push_err = await git_run(["push", remote, f"HEAD:{branch}"], "push")
+    if push_rc == 0:
+        return
+    log.info("push_branch.first_push_failed_trying_force", branch=branch, error=push_err[:200])
+    force_rc, force_err = await git_run(["push", "--force", remote, f"HEAD:{branch}"], "force-push")
+    if force_rc != 0:
+        raise WorkspaceSetupError(
+            f"git push failed: {_summarise_git_push_error(force_err or push_err)}"
+        )
 
 
 async def get_head_sha(stand: Stand) -> str:
@@ -1063,7 +1202,26 @@ async def get_head_sha(stand: Stand) -> str:
     return stdout.decode().strip()
 
 
-async def commit_file(stand: Stand, path: str, content: str, message: str) -> None:
+def _stand_git_runners(stand: Stand, env: dict[str, str]):
+    """``(git_run, git_out)`` closures over *stand.path* for the shared push path."""
+    async def _git(args: list[str], what: str) -> tuple[int, str]:
+        try:
+            return await _run_git(["git", *args], cwd=stand.path, env=env)
+        except OSError as exc:
+            raise WorkspaceSetupError(f"git {what} failed: {exc}") from exc
+
+    async def _git_out(args: list[str], what: str) -> tuple[int, str]:
+        try:
+            return await _run_git_stdout(["git", *args], cwd=stand.path, env=env)
+        except OSError as exc:
+            raise WorkspaceSetupError(f"git {what} failed: {exc}") from exc
+
+    return _git, _git_out
+
+
+async def commit_file(
+    stand: Stand, path: str, content: str, message: str, *, score: Score | None = None
+) -> None:
     """Write *content* to *path* in the stand's repo, commit, and push.
 
     If the file already exists, it is overwritten (FR-009: re-run safety).
@@ -1113,15 +1271,11 @@ async def commit_file(stand: Stand, path: str, content: str, message: str) -> No
     if returncode != 0:
         raise WorkspaceSetupError(f"git commit failed (exit {returncode}): {stderr}")
 
-    # Push (force — same rationale as push_branch: coordinare-managed branches)
-    returncode, stderr = await _run_git(
-        ["git", "push", "--force", "origin", f"HEAD:{stand.branch}"],
-        cwd=stand.path, env=env,
+    # Push through the shared path: rebase onto the remote, never force over
+    # another performer's commits, and hold a documenter side run to its tree.
+    await _push_head_without_clobbering(
+        *_stand_git_runners(stand, env), remote="origin", branch=stand.branch, score=score
     )
-    if returncode != 0:
-        raise WorkspaceSetupError(
-            f"git push failed (exit {returncode}): {_summarise_git_push_error(stderr)}",
-        )
 
     log.info("commit_file.committed", path=path, branch=stand.branch)
 
@@ -1181,6 +1335,8 @@ async def commit_files(
     files: list[dict[str, str]],
     message: str,
     deletions: list[str] | None = None,
+    *,
+    score: Score | None = None,
 ) -> list[str]:
     """Batch-commit multiple files in a single git commit + push.
 
@@ -1277,15 +1433,10 @@ async def commit_files(
     if returncode != 0:
         raise WorkspaceSetupError(f"git commit (batch) failed (exit {returncode}): {stderr}")
 
-    # Single push
-    returncode, stderr = await _run_git(
-        ["git", "push", "--force", "origin", f"HEAD:{stand.branch}"],
-        cwd=stand.path, env=env,
+    # Single push through the shared path (rebase, no force, documenter tree guard)
+    await _push_head_without_clobbering(
+        *_stand_git_runners(stand, env), remote="origin", branch=stand.branch, score=score
     )
-    if returncode != 0:
-        raise WorkspaceSetupError(
-            f"git push (batch) failed (exit {returncode}): {_summarise_git_push_error(stderr)}",
-        )
 
     log.info(
         "commit_files.committed",
