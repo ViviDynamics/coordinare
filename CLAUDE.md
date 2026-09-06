@@ -86,6 +86,8 @@ See AGENTS.md for all development guidelines.
 - N/A. A workflow run is one-shot and dies with the container. No (164-qa-role-workflow)
 - Python 3.14 (project minimum 3.12; prod 3.14.5 via uv) + existing only. pydantic 2.x (blueprint and brief models), the 164 layer (`workflows/`: `WorkflowAdapter`, `Toolkit`, `budget`, `schema_guard`), `persona_service`, `state_store` (`PersistedSession`), `dispatch_performer` and `monitor_performer` nodes, `env_cache.check_and_trigger` as the out-of-lifecycle dispatch precedent, `workspace.push_branch`. No new external dependencies. (165-architect-blueprint-workflow)
 - single-host JSON snapshot via `state_store.py`; schema version 16 -> 17 adds `PersistedSession.blueprint` and `PersistedSession.documenting_side`, both defaulting to `None`. Older snapshots load unchanged. (165-architect-blueprint-workflow)
+- Python 3.14 (project minimum 3.12; prod 3.14.5 via uv) + existing only. pydantic 2.x (assessment and gate-rule models), the 164 layer (`workflows/`, `Toolkit` with no command runner, `budget`, `schema_guard`), `Toolkit` imported without `command_runner`, spec-165 architect intake adapted to render assessment first. No new external dependencies. (166-assessor-workflow)
+- single-host JSON snapshot via `state_store.py`; schema version 17 -> 18 adds `PersistedSession.assessment`, defaulting to `None`. Older snapshots load unchanged. (166-assessor-workflow)
 
 ## Recent Changes
 - 076-qa-cycle: Added Python 3.14 (project minimum: 3.12; production currently on 3.14.5 via uv) + pydantic 2.x, langgraph, structlog, docker SDK (or subprocess to `docker` CLI), fastapi (dashboard SSE), httpx (performer HTTP transport), pyyaml (config)

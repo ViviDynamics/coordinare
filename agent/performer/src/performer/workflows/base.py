@@ -24,6 +24,7 @@ class WorkflowMetrics:
     model_calls: int = 0
     truncation_retries: int = 0
     schema_reprompts: int = 0
+    commands_run: int = 0
     step_durations_ms: dict[str, int] = field(default_factory=dict)
     baseline_skipped: bool = False
     #: Which attempt at this card this run is (1 = first). The spec's success

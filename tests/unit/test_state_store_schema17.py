@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from coordinare.daemon import _persist_active_sessions
 from coordinare.state_store import (
-    CURRENT_SCHEMA_VERSION,
     DocumentingSideRun,
     PersistedSession,
     WorkflowSnapshot,
@@ -19,10 +18,6 @@ _BLUEPRINT = {
     "blueprint_hash": "abc123",
     "created_at": "2026-09-06T12:00:00+00:00",
 }
-
-
-def test_schema_version_is_17() -> None:
-    assert CURRENT_SCHEMA_VERSION == 17
 
 
 def test_new_fields_default_to_none_so_v16_sessions_load_unchanged() -> None:

@@ -74,6 +74,7 @@ class Toolkit:
         """
         if self._command_runner is None:  # pragma: no cover - wiring error
             raise RuntimeError("Toolkit has no command runner configured")
+        self.metrics.commands_run += 1
         exit_code, output = await self._command_runner(cmd, cwd, timeout_s)
         return ExecutedCheck.from_result(
             command=cmd, exit_code=exit_code, output=output, plan_check_id=plan_check_id

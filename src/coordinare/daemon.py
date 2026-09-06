@@ -355,6 +355,16 @@ def _persist_active_sessions(active_sessions: dict[str, Any]) -> dict[str, Persi
                 documenting_side = DocumentingSideRun(**side_raw)
             except (ValidationError, TypeError):
                 documenting_side = None
+        # 166: the assessment is a plain dict (validated on the performer side);
+        # a corrupt entry drops to None instead of failing the snapshot save.
+        assessment_raw = sess.get("assessment")
+        assessment = (
+            dict(assessment_raw)
+            if isinstance(assessment_raw, dict)
+            and assessment_raw.get("goal")
+            and "ready" in assessment_raw
+            else None
+        )
         out[cid] = PersistedSession(
             card_id=cid,
             performer_stage=(sess.get("performer_stage") or None),
@@ -398,6 +408,7 @@ def _persist_active_sessions(active_sessions: dict[str, Any]) -> dict[str, Persi
             feedback_ledger=feedback_ledger,
             feedback_origin_sha=feedback_origin_sha,
             noop_success_retries=noop_success_retries,
+            assessment=assessment,
         )
     return out
 

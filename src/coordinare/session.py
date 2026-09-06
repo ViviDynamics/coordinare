@@ -218,6 +218,13 @@ class CardSession(TypedDict, total=False):
     stage_verdicts: dict[str, dict[str, Any]]
     blueprint: dict[str, Any] | None
     documenting_side: dict[str, Any] | None
+    # 166: the assessor's structured assessment (goal, expected_behavior,
+    # out_of_scope, questions, assumptions, criteria with source, carried
+    # clarifications) plus assessment_hash and created_at. A plain dict at
+    # session/state level (typed Assessment lives in the workflow). MUST
+    # round-trip session ↔ state so the assessment survives a daemon restart
+    # and reaches the architecting dispatch.
+    assessment: dict[str, Any] | None
     # 126: terminal-success-floor state.  feedback_ledger entries are plain
     # dicts at session/state level (typed FeedbackItemRecord lives in
     # state_store); feedback_origin_sha is the head the current feedback round
@@ -310,6 +317,10 @@ _SESSION_FIELDS: tuple[str, ...] = (
     # 125: stage-verdict memory.  Round-trips per-card so recorded passing
     # verdicts survive cycles and daemon restarts.
     "stage_verdicts",
+    # 166: assessor's structured assessment.  Round-trips per-card so the
+    # assessment survives cycles and daemon restarts, and reaches the
+    # architecting dispatch.
+    "assessment",
     # 126: terminal-success-floor state.  Round-trips per-card so the feedback
     # contract, origin head and no-op retry budget survive restarts.
     "feedback_ledger",
@@ -391,6 +402,7 @@ def create_session_from_card(card: dict[str, Any]) -> CardSession:
         # 125: no verdicts recorded yet for a freshly-picked-up card
         stage_verdicts={},
         blueprint=None,
+        assessment=None,
         documenting_side=None,
         # 126: no feedback rounds stamped yet for a freshly-picked-up card
         feedback_ledger=[],

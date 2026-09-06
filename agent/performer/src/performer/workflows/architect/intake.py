@@ -18,12 +18,19 @@ class Intake:
     title: str
     description: str
     criteria: list[str] = field(default_factory=list)
-    assessment: str = ""
+    assessment: str | dict = ""
     clarifications: list[dict] = field(default_factory=list)
     agent_instructions: str = ""
 
     def as_text(self) -> str:
         parts = [f"# Card: {self.title}", self.description.strip() or "(no description)"]
+
+        # 166: render structured assessment first when present (as a dict from workflow).
+        if isinstance(self.assessment, dict):
+            assessment_text = self._render_assessment_dict(self.assessment)
+            if assessment_text:
+                parts.append("## Assessment\n" + assessment_text)
+
         if self.criteria:
             parts.append("## Acceptance criteria\n" + "\n".join(f"- {c}" for c in self.criteria))
         if self.clarifications:
@@ -34,10 +41,54 @@ class Intake:
             )
             if qa:
                 parts.append("## Clarifications answered by humans\n" + qa)
-        if self.assessment:
+        if isinstance(self.assessment, str) and self.assessment:
             parts.append("## Assessment\n" + self.assessment)
         if self.agent_instructions:
             parts.append("## Repository agent instructions\n" + self.agent_instructions)
+        return "\n\n".join(parts)
+
+    def _render_assessment_dict(self, assessment: dict) -> str:
+        """Render a structured assessment from the workflow report.
+
+        Renders: goal, expected behaviour, out of scope, assumptions, clarifications,
+        and draft criteria (labelled as a draft to refine when criteria_source is assessor).
+        """
+        parts = []
+
+        goal = assessment.get("goal", "").strip()
+        if goal:
+            parts.append(f"Goal: {goal}")
+
+        expected = assessment.get("expected_behavior", "").strip()
+        if expected:
+            parts.append(f"Expected behaviour: {expected}")
+
+        out_of_scope = assessment.get("out_of_scope", [])
+        if out_of_scope:
+            parts.append("Out of scope:\n" + "\n".join(f"- {item}" for item in out_of_scope if item))
+
+        assumptions = assessment.get("assumptions", [])
+        if assumptions:
+            parts.append("Assumptions:\n" + "\n".join(f"- {item}" for item in assumptions if item))
+
+        clarifications = assessment.get("clarifications", [])
+        answered = [c for c in clarifications if isinstance(c, dict) and (c.get("answer") or "").strip()]
+        if answered:
+            qa = "\n".join(
+                f"- Q: {c.get('question', '')}\n  A: {c.get('answer', '')}"
+                for c in answered
+            )
+            parts.append("Clarifications:\n" + qa)
+
+        criteria_source = assessment.get("criteria_source", "")
+        criteria = assessment.get("criteria", [])
+        if criteria and criteria_source == "assessor":
+            label = "Draft acceptance criteria (refine these into the verification brief):"
+            parts.append(label + "\n" + "\n".join(
+                f"- {c.get('surface', '')}: {c.get('action', '')} -> {c.get('expected', '')} [{c.get('kind', '')}]"
+                for c in criteria if isinstance(c, dict)
+            ))
+
         return "\n\n".join(parts)
 
 
@@ -50,20 +101,30 @@ def _read_capped(path: Path) -> str:
 
 
 def build_intake(score, workspace: Path) -> Intake:
-    """Pure assembly from *score* and files already in *workspace*."""
-    folder = getattr(score, "doc_folder", None)
-    assessment = ""
-    candidates = []
-    if folder:
-        candidates.append(Path(workspace) / str(folder) / "assessment.md")
-    issue = getattr(score, "issue_number", None)
-    cards_dir = Path(workspace) / "docs" / "cards"
-    if issue and cards_dir.is_dir():
-        candidates.extend(sorted(cards_dir.glob(f"{issue}-*/assessment.md")))
-    for cand in candidates:
-        if cand.is_file():
-            assessment = _read_capped(cand)
-            break
+    """Pure assembly from *score* and files already in *workspace*.
+
+    166: assessment may come from the Score (workflow report, as a dict) or from
+    the workspace (legacy prose path, as a string).
+    """
+    # 166: check for workflow assessment in score first (takes precedence).
+    assessment = getattr(score, "assessment", None)
+    if not assessment:
+        # Fallback to reading from workspace (legacy path).
+        folder = getattr(score, "doc_folder", None)
+        candidates = []
+        if folder:
+            candidates.append(Path(workspace) / str(folder) / "assessment.md")
+        issue = getattr(score, "issue_number", None)
+        cards_dir = Path(workspace) / "docs" / "cards"
+        if issue and cards_dir.is_dir():
+            candidates.extend(sorted(cards_dir.glob(f"{issue}-*/assessment.md")))
+        for cand in candidates:
+            if cand.is_file():
+                assessment = _read_capped(cand)
+                break
+        if not assessment:
+            assessment = ""
+
     agent_text = ""
     for name in _AGENT_FILES:
         p = Path(workspace) / name
