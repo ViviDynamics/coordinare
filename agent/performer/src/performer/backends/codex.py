@@ -105,7 +105,40 @@ def _build_provider_config_toml(env: Mapping[str, str]) -> str | None:
     ]
     if provider_wire_api is not None:
         lines.append(f"wire_api = {_toml_quote(provider_wire_api)}")
+    # A wedged response must fail in minutes, not at the performer's 7200 s
+    # ceiling: a live architect round waited on one in-flight call for over an
+    # hour while the gateway answered fresh probes in a second. codex applies no
+    # idle timeout to a custom provider unless told to. These live inside the
+    # provider table (codex ignores them at top level).
+    lines.append(
+        f"stream_idle_timeout_ms = {_positive_int_env(env, 'CODEX_STREAM_IDLE_TIMEOUT_MS', 300_000)}"
+    )
+    lines.append(
+        f"request_max_retries = {_positive_int_env(env, 'CODEX_REQUEST_MAX_RETRIES', 4, minimum=0)}"
+    )
+    lines.append(
+        f"stream_max_retries = {_positive_int_env(env, 'CODEX_STREAM_MAX_RETRIES', 5, minimum=0)}"
+    )
     return "\n".join(lines) + "\n"
+
+
+def _positive_int_env(env: Mapping[str, str], key: str, default: int, *, minimum: int = 1) -> int:
+    """Read an integer knob from the endpoint env, or fall back to *default*.
+
+    Raises ``ValueError`` on a non-integer or a value below *minimum*: a bad
+    override must fail the job at start, not silently produce a config codex
+    rejects (which it reports as the unrelated "Model provider not found").
+    """
+    raw = env.get(key)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        value = int(raw.strip())
+    except ValueError as exc:
+        raise ValueError(f"{key} must be an integer, got {raw!r}") from exc
+    if value < minimum:
+        raise ValueError(f"{key} must be >= {minimum}, got {value}")
+    return value
 
 
 _JSON_ONLY_ROLES = {
