@@ -192,6 +192,39 @@ def reset_blueprint_for_architect(state: Any, performer_stage: str | None) -> bo
     return had
 
 
+def reset_assessment_for_assessor(state: Any, performer_stage: str | None) -> bool:
+    """Dispatching the assessor means a new assessment is coming: drop the old
+    one so a round that fails to report can never leave a stale assessment for
+    the architect to consume (mirrors reset_blueprint_for_architect). Returns
+    True when something was cleared."""
+    if performer_stage != "assessing":
+        return False
+    had = state.get("assessment") is not None
+    state["assessment"] = None
+    if had:
+        logger.info("assessment.reset_for_assessor", card_id=state.get("card_id"))
+    return had
+
+
+def inject_assessment(card_context: dict[str, Any], state: Any, *, performer_stage: str | None) -> None:
+    """166 (FR-013): hand the architect the assessor's structured assessment.
+
+    The architect receives the assessment (goal, expected behaviour, out-of-scope
+    items, questions, assumptions, criteria with their source, carried
+    clarifications) only when dispatching the architecting stage. Absent an
+    assessment every key stays off the payload, so the pre-166 dispatch is
+    unchanged in shape and size. Registered in specs/contracts/dispatch-payload.md
+    and declared on ``Score``.
+    """
+    if performer_stage != "architecting":
+        return
+    assessment = state.get("assessment") if hasattr(state, "get") else None
+    if not isinstance(assessment, dict) or not assessment.get("goal"):
+        return
+    from copy import deepcopy
+    card_context["assessment"] = deepcopy(assessment)
+
+
 def inject_briefs(card_context: dict[str, Any], state: Any, *, role: str | None) -> None:
     """165 (FR-010, FR-013): hand each reader its slice of the blueprint.
 
@@ -1427,10 +1460,17 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
     # answered on an earlier bounce. Injected as ``prior_clarifications`` only
     # when non-empty; absent on the first dispatch (empty list). Persisted by
     # monitor_performer after each successful assessor run (FR-010).
+    # 166 (FR-007, FR-008): also inject the full clarification history so the
+    # assessor can check for already-answered questions and the gate can dedupe
+    # questions against the card's clarifications. Filter to dict entries only
+    # (skip any legacy/malformed entries).
     if performer_stage == "assessing":
         prior_qa = state.get("assessor_open_questions") or []
         if prior_qa:
             card_context["prior_clarifications"] = [dict(q) for q in prior_qa]
+        card_clarifications = state.get("card_clarifications") or []
+        if card_clarifications:
+            card_context["clarifications"] = [dict(c) for c in card_clarifications if isinstance(c, dict)]
 
     # 083 US1: coordinare-authoritative static-analysis floor. For the security
     # role ONLY, fetch the PR diff and run the scanner exactly once here at
@@ -1446,6 +1486,10 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
 
     # 164: hand the previous QA round's repair brief to the implementer.
     inject_qa_findings(card_context, state, role=role)
+    # 166: a re-dispatched assessor replaces the assessment; until it reports,
+    # there is none. Then inject into architecting only.
+    reset_assessment_for_assessor(state, performer_stage)
+    inject_assessment(card_context, state, performer_stage=performer_stage)
     # 165: a re-dispatched architect replaces the blueprint; until it reports,
     # there is none. Then hand each reader its slice.
     reset_blueprint_for_architect(state, performer_stage)

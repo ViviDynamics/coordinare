@@ -284,6 +284,10 @@ class CoordinareState(TypedDict, total=False):
     # documenter side-run record; per card, restart-safe (schema v17).
     blueprint: dict[str, Any] | None
     documenting_side: dict[str, Any] | None
+    # 166: the assessor's structured assessment (goal, expected_behavior,
+    # out_of_scope, questions, assumptions, criteria with source, carried
+    # clarifications); per card, restart-safe (schema v18).
+    assessment: dict[str, Any] | None
     # 125: one-shot veto — set to the target stage by _apply_pending_override's
     # "restart" action so the verdict cache never suppresses an operator-
     # requested run.  Consumed (cleared) by the cache check.  Transient:
@@ -410,6 +414,8 @@ def initial_state() -> CoordinareState:
         "stage_verdicts": {},
         "blueprint": None,
         "documenting_side": None,
+        # 166: assessor structured assessment
+        "assessment": None,
         "override_forced_dispatch": None,
         # 126: terminal-success-floor state
         "feedback_ledger": [],

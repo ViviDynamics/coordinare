@@ -48,6 +48,9 @@ _STEP_BUDGETS: dict[str, int] = {
     # blueprint is plan-sized, so it takes the plan floor.
     "survey": 3000,
     "blueprint": 8000,
+    # 166 assessor workflow: the assessment is a structured product reading
+    # with bounded questions and criteria; similar to the survey scope.
+    "assess": 3000,
 }
 _DEFAULT_BUDGET = 8000
 

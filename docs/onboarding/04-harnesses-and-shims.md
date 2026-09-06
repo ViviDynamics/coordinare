@@ -208,6 +208,42 @@ performers:
     workflow: architect
 ```
 
+### Role workflows: assessor (spec 166)
+
+The assessor had a prose contract (write `assessment.md` on the branch), and on
+the live fleet it drifted: the assessor commits a second documentation file
+beside the documenter, and the structured assessment never reaches the architect.
+`workflow: assessor` replaces that with four steps that only code advances:
+
+1. **intake**: card, its clarification history, prior assessor answers from
+   earlier bounces. No model call.
+2. **assess**: one schema-guarded call producing a goal, expected behaviour,
+   out-of-scope items, questions, assumptions, and outcome-level criteria when
+   the card has none, every list and string bounded.
+3. **gate**: code-driven rules that keep at most two questions, drop questions
+   already answered (with 60 percent token overlap), turn remaining questions
+   into assumptions after the card's second answered clarification round, and
+   always report ready after that round or if no usable question remains.
+4. **report**: when ready, the assessment plus a round record; when not ready,
+   the gated questions and a blocked status. Nothing is committed.
+
+The assessor commits nothing. Coordinare lifts the assessment into the card's
+session (persisted, schema v18) and injects it only into the architecting
+dispatch, where the spec 165 architect intake renders it as the first section:
+the goal, expected behaviour, out-of-scope items, answered clarifications,
+assumptions, and draft criteria (the architect refines criteria into the
+verification brief). The clarification loop is bounded by code: at most two
+questions per round, never the same question twice, at most two blocking rounds
+per card.
+
+Turning it on:
+
+```yaml
+performers:
+  assessor:
+    workflow: assessor
+```
+
 ## The end-to-end picture
 
 ```mermaid

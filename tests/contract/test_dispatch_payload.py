@@ -68,6 +68,8 @@ def _full_card_context() -> dict[str, Any]:
         "documentation_brief": {"summary": "s", "docs": [{"topic": "t", "location": "wiki/x.md", "say": "y"}]},
         "verification_brief": {"summary": "s", "criteria": [{"surface": "/", "action": "open", "expected": "ok", "kind": "functional"}]},
         "implementer_single_turn": True,
+        # 166: assessor workflow assessment (injected into architecting dispatch only)
+        "assessment": {"ready": True, "goal": "Add time entry categories", "expected_behavior": "Users select category", "out_of_scope": [], "questions": [], "assumptions": [], "criteria": [{"surface": "/", "action": "open", "expected": "ok", "kind": "functional"}], "criteria_source": "card", "clarifications": []},
     }
 
 
@@ -189,6 +191,26 @@ class TestDispatchPayloadContract:
         await service.dispatch_card({**briefs, "title": "test", "id": "X"})
         for key, value in briefs.items():
             assert transport.captured_payload[key] == value, key
+
+    @pytest.mark.asyncio
+    async def test_assessment_is_not_dropped(self) -> None:
+        """166: the assessor's structured assessment reaches the performer
+        intact when injected by dispatch_performer."""
+        transport = _CaptureTransport()
+        service = AgentService(transport)
+        assessment = {
+            "ready": True,
+            "goal": "Add time entry categories",
+            "expected_behavior": "Users select category",
+            "out_of_scope": ["Category management UI"],
+            "questions": [],
+            "assumptions": [],
+            "criteria": [{"surface": "/time_entries/new", "action": "open", "expected": "category select", "kind": "functional"}],
+            "criteria_source": "card",
+            "clarifications": [],
+        }
+        await service.dispatch_card({"title": "test", "id": "X", "assessment": assessment})
+        assert transport.captured_payload["assessment"] == assessment
 
     async def test_briefs_are_declared_on_score_so_extra_ignore_keeps_them(self) -> None:
         from performer.models import Score
@@ -331,6 +353,9 @@ class TestScoreModelContract:
         assert score.model == "claude-sonnet-4-20250514"
         assert score.github_api_url == "https://github.example.com/api/v3"
         assert score.architecture_plan_path == "docs/coordinare-architecture.md"
+        assert score.assessment is not None
+        assert score.assessment["ready"] is True
+        assert score.assessment["goal"] == "Add time entry categories"
 
     def test_score_defaults_for_minimal_payload(self) -> None:
         """Score with only required fields should have safe defaults."""

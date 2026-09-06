@@ -2081,7 +2081,43 @@ async def handle_status(
         # (a terminal success status that advances the lifecycle).  When
         # insufficient, reports blocked with the generated questions.
         if perf.role == "assessing":
+            # 166: the assessor WORKFLOW reports an assessment and commits nothing.
+            # Its output is the JSON report (assessment, gate_record, write_free_check,
+            # workflow_metrics); coordinare lifts the assessment and records it on the
+            # card session. The prose path below is untouched (164 FR-005).
             assess_raw = backend_status.output or ""
+            _ar = _extract_json(assess_raw) if isinstance(assess_raw, str) else assess_raw
+            if isinstance(_ar, dict) and isinstance(_ar.get("assessment"), dict):
+                _assessment = _ar["assessment"]
+                _ready = bool(_assessment.get("ready"))
+                _questions = [str(q) for q in (_assessment.get("questions") or [])]
+                log.info(
+                    "assessor.assessment_reported",
+                    ready=_ready,
+                    questions=len(_questions),
+                    criteria_source=_assessment.get("criteria_source"),
+                    session_id=perf.session_id,
+                )
+                if _ready:
+                    perf.state = "assessment_complete"
+                    return PerformerResponse(
+                        status="assessment_complete",
+                        session_id=perf.session_id,
+                        report=_ar,
+                        progress="assessment (ready)",
+                    )
+                # Not ready: the same blocked shape the prose assessor returns
+                # (FR-011, FR-015), so coordinare's open_questions path and the
+                # issue comment are untouched. The gate guarantees a question.
+                perf.assessment_questions = _questions
+                perf.state = "blocked"
+                perf.open_questions = perf.assessment_questions
+                return PerformerResponse(
+                    status="blocked",
+                    session_id=perf.session_id,
+                    questions=perf.assessment_questions,
+                    report=_ar,
+                )
             if not assess_raw.strip():
                 return await _handle_backend_parse_failure(
                     perf, assess_raw, "assessment", settings, "was empty",

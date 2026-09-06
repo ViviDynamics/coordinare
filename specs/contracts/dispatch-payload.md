@@ -53,13 +53,14 @@ authoritative schema — any field not on `Score` is silently dropped by pydanti
 | `documentation_brief` | dict | no | dispatch_performer (projection of the blueprint, spec 165) | documenter side-run prompt: summary, docs, modules |
 | `verification_brief` | dict | no | dispatch_performer (projection of the blueprint, spec 165) | QA workflow plan step: criteria, summary |
 | `implementer_single_turn` | bool | no | dispatch_performer (from `blueprint.size == "small"`, spec 165) | implementer persona: no milestone loop, no PARTIAL_PROGRESS |
+| `assessment` | dict or absent | no | dispatch_performer (from `PersistedSession.assessment`, spec 166) | architecting workflow: structured product reading (goal, expected behaviour, out-of-scope items, questions, assumptions, criteria with their source, carried clarifications). Injected ONLY into architecting stage dispatch; absent from all other stages. When present, architect intake renders it as the first section. |
 | `relay_feedback` | list[dict] | no | dispatch_performer | backend prompt — human review comments to address. 126: entries MAY carry `id` (str, `fb-N`), `raiser` (str stage name or `ci`) and `re_raised` (bool) — the feedback-ledger contract keys the implementer echoes back via `feedback_dispositions` |
 | `disputed_feedback` | list[dict] | no | dispatch_performer | 126: `{id, body, reason}` items the implementer disputed, injected ONLY into the raising stage's dispatch so its verdict adjudicates them |
 | `pr_url` | str | no | dispatch_performer (from card) | reviewer/security post reviews to PR |
 | `pr_node_id` | str | no | dispatch_performer (from card) | terminal status response for coordinare |
 | `pr_diff` | str | no | dispatch_performer (fetched via get_pr_diff) | backend prompt — raw unified diff for review roles (reviewer/closer/qa/tech_writer) so the model has the changes inline; omitted on fetch failure |
 | `architecture_plan_path` | str | no | dispatch_performer (from card) | backend prompt — reference architect's plan |
-| `clarifications` | list[dict] | no | assess_card (embedded in card) | backend prompt — Q&A history |
+| `clarifications` | list[dict] | no | assess_card (embedded in card); dispatch_performer for assessing stage (spec 166, from `PersistedSession.card_clarifications`) | backend prompt — Q&A history; injected into assessing dispatch only from prior clarification rounds |
 | `prior_clarifications` | list[dict] | no | dispatch_performer (from session.open_questions, feature 123) | assessor backend prompt — Q&A answers from prior assessor runs; injected on re-dispatch only, absent on first dispatch; each entry is `{"question": str, "answer": str}` |
 
 ### Environment Cache (set by dispatch_performer, feature 060)

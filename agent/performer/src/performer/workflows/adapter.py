@@ -25,7 +25,7 @@ import structlog
 
 from performer.backends.base import BackendStatus
 from performer.workflows import get_workflow
-from performer.workflows.base import WorkflowMetrics, WorkflowResult
+from performer.workflows.base import SchemaViolation, WorkflowMetrics, WorkflowResult
 from performer.workflows.budget import ModelReply
 from performer.workflows.toolkit import Toolkit
 
@@ -40,6 +40,7 @@ log = structlog.get_logger(__name__)
 # gateway still fails fast.
 _MODEL_READ_TIMEOUT_S = 900.0
 _MODEL_CONNECT_TIMEOUT_S = 30.0
+_FORMAT_ERROR_PREFIX = "BACKEND_FORMAT_ERROR:"
 
 
 def _effective_max_tokens(requested: int, role_cap: object) -> int:
@@ -145,7 +146,9 @@ def _default_screenshot_path() -> str:
     return path
 
 
-def build_production_toolkit(score: "Score", *, metrics, event_sink) -> Toolkit:
+def build_production_toolkit(
+    score: "Score", *, metrics, event_sink, workflow_name: str = ""
+) -> Toolkit:
     """Wire a Toolkit with every primitive a workflow needs at runtime.
 
     Adversarial review, critical: the previous version constructed
@@ -153,6 +156,8 @@ def build_production_toolkit(score: "Score", *, metrics, event_sink) -> Toolkit:
     screenshot_capture or dom_reader. Every one of those raises on first use, so
     the QA workflow could not run in a real performer at all. The scenario eval
     never caught it because it supplies its own toolkit.
+
+    The assessor workflow has no command_runner (write-free requirement).
     """
     from performer.qa_capture import capture_app_screenshot
     from performer.workflows.qa.dom import read_dom
@@ -165,6 +170,17 @@ def build_production_toolkit(score: "Score", *, metrics, event_sink) -> Toolkit:
         return capture_app_screenshot(
             env=dict(os.environ),
             out_path=out_path or _default_screenshot_path(),
+        )
+
+    # Assessor workflow is write-free: no command_runner, screenshot_capture, or dom_reader
+    if workflow_name == "assessor":
+        return Toolkit(
+            metrics=metrics,
+            model_call=_model_caller(score),
+            command_runner=None,
+            screenshot_capture=None,
+            dom_reader=None,
+            event_sink=event_sink,
         )
 
     return Toolkit(
@@ -207,7 +223,8 @@ class WorkflowAdapter:
             self._toolkit_factory(self._metrics, self._on_event)
             if self._toolkit_factory is not None
             else build_production_toolkit(
-                score, metrics=self._metrics, event_sink=self._on_event
+                score, metrics=self._metrics, event_sink=self._on_event,
+                workflow_name=self.workflow_name
             )
         )
         log.info(
@@ -258,9 +275,13 @@ class WorkflowAdapter:
         if not self._task.done():
             return BackendStatus(state="working", progress=self._current_step or "running")
         if self._error is not None:
+            error_msg = f"{type(self._error).__name__}: {self._error}"
+            # Schema violations route to bounded retry gate (spec 098/119)
+            if isinstance(self._error, SchemaViolation):
+                error_msg = f"{_FORMAT_ERROR_PREFIX} {error_msg}"
             return BackendStatus(
                 state="error",
-                error_reason=f"{type(self._error).__name__}: {self._error}",
+                error_reason=error_msg,
             )
         if self._result is None:  # pragma: no cover - defensive
             return BackendStatus(state="error", error_reason="workflow produced no result")

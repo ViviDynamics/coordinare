@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-CURRENT_SCHEMA_VERSION: int = 17  # 165: + PersistedSession.blueprint, .documenting_side
+CURRENT_SCHEMA_VERSION: int = 18  # 166: + PersistedSession.assessment; 165: + blueprint, .documenting_side
 
 # Lowest schema_version we still know how to read.  v1 snapshots are upgraded
 # in-memory at load time (065 Fix 7b: active_sessions added in v2; v1 snapshots
@@ -97,6 +97,14 @@ CURRENT_SCHEMA_VERSION: int = 17  # 165: + PersistedSession.blueprint, .document
 # and documenting_side (the out-of-lifecycle documenter run: status,
 # blueprint_hash, session_id, head_sha, result_reason). v1-v16 snapshots load
 # with None for both. Plan text and SHAs only; never secret values.
+# v18 (166) adds assessment on PersistedSession: the assessor workflow's
+# structured product reading (goal, expected_behavior, out_of_scope, questions,
+# assumptions, criteria with their source, and carried clarifications) plus
+# assessment_hash and created_at timestamp. v1-v17 snapshots load with None;
+# a malformed record (missing goal or ready field) drops to None on load, never
+# failing the snapshot. Only the goal and ready fields are required for
+# validation; other missing fields trigger the drop. Assessment text and
+# hash only; never secret values.
 MIN_SUPPORTED_SCHEMA_VERSION: int = 1
 
 WorkflowPhase = Literal[
@@ -399,6 +407,13 @@ class PersistedSession(BaseModel):
     # and never stored. Defaults keep v1-v16 snapshots loading unchanged.
     blueprint: dict[str, Any] | None = None
     documenting_side: DocumentingSideRun | None = None
+    # 166 (schema v18+): the assessor's structured assessment for one card.
+    # Contains goal, expected_behavior, out_of_scope, questions, assumptions,
+    # criteria with their source, carried clarifications, and assessment_hash.
+    # Defaults keep v1-v17 snapshots loading unchanged. A malformed record
+    # (missing goal or ready field, or not a dict) loads as None, never as
+    # a snapshot load failure.
+    assessment: dict[str, Any] | None = None
 
     @field_validator("documenting_side", mode="before")
     @classmethod
@@ -409,6 +424,20 @@ class PersistedSession(BaseModel):
         if v is None or isinstance(v, DocumentingSideRun):
             return v
         if not isinstance(v, dict) or not v.get("blueprint_hash"):
+            return None
+        return v
+
+    @field_validator("assessment", mode="before")
+    @classmethod
+    def _drop_corrupt_assessment(cls, v: object) -> object:
+        """166: a malformed assessment record loads as None (no assessment
+        recorded == the assessor may be dispatched again), never as a snapshot
+        load failure. Required fields: goal (str) and ready (bool)."""
+        if v is None:
+            return v
+        if not isinstance(v, dict):
+            return None
+        if not v.get("goal") or "ready" not in v:
             return None
         return v
 

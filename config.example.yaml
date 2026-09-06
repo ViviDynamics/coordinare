@@ -340,6 +340,16 @@ performers:
     effort: low
     temperature: 0.0
     max_tokens: 2048
+    # 166: run the assessor as a bounded role WORKFLOW (intake -> assess ->
+    # gate -> report) instead of the single-prompt persona. The assessment is
+    # a structured product reading (goal, expected behaviour, out-of-scope
+    # items, questions, assumptions, criteria) that lives in coordinare state
+    # and travels into the architect's intake. The clarification loop is bounded
+    # by code: at most two questions, never re-asking an answered question, at
+    # most two blocking rounds per card. Nothing is committed by the assessor
+    # and no assessment.md file is written. Default off: remove the line to
+    # restore the prose path exactly. See specs/166-assessor-workflow/quickstart.md.
+    # workflow: assessor
 
   architect:
     effort: high

@@ -1,0 +1,151 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Assessment",
+  "description": "Structured product reading of one card: readiness, goal, expected behaviour, out-of-scope items, questions, assumptions, dependencies, criteria with their source, and carried clarifications.",
+  "type": "object",
+  "properties": {
+    "ready": {
+      "type": "boolean",
+      "description": "True when the assessor is confident in the outcome; false when human input is needed."
+    },
+    "goal": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500,
+      "description": "One sentence: what the card is trying to achieve."
+    },
+    "expected_behavior": {
+      "type": "string",
+      "minLength": 0,
+      "maxLength": 1000,
+      "description": "What the user or system does / what changes; empty means only goal, no behaviour change."
+    },
+    "out_of_scope": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 5,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 300
+      },
+      "description": "Things explicitly not in this card (e.g. refactoring, optimization, future feature)."
+    },
+    "questions": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 2,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 300
+      },
+      "description": "Clarifications needed from the human; only when ready is false."
+    },
+    "assumptions": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 10,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 300
+      },
+      "description": "Decisions the assessor made for the human to correct on the issue (no model rewrite)."
+    },
+    "criteria": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "properties": {
+          "surface": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120,
+            "description": "A route, screen, command or API."
+          },
+          "action": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "What the user or system does."
+          },
+          "expected": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300,
+            "description": "What should happen."
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "functional",
+              "visual",
+              "command"
+            ],
+            "description": "Type of verification."
+          }
+        },
+        "required": [
+          "surface",
+          "action",
+          "expected",
+          "kind"
+        ],
+        "additionalProperties": false
+      },
+      "description": "Acceptance criteria in the blueprint criterion shape."
+    },
+    "criteria_source": {
+      "type": "string",
+      "enum": [
+        "card",
+        "assessor"
+      ],
+      "description": "\"card\" when the card has criteria; \"assessor\" when drafted by the model."
+    },
+    "clarifications": {
+      "type": "array",
+      "minItems": 0,
+      "items": {
+        "type": "object",
+        "properties": {
+          "question": {
+            "type": "string",
+            "description": "The human's question posted to the issue."
+          },
+          "answer": {
+            "type": "string",
+            "description": "The human's answer; blank is treated as \"not answered\"."
+          }
+        },
+        "required": [
+          "question",
+          "answer"
+        ],
+        "additionalProperties": false
+      },
+      "description": "Carried from the input for the architect to see context."
+    },
+    "assessment_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 fingerprint of goal, expected_behavior, out_of_scope, criteria for de-duplication."
+    }
+  },
+  "required": [
+    "ready",
+    "goal",
+    "expected_behavior",
+    "out_of_scope",
+    "questions",
+    "assumptions",
+    "criteria",
+    "criteria_source",
+    "clarifications",
+    "assessment_hash"
+  ],
+  "additionalProperties": false
+}

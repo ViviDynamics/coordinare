@@ -270,3 +270,54 @@ async def test_the_architect_workflow_runs_behind_the_same_adapter_seam(tmp_path
     report = json.loads(status.output)
     assert report["blueprint"]["size"] == "small" and report["write_free_check"]["passed"] is True
     assert ran == ["ls app", "git status --porcelain"]
+
+
+@pytest.mark.asyncio
+async def test_the_assessor_workflow_runs_behind_the_same_adapter_seam(tmp_path):
+    """166: the third consumer of the layer is dispatched exactly like the
+    first two: BackendAdapter-shaped, done with a JSON report main.py can parse,
+    and its report carries the assessment coordinare lifts."""
+    import json
+    from types import SimpleNamespace
+
+    from performer.workflows.adapter import WorkflowAdapter
+    from performer.workflows.budget import ModelReply
+
+    from tests.unit.workflows.assessor.test_workflow_end_to_end import _CLEAR_ASSESSMENT
+
+    async def model_call(persona, content, max_tokens):
+        return ModelReply(content=json.dumps(_CLEAR_ASSESSMENT), finish_reason="stop")
+
+    # Stub toolkit for assessor (no command runner)
+    from performer.workflows.base import WorkflowMetrics
+    from performer.workflows.toolkit import Toolkit
+
+    events = []
+    stub_tk = Toolkit(
+        metrics=WorkflowMetrics(),
+        model_call=model_call,
+        command_runner=None,
+        screenshot_capture=None,
+        dom_reader=None,
+        event_sink=events.append,
+        call_limit=12,
+    )
+
+    def score_for_assessor():
+        return SimpleNamespace(
+            title="Test card",
+            description="A clear card",
+            acceptance_criteria=["Criterion 1"],
+            clarifications=[],
+            issue_number=42,
+            workflow_env={},
+        )
+
+    adapter = WorkflowAdapter("assessor", toolkit_factory=lambda metrics, sink: stub_tk)
+    await adapter.start(SimpleNamespace(path=tmp_path), score_for_assessor())
+    await adapter._task
+    status = adapter.get_status()
+    assert status.state == "done"
+    report = json.loads(status.output)
+    assert "assessment" in report and report["assessment"]["ready"] is True
+    assert report["write_free_check"]["passed"] is True

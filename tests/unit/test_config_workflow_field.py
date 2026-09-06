@@ -81,3 +81,14 @@ def test_workflow_env_coercion_matches_on_the_performer_side():
 def test_architect_is_accepted_on_a_role():
     cfg = PerformerRoleConfig(backend="codex", workflow="architect")
     assert cfg.workflow == "architect"
+
+
+def test_assessor_is_case_sensitive():
+    """'assessor' is valid; 'Assessor' (capitalised) is not."""
+    cfg = PerformerRoleConfig(backend="codex", workflow="assessor")
+    assert cfg.workflow == "assessor"
+
+    with pytest.raises(ValidationError) as exc:
+        PerformerRoleConfig(backend="codex", workflow="Assessor")
+    msg = str(exc.value)
+    assert "Assessor" in msg, "error should mention the invalid name"

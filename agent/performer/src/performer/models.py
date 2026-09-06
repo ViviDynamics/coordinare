@@ -153,6 +153,12 @@ class Score(BaseModel):
     implementation_brief: dict = Field(default_factory=dict)
     documentation_brief: dict = Field(default_factory=dict)
     verification_brief: dict = Field(default_factory=dict)
+    # 166: the assessor's structured assessment for one card (goal,
+    # expected_behavior, out_of_scope, questions, assumptions, criteria with
+    # their source, carried clarifications). Injected into architecting dispatch
+    # only (FR-013); absent from all other stages. Must be declared here or
+    # extra="ignore" silently drops it.
+    assessment: dict[str, Any] | None = None
     # 165: a small blueprint dispatches the implementer for one turn with no
     # milestone loop.
     implementer_single_turn: bool = False

@@ -3508,6 +3508,34 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
                     blueprint_hash=_bp.get("blueprint_hash"),
                 )
 
+        # 166: lift the assessor workflow's assessment into the session. It is
+        # the structured product reading of the card: goal, expected behaviour,
+        # out-of-scope items, questions, assumptions, criteria with their source,
+        # and carried clarifications. A new assessment replaces the old one.
+        # The prose assessor reports no assessment and leaves state untouched.
+        if stage == "assessing" and marker == "assessment_complete":
+            _assess_report = status.get("report") if isinstance(status.get("report"), dict) else {}
+            _assess = _assess_report.get("assessment")
+            if isinstance(_assess, dict) and _assess.get("goal"):
+                state["assessment"] = dict(_assess)
+                if "recorded_at" not in state["assessment"]:
+                    state["assessment"]["recorded_at"] = datetime.now(UTC).isoformat()
+                logger.info(
+                    "assessment.lifted",
+                    card_id=card_id,
+                    ready=_assess.get("ready"),
+                    questions=len(_assess.get("questions") or []),
+                    criteria_source=_assess.get("criteria_source"),
+                    assessment_hash=_assess.get("assessment_hash"),
+                )
+            else:
+                logger.info(
+                    "assessment.not_lifted",
+                    card_id=card_id,
+                    has_report=isinstance(_assess_report, dict),
+                    has_assessment=isinstance(_assess, dict),
+                )
+
         # 164: stash the QA repair brief for the next implementer dispatch,
         # mirroring how scanner_findings already travels. Reports what failed
         # and how to reproduce it; never prescribes a fix (FR-014). Lifted on
