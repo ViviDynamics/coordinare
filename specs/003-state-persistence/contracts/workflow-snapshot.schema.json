@@ -4,13 +4,35 @@
   "title": "WorkflowSnapshot",
   "description": "On-disk representation of the coordinare's current workflow position. Written atomically after every phase transition.",
   "type": "object",
-  "required": ["schema_version", "snapshot_at", "phase"],
+  "required": [
+    "schema_version",
+    "snapshot_at",
+    "phase"
+  ],
   "additionalProperties": false,
   "properties": {
     "schema_version": {
       "type": "integer",
-      "enum": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
-      "description": "Schema version. v1 is the original snapshot format; v2 (065 Fix 7b) adds per-card active_sessions; v3 (073 Fix 3) adds env_cache so env_bootstrap doesn't re-run after restart with unchanged symphony env-spec files; v4 (074) adds per-session persona_scope; v5 (075) adds per-session bounce_counter and latest_ci_gate_decision for the implementer CI gate; v6 (075 fix) adds ci_gate_rollup_signature for notify.py dedup across daemon restarts; v7 (076) adds dispatcher-dedup fields (idle_timeout_retries, pr_artefacts_recorded_at, multi_pr_divergence, wedge_count_window, reconciliation_decisions_last_startup); v8 (089) adds per-session local_fix_counter for the implementer local-test-gate self-fix budget; v9 (090) adds per-session inheritance_repair_counter and repair_audit for the baseline-repair autonomy layer; v10 (095) adds per-session env_blocked (ENV_BLOCKED infra-failure hold + notification-dedup state); v11 (096) adds top-level last_known_main_sha (the auto-rebase baseline, persisted so cross-restart main drift is detected) and per-session last_rebase_attempt (the auto-rebase anti-thrash marker); v12 (123) adds per-session content_feedback_cycles / transient_error_cycles (the split bounce budget) and assessor_open_questions (assessor Q&A carried across bounce cycles); v13 (124) adds per-symphony OpenWiki wiki-init fields on env_cache (wiki_initialized marker, wiki_attempts / wiki_exhausted circuit breaker, last_wiki_init_at/succeeded/error) — wiki_in_flight is transient and not persisted; v14 (125) adds per-session stage_verdicts (stage-verdict memory: one {head_sha, verdict, recorded_at} slot per verdict stage so dispatch can skip re-running a stage whose passing verdict covers the current PR head) and per-session processed_issue_comment_ids / last_issue_comment_id (issue-comment classification dedup surviving restarts); v15 (126) adds per-session feedback_ledger / feedback_origin_sha / noop_success_retries (terminal-success floors: feedback-item contract, origin-head reference, bounded no-op retry). Older snapshots remain readable and load with empty defaults for newer fields."
+      "enum": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17
+      ],
+      "description": "Schema version. v1 is the original snapshot format; v2 (065 Fix 7b) adds per-card active_sessions; v3 (073 Fix 3) adds env_cache so env_bootstrap doesn't re-run after restart with unchanged symphony env-spec files; v4 (074) adds per-session persona_scope; v5 (075) adds per-session bounce_counter and latest_ci_gate_decision for the implementer CI gate; v6 (075 fix) adds ci_gate_rollup_signature for notify.py dedup across daemon restarts; v7 (076) adds dispatcher-dedup fields (idle_timeout_retries, pr_artefacts_recorded_at, multi_pr_divergence, wedge_count_window, reconciliation_decisions_last_startup); v8 (089) adds per-session local_fix_counter for the implementer local-test-gate self-fix budget; v9 (090) adds per-session inheritance_repair_counter and repair_audit for the baseline-repair autonomy layer; v10 (095) adds per-session env_blocked (ENV_BLOCKED infra-failure hold + notification-dedup state); v11 (096) adds top-level last_known_main_sha (the auto-rebase baseline, persisted so cross-restart main drift is detected) and per-session last_rebase_attempt (the auto-rebase anti-thrash marker); v12 (123) adds per-session content_feedback_cycles / transient_error_cycles (the split bounce budget) and assessor_open_questions (assessor Q&A carried across bounce cycles); v13 (124) adds per-symphony OpenWiki wiki-init fields on env_cache (wiki_initialized marker, wiki_attempts / wiki_exhausted circuit breaker, last_wiki_init_at/succeeded/error) \u2014 wiki_in_flight is transient and not persisted; v14 (125) adds per-session stage_verdicts (stage-verdict memory: one {head_sha, verdict, recorded_at} slot per verdict stage so dispatch can skip re-running a stage whose passing verdict covers the current PR head) and per-session processed_issue_comment_ids / last_issue_comment_id (issue-comment classification dedup surviving restarts); v15 (126) adds per-session feedback_ledger / feedback_origin_sha / noop_success_retries (terminal-success floors: feedback-item contract, origin-head reference, bounded no-op retry). Older snapshots remain readable and load with empty defaults for newer fields. v17 (165) adds PersistedSession.blueprint and .documenting_side."
     },
     "snapshot_at": {
       "type": "string",
@@ -34,33 +56,51 @@
       "description": "Current workflow phase at the time the snapshot was written."
     },
     "active_card_id": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "description": "Board item node ID of the active card. Null when phase is 'idle'.",
       "default": null
     },
     "active_card_title": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "description": "Title of the active card. Null when phase is 'idle'.",
       "default": null
     },
     "active_card_column": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "description": "Board column name (e.g. 'In Progress') at the time the snapshot was written. Null when phase is 'idle'.",
       "default": null
     },
     "pr_url": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "format": "uri",
       "description": "GitHub PR URL. Non-null in monitoring_pr, merging, relay_feedback phases.",
       "default": null
     },
     "pr_node_id": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "description": "GitHub PR node ID. Non-null in monitoring_pr, merging, relay_feedback phases.",
       "default": null
     },
     "agent_session_id": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "description": "Agent session identifier. Non-null in monitoring_agent and relay_feedback phases.",
       "default": null
     },
@@ -74,41 +114,60 @@
       "default": []
     },
     "active_card_issue_id": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "description": "GitHub issue node ID linked to the active card. Used to post comments during blocked phase.",
       "default": null
     },
     "active_card_issue_number": {
-      "type": ["integer", "null"],
+      "type": [
+        "integer",
+        "null"
+      ],
       "minimum": 1,
       "description": "GitHub issue number linked to the active card. Persisted so restart-from-snapshot can dispatch with issue_number set, ensuring PRs open with 'Closes #N' linkage. (045)",
       "default": null
     },
     "active_card_issue_url": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "format": "uri",
       "description": "GitHub issue URL linked to the active card. Persisted alongside issue_number for restore-from-snapshot fidelity. (045)",
       "default": null
     },
     "active_card_description": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "description": "Active card description body. Persisted so restart-from-snapshot can dispatch with the original card context. (045)",
       "default": null
     },
     "active_card_acceptance_criteria": {
       "type": "array",
-      "items": { "type": "string" },
+      "items": {
+        "type": "string"
+      },
       "description": "Active card acceptance criteria parsed from the issue body. Persisted so restart-from-snapshot doesn't dispatch with an empty list. (045)",
       "default": []
     },
     "performer_stage": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "description": "Current lifecycle stage (for example: assessing, architecting, implementing). Persisted so daemon restarts resume at the active performer role instead of restarting lifecycle from stage 1.",
       "default": null
     },
     "lifecycle_sequence": {
       "type": "array",
-      "items": { "type": "string" },
+      "items": {
+        "type": "string"
+      },
       "description": "Configured ordered performer lifecycle for the active card. Persisted with performer_stage so restart resumes the same multi-role workflow path.",
       "default": []
     },
@@ -119,7 +178,9 @@
         "properties": {
           "questions": {
             "type": "array",
-            "items": {"type": "string"}
+            "items": {
+              "type": "string"
+            }
           },
           "answer": {
             "type": "string"
@@ -130,26 +191,36 @@
       "default": []
     },
     "last_blocked_notified_at": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "format": "date-time",
       "description": "UTC timestamp of the last blocked notification posted. Persisted so restarts do not re-post duplicate questions.",
       "default": null
     },
     "lifecycle_completed_at": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "format": "date-time",
       "description": "UTC timestamp when the performer lifecycle last completed all stages. Used by monitor_pr to filter out old reviews that were already addressed.",
       "default": null
     },
     "processed_review_ids": {
       "type": "array",
-      "items": { "type": "string" },
+      "items": {
+        "type": "string"
+      },
       "description": "Review node IDs recorded by classify_human_feedback after staging relay feedback. Used by monitor_pr to filter already-processed reviews and prevent re-dispatch loops.",
       "default": []
     },
     "surfaced_stale_reviews": {
       "type": "object",
-      "additionalProperties": { "type": "string" },
+      "additionalProperties": {
+        "type": "string"
+      },
       "description": "128: stale-review surfacing dedup marker {review_id: head_oid} (schema v16+); records the head a stale change-request was re-requested/notified against so it fires once per situation.",
       "default": {}
     },
@@ -159,50 +230,328 @@
       "additionalProperties": {
         "type": "object",
         "properties": {
-          "card_id": { "type": "string" },
-          "performer_stage": { "type": ["string", "null"] },
-          "phase": { "type": ["string", "null"] },
-          "lifecycle_completed_at": { "type": ["string", "null"], "format": "date-time" },
-          "processed_review_ids": { "type": "array", "items": { "type": "string" } },
-          "surfaced_stale_reviews": { "type": "object", "additionalProperties": { "type": "string" }, "description": "128: per-card stale-review surfacing dedup marker {review_id: head_oid} (schema v16+)." },
-          "open_questions": { "type": "array", "items": { "type": "string" } },
-          "card_clarifications": { "type": "array", "items": { "type": "object" } },
-          "relay_feedback": { "type": "array", "items": { "type": "object" } },
-          "system_error_count": { "type": "integer" },
-          "system_error_reason": { "type": ["string", "null"] },
-          "system_error_notified": { "type": "boolean" },
-          "requirements_changed": { "type": "boolean" },
-          "bounce_counter": { "type": "object", "additionalProperties": { "type": "integer" }, "description": "075: per-HEAD CI-gate bounce counter (schema v5+)." },
-          "ci_gate_rollup_signature": { "type": ["string", "null"], "description": "075 fix: dedup signature for the last CI-gate PR rollup comment (schema v6+)." },
-          "local_fix_counter": { "type": "object", "additionalProperties": { "type": "integer" }, "description": "089: per-HEAD implementer local-test self-fix counter (schema v8+)." },
-          "inheritance_repair_counter": { "type": "object", "additionalProperties": { "type": "integer" }, "description": "090-L3: per-HEAD INHERITED-failure repair budget counter (schema v9+)." },
+          "card_id": {
+            "type": "string"
+          },
+          "performer_stage": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "phase": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lifecycle_completed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "processed_review_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "surfaced_stale_reviews": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "128: per-card stale-review surfacing dedup marker {review_id: head_oid} (schema v16+)."
+          },
+          "open_questions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "card_clarifications": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "relay_feedback": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "system_error_count": {
+            "type": "integer"
+          },
+          "system_error_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "system_error_notified": {
+            "type": "boolean"
+          },
+          "requirements_changed": {
+            "type": "boolean"
+          },
+          "bounce_counter": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "description": "075: per-HEAD CI-gate bounce counter (schema v5+)."
+          },
+          "ci_gate_rollup_signature": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "075 fix: dedup signature for the last CI-gate PR rollup comment (schema v6+)."
+          },
+          "local_fix_counter": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "description": "089: per-HEAD implementer local-test self-fix counter (schema v8+)."
+          },
+          "inheritance_repair_counter": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "description": "090-L3: per-HEAD INHERITED-failure repair budget counter (schema v9+)."
+          },
           "repair_audit": {
             "type": "array",
             "items": {
               "type": "object",
               "properties": {
-                "head_sha": { "type": "string" },
-                "attempt": { "type": "integer" },
-                "kind": { "type": "string", "enum": ["dispatch", "static_guard", "reviewer", "acceptance", "rejection", "escalation"] },
-                "decided_at": { "type": "string", "format": "date-time" },
-                "is_safe": { "type": ["boolean", "null"] },
-                "flagged_patterns": { "type": "array", "items": { "type": "string" } },
-                "detail": { "type": ["string", "null"] }
+                "head_sha": {
+                  "type": "string"
+                },
+                "attempt": {
+                  "type": "integer"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "dispatch",
+                    "static_guard",
+                    "reviewer",
+                    "acceptance",
+                    "rejection",
+                    "escalation"
+                  ]
+                },
+                "decided_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "is_safe": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "flagged_patterns": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "detail": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
               },
-              "required": ["head_sha", "attempt", "kind", "decided_at"],
+              "required": [
+                "head_sha",
+                "attempt",
+                "kind",
+                "decided_at"
+              ],
               "additionalProperties": false
             },
             "description": "090-L3: append-only record of repair-gate decisions per head (schema v9+)."
           },
-          "content_feedback_cycles": { "type": "integer", "description": "123: content-driven feedback budget counter (reviewer/QA changes_requested), checked against config.max_feedback_cycles (schema v12+)." },
-          "transient_error_cycles": { "type": "integer", "description": "123: per-card transient/infra failure budget counter (env_blocked/system_error/unknown), separate from content_feedback_cycles (schema v12+)." },
-          "assessor_open_questions": { "type": "array", "items": { "type": "object" }, "description": "123: answered assessor Q&A ({question,answer}) carried across bounce cycles, injected as prior_clarifications on assessor re-dispatch (schema v12+)." },
-          "stage_verdicts": { "type": "object", "additionalProperties": { "type": "object", "properties": { "head_sha": { "type": "string", "minLength": 1 }, "verdict": { "type": "string", "minLength": 1 }, "recorded_at": { "type": "string" } }, "required": ["head_sha", "verdict", "recorded_at"], "additionalProperties": false }, "description": "125: stage-verdict memory — one slot per verdict stage (reviewing/security/qa/documenting/closing_review) recording the PR head SHA its passing verdict was issued against (schema v13+)." },
-          "processed_issue_comment_ids": { "type": "array", "items": { "type": "integer" }, "description": "125: per-card already-classified issue-comment IDs (bounded to the numerically largest 2000 at save), so restarts do not re-classify processed comments (schema v13+)." },
-          "last_issue_comment_id": { "type": ["integer", "null"], "description": "125: per-card since_id fetch watermark for the issue-comment router (schema v13+)." },
-          "feedback_ledger": { "type": "array", "items": { "type": "object", "properties": { "id": { "type": "string", "minLength": 1 }, "raiser": { "type": "string", "minLength": 1 }, "origin_sha": { "type": "string" }, "body_digest": { "type": "string" }, "disposition": { "type": "string", "enum": ["open", "addressed", "disputed", "dispute_accepted", "dispute_rejected", "superseded"] }, "dispute_reason": { "type": "string" }, "re_raised": { "type": "boolean" }, "round_status": { "type": "string", "enum": ["current", "previous"] } }, "required": ["id", "raiser"], "additionalProperties": false }, "description": "126: terminal-success-floor feedback ledger — per-item contract records, current + previous round only (schema v15+)." },
-          "feedback_origin_sha": { "type": ["string", "null"], "description": "126: head SHA the current feedback round was raised against; the implementer progress floor compares completions against it (schema v15+)." },
-          "noop_success_retries": { "type": "integer", "minimum": 0, "description": "126: bounded strengthened-re-dispatch counter for no-op implementer successes (schema v15+)." }
+          "content_feedback_cycles": {
+            "type": "integer",
+            "description": "123: content-driven feedback budget counter (reviewer/QA changes_requested), checked against config.max_feedback_cycles (schema v12+)."
+          },
+          "transient_error_cycles": {
+            "type": "integer",
+            "description": "123: per-card transient/infra failure budget counter (env_blocked/system_error/unknown), separate from content_feedback_cycles (schema v12+)."
+          },
+          "assessor_open_questions": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "123: answered assessor Q&A ({question,answer}) carried across bounce cycles, injected as prior_clarifications on assessor re-dispatch (schema v12+)."
+          },
+          "stage_verdicts": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "head_sha": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "verdict": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "recorded_at": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "head_sha",
+                "verdict",
+                "recorded_at"
+              ],
+              "additionalProperties": false
+            },
+            "description": "125: stage-verdict memory \u2014 one slot per verdict stage (reviewing/security/qa/documenting/closing_review) recording the PR head SHA its passing verdict was issued against (schema v13+)."
+          },
+          "processed_issue_comment_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "description": "125: per-card already-classified issue-comment IDs (bounded to the numerically largest 2000 at save), so restarts do not re-classify processed comments (schema v13+)."
+          },
+          "last_issue_comment_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "125: per-card since_id fetch watermark for the issue-comment router (schema v13+)."
+          },
+          "feedback_ledger": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "raiser": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "origin_sha": {
+                  "type": "string"
+                },
+                "body_digest": {
+                  "type": "string"
+                },
+                "disposition": {
+                  "type": "string",
+                  "enum": [
+                    "open",
+                    "addressed",
+                    "disputed",
+                    "dispute_accepted",
+                    "dispute_rejected",
+                    "superseded"
+                  ]
+                },
+                "dispute_reason": {
+                  "type": "string"
+                },
+                "re_raised": {
+                  "type": "boolean"
+                },
+                "round_status": {
+                  "type": "string",
+                  "enum": [
+                    "current",
+                    "previous"
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "raiser"
+              ],
+              "additionalProperties": false
+            },
+            "description": "126: terminal-success-floor feedback ledger \u2014 per-item contract records, current + previous round only (schema v15+)."
+          },
+          "feedback_origin_sha": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "126: head SHA the current feedback round was raised against; the implementer progress floor compares completions against it (schema v15+)."
+          },
+          "noop_success_retries": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "126: bounded strengthened-re-dispatch counter for no-op implementer successes (schema v15+)."
+          },
+          "blueprint": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "165: the architect workflow's validated blueprint plus size, blueprint_hash and created_at; source of the implementer, documenter and QA briefs. Null on v1-v16 snapshots and on the prose path."
+          },
+          "documenting_side": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "165: the out-of-lifecycle documenter run for the current blueprint (status, blueprint_hash, dispatched_at, session_id, head_sha, result_reason). Null when never dispatched.",
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "pending",
+                  "running",
+                  "done",
+                  "failed"
+                ]
+              },
+              "blueprint_hash": {
+                "type": "string"
+              },
+              "dispatched_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "session_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "head_sha": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "result_reason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
         }
       },
       "default": {}
@@ -213,29 +562,92 @@
       "additionalProperties": {
         "type": "object",
         "properties": {
-          "symphony_name": { "type": "string" },
-          "sanitised_name": { "type": "string" },
-          "cache_dir": { "type": "string" },
-          "readme_sha": { "type": ["string", "null"] },
-          "last_bootstrap_at": { "type": ["string", "null"], "format": "date-time" },
-          "last_bootstrap_succeeded": { "type": ["boolean", "null"] },
-          "cache_dir_ready": { "type": "boolean" },
-          "last_bootstrap_error": { "type": ["string", "null"] },
-          "bootstrap_attempts": { "type": "integer" },
-          "bootstrap_exhausted": { "type": "boolean" },
-          "test_env_source": { "type": ["string", "null"] },
-          "wiki_initialized": { "type": "boolean" },
-          "wiki_attempts": { "type": "integer" },
-          "wiki_exhausted": { "type": "boolean" },
-          "last_wiki_init_at": { "type": ["string", "null"], "format": "date-time" },
-          "last_wiki_init_succeeded": { "type": ["boolean", "null"] },
-          "last_wiki_init_error": { "type": ["string", "null"] }
+          "symphony_name": {
+            "type": "string"
+          },
+          "sanitised_name": {
+            "type": "string"
+          },
+          "cache_dir": {
+            "type": "string"
+          },
+          "readme_sha": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_bootstrap_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "last_bootstrap_succeeded": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "cache_dir_ready": {
+            "type": "boolean"
+          },
+          "last_bootstrap_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "bootstrap_attempts": {
+            "type": "integer"
+          },
+          "bootstrap_exhausted": {
+            "type": "boolean"
+          },
+          "test_env_source": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "wiki_initialized": {
+            "type": "boolean"
+          },
+          "wiki_attempts": {
+            "type": "integer"
+          },
+          "wiki_exhausted": {
+            "type": "boolean"
+          },
+          "last_wiki_init_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "last_wiki_init_succeeded": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "last_wiki_init_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
         }
       },
       "default": {}
     },
     "last_known_main_sha": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "description": "096: the main-branch SHA the auto-rebase trigger last reconciled against (schema v11+). Persisted run-global so a main advance that occurred while the daemon was down is detected as drift on the first post-restart cycle instead of being silently re-baselined. null = unknown (pre-096 snapshots or a fresh run). A git SHA only, never a secret."
     }
   }

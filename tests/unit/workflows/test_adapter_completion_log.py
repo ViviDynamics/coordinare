@@ -9,8 +9,16 @@ from __future__ import annotations
 
 import pytest
 from performer.workflows.adapter import WorkflowAdapter
-from structlog.testing import capture_logs
 
+from tests.unit.workflows._fakelog import FakeLog
+
+
+def _fake_log(monkeypatch) -> FakeLog:
+    import performer.workflows.adapter as adapter_mod
+
+    fake = FakeLog()
+    monkeypatch.setattr(adapter_mod, "log", fake)
+    return fake
 
 class _Score:
     role = "qa"
@@ -18,16 +26,16 @@ class _Score:
 
 
 @pytest.mark.asyncio
-async def test_completion_logs_metrics_for_measurement():
+async def test_completion_logs_metrics_for_measurement(monkeypatch):
+    fake = _fake_log(monkeypatch)
     adapter = WorkflowAdapter("noop", toolkit_factory=lambda metrics, sink: object())
     adapter._metrics.step_durations_ms["plan"] = 12
     adapter._metrics.model_calls = 3
 
-    with capture_logs() as logs:
-        await adapter.start(object(), _Score())
-        await adapter._task
+    await adapter.start(object(), _Score())
+    await adapter._task
 
-    done = [e for e in logs if e["event"] == "workflow.completed"]
+    done = [e for e in fake.entries if e["event"] == "workflow.completed"]
     assert len(done) == 1
     entry = done[0]
     assert entry["workflow"] == "noop"
@@ -45,18 +53,18 @@ class _Boom:
 
 
 @pytest.mark.asyncio
-async def test_failure_logs_timings_but_never_completed():
+async def test_failure_logs_timings_but_never_completed(monkeypatch):
+    fake = _fake_log(monkeypatch)
     adapter = WorkflowAdapter("noop", toolkit_factory=lambda metrics, sink: object())
     adapter._workflow = _Boom()
 
-    with capture_logs() as logs:
-        await adapter.start(object(), _Score())
-        await adapter._task
+    await adapter.start(object(), _Score())
+    await adapter._task
 
-    events = [e["event"] for e in logs]
+    events = [e["event"] for e in fake.entries]
     assert "workflow.failed" in events
     assert "workflow.completed" not in events
-    failed = next(e for e in logs if e["event"] == "workflow.failed")
+    failed = next(e for e in fake.entries if e["event"] == "workflow.failed")
     assert "total_ms" in failed
     assert failed["step_durations_ms"] == {}
     assert adapter.get_status().state == "error"
@@ -128,13 +136,13 @@ async def test_model_call_logs_timing_and_parses_the_response_once(monkeypatch):
         model = "m"
         max_tokens = 12288
 
-    with capture_logs() as logs:
-        reply = await adapter_mod._model_caller(_S())("persona", [{"type": "text", "text": "hi"}], 16000)
+    fake = _fake_log(monkeypatch)
+    reply = await adapter_mod._model_caller(_S())("persona", [{"type": "text", "text": "hi"}], 16000)
 
     get_settings.cache_clear()
     assert reply.finish_reason == "stop" and reply.reasoning_content == "r"
     assert sent["body"]["max_tokens"] == 12288, "doubled budget must be capped by the role"
     assert parses["n"] == 1, "the response body is parsed once"
-    entry = next(e for e in logs if e["event"] == "workflow.model_call")
+    entry = next(e for e in fake.entries if e["event"] == "workflow.model_call")
     assert entry["completion_tokens"] == 42 and entry["max_tokens"] == 12288
     assert isinstance(entry["elapsed_ms"], int)

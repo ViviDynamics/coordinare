@@ -270,24 +270,25 @@ class TestPushBranch:
         decoded = base64.b64decode(raw.removeprefix("Authorization: Basic ")).decode()
         assert "ghp_secret" in decoded
 
-    async def test_non_fast_forward_falls_back_to_force(self, tmp_path: Path) -> None:
-        """Non-fast-forward regular push triggers force-push fallback."""
+    async def test_existing_remote_branch_rebases_instead_of_forcing(self, tmp_path: Path) -> None:
+        """165: a branch that already exists on the remote is fetched and rebased
+        onto, then pushed WITHOUT --force. The old force fallback on a
+        non-fast-forward rejection would overwrite a concurrent performer."""
         stand = Stand(path=tmp_path, branch="feat/x")
-        proc_fail = MagicMock()
-        proc_fail.returncode = 1
-        proc_fail.communicate = AsyncMock(
-            return_value=(b"", b"error: failed to push some refs\n [rejected] feat/x -> feat/x (non-fast-forward)")
-        )
         proc_ok = MagicMock()
         proc_ok.returncode = 0
         proc_ok.communicate = AsyncMock(return_value=(b"", b""))
-        # 131: push_branch first runs the agent-artifact guard (git ls-files) —
-        # here it returns no tracked files (proc_ok, empty) → guard is a no-op.
+        # 131 guard (ls-files) → ls-remote (0 = exists) → fetch → rebase → push
         with patch(
             "performer.workspace.asyncio.create_subprocess_exec",
-            side_effect=[proc_ok, proc_fail, proc_ok],
-        ):
-            await push_branch(stand, _score())  # should succeed via force fallback
+            return_value=proc_ok,
+        ) as mock_exec:
+            await push_branch(stand, _score())
+        issued = [" ".join(str(a) for a in c[0]) for c in mock_exec.call_args_list]
+        assert any("ls-remote" in c for c in issued)
+        assert any(" fetch " in c for c in issued)
+        assert any(" rebase FETCH_HEAD" in c for c in issued)
+        assert not any("--force" in c for c in issued)
 
     async def test_both_push_attempts_fail_raises_workspace_error(self, tmp_path: Path) -> None:
         """When both regular and force push fail, raises WorkspaceSetupError."""

@@ -76,3 +76,8 @@ def test_workflow_env_coercion_matches_on_the_performer_side():
         workflow_env={"PORT": 3000, "DEBUG": False},
     )
     assert s.workflow_env == {"PORT": "3000", "DEBUG": "0"}
+
+
+def test_architect_is_accepted_on_a_role():
+    cfg = PerformerRoleConfig(backend="codex", workflow="architect")
+    assert cfg.workflow == "architect"

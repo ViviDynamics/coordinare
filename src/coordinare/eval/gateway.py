@@ -62,7 +62,9 @@ async def _call_model(persona: str, content: list[dict], max_tokens: int) -> Mod
         "messages": [{"role": "system", "content": persona},
                      {"role": "user", "content": content}],
     }
-    async with httpx.AsyncClient(timeout=300) as client:
+    # 900s read: the same ceiling the performer HTTP path uses (#264); a large
+    # blueprint on a slow self-hosted model can take minutes to stream.
+    async with httpx.AsyncClient(timeout=httpx.Timeout(900, connect=30)) as client:
         resp = await client.post(
             f"{_base_url()}/chat/completions",
             headers={"Authorization": f"Bearer {key}"},

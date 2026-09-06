@@ -14,9 +14,14 @@ unverified work, so the conservative direction is the correct one.
 from __future__ import annotations
 
 from performer.workflows.base import WorkflowError
+import structlog
+
 from performer.workflows.budget import Budget
 from performer.workflows.qa.models import TestPlan
 from performer.workflows.qa.personas import PLAN
+
+
+log = structlog.get_logger(__name__)
 
 
 class EmptyPlan(WorkflowError):
@@ -33,10 +38,41 @@ class EmptyPlan(WorkflowError):
         self.criteria = list(criteria or [])
 
 
+def effective_criteria(score) -> tuple[list[str], str]:
+    """The criteria QA plans against, and where they came from.
+
+    165 (FR-017): when the architect's verification brief is present its
+    criteria are authoritative and already testable (surface, action, expected
+    observation), so the planner is told they are fixed. Otherwise the card's
+    acceptance criteria are used exactly as before 165.
+    """
+    brief = getattr(score, "verification_brief", None) or {}
+    items = brief.get("criteria") if isinstance(brief, dict) else None
+    if isinstance(items, list) and items:
+        rendered = []
+        for c in items:
+            if not isinstance(c, dict):
+                continue
+            surface = str(c.get("surface", "")).strip()
+            action = str(c.get("action", "")).strip()
+            expected = str(c.get("expected", "")).strip()
+            text = " ".join(part for part in (f"{surface}:" if surface else "", action, f"-> {expected}" if expected else "") if part)
+            if text:
+                rendered.append(text)
+        if rendered:
+            return rendered, "blueprint"
+    return list(getattr(score, "acceptance_criteria", []) or []), "card"
+
+
 def _prompt(
-    criteria: list[str], diff: str, description: str, base_url: str | None
+    criteria: list[str], diff: str, description: str, base_url: str | None, source: str = "card"
 ) -> list[dict]:
     criteria_block = "\n".join(f"- {c}" for c in criteria) or "(none stated)"
+    if source == "blueprint":
+        criteria_block += (
+            "\n\nThese criteria are fixed by the architect's blueprint: plan checks "
+            "for exactly these, do not add, merge or reinterpret them."
+        )
     # Without this the model invents a conventional port. The first live eval
     # run planned `curl localhost:3000` against an app on an ephemeral port, and
     # the resulting failure demoted a criterion the flow check had demonstrated.
@@ -63,7 +99,8 @@ def _prompt(
 
 async def run_plan_step(toolkit, score, *, base_url: str | None = None) -> TestPlan:
     """Produce the test plan, or fail closed."""
-    criteria = list(getattr(score, "acceptance_criteria", []) or [])
+    criteria, source = effective_criteria(score)
+    log.info("qa.plan.criteria_source", source=source, count=len(criteria))
     plan = await toolkit.call_model(
         persona=PLAN,
         schema=TestPlan,
@@ -72,6 +109,7 @@ async def run_plan_step(toolkit, score, *, base_url: str | None = None) -> TestP
             getattr(score, "pr_diff", "") or "",
             getattr(score, "description", "") or "",
             base_url,
+            source,
         ),
         budget=Budget.for_step("plan"),
     )

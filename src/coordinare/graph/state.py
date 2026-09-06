@@ -280,6 +280,10 @@ class CoordinareState(TypedDict, total=False):
     # consulted by dispatch_performer's verdict-cache skip.  Round-trips
     # session ↔ state and persists (schema v14).
     stage_verdicts: dict[str, dict[str, Any]]
+    # 165: the architect's blueprint (source of the three briefs) and the
+    # documenter side-run record; per card, restart-safe (schema v17).
+    blueprint: dict[str, Any] | None
+    documenting_side: dict[str, Any] | None
     # 125: one-shot veto — set to the target stage by _apply_pending_override's
     # "restart" action so the verdict cache never suppresses an operator-
     # requested run.  Consumed (cleared) by the cache check.  Transient:
@@ -404,6 +408,8 @@ def initial_state() -> CoordinareState:
         "assessor_open_questions": [],
         # 125: stage-verdict memory + one-shot override forcing flag
         "stage_verdicts": {},
+        "blueprint": None,
+        "documenting_side": None,
         "override_forced_dispatch": None,
         # 126: terminal-success-floor state
         "feedback_ledger": [],

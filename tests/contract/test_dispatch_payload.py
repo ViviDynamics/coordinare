@@ -64,6 +64,10 @@ def _full_card_context() -> dict[str, Any]:
         "workflow": "qa",
         "workflow_env": {"PORT": "3000", "QA_APP_START_COMMAND": "python app.py"},
         "qa_findings": [{"file": "a.py", "line": 1, "category": "unmet_criterion", "severity": "high"}],
+        "implementation_brief": {"summary": "s", "milestones": [{"goal": "g", "scope": ["a"], "done_when": "d"}], "size": "small"},
+        "documentation_brief": {"summary": "s", "docs": [{"topic": "t", "location": "wiki/x.md", "say": "y"}]},
+        "verification_brief": {"summary": "s", "criteria": [{"surface": "/", "action": "open", "expected": "ok", "kind": "functional"}]},
+        "implementer_single_turn": True,
     }
 
 
@@ -171,6 +175,37 @@ class TestDispatchPayloadContract:
         assert transport.captured_payload["qa_findings"] == findings
 
     @pytest.mark.asyncio
+    async def test_blueprint_briefs_are_not_dropped(self) -> None:
+        """165: the three reader-specific projections of the architect's
+        blueprint and the single-turn flag reach the performer intact."""
+        transport = _CaptureTransport()
+        service = AgentService(transport)
+        briefs = {
+            "implementation_brief": {"summary": "s", "milestones": [{"goal": "g", "scope": ["a"], "done_when": "d"}], "size": "large"},
+            "documentation_brief": {"summary": "s", "docs": [{"topic": "t", "location": "wiki/x.md", "say": "y"}]},
+            "verification_brief": {"summary": "s", "criteria": [{"surface": "/", "action": "open", "expected": "ok", "kind": "functional"}]},
+            "implementer_single_turn": False,
+        }
+        await service.dispatch_card({**briefs, "title": "test", "id": "X"})
+        for key, value in briefs.items():
+            assert transport.captured_payload[key] == value, key
+
+    async def test_briefs_are_declared_on_score_so_extra_ignore_keeps_them(self) -> None:
+        from performer.models import Score
+
+        score = Score(
+            card_id="X", title="t", description="d", acceptance_criteria=[],
+            repo_url="https://github.com/o/r", branch="b",
+            implementation_brief={"size": "small"}, documentation_brief={"docs": []},
+            verification_brief={"criteria": []}, implementer_single_turn=True,
+        )
+        assert score.implementation_brief == {"size": "small"}
+        assert score.documentation_brief == {"docs": []}
+        assert score.verification_brief == {"criteria": []}
+        assert score.implementer_single_turn is True
+        bare = Score(card_id="X", title="t", description="d", acceptance_criteria=[], repo_url="https://github.com/o/r", branch="b")
+        assert bare.implementation_brief == {} and bare.implementer_single_turn is False
+
     async def test_disputed_feedback_is_not_dropped(self) -> None:
         """126: disputed_feedback carries dispute-adjudication context for the
         raising stage — must survive the boundary."""

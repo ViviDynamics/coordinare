@@ -1785,6 +1785,7 @@ async def _commit_doc_batch(perf: Performance) -> PerformerResponse:
         try:
             committed = await commit_files(
                 perf.stand, valid_files, batch_msg, deletions=perf.doc_deletions,
+                score=perf.score,  # 165: a documenter side run is held to its tree
             )
             perf.docs_files_modified.extend(committed)
         except Exception as exc:
@@ -1997,6 +1998,25 @@ async def handle_status(
         # the model writes the plan via apply_patch, output is empty. Probe
         # the workspace before declaring the plan empty.
         if perf.role == "architecting":
+            # 165: the architect WORKFLOW reports a blueprint and commits nothing.
+            # Its output is the JSON report (blueprint, size, write_free_check,
+            # workflow_metrics); coordinare lifts the blueprint and slices it into
+            # the readers' briefs. The prose path below is untouched (164 FR-005).
+            _bp_report = _extract_json(backend_status.output or "")
+            if isinstance(_bp_report, dict) and isinstance(_bp_report.get("blueprint"), dict):
+                perf.state = "plan_committed"
+                log.info(
+                    "architect.blueprint_reported",
+                    size=_bp_report.get("size"),
+                    milestones=len(_bp_report["blueprint"].get("milestones") or []),
+                    session_id=perf.session_id,
+                )
+                return PerformerResponse(
+                    status="plan_committed",
+                    session_id=perf.session_id,
+                    report=_bp_report,
+                    progress=f"blueprint ({_bp_report.get('size') or 'unsized'})",
+                )
             folder = _doc_folder(perf.score)
             issue_num = perf.score.issue_number
             plan_content = (backend_status.output or "").strip()

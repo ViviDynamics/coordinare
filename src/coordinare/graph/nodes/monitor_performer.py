@@ -3486,6 +3486,28 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
         # bounces to the implementer as a synthetic failure. A substantiated pass
         # (>=1 criterion with evidence) and a genuine no-criteria scope
         # (criteria_checked==0) advance unchanged — no regression of real passes.
+        # 165: lift the architect workflow's blueprint into the session. It is
+        # the single source the implementer, documenter and QA briefs are
+        # projected from at dispatch (dispatch_performer.inject_briefs). A new
+        # blueprint replaces the old one and resets the documenter side run, so
+        # the once-per-hash rule keys on the current plan. The prose architect
+        # reports no blueprint and leaves state untouched (164 FR-005).
+        if stage == "architecting" and marker == "plan_committed":
+            _bp_report = status.get("report") if isinstance(status.get("report"), dict) else {}
+            _bp = _bp_report.get("blueprint")
+            if isinstance(_bp, dict) and _bp.get("milestones"):
+                state["blueprint"] = dict(_bp)
+                state["documenting_side"] = None
+                logger.info(
+                    "blueprint.lifted",
+                    card_id=card_id,
+                    size=_bp.get("size"),
+                    milestones=len(_bp.get("milestones") or []),
+                    criteria=len(_bp.get("criteria") or []),
+                    docs=len(_bp.get("docs") or []),
+                    blueprint_hash=_bp.get("blueprint_hash"),
+                )
+
         # 164: stash the QA repair brief for the next implementer dispatch,
         # mirroring how scanner_findings already travels. Reports what failed
         # and how to reproduce it; never prescribes a fix (FR-014). Lifted on

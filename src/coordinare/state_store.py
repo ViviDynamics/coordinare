@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-CURRENT_SCHEMA_VERSION: int = 16  # 128: + PersistedSession.surfaced_stale_reviews
+CURRENT_SCHEMA_VERSION: int = 17  # 165: + PersistedSession.blueprint, .documenting_side
 
 # Lowest schema_version we still know how to read.  v1 snapshots are upgraded
 # in-memory at load time (065 Fix 7b: active_sessions added in v2; v1 snapshots
@@ -91,6 +91,12 @@ CURRENT_SCHEMA_VERSION: int = 16  # 128: + PersistedSession.surfaced_stale_revie
 # comparison reference) and noop_success_retries (bounded strengthened-
 # re-dispatch counter).  v1-v14 snapshots load with []/None/0.  Body digests
 # are capped at 200 chars — never full comment bodies, never secret values.
+# v17 (165) adds two fields on PersistedSession: blueprint (the architect
+# workflow's validated blueprint plus size, blueprint_hash and created_at; the
+# single source the implementer, documenter and QA briefs are projected from)
+# and documenting_side (the out-of-lifecycle documenter run: status,
+# blueprint_hash, session_id, head_sha, result_reason). v1-v16 snapshots load
+# with None for both. Plan text and SHAs only; never secret values.
 MIN_SUPPORTED_SCHEMA_VERSION: int = 1
 
 WorkflowPhase = Literal[
@@ -149,6 +155,25 @@ class StageVerdict(BaseModel):
     head_sha: str = Field(min_length=1)
     verdict: str = Field(min_length=1)
     recorded_at: str  # ISO-8601 stamp (set by the node, not a pure path)
+
+
+class DocumentingSideRun(BaseModel):
+    """165: the documenter side run for one blueprint (schema v17+).
+
+    Dispatched at most once per ``blueprint_hash`` once the card has advanced
+    past architecting and the blueprint's documentation brief is non-empty.
+    A failed run is recorded and not retried within the card; the
+    end-of-lifecycle documenting pass (spec 125) still runs unchanged.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    status: Literal["pending", "running", "done", "failed"] = "pending"
+    blueprint_hash: str
+    dispatched_at: datetime | None = None
+    session_id: str | None = None
+    head_sha: str | None = None
+    result_reason: str | None = None
 
 
 class FeedbackItemRecord(BaseModel):
@@ -368,6 +393,24 @@ class PersistedSession(BaseModel):
     feedback_ledger: list[FeedbackItemRecord] = Field(default_factory=list)
     feedback_origin_sha: str | None = None
     noop_success_retries: int = 0
+    # 165 (schema v17+): the architect blueprint and the documenter side run.
+    # blueprint is the validated Blueprint (data-model.md) plus size,
+    # blueprint_hash and created_at; briefs are projected from it at dispatch
+    # and never stored. Defaults keep v1-v16 snapshots loading unchanged.
+    blueprint: dict[str, Any] | None = None
+    documenting_side: DocumentingSideRun | None = None
+
+    @field_validator("documenting_side", mode="before")
+    @classmethod
+    def _drop_corrupt_documenting_side(cls, v: object) -> object:
+        """165: a malformed side-run record loads as None (no run recorded ==
+        the side run may be dispatched again for the current blueprint hash),
+        never as a snapshot load failure."""
+        if v is None or isinstance(v, DocumentingSideRun):
+            return v
+        if not isinstance(v, dict) or not v.get("blueprint_hash"):
+            return None
+        return v
 
     @field_validator("feedback_ledger", mode="before")
     @classmethod

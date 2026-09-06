@@ -243,3 +243,30 @@ def test_production_screenshots_do_not_share_one_fixed_path():
     assert a != b, "each call must yield a distinct path"
     assert a.endswith(".png") and b.endswith(".png")
     assert "qa_screenshot" not in a or a != "/tmp/qa_screenshot.png"
+
+
+@pytest.mark.asyncio
+async def test_the_architect_workflow_runs_behind_the_same_adapter_seam(tmp_path):
+    """165: the second consumer of the layer is dispatched exactly like the
+    first: BackendAdapter-shaped, done with a JSON report main.py can parse,
+    and its report carries the blueprint coordinare lifts."""
+    import json
+    from types import SimpleNamespace
+
+    from performer.workflows.adapter import WorkflowAdapter
+
+    from tests.unit.workflows.architect.test_workflow_end_to_end import (
+        _TRIVIAL_BP,
+        _score,
+        _stub_toolkit,
+    )
+
+    tk, ran, _events = _stub_toolkit(_TRIVIAL_BP, ["ls app"])
+    adapter = WorkflowAdapter("architect", toolkit_factory=lambda metrics, sink: tk)
+    await adapter.start(SimpleNamespace(path=tmp_path), _score())
+    await adapter._task
+    status = adapter.get_status()
+    assert status.state == "done"
+    report = json.loads(status.output)
+    assert report["blueprint"]["size"] == "small" and report["write_free_check"]["passed"] is True
+    assert ran == ["ls app", "git status --porcelain"]

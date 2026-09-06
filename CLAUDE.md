@@ -84,6 +84,8 @@ See AGENTS.md for all development guidelines.
 - N/A for coordinare state. Outputs are files beside the artifacts they (161-board-bench-harness)
 - Python 3.14 (project minimum 3.12; prod 3.14.5 via uv) + existing only — pydantic 2.x (step/finding/plan models), (164-qa-role-workflow)
 - N/A. A workflow run is one-shot and dies with the container. No (164-qa-role-workflow)
+- Python 3.14 (project minimum 3.12; prod 3.14.5 via uv) + existing only. pydantic 2.x (blueprint and brief models), the 164 layer (`workflows/`: `WorkflowAdapter`, `Toolkit`, `budget`, `schema_guard`), `persona_service`, `state_store` (`PersistedSession`), `dispatch_performer` and `monitor_performer` nodes, `env_cache.check_and_trigger` as the out-of-lifecycle dispatch precedent, `workspace.push_branch`. No new external dependencies. (165-architect-blueprint-workflow)
+- single-host JSON snapshot via `state_store.py`; schema version 16 -> 17 adds `PersistedSession.blueprint` and `PersistedSession.documenting_side`, both defaulting to `None`. Older snapshots load unchanged. (165-architect-blueprint-workflow)
 
 ## Recent Changes
 - 076-qa-cycle: Added Python 3.14 (project minimum: 3.12; production currently on 3.14.5 via uv) + pydantic 2.x, langgraph, structlog, docker SDK (or subprocess to `docker` CLI), fastapi (dashboard SSE), httpx (performer HTTP transport), pyyaml (config)
