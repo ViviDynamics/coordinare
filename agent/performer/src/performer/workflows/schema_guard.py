@@ -114,6 +114,7 @@ async def validate_with_reprompt(
             )
 
     metrics.schema_reprompts += 1
+    log.warning("schema_guard.reprompt", problem=first_problem[:200], first=_excerpt(raw))
     correction = (
         f"Your previous response did not match the required schema ({first_problem}).\n"
         f"{schema_instruction(schema)}"

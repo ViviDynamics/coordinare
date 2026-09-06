@@ -105,7 +105,29 @@ def test_call_ceiling_default_is_the_documented_twelve():
 
 
 def test_budget_floors_are_the_measured_ones():
-    """500 truncated, 3000 completed. Judgment >=3000, observation >=1500."""
-    assert Budget.for_step("judge").max_tokens >= 3000
-    assert Budget.for_step("observe").max_tokens >= 1500
-    assert Budget.for_step("plan").max_tokens >= 3000
+    """500 truncated, 3000 completed in design; the first live plan call spent
+    3000 entirely on reasoning (13,391 chars, finish=length). Plan and judge
+    need >=8000, observation >=3000."""
+    assert Budget.for_step("judge").max_tokens >= 8000
+    assert Budget.for_step("observe").max_tokens >= 3000
+    assert Budget.for_step("plan").max_tokens >= 8000
+
+
+@pytest.mark.asyncio
+async def test_a_truncation_retry_is_logged_with_both_budgets():
+    from structlog.testing import capture_logs
+
+    calls: list[int] = []
+
+    async def call(max_tokens: int) -> ModelReply:
+        calls.append(max_tokens)
+        if len(calls) == 1:
+            return ModelReply(content="", finish_reason="length", reasoning_content="thinking...")
+        return ModelReply(content='{"ok": true}', finish_reason="stop")
+
+    with capture_logs() as logs:
+        await call_with_budget(call, Budget(max_tokens=3000), WorkflowMetrics())
+
+    entry = next(e for e in logs if e["event"] == "budget.truncation_retry")
+    assert entry["first_budget"] == 3000 and entry["retry_budget"] == 6000
+    assert entry["finish_reason"] == "length"

@@ -14,6 +14,12 @@ live gateway during design, not from theory:
 * Reasoning models can put the payload in ``reasoning_content`` and leave
   ``content`` empty.  The 073 shim promotes it; the direct LiteLLM path does
   not, and the toolkit calls LiteLLM directly.  So promotion happens here.
+* First live run (website #162, glm-5.3-flash, 2026-09-06): the plan call at
+  3000 spent the whole budget on 13,391 characters of reasoning, finished with
+  ``length`` and no JSON, in 173 s. The doubled retry then outran a 300 s HTTP
+  read timeout. A plan-sized prompt with thinking on needs roughly 3,500
+  tokens of reasoning before the answer starts, so plan and judge floors are
+  8000 and the model caller waits 900 s (see adapter._MODEL_READ_TIMEOUT_S).
 """
 from __future__ import annotations
 
@@ -32,14 +38,14 @@ log = structlog.get_logger(__name__)
 
 #: Per-step minimum budgets.  Anchored to the measurement above.
 _STEP_BUDGETS: dict[str, int] = {
-    "plan": 3000,
+    "plan": 8000,
     "baseline": 0,  # no model call
     "execute": 0,   # no model call
-    "observe": 1500,
-    "judge": 3000,
+    "observe": 3000,
+    "judge": 8000,
     "report": 0,    # no model call
 }
-_DEFAULT_BUDGET = 3000
+_DEFAULT_BUDGET = 8000
 
 #: Model calls permitted in a single workflow run (plan.md performance budget).
 DEFAULT_CALL_LIMIT = 12
@@ -125,6 +131,13 @@ async def call_with_budget(
     # Either truncated, or empty with nothing to promote.  One retry, doubled.
     retry_budget = budget.doubled()
     metrics.truncation_retries += 1
+    log.warning(
+        "budget.truncation_retry",
+        finish_reason=reply.finish_reason,
+        first_budget=budget.max_tokens,
+        retry_budget=retry_budget.max_tokens,
+        promoted_chars=len(content or ""),
+    )
     retried = await call(retry_budget.max_tokens)
     metrics.model_calls += 1
     retried_content = _usable_content(retried)
