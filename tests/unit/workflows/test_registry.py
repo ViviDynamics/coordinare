@@ -56,3 +56,13 @@ def test_architect_is_a_registered_workflow_resolving_inside_the_trusted_root():
     wf = get_workflow("architect")
     assert wf.name == "architect"
     assert not is_supported_workflow("architec"), "a typo is still unknown"
+
+
+def test_implementer_is_a_registered_workflow():
+    """167: implementer workflow resolves and is registered."""
+    from performer.workflows import get_workflow, is_supported_workflow
+
+    assert is_supported_workflow("implementer") is True
+    wf = get_workflow("implementer")
+    assert wf.name == "implementer"
+    assert not is_supported_workflow("implement"), "a typo is still unknown"

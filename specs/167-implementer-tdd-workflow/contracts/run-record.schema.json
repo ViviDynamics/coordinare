@@ -1,0 +1,273 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Run Record",
+  "description": "Complete workflow run history, travels in PerformerResponse.report (spec 167 FR-018).",
+  "type": "object",
+  "required": [
+    "status",
+    "reason",
+    "milestones_planned",
+    "milestones_completed",
+    "per_milestone",
+    "quality_attempts",
+    "ci_attempts",
+    "scope_reverts",
+    "phase_durations_ms",
+    "total_duration_ms"
+  ],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "pr_opened",
+        "changes_requested",
+        "partial_progress",
+        "env_blocked"
+      ],
+      "description": "Final outcome"
+    },
+    "reason": {
+      "type": "string",
+      "description": "Human-readable outcome reason"
+    },
+    "milestones_planned": {
+      "type": "integer",
+      "description": "Total number of milestones in the plan"
+    },
+    "milestones_completed": {
+      "type": "integer",
+      "description": "Number of milestones that reached green"
+    },
+    "next_focus_milestone": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "If partial_progress, the name of the failing milestone"
+    },
+    "per_milestone": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "index",
+          "goal",
+          "done_when",
+          "tests_attempt",
+          "implement_attempts",
+          "implementation_successful",
+          "failure_reason"
+        ],
+        "properties": {
+          "index": {
+            "type": "integer"
+          },
+          "goal": {
+            "type": "string"
+          },
+          "done_when": {
+            "type": "string"
+          },
+          "tests_attempt": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "The tests turn, if run",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "tests"
+                ]
+              },
+              "milestone_index": {
+                "type": "integer"
+              },
+              "attempt_number": {
+                "type": "integer"
+              },
+              "exit_state": {
+                "type": "string",
+                "enum": [
+                  "success",
+                  "timeout",
+                  "failed"
+                ]
+              },
+              "wall_time_ms": {
+                "type": "integer"
+              },
+              "files_changed": {
+                "type": "integer"
+              },
+              "has_out_of_scope_reverts": {
+                "type": "boolean"
+              },
+              "failure_reason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          },
+          "tests_reprompt": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Reprompt after vacuous tests"
+          },
+          "implement_attempts": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Up to 3 implementation attempts"
+          },
+          "implementation_successful": {
+            "type": "boolean"
+          },
+          "failure_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "quality_attempts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "command",
+          "attempt_number",
+          "exit_code",
+          "wall_time_ms",
+          "passed"
+        ],
+        "properties": {
+          "command": {
+            "type": "string"
+          },
+          "attempt_number": {
+            "type": "integer"
+          },
+          "exit_code": {
+            "type": "integer"
+          },
+          "output_tail": {
+            "type": "string"
+          },
+          "wall_time_ms": {
+            "type": "integer"
+          },
+          "passed": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "ci_attempts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "attempt_number",
+          "failing_checks",
+          "repair_needed",
+          "wall_time_ms"
+        ],
+        "properties": {
+          "attempt_number": {
+            "type": "integer"
+          },
+          "failing_checks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "repair_needed": {
+            "type": "boolean"
+          },
+          "wall_time_ms": {
+            "type": "integer"
+          },
+          "log_excerpt": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "scope_reverts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "path",
+          "kind",
+          "reason"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "reverted_source",
+              "reverted_doc",
+              "removed_untracked"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "phase_durations_ms": {
+      "type": "object",
+      "description": "Durations of each phase for budgeting",
+      "properties": {
+        "planning": {
+          "type": "integer"
+        },
+        "baseline": {
+          "type": "integer"
+        },
+        "per_milestone": {
+          "type": "integer"
+        },
+        "quality": {
+          "type": "integer"
+        },
+        "local_gate": {
+          "type": "integer"
+        },
+        "ci": {
+          "type": "integer"
+        }
+      }
+    },
+    "total_duration_ms": {
+      "type": "integer"
+    },
+    "turn_count": {
+      "type": "integer",
+      "description": "Total harness turns invoked"
+    },
+    "model_calls": {
+      "type": "integer",
+      "description": "Total model calls (backend invocations)"
+    },
+    "github_api_calls": {
+      "type": "integer",
+      "description": "Total GitHub API calls (check runs, logs, PR create/update)"
+    }
+  }
+}
