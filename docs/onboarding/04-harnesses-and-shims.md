@@ -244,6 +244,61 @@ performers:
     workflow: assessor
 ```
 
+### Role workflows: implementer (spec 167)
+
+The implementer was one long harness run: codex or claude_code with a persona
+and, since spec 165, an implementation brief, policed only after the fact by the
+070 commit floor, the 072 checkpoint, the 089 local gate and the 075 CI fix
+loop. `workflow: implementer` moves the loop into code, one blueprint milestone
+at a time:
+
+1. **intake, plan, baseline**: milestones from the implementation brief (or the
+   whole card as one milestone when there is no brief or the size rule marked it
+   single-turn); the project's test command runs once to record what passes.
+2. **tests turn, red check**: the harness is asked for the failing tests of this
+   milestone only. Code runs the tests: at least one changed test file must
+   fail and nothing from the baseline may break. Tests that pass without the
+   code get one reprompt; a second miss fails the milestone. Code commits
+   `test(#n): failing tests for <goal>`.
+3. **implementation turn, green check**: the harness gets the failing test
+   names and the excerpt; code runs the tests again; up to three attempts, each
+   with the fresh excerpt; code commits `feat(#n): <goal>` and the baseline
+   grows. A milestone that will not go green ends the run as partial progress
+   at the last green commit, nothing pushed.
+4. **quality**: the detected lint command plus `QUALITY_COMMANDS` from the
+   role's `workflow_env`, in order; a failure gets a repair turn with the tool's
+   output, then the tests and the whole set run again; at most two repairs.
+5. **local gate, push, PR**: the 089 gate unchanged, the 165 push path (fetch,
+   rebase, never force), the PR opened or updated without reporting `pr_opened`.
+6. **CI wait**: the checks are polled; a red check gets a repair turn with the
+   failing job's log excerpt, then tests, quality, push and another poll; at
+   most three repairs, and the same failing checks twice in a row stop early.
+   Checks pending past the wait budget are an environment hold, not a code
+   failure. Only green CI reports `pr_opened`, so the reviewer sees a PR whose
+   checks already pass.
+
+Every turn is a bounded harness session with a narrow persona; a tests turn may
+touch only test paths and no turn may touch `docs/` (out-of-scope edits are
+reverted by code and recorded). Commits are written by code, and any commit the
+harness makes is squashed into the step's commit.
+
+Turning it on, with the caps the run obeys:
+
+```yaml
+performers:
+  implementer:
+    workflow: implementer
+    workflow_env:
+      QUALITY_COMMANDS: |
+        bundle exec rubocop
+      IMPL_TURN_TIMEOUT_S: "1200"
+```
+
+Keep `dispatcher_dedup.stall_timeout_seconds` at or above the turn timeout: the
+077 stall watchdog kills a working turn that shows no event growth for that
+long, and although the workflow forwards the harness's progress, the two
+settings should not disagree.
+
 ## The end-to-end picture
 
 ```mermaid

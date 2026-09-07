@@ -26,6 +26,10 @@ class WorkflowMetrics:
     schema_reprompts: int = 0
     commands_run: int = 0
     step_durations_ms: dict[str, int] = field(default_factory=dict)
+    #: Count of agent turns run (spec 167 FR-018).
+    agent_turns: int = 0
+    #: Wall-clock durations of each agent turn in milliseconds (spec 167 FR-018).
+    turn_durations_ms: list[int] = field(default_factory=list)
     baseline_skipped: bool = False
     #: Which attempt at this card this run is (1 = first). The spec's success
     #: metric is rounds-to-green per ISSUE, so a single run can only contribute

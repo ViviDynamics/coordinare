@@ -36,6 +36,7 @@ from performer.qa_capture import boot_and_capture_app_screenshot  # noqa: F401
 from performer.github import GitHubAPIError, create_pull_request, get_check_run_logs, get_check_runs, list_pr_comments, post_issue_comment, post_pr_comment, post_pull_request_review, resolve_pr_review_threads, summarise_check_runs  # noqa: F401 (post_issue_comment: see T049 note above)  # noqa: F401 (post_issue_comment: see T049 note above)
 from performer.io_utils import iter_lines_chunked
 from performer.models import DIAGNOSTIC_ROLE, Performance, Score, Stand, _redact_secrets
+from performer.test_results import _strip_ansi, _reported_failure_count, _match_env_signature, _env_signature_reason, _format_failure_excerpt, _TEST_FAILURE_MARKERS  # noqa: F401
 from performer.protocol import (
     FAILURE_STATUSES,
     TERMINAL_STATUSES,
@@ -184,21 +185,6 @@ class LocalTestResult:
 # modes that surface only in test stdout/stderr (a refused service socket, a
 # port collision, a missing toolchain binary) and which spec-088's single-shot
 # env signals do not always flag.
-_ENV_FAILURE_SIGNATURES: tuple[str, ...] = (
-    "connection refused",
-    "could not connect to",
-    "couldn't connect to",
-    "failed to connect to",
-    "address already in use",
-    "errno 98",  # EADDRINUSE (Linux)
-    "errno 48",  # EADDRINUSE (macOS)
-    "errno 111",  # ECONNREFUSED (Linux)
-    "errno 61",  # ECONNREFUSED (macOS)
-    "no such host",
-    "name or service not known",
-    "temporary failure in name resolution",
-    "no space left on device",
-)
 # Deliberately NOT here: "command not found". Review was right that it is the
 # shell-level twin of ModuleNotFoundError, excluded a few lines above on the
 # grounds that a forgotten dependency in the diff IS a defect. An implementer
@@ -233,25 +219,6 @@ _ENV_FAILURE_SIGNATURES: tuple[str, ...] = (
 # spec-089 US2 exists to prevent. Every runner ci_detection can select prints a
 # non-zero failure COUNT in its summary, and truncate="tail" guarantees that
 # summary survives, so the counts below are both sufficient and safe.
-_TEST_FAILURE_MARKERS = re.compile(
-    # Anchored the same way the `failures?` alternative below is, and for the
-    # same reason review gave: `\b` after "failed" matches before a space, so
-    # "2 failed to connect to postgres:5432" and "1 failed attempt to reach
-    # redis" read as test results. Both were reproduced against the previous
-    # pattern. pytest always follows its count with a comma or " in ";
-    # mocha prints its count alone on a line.
-    r"[1-9]\d*\s+failed(?:,|\s+in\s)"  # pytest "1 failed, 12 passed" / "1 failed in 3.2s"
-    r"|^\s*[1-9]\d*\s+failing\s*$"  # mocha "  1 failing", alone on its line
-    # rspec "3 examples, 1 failure" / minitest "…, 1 failures, 0 errors". The
-    # leading comma anchors these to a summary line so prose such as
-    # "3 failures to connect, giving up" cannot masquerade as a test result.
-    r"|,\s*[1-9]\d*\s+failures?\b"
-    r"|failures:\s*[1-9]"  # maven / gradle "Failures: 1"
-    r"|^\s*\d+\)\s+Failure:"  # minitest per-failure header
-    r"|^\s*Failure/Error:"  # rspec per-failure detail
-    r"|^FAILED\s+\S+::",  # pytest per-test failure line
-    re.IGNORECASE | re.MULTILINE,
-)
 
 
 #: CSI/OSC escape sequences. A runner told to colour its output (``--color=yes``,
@@ -261,108 +228,12 @@ _TEST_FAILURE_MARKERS = re.compile(
 #: signatures, which are plain substrings, still match. That combination fails in
 #: the direction this gate exists to prevent: a genuinely red suite is held as an
 #: environment block and the implementer never hears about its own bug.
-_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
 
 
-def _strip_ansi(text: str) -> str:
-    """Output as the runner meant it, for anything that reads it as text."""
-    return _ANSI_RE.sub("", text)
-
-
-#: Above this many reported failing tests the gate stops treating a red run as a
-#: possible flake. A few failures can be timing; a wall of them is the diff.
 _RETRY_MAX_FAILING = 3
 
 #: Counts as reported by the runners ci_detection can select. Anchored the same
 #: way _TEST_FAILURE_MARKERS is, so prose cannot supply a count.
-_FAILURE_COUNT_PATTERNS = (
-    re.compile(r"([1-9]\d*)\s+failed(?:,|\s+in\s)", re.IGNORECASE),
-    re.compile(r"^\s*([1-9]\d*)\s+failing\s*$", re.IGNORECASE | re.MULTILINE),
-    re.compile(r",\s*([1-9]\d*)\s+failures?\b", re.IGNORECASE),
-    re.compile(r"failures:\s*([1-9]\d*)", re.IGNORECASE),
-)
-
-
-def _reported_failure_count(output: str) -> int | None:
-    """How many failing tests the runner said there were, if it said.
-
-    None when no summary could be read — a crashed runner, an unfamiliar
-    format — which the caller treats as "might be a flake" rather than
-    "definitely broad", because guessing the other way would remove flake
-    recovery from every runner this cannot parse.
-    """
-    # The LAST count in the output, not the largest. A runner prints its summary
-    # when it finishes, and run_command tail-truncates, so the final match is the
-    # run that just happened; an earlier one is captured output from something
-    # else -- a nested suite, a subprocess under test, a prior summary echoed
-    # into stderr. Taking the max let a stale "15 failed" from captured output
-    # override the real "3 failed" and skip the retry, bouncing a flake as a
-    # broken diff.
-    matches = [
-        (match.end(), int(match.group(1)))
-        for pattern in _FAILURE_COUNT_PATTERNS
-        for match in pattern.finditer(output)
-    ]
-    if not matches:
-        return None
-    return max(matches)[1]
-
-
-def _match_env_signature(output: str) -> str | None:
-    """Return the first :data:`_ENV_FAILURE_SIGNATURES` substring present in
-    *output* (case-insensitive), or None when the failure looks like a genuine
-    code defect.
-
-    A runner-reported test failure (:data:`_TEST_FAILURE_MARKERS`) short-circuits
-    to None: the suite ran and tests failed on their own assertions, so this is
-    the implementer's bug even when the output also mentions an environment-shaped
-    string.
-    """
-    if _TEST_FAILURE_MARKERS.search(output):
-        return None
-    haystack = output.lower()
-    for sig in _ENV_FAILURE_SIGNATURES:
-        if sig in haystack:
-            return sig
-    return None
-
-
-def _env_signature_reason(signature: str, output: str) -> str:
-    """Build the env-block reason for a signature-classified failure.
-
-    Signature matching is a heuristic, and it routes the card to a HOLD that a
-    human has to judge. Naming only the matched phrase makes that judgement
-    impossible without going and finding the performer log, so carry a bounded
-    excerpt of the output that triggered it. Bounded because this string travels
-    into the operator notification.
-    """
-    excerpt = _format_failure_excerpt(output, limit=400)
-    reason = f"local test output matched environment-failure signature: '{signature}'"
-    return f"{reason}\n{excerpt}" if excerpt else reason
-
-
-def _format_failure_excerpt(output: str, *, limit: int = 1500) -> str:
-    """Clamp failure output for the implementer feedback comment.
-
-    The output is already tail-truncated by ``run_command`` (the test summary is
-    the most diagnostic part); if it is still over *limit* chars, keep the head
-    and tail with an elision marker so both the first failure and the final
-    summary survive."""
-    from performer.workspace import _redact_auth_headers
-
-    # Redacted here rather than at the call sites: this function is the single
-    # place arbitrary test output becomes a string bound for a PR comment or an
-    # operator notification. Review's point was that this change widened that
-    # surface -- from a 500-char head slice to a 1500-char head+tail, so the end
-    # of the output, where config dumps and connection strings land, is now
-    # included -- and that inheriting "pre-existing" was the wrong call in the
-    # change that did the widening.
-    output = _redact_auth_headers(output.strip())
-    if len(output) <= limit:
-        return output
-    head = output[: limit // 3]
-    tail = output[-(limit - limit // 3) :]
-    return f"{head}\n…[truncated]…\n{tail}"
 
 
 async def _run_test_check(
@@ -2742,6 +2613,58 @@ async def handle_status(
                 session_id=perf.session_id,
                 **perf.inference_state,
             )
+
+        # 167: the implementer WORKFLOW reports a run record and has already
+        # committed, pushed, opened the PR and waited for green CI itself (or
+        # stopped at a bounded failure). Map its status onto the response the
+        # prose path returns for that outcome and skip the prose
+        # post-processing (089 gate, push, PR, 075 loop). Prose path unchanged.
+        if perf.role == "implementing":
+            _ir_raw = backend_status.output or ""
+            _ir = _extract_json(_ir_raw) if isinstance(_ir_raw, str) else _ir_raw
+            if isinstance(_ir, dict) and isinstance(_ir.get("implementer_run"), dict):
+                _run = _ir["implementer_run"]
+                _status = str(_run.get("status") or "")
+                _reason = str(_run.get("reason") or "")
+                log.info(
+                    "implementer.run_reported",
+                    status=_status,
+                    milestones_completed=_run.get("milestones_completed"),
+                    milestones_planned=_run.get("milestones_planned"),
+                    turns=_run.get("turn_count"),
+                    session_id=perf.session_id,
+                )
+                _head: str | None = None
+                try:
+                    _head = await get_head_sha(perf.stand)
+                except Exception as exc:  # noqa: BLE001 - best effort
+                    log.warning("implementer.head_after_failed", error=str(exc))
+                if _status == "pr_opened":
+                    perf.pr_url = str(_ir.get("pr_url") or perf.pr_url or "") or None
+                    perf.pr_node_id = str(_ir.get("pr_node_id") or "") or perf.pr_node_id
+                    perf.pr_head_sha = _head
+                    perf.state = "pr_opened"
+                    return PerformerResponse(
+                        status="pr_opened", session_id=perf.session_id, pr_url=perf.pr_url,
+                        pr_node_id=perf.pr_node_id, report=_ir, head_before=perf.head_at_start, head_after=_head,
+                        progress="implementer workflow: CI green",
+                    )
+                if _status == "partial_progress":
+                    perf.state = "waiting_for_checks"
+                    return PerformerResponse(
+                        status="partial_progress", session_id=perf.session_id, report=_ir,
+                        next_focus=_run.get("next_focus_milestone"), reason=_reason,
+                        progress=_reason[:200] or "partial progress checkpoint",
+                        head_before=perf.head_at_start, head_after=_head,
+                    )
+                if _status == "env_blocked":
+                    perf.state = "env_blocked"
+                    return PerformerResponse(status="env_blocked", session_id=perf.session_id, reason=_reason, report=_ir)
+                perf.state = "changes_requested"
+                return PerformerResponse(
+                    status="changes_requested", session_id=perf.session_id, reason=_reason,
+                    body=_reason, report=_ir, local_test_failed=True,
+                )
 
         # 070: implementer partial_progress escape hatch. If the backend
         # emitted a trailing ``{"status": "partial_progress", ...}`` sentinel,

@@ -11,7 +11,9 @@ container and no gateway.
 """
 from __future__ import annotations
 
+import asyncio
 import inspect
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, TypeVar
 
@@ -32,6 +34,8 @@ M = TypeVar("M", bound=BaseModel)
 CommandRunner = Callable[[str, Any, int], Awaitable[tuple[int, str]]]
 #: (persona, content, max_tokens) -> ModelReply
 ModelCall = Callable[[str, list[dict], int], Awaitable[ModelReply]]
+#: (brief: dict, *, timeout_s: float) -> TurnResult dict
+AgentTurnRunner = Callable[[dict], Awaitable[dict]]
 
 
 class Toolkit:
@@ -46,6 +50,7 @@ class Toolkit:
         screenshot_capture: Callable[..., str | None] | None = None,
         dom_reader: Callable[[str], list[dict]] | None = None,
         event_sink: Callable[["BackendEvent"], None] | None = None,
+        agent_turn_runner: AgentTurnRunner | None = None,
         call_limit: int = 12,
     ) -> None:
         self.metrics = metrics
@@ -55,6 +60,7 @@ class Toolkit:
         self._dom_reader = dom_reader
         self._events: list["BackendEvent"] = []
         self._event_sink = event_sink
+        self._agent_turn_runner = agent_turn_runner
         self._ceiling = CallCeiling(limit=call_limit)
 
     # -- commands ---------------------------------------------------------
@@ -164,3 +170,98 @@ class Toolkit:
     @property
     def events(self) -> list["BackendEvent"]:
         return list(self._events)
+
+    # -- agent turns (spec 167) -----------------------------------------------
+
+    async def run_agent_turn(
+        self, brief: dict, *, timeout_s: float
+    ) -> dict:
+        """Run one bounded harness turn via the injected agent_turn_runner.
+
+        Arguments:
+            brief: TurnBrief dict with keys:
+                - kind: "tests", "implement", or "repair"
+                - milestone_goal: goal text
+                - scope: scope boundaries
+                - done_when: acceptance criterion
+                - forbidden_paths: list of paths to not edit
+                - milestone_index: 0-indexed position
+                - persona: (optional) turn persona instructions
+            timeout_s: wall-clock timeout in seconds
+
+        Returns:
+            TurnResult dict with keys:
+                - exit_state: "done", "timeout", or "error"
+                - output_tail: last 2000 chars of output
+                - changed_paths: dict[path -> "added"|"modified"|"deleted"]
+                - wall_ms: wall time in milliseconds
+                - harness_commits: list[commit SHAs]
+
+        Raises:
+            RuntimeError: when no agent_turn_runner is configured.
+
+        Records:
+            - Increments metrics.agent_turns
+            - Appends wall_ms to metrics.turn_durations_ms
+            - Emits "turn.start" and "turn.end" events
+        """
+        if self._agent_turn_runner is None:
+            raise RuntimeError("Toolkit has no agent_turn_runner configured")
+
+        # Emit start event
+        from performer.models import BackendEvent, BackendEventType
+        self.emit(BackendEvent(
+            type=BackendEventType.progress,
+            text=f"turn.start kind={brief.get('kind')} milestone_index={brief.get('milestone_index')}"
+        ))
+
+        started = time.monotonic()
+        try:
+            # Run the turn with timeout enforcement
+            result = await asyncio.wait_for(
+                self._agent_turn_runner(brief, timeout_s=timeout_s),
+                timeout=timeout_s
+            )
+        except asyncio.TimeoutError:
+            wall_ms = int((time.monotonic() - started) * 1000)
+            self.metrics.agent_turns += 1
+            self.metrics.turn_durations_ms.append(wall_ms)
+            self.emit(BackendEvent(
+                type=BackendEventType.progress,
+                text=f"turn.end kind={brief.get('kind')} exit_state=timeout wall_ms={wall_ms}"
+            ))
+            return {
+                "exit_state": "timeout",
+                "output_tail": "Turn exceeded wall-clock timeout",
+                "changed_paths": {},
+                "wall_ms": wall_ms,
+                "harness_commits": [],
+            }
+        except BaseException as exc:
+            wall_ms = int((time.monotonic() - started) * 1000)
+            self.metrics.agent_turns += 1
+            self.metrics.turn_durations_ms.append(wall_ms)
+            self.emit(BackendEvent(
+                type=BackendEventType.progress,
+                text=f"turn.end kind={brief.get('kind')} exit_state=error wall_ms={wall_ms}"
+            ))
+            return {
+                "exit_state": "error",
+                "output_tail": str(exc),
+                "changed_paths": {},
+                "wall_ms": wall_ms,
+                "harness_commits": [],
+            }
+
+        # Record metrics for successful completion
+        wall_ms = result.get("wall_ms", int((time.monotonic() - started) * 1000))
+        self.metrics.agent_turns += 1
+        self.metrics.turn_durations_ms.append(wall_ms)
+
+        # Emit end event
+        self.emit(BackendEvent(
+            type=BackendEventType.progress,
+            text=f"turn.end kind={brief.get('kind')} exit_state={result.get('exit_state')} wall_ms={wall_ms}"
+        ))
+
+        return result

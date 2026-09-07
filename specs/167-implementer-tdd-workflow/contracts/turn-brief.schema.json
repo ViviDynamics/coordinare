@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TurnBrief (spec 167)",
+  "description": "What one harness turn is asked to do. Travels from the workflow to the agent turn runner; never in the dispatch payload.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "kind": {
+      "type": "string",
+      "enum": [
+        "tests",
+        "implement",
+        "repair"
+      ]
+    },
+    "persona_kind": {
+      "type": "string",
+      "enum": [
+        "TESTS",
+        "IMPLEMENT",
+        "REPAIR_TESTS",
+        "REPAIR_IMPLEMENT",
+        "REPAIR_QUALITY",
+        "REPAIR_CI"
+      ]
+    },
+    "persona": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The rendered persona text handed to the harness as its instructions."
+    },
+    "milestone_index": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "milestone_goal": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "scope_paths": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "string",
+        "maxLength": 256
+      }
+    },
+    "done_when": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "forbidden_paths": {
+      "type": "array",
+      "maxItems": 10,
+      "items": {
+        "type": "string"
+      }
+    },
+    "failing_tests": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "type": "string"
+      }
+    },
+    "failure_excerpt": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 8000
+    }
+  },
+  "required": [
+    "kind",
+    "persona_kind",
+    "persona",
+    "milestone_index",
+    "milestone_goal",
+    "scope_paths",
+    "done_when",
+    "forbidden_paths"
+  ]
+}

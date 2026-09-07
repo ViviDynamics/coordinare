@@ -146,8 +146,227 @@ def _default_screenshot_path() -> str:
     return path
 
 
+def build_agent_turn_runner(
+    *,
+    stand,
+    score,
+    backend_name: str,
+    model: str | None = None,
+    effort: str | None = None,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+    forward_progress=None,
+    backend_factory=None,
+):
+    """Build an agent_turn_runner for the implementer workflow (spec 167 R7).
+
+    Arguments:
+        stand: Stand object with the cloned workspace path
+        score: Score object for this turn
+        backend_name: name of the backend (e.g. "claude_code", "junie")
+        model: optional model override
+        effort: optional effort override
+        temperature: optional temperature override
+        max_tokens: optional token count override
+        forward_progress: callable to forward BackendStatus to outer adapter
+        backend_factory: optional factory to instantiate backends (defaults to get_backend)
+
+    Returns:
+        An async callable runner(brief: dict, *, timeout_s: float) -> dict
+        that runs one turn and returns TurnResult dict.
+    """
+    import subprocess
+
+    from performer.backends import get_backend as _default_get_backend
+
+    if backend_factory is None:
+        backend_factory = _default_get_backend
+
+    async def _runner(brief: dict, *, timeout_s: float) -> dict:
+        """Run one agent turn against the backend adapter."""
+        # Resolve backend adapter
+        backend = backend_factory(backend_name.replace("-", "_").lower())  # main.py normalises kebab-case the same way
+
+        # Record starting state
+        git_result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(stand.path),
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        start_sha = git_result.stdout.strip()
+
+        # Record untracked/dirty snapshot for initial state
+        subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=str(stand.path),
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+        # Build per-turn Score with modified persona_instructions
+        turn_score = score.model_copy(
+            update={
+                "persona_instructions": brief.get("persona", ""),
+            }
+        )
+
+        # Start the backend
+        started_at = time.monotonic()
+        try:
+            await backend.start(
+                stand,
+                turn_score,
+                model=model,
+                effort=effort,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+        except Exception as exc:
+            return {
+                "exit_state": "error",
+                "output_tail": f"Failed to start backend: {exc}",
+                "changed_paths": {},
+                "wall_ms": int((time.monotonic() - started_at) * 1000),
+                "harness_commits": [],
+            }
+
+        # Poll for completion
+        poll_interval_s = 2.0
+        final_status = None
+
+        try:
+            while True:
+                elapsed = time.monotonic() - started_at
+                if elapsed > timeout_s:
+                    await backend.stop()
+                    return {
+                        "exit_state": "timeout",
+                        "output_tail": "Turn exceeded wall-clock timeout",
+                        "changed_paths": {},
+                        "wall_ms": int(elapsed * 1000),
+                        "harness_commits": [],
+                    }
+
+                status = backend.get_status()
+                final_status = status
+
+                # Forward progress and drain events to outer adapter (spec 167 R-e)
+                if forward_progress is not None and status is not None:
+                    forward_progress(status, backend)
+
+                if status.state in {"done", "error"}:
+                    break
+
+                await asyncio.sleep(poll_interval_s)
+        except asyncio.CancelledError:
+            await backend.stop()
+            raise
+
+        # Compute changed files
+        # Get working tree changes (git status --porcelain)
+        status_result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=str(stand.path),
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        working_tree_changes = {}
+        for line in status_result.stdout.splitlines():
+            if not line.strip():
+                continue
+            # Format: "XY filename"
+            status_code = line[:2]
+            path = line[3:]
+            if status_code[0] == "A" or status_code[0] == "?":
+                working_tree_changes[path] = "added"
+            elif status_code[0] == "D":
+                working_tree_changes[path] = "deleted"
+            else:
+                working_tree_changes[path] = "modified"
+
+        # Get committed changes (git diff --name-only --name-status)
+        diff_result = subprocess.run(
+            ["git", "diff", "--name-status", start_sha],
+            cwd=str(stand.path),
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        committed_changes = {}
+        for line in diff_result.stdout.splitlines():
+            if not line.strip():
+                continue
+            parts = line.split(None, 1)
+            if len(parts) < 2:
+                continue
+            status_code = parts[0]
+            path = parts[1]
+            if status_code == "A":
+                committed_changes[path] = "added"
+            elif status_code == "D":
+                committed_changes[path] = "deleted"
+            else:
+                committed_changes[path] = "modified"
+
+        # Merge both dictionaries (committed takes precedence as it's more authoritative)
+        changed_paths = dict(working_tree_changes)
+        changed_paths.update(committed_changes)
+
+        # Get commits made during the turn
+        commits_result = subprocess.run(
+            ["git", "rev-list", f"{start_sha}..HEAD"],
+            cwd=str(stand.path),
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        harness_commits = commits_result.stdout.strip().splitlines()
+
+        # Compute output tail
+        output_tail = ""
+        if final_status and final_status.output:
+            output = final_status.output or ""
+            output_tail = output[-4000:] if len(output) > 4000 else output
+
+        wall_ms = int((time.monotonic() - started_at) * 1000)
+
+        if final_status and final_status.state == "error":
+            return {
+                "exit_state": "error",
+                "output_tail": final_status.error_reason or output_tail,
+                "changed_paths": changed_paths,
+                "wall_ms": wall_ms,
+                "harness_commits": harness_commits,
+            }
+
+        return {
+            "exit_state": "done",
+            "output_tail": output_tail,
+            "changed_paths": changed_paths,
+            "wall_ms": wall_ms,
+            "harness_commits": harness_commits,
+        }
+
+    return _runner
+
+
 def build_production_toolkit(
-    score: "Score", *, metrics, event_sink, workflow_name: str = ""
+    score: "Score",
+    *,
+    metrics,
+    event_sink,
+    workflow_name: str = "",
+    stand=None,
+    model: str | None = None,
+    effort: str | None = None,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+    inner_status_recorder=None,
+    backend_factory=None,
 ) -> Toolkit:
     """Wire a Toolkit with every primitive a workflow needs at runtime.
 
@@ -172,6 +391,29 @@ def build_production_toolkit(
             out_path=out_path or _default_screenshot_path(),
         )
 
+    # Build agent_turn_runner for implementer workflow (spec 167 T012)
+    agent_turn_runner = None
+    if workflow_name == "implementer" and stand is not None:
+        from performer.config import get_settings
+
+        backend_name = score.backend or get_settings().AGENT_BACKEND
+
+        def _forward_progress(status, backend):
+            if inner_status_recorder is not None:
+                inner_status_recorder(status, backend)
+
+        agent_turn_runner = build_agent_turn_runner(
+            stand=stand,
+            score=score,
+            backend_name=backend_name,
+            model=model,
+            effort=effort,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            forward_progress=_forward_progress,
+            backend_factory=backend_factory,
+        )
+
     # Assessor workflow is write-free: no command_runner, screenshot_capture, or dom_reader
     if workflow_name == "assessor":
         return Toolkit(
@@ -181,6 +423,7 @@ def build_production_toolkit(
             screenshot_capture=None,
             dom_reader=None,
             event_sink=event_sink,
+            agent_turn_runner=agent_turn_runner,
         )
 
     return Toolkit(
@@ -190,6 +433,7 @@ def build_production_toolkit(
         screenshot_capture=_capture,
         dom_reader=read_dom,
         event_sink=event_sink,
+        agent_turn_runner=agent_turn_runner,
     )
 
 
@@ -206,6 +450,10 @@ class WorkflowAdapter:
         self._metrics = WorkflowMetrics()
         self._events: list["BackendEvent"] = []
         self._current_step: str | None = None
+        #: Progress text from inner harness (spec 167 R-e).
+        self._inner_progress: str | None = None
+        #: Event sink callback for forwarding events
+        self._event_sink = None
 
     # -- BackendAdapter ---------------------------------------------------
 
@@ -219,12 +467,21 @@ class WorkflowAdapter:
         temperature: float | None = None,
         max_tokens: int | None = None,
     ) -> None:
+        self._event_sink = self._on_event
         toolkit = (
             self._toolkit_factory(self._metrics, self._on_event)
             if self._toolkit_factory is not None
             else build_production_toolkit(
-                score, metrics=self._metrics, event_sink=self._on_event,
-                workflow_name=self.workflow_name
+                score,
+                metrics=self._metrics,
+                event_sink=self._on_event,
+                workflow_name=self.workflow_name,
+                stand=stand,
+                model=model,
+                effort=effort,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                inner_status_recorder=self.record_inner_status,
             )
         )
         log.info(
@@ -240,6 +497,35 @@ class WorkflowAdapter:
         text = getattr(event, "text", "") or ""
         if text.startswith("qa."):
             self._current_step = text[3:]
+
+    def set_inner_progress(self, text: str) -> None:
+        """Set progress text from inner harness (spec 167 R-e).
+
+        Called by the agent turn runner to forward the inner harness's status
+        progress so the coordinare's stall watchdog sees growth.
+        """
+        self._inner_progress = text
+
+    def record_inner_status(self, status: BackendStatus, backend=None) -> None:
+        """Record progress and events from inner harness (spec 167 R-e).
+
+        Called by the agent turn runner to forward the inner backend's status
+        during a turn. Appends any new inner events and updates inner progress.
+        """
+        if status is None:
+            return
+
+        # Forward progress text (update inner progress marker)
+        if status.progress:
+            self.set_inner_progress(status.progress)
+
+        # Drain and forward events from backend
+        if backend is not None:
+            events = backend.drain_events()
+            for event in events:
+                self._events.append(event)
+                if self._event_sink is not None:
+                    self._event_sink(event)
 
     async def _run(self, stand, score, toolkit) -> None:
         started = time.monotonic()
@@ -273,7 +559,9 @@ class WorkflowAdapter:
         if self._task is None:
             return BackendStatus(state="working", progress="not started")
         if not self._task.done():
-            return BackendStatus(state="working", progress=self._current_step or "running")
+            # Spec 167 R-e: forward inner progress if available (stall watchdog)
+            progress = self._inner_progress or self._current_step or "running"
+            return BackendStatus(state="working", progress=progress)
         if self._error is not None:
             error_msg = f"{type(self._error).__name__}: {self._error}"
             # Schema violations route to bounded retry gate (spec 098/119)

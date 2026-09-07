@@ -35,6 +35,7 @@ SUPPORTED_WORKFLOWS: dict[str, tuple[str, str]] = {
     "qa": ("performer.workflows.qa", "QAWorkflow"),
     "architect": ("performer.workflows.architect", "ArchitectWorkflow"),
     "assessor": ("performer.workflows.assessor", "AssessorWorkflow"),
+    "implementer": ("performer.workflows.implementer", "ImplementerWorkflow"),
 }
 
 

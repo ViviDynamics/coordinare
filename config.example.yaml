@@ -368,6 +368,28 @@ performers:
 
   implementer:
     effort: high
+    # 167: run the implementer as a bounded test-first WORKFLOW instead of one
+    # long harness run. Per blueprint milestone: a tests turn, an observed red
+    # (the new tests fail, nothing regressed), an implementation turn, an
+    # observed green, commits written by code. Then the repository's quality
+    # commands, the 089 local gate, push, PR, and a wait for green CI with
+    # bounded repair turns before pr_opened. Every loop has a cap. Default off:
+    # remove the line to restore the prose path exactly, including the 075 CI
+    # loop. See specs/167-implementer-tdd-workflow/quickstart.md.
+    # NOTE: dispatcher_dedup.stall_timeout_seconds must be at least
+    # IMPL_TURN_TIMEOUT_S, or the stall watchdog can kill a quiet harness turn;
+    # the workflow forwards the harness's progress, but keep them consistent.
+    # workflow: implementer
+    # workflow_env:
+    #   QUALITY_COMMANDS: |          # what CI enforces, one per line, run before push
+    #     bundle exec rubocop
+    #     bundle exec erb_lint --lint-all
+    #   IMPL_TURN_TIMEOUT_S: 1200      # wall clock per harness turn
+    #   IMPL_ATTEMPTS: 3               # implementation turns per milestone
+    #   IMPL_QUALITY_REPAIRS: 2
+    #   IMPL_CI_REPAIRS: 3
+    #   IMPL_CI_WAIT_S: 1800           # pending checks past this are an env hold
+    #   IMPL_DEFAULT_KIND: feature     # lane when no blueprint names a work kind
     max_tokens: 16384
 
   reviewer:
