@@ -1,0 +1,74 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "SecurityRecord",
+  "description": "The security workflow's report record (spec 170), returned as report[\"security\"].",
+  "type": "object",
+  "required": ["changed_files", "diff_truncated", "scan", "verdict", "covered_files"],
+  "additionalProperties": false,
+  "properties": {
+    "changed_files": {"type": "array", "items": {"$ref": "#/definitions/changed_file"}},
+    "diff_truncated": {"type": "boolean"},
+    "scan": {"type": "array", "items": {"$ref": "#/definitions/scan_result"}},
+    "unread_files": {"type": "array", "items": {"type": "string"}, "default": []},
+    "survey_commands": {"type": "array", "items": {"type": "object"}, "default": []},
+    "survey_refusals": {"type": "array", "items": {"type": "object"}, "default": []},
+    "findings_before_gate": {"type": "array", "maxItems": 30, "items": {"$ref": "#/definitions/finding"}, "default": []},
+    "findings_dropped": {"type": "array", "maxItems": 30, "items": {"$ref": "#/definitions/finding"}, "default": []},
+    "findings_after_anchor_recheck": {"type": "array", "maxItems": 30, "items": {"$ref": "#/definitions/finding"}, "default": []},
+    "scanner_findings": {"type": "array", "maxItems": 200, "items": {"$ref": "#/definitions/finding"}, "default": []},
+    "blocking": {"type": "array", "maxItems": 230, "items": {"$ref": "#/definitions/finding"}, "default": []},
+    "advisory": {"type": "array", "maxItems": 230, "items": {"$ref": "#/definitions/finding"}, "default": []},
+    "coverage_pass_ran": {"type": "boolean", "default": false},
+    "coverage_pass_output": {"type": "string", "default": ""},
+    "verdict": {"type": "string", "enum": ["security_passed", "security_failed", "env_blocked"]},
+    "hold_reason": {"type": ["string", "null"], "default": null},
+    "covered_files": {"type": "array", "items": {"type": "string"}},
+    "post_error": {"type": ["string", "null"], "default": null},
+    "posted_review_url": {"type": ["string", "null"], "default": null},
+    "workflow_metrics": {"type": "object", "default": {}}
+  },
+  "definitions": {
+    "changed_file": {
+      "type": "object",
+      "required": ["path", "hunks", "fully_in_diff"],
+      "properties": {
+        "path": {"type": "string"},
+        "hunks": {"type": "array", "items": {"type": "object", "required": ["header", "start_line", "end_line"],
+          "properties": {"header": {"type": "string"}, "start_line": {"type": "integer", "minimum": 1}, "end_line": {"type": "integer", "minimum": 1}, "lines": {"type": "array", "items": {"type": "string"}}}}},
+        "fully_in_diff": {"type": "boolean"},
+        "opened_by_survey": {"type": "boolean", "default": false}
+      }
+    },
+    "scan_result": {
+      "type": "object",
+      "required": ["tool", "command", "finding_count", "duration_ms"],
+      "properties": {
+        "tool": {"type": "string", "enum": ["semgrep", "bandit"]},
+        "command": {"type": "string"},
+        "exit_code": {"type": ["integer", "null"]},
+        "finding_count": {"type": "integer", "minimum": 0},
+        "duration_ms": {"type": "integer", "minimum": 0},
+        "error": {"type": ["string", "null"], "default": null}
+      }
+    },
+    "finding": {
+      "type": "object",
+      "required": ["path", "line", "category", "problem", "why_blocking", "evidence", "origin", "severity", "routing", "introduced_by", "tool"],
+      "properties": {
+        "path": {"type": "string"},
+        "line": {"type": "integer", "minimum": 0},
+        "category": {"type": "string", "enum": ["injection", "broken_authorization", "hardcoded_secret", "insecure_deserialization", "path_traversal", "ssrf", "weak_crypto", "missing_hardening", "information_leak", "other_insecure_pattern"]},
+        "problem": {"type": "string", "minLength": 1, "maxLength": 500},
+        "why_blocking": {"type": "string", "minLength": 1, "maxLength": 500},
+        "evidence": {"type": "string", "maxLength": 200},
+        "origin": {"type": "string", "enum": ["model", "rule"]},
+        "severity": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
+        "routing": {"type": "string", "enum": ["implementer", "architect"]},
+        "introduced_by": {"type": "string"},
+        "tool": {"type": "string", "enum": ["model", "semgrep", "bandit"]},
+        "downgraded": {"type": "boolean", "default": false},
+        "downgrade_reason": {"type": "string", "maxLength": 300, "default": ""}
+      }
+    }
+  }
+}

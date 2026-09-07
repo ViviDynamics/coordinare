@@ -415,6 +415,25 @@ performers:
     mode: single-gpt55              # upgrade model for security analysis if desired
     effort: high
     temperature: 0.0
+    # 170: run the security stage as a workflow: semgrep and bandit run inside
+    # the performer over the changed files (a missing or broken scanner holds
+    # the card, never passes it), a read-only survey with coverage, one
+    # schema-guarded findings call over a fixed category set, severity and
+    # routing assigned by code from the category (hardcoded_secret critical;
+    # injection, broken_authorization, insecure_deserialization, path_traversal,
+    # ssrf high; the rest advisory), scanner findings never dropped, and
+    # exactly one GitHub review. Blocking findings routed to the implementer
+    # reach it through the same repair lane the reviewer uses. Under the
+    # workflow coordinare skips its own dispatch-time scan (spec 083) and the
+    # stage commits nothing. Default off: remove the line to restore the prose
+    # path exactly. See specs/170-security-workflow/quickstart.md.
+    # workflow: security
+    # workflow_env:
+    #   SECURITY_SEMGREP_CONFIG: auto          # p/default or a rules directory when the container has no registry access
+    #   SECURITY_SCAN_TIMEOUT_S: 120           # per tool
+    #   SECURITY_SURVEY_MAX_COMMANDS: 12
+    #   SECURITY_SURVEY_MAX_OUTPUT_CHARS: 4000
+    #   SECURITY_MAX_FINDINGS: 30              # never above 30
 
   qa:
     effort: high

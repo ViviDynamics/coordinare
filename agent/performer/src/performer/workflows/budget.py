@@ -54,6 +54,9 @@ _STEP_BUDGETS: dict[str, int] = {
     # 169 reviewer workflow: the findings call is schema-guarded with max 30
     # findings and one reprompt; similar to blueprint scope.
     "findings": 8000,
+    # 170 security workflow: the findings call is schema-guarded over a fixed
+    # category set with max 30 findings and one reprompt; one re-anchor call.
+    "security_findings": 8000,
 }
 _DEFAULT_BUDGET = 8000
 

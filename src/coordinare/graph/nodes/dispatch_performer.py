@@ -115,6 +115,32 @@ def _resolve_persona_slice_and_behavior(
     return slice_dict, scope_behavior
 
 
+def _role_runs_workflow(state: Any, role: str | None, workflow_name: str) -> bool:
+    """170 — Resolve whether a role is configured to run a specific workflow.
+
+    Returns True only when the role's config carries a workflow field matching
+    the given name. Guards every attribute access to tolerate missing config.
+    Used to gate coordinare's floor logic: when a role runs a workflow, the
+    workflow runs its own floor and coordinare must not run the legacy floor.
+    """
+    if role is None:
+        return False
+    config = state.get("config")
+    if config is None or not hasattr(config, "performers"):
+        return False
+    performers = getattr(config, "performers", None)
+    if performers is None or not hasattr(performers, "resolved_role"):
+        return False
+    try:
+        role_config = performers.resolved_role(role)
+    except Exception:
+        return False
+    if role_config is None:
+        return False
+    role_workflow = getattr(role_config, "workflow", None)
+    return role_workflow == workflow_name
+
+
 def _scanner_unavailable_finding(reason: str) -> dict[str, Any]:
     """083 — Synthetic fail-closed finding for a broken/unavailable scanner.
 
@@ -228,10 +254,11 @@ def inject_assessment(card_context: dict[str, Any], state: Any, *, performer_sta
 def reset_review_findings_for_reviewer(state: Any, performer_stage: str | None) -> bool:
     """169 (T039): dispatching the reviewer means a new review is coming: drop the
     old findings so a round that fails to report can never leave stale findings for
-    the implementer to consume (mirrors reset_assessment_for_assessor). Returns
-    True when something was cleared.
+    the implementer to consume (mirrors reset_assessment_for_assessor). 170: also
+    clear on security dispatch because a security workflow also replaces findings.
+    Returns True when something was cleared.
     """
-    if performer_stage != "reviewing":
+    if performer_stage not in ("reviewing", "security"):
         return False
     had = state.get("review_findings") is not None
     state["review_findings"] = None
@@ -1513,10 +1540,23 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
     # diff-fetch or scanner failure is fail-closed: a synthetic critical
     # ``scanner_unavailable`` finding (routing: halt) is stashed instead, so the
     # gate never silently passes on a broken scanner (FR-008).
+    # 170: when the security role runs the workflow, skip this floor: the
+    # workflow runs its own scanner inside the performer. Set scanner_findings
+    # to [] so the monitor floor merge is skipped (it checks for a report key
+    # instead), and inject pr_diff since the workflow's intake needs it.
     if role == "security":
-        scanner_findings = await _run_security_floor(state, card)
-        state["scanner_findings"] = scanner_findings
-        card_context["scanner_findings"] = scanner_findings
+        if _role_runs_workflow(state, role, "security"):
+            state["scanner_findings"] = []
+            card_context["scanner_findings"] = []
+            logger.info(
+                "dispatch_performer.security_floor_skipped",
+                card_id=card_id,
+                reason="workflow",
+            )
+        else:
+            scanner_findings = await _run_security_floor(state, card)
+            state["scanner_findings"] = scanner_findings
+            card_context["scanner_findings"] = scanner_findings
 
     # 164: hand the previous QA round's repair brief to the implementer.
     inject_qa_findings(card_context, state, role=role)
@@ -1539,7 +1579,10 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
     # on any fetch failure the diff is omitted and the persona fallback applies.
     # 125 US3 (F1): reuse the doc gate's fetch when it already ran — at most
     # one get_pr_diff per dispatch evaluation.
-    if role in _DIFF_REVIEW_ROLES:
+    # 170: also inject pr_diff for the security role when it runs the workflow,
+    # since the workflow intake needs to parse the diff (R-b).
+    inject_pr_diff = role in _DIFF_REVIEW_ROLES or _role_runs_workflow(state, role, "security")
+    if inject_pr_diff:
         if pr_data is None:
             pr_data = await _fetch_pr_data(state, card)
         pr_diff_text = pr_data[0]

@@ -2095,7 +2095,7 @@ async def handle_status(
             # path returns for that outcome and skip the prose post. Without the
             # report key the prose path below is untouched (FR-015).
             _rr = _extract_json(review_raw) if isinstance(review_raw, str) else review_raw
-            if isinstance(_rr, dict) and isinstance(_rr.get("review"), dict):
+            if isinstance(_rr, dict) and isinstance(_rr.get("review"), dict) and _rr["review"].get("verdict") in ("approved", "changes_requested", "env_blocked"):
                 _review = _rr["review"]
                 _verdict = str(_review.get("verdict") or "")
                 _findings = [f for f in (_review.get("findings") or []) if isinstance(f, dict)]
@@ -2341,6 +2341,63 @@ async def handle_status(
         # 022: Security performer path — analyse findings, post advisories, pass or fail.
         if perf.role == "security":
             sec_raw = backend_status.output or ""
+            # 170: the security WORKFLOW reports a security record: the scan ran
+            # inside the performer, the gate assigned severity and routing by code,
+            # and the one GitHub review is already posted. Map the record onto the
+            # statuses coordinare routes today (022 findings shape) and skip the
+            # prose post-processing (committed report, advisory comments). Without
+            # the report key the prose path below is untouched.
+            _sr = _extract_json(sec_raw) if isinstance(sec_raw, str) else sec_raw
+            if isinstance(_sr, dict) and isinstance(_sr.get("security"), dict) and _sr["security"].get("verdict") in ("security_passed", "security_failed", "env_blocked"):
+                _sec = _sr["security"]
+                _verdict = str(_sec.get("verdict") or "")
+                _blocking = [f for f in (_sec.get("blocking") or []) if isinstance(f, dict)]
+                _advisory = [f for f in (_sec.get("advisory") or []) if isinstance(f, dict)]
+                log.info(
+                    "security.record_reported",
+                    verdict=_verdict,
+                    blocking=len(_blocking),
+                    advisory=len(_advisory),
+                    dropped=len(_sec.get("findings_dropped") or []),
+                    scan=[(r.get("tool"), r.get("exit_code"), r.get("finding_count")) for r in (_sec.get("scan") or []) if isinstance(r, dict)],
+                    posted=_sec.get("posted_review_url"),
+                    session_id=perf.session_id,
+                )
+
+                def _as_022(f: dict) -> dict:
+                    desc = f"{f.get('category')}: {f.get('problem')} Why blocking: {f.get('why_blocking')}"
+                    if f.get("evidence"):
+                        desc += f" Evidence: {f.get('evidence')}"
+                    return {
+                        "severity": str(f.get("severity") or "high"),
+                        "category": str(f.get("category") or "other_insecure_pattern"),
+                        "description": desc,
+                        "file": str(f.get("path") or ""),
+                        "line": int(f.get("line") or 0),
+                        "routing": str(f.get("routing") or "implementer"),
+                    }
+
+                if _verdict == "security_passed":
+                    perf.state = "security_passed"
+                    return PerformerResponse(status="security_passed", session_id=perf.session_id, report=_sr)
+                if _verdict == "security_failed":
+                    max_cycles = settings.SECURITY_MAX_CYCLES if settings else 3
+                    perf.security_cycle += 1
+                    if perf.security_cycle >= max_cycles:
+                        summary = f"Security: {len(_blocking)} blocking finding(s) after {perf.security_cycle} fix attempt(s)"
+                        perf.state = "blocked"
+                        perf.open_questions = [summary]
+                        return PerformerResponse(status="blocked", session_id=perf.session_id, questions=[summary], report=_sr)
+                    perf.security_findings = [_as_022(f) for f in _blocking]
+                    perf.state = "security_failed"
+                    return PerformerResponse(
+                        status="security_failed", session_id=perf.session_id, findings=perf.security_findings, report=_sr,
+                    )
+                _reason = str(_sec.get("hold_reason") or _sec.get("post_error") or "")
+                if not _reason:
+                    _reason = "the security review could not complete: " + ", ".join(str(u) for u in (_sec.get("unread_files") or [])[:10])
+                perf.state = "env_blocked"
+                return PerformerResponse(status="env_blocked", session_id=perf.session_id, reason=_reason, report=_sr)
             if not sec_raw.strip():
                 return await _handle_backend_parse_failure(
                     perf, sec_raw, "security", settings, "was empty",
