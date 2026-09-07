@@ -60,6 +60,9 @@ _STEP_BUDGETS: dict[str, int] = {
     # 171 documenter workflow: one schema-guarded write call per page with one
     # reprompt; documented pages are prose-heavy and need room for quality.
     "doc_write": 8000,
+    # 172 closer workflow: one schema-guarded judgement call over at most 20
+    # answered threads with one reprompt; threads are classified by code.
+    "closing_judge": 4000,
 }
 _DEFAULT_BUDGET = 8000
 

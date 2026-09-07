@@ -463,6 +463,8 @@ performers:
     effort: low
     temperature: 0.0
     max_tokens: 2048
+    # 172: run the closing review as a workflow (see specs/172-closer-workflow/quickstart.md).
+    # workflow: closer
 
 # --- Self-hosted backend example (opencode_compat) ---
 # Drop-in alternative for any role above. Add a self-hosted endpoint + model

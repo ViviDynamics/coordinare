@@ -4025,6 +4025,15 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
                     "blocked column: check the workspace for leftover changes and the push path for the "
                     "branch, then re-run the documenting stage."
                 ]
+            elif stage == "closing_review":
+                # 172: the closer workflow holds when it could not read the review
+                # threads, could not post its one review, or could not resolve a
+                # thread it judged addressed. None of these is a code defect.
+                state["system_error_reason"] = f"the closing review could not complete (no code defect):\n{_reason}"
+                state["open_questions"] = [
+                    f"The closer hit an environment blocker ({_reason}). The card is parked in the blocked "
+                    "column: check GitHub API access from the performer, then re-run the closing review."
+                ]
             elif stage == "security":
                 # 170: the security workflow holds when a scanner is missing or broken,
                 # when it could not post its one review, or when it could not read

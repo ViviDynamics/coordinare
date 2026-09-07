@@ -2087,6 +2087,61 @@ async def handle_status(
         # difference is the persona instructions injected by the coordinare.
         # The closer posts a verdict and, on approval, resolves every open
         # thread so the PR can clear the "all comments resolved" merge gate.
+        # 172: the closer WORKFLOW reports a closing record: the review threads were
+        # classified by code, only ambiguous ones reached the model, every judgement
+        # was checked against the thread's own words, the one review is posted and
+        # the earned threads are already resolved. Map the verdict and skip the prose
+        # path (and its resolve-everything call). A dict without a known verdict is
+        # not a workflow report: the prose path below is untouched.
+        if perf.role == "closing_review":
+            _cr_raw = backend_status.output or ""
+            _cr = _extract_json(_cr_raw) if isinstance(_cr_raw, str) else _cr_raw
+            if (isinstance(_cr, dict) and isinstance(_cr.get("closing"), dict)
+                    and _cr["closing"].get("verdict") in ("approved", "changes_requested", "env_blocked")
+                    and isinstance(_cr["closing"].get("threads_read"), int)
+                    and isinstance(_cr["closing"].get("classifications"), list)):
+                _closing = _cr["closing"]
+                _verdict = str(_closing.get("verdict"))
+                _open = [t for t in (_closing.get("open_threads") or []) if isinstance(t, dict)]
+                log.info(
+                    "closer.record_reported",
+                    verdict=_verdict,
+                    threads=_closing.get("threads_read"),
+                    resolved=len(_closing.get("resolved") or []),
+                    open=len(_open),
+                    model_calls=(_closing.get("workflow_metrics") or {}).get("model_calls"),
+                    session_id=perf.session_id,
+                )
+                if _verdict == "env_blocked":
+                    perf.state = "env_blocked"
+                    return PerformerResponse(
+                        status="env_blocked", session_id=perf.session_id,
+                        reason=str(_closing.get("hold_reason") or "the closing review could not complete"), report=_cr,
+                    )
+                if _verdict == "approved":
+                    # The workflow resolved what it judged; never resolve again here.
+                    perf.state = "approved"
+                    perf.review_suggestions = []
+                    return PerformerResponse(status="approved", session_id=perf.session_id, suggestions=[], report=_cr)
+                _comments = [
+                    {"path": str(t.get("path") or ""), "line": int(t.get("line") or 0),
+                     "body": f"unresolved review thread: {t.get('excerpt') or t.get('thread_id')}"}
+                    for t in _open
+                ]
+                max_cycles = settings.REVIEWER_MAX_CYCLES if settings else 3
+                perf.review_cycle += 1
+                if perf.review_cycle >= max_cycles:
+                    summary = f"Review cycle limit reached ({perf.review_cycle}). Unresolved threads remain."
+                    perf.state = "blocked"
+                    perf.open_questions = [summary]
+                    return PerformerResponse(status="blocked", session_id=perf.session_id, questions=[summary], report=_cr)
+                perf.review_comments = _comments
+                perf.state = "changes_requested"
+                return PerformerResponse(
+                    status="changes_requested", session_id=perf.session_id, comments=_comments,
+                    body=f"{len(_open)} review thread(s) still open", report=_cr,
+                )
+
         if perf.role in ("reviewing", "closing_review"):
             review_raw = backend_status.output or ""
             # 169: the reviewer WORKFLOW reports a review record and has already

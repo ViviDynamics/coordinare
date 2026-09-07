@@ -461,3 +461,35 @@ async def test_the_documenter_workflow_runs_behind_the_same_adapter_seam(tmp_pat
     assert status.state == "done", status
     report = json.loads(status.output)
     assert report["docs"]["verdict"] == "docs_committed" and "docs/wiki/payments.md" in report["docs"]["files_written"]
+
+
+@pytest.mark.asyncio
+async def test_the_closer_workflow_runs_behind_the_same_adapter_seam(tmp_path):
+    """172: the eighth consumer of the layer is dispatched exactly like the others,
+    and the common path makes no model call at all."""
+    import json
+    from types import SimpleNamespace
+
+    from performer.workflows.adapter import WorkflowAdapter
+    from performer.workflows.base import WorkflowMetrics
+    from performer.workflows.closer import CloserWorkflow
+    from performer.workflows.toolkit import Toolkit
+
+    from tests.unit.workflows.closer._fakes import FakeGitHub, comment, thread
+
+    async def no_model(*_a, **_k):
+        raise AssertionError("a card whose threads are all resolved must make no model call")
+
+    events = []
+    stub_tk = Toolkit(metrics=WorkflowMetrics(), model_call=no_model, command_runner=None, event_sink=events.append, call_limit=8)
+    gh = FakeGitHub([thread("t1", comment("reviewer", "please guard this"), resolved=True)])
+    adapter = WorkflowAdapter("closer", toolkit_factory=lambda metrics, sink: stub_tk)
+    adapter._workflow = CloserWorkflow(fetcher=gh.fetcher, resolver=gh.resolver, poster=gh.poster)  # the registry's instance would call GitHub
+    score = SimpleNamespace(pr_url="https://github.com/o/r/pull/7", owner_repo=("o", "r"), effective_github_token="t",
+                            backend="codex", model="m", workflow_env={}, head_sha="abc")
+    await adapter.start(SimpleNamespace(path=tmp_path), score)
+    await adapter._task
+    status = adapter.get_status()
+    assert status.state == "done", status
+    report = json.loads(status.output)
+    assert report["closing"]["verdict"] == "approved" and report["workflow_metrics"]["model_calls"] == 0
