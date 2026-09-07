@@ -21,7 +21,14 @@ _SOURCE_SUFFIXES = frozenset({".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs",
 
 
 _RELATIVE_PATH = re.compile(r"^[A-Za-z0-9_.-]+(?:(?:/[A-Za-z0-9_.-]+)+/?|/)$")  # a/b, a/b/, or a bare directory a/
-_FILE_WITH_EXTENSION = re.compile(r"^[A-Za-z0-9_-][A-Za-z0-9_.-]*\.[a-z0-9]{1,5}$")
+#: A bare file name counts as a path only with a known source or config extension.
+#: The live init round read `0.1.0` (a version) and `pkg5.x` (an attribute) as files.
+_KNOWN_EXTENSIONS = (
+    "py", "pyi", "js", "jsx", "ts", "tsx", "go", "rs", "rb", "java", "kt", "swift", "c", "cc", "cpp", "h", "hpp",
+    "cs", "php", "scala", "ex", "exs", "sh", "bash", "zsh", "sql", "md", "rst", "txt", "toml", "yaml", "yml",
+    "json", "cfg", "ini", "conf", "env", "lock", "xml", "html", "css", "scss", "csv", "proto", "gradle", "mk",
+)
+_FILE_WITH_EXTENSION = re.compile(r"^[A-Za-z_-][A-Za-z0-9_.-]*\.(?:" + "|".join(_KNOWN_EXTENSIONS) + r")$")
 
 
 def path_like_tokens(text: str) -> set[str]:
