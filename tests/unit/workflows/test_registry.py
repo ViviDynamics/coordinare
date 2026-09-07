@@ -66,3 +66,13 @@ def test_implementer_is_a_registered_workflow():
     wf = get_workflow("implementer")
     assert wf.name == "implementer"
     assert not is_supported_workflow("implement"), "a typo is still unknown"
+
+
+def test_documenter_is_a_registered_workflow():
+    """171: documenter workflow resolves and is registered."""
+    from performer.workflows import get_workflow, is_supported_workflow
+
+    assert is_supported_workflow("documenter") is True
+    wf = get_workflow("documenter")
+    assert wf.name == "documenter"
+    assert not is_supported_workflow("document"), "a typo is still unknown"

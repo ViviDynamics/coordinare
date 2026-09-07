@@ -325,3 +325,22 @@ async def test_a_security_env_blocked_hold_names_the_scanners_not_the_local_test
     assert result["phase"] == "blocked"
     text = " ".join(result["open_questions"]) + result["system_error_reason"]
     assert "semgrep" in text and "security" in text.lower() and "local test" not in text.lower()
+
+
+@pytest.mark.asyncio
+async def test_a_documenting_env_blocked_hold_names_the_documenter_not_the_local_test_gate():
+    """Spec 171 review finding: the hold message for the documenting stage talked about local tests."""
+    from coordinare.graph.nodes.monitor_performer import monitor_performer
+    from coordinare.graph.state import initial_state
+    from tests.unit.graph.nodes.test_monitor_performer import _Performer
+
+    state = initial_state()
+    state["performer_services"] = {"documenting": _Performer(response={"status": "env_blocked", "reason": "the tree was dirty at start: src/a.py", "report": {"docs": {"verdict": "env_blocked"}}})}
+    state["performer_stage"] = "documenting"
+    state["lifecycle_sequence"] = ["implementing", "documenting"]
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    result = await monitor_performer(state)
+    assert result["phase"] == "blocked"
+    text = " ".join(result["open_questions"]) + result["system_error_reason"]
+    assert "documenter" in text.lower() and "dirty" in text and "local test" not in text.lower()

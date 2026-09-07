@@ -1,0 +1,61 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "DocsRecord",
+  "description": "The documenter workflow's report record (spec 171), returned as report[\"docs\"].",
+  "type": "object",
+  "required": ["mode", "changed_files", "plan", "results", "files_written", "verdict"],
+  "additionalProperties": false,
+  "properties": {
+    "mode": {"type": "string", "enum": ["update", "init"]},
+    "brief_present": {"type": "boolean", "default": false},
+    "changed_files": {"type": "array", "items": {"type": "string"}},
+    "diff_truncated": {"type": "boolean", "default": false},
+    "inventory_size": {"type": "integer", "minimum": 0, "default": 0},
+    "plan": {"type": "array", "maxItems": 8, "items": {"$ref": "#/definitions/page_plan"}},
+    "deferred": {"type": "array", "items": {"type": "string"}, "default": []},
+    "refused_paths": {"type": "array", "items": {"type": "string"}, "default": []},
+    "evidence": {"type": "object", "default": {}},
+    "results": {"type": "array", "maxItems": 8, "items": {"$ref": "#/definitions/page_result"}},
+    "files_written": {"type": "array", "items": {"type": "string"}},
+    "files_retired": {"type": "array", "items": {"type": "string"}, "default": []},
+    "readme_generated": {"type": "boolean", "default": false},
+    "pointers_refreshed": {"type": "array", "items": {"type": "string"}, "default": []},
+    "reverted_paths": {"type": "array", "items": {"type": "string"}, "default": []},
+    "commit_sha": {"type": ["string", "null"], "default": null},
+    "verdict": {"type": "string", "enum": ["docs_committed", "env_blocked"]},
+    "hold_reason": {"type": ["string", "null"], "default": null},
+    "workflow_metrics": {"type": "object", "default": {}}
+  },
+  "definitions": {
+    "page_plan": {
+      "type": "object",
+      "required": ["path", "kind", "source", "justification", "exists"],
+      "properties": {
+        "path": {"type": "string"},
+        "kind": {"type": ["string", "null"], "enum": ["explanation", "how-to", "reference", "decision", null]},
+        "source": {"type": "string", "enum": ["brief", "inventory", "init", "index"]},
+        "justification": {"type": "string", "maxLength": 500},
+        "exists": {"type": "boolean"},
+        "say": {"type": "array", "items": {"type": "string"}, "default": []},
+        "modules": {"type": "array", "items": {"type": "string"}, "default": []}
+      }
+    },
+    "page_result": {
+      "type": "object",
+      "required": ["path", "action", "dropped"],
+      "properties": {
+        "path": {"type": "string"},
+        "kind": {"type": ["string", "null"]},
+        "action": {"type": "string", "enum": ["write", "unchanged", "retire", "generated"]},
+        "reason": {"type": "string", "maxLength": 300, "default": ""},
+        "citations_checked": {"type": "integer", "minimum": 0, "default": 0},
+        "citations_missing": {"type": "array", "items": {"type": "string"}, "default": []},
+        "links_missing": {"type": "array", "items": {"type": "string"}, "default": []},
+        "contract_failures": {"type": "array", "items": {"type": "string"}, "default": []},
+        "size": {"type": "integer", "minimum": 0, "default": 0},
+        "dropped": {"type": "boolean"},
+        "drop_reason": {"type": ["string", "null"], "default": null}
+      }
+    }
+  }
+}

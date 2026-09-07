@@ -419,3 +419,45 @@ async def test_the_security_workflow_runs_behind_the_same_adapter_seam(tmp_path)
     assert report["security"]["verdict"] == "security_failed"
     assert report["security"]["blocking"][0]["category"] == "injection"
     assert [r["event"] for r in gh.reviews] == ["REQUEST_CHANGES"]
+
+
+@pytest.mark.asyncio
+async def test_the_documenter_workflow_runs_behind_the_same_adapter_seam(tmp_path):
+    """171: the seventh consumer of the layer is dispatched exactly like the
+    others: BackendAdapter-shaped, done with a JSON report main.py can parse,
+    and its report carries the docs record. The committer is local: nothing is pushed."""
+    import json
+    from types import SimpleNamespace
+
+    from performer.models import Stand
+    from performer.workflows.adapter import WorkflowAdapter
+    from performer.workflows.base import WorkflowMetrics
+    from performer.workflows.budget import ModelReply
+    from performer.workflows.documenter import DocumenterWorkflow
+    from performer.workflows.toolkit import Toolkit
+
+    from tests.unit.workflows.documenter._repo import add_payments, local_committer, make_repo
+    from tests.unit.workflows.documenter.test_workflow_end_to_end import (
+        BRIEF,
+        PAYMENTS_PAGE,
+        _run_command,
+    )
+
+    repo = make_repo(tmp_path)
+    diff = add_payments(repo)
+
+    async def model_call(persona, content, max_tokens):
+        reply = {"action": "write", "content": PAYMENTS_PAGE, "reason": ""} if "payments.md" in persona else {"action": "unchanged", "content": "", "reason": "fine"}
+        return ModelReply(content=json.dumps(reply), finish_reason="stop")
+
+    events = []
+    stub_tk = Toolkit(metrics=WorkflowMetrics(), model_call=model_call, command_runner=_run_command, event_sink=events.append, call_limit=20)
+    adapter = WorkflowAdapter("documenter", toolkit_factory=lambda metrics, sink: stub_tk)
+    adapter._workflow = DocumenterWorkflow(committer=local_committer)  # the registry's instance would push through commit_files
+    score = SimpleNamespace(pr_diff=diff, documentation_brief=BRIEF, doc_mode="update", issue_number=7, title="t", description="d", workflow_env={}, owner_repo=("o", "r"), effective_github_token="t")
+    await adapter.start(Stand(path=repo, branch="feat/payments"), score)
+    await adapter._task
+    status = adapter.get_status()
+    assert status.state == "done", status
+    report = json.loads(status.output)
+    assert report["docs"]["verdict"] == "docs_committed" and "docs/wiki/payments.md" in report["docs"]["files_written"]

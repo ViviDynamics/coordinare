@@ -1,4 +1,4 @@
-"""The stubbed scenario runners (164 to 170) are CLIs a human runs; exercise
+"""The stubbed scenario runners (164 to 171) are CLIs a human runs; exercise
 their stubbed path under pytest so a broken runner is caught in CI and so
 the coverage gate measures them (they tipped the total under 90 percent on
 spec 167's branch)."""
@@ -11,13 +11,14 @@ import pytest
 from coordinare.eval import (
     architect_scenarios,
     assessor_scenarios,
+    documenter_scenarios,
     implementer_scenarios,
     reviewer_scenarios,
     security_scenarios,
 )
 
 
-@pytest.mark.parametrize("module", [architect_scenarios, assessor_scenarios, implementer_scenarios, reviewer_scenarios, security_scenarios])
+@pytest.mark.parametrize("module", [architect_scenarios, assessor_scenarios, implementer_scenarios, reviewer_scenarios, security_scenarios, documenter_scenarios])
 def test_stubbed_runner_passes_every_fixture(module):
     scores = asyncio.run(module.run_all(live=False, only=None))
     assert scores, "the runner produced no results"
@@ -26,7 +27,7 @@ def test_stubbed_runner_passes_every_fixture(module):
         assert passed, getattr(score, "notes", None) or score
 
 
-@pytest.mark.parametrize("module", [architect_scenarios, assessor_scenarios, implementer_scenarios, reviewer_scenarios, security_scenarios])
+@pytest.mark.parametrize("module", [architect_scenarios, assessor_scenarios, implementer_scenarios, reviewer_scenarios, security_scenarios, documenter_scenarios])
 def test_runner_main_exits_zero_stubbed(module, capsys):
     assert module.main([]) == 0
     out = capsys.readouterr().out
@@ -43,6 +44,12 @@ def test_reviewer_runner_main_only_selects_one_fixture(capsys):
     assert reviewer_scenarios.main(["--only", "findings"]) == 0
     out = capsys.readouterr().out
     assert "findings" in out and "hallucinated_anchor" not in out
+
+
+def test_documenter_runner_main_only_selects_one_fixture(capsys):
+    assert documenter_scenarios.main(["--only", "trivial"]) == 0
+    out = capsys.readouterr().out
+    assert "trivial" in out and "hallucinated_citation" not in out
 
 
 def test_security_runner_main_only_selects_one_fixture(capsys):
