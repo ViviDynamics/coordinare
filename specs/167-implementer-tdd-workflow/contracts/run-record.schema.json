@@ -38,6 +38,13 @@
       "type": "integer",
       "description": "Number of milestones that reached green"
     },
+    "resumed_from_milestone": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "description": "spec 171: index of the first milestone this run ran, when earlier ones were skipped as already done by a previous run of the same card; null when the run started at the top of the plan"
+    },
     "next_focus_milestone": {
       "type": [
         "string",
@@ -128,6 +135,16 @@
           },
           "implementation_successful": {
             "type": "boolean"
+          },
+          "satisfied_by": {
+            "type": "string",
+            "enum": [
+              "this_run",
+              "prior_run",
+              "existing_tests"
+            ],
+            "default": "this_run",
+            "description": "spec 171: how the milestone came to be complete. this_run = it ran; prior_run = skipped at plan time because this card's own earlier commits satisfied it; existing_tests = its tests turn changed nothing over tests that already cover it"
           },
           "failure_reason": {
             "type": [

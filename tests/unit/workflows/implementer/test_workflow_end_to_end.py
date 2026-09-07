@@ -198,7 +198,9 @@ async def test_two_milestones_build_test_first_one_at_a_time(tmp_path):
     assert all(r["implementation_successful"] for r in run["per_milestone"])
     assert not (repo / "docs").exists()
     assert edges.pushes == 1 and edges.pr_opened == 1
-    assert list(run["phase_durations_ms"]) == ["intake", "plan", "baseline", "milestones", "quality", "local_gate", "push_pr", "ci_wait"]
+    assert list(run["phase_durations_ms"]) == ["intake", "plan", "baseline", "resume", "milestones", "quality", "local_gate", "push_pr", "ci_wait"]
+    assert run["resumed_from_milestone"] is None, "a fresh branch resumes nothing"
+    assert [r["satisfied_by"] for r in run["per_milestone"]] == ["this_run", "this_run"]
     assert toolkit.metrics.agent_turns == 4 and toolkit.metrics.model_calls == 0
 
 
@@ -589,3 +591,237 @@ async def test_an_implementation_turn_may_not_pre_write_later_milestones_tests(t
     assert [r["kind"] for r in run["scope_reverts"]] == ["reverted_foreign_test"]
     assert [r["path"] for r in run["scope_reverts"]] == ["tests/test_m1.py"]
     assert [b["persona_kind"] for b in harness.briefs][:3] == ["TESTS", "IMPLEMENT", "TESTS"], "milestone two still gets its tests turn"
+
+
+# --- spec 171: resuming a branch this card's earlier run already worked --------
+
+
+def _card_commit(repo: Path, files: dict[str, str], subject: str) -> None:
+    """Commit *files* under a subject the driver would have written."""
+    for rel, text in files.items():
+        _write(repo, rel, text)
+    _sh([*_G, "add", "--", *files], repo)
+    _sh([*_G, "commit", "-q", "-m", subject], repo)
+
+
+def _over_delivering_impl(repo, brief):
+    """Milestone zero's turn also implements milestone one (the live failure)."""
+    _impl_turn(repo, brief)
+    if brief["milestone_index"] == 0:
+        _write(repo, "src/m1.py", "M1 = True\n")
+        _write(repo, "tests/test_m1.py", "EXPECTS src/m1.py\n")  # reverted as a foreign test
+
+
+@pytest.mark.asyncio
+async def test_a_re_dispatch_resumes_instead_of_repeating_the_whole_plan(tmp_path):
+    """The live loop, end to end over one real clone (171 SC-001).
+
+    Run one over-implements milestone one during milestone zero and then cannot
+    observe red for milestone one, so it stops at partial_progress. Before 171
+    the next dispatch replanned from milestone zero, whose tests now pass at
+    baseline, so it failed EARLIER than run one and the card could never finish.
+    """
+    repo, _ = _repo(tmp_path)
+    score = _score(milestones=_milestones(2))
+
+    first = Harness(repo, {"TESTS": _tests_turn, "IMPLEMENT": _over_delivering_impl})
+    report_one, _ = await _run(repo, score, first, Edges())
+    run_one = report_one["implementer_run"]
+    assert run_one["status"] == "partial_progress" and "red was not observed" in run_one["reason"]
+    assert run_one["next_focus_milestone"] == "milestone 1"
+    assert _log(repo) == ["feat(#7): milestone 0", "test(#7): failing tests for milestone 0"]
+    assert (repo / "src" / "m1.py").exists(), "the over-delivered source stayed on the branch"
+    assert not (repo / "tests" / "test_m1.py").exists(), "its foreign test was reverted"
+
+    second = Harness(repo, {"TESTS": _tests_turn, "IMPLEMENT": _impl_turn})
+    edges = Edges()
+    report_two, _ = await _run(repo, score, second, edges)
+    run_two = report_two["implementer_run"]
+
+    assert run_two["status"] == "pr_opened", run_two["reason"]
+    assert [(b["persona_kind"], b["milestone_index"]) for b in second.briefs] == [("TESTS", 1)], (
+        "milestone zero is skipped and milestone one runs in the tests lane"
+    )
+    assert run_two["resumed_from_milestone"] == 1
+    assert run_two["milestones_planned"] == 2 and run_two["milestones_completed"] == 2
+    assert [r["satisfied_by"] for r in run_two["per_milestone"]] == ["prior_run", "this_run"]
+    assert _log(repo) == [
+        "test(#7): cover milestone 1",
+        "feat(#7): milestone 0",
+        "test(#7): failing tests for milestone 0",
+    ]
+    assert edges.pushes == 1 and edges.pr_opened == 1
+
+
+@pytest.mark.asyncio
+async def test_a_plan_a_previous_run_finished_needs_no_turn_at_all(tmp_path):
+    """Every milestone done: no turn runs and the run still hands the branch off."""
+    repo, _ = _repo(tmp_path)
+    score = _score(milestones=_milestones(1))
+    first = Harness(repo, {"TESTS": _tests_turn, "IMPLEMENT": _impl_turn})
+    assert (await _run(repo, score, first, Edges()))[0]["implementer_run"]["status"] == "pr_opened"
+    before = _log(repo)
+
+    second = Harness(repo, {"TESTS": _tests_turn, "IMPLEMENT": _impl_turn})
+    edges = Edges()
+    report, _ = await _run(repo, score, second, edges)
+    run = report["implementer_run"]
+
+    assert run["status"] == "pr_opened", run["reason"]
+    assert second.briefs == [], "there was nothing left to do"
+    assert run["milestones_completed"] == 1 and [r["satisfied_by"] for r in run["per_milestone"]] == ["prior_run"]
+    assert run["resumed_from_milestone"] is None
+    assert _log(repo) == before
+    assert edges.pushes == 1 and edges.pr_opened == 1
+
+
+@pytest.mark.asyncio
+async def test_ci_still_repairs_when_every_milestone_was_skipped(tmp_path):
+    """171: with nothing left to run, a red check still routes a repair turn.
+
+    rerun_green looks a milestone up by index, and after a full skip the only
+    records are the skipped ones, so this drives _green_phase for a milestone
+    that never ran in this process. It must repair rather than crash.
+    """
+    repo, _ = _repo(tmp_path)
+    score = _score(milestones=_milestones(1))
+    first = Harness(repo, {"TESTS": _tests_turn, "IMPLEMENT": _impl_turn})
+    assert (await _run(repo, score, first, Edges()))[0]["implementer_run"]["status"] == "pr_opened"
+
+    second = Harness(repo, {"TESTS": _tests_turn, "IMPLEMENT": _impl_turn,
+                            "REPAIR_CI": lambda r, b: _write(r, "src/ci_fix.py", "CI = 1\n")})
+    edges = Edges(checks=lambda n: [{"name": "Lint", "id": 9, "status": "completed",
+                                     "conclusion": "failure" if n == 1 else "success"}])
+    report, _ = await _run(repo, score, second, edges)
+    run = report["implementer_run"]
+
+    assert run["status"] == "pr_opened", run["reason"]
+    assert [b["persona_kind"] for b in second.briefs] == ["REPAIR_CI"]
+    assert [r["satisfied_by"] for r in run["per_milestone"]] == ["prior_run"]
+    assert run["per_milestone"][0]["implement_attempts"] == [], "the skipped milestone gained no attempt"
+    assert _log(repo)[0] == "fix(#7): Lint"
+
+
+@pytest.mark.asyncio
+async def test_a_tests_turn_that_changes_nothing_over_covering_tests_is_satisfied(tmp_path):
+    """171 FR-011. Milestone one is done but sits behind an open milestone zero,
+    so the contiguous-prefix rule does not skip it; its tests turn writes nothing
+    and the tests already there cover it."""
+    repo, _ = _repo(tmp_path)
+    _card_commit(repo, {"src/m1.py": "M1 = True\n"}, "feat(#7): milestone 1")
+    _card_commit(repo, {"tests/test_m1.py": "EXPECTS src/m1.py\n"}, "test(#7): failing tests for milestone 1")
+
+    def tests_turn_for_zero_only(repo, brief):
+        if brief["milestone_index"] == 0:
+            _tests_turn(repo, brief)
+
+    before = _log(repo)
+    harness = Harness(repo, {"TESTS": tests_turn_for_zero_only, "IMPLEMENT": _impl_turn})
+    report, _ = await _run(repo, _score(milestones=_milestones(2)), harness, Edges())
+    run = report["implementer_run"]
+
+    assert run["status"] == "pr_opened", run["reason"]
+    assert [(b["persona_kind"], b["milestone_index"]) for b in harness.briefs] == [
+        ("TESTS", 0), ("IMPLEMENT", 0), ("TESTS", 1),
+    ], "milestone one needed no implementation turn"
+    assert [r["satisfied_by"] for r in run["per_milestone"]] == ["this_run", "existing_tests"]
+    assert run["resumed_from_milestone"] is None, "nothing was skipped at plan time"
+    assert [line for line in _log(repo) if line not in before] == [
+        "feat(#7): milestone 0",
+        "test(#7): failing tests for milestone 0",
+    ], "the satisfied milestone added no commit of its own"
+
+
+@pytest.mark.asyncio
+async def test_a_vacuous_tests_turn_still_fails_on_a_resumed_branch(tmp_path):
+    """171 FR-012. Prior commits somewhere on the branch never excuse a test the
+    model wrote that passes with none of this milestone's code behind it."""
+    repo, _ = _repo(tmp_path)
+    _card_commit(repo, {"src/m0.py": "M0 = True\n"}, "feat(#7): milestone 0")
+    _card_commit(repo, {"tests/test_m0.py": "EXPECTS src/m0.py\n"}, "test(#7): failing tests for milestone 0")
+    start = _head(repo)
+
+    def vacuous(repo, brief):
+        _write(repo, "tests/test_m1.py", "EXPECTS src/base.py\n")  # passes without src/m1.py
+
+    harness = Harness(repo, {"TESTS": vacuous, "REPAIR_TESTS": vacuous, "IMPLEMENT": _impl_turn})
+    edges = Edges()
+    report, _ = await _run(repo, _score(milestones=_milestones(2)), harness, edges)
+    run = report["implementer_run"]
+
+    assert run["status"] == "partial_progress" and "red was not observed" in run["reason"]
+    assert run["resumed_from_milestone"] == 1, "milestone zero was still skipped as done"
+    assert [b["persona_kind"] for b in harness.briefs] == ["TESTS", "REPAIR_TESTS"]
+    assert _head(repo) == start and edges.pushes == 0
+
+
+@pytest.mark.asyncio
+async def test_a_passing_test_from_the_base_branch_is_not_a_previous_run(tmp_path):
+    """171 FR-002. A brief may name a test file the base branch already has and
+    passes; that is not evidence an earlier run of this card did the milestone,
+    so a tests turn that writes nothing still fails."""
+    repo, _ = _repo(tmp_path)
+    # committed on main, not by this card
+    (repo / "tests" / "test_m0.py").write_text("EXPECTS src/base.py\n")
+    _sh([*_G, "add", "."], repo)
+    _sh([*_G, "commit", "-q", "-m", "add coverage"], repo)
+    _sh([*_G, "checkout", "-q", "main"], repo)
+    _sh([*_G, "merge", "-q", "--ff-only", "feat/x"], repo)
+    _sh([*_G, "push", "-q", "origin", "main"], repo)
+    _sh([*_G, "checkout", "-q", "feat/x"], repo)
+
+    harness = Harness(repo, {"TESTS": lambda r, b: None, "REPAIR_TESTS": lambda r, b: None, "IMPLEMENT": _impl_turn})
+    edges = Edges()
+    report, _ = await _run(repo, _score(milestones=_milestones(1)), harness, edges)
+    run = report["implementer_run"]
+
+    assert run["status"] == "partial_progress" and "red was not observed" in run["reason"]
+    assert run["resumed_from_milestone"] is None
+    assert [b["persona_kind"] for b in harness.briefs] == ["TESTS", "REPAIR_TESTS"]
+    assert edges.pushes == 0
+
+
+@pytest.mark.asyncio
+async def test_next_focus_never_names_a_milestone_this_run_skipped(tmp_path):
+    """171 review: main.py relays next_focus to the next dispatch, so pointing it
+    at a milestone a previous run already finished is misleading guidance."""
+    repo, _ = _repo(tmp_path)
+    score = _score(milestones=_milestones(1))
+    first = Harness(repo, {"TESTS": _tests_turn, "IMPLEMENT": _impl_turn})
+    assert (await _run(repo, score, first, Edges()))[0]["implementer_run"]["status"] == "pr_opened"
+
+    # everything is skipped, then the quality gate fails and cannot be repaired
+    (repo / ".lint_fail").write_text("")
+    _sh([*_G, "add", "."], repo)
+    _sh([*_G, "commit", "-q", "-m", "lint marker"], repo)
+    second = Harness(repo, {"REPAIR_QUALITY": lambda r, b: _write(r, "src/nope.py", "x\n")})
+    report, _ = await _run(repo, score, second, Edges())
+    run = report["implementer_run"]
+
+    assert run["status"] == "partial_progress" and "lint" in run["reason"]
+    assert run["next_focus_milestone"] is None, "no milestone ran, so none is the focus"
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_branch_history_costs_the_skip_not_the_run(tmp_path):
+    """171 review: run() has no generic exception handler, so an error in the
+    resume read would abort a run that the resume rule only ever optimises."""
+    repo, _ = _repo(tmp_path)
+
+    async def boom(*_a, **_k):
+        raise TimeoutError("git command timed out after 120.0s: git log")
+
+    from performer.workflows.implementer import commits as git_mod
+
+    original = git_mod.branch_commit_entries
+    git_mod.branch_commit_entries = boom
+    try:
+        harness = Harness(repo, {"TESTS": _tests_turn, "IMPLEMENT": _impl_turn})
+        report, _ = await _run(repo, _score(milestones=_milestones(1)), harness, Edges())
+    finally:
+        git_mod.branch_commit_entries = original
+
+    run = report["implementer_run"]
+    assert run["status"] == "pr_opened", run["reason"]
+    assert run["resumed_from_milestone"] is None
+    assert [b["persona_kind"] for b in harness.briefs] == ["TESTS", "IMPLEMENT"], "the full plan ran"

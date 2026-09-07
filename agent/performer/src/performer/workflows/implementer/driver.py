@@ -39,11 +39,13 @@ from performer.workflows.implementer.cycle import (
     red_check,
     scope_violations,
 )
+from performer.workflows.implementer.resume import present_paths, resume_state, scope_segments
 from performer.workflows.implementer.models import (
     Baseline,
     MilestonePlan,
     PerMilestoneRecord,
     PerTurnAttempt,
+    SatisfiedBy,
     TurnBrief,
     TurnResult,
 )
@@ -51,9 +53,24 @@ from performer.workflows.implementer.personas import render
 
 log = structlog.get_logger(__name__)
 
-__all__ = ["RunContext", "MilestoneFailed", "run_milestone", "run_turn", "DOCS_TREE"]
+__all__ = ["RunContext", "MilestoneFailed", "RedOutcome", "run_milestone", "run_turn", "DOCS_TREE"]
 
 DOCS_TREE = "docs/"
+
+
+@dataclass
+class RedOutcome:
+    """What the red step of one milestone produced (spec 171 FR-011).
+
+    ``satisfied_by`` is set only when the milestone needs no implementation
+    turn because a previous run of this card already did the work; ``files``,
+    ``summary`` and ``changed`` are then the evidence for that.
+    """
+
+    files: list[str]
+    summary: TestSummary
+    changed: dict[str, str]
+    satisfied_by: SatisfiedBy | None = None
 
 
 class MilestoneFailed(Exception):
@@ -92,6 +109,9 @@ class RunContext:
     github_api_calls: int = 0
     investigation_note: str | None = None
     investigated: bool = False
+    # 171: the paths this card's own earlier runs committed on this branch. Empty
+    # on a fresh branch, which leaves every resume rule inert.
+    prior_paths: frozenset[str] = frozenset()
     pr_node_id: str | None = None
     # injectable edges (the workflow fills the defaults; tests fake them)
     push: Callable[[], Awaitable[None]] = _noop_async
@@ -131,7 +151,7 @@ def _scope_list(milestone: MilestonePlan) -> list[str]:
         return []
     if getattr(milestone, "lane", None) == "repair":
         return [scope]  # 169: one file group per milestone; a comma in the file name is part of the path
-    return [s.strip() for s in scope.replace(";", ",").split(",") if s.strip()][:20]
+    return scope_segments(scope)
 
 
 def _build_brief(
@@ -282,6 +302,12 @@ def _grow_baseline(ctx: RunContext, summary: TestSummary) -> None:
         ctx.baseline = ctx.baseline.model_copy(update={"pass_count": len(summary.test_names_passed)})
 
 
+def _lane(ctx: RunContext, milestone: MilestonePlan) -> str:
+    """The lane this milestone runs in: its own when the plan set one (spec 171
+    FR-010 re-lanes a single milestone to ``tests``), else the run's."""
+    return getattr(milestone, "lane", None) or ctx.lane
+
+
 def _prefix(lane: str) -> str:
     return {"chore": "chore", "refactor": "refactor", "repair": "fix"}.get(lane, "feat")
 
@@ -325,9 +351,22 @@ def _log_red_miss(ctx: RunContext, milestone: MilestonePlan, files: list[str], c
     )
 
 
+def _already_covered(ctx: RunContext, milestone: MilestonePlan, summary: TestSummary) -> bool:
+    """Whether this card's own earlier commits already cover this milestone (171 FR-011).
+
+    The same rule the plan step uses, judged against the CURRENT result set
+    instead of the baseline. It requires the milestone's test files to have come
+    from a ``test(#N):`` commit of this card, so a passing test file that merely
+    exists on the base branch never excuses a tests turn that did nothing.
+    """
+    present = present_paths(ctx.workspace, scope_segments(milestone.scope))
+    state = resume_state(milestone, ctx.prior_paths, present, summary.test_names_passed, summary.test_names_failed)
+    return state == "done"
+
+
 async def _red_phase(
     ctx: RunContext, milestone: MilestonePlan, record: PerMilestoneRecord
-) -> tuple[list[str], TestSummary, dict[str, str]]:
+) -> RedOutcome:
     """Tests turn plus the observed red, with one reprompt (FR-005)."""
     brief = _build_brief(ctx, milestone, kind="tests", persona_kind="TESTS")
     result, attempt, changed = await run_turn(ctx, brief, attempt_number=1)
@@ -335,7 +374,14 @@ async def _red_phase(
     files = changed_test_files(changed, ctx.runner_kind, brief.scope_paths or None)
     summary = await _tests(ctx) if result.exit_state == "done" else TestSummary(passed=False, failed=None, exit_code=1, raw_tail="turn did not complete")
     if result.exit_state == "done" and red_check(files, summary, ctx.baseline):
-        return files, summary, changed
+        return RedOutcome(files, summary, changed)
+    # 171 FR-011: a tests turn that changed NO test file, over tests a previous
+    # run of this card already wrote and which pass, is a resume and not a red
+    # miss. A turn that DID write a test file stays under FR-005 (FR-012): a
+    # passing new test is vacuous whatever the branch history holds.
+    if result.exit_state == "done" and not files and _already_covered(ctx, milestone, summary):
+        log.info("implementer.milestone_already_covered", milestone=milestone.index, goal=milestone.goal)
+        return RedOutcome(files, summary, changed, satisfied_by="existing_tests")
     _log_red_miss(ctx, milestone, files, changed, summary, attempt=1)
     if ctx.budgets.tests_reprompts >= 1:
         reason = "the new tests pass without the behaviour" if summary.passed else ("no test file changed" if not files else "the tests turn regressed the baseline or did not complete")
@@ -351,7 +397,9 @@ async def _red_phase(
         if result2.exit_state == "done":
             summary = await _tests(ctx)
             if red_check(files, summary, ctx.baseline):
-                return files, summary, changed
+                return RedOutcome(files, summary, changed)
+            # no second FR-011 check here: the reprompt only writes test files,
+            # so reaching it means the first turn's judgement already stood.
             _log_red_miss(ctx, milestone, files, changed, summary, attempt=2)
     raise MilestoneFailed(milestone.index, milestone.goal, "red was not observed: the tests did not fail for the right reason after one reprompt")
 
@@ -389,10 +437,17 @@ async def _green_phase(
 
 
 async def _feature(ctx: RunContext, milestone: MilestonePlan, record: PerMilestoneRecord) -> None:
-    files, summary, changed = await _red_phase(ctx, milestone, record)
-    await _commit(ctx, changed, f"test{_issue(ctx)}: failing tests for {milestone.goal}")
-    green_summary, impl_changed = await _green_phase(ctx, milestone, record, files, summary)
-    await _commit(ctx, impl_changed, f"{_prefix(ctx.lane)}{_issue(ctx)}: {milestone.goal}")
+    outcome = await _red_phase(ctx, milestone, record)
+    if outcome.satisfied_by:
+        # 171 FR-011: nothing to drive to green. A tests turn changes only test
+        # files (every other path is reverted as out of scope), and this branch
+        # is reached only when it changed none, so there is nothing to commit.
+        record.satisfied_by = outcome.satisfied_by
+        _grow_baseline(ctx, outcome.summary)
+        return
+    await _commit(ctx, outcome.changed, f"test{_issue(ctx)}: failing tests for {milestone.goal}")
+    green_summary, impl_changed = await _green_phase(ctx, milestone, record, outcome.files, outcome.summary)
+    await _commit(ctx, impl_changed, f"{_prefix(_lane(ctx, milestone))}{_issue(ctx)}: {milestone.goal}")
     _grow_baseline(ctx, green_summary)
 
 
@@ -413,7 +468,7 @@ async def _change(ctx: RunContext, milestone: MilestonePlan, record: PerMileston
         summary = await _tests(ctx)
         regs = regressions(ctx.baseline, summary)
         if not regs and summary.passed:
-            await _commit(ctx, changed_all, f"{_prefix(ctx.lane)}{_issue(ctx)}: {milestone.goal}")
+            await _commit(ctx, changed_all, f"{_prefix(_lane(ctx, milestone))}{_issue(ctx)}: {milestone.goal}")
             _grow_baseline(ctx, summary)
             return
         failing = list(summary.test_names_failed or []) or regs
@@ -457,7 +512,7 @@ async def _repair(ctx: RunContext, milestone: MilestonePlan, record: PerMileston
         summary = await _tests(ctx)
         regs = regressions(ctx.baseline, summary)
         if not regs and summary.passed:
-            await _commit(ctx, changed_all, f"{_prefix(ctx.lane)}{_issue(ctx)}: {milestone.goal}")
+            await _commit(ctx, changed_all, f"{_prefix(_lane(ctx, milestone))}{_issue(ctx)}: {milestone.goal}")
             _grow_baseline(ctx, summary)
             return
         failing = list(summary.test_names_failed or []) or regs
@@ -495,18 +550,22 @@ async def run_milestone(ctx: RunContext, milestone: MilestonePlan) -> PerMilesto
     start_sha = git.head_sha(ctx.workspace)
     record = PerMilestoneRecord(index=milestone.index, goal=milestone.goal, done_when=milestone.done_when, implementation_successful=False)
     started = time.monotonic()
-    log.info("implementer.milestone_start", index=milestone.index, goal=milestone.goal, lane=ctx.lane)
+    # 171 FR-010: the MILESTONE's lane, not the run's, so a single milestone the
+    # resume rule re-laned to ``tests`` runs there. Every lane a plan builds
+    # today carries the run's lane, so this is the run's lane in every other case.
+    lane = _lane(ctx, milestone)
+    log.info("implementer.milestone_start", index=milestone.index, goal=milestone.goal, lane=lane)
     try:
-        if ctx.lane == "bug":
+        if lane == "bug":
             if not ctx.investigated:  # FR-021: one investigation per run, not per milestone
                 ctx.investigated = True
                 await _investigate(ctx, milestone)
             await _feature(ctx, milestone, record)
-        elif ctx.lane in ("chore", "refactor"):
+        elif lane in ("chore", "refactor"):
             await _change(ctx, milestone, record)
-        elif ctx.lane == "tests":
+        elif lane == "tests":
             await _tests_lane(ctx, milestone, record)
-        elif ctx.lane == "repair":
+        elif lane == "repair":
             await _repair(ctx, milestone, record)
         else:
             await _feature(ctx, milestone, record)

@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 from performer.workflows.implementer.commits import (
+    branch_commit_entries,
     changed_paths_since,
     commit_paths,
     head_sha,
@@ -246,3 +247,80 @@ async def test_revert_paths_removes_an_untracked_directory(tmp_path):
     (repo / ".codex" / ".tmp" / "plugins" / "a.json").write_text("{}")
     reverted = await revert_paths(repo, [".codex/.tmp/plugins"])
     assert reverted == [".codex/.tmp/plugins"] and not (repo / ".codex" / ".tmp" / "plugins").exists()
+
+
+# --- spec 171: reading the branch's own history --------------------------------
+
+
+def _commit(local: Path, rel: str, text: str, subject: str) -> None:
+    path = local / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    _sh([*_G, "add", "--", rel], local)
+    _sh([*_G, "commit", "-q", "-m", subject], local)
+
+
+@pytest.mark.asyncio
+async def test_branch_commit_entries_returns_subjects_with_their_paths(tmp_path):
+    """Each commit over the base comes back with the paths it touched (171 FR-001)."""
+    local, _ = _repo_with_remote(tmp_path, branch="feat/x")
+    _commit(local, "tests/test_m0.py", "t\n", "test(#7): failing tests for milestone 0")
+    _commit(local, "src/m0.py", "M0\n", "feat(#7): milestone 0")
+
+    entries = await branch_commit_entries(local, ["origin/main", "main"])
+
+    assert entries == [
+        ("feat(#7): milestone 0", ["src/m0.py"]),
+        ("test(#7): failing tests for milestone 0", ["tests/test_m0.py"]),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_branch_commit_entries_reports_every_path_of_one_commit(tmp_path):
+    local, _ = _repo_with_remote(tmp_path, branch="feat/x")
+    (local / "src").mkdir()
+    (local / "src" / "a.py").write_text("a\n")
+    (local / "src" / "b.py").write_text("b\n")
+    _sh([*_G, "add", "."], local)
+    _sh([*_G, "commit", "-q", "-m", "feat(#7): both"], local)
+
+    entries = await branch_commit_entries(local, ["main"])
+
+    assert entries == [("feat(#7): both", ["src/a.py", "src/b.py"])]
+
+
+@pytest.mark.asyncio
+async def test_branch_commit_entries_is_empty_on_a_fresh_branch(tmp_path):
+    """A branch with no commits of its own carries no history to resume from."""
+    local, _ = _repo_with_remote(tmp_path, branch="feat/x")
+    assert await branch_commit_entries(local, ["origin/main", "main"]) == []
+
+
+@pytest.mark.asyncio
+async def test_branch_commit_entries_is_empty_when_no_base_resolves(tmp_path):
+    """An unreadable base leaves the resume rules inert rather than raising."""
+    local, _ = _repo_with_remote(tmp_path, branch="feat/x")
+    _commit(local, "src/m0.py", "M0\n", "feat(#7): milestone 0")
+    assert await branch_commit_entries(local, ["origin/nope", "nope", ""]) == []
+
+
+@pytest.mark.asyncio
+async def test_branch_commit_entries_uses_the_first_base_that_resolves(tmp_path):
+    local, _ = _repo_with_remote(tmp_path, branch="feat/x")
+    _commit(local, "src/m0.py", "M0\n", "feat(#7): milestone 0")
+    entries = await branch_commit_entries(local, ["origin/does-not-exist", "main"])
+    assert entries == [("feat(#7): milestone 0", ["src/m0.py"])]
+
+
+@pytest.mark.asyncio
+async def test_branch_commit_entries_reports_non_ascii_paths_unquoted(tmp_path):
+    """171 review: core.quotepath defaults to true, which would render this path
+    as an octal-escaped quoted string that matches nothing on disk, so the resume
+    rule would silently never engage for such a repository."""
+    local, _ = _repo_with_remote(tmp_path, branch="feat/x")
+    _commit(local, "src/\u6587\u4ef6.py", "x\n", "feat(#7): milestone 0")
+
+    entries = await branch_commit_entries(local, ["main"])
+
+    assert entries == [("feat(#7): milestone 0", ["src/\u6587\u4ef6.py"])]
+    assert (local / "src" / "\u6587\u4ef6.py").exists(), "the reported path is the real one"

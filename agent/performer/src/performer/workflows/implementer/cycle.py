@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 __all__ = [
+    "is_test_path",
     "red_check",
     "green_check",
     "vacuous_test_check",
@@ -34,6 +35,24 @@ __all__ = [
     "changed_test_files",
     "next_attempt_allowed",
 ]
+
+
+# The one test-file convention every rule reads (spec 171 FR-003). Two copies of
+# this list drifted apart in 167: ``changed_test_files`` knew about Go and Java
+# test files and ``scope_violations`` did not, so a foreign Go test survived an
+# implementation turn that a Python one would not have.
+_TEST_PATTERNS = (
+    re.compile(r"test_.*\.(py|rb|js|go|java)$"),
+    re.compile(r".*_test\.(py|rb|js|go)$"),
+    re.compile(r".*\.test\.(js|ts)$"),
+    re.compile(r"spec/.*_spec\.rb$"),
+    re.compile(r".*_spec\.(rb)$"),
+)
+
+
+def is_test_path(path: str) -> bool:
+    """Whether a repository path is a test file by convention (spec 171 FR-003)."""
+    return any(pattern.search(path) for pattern in _TEST_PATTERNS)
 
 
 def changed_test_files(changed: dict[str, str], runner_kind: str, scope_paths: list[str] | None = None) -> list[str]:
@@ -50,20 +69,7 @@ def changed_test_files(changed: dict[str, str], runner_kind: str, scope_paths: l
     Returns:
         List of test file paths that changed.
     """
-    test_patterns = [
-        re.compile(r"test_.*\.(py|rb|js|go|java)$"),
-        re.compile(r".*_test\.(py|rb|js|go)$"),
-        re.compile(r".*\.test\.(js|ts)$"),
-        re.compile(r"spec/.*_spec\.rb$"),
-        re.compile(r".*_spec\.(rb)$"),
-    ]
-
-    test_files = []
-    for path in changed.keys():
-        if any(pattern.search(path) for pattern in test_patterns):
-            test_files.append(path)
-
-    return sorted(test_files)
+    return sorted(path for path in changed if is_test_path(path))
 
 
 def red_check(changed_test_files: list[str], summary: TestSummary, baseline: Baseline) -> bool:
@@ -222,8 +228,7 @@ def scope_violations(kind: str, changed_paths: dict[str, str], runner_kind: str,
             # the implementation turn works the milestone's own tests; writing
             # tests for LATER milestones pre-empts their tests turn (a live
             # round implemented and tested milestone two during milestone one)
-            is_test = any(re.search(pat, path) for pat in [r"test_.*\.(py|rb|js)", r".*_test\.(py|rb|js)", r".*\.test\.(js|ts)", r"spec/.*_spec\.rb", r".*_spec\.rb"])
-            if is_test and path not in milestone_test_files:
+            if is_test_path(path) and path not in milestone_test_files:
                 violations.append({
                     "path": path,
                     "kind": "reverted_foreign_test",
@@ -231,10 +236,7 @@ def scope_violations(kind: str, changed_paths: dict[str, str], runner_kind: str,
                 })
                 continue
         if kind == "tests":
-            if not any(
-                re.search(pattern, path)
-                for pattern in [r"test_.*\.(py|rb|js)", r".*_test\.(py|rb|js)", r".*\.test\.(js|ts)", r"spec/.*_spec\.rb", r".*_spec\.rb"]
-            ):
+            if not is_test_path(path):
                 violations.append({
                     "path": path,
                     "kind": "reverted_source",
