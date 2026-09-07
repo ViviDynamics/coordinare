@@ -2529,6 +2529,56 @@ async def handle_status(
         # reliability fix for gpt-oss on multi-page wiki jobs.
         if perf.role == "documenting":
             docs_raw = backend_status.output or ""
+            # 171: the documenter WORKFLOW reports a docs record: the page set was
+            # chosen by code, every page passed the contract, and the one commit
+            # (with push) is already made through commit_files. Map the record
+            # onto docs_committed with the files it wrote, or env_blocked for a
+            # hold, and skip the prose plan-then-write path. A dict without a known
+            # verdict is not a workflow report (a prose model may emit a "docs"
+            # key): the prose path below is untouched.
+            _dr = _extract_json(docs_raw) if isinstance(docs_raw, str) else docs_raw
+            if isinstance(_dr, dict) and isinstance(_dr.get("docs"), dict) and _dr["docs"].get("verdict") in ("docs_committed", "env_blocked"):
+                _docs = _dr["docs"]
+                _written = [str(p) for p in (_docs.get("files_written") or []) if isinstance(p, str)]
+                _retired = [str(p) for p in (_docs.get("files_retired") or []) if isinstance(p, str)]
+                _pointers = [str(p) for p in (_docs.get("pointers_refreshed") or []) if isinstance(p, str)]
+                log.info(
+                    "documenter.record_reported",
+                    verdict=_docs.get("verdict"),
+                    mode=_docs.get("mode"),
+                    planned=len(_docs.get("plan") or []),
+                    written=len(_written),
+                    retired=len(_retired),
+                    dropped=sum(1 for r in (_docs.get("results") or []) if isinstance(r, dict) and r.get("dropped")),
+                    commit=_docs.get("commit_sha"),
+                    session_id=perf.session_id,
+                )
+                if _docs.get("verdict") == "env_blocked":
+                    perf.state = "env_blocked"
+                    return PerformerResponse(
+                        status="env_blocked", session_id=perf.session_id,
+                        reason=str(_docs.get("hold_reason") or "the documenter could not complete"), report=_dr,
+                    )
+                perf.docs_files_modified = _written + _retired + _pointers
+                perf.state = "docs_committed"
+                # 124(US2): the symphony-init dispatch is cardless; open the seed PR as
+                # the prose path does so WikiInitService can auto-merge it.
+                pr_url = pr_node_id = None
+                _pr_error: str | None = None
+                if getattr(perf.score, "doc_mode", "update") == "init" and perf.docs_files_modified:
+                    try:
+                        owner, repo = perf.score.owner_repo
+                        pr_url, pr_node_id = await create_pull_request(
+                            owner, repo, perf.score, perf.stand.branch, perf.score.effective_github_token,
+                        )
+                        perf.pr_url, perf.pr_node_id = pr_url, pr_node_id
+                    except Exception as exc:  # noqa: BLE001 - never fail the doc commit on PR open
+                        _pr_error = f"wiki init PR open failed (the branch carries the wiki): {exc}"
+                        log.error("wiki_init.pr_open_failed", error=str(exc))
+                return PerformerResponse(
+                    status="docs_committed", session_id=perf.session_id, files_modified=perf.docs_files_modified,
+                    pr_url=pr_url, pr_node_id=pr_node_id, report=_dr, reason=_pr_error,
+                )
 
             # WRITE phase: a per-page write just completed → accumulate + advance.
             if perf.doc_phase == "writing":

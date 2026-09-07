@@ -4016,6 +4016,15 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
                     "blocked column: check GitHub API access from the performer and the size of the "
                     "injected diff, then re-run the review stage."
                 ]
+            elif stage == "documenting":
+                # 171: the documenter workflow holds when the tree was dirty at
+                # start or the docs commit or push failed. No code change fixes it.
+                state["system_error_reason"] = f"the documentation update could not complete (no code defect):\n{_reason}"
+                state["open_questions"] = [
+                    f"The documenter hit an environment blocker ({_reason}). The card is parked in the "
+                    "blocked column: check the workspace for leftover changes and the push path for the "
+                    "branch, then re-run the documenting stage."
+                ]
             elif stage == "security":
                 # 170: the security workflow holds when a scanner is missing or broken,
                 # when it could not post its one review, or when it could not read

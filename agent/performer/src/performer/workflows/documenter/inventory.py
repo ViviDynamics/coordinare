@@ -1,0 +1,303 @@
+"""Build wiki inventory and detect repository layout (spec 171)."""
+from __future__ import annotations
+
+import re
+
+import json
+from pathlib import Path
+
+from performer.workflows.documenter.markdown import parse_frontmatter, backticked_tokens, links
+from performer.workflows.documenter.models import WikiPage, RepositoryLayout
+
+__all__ = [
+    "extract_citations",
+    "wiki_links",
+    "build_inventory",
+    "repository_layout",
+]
+
+
+_SOURCE_SUFFIXES = frozenset({".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".rb", ".java", ".cs", ".php", ".kt", ".swift", ".c", ".cc", ".cpp", ".h", ".scala", ".ex", ".exs"})
+
+
+_RELATIVE_PATH = re.compile(r"^[A-Za-z0-9_.-]+(?:(?:/[A-Za-z0-9_.-]+)+/?|/)$")  # a/b, a/b/, or a bare directory a/
+_FILE_WITH_EXTENSION = re.compile(r"^[A-Za-z0-9_-][A-Za-z0-9_.-]*\.[a-z0-9]{1,5}$")
+
+
+def path_like_tokens(text: str) -> set[str]:
+    """Backticked tokens that look like repository paths, whether or not they exist.
+
+    A repository path is relative (``src/app.py``, ``tests/``) or a bare file
+    name with an extension (``pyproject.toml``). A URL route (``/charge``), a
+    decorator (``@app.route``), a URL, a shell fragment or a symbol is not a
+    path: the live round showed such tokens counted as missing citations.
+
+    The inventory keeps them so a page whose cited files were deleted still
+    shows what it cited (that is how a retirement is justified); the gate
+    decides which of them exist.
+    """
+    out: set[str] = set()
+    for token in backticked_tokens(text):
+        t = token.strip()
+        if not t or " " in t or t.startswith(("http", "-", "$", "#", "@", "/", "./", "../")):
+            continue
+        if "(" in t or ")" in t or "=" in t or ":" in t:
+            continue
+        if t.rstrip("/") == "docs/wiki" or t.startswith("docs/wiki/"):
+            continue  # a wiki page or the wiki itself is a link target, checked by links_resolve, never a citation
+        if _RELATIVE_PATH.match(t) or _FILE_WITH_EXTENSION.match(t):
+            out.add(t.rstrip("/"))
+    return out
+
+
+def extract_citations(text: str, tree: set[str]) -> list[str]:
+    """Extract citations from markdown content.
+
+    Citations are backticked tokens containing "/" or a file extension,
+    or link targets that resolve to repository files outside the wiki.
+
+    Args:
+        text: The markdown content.
+        tree: Set of repository paths.
+
+    Returns:
+        Sorted list of unique citations that exist in tree.
+    """
+    citations = []
+
+    # Extract backticked tokens
+    tokens = backticked_tokens(text)
+    for token in tokens:
+        # Include if it contains "/" or a file extension, and is in the tree
+        if ("/" in token or "." in token) and token in tree:
+            if token not in citations:
+                citations.append(token)
+        # Check directory prefixes
+        elif "/" in token:
+            # Check if it's a directory prefix
+            prefix = token.rstrip("/") + "/"
+            for path in tree:
+                if path.startswith(prefix):
+                    if token not in citations:
+                        citations.append(token)
+                    break
+
+    # Extract link targets that resolve to tree files outside wiki
+    link_list = links(text)
+    for link in link_list:
+        target = link.target
+        # Normalize the path
+        if target.startswith("./"):
+            target = target[2:]
+        if target.startswith("../"):
+            # Resolve relative paths (basic implementation)
+            pass
+        # Check if it's in the tree and not a markdown file in wiki
+        if target in tree and not target.endswith(".md"):
+            if target not in citations:
+                citations.append(target)
+
+    return citations
+
+
+def wiki_links(text: str, page_path: str) -> list[str]:
+    """Extract wiki links that resolve to .md files in docs/wiki/.
+
+    Args:
+        text: The markdown content.
+        page_path: Path to the current page.
+
+    Returns:
+        List of resolved wiki link targets as repo paths.
+    """
+    resolved = []
+    link_list = links(text)
+    page_dir = Path(page_path).parent
+
+    for link in link_list:
+        target = link.target
+        # Skip external links and anchors
+        if target.startswith("http") or target.startswith("#"):
+            continue
+        if not target.endswith(".md"):
+            continue
+
+        # Resolve relative paths
+        if target.startswith("/"):
+            # Absolute from repo root
+            resolved_path = target.lstrip("/")
+        elif target.startswith("docs/wiki/"):
+            # Repository-relative, the convention Google's docguide asks for (review finding: doubled path)
+            resolved_path = target
+        elif target.startswith("./"):
+            # Relative to current dir
+            resolved_path = str(page_dir / target[2:])
+        elif target.startswith("../"):
+            # Parent directory
+            resolved_path = str((page_dir / target).resolve())
+        else:
+            # Relative to current dir
+            resolved_path = str(page_dir / target)
+
+        # Normalize path
+        resolved_path = str(Path(resolved_path)).replace("\\", "/")
+        if resolved_path not in resolved:
+            resolved.append(resolved_path)
+
+    return resolved
+
+
+def first_paragraph(text: str) -> str:
+    """The first prose paragraph after the H1, one line, for the index entry."""
+    _fm, body = parse_frontmatter(text)
+    lines = body.replace("\r\n", "\n").split("\n")
+    i = 0
+    while i < len(lines) and not lines[i].startswith("# "):
+        i += 1
+    i += 1
+    para: list[str] = []
+    for line in lines[i:]:
+        stripped = line.strip()
+        if not stripped:
+            if para:
+                break
+            continue
+        if stripped.startswith(("#", ">", "```", "~~~", "|", "- ", "* ", "---")):
+            if para:
+                break
+            continue
+        para.append(stripped)
+    return " ".join(" ".join(para).split())[:120]
+
+
+def build_inventory(workspace: Path, tree: set[str]) -> list[WikiPage]:
+    """Build inventory of all pages in docs/wiki/.
+
+    Args:
+        workspace: The repository root.
+        tree: Set of all repository paths.
+
+    Returns:
+        List of WikiPage objects for each page in docs/wiki/.
+    """
+    pages = []
+    wiki_dir = workspace / "docs" / "wiki"
+
+    if not wiki_dir.exists():
+        return pages
+
+    for md_file in sorted(wiki_dir.rglob("*.md")):
+        relative_path = md_file.relative_to(workspace)
+        path_str = str(relative_path).replace("\\", "/")
+
+        content = md_file.read_text(encoding="utf-8")
+
+        # Parse frontmatter for kind
+        from performer.workflows.documenter.markdown import parse_frontmatter, headings
+
+        meta, body = parse_frontmatter(content)
+        kind = meta.get("kind")
+
+        # Extract title (first H1 or file stem)
+        h_list = headings(content)
+        title = next((h.text for h in h_list if h.level == 1), md_file.stem)
+
+        # Extract citations and links
+        citations = extract_citations(content, tree | path_like_tokens(content))
+        page_links = wiki_links(content, path_str)
+
+        # File size
+        size = len(content)
+
+        pages.append(
+            WikiPage(
+                path=path_str,
+                kind=kind,
+                title=title,
+                citations=citations,
+                links=page_links,
+                size=size,
+                summary=first_paragraph(content),
+            )
+        )
+
+    return pages
+
+
+def repository_layout(workspace: Path, tree: set[str]) -> RepositoryLayout:
+    """Detect repository structure for init mode.
+
+    Args:
+        workspace: The repository root.
+        tree: Set of all repository paths.
+
+    Returns:
+        RepositoryLayout with project name, packages, CI presence, and test hint.
+    """
+    # Detect project name
+    project_name = workspace.name
+
+    if (workspace / "pyproject.toml").exists():
+        import tomllib
+
+        try:
+            with open(workspace / "pyproject.toml", "rb") as f:
+                data = tomllib.load(f)
+                project_name = data.get("project", {}).get("name", workspace.name)
+        except Exception:
+            pass
+
+    if (workspace / "package.json").exists():
+        try:
+            with open(workspace / "package.json") as f:
+                data = json.load(f)
+                project_name = data.get("name", workspace.name)
+        except Exception:
+            pass
+
+    # Detect packages: top-level directories holding source files. Size is bytes on
+    # disk; has_tests when a tests or test directory exists at the top level or inside
+    # the package. Documentation, test, tooling and vendor directories are not packages.
+    packages = []
+    skip = {"docs", "doc", "tests", "test", "node_modules", "vendor", "build", "dist", "specs", "scripts", "bin"}
+    repo_has_tests = any(p.split("/", 1)[0] in ("tests", "test") for p in tree if "/" in p)
+    by_dir: dict[str, list[str]] = {}
+    for path_str in tree:
+        if "/" not in path_str:
+            continue
+        top = path_str.split("/", 1)[0]
+        if top.startswith(".") or top in skip:
+            continue
+        by_dir.setdefault(top, []).append(path_str)
+    for top, files in by_dir.items():
+        sources = [f for f in files if Path(f).suffix.lower() in _SOURCE_SUFFIXES]
+        if not sources:
+            continue
+        size = 0
+        for f in files:
+            try:
+                size += (workspace / f).stat().st_size
+            except OSError:
+                continue
+        inner_tests = any(part in ("tests", "test") for f in files for part in Path(f).parts[1:-1])
+        packages.append({"path": top, "size": size, "has_tests": repo_has_tests or inner_tests})
+
+    # Sort by size descending
+    packages.sort(key=lambda p: p["size"], reverse=True)
+
+    # Detect CI
+    has_ci = any(p.startswith(".github/workflows/") for p in tree)
+
+    # Detect test command hint
+    test_command_hint = ""
+    if (workspace / "pyproject.toml").exists() or any(p in tree for p in ["pytest.ini", "setup.cfg"]):
+        test_command_hint = "pytest"
+    elif (workspace / "package.json").exists():
+        test_command_hint = "npm test"
+
+    return RepositoryLayout(
+        project_name=project_name,
+        packages=packages,
+        has_ci=has_ci,
+        test_command_hint=test_command_hint,
+    )
