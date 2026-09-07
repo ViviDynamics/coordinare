@@ -147,3 +147,15 @@ def test_init_pages_gather_evidence_from_their_own_files():
     assert "tests/test_app.py" in _init_modules(mk("docs/wiki/testing.md"), tree, layout)
     arch = _init_modules(mk("docs/wiki/architecture.md"), tree, layout)
     assert arch[0] == "pyproject.toml" and "src/app.py" in arch and "pkg2/__init__.py" in arch
+
+
+
+# path_like_tokens: mutation = accept any dotted token as a file name
+def test_versions_and_attributes_are_not_file_paths():
+    """Live init round: `0.1.0` and `pkg5.x` were read as paths and dropped good pages."""
+    from performer.workflows.documenter.inventory import path_like_tokens
+
+    text = "Version `0.1.0` exposes `pkg5.x` and `app.config`; the code is in `pkg5/__init__.py` and `pyproject.toml`."
+    assert path_like_tokens(text) == {"pkg5/__init__.py", "pyproject.toml"}
+    assert path_like_tokens("`Makefile`") == set(), "a bare name with no extension is not a citation"
+    assert path_like_tokens("`docs/guide.md` `x.unknownext`") == {"docs/guide.md"}
