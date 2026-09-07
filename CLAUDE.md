@@ -92,6 +92,8 @@ See AGENTS.md for all development guidelines.
 - single-host JSON snapshot via `state_store.py` unchanged. Run record is transient (produced by workflow, travels in report, not persisted by coordinare). Performer is one-shot per spec FR-010. (167-implementer-tdd-workflow)
 - Python 3.14 (project minimum 3.12; prod 3.14.5 via uv) + existing only. pydantic 2.x (finding, disposition, review record models), the 164 layer (`workflows/`, `Toolkit` with command_runner, `budget`, `schema_guard`), spec-165 brief parsing, spec-167 implementer lane plumbing, structlog (observability). No new external dependencies. (169-reviewer-workflow)
 - single-host JSON snapshot via `state_store.py`; schema version 18 to 19 adds `PersistedSession.review_findings`, cleared on reviewer re-dispatch. Older snapshots load with `None` default. (169-reviewer-workflow)
+- Python 3.14 (project minimum 3.12; prod 3.14.5 via uv) + existing only. pydantic 2.x (SecurityFinding, SecurityRecord, ScanResult), the 164 layer (`Toolkit`, `budget`, `schema_guard`), the 169 reviewer package (`diffparse`, `survey`, `models.model_findings_schema`, `gate` anchor rules, `post`, `report.write_free_check`), semgrep and bandit already in `Dockerfile.full`, structlog. No new external dependencies. (170-security-workflow)
+- single-host JSON snapshot via `state_store.py`, unchanged (schema stays v19; the security stage writes the existing `review_findings` field). (170-security-workflow)
 
 ## Recent Changes
 - 076-qa-cycle: Added Python 3.14 (project minimum: 3.12; production currently on 3.14.5 via uv) + pydantic 2.x, langgraph, structlog, docker SDK (or subprocess to `docker` CLI), fastapi (dashboard SSE), httpx (performer HTTP transport), pyyaml (config)

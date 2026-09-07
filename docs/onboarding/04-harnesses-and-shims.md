@@ -343,6 +343,64 @@ performers:
       REVIEWER_SURVEY_MAX_COMMANDS: "12"
 ```
 
+### Role workflows: security (spec 170)
+
+The security stage was one prose taint analysis whose severity and routing came
+from the model, with coordinare running semgrep and bandit at dispatch as a floor
+and merging afterwards. `workflow: security` moves the whole stage into code, as
+a sibling of the reviewer workflow:
+
+1. **intake**: the injected diff parsed into changed files with new-side hunks;
+   truncation recorded; the implementation brief carried. No prior-comment
+   dispositions: each round scans fresh.
+2. **scan**: semgrep and bandit run inside the performer over the changed files,
+   normalised exactly as coordinare's spec-083 scanner does (a parity test holds
+   the two copies equal). A missing binary, a crash, a timeout or unparseable
+   output ends the round as an environment hold naming the tool, before any
+   model call. Fail closed: no scan, no pass.
+3. **survey**: the reviewer's allow-listed survey with coverage tracking and one
+   coverage pass, seeded with the changed files and the scan findings.
+4. **findings**: one schema-guarded call over a fixed category set (injection,
+   broken_authorization, hardcoded_secret, insecure_deserialization,
+   path_traversal, ssrf, weak_crypto, missing_hardening, information_leak,
+   other_insecure_pattern). Each finding names the line, verbatim evidence and
+   the changed file that introduces the path. The schema forbids severity,
+   routing and verdict keys.
+5. **gate**: pure rules. A finding may anchor in a changed file or in any file
+   the survey opened (a sink reached from a changed source), but its
+   `introduced_by` must be a changed file and its evidence must match a diff or
+   survey line; dropped findings get one re-anchor call. Severity comes from the
+   category table (hardcoded_secret critical; injection, broken_authorization,
+   insecure_deserialization, path_traversal, ssrf high; the rest medium) and
+   routing too (broken_authorization to the architect). A `downgrade_reason` on a
+   model finding in a blocking category lowers it to advisory and is recorded.
+   Scanner findings join with the tool's severity and can never be dropped. Any
+   blocking finding is `security_failed`; none is `security_passed`, which also
+   needs every changed file read.
+6. **post**: exactly one GitHub review, `REQUEST_CHANGES` with inline comments
+   for blocking findings inside hunks or `COMMENT` listing the advisories. The
+   committed `security.md` and the per-finding advisory comments are retired.
+7. **report**: the security record with the executed write-free check.
+
+main.py maps the record onto `security_passed`, `security_failed` (findings in
+the spec-022 shape, so coordinare's routing to implementer or architect is
+unchanged) or `env_blocked`. Coordinare skips its dispatch-time scan and the
+monitor floor merge for a role that runs the workflow, and lifts the blocking
+implementer-routed findings into the same `review_findings` carrier the
+reviewer uses, so the spec-167 repair lane fixes them.
+
+```yaml
+performers:
+  security:
+    workflow: security
+    workflow_env:
+      SECURITY_SEMGREP_CONFIG: "auto"
+```
+
+`auto` fetches rules from the semgrep registry; a container without egress
+fails the scan and the card holds. Point the env at `p/default` or a local rules
+directory for an offline fleet.
+
 ## The end-to-end picture
 
 ```mermaid

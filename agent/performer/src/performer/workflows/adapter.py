@@ -438,6 +438,18 @@ def build_production_toolkit(
             agent_turn_runner=agent_turn_runner,
         )
 
+    # Security workflow is read-only: has command_runner for survey, but no screenshot_capture or dom_reader
+    if workflow_name == "security":
+        return Toolkit(
+            metrics=metrics,
+            model_call=_model_caller(score),
+            command_runner=_command_runner(workspace),
+            screenshot_capture=None,
+            dom_reader=None,
+            event_sink=event_sink,
+            agent_turn_runner=agent_turn_runner,
+        )
+
     return Toolkit(
         metrics=metrics,
         model_call=_model_caller(score),

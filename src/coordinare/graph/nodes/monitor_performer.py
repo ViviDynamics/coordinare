@@ -1051,6 +1051,60 @@ def _lift_review_findings(state: dict[str, Any], report: dict[str, Any], stage: 
         )
 
 
+def _lift_security_findings(state: dict[str, Any], report: dict[str, Any], target_stage: str) -> None:
+    """170: lift security workflow findings into state when routed to implementer.
+
+    Report structure: {"security": {...}, "workflow_metrics": {...}}. The "security" key
+    carries the complete SecurityRecord (changed_files, findings, verdict, etc).
+    Only lifts when target_stage is implementing and findings route to implementer.
+
+    Mutates state in place.
+    """
+    if target_stage != "implementing":
+        return
+
+    _security_report = report if isinstance(report, dict) else {}
+    sec = _security_report.get("security")
+
+    if not isinstance(sec, dict):
+        return
+
+    # Build the findings record with implementer-routed findings only
+    blocking = sec.get("blocking") or []
+    implementer_findings = [
+        {
+            "path": f.get("path", ""),
+            "line": f.get("line", 0),
+            "category": f.get("category", ""),
+            "problem": f.get("problem", ""),
+            "why_blocking": f.get("why_blocking", ""),
+            "evidence": f.get("evidence", ""),
+            "origin": f.get("origin", "model"),
+        }
+        for f in blocking
+        if isinstance(f, dict) and f.get("routing", "implementer") == "implementer"
+    ]
+
+    if implementer_findings:
+        import copy
+        record = {
+            "changed_files": sec.get("changed_files") or [],
+            "diff_truncated": bool(sec.get("diff_truncated")),
+            "verdict": "changes_requested",
+            "covered_files": sec.get("covered_files") or [],
+            "findings": implementer_findings,
+        }
+        state["review_findings"] = copy.deepcopy(record)
+        categories = {f.get("category", "unknown") for f in implementer_findings}
+        logger.info(
+            "review_findings.lifted",
+            card_id=state.get("current_card", {}).get("id", "unknown"),
+            source="security",
+            count=len(implementer_findings),
+            categories=list(categories),
+        )
+
+
 def _advance_stage(state: CoordinareState, status: dict[str, Any] | None = None) -> dict[str, Any]:
     """Compute the state update to advance the lifecycle to the next role.
 
@@ -3477,43 +3531,54 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
         # fail-closed. Reuse the dispatch findings — never re-scan here. This
         # MUST run before the terminal-success handling below so an overridden
         # security_passed never advances the stage.
+        # 170: when the report carries a "security" key (workflow report), skip
+        # the 083 floor merge because the workflow already ran its floor inside
+        # the performer.
         if stage == "security" and marker != "working":
-            raw_scanner = state.get("scanner_findings") or []
-            scanner_findings = [f for f in raw_scanner if isinstance(f, dict)]
-            gating = [
-                f for f in scanner_findings
-                if str(f.get("severity", "")).lower() in ("critical", "high")
-            ]
-            if gating:
-                if marker != "security_failed":
-                    logger.warning(
-                        "monitor_performer.security_floor_override",
-                        performer_stage=stage,
-                        card_id=card_id,
-                        model_marker=marker,
-                        gating_count=len(gating),
-                        severities=sorted(
-                            {str(f.get("severity")) for f in gating}
-                        ),
-                    )
-                    marker = "security_failed"
-                # Merge scanner findings into the response findings, deduped by
-                # (file, line, category). Copy status so we never mutate the
-                # performer service's response object.
-                existing_raw = status.get("findings", [])
-                existing = list(existing_raw) if isinstance(existing_raw, list) else []
-                seen = {
-                    (f.get("file"), f.get("line"), f.get("category"))
-                    for f in existing
-                    if isinstance(f, dict)
-                }
-                merged = list(existing)
-                for f in scanner_findings:
-                    key = (f.get("file"), f.get("line"), f.get("category"))
-                    if key not in seen:
-                        merged.append(f)
-                        seen.add(key)
-                status = {**status, "findings": merged}
+            _workflow_report = status.get("report") if isinstance(status.get("report"), dict) else {}
+            if not isinstance(_workflow_report.get("security"), dict):
+                raw_scanner = state.get("scanner_findings") or []
+                scanner_findings = [f for f in raw_scanner if isinstance(f, dict)]
+                gating = [
+                    f for f in scanner_findings
+                    if str(f.get("severity", "")).lower() in ("critical", "high")
+                ]
+                if gating:
+                    if marker != "security_failed":
+                        logger.warning(
+                            "monitor_performer.security_floor_override",
+                            performer_stage=stage,
+                            card_id=card_id,
+                            model_marker=marker,
+                            gating_count=len(gating),
+                            severities=sorted(
+                                {str(f.get("severity")) for f in gating}
+                            ),
+                        )
+                        marker = "security_failed"
+                    # Merge scanner findings into the response findings, deduped by
+                    # (file, line, category). Copy status so we never mutate the
+                    # performer service's response object.
+                    existing_raw = status.get("findings", [])
+                    existing = list(existing_raw) if isinstance(existing_raw, list) else []
+                    seen = {
+                        (f.get("file"), f.get("line"), f.get("category"))
+                        for f in existing
+                        if isinstance(f, dict)
+                    }
+                    merged = list(existing)
+                    for f in scanner_findings:
+                        key = (f.get("file"), f.get("line"), f.get("category"))
+                        if key not in seen:
+                            merged.append(f)
+                            seen.add(key)
+                    status = {**status, "findings": merged}
+            else:
+                logger.info(
+                    "monitor_performer.security_floor_skipped",
+                    performer_stage=stage,
+                    card_id=card_id,
+                )
 
         # --- 120 (US1): QA evidence-integrity floor — coordinare-authoritative ---
         # A QA "qa_passed" that verified ZERO acceptance criteria (criteria were
@@ -3950,6 +4015,17 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
                     f"The reviewer hit an environment blocker ({_reason}). The card is parked in the "
                     "blocked column: check GitHub API access from the performer and the size of the "
                     "injected diff, then re-run the review stage."
+                ]
+            elif stage == "security":
+                # 170: the security workflow holds when a scanner is missing or broken,
+                # when it could not post its one review, or when it could not read
+                # every changed file. No code change fixes any of these.
+                state["system_error_reason"] = f"the security review could not complete (no code defect):\n{_reason}"
+                state["open_questions"] = [
+                    f"The security stage hit an environment blocker ({_reason}). The card is parked in the "
+                    "blocked column: check that semgrep and bandit run in the performer image (and can reach "
+                    "the semgrep registry, or set SECURITY_SEMGREP_CONFIG), GitHub API access from the "
+                    "performer, and the size of the injected diff, then re-run the security stage."
                 ]
             else:
                 state["system_error_reason"] = (
@@ -4435,6 +4511,10 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
                     state, relevant_findings, raiser="security",
                     origin_sha=_settled_head(status),
                 )
+            # 170: lift security workflow findings into review_findings when the
+            # workflow ran and findings route to the implementer.
+            _security_report = status.get("report") if isinstance(status.get("report"), dict) else {}
+            _lift_security_findings(state, _security_report, target_stage)
             state["relay_feedback"] = relevant_findings  # type: ignore[typeddict-unknown-key]
             state["performer_stage"] = target_stage
             state["phase"] = "dispatching"

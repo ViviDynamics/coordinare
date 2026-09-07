@@ -99,3 +99,10 @@ async def test_output_without_the_report_key_takes_the_prose_path():
     assert resp.status == "changes_requested"
     assert post.called, "the prose path posts the review itself, byte for byte as before"
     assert post.call_args.kwargs["event"] == "COMMENT"
+
+
+@pytest.mark.asyncio
+async def test_a_review_dict_without_a_known_verdict_takes_the_prose_path():
+    """Review finding (spec 170 PR): a prose reviewer that emits a `review` key with no verdict is not a workflow hold."""
+    perf, resp, post, _ = await _handle(json.dumps({"review": {"summary": "fine"}, "approved": False, "comments": [{"path": "src/a.py", "line": 3, "body": "fix"}], "body": "please fix"}))
+    assert resp.status == "changes_requested" and post.called

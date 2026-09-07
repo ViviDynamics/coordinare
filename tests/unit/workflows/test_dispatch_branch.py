@@ -370,3 +370,52 @@ async def test_the_reviewer_workflow_runs_behind_the_same_adapter_seam(tmp_path)
     assert report["review"]["findings"][0]["path"] == "src/calc.py"
     assert report["write_free_check"]["passed"] is True
     assert [r["event"] for r in gh.reviews] == ["REQUEST_CHANGES"]
+
+
+@pytest.mark.asyncio
+async def test_the_security_workflow_runs_behind_the_same_adapter_seam(tmp_path):
+    """170: the sixth consumer of the layer is dispatched exactly like the
+    others: BackendAdapter-shaped, done with a JSON report main.py can parse,
+    and its report carries the security record coordinare routes. The GitHub
+    poster and the scanner are fakes here: nothing leaves the test."""
+    import json
+    from types import SimpleNamespace
+
+    from performer.workflows.adapter import WorkflowAdapter
+    from performer.workflows.base import WorkflowMetrics
+    from performer.workflows.budget import ModelReply
+    from performer.workflows.security import SecurityWorkflow
+    from performer.workflows.toolkit import Toolkit
+
+    from tests.unit.workflows.security.test_workflow_end_to_end import (
+        INJECTION,
+        SURVEY,
+        FakeGitHub,
+        _score,
+        fake_scanner,
+    )
+
+    replies = [SURVEY, {"findings": [INJECTION]}]
+    state = {"i": 0}
+
+    async def model_call(persona, content, max_tokens):
+        reply = replies[min(state["i"], len(replies) - 1)]
+        state["i"] += 1
+        return ModelReply(content=json.dumps(reply), finish_reason="stop")
+
+    async def runner(cmd, cwd, timeout_s):
+        return (0, "") if cmd.startswith("git status") else (0, "abc123 add lookup\n")
+
+    events = []
+    stub_tk = Toolkit(metrics=WorkflowMetrics(), model_call=model_call, command_runner=runner, event_sink=events.append, call_limit=12)
+    gh = FakeGitHub()
+    adapter = WorkflowAdapter("security", toolkit_factory=lambda metrics, sink: stub_tk)
+    adapter._workflow = SecurityWorkflow(poster=gh.post, scan_runner=fake_scanner())  # the registry's instance would post and scan for real
+    await adapter.start(SimpleNamespace(path=tmp_path), _score())
+    await adapter._task
+    status = adapter.get_status()
+    assert status.state == "done", status
+    report = json.loads(status.output)
+    assert report["security"]["verdict"] == "security_failed"
+    assert report["security"]["blocking"][0]["category"] == "injection"
+    assert [r["event"] for r in gh.reviews] == ["REQUEST_CHANGES"]
