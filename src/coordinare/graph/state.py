@@ -288,6 +288,11 @@ class CoordinareState(TypedDict, total=False):
     # out_of_scope, questions, assumptions, criteria with source, carried
     # clarifications); per card, restart-safe (schema v18).
     assessment: dict[str, Any] | None
+    # 169: the reviewer's structured findings (changed_files with hunks,
+    # findings with anchors, survey commands, dispositions, coverage pass,
+    # verdict, post result); per card, restart-safe (schema v19).
+    # Cleared on reviewer dispatch, injected to implementing stage only.
+    review_findings: dict[str, Any] | None
     # 125: one-shot veto — set to the target stage by _apply_pending_override's
     # "restart" action so the verdict cache never suppresses an operator-
     # requested run.  Consumed (cleared) by the cache check.  Transient:
@@ -416,6 +421,8 @@ def initial_state() -> CoordinareState:
         "documenting_side": None,
         # 166: assessor structured assessment
         "assessment": None,
+        # 169: reviewer structured findings
+        "review_findings": None,
         "override_forced_dispatch": None,
         # 126: terminal-success-floor state
         "feedback_ledger": [],

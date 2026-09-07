@@ -72,6 +72,8 @@ def _full_card_context() -> dict[str, Any]:
         "implementer_single_turn": True,
         # 166: assessor workflow assessment (injected into architecting dispatch only)
         "assessment": {"ready": True, "goal": "Add time entry categories", "expected_behavior": "Users select category", "out_of_scope": [], "questions": [], "assumptions": [], "criteria": [{"surface": "/", "action": "open", "expected": "ok", "kind": "functional"}], "criteria_source": "card", "clarifications": []},
+        # 169: reviewer workflow findings (injected into implementing dispatch only)
+        "review_findings": {"changed_files": [], "diff_truncated": False, "verdict": "changes_requested", "covered_files": [], "findings": [{"path": "a.py", "line": 1, "category": "logic_error", "problem": "p", "why_blocking": "w", "evidence": "e", "origin": "model"}]},
     }
 
 
@@ -193,6 +195,18 @@ class TestDispatchPayloadContract:
         await service.dispatch_card({**briefs, "title": "test", "id": "X"})
         for key, value in briefs.items():
             assert transport.captured_payload[key] == value, key
+
+    @pytest.mark.asyncio
+    async def test_review_findings_are_not_dropped(self) -> None:
+        """169: the reviewer's structured findings reach the implementer intact
+        when injected by dispatch_performer."""
+        transport = _CaptureTransport()
+        service = AgentService(transport)
+        review = {"changed_files": [{"path": "a.py", "hunks": [], "fully_in_diff": True, "opened_by_survey": False}], "diff_truncated": False,
+                  "verdict": "changes_requested", "covered_files": ["a.py"],
+                  "findings": [{"path": "a.py", "line": 3, "category": "logic_error", "problem": "off by one", "why_blocking": "wrong", "evidence": "range(n)", "origin": "model"}]}
+        await service.dispatch_card({"title": "test", "id": "X", "review_findings": review})
+        assert transport.captured_payload["review_findings"] == review
 
     @pytest.mark.asyncio
     async def test_assessment_is_not_dropped(self) -> None:

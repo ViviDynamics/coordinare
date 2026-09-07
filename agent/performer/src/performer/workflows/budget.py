@@ -51,6 +51,9 @@ _STEP_BUDGETS: dict[str, int] = {
     # 166 assessor workflow: the assessment is a structured product reading
     # with bounded questions and criteria; similar to the survey scope.
     "assess": 3000,
+    # 169 reviewer workflow: the findings call is schema-guarded with max 30
+    # findings and one reprompt; similar to blueprint scope.
+    "findings": 8000,
 }
 _DEFAULT_BUDGET = 8000
 

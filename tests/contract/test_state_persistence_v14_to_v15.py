@@ -37,11 +37,12 @@ _ITEM = {
 }
 
 
-def test_current_schema_version_is_18() -> None:
-    """Spec 166 bumps the snapshot schema to v18 (per-card assessment from the
+def test_current_schema_version_is_19() -> None:
+    """Spec 169 bumps the snapshot schema to v19 (per-card review_findings from the
+    reviewer workflow). Spec 166 bumped it to v18 (per-card assessment from the
     assessor workflow), superseding the v17 pin (spec 165, blueprint and
     documenting_side — still present, just no longer current)."""
-    assert CURRENT_SCHEMA_VERSION == 18  # 166: + assessment; 165: + blueprint, documenting_side
+    assert CURRENT_SCHEMA_VERSION == 19  # 169: + review_findings; 166: + assessment; 165: + blueprint, documenting_side
 
 
 def test_old_session_loads_with_surfaced_stale_reviews_default() -> None:

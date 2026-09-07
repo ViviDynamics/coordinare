@@ -225,6 +225,40 @@ def inject_assessment(card_context: dict[str, Any], state: Any, *, performer_sta
     card_context["assessment"] = deepcopy(assessment)
 
 
+def reset_review_findings_for_reviewer(state: Any, performer_stage: str | None) -> bool:
+    """169 (T039): dispatching the reviewer means a new review is coming: drop the
+    old findings so a round that fails to report can never leave stale findings for
+    the implementer to consume (mirrors reset_assessment_for_assessor). Returns
+    True when something was cleared.
+    """
+    if performer_stage != "reviewing":
+        return False
+    had = state.get("review_findings") is not None
+    state["review_findings"] = None
+    if had:
+        logger.info("review_findings.reset_for_reviewer", card_id=state.get("card_id"))
+    return had
+
+
+def inject_review_findings(card_context: dict[str, Any], state: Any, *, performer_stage: str | None) -> None:
+    """169 (FR-012): hand the implementer the reviewer's structured findings.
+
+    The implementer receives the findings (changed_files with hunks, findings
+    with anchors and categories, survey commands, dispositions, coverage pass
+    outcome, verdict, GitHub post result) only when dispatching the implementing
+    stage after a reviewing stage reported changes_requested. Absent review_findings
+    every key stays off the payload, so the pre-169 dispatch is unchanged in shape
+    and size. Registered in specs/contracts/dispatch-payload.md and declared on ``Score``.
+    """
+    if performer_stage != "implementing":
+        return
+    review_findings = state.get("review_findings") if hasattr(state, "get") else None
+    if not isinstance(review_findings, dict) or not isinstance(review_findings.get("changed_files"), list) or not isinstance(review_findings.get("verdict"), str):
+        return
+    from copy import deepcopy
+    card_context["review_findings"] = deepcopy(review_findings)
+
+
 def inject_briefs(card_context: dict[str, Any], state: Any, *, role: str | None) -> None:
     """165 (FR-010, FR-013): hand each reader its slice of the blueprint.
 
@@ -1490,6 +1524,10 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
     # there is none. Then inject into architecting only.
     reset_assessment_for_assessor(state, performer_stage)
     inject_assessment(card_context, state, performer_stage=performer_stage)
+    # 169: a re-dispatched reviewer replaces the findings; until it reports,
+    # there is none. Then inject into implementing only.
+    reset_review_findings_for_reviewer(state, performer_stage)
+    inject_review_findings(card_context, state, performer_stage=performer_stage)
     # 165: a re-dispatched architect replaces the blueprint; until it reports,
     # there is none. Then hand each reader its slice.
     reset_blueprint_for_architect(state, performer_stage)

@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-CURRENT_SCHEMA_VERSION: int = 18  # 166: + PersistedSession.assessment; 165: + blueprint, .documenting_side
+CURRENT_SCHEMA_VERSION: int = 19  # 169: + PersistedSession.review_findings; 166: + assessment; 165: + blueprint, .documenting_side
 
 # Lowest schema_version we still know how to read.  v1 snapshots are upgraded
 # in-memory at load time (065 Fix 7b: active_sessions added in v2; v1 snapshots
@@ -105,6 +105,15 @@ CURRENT_SCHEMA_VERSION: int = 18  # 166: + PersistedSession.assessment; 165: + b
 # failing the snapshot. Only the goal and ready fields are required for
 # validation; other missing fields trigger the drop. Assessment text and
 # hash only; never secret values.
+# v19 (169) adds review_findings on PersistedSession: the reviewer workflow's
+# structured findings record (changed_files, findings, dispositions, coverage
+# pass outcome, verdict, and posting result) lifted when the reviewer reports
+# changes_requested. v1-v18 snapshots load with None; a malformed record
+# (not a dict, missing changed_files or verdict) drops to None on load, never
+# failing the snapshot. Review findings are cleared when the reviewer is
+# dispatched (reset_review_findings_for_reviewer) and injected into the
+# implementing stage only (inject_review_findings). Finding anchors and verdict
+# text only; never secret values.
 MIN_SUPPORTED_SCHEMA_VERSION: int = 1
 
 WorkflowPhase = Literal[
@@ -414,6 +423,16 @@ class PersistedSession(BaseModel):
     # (missing goal or ready field, or not a dict) loads as None, never as
     # a snapshot load failure.
     assessment: dict[str, Any] | None = None
+    # 169 (schema v19+): the reviewer's structured findings for one card.
+    # Contains changed_files with hunks, diff_truncated flag, survey commands/
+    # refusals, findings (before gate, dropped, after recheck), dispositions,
+    # coverage pass state, verdict, covered files, post result and URL, and
+    # workflow metrics. Defaults keep v1-v18 snapshots loading unchanged.
+    # A malformed record (not a dict, missing changed_files or verdict) loads
+    # as None, never as a snapshot load failure. Cleared when reviewer is
+    # dispatched; injected into implementing stage only. Findings and verdict
+    # text only; never secret values.
+    review_findings: dict[str, Any] | None = None
 
     @field_validator("documenting_side", mode="before")
     @classmethod
@@ -438,6 +457,22 @@ class PersistedSession(BaseModel):
         if not isinstance(v, dict):
             return None
         if not v.get("goal") or "ready" not in v:
+            return None
+        return v
+
+    @field_validator("review_findings", mode="before")
+    @classmethod
+    def _drop_corrupt_review_findings(cls, v: object) -> object:
+        """169: a malformed review_findings record loads as None (no findings
+        recorded == the reviewer may be dispatched again), never as a snapshot
+        load failure. Required fields: changed_files (list) and verdict (str)."""
+        if v is None:
+            return v
+        if not isinstance(v, dict):
+            return None
+        if not isinstance(v.get("changed_files"), list) or not isinstance(
+            v.get("verdict"), str
+        ):
             return None
         return v
 

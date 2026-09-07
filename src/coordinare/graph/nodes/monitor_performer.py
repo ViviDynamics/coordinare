@@ -1011,6 +1011,46 @@ def _record_pr_artefacts(
     return updates
 
 
+def _lift_review_findings(state: dict[str, Any], report: dict[str, Any], stage: str) -> None:
+    """169 (T038): lift reviewer findings into state when reviewer reports changes_requested.
+
+    Findings are cleared on reviewer re-dispatch and injected into implementing stage only.
+    Report structure: {"review": {...}, "workflow_metrics": {...}}. The "review" key
+    carries the complete ReviewRecord (changed_files, findings, dispositions, coverage,
+    verdict, post result).
+
+    Mutates state in place.
+    """
+    if stage != "reviewing":
+        return
+
+    _review_report = report if isinstance(report, dict) else {}
+    _review = _review_report.get("review")
+
+    if isinstance(_review, dict) and isinstance(_review.get("changed_files"), list) and isinstance(_review.get("verdict"), str):
+        # Deep copy to avoid references to mutable structures
+        import copy
+        state["review_findings"] = copy.deepcopy(_review)
+        categories = set()
+        for finding in _review.get("findings", []):
+            if isinstance(finding, dict):
+                categories.add(finding.get("category", "unknown"))
+        logger.info(
+            "review_findings.lifted",
+            card_id=state.get("current_card", {}).get("id", "unknown"),
+            count=len(_review.get("findings", [])),
+            categories=list(categories),
+            verdict=_review.get("verdict"),
+        )
+    elif isinstance(_review, dict):
+        logger.info(
+            "review_findings.not_lifted",
+            card_id=state.get("current_card", {}).get("id", "unknown"),
+            has_review=isinstance(_review, dict),
+            missing_fields=not (isinstance(_review.get("changed_files"), list) and isinstance(_review.get("verdict"), str)),
+        )
+
+
 def _advance_stage(state: CoordinareState, status: dict[str, Any] | None = None) -> dict[str, Any]:
     """Compute the state update to advance the lifecycle to the next role.
 
@@ -3536,6 +3576,12 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
                     has_assessment=isinstance(_assess, dict),
                 )
 
+        # 169: lift reviewer findings when reviewer reports changes_requested.
+        # Uses helper _lift_review_findings to validate and copy the ReviewRecord.
+        if stage == "reviewing" and marker == "changes_requested":
+            _review_report = status.get("report") if isinstance(status.get("report"), dict) else {}
+            _lift_review_findings(state, _review_report, stage)
+
         # 164: stash the QA repair brief for the next implementer dispatch,
         # mirroring how scanner_findings already travels. Reports what failed
         # and how to reproduce it; never prescribes a fix (FR-014). Lifted on
@@ -3895,16 +3941,27 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
             state["transient_error_cycles"] = int(  # type: ignore[typeddict-unknown-key]
                 state.get("transient_error_cycles") or 0
             ) + 1
-            state["system_error_reason"] = (
-                f"local tests could not run due to an environment blocker "
-                f"(no code defect); not pushing:\n{_reason}"
-            )
-            state["open_questions"] = [
-                "The implementer's local test gate hit an environment blocker "
-                f"(env-cache reason: {_reason}). The card is parked in the blocked "
-                "column — no code change will fix this; an operator must repair the "
-                "performer environment / env cache before the stage can re-run."
-            ]
+            if stage in ("reviewing", "closing_review"):
+                # 169: the reviewer workflow holds when it could not post its one
+                # review or could not read every changed file; neither is a test
+                # environment problem and no code change fixes it.
+                state["system_error_reason"] = f"the review could not complete (no code defect):\n{_reason}"
+                state["open_questions"] = [
+                    f"The reviewer hit an environment blocker ({_reason}). The card is parked in the "
+                    "blocked column: check GitHub API access from the performer and the size of the "
+                    "injected diff, then re-run the review stage."
+                ]
+            else:
+                state["system_error_reason"] = (
+                    f"local tests could not run due to an environment blocker "
+                    f"(no code defect); not pushing:\n{_reason}"
+                )
+                state["open_questions"] = [
+                    "The implementer's local test gate hit an environment blocker "
+                    f"(env-cache reason: {_reason}). The card is parked in the blocked "
+                    "column — no code change will fix this; an operator must repair the "
+                    "performer environment / env cache before the stage can re-run."
+                ]
             state["agent_dispatch"] = {}
             state["agent_dispatch_at"] = None
             return state
