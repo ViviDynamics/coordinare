@@ -1,0 +1,87 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Reviewer Findings Output",
+  "description": "The model-facing output schema for the reviewer findings call. Does not include a verdict field; that is determined by code.",
+  "type": "object",
+  "properties": {
+    "findings": {
+      "type": "array",
+      "description": "List of code issues found by the reviewer",
+      "maxItems": 30,
+      "items": {
+        "type": "object",
+        "required": ["path", "line", "category", "problem", "why_blocking", "evidence"],
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "File path where the issue was found; empty string for unanchored prior comments"
+          },
+          "line": {
+            "type": "integer",
+            "description": "New-side line number in the diff; 0 for unanchored prior comments",
+            "minimum": 0
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "logic_error",
+              "test_missing",
+              "style",
+              "performance",
+              "security",
+              "documentation_by_implementer",
+              "unaddressed_feedback"
+            ],
+            "description": "Category of the finding"
+          },
+          "problem": {
+            "type": "string",
+            "description": "What is wrong with the code",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "why_blocking": {
+            "type": "string",
+            "description": "Why this problem must be fixed before approval",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "evidence": {
+            "type": "string",
+            "description": "The offending line or code snippet from the diff or surveyed output",
+            "maxLength": 200
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "dispositions": {
+      "type": "array",
+      "description": "How each prior comment was handled",
+      "items": {
+        "type": "object",
+        "required": ["prior_comment_id", "status"],
+        "properties": {
+          "prior_comment_id": {
+            "type": "string",
+            "description": "ID of the comment from relay_feedback"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["fixed", "not_fixed"],
+            "description": "Whether the issue was addressed"
+          },
+          "linked_finding_index": {
+            "type": "integer",
+            "description": "Index into findings array if status is not_fixed and a finding addresses it; null otherwise",
+            "minimum": 0,
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["findings"],
+  "additionalProperties": false
+}

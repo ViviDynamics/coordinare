@@ -321,3 +321,52 @@ async def test_the_assessor_workflow_runs_behind_the_same_adapter_seam(tmp_path)
     report = json.loads(status.output)
     assert "assessment" in report and report["assessment"]["ready"] is True
     assert report["write_free_check"]["passed"] is True
+
+
+@pytest.mark.asyncio
+async def test_the_reviewer_workflow_runs_behind_the_same_adapter_seam(tmp_path):
+    """169: the fifth consumer of the layer is dispatched exactly like the
+    others: BackendAdapter-shaped, done with a JSON report main.py can parse,
+    and its report carries the review record coordinare lifts. The GitHub
+    poster is a recorder here: nothing leaves the test."""
+    import json
+    from types import SimpleNamespace
+
+    from performer.workflows.adapter import WorkflowAdapter
+    from performer.workflows.base import WorkflowMetrics
+    from performer.workflows.budget import ModelReply
+    from performer.workflows.reviewer import ReviewerWorkflow
+    from performer.workflows.toolkit import Toolkit
+
+    from tests.unit.workflows.reviewer.test_workflow_end_to_end import (
+        DIV_FINDING,
+        SURVEY,
+        FakeGitHub,
+        _score,
+    )
+
+    replies = [SURVEY, {"findings": [DIV_FINDING], "dispositions": []}]
+    state = {"i": 0}
+
+    async def model_call(persona, content, max_tokens):
+        reply = replies[min(state["i"], len(replies) - 1)]
+        state["i"] += 1
+        return ModelReply(content=json.dumps(reply), finish_reason="stop")
+
+    async def runner(cmd, cwd, timeout_s):
+        return (0, "") if cmd.startswith("git status") else (0, "abc123 add div\n")
+
+    events = []
+    stub_tk = Toolkit(metrics=WorkflowMetrics(), model_call=model_call, command_runner=runner, event_sink=events.append, call_limit=12)
+    gh = FakeGitHub()
+    adapter = WorkflowAdapter("reviewer", toolkit_factory=lambda metrics, sink: stub_tk)
+    adapter._workflow = ReviewerWorkflow(poster=gh.post)  # the registry's instance would post to GitHub for real
+    await adapter.start(SimpleNamespace(path=tmp_path), _score())
+    await adapter._task
+    status = adapter.get_status()
+    assert status.state == "done", status
+    report = json.loads(status.output)
+    assert report["review"]["verdict"] == "changes_requested"
+    assert report["review"]["findings"][0]["path"] == "src/calc.py"
+    assert report["write_free_check"]["passed"] is True
+    assert [r["event"] for r in gh.reviews] == ["REQUEST_CHANGES"]

@@ -204,17 +204,23 @@ class ImplementerWorkflow:
             # milestones
             self._step(toolkit, "milestones", f"{len(plans)} in lane {lane}")
             t = time.monotonic()
+            lint_command = detect_lint_command(score, workspace)
+            commands = quality_commands(lint_command, budgets.quality_commands)
+            quality_attempts = []
             for plan in plans:
                 self._step(toolkit, "milestone", f"{plan.index}: {plan.goal}")
                 await run_milestone(ctx, plan)
+                if lane == "repair" and commands:
+                    # 169 FR-013: the repair lane runs the quality set after every turn,
+                    # so a group that breaks lint is repaired before the next group.
+                    quality_attempts.extend(await run_quality_phase(ctx, commands, rerun_green=rerun_green))
             timed("milestones", t)
 
             # quality
             self._step(toolkit, "quality")
             t = time.monotonic()
-            lint_command = detect_lint_command(score, workspace)
-            commands = quality_commands(lint_command, budgets.quality_commands)
-            quality_attempts = await run_quality_phase(ctx, commands, rerun_green=rerun_green)
+            if not (lane == "repair" and commands and plans):
+                quality_attempts.extend(await run_quality_phase(ctx, commands, rerun_green=rerun_green))
             timed("quality", t)
 
             # local gate (089, unchanged in meaning)

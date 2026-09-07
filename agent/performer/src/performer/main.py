@@ -2089,6 +2089,57 @@ async def handle_status(
         # thread so the PR can clear the "all comments resolved" merge gate.
         if perf.role in ("reviewing", "closing_review"):
             review_raw = backend_status.output or ""
+            # 169: the reviewer WORKFLOW reports a review record and has already
+            # posted the one GitHub review itself (REQUEST_CHANGES with inline
+            # comments, or COMMENT). Map its verdict onto the response the prose
+            # path returns for that outcome and skip the prose post. Without the
+            # report key the prose path below is untouched (FR-015).
+            _rr = _extract_json(review_raw) if isinstance(review_raw, str) else review_raw
+            if isinstance(_rr, dict) and isinstance(_rr.get("review"), dict):
+                _review = _rr["review"]
+                _verdict = str(_review.get("verdict") or "")
+                _findings = [f for f in (_review.get("findings") or []) if isinstance(f, dict)]
+                log.info(
+                    "reviewer.review_reported",
+                    verdict=_verdict,
+                    findings=len(_findings),
+                    dropped=len(_review.get("findings_dropped") or []),
+                    coverage_pass=_review.get("coverage_pass_ran"),
+                    posted=_review.get("posted_review_url"),
+                    session_id=perf.session_id,
+                )
+                if _verdict == "approved":
+                    perf.state = "approved"
+                    perf.review_suggestions = []
+                    return PerformerResponse(status="approved", session_id=perf.session_id, suggestions=[], report=_rr)
+                if _verdict == "changes_requested":
+                    _comments = [
+                        {
+                            "path": str(f.get("path") or ""),
+                            "line": int(f.get("line") or 0),
+                            "body": f"{f.get('category')}: {f.get('problem')} Why blocking: {f.get('why_blocking')}",
+                        }
+                        for f in _findings
+                    ]
+                    max_cycles = settings.REVIEWER_MAX_CYCLES if settings else 3
+                    perf.review_cycle += 1
+                    if perf.review_cycle >= max_cycles:
+                        summary = f"Review cycle limit reached ({perf.review_cycle}). Unresolved issues remain."
+                        perf.state = "blocked"
+                        perf.open_questions = [summary]
+                        return PerformerResponse(status="blocked", session_id=perf.session_id, questions=[summary], report=_rr)
+                    perf.review_comments = _comments
+                    perf.state = "changes_requested"
+                    return PerformerResponse(
+                        status="changes_requested", session_id=perf.session_id, comments=_comments,
+                        body=f"{len(_findings)} blocking finding(s) from the reviewer workflow", report=_rr,
+                    )
+                _reason = str(_review.get("post_error") or "")
+                if not _reason:
+                    _unread = _review.get("unread_files") or []
+                    _reason = "the review could not cover every changed file: " + ", ".join(str(u) for u in _unread[:10])
+                perf.state = "env_blocked"
+                return PerformerResponse(status="env_blocked", session_id=perf.session_id, reason=_reason, report=_rr)
             if not review_raw.strip():
                 return await _handle_backend_parse_failure(
                     perf, review_raw, "review", settings, "was empty",

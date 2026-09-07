@@ -27,11 +27,11 @@ class _Bounded(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-PersonaKind = Literal["TESTS", "IMPLEMENT", "REPAIR_TESTS", "REPAIR_IMPLEMENT", "REPAIR_QUALITY", "REPAIR_CI", "INVESTIGATE", "CHANGE"]
+PersonaKind = Literal["TESTS", "IMPLEMENT", "REPAIR_TESTS", "REPAIR_IMPLEMENT", "REPAIR_QUALITY", "REPAIR_CI", "INVESTIGATE", "CHANGE", "REPAIR_REVIEW"]
 TurnKind = Literal["tests", "implement", "repair"]
 ExitState = Literal["done", "timeout", "error"]
-Lane = Literal["feature", "bug", "chore", "refactor", "tests"]
-LaneSource = Literal["brief", "default", "unknown"]
+Lane = Literal["feature", "bug", "chore", "refactor", "tests", "repair"]
+LaneSource = Literal["brief", "default", "unknown", "review"]
 
 
 class TurnBrief(_Bounded):

@@ -225,6 +225,13 @@ class CardSession(TypedDict, total=False):
     # round-trip session ↔ state so the assessment survives a daemon restart
     # and reaches the architecting dispatch.
     assessment: dict[str, Any] | None
+    # 169: the reviewer's structured findings (changed_files with hunks,
+    # findings with anchors, survey commands, dispositions, coverage pass
+    # outcome, verdict, and post result). A plain dict at session/state level
+    # (typed ReviewRecord lives in the workflow). MUST round-trip session ↔ state
+    # so review_findings survives a daemon restart and reaches the implementing
+    # dispatch. Cleared on reviewer dispatch (reset_review_findings_for_reviewer).
+    review_findings: dict[str, Any] | None
     # 126: terminal-success-floor state.  feedback_ledger entries are plain
     # dicts at session/state level (typed FeedbackItemRecord lives in
     # state_store); feedback_origin_sha is the head the current feedback round
@@ -321,6 +328,10 @@ _SESSION_FIELDS: tuple[str, ...] = (
     # assessment survives cycles and daemon restarts, and reaches the
     # architecting dispatch.
     "assessment",
+    # 169: reviewer's structured findings.  Round-trips per-card so the
+    # findings survive cycles and daemon restarts, are cleared on reviewer
+    # dispatch, and reach the implementing dispatch.
+    "review_findings",
     # 126: terminal-success-floor state.  Round-trips per-card so the feedback
     # contract, origin head and no-op retry budget survive restarts.
     "feedback_ledger",
@@ -403,6 +414,7 @@ def create_session_from_card(card: dict[str, Any]) -> CardSession:
         stage_verdicts={},
         blueprint=None,
         assessment=None,
+        review_findings=None,
         documenting_side=None,
         # 126: no feedback rounds stamped yet for a freshly-picked-up card
         feedback_ledger=[],

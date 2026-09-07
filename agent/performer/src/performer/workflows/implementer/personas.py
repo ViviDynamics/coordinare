@@ -20,6 +20,7 @@ __all__ = [
     "REPAIR_CI",
     "INVESTIGATE",
     "CHANGE",
+    "REPAIR_REVIEW",
     "render",
 ]
 
@@ -144,6 +145,15 @@ Do not create or edit documentation.
 Do not commit."""
 
 
+REPAIR_REVIEW = """Address these review findings in {path} (spec 169 FR-013). Fix each one where it is anchored; do not restructure unrelated code and do not touch other files unless a finding requires it.
+
+Findings (verbatim from the reviewer):
+{findings}
+
+Run the existing tests before you finish. Do not edit documentation.
+"""
+
+
 def render(kind: str, **values) -> str:
     """Render a persona template with placeholder values (data-model.md).
 
@@ -168,6 +178,7 @@ def render(kind: str, **values) -> str:
         "REPAIR_CI": REPAIR_CI,
         "INVESTIGATE": INVESTIGATE,
         "CHANGE": CHANGE,
+        "REPAIR_REVIEW": REPAIR_REVIEW,
     }
 
     if kind not in templates:

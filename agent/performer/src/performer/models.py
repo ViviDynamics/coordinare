@@ -166,6 +166,12 @@ class Score(BaseModel):
     # only (FR-013); absent from all other stages. Must be declared here or
     # extra="ignore" silently drops it.
     assessment: dict[str, Any] | None = None
+    # 169: the reviewer's structured findings for one card (changed_files with
+    # hunks, findings with anchors, survey commands, dispositions, coverage pass,
+    # verdict, post result). Injected into implementing dispatch only (FR-012);
+    # absent from reviewing and all other stages. Must be declared here or
+    # extra="ignore" silently drops it.
+    review_findings: dict[str, Any] | None = None
     # 165: a small blueprint dispatches the implementer for one turn with no
     # milestone loop.
     implementer_single_turn: bool = False

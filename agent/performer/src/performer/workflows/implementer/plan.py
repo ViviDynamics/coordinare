@@ -71,6 +71,48 @@ def _criteria_text(score) -> str:
     return text[:256]
 
 
+def review_findings(score) -> list[dict]:
+    """The reviewer's surviving findings on the dispatch payload (spec 169), or []."""
+    record = getattr(score, "review_findings", None)
+    if not isinstance(record, dict):
+        return []
+    return [f for f in (record.get("findings") or []) if isinstance(f, dict)]
+
+
+def _safe_repo_path(path: str) -> bool:
+    """A repair group path stays inside the repository: relative, no parent segments."""
+    return bool(path) and not path.startswith("/") and ".." not in path.split("/") and "\\" not in path
+
+
+def review_findings_for(score, path: str) -> list[dict]:
+    return [f for f in review_findings(score) if str(f.get("path")) == path]
+
+
+def repair_plan(score) -> list[MilestonePlan]:
+    """Spec 169 FR-013: one repair milestone per file group of review findings, in diff order.
+
+    Findings without a file anchor (prior comments on the PR body) ride with
+    the first group so the turn sees them; they cannot form a group of their own.
+    """
+    findings = review_findings(score)
+    if not findings:
+        return []
+    groups: dict[str, list[dict]] = {}
+    for f in findings:
+        path = str(f.get("path") or "")
+        if not _safe_repo_path(path):
+            continue  # body-anchored findings ride with the first group; traversal paths never form one
+        groups.setdefault(path, []).append(f)
+    plans = []
+    for index, (path, group) in enumerate(groups.items()):
+        cats = ", ".join(sorted({str(f.get("category")) for f in group}))
+        plans.append(MilestonePlan(
+            index=index, goal=f"Address {len(group)} review finding(s) in {path}"[:256], scope=path[:256],
+            done_when=f"the findings ({cats}) are fixed and the tests pass"[:256], lane="repair", lane_source="review",
+        ))
+    return plans
+
+
 def build_plan(score, brief: dict | None) -> list[MilestonePlan]:
     """Build milestone plan from brief or card (FR-003, FR-020).
 
@@ -88,6 +130,11 @@ def build_plan(score, brief: dict | None) -> list[MilestonePlan]:
         - Lane is selected from brief's work_kind (feature, bug, chore, refactor, tests).
     """
     workflow_env = score.workflow_env if hasattr(score, "workflow_env") else None
+
+    repair = repair_plan(score)
+    if repair:
+        log.info("plan.repair_lane", groups=len(repair), findings=len(review_findings(score)))
+        return repair
 
     if not brief:
         log.info("plan.no_brief", card=score.issue_number if hasattr(score, "issue_number") else "unknown")

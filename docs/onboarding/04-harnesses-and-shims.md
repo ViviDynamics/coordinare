@@ -299,6 +299,50 @@ Keep `dispatcher_dedup.stall_timeout_seconds` at or above the turn timeout: the
 long, and although the workflow forwards the harness's progress, the two
 settings should not disagree.
 
+### Role workflows: reviewer (spec 169)
+
+The reviewer was one prompt over the diff whose JSON verdict either parsed or
+fell back to prose. `workflow: reviewer` moves the review into code:
+
+1. **intake**: the injected diff is parsed into changed files with new-side hunk
+   ranges; a truncated diff is recorded; the relayed open comments are
+   normalised to id, path, line and body; the implementation brief is carried.
+2. **survey**: the spec-165 allow-list and survey step, with coverage tracking.
+   A changed file counts as read when it was fully in the diff or an admitted
+   command opened it. A truncated diff or an unread file gets exactly one more
+   survey turn naming the unread files.
+3. **findings**: one schema-guarded model call. Each finding carries a path, a
+   new-side line, a category from the fixed set, the problem, why it blocks,
+   and the offending line as evidence. The schema forbids a verdict.
+4. **gate**: pure rules. A finding whose path is not a changed file, whose line
+   is outside the hunks of a file the survey did not open, or whose evidence
+   matches no diff or survey line is dropped and re-anchored once. Every open
+   comment without a disposition becomes an `unaddressed_feedback` finding.
+   With a brief present, a documentation edit becomes a
+   `documentation_by_implementer` finding. Any surviving finding is changes
+   requested; none is approved, and approval also needs every changed file
+   read, otherwise the run ends as an environment hold naming the unread files.
+5. **post**: exactly one GitHub review, `REQUEST_CHANGES` with an inline comment
+   per finding inside a hunk (the rest in the body) or `COMMENT` when clean.
+   Fixed dispositions are named in the body. No thread is resolved.
+6. **report**: the review record with the executed write-free check
+   (`git status --porcelain` through the toolkit).
+
+Coordinare lifts the findings into the card session (schema v19), clears them
+when the reviewer is dispatched again, and injects them into the implementer
+dispatch only. The spec-167 implementer then selects a `repair` lane: one
+bounded turn per file group of findings carrying them verbatim, the milestone
+tests after each turn, then the usual quality, push, PR and CI path. The
+categories are a parameter of the workflow so the security role can reuse it.
+
+```yaml
+performers:
+  reviewer:
+    workflow: reviewer
+    workflow_env:
+      REVIEWER_SURVEY_MAX_COMMANDS: "12"
+```
+
 ## The end-to-end picture
 
 ```mermaid

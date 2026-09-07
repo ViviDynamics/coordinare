@@ -1,0 +1,257 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Reviewer Workflow Run Record",
+  "description": "The complete execution record of the reviewer workflow, travels in PerformerResponse.report['review_findings'] when changes_requested, persisted on the card in PersistedSession.review_findings.",
+  "type": "object",
+  "required": ["changed_files", "diff_truncated", "verdict", "covered_files"],
+  "properties": {
+    "changed_files": {
+      "type": "array",
+      "description": "Parsed diff structure: one entry per changed file",
+      "items": {
+        "type": "object",
+        "required": ["path", "hunks", "fully_in_diff"],
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "File path from diff header"
+          },
+          "hunks": {
+            "type": "array",
+            "description": "Hunks in this file with new-side line ranges",
+            "items": {
+              "type": "object",
+              "required": ["header", "start_line", "end_line"],
+              "properties": {
+                "header": {
+                  "type": "string",
+                  "description": "Unified diff hunk header, e.g. '@@ -10,5 +10,7 @@'"
+                },
+                "start_line": {
+                  "type": "integer",
+                  "description": "First new-side line number",
+                  "minimum": 1
+                },
+                "end_line": {
+                  "type": "integer",
+                  "description": "Last new-side line number",
+                  "minimum": 1
+                },
+                "lines": {
+                  "type": "array",
+                  "description": "Hunk content lines for evidence matching",
+                  "items": {"type": "string"}
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "fully_in_diff": {
+            "type": "boolean",
+            "description": "True if entire file is in the injected diff text"
+          },
+          "opened_by_survey": {
+            "type": "boolean",
+            "description": "True if survey ran a command on this file",
+            "default": false
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "diff_truncated": {
+      "type": "boolean",
+      "description": "True if the injected diff was truncated to 60k chars"
+    },
+    "unread_files": {
+      "type": "array",
+      "description": "After coverage pass, files still not read",
+      "items": {"type": "string"},
+      "default": []
+    },
+    "survey_commands": {
+      "type": "array",
+      "description": "Commands executed during survey",
+      "default": [],
+      "items": {
+        "type": "object",
+        "properties": {
+          "command": {
+            "type": "string",
+            "description": "Command that was run"
+          },
+          "output": {
+            "type": ["string", "null"],
+            "description": "Output from the command"
+          },
+          "error": {
+            "type": ["string", "null"],
+            "description": "Error if command failed"
+          }
+        },
+        "required": ["command"]
+      }
+    },
+    "survey_refusals": {
+      "type": "array",
+      "description": "Commands that were refused",
+      "default": [],
+      "items": {
+        "type": "object",
+        "properties": {
+          "command": {
+            "type": "string",
+            "description": "Command that was refused"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why it was refused (e.g. 'not in allow-list')"
+          }
+        },
+        "required": ["command", "reason"]
+      }
+    },
+    "findings": {
+      "type": "array",
+      "description": "Surviving findings after the gate: the canonical list coordinare lifts and the implementer repairs",
+      "default": [],
+      "maxItems": 30,
+      "items": {"$ref": "#/definitions/finding"}
+    },
+    "findings_before_gate": {
+      "type": "array",
+      "description": "Model's raw findings before validation",
+      "default": [],
+      "maxItems": 30,
+      "items": {"$ref": "#/definitions/finding"}
+    },
+    "findings_dropped": {
+      "type": "array",
+      "description": "Findings that failed anchor validation and were dropped",
+      "default": [],
+      "maxItems": 30,
+      "items": {"$ref": "#/definitions/finding"}
+    },
+    "findings_after_anchor_recheck": {
+      "type": "array",
+      "description": "Findings after reprompt for re-anchoring, if any",
+      "default": [],
+      "maxItems": 30,
+      "items": {"$ref": "#/definitions/finding"}
+    },
+    "dispositions": {
+      "type": "array",
+      "description": "How prior comments were handled",
+      "default": [],
+      "items": {
+        "type": "object",
+        "required": ["prior_comment_id", "status"],
+        "properties": {
+          "prior_comment_id": {
+            "type": "string",
+            "description": "ID of the prior comment"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["fixed", "not_fixed"]
+          },
+          "finding_index": {
+            "type": ["integer", "null"],
+            "description": "Index into findings if a new finding was created for not_fixed"
+          }
+        }
+      }
+    },
+    "coverage_pass_ran": {
+      "type": "boolean",
+      "description": "True if coverage pass was needed and ran",
+      "default": false
+    },
+    "coverage_pass_output": {
+      "type": "string",
+      "description": "Model's coverage report",
+      "default": ""
+    },
+    "verdict": {
+      "type": "string",
+      "enum": ["approved", "changes_requested", "env_blocked"],
+      "description": "Final verdict from the workflow"
+    },
+    "covered_files": {
+      "type": "array",
+      "description": "Changed files that were in diff or opened by survey",
+      "items": {"type": "string"}
+    },
+    "post_error": {
+      "type": ["string", "null"],
+      "description": "Error message if GitHub review post failed"
+    },
+    "posted_review_url": {
+      "type": ["string", "null"],
+      "description": "URL of the posted GitHub review, if successful"
+    },
+    "workflow_metrics": {
+      "type": "object",
+      "description": "Timing and token metrics from the workflow",
+      "properties": {
+        "intake_elapsed_secs": {"type": "number"},
+        "survey_elapsed_secs": {"type": "number"},
+        "findings_call_elapsed_secs": {"type": "number"},
+        "gate_elapsed_secs": {"type": "number"},
+        "post_elapsed_secs": {"type": "number"},
+        "total_elapsed_secs": {"type": "number"},
+        "findings_call_completion_tokens": {"type": "integer"},
+        "coverage_call_completion_tokens": {"type": "integer", "default": 0},
+        "reprompt_tokens": {"type": "integer", "default": 0}
+      }
+    }
+  },
+  "definitions": {
+    "finding": {
+      "type": "object",
+      "required": ["path", "line", "category", "problem", "why_blocking", "evidence", "origin"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "File path; empty string for unanchored prior comments"
+        },
+        "line": {
+          "type": "integer",
+          "description": "New-side line number; 0 for unanchored",
+          "minimum": 0
+        },
+        "category": {
+          "type": "string",
+          "enum": [
+            "logic_error",
+            "test_missing",
+            "style",
+            "performance",
+            "security",
+            "documentation_by_implementer",
+            "unaddressed_feedback"
+          ]
+        },
+        "problem": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "why_blocking": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "evidence": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "origin": {
+          "type": "string",
+          "enum": ["model", "rule"],
+          "description": "Whether added by the model or by a gate rule"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

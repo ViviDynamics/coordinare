@@ -365,6 +365,16 @@ def _persist_active_sessions(active_sessions: dict[str, Any]) -> dict[str, Persi
             and "ready" in assessment_raw
             else None
         )
+        # 169: the review_findings is a plain dict (validated on the performer
+        # side); a corrupt entry drops to None instead of failing the snapshot save.
+        review_findings_raw = sess.get("review_findings")
+        review_findings = (
+            dict(review_findings_raw)
+            if isinstance(review_findings_raw, dict)
+            and isinstance(review_findings_raw.get("changed_files"), list)
+            and isinstance(review_findings_raw.get("verdict"), str)
+            else None
+        )
         out[cid] = PersistedSession(
             card_id=cid,
             performer_stage=(sess.get("performer_stage") or None),
@@ -409,6 +419,7 @@ def _persist_active_sessions(active_sessions: dict[str, Any]) -> dict[str, Persi
             feedback_origin_sha=feedback_origin_sha,
             noop_success_retries=noop_success_retries,
             assessment=assessment,
+            review_findings=review_findings,
         )
     return out
 

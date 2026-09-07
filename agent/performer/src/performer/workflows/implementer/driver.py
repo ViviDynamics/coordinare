@@ -129,6 +129,8 @@ def _scope_list(milestone: MilestonePlan) -> list[str]:
     scope = (milestone.scope or "").strip()
     if not scope or scope == ".":
         return []
+    if getattr(milestone, "lane", None) == "repair":
+        return [scope]  # 169: one file group per milestone; a comma in the file name is part of the path
     return [s.strip() for s in scope.replace(";", ",").split(",") if s.strip()][:20]
 
 
@@ -281,7 +283,7 @@ def _grow_baseline(ctx: RunContext, summary: TestSummary) -> None:
 
 
 def _prefix(lane: str) -> str:
-    return {"chore": "chore", "refactor": "refactor"}.get(lane, "feat")
+    return {"chore": "chore", "refactor": "refactor", "repair": "fix"}.get(lane, "feat")
 
 
 def _issue(ctx: RunContext) -> str:
@@ -420,6 +422,50 @@ async def _change(ctx: RunContext, milestone: MilestonePlan, record: PerMileston
     raise MilestoneFailed(milestone.index, milestone.goal, f"the change regressed the baseline after {ctx.budgets.impl_attempts} attempts; last failure: {(excerpt or '')[:500]}")
 
 
+def _findings_text(findings: list[dict]) -> str:
+    lines = []
+    for f in findings:
+        where = f"{f.get('path')}:{f.get('line')}" if f.get("path") else "(pull request)"
+        ev = f" Evidence: {f.get('evidence')}" if f.get("evidence") else ""
+        lines.append(f"- [{f.get('category')}] {where}: {f.get('problem')} Why blocking: {f.get('why_blocking')}{ev}")
+    return "\n".join(lines) or "(none)"
+
+
+async def _repair(ctx: RunContext, milestone: MilestonePlan, record: PerMilestoneRecord) -> None:
+    """Repair lane (spec 169 FR-013): no red step; one bounded turn per file group of
+    review findings carrying them verbatim, the milestone tests after the turn, a
+    bounded repair on a regression, then the commit. Body-anchored findings ride
+    with the first group."""
+    from performer.workflows.implementer.plan import review_findings, review_findings_for
+
+    group = review_findings_for(ctx.score, milestone.scope)
+    if milestone.index == 0:
+        group = group + [f for f in review_findings(ctx.score) if not f.get("path")]
+    values = {"path": milestone.scope, "findings": _findings_text(group)}
+    persona_kind = "REPAIR_REVIEW"
+    failing: list[str] = []
+    excerpt: str | None = None
+    changed_all: dict[str, str] = {}
+    for attempt_no in range(1, ctx.budgets.impl_attempts + 1):
+        brief = _build_brief(ctx, milestone, kind="implement", persona_kind=persona_kind, failing_tests=failing, failure_excerpt=excerpt, extra_values=values if persona_kind == "REPAIR_REVIEW" else None)
+        result, attempt, changed = await run_turn(ctx, brief, attempt_number=attempt_no)
+        record.implement_attempts.append(attempt)
+        changed_all.update(changed)
+        if result.exit_state != "done":
+            excerpt, persona_kind = f"the previous turn {result.exit_state}", "REPAIR_IMPLEMENT"
+            continue
+        summary = await _tests(ctx)
+        regs = regressions(ctx.baseline, summary)
+        if not regs and summary.passed:
+            await _commit(ctx, changed_all, f"{_prefix(ctx.lane)}{_issue(ctx)}: {milestone.goal}")
+            _grow_baseline(ctx, summary)
+            return
+        failing = list(summary.test_names_failed or []) or regs
+        excerpt = "regressed: " + ", ".join(regs) + "\n" + summary.raw_tail if regs else summary.raw_tail
+        persona_kind = "REPAIR_IMPLEMENT"
+    raise MilestoneFailed(milestone.index, milestone.goal, f"the repair regressed the baseline after {ctx.budgets.impl_attempts} attempts; last failure: {(excerpt or '')[:500]}")
+
+
 async def _tests_lane(ctx: RunContext, milestone: MilestonePlan, record: PerMilestoneRecord) -> None:
     """Tests lane (FR-023): the new tests must pass against the existing code."""
     brief = _build_brief(ctx, milestone, kind="tests", persona_kind="TESTS")
@@ -460,6 +506,8 @@ async def run_milestone(ctx: RunContext, milestone: MilestonePlan) -> PerMilesto
             await _change(ctx, milestone, record)
         elif ctx.lane == "tests":
             await _tests_lane(ctx, milestone, record)
+        elif ctx.lane == "repair":
+            await _repair(ctx, milestone, record)
         else:
             await _feature(ctx, milestone, record)
     except MilestoneFailed as exc:

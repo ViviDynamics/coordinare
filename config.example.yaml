@@ -395,6 +395,21 @@ performers:
   reviewer:
     effort: high
     temperature: 0.0
+    # 169: run the review as a workflow: the injected diff parsed into changed
+    # files, a read-only survey under the spec-165 allow-list, one schema-guarded
+    # findings call, a gate that drops findings whose anchor does not verify
+    # against the diff or the survey output, unaddressed prior comments and
+    # implementer documentation edits added by rule, the verdict derived by code
+    # (any finding is changes requested; approval needs every changed file
+    # read), and exactly one GitHub review posted by the workflow. Findings are
+    # lifted into the card and injected into the implementer, which repairs them
+    # one file group at a time. Default off: remove the line to restore the
+    # prose path exactly. See specs/169-reviewer-workflow/quickstart.md.
+    # workflow: reviewer
+    # workflow_env:
+    #   REVIEWER_SURVEY_MAX_COMMANDS: 12       # read-only commands per survey turn
+    #   REVIEWER_SURVEY_MAX_OUTPUT_CHARS: 4000 # kept per command
+    #   REVIEWER_MAX_FINDINGS: 30              # hard cap, never above 30
 
   security:
     mode: single-gpt55              # upgrade model for security analysis if desired

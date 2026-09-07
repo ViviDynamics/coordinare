@@ -1,4 +1,4 @@
-"""166 (schema v18): the assessor's structured assessment persists per card
+"""166 (schema v19): the assessor's structured assessment persists per card
 and survives a restart; older snapshots load with None."""
 from __future__ import annotations
 
@@ -30,8 +30,8 @@ _ASSESSMENT = {
 }
 
 
-def test_schema_version_is_18() -> None:
-    assert CURRENT_SCHEMA_VERSION == 18
+def test_schema_version_is_19() -> None:
+    assert CURRENT_SCHEMA_VERSION == 19
 
 
 def test_new_assessment_field_defaults_to_none() -> None:
