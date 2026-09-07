@@ -96,6 +96,8 @@ See AGENTS.md for all development guidelines.
 - single-host JSON snapshot via `state_store.py`, unchanged (schema stays v19; the security stage writes the existing `review_findings` field). (170-security-workflow)
 - Python 3.14 (project minimum 3.12; prod 3.14.5 via uv) + existing only. pydantic 2.x (plan, result and record models), the 164 layer (`Toolkit`, `budget`, `schema_guard`), the 169 reviewer package (`diffparse`, `survey` allow-list runner, `report.write_free_check`), `performer.workspace.commit_files` and `get_head_sha`, structlog. No new external dependencies; Markdown is parsed with a small line-based scanner in the package (no markdown library). (171-documenter-workflow)
 - none; `state_store.py` unchanged. Coordinare state and schema untouched. (171-documenter-workflow)
+- Python 3.14 (project minimum 3.12; prod 3.14.5 via uv) + existing only. pydantic 2.x (thread, judgement and record models), the 164 layer (`Toolkit`, `budget`, `schema_guard`), the 169 reviewer's poster and write-free check, httpx through the performer's existing GitHub GraphQL helpers, structlog. (172-closer-workflow)
+- none; no coordinare state change. (172-closer-workflow)
 
 ## Recent Changes
 - 076-qa-cycle: Added Python 3.14 (project minimum: 3.12; production currently on 3.14.5 via uv) + pydantic 2.x, langgraph, structlog, docker SDK (or subprocess to `docker` CLI), fastapi (dashboard SSE), httpx (performer HTTP transport), pyyaml (config)

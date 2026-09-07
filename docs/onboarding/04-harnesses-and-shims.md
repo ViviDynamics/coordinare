@@ -401,6 +401,43 @@ performers:
 fails the scan and the card holds. Point the env at `p/default` or a local rules
 directory for an offline fleet.
 
+### Role workflows: closer (spec 172)
+
+The closer shares the reviewer's code path and spends a full model turn
+re-reading a pull request to answer a question GitHub already stores per
+thread. `workflow: closer` makes it the first workflow whose common path makes
+no model call:
+
+1. **intake**: every review thread of the PR, paged, with its resolved and
+   outdated flags, path, line and full comment transcript.
+2. **classify** (pure rules): `resolved` when GitHub says so; `stale` when it is
+   unresolved and outdated, which means the lines it anchored to have changed;
+   `answered` when the last comment is by someone other than the raiser and is
+   not earlier than the first; `open` otherwise.
+3. **judge**: at most one schema-guarded call, only over the answered threads,
+   returning per thread addressed with a verbatim quote, or not addressed with
+   a reason. Skipped entirely when nothing is ambiguous.
+4. **gate**: a judgement about a thread nobody sent is discarded, and an
+   addressed judgement whose quote appears in no comment of that thread is
+   discarded; the thread then stays open. The verdict is code: any open thread
+   is changes requested.
+5. **post**: exactly one COMMENT review naming what was resolved and what
+   remains, before anything is resolved, so a failed post leaves the PR
+   untouched.
+6. **act**: on approval only, the stale and addressed threads are resolved
+   through the shared helper. A failed resolution turns the verdict into a
+   hold: a card never advances carrying a thread the closer believed closed.
+
+Remote CI is never read here. Spec 064's rollup gate runs after approval, and
+closers rejecting on pending checks is the bounce loop that gate exists to
+prevent.
+
+```yaml
+performers:
+  closer:
+    workflow: closer
+```
+
 ## The end-to-end picture
 
 ```mermaid

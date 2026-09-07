@@ -1,0 +1,32 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ClosingRecord",
+  "description": "The closer workflow's report record (spec 172), returned as report[\"closing\"].",
+  "type": "object",
+  "required": ["threads_read", "classifications", "verdict"],
+  "additionalProperties": false,
+  "properties": {
+    "head_sha": {"type": ["string", "null"], "default": null},
+    "threads_read": {"type": "integer", "minimum": 0},
+    "pages_read": {"type": "integer", "minimum": 0, "default": 0},
+    "classifications": {"type": "array", "items": {"type": "object", "required": ["thread_id", "state", "rule"], "properties": {
+      "thread_id": {"type": "string"},
+      "state": {"type": "string", "enum": ["resolved", "stale", "answered", "open"]},
+      "rule": {"type": "string", "maxLength": 200}}}},
+    "judgements": {"type": "array", "default": [], "items": {"type": "object", "required": ["thread_id", "addressed", "accepted"], "properties": {
+      "thread_id": {"type": "string"},
+      "addressed": {"type": "boolean"},
+      "quote": {"type": "string", "maxLength": 300, "default": ""},
+      "reason": {"type": "string", "maxLength": 300, "default": ""},
+      "accepted": {"type": "boolean"},
+      "discard_reason": {"type": ["string", "null"], "default": null}}}},
+    "resolved": {"type": "array", "default": [], "items": {"type": "object", "required": ["thread_id", "reason"], "properties": {
+      "thread_id": {"type": "string"}, "reason": {"type": "string", "maxLength": 300}}}},
+    "open_threads": {"type": "array", "default": [], "items": {"type": "object", "required": ["thread_id"], "properties": {
+      "thread_id": {"type": "string"}, "path": {"type": "string"}, "line": {"type": "integer", "minimum": 0}, "excerpt": {"type": "string", "maxLength": 300}}}},
+    "verdict": {"type": "string", "enum": ["approved", "changes_requested", "env_blocked"]},
+    "hold_reason": {"type": ["string", "null"], "default": null},
+    "posted_review_url": {"type": ["string", "null"], "default": null},
+    "workflow_metrics": {"type": "object", "default": {}}
+  }
+}
