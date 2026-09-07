@@ -9,7 +9,7 @@ dangerous class of bug in the coordinare-performer contract.
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
@@ -53,6 +53,8 @@ def _full_card_context() -> dict[str, Any]:
         "pr_diff": "diff --git a/src/app.py b/src/app.py\n+    margin = base * 0.9\n",
         "architecture_plan_path": "docs/coordinare-architecture.md",
         "clarifications": [{"questions": ["What framework?"], "answer": "Rails 7"}],
+        # 123 US4: answered Q&A carried into an assessor re-dispatch.
+        "prior_clarifications": [{"question": "Which ORM?", "answer": "ActiveRecord"}],
         # Backend selection (037)
         "backend": "claude_code",
         "model": "claude-sonnet-4-20250514",
@@ -356,6 +358,9 @@ class TestScoreModelContract:
         assert score.assessment is not None
         assert score.assessment["ready"] is True
         assert score.assessment["goal"] == "Add time entry categories"
+        assert score.prior_clarifications == [
+            {"question": "Which ORM?", "answer": "ActiveRecord"}
+        ]
 
     def test_score_defaults_for_minimal_payload(self) -> None:
         """Score with only required fields should have safe defaults."""
@@ -370,9 +375,157 @@ class TestScoreModelContract:
         assert score.role == "implementing"
         assert score.persona_instructions == ""
         assert score.relay_feedback == []
+        assert score.prior_clarifications == []
         assert score.pr_url == ""
         assert score.pr_node_id == ""
         assert score.pr_diff == ""
         assert score.backend == ""
         assert score.model == ""
         assert score.github_api_url == ""
+
+
+@pytest.mark.skipif(not _has_performer, reason="performer package not on PYTHONPATH")
+class TestCardContextKeysAreDeclaredOnScore:
+    """Source scan: every key dispatch_performer writes into ``card_context``
+    must be declared on the performer's ``Score`` model.
+
+    ``Score`` sets ``extra="ignore"``, so an injected-but-undeclared field is
+    dropped silently at the coordinare -> performer boundary: the coordinare logs
+    a correct dispatch, the performer never sees the value, and nothing fails.
+    The per-field tests above only catch this for fields somebody remembered to
+    write a test for. This scan catches the whole class.
+    """
+
+    # Keys that are deliberately NOT Score fields. Each entry needs a reason;
+    # an unexplained entry here is the bug this test exists to prevent.
+    _INTENTIONALLY_NOT_ON_SCORE: ClassVar[set[str]] = {
+        # 092: secret-like, so http_performer_service routes it into the
+        # redacted `secrets` channel and strips it from the metadata that
+        # becomes Score (http_performer_service.py: `k != "test_env_vars"`).
+        "test_env_vars",
+    }
+
+    # Keys dispatch_performer injects that Score drops today. These are real
+    # gaps, not exemptions: no performer code reads any of them, so the value
+    # never reaches a backend prompt. Declaring the field is necessary but not
+    # sufficient -- each also needs a consumer -- so they are tracked here
+    # rather than papered over. Shrink this set; never grow it.
+    _KNOWN_DROPPED: ClassVar[set[str]] = {
+        "max_tool_calls",     # persona-slice scope tier cap
+        "repair_mandate",     # 090-L3 baseline-repair mandate
+        "scanner_findings",   # 083 security advisory ceiling
+        "scope_addon",        # persona-slice prompt addon
+        "scope_focus",        # persona-slice focus
+    }
+
+    @staticmethod
+    def _injected_keys() -> set[str]:
+        import re
+        from pathlib import Path
+
+        import coordinare.graph.nodes.dispatch_performer as dp
+
+        source = Path(dp.__file__).read_text()
+        return set(re.findall(r'card_context\[\s*"([^"]+)"\s*\]\s*=', source))
+
+    def test_scan_finds_the_known_injection_sites(self) -> None:
+        """Guard the regex itself: if it stops matching, the scan below passes
+        vacuously and the whole class of bug goes unnoticed again."""
+        keys = self._injected_keys()
+        assert len(keys) >= 20, f"regex matched only {len(keys)} keys -- scan is broken"
+        for expected in ("role", "persona_instructions", "prior_clarifications"):
+            assert expected in keys, f"{expected!r} not found by the scan"
+
+    def test_every_injected_key_is_declared_on_score(self) -> None:
+        """No NEW field may be injected without being declared on Score."""
+        from performer.models import Score
+
+        declared = set(Score.model_fields)
+        undeclared = (
+            self._injected_keys()
+            - declared
+            - self._INTENTIONALLY_NOT_ON_SCORE
+            - self._KNOWN_DROPPED
+        )
+        assert not undeclared, (
+            "dispatch_performer injects these into card_context but Score does "
+            f"not declare them, so extra=\"ignore\" drops them in transit: "
+            f"{sorted(undeclared)}. Declare each on performer.models.Score and "
+            "add a row to specs/contracts/dispatch-payload.md."
+        )
+
+    def test_known_dropped_set_is_accurate(self) -> None:
+        """Keep the gap register honest: an entry that is now declared (or no
+        longer injected) must be removed, or the register rots into a
+        permanent excuse."""
+        from performer.models import Score
+
+        declared = set(Score.model_fields)
+        injected = self._injected_keys()
+        for key in self._KNOWN_DROPPED:
+            assert key in injected, f"{key!r} is no longer injected -- drop it from _KNOWN_DROPPED"
+            assert key not in declared, f"{key!r} is now declared on Score -- drop it from _KNOWN_DROPPED"
+
+
+@pytest.mark.skipif(not _has_performer, reason="performer package not on PYTHONPATH")
+class TestPriorClarificationsContract:
+    """123 US4 (FR-011): answered assessor Q&A carried forward on re-dispatch."""
+
+    @pytest.mark.asyncio
+    async def test_prior_clarifications_is_not_dropped_by_agent_service(self) -> None:
+        transport = _CaptureTransport()
+        service = AgentService(transport)
+        prior = [{"question": "What framework?", "answer": "Rails 7"}]
+
+        await service.dispatch_card(
+            {"prior_clarifications": prior, "title": "test", "id": "X"}
+        )
+
+        assert transport.captured_payload["prior_clarifications"] == prior
+
+    def test_prior_clarifications_survives_score_validation(self) -> None:
+        """The field must be declared, or extra="ignore" drops it before the
+        spec-166 assessor intake can merge it."""
+        from performer.models import Score
+
+        prior = [{"question": "What framework?", "answer": "Rails 7"}]
+        score = Score(
+            title="t",
+            repo_url="https://github.com/o/r",
+            branch="b",
+            role="assessing",
+            prior_clarifications=prior,
+        )
+
+        assert score.prior_clarifications == prior
+
+    def test_prior_clarifications_defaults_to_empty_list(self) -> None:
+        from performer.models import Score
+
+        score = Score(title="t", repo_url="https://github.com/o/r", branch="b")
+
+        assert score.prior_clarifications == []
+
+    def test_prior_clarifications_reaches_the_assessor_intake(self) -> None:
+        """End of the chain: what dispatch_performer injects is what the
+        assessor's intake actually merges (spec 166 reads it off the Score)."""
+        from performer.models import Score
+        from performer.workflows.assessor.intake import build_intake
+
+        score = Score(
+            title="t",
+            repo_url="https://github.com/o/r",
+            branch="b",
+            role="assessing",
+            prior_clarifications=[
+                {"question": "What framework?", "answer": "Rails 7"}
+            ],
+        )
+
+        intake = build_intake(score)
+
+        assert any(
+            c["question"] == "What framework?" and c["answer"] == "Rails 7"
+            for c in intake.clarifications
+        ), f"prior Q&A missing from intake: {intake.clarifications}"
+        assert intake.answered_rounds == 1

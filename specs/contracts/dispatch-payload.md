@@ -61,7 +61,7 @@ authoritative schema — any field not on `Score` is silently dropped by pydanti
 | `pr_diff` | str | no | dispatch_performer (fetched via get_pr_diff) | backend prompt — raw unified diff for review roles (reviewer/closer/qa/tech_writer) so the model has the changes inline; omitted on fetch failure |
 | `architecture_plan_path` | str | no | dispatch_performer (from card) | backend prompt — reference architect's plan |
 | `clarifications` | list[dict] | no | assess_card (embedded in card); dispatch_performer for assessing stage (spec 166, from `PersistedSession.card_clarifications`) | backend prompt — Q&A history; injected into assessing dispatch only from prior clarification rounds |
-| `prior_clarifications` | list[dict] | no | dispatch_performer (from session.open_questions, feature 123) | assessor backend prompt — Q&A answers from prior assessor runs; injected on re-dispatch only, absent on first dispatch; each entry is `{"question": str, "answer": str}` |
+| `prior_clarifications` | list[dict] | no | dispatch_performer (from `PersistedSession.assessor_open_questions`, feature 123) | assessor intake (spec 166 `build_intake`, merged with `clarifications`): Q&A answers from prior assessor runs; injected on re-dispatch only, absent on first dispatch; each entry is `{"question": str, "answer": str}`. MUST be declared on `Score`, because `extra="ignore"` would otherwise drop it and the assessor would re-ask every answered question while the dispatch looked correct |
 
 ### Environment Cache (set by dispatch_performer, feature 060)
 

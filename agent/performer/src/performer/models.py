@@ -116,6 +116,13 @@ class Score(BaseModel):
     description: str = ""
     acceptance_criteria: list[str] = Field(default_factory=list)
     clarifications: list[dict] = Field(default_factory=list)
+    # 123 US4 (FR-011): answered Q&A from earlier assessor runs, injected by
+    # dispatch_performer on an assessor RE-dispatch so the assessor does not
+    # re-ask what a prior bounce already answered. Read by the spec-166
+    # assessor intake, which merges it with ``clarifications``. Must be
+    # declared here or extra="ignore" drops it in transit and the assessor
+    # re-asks every question while the dispatch looks correct.
+    prior_clarifications: list[dict] = Field(default_factory=list)
     repo_url: str
     branch: str
     github_token: str = ""
