@@ -159,10 +159,13 @@ async def capture_baseline(toolkit, score, workspace: Path) -> Baseline:
     parsed = await run_tests(toolkit, test_command, stack, workspace, timeout_s=600)
 
     test_names = parsed.test_names_passed or []
+    failed_names = parsed.test_names_failed or []
     fail_count = parsed.failed or 0
 
     baseline = Baseline(
         test_names=test_names if test_names else None,
+        # 171: kept so the resume rule can place a baseline failure in a file
+        test_names_failed=failed_names if failed_names else None,
         pass_count=len(test_names) if test_names else (1 if parsed.passed else 0),
         fail_count=fail_count,
         stack=stack,

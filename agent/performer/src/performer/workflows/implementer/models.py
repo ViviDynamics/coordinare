@@ -20,6 +20,7 @@ __all__ = [
     "QualityAttempt",
     "CIAttempt",
     "RunRecord",
+    "SatisfiedBy",
 ]
 
 
@@ -31,7 +32,12 @@ PersonaKind = Literal["TESTS", "IMPLEMENT", "REPAIR_TESTS", "REPAIR_IMPLEMENT", 
 TurnKind = Literal["tests", "implement", "repair"]
 ExitState = Literal["done", "timeout", "error"]
 Lane = Literal["feature", "bug", "chore", "refactor", "tests", "repair"]
-LaneSource = Literal["brief", "default", "unknown", "review"]
+LaneSource = Literal["brief", "default", "unknown", "review", "resume"]
+# 171: how a milestone came to be complete. ``this_run`` is the default (the
+# milestone actually ran); ``prior_run`` was skipped at plan time because this
+# card's own earlier commits already satisfied it; ``existing_tests`` had a
+# tests turn that changed nothing over tests that already cover it.
+SatisfiedBy = Literal["this_run", "prior_run", "existing_tests"]
 
 
 class TurnBrief(_Bounded):
@@ -70,6 +76,10 @@ class Baseline(_Bounded):
     """Passing test set before any milestone work (FR-004)."""
 
     test_names: list[str] | None = None
+    # 171: the names the baseline run reported as FAILING, so the resume rule can
+    # tell "this milestone's tests pass" from "one of them fails" at plan time.
+    # ``fail_count`` alone cannot place a failure in a file.
+    test_names_failed: list[str] | None = None
     pass_count: int | None = None
     fail_count: int | None = None
     stack: str
@@ -115,6 +125,7 @@ class PerMilestoneRecord(_Bounded):
     tests_reprompt: PerTurnAttempt | None = None
     implement_attempts: list[PerTurnAttempt] = Field(default_factory=list)
     implementation_successful: bool
+    satisfied_by: SatisfiedBy = "this_run"
     failure_reason: str | None = None
 
 
@@ -149,6 +160,9 @@ class RunRecord(_Bounded):
     reason: str
     milestones_planned: int
     milestones_completed: int
+    # 171: the index of the first milestone this run actually ran; None when the
+    # run started at the top of the plan.
+    resumed_from_milestone: int | None = None
     next_focus_milestone: str | None = None
     per_milestone: list[PerMilestoneRecord]
     quality_attempts: list[QualityAttempt]

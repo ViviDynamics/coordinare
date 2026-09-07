@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 from performer.workflows.implementer.models import (
     Baseline,
+    PerMilestoneRecord,
     RunRecord,
     TurnBrief,
     TurnResult,
@@ -114,6 +115,41 @@ class TestBaseline:
         assert baseline.pass_count == 5
         assert baseline.test_names is None
 
+    def test_baseline_carries_the_failing_names(self):
+        """171 FR-016: the resume rule places a baseline failure by file."""
+        baseline = Baseline(
+            test_names=["tests/test_a.py::test_0"],
+            test_names_failed=["tests/test_b.py::test_0"],
+            fail_count=1,
+            stack="pytest",
+            detected_from="score.test_command",
+        )
+        assert baseline.test_names_failed == ["tests/test_b.py::test_0"]
+
+    def test_baseline_failing_names_default_to_none(self):
+        """A pre-171 baseline loads unchanged."""
+        assert Baseline(stack="pytest", detected_from="x").test_names_failed is None
+
+
+class TestSatisfiedBy:
+    """171: how a milestone came to be complete."""
+
+    def _record(self, **over):
+        base = dict(index=0, goal="g", done_when="d", implementation_successful=True)
+        base.update(over)
+        return PerMilestoneRecord(**base)
+
+    def test_defaults_to_this_run(self):
+        assert self._record().satisfied_by == "this_run"
+
+    @pytest.mark.parametrize("value", ["prior_run", "existing_tests"])
+    def test_resume_values_accepted(self, value):
+        assert self._record(satisfied_by=value).satisfied_by == value
+
+    def test_satisfied_by_is_a_closed_set(self):
+        with pytest.raises(ValidationError):
+            self._record(satisfied_by="somehow")
+
 
 class TestRunRecord:
     """Test RunRecord model structure."""
@@ -134,6 +170,15 @@ class TestRunRecord:
         )
         assert record.status == "pr_opened"
         assert record.milestones_planned == 1
+        assert record.resumed_from_milestone is None, "171: absent means the run started at the top"
+
+    def test_run_record_carries_the_resume_index(self):
+        record = RunRecord(
+            status="pr_opened", reason="green", milestones_planned=3, milestones_completed=3,
+            resumed_from_milestone=2, per_milestone=[], quality_attempts=[], ci_attempts=[],
+            scope_reverts=[], phase_durations_ms={}, total_duration_ms=1,
+        )
+        assert record.resumed_from_milestone == 2
 
     def test_run_record_schema_keys(self):
         """RunRecord.model_json_schema() has same required keys as contract."""

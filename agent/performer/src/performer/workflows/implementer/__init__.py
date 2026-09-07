@@ -30,12 +30,20 @@ from performer.workflows.implementer.baseline import (
     detect_test_command,
     run_tests,
 )
+from performer.workflows.implementer import commits as git
 from performer.workflows.implementer.budgets import ImplementerBudgets
 from performer.workflows.implementer.ci import CIFailed, CIPending, run_ci_phase
 from performer.workflows.implementer.driver import MilestoneFailed, RunContext, _green_phase, run_milestone
-from performer.workflows.implementer.models import MilestonePlan, RunRecord
+from performer.workflows.implementer.models import MilestonePlan, PerMilestoneRecord, RunRecord
 from performer.workflows.implementer.plan import LaneNotForImplementer, build_plan
 from performer.workflows.implementer.quality import QualityFailed, quality_commands, run_quality_phase
+from performer.workflows.implementer.resume import (
+    apply_resume,
+    present_paths,
+    prior_run_paths,
+    resume_state,
+    scope_segments,
+)
 from performer.workflows.implementer.report import assemble_run_record
 
 if TYPE_CHECKING:
@@ -46,7 +54,8 @@ log = structlog.get_logger(__name__)
 __all__ = ["ImplementerWorkflow", "STATES"]
 
 STATES: tuple[str, ...] = (
-    "intake", "plan", "baseline", "milestones", "quality", "local_gate", "push_pr", "ci_wait", "handoff",
+    "intake", "plan", "baseline", "resume", "milestone", "milestones", "quality", "local_gate", "push_pr",
+    "ci_wait", "handoff",
 )
 
 
@@ -136,6 +145,65 @@ class ImplementerWorkflow:
         if ctx.sleep is RunContext.sleep:
             ctx.sleep = sleep
 
+    # -- resume (spec 171) -------------------------------------------------
+
+    @staticmethod
+    async def _resume(
+        ctx: RunContext, plans: list[MilestonePlan], workspace: Path
+    ) -> tuple[list[MilestonePlan], int | None]:
+        """Drop the milestones a previous run of this card already did (171 FR-007).
+
+        Reads the branch's own history once, keeps the paths this card's earlier
+        commits touched on ``ctx.prior_paths`` (the red step reads it too), and
+        returns the milestones still to run plus the index resumed from. A fresh
+        branch has no such commits and returns the plan untouched, which is the
+        pre-171 behaviour.
+        """
+        base = str(getattr(ctx.score, "base_branch", "") or "").strip() or "main"
+        try:
+            entries = await git.branch_commit_entries(workspace, [f"origin/{base}", base, "origin/main", "main"])
+        except Exception as exc:  # noqa: BLE001 - run() has no generic handler, and resume is
+            # only an optimisation: a history we cannot read must cost us the skip, never the run.
+            log.warning("implementer.resume_history_unreadable", error=str(exc))
+            entries = []
+        ctx.prior_paths = prior_run_paths(entries, ctx.issue_number)
+        if not ctx.prior_paths:
+            log.info("implementer.resume", commits=len(entries), prior_paths=0, skipped=[], resumed_from=None)
+            return list(plans), None
+
+        states = [
+            resume_state(
+                plan,
+                ctx.prior_paths,
+                present_paths(workspace, scope_segments(plan.scope)),
+                ctx.baseline.test_names,
+                ctx.baseline.test_names_failed,
+            )
+            for plan in plans
+        ]
+        skipped, remaining = apply_resume(plans, states)
+        for plan in skipped:
+            ctx.milestone_records.append(
+                PerMilestoneRecord(
+                    index=plan.index,
+                    goal=plan.goal,
+                    done_when=plan.done_when,
+                    implementation_successful=True,
+                    satisfied_by="prior_run",
+                )
+            )
+        resumed_from = remaining[0].index if (skipped and remaining) else None
+        log.info(
+            "implementer.resume",
+            commits=len(entries),
+            prior_paths=len(ctx.prior_paths),
+            states=[f"{plan.index}:{state}" for plan, state in zip(plans, states, strict=True)],
+            skipped=[plan.index for plan in skipped],
+            relaned=[plan.index for plan in remaining if plan.lane_source == "resume"],
+            resumed_from=resumed_from,
+        )
+        return remaining, resumed_from
+
     # -- the run -----------------------------------------------------------
 
     async def run(self, stand: "Stand", score: "Score", toolkit: Any, *, ctx_overrides: dict[str, Any] | None = None) -> WorkflowResult:
@@ -147,6 +215,8 @@ class ImplementerWorkflow:
         status, reason, next_focus = "env_blocked", "", None
         quality_attempts: list = []
         ci_attempts: list = []
+        resumed_from: int | None = None
+        remaining: list[MilestonePlan] = []
 
         def timed(name: str, t0: float) -> None:
             ms = int((time.monotonic() - t0) * 1000)
@@ -201,13 +271,19 @@ class ImplementerWorkflow:
                     return
                 await _green_phase(ctx, plan, record, [], summary)
 
+            # resume (171): skip what a previous run of this card already did
+            self._step(toolkit, "resume")
+            t = time.monotonic()
+            remaining, resumed_from = await self._resume(ctx, plans, workspace)
+            timed("resume", t)
+
             # milestones
-            self._step(toolkit, "milestones", f"{len(plans)} in lane {lane}")
+            self._step(toolkit, "milestones", f"{len(remaining)} of {len(plans)} in lane {lane}")
             t = time.monotonic()
             lint_command = detect_lint_command(score, workspace)
             commands = quality_commands(lint_command, budgets.quality_commands)
             quality_attempts = []
-            for plan in plans:
+            for plan in remaining:
                 self._step(toolkit, "milestone", f"{plan.index}: {plan.goal}")
                 await run_milestone(ctx, plan)
                 if lane == "repair" and commands:
@@ -219,7 +295,7 @@ class ImplementerWorkflow:
             # quality
             self._step(toolkit, "quality")
             t = time.monotonic()
-            if not (lane == "repair" and commands and plans):
+            if not (lane == "repair" and commands and remaining):
                 quality_attempts.extend(await run_quality_phase(ctx, commands, rerun_green=rerun_green))
             timed("quality", t)
 
@@ -251,8 +327,6 @@ class ImplementerWorkflow:
             # CI wait
             self._step(toolkit, "ci_wait")
             t = time.monotonic()
-            from performer.workflows.implementer import commits as git
-
             ci_attempts = await run_ci_phase(ctx, head_sha=git.head_sha(ctx.workspace), quality=commands, rerun_green=rerun_green)
             timed("ci_wait", t)
 
@@ -262,15 +336,15 @@ class ImplementerWorkflow:
             status, reason, next_focus = "partial_progress", exc.reason, exc.goal
         except QualityFailed as exc:
             status, reason = "partial_progress", f"quality command {exc.command} failed after repairs: {exc.output[-1500:]}"
-            next_focus = plans[-1].goal if plans else None
+            next_focus = remaining[-1].goal if remaining else None
         except CIFailed as exc:
             status, reason = "partial_progress", f"CI checks {', '.join(exc.check_names)}: {exc.reason}\n{exc.excerpt[-1500:]}"
-            next_focus = plans[-1].goal if plans else None
+            next_focus = remaining[-1].goal if remaining else None
         except CIPending as exc:
             status, reason = "env_blocked", str(exc)
         except _PushFailed as exc:
             status, reason = "partial_progress", exc.reason
-            next_focus = plans[-1].goal if plans else None
+            next_focus = remaining[-1].goal if remaining else None
         except _EnvHold as exc:
             status, reason = "env_blocked", exc.reason
         except _GateRejected as exc:
@@ -283,6 +357,7 @@ class ImplementerWorkflow:
             reason=reason,
             milestones_planned=len(plans),
             milestones_completed=completed,
+            resumed_from_milestone=resumed_from,
             next_focus_milestone=next_focus,
             per_milestone=list(ctx.milestone_records) if ctx else [],
             quality_attempts=quality_attempts,
@@ -302,6 +377,7 @@ class ImplementerWorkflow:
             lane=ctx.lane if ctx else None,
             milestones_planned=len(plans),
             milestones_completed=completed,
+            resumed_from=resumed_from,
             turns=record.turn_count,
             quality_attempts=len(quality_attempts),
             ci_attempts=len(ci_attempts),

@@ -28,6 +28,7 @@ def assemble_run_record(
     scope_reverts: list[dict[str, str]],
     phase_durations_ms: dict[str, int],
     total_duration_ms: int,
+    resumed_from_milestone: int | None = None,
     turn_count: int = 0,
     model_calls: int = 0,
     github_api_calls: int = 0,
@@ -40,6 +41,8 @@ def assemble_run_record(
         milestones_planned: Total milestones in the plan.
         milestones_completed: Milestones that completed successfully.
         next_focus_milestone: If partial_progress, the failing milestone goal.
+        resumed_from_milestone: 171: index of the first milestone this run ran,
+            when earlier ones were skipped as already done by a previous run.
         per_milestone: List of PerMilestoneRecord for each milestone.
         quality_attempts: List of QualityAttempt records.
         ci_attempts: List of CIAttempt records.
@@ -58,6 +61,7 @@ def assemble_run_record(
         reason=reason,
         milestones_planned=milestones_planned,
         milestones_completed=milestones_completed,
+        resumed_from_milestone=resumed_from_milestone,
         next_focus_milestone=next_focus_milestone,
         per_milestone=per_milestone,
         quality_attempts=quality_attempts,
@@ -74,6 +78,7 @@ def assemble_run_record(
         "report.assembled",
         status=status,
         milestones=f"{milestones_completed}/{milestones_planned}",
+        resumed_from=resumed_from_milestone,
         total_ms=total_duration_ms,
         turns=turn_count,
     )

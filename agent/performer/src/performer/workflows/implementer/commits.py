@@ -16,6 +16,7 @@ __all__ = [
     "squash_turn_commits",
     "revert_paths",
     "commit_paths",
+    "branch_commit_entries",
 ]
 
 
@@ -247,3 +248,49 @@ async def commit_paths(workspace: Path, paths: list[str], message: str) -> str |
         raise RuntimeError(f"git commit failed: {_stderr}")
 
     return head_sha(workspace)
+
+
+async def branch_commit_entries(
+    workspace: Path,
+    base_candidates: list[str],
+) -> list[tuple[str, list[str]]]:
+    """The commits this branch carries over its base, newest first (spec 171 FR-001).
+
+    Returns ``(subject, paths)`` per commit on ``<base>..HEAD`` for the first
+    candidate ref that resolves, and ``[]`` when none does or the range is
+    empty. The resume rule reads this to find the commits an EARLIER run of the
+    same card left on the branch; a history it cannot read leaves every resume
+    rule inert, which is the pre-171 behaviour.
+    """
+    base = None
+    for candidate in base_candidates:
+        if not candidate:
+            continue
+        rc, _out = await _run_git_stdout(["git", "rev-parse", "--verify", "--quiet", f"{candidate}^{{commit}}"], workspace)
+        if rc == 0:
+            base = candidate
+            break
+    if base is None:
+        return []
+
+    rc, stdout = await _run_git_stdout(
+        # core.quotepath defaults to true, which renders a non-ASCII path as an
+        # octal-escaped quoted string ("src/\346\226\207.py"). That path then
+        # matches nothing on disk, so the resume rule silently never engages for
+        # such a repository.
+        ["git", "-c", "core.quotepath=false", "log", "--no-merges", "--format=%x00%s", "--name-only", f"{base}..HEAD"],
+        workspace,
+    )
+    if rc != 0:
+        return []
+
+    entries: list[tuple[str, list[str]]] = []
+    # one record per commit: NUL, the subject, a blank line, then its paths
+    for chunk in stdout.split("\0"):
+        if not chunk.strip():
+            continue
+        lines = chunk.splitlines()
+        subject = lines[0].strip()
+        paths = [line.strip() for line in lines[1:] if line.strip()]
+        entries.append((subject, paths))
+    return entries
