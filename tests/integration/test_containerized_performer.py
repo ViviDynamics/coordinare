@@ -12,6 +12,7 @@ Skipped automatically when Docker is unreachable.
 from __future__ import annotations
 
 import asyncio
+import socket
 import subprocess
 import textwrap
 import time
@@ -27,13 +28,42 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 IMAGE_TAG = "coordinare-test-performer:base"
 
 
-def _container_endpoint(container_id: str, port: int = 8080) -> str:
-    """Resolve container → host endpoint, preferring port mapping, falling back to bridge IP.
+def _endpoint_answers(endpoint: str, timeout: float = 2.0) -> bool:
+    """True when a TCP connection to *endpoint* is accepted.
 
-    Some CI runners (rootless Docker, DinD) don't support host port publishing,
-    so docker port returns a non-zero exit code.  On Linux the bridge IP is
-    always reachable from the host, so we fall back to that.
+    A published port is not the same thing as a reachable address. When the
+    docker daemon is not in the test process's own network namespace (a DinD
+    sidecar, or a socket mounted from the node), ``docker port`` reports a
+    mapping on the DAEMON's host and 127.0.0.1 here reaches nothing. The
+    connection is what settles it, not the mapping.
     """
+    host, _, port_text = endpoint.removeprefix("http://").partition(":")
+    try:
+        with socket.create_connection((host, int(port_text)), timeout=timeout):
+            return True
+    except (OSError, ValueError):
+        return False
+
+
+def _container_endpoint(container_id: str, port: int = 8080) -> str:
+    """Resolve container → an endpoint this process can actually reach.
+
+    Two candidates, tried in order and VERIFIED rather than assumed:
+
+    1. the published host port, as 127.0.0.1
+    2. the container's bridge IP
+
+    The published port is preferred when it works, because it is the shape a
+    real deployment uses. It is not always reachable from here: some CI runners
+    run the daemon elsewhere, and there ``docker port`` succeeds while
+    127.0.0.1 is the wrong host entirely. Before this check, that combination
+    returned a dead address and the caller's readiness probe spent its whole
+    deadline talking to nothing, then failed as "never became ready" -- which
+    reads like a broken performer rather than a networking mismatch. It cost a
+    main-branch build, and with it every image and publish job downstream.
+    """
+    candidates: list[str] = []
+
     port_result = subprocess.run(
         ["docker", "port", container_id, f"{port}/tcp"],
         capture_output=True,
@@ -42,8 +72,8 @@ def _container_endpoint(container_id: str, port: int = 8080) -> str:
     )
     if port_result.returncode == 0 and port_result.stdout.strip():
         port_line = port_result.stdout.decode().strip().splitlines()[0]
-        host_port = port_line.rsplit(":", 1)[1]
-        return f"http://127.0.0.1:{host_port}"
+        candidates.append(f"http://127.0.0.1:{port_line.rsplit(':', 1)[1]}")
+
     inspect = subprocess.run(
         ["docker", "inspect", "--format", "{{.NetworkSettings.IPAddress}}", container_id],
         capture_output=True,
@@ -51,12 +81,26 @@ def _container_endpoint(container_id: str, port: int = 8080) -> str:
         check=False,
     )
     ip = inspect.stdout.decode().strip()
-    if not ip:
-        pytest.skip(
-            f"Docker container networking not reachable from test process "
-            f"(container {container_id[:12]}): port mapping and bridge IP both unavailable"
-        )
-    return f"http://{ip}:{port}"
+    if ip:
+        candidates.append(f"http://{ip}:{port}")
+
+    # The container may still be starting, so give the candidates a short
+    # window before declaring the environment unusable. This is a REACHABILITY
+    # check, not a readiness check: the caller still waits for /status.
+    deadline = time.monotonic() + 20.0
+    while True:
+        for candidate in candidates:
+            if _endpoint_answers(candidate):
+                return candidate
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(0.5)
+
+    pytest.skip(
+        f"Docker container networking not reachable from test process "
+        f"(container {container_id[:12]}): tried {candidates or ['no candidates']}. "
+        f"The daemon is probably not in this process's network namespace."
+    )
 STUB_SCRIPT = textwrap.dedent(
     """
     import json
