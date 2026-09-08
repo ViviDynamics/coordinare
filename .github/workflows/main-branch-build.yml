@@ -16,6 +16,7 @@ jobs:
     runs-on:
       - self-hosted
       - linux
+      - x64
     permissions:
       contents: read
     outputs:
@@ -84,6 +85,7 @@ jobs:
     runs-on:
       - self-hosted
       - linux
+      - x64
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -104,6 +106,7 @@ jobs:
     runs-on:
       - self-hosted
       - linux
+      - x64
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -130,6 +133,7 @@ jobs:
     runs-on:
       - self-hosted
       - linux
+      - x64
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -161,6 +165,7 @@ jobs:
     runs-on:
       - self-hosted
       - linux
+      - x64
     permissions:
       contents: write
     outputs:
@@ -205,12 +210,21 @@ jobs:
             });
             console.log(`Created release ${version}`);
 
-  build-base:
-    name: Build and Push Base Image
+  # 173a: image jobs are pinned to an architecture. They used to ask only for
+  # [self-hosted, linux], which matches BOTH the amd64 cluster pods and the
+  # arm64 spark boxes, so which architecture an image was built for came down
+  # to which runner happened to pick the job up. When the base landed on spark
+  # and the full image on cluster, `FROM` an arm64 base on an amd64 host failed
+  # with "exec /bin/sh: exec format error" and every publish job downstream was
+  # skipped. Each arch is now built on the fleet that IS that arch, and the two
+  # are joined into one manifest, so the published image serves both.
+  build-base-amd64:
+    name: Build and Push Base Image (amd64)
     needs: create-tag
     runs-on:
       - self-hosted
       - linux
+      - x64
     permissions:
       contents: read
       packages: write
@@ -229,23 +243,58 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push base image
+      - name: Build and push base image (amd64)
         run: |
           REGISTRY=$(cat registry)
           VERSION=${{ needs.create-tag.outputs.version }}
 
-          docker build -t "${REGISTRY}-base:${VERSION}" -f agent/performer/Dockerfile.base .
-          docker push "${REGISTRY}-base:${VERSION}"
-          echo "Pushed ${REGISTRY}-base:${VERSION}"
+          docker build --platform linux/amd64 \
+            -t "${REGISTRY}-base:${VERSION}-amd64" -f agent/performer/Dockerfile.base .
+          docker push "${REGISTRY}-base:${VERSION}-amd64"
+          echo "Pushed ${REGISTRY}-base:${VERSION}-amd64"
 
-  build-full:
-    name: Build and Push Full Image
+  build-base-arm64:
+    name: Build and Push Base Image (arm64)
+    needs: create-tag
+    runs-on:
+      - self-hosted
+      - macos
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.create-tag.outputs.version }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push base image (arm64)
+        run: |
+          REGISTRY=$(cat registry)
+          VERSION=${{ needs.create-tag.outputs.version }}
+
+          docker build --platform linux/arm64 \
+            -t "${REGISTRY}-base:${VERSION}-arm64" -f agent/performer/Dockerfile.base .
+          docker push "${REGISTRY}-base:${VERSION}-arm64"
+          echo "Pushed ${REGISTRY}-base:${VERSION}-arm64"
+
+  manifest-base:
+    name: Base Image Manifest
     needs:
       - create-tag
-      - build-base
+      - build-base-amd64
+      - build-base-arm64
     runs-on:
       - self-hosted
       - linux
+      - x64
     permissions:
       contents: read
       packages: write
@@ -253,8 +302,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          # Check out the release tag so the image always matches the exact
-          # commit that was validated — not the moving branch head.
           ref: ${{ needs.create-tag.outputs.version }}
 
       - name: Log in to GHCR
@@ -264,25 +311,141 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push full image
+      - name: Join the per-arch base images into one manifest
         run: |
           REGISTRY=$(cat registry)
           VERSION=${{ needs.create-tag.outputs.version }}
 
-          docker build \
-            --build-arg BASE_IMAGE="${REGISTRY}-base:${VERSION}" \
-            -t "${REGISTRY}-full:${VERSION}" \
+          docker buildx imagetools create -t "${REGISTRY}-base:${VERSION}" \
+            "${REGISTRY}-base:${VERSION}-amd64" \
+            "${REGISTRY}-base:${VERSION}-arm64"
+          echo "Published ${REGISTRY}-base:${VERSION} (amd64 + arm64)"
+
+  build-full-amd64:
+    name: Build and Push Full Image (amd64)
+    needs:
+      - create-tag
+      - build-base-amd64
+    runs-on:
+      - self-hosted
+      - linux
+      - x64
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.create-tag.outputs.version }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The base is pulled by its ARCH-SPECIFIC tag, not the manifest tag.
+      # Naming the manifest would reintroduce the original failure by another
+      # route: the daemon would resolve it to whichever arch it prefers.
+      - name: Build and push full image (amd64)
+        run: |
+          REGISTRY=$(cat registry)
+          VERSION=${{ needs.create-tag.outputs.version }}
+
+          docker build --platform linux/amd64 \
+            --build-arg BASE_IMAGE="${REGISTRY}-base:${VERSION}-amd64" \
+            -t "${REGISTRY}-full:${VERSION}-amd64" \
             -f agent/performer/Dockerfile.full \
             agent/performer/
-          docker push "${REGISTRY}-full:${VERSION}"
-          echo "Pushed ${REGISTRY}-full:${VERSION}"
+          docker push "${REGISTRY}-full:${VERSION}-amd64"
+          echo "Pushed ${REGISTRY}-full:${VERSION}-amd64"
 
+  build-full-arm64:
+    name: Build and Push Full Image (arm64)
+    needs:
+      - create-tag
+      - build-base-arm64
+    runs-on:
+      - self-hosted
+      - macos
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.create-tag.outputs.version }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push full image (arm64)
+        run: |
+          REGISTRY=$(cat registry)
+          VERSION=${{ needs.create-tag.outputs.version }}
+
+          docker build --platform linux/arm64 \
+            --build-arg BASE_IMAGE="${REGISTRY}-base:${VERSION}-arm64" \
+            -t "${REGISTRY}-full:${VERSION}-arm64" \
+            -f agent/performer/Dockerfile.full \
+            agent/performer/
+          docker push "${REGISTRY}-full:${VERSION}-arm64"
+          echo "Pushed ${REGISTRY}-full:${VERSION}-arm64"
+
+  manifest-full:
+    name: Full Image Manifest
+    needs:
+      - create-tag
+      - build-full-amd64
+      - build-full-arm64
+    runs-on:
+      - self-hosted
+      - linux
+      - x64
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.create-tag.outputs.version }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Join the per-arch full images into one manifest
+        run: |
+          REGISTRY=$(cat registry)
+          VERSION=${{ needs.create-tag.outputs.version }}
+
+          docker buildx imagetools create -t "${REGISTRY}-full:${VERSION}" \
+            "${REGISTRY}-full:${VERSION}-amd64" \
+            "${REGISTRY}-full:${VERSION}-arm64"
+          echo "Published ${REGISTRY}-full:${VERSION} (amd64 + arm64)"
+
+  # The daemon is deployed to the amd64 cluster cluster and nowhere else, so it
+  # is pinned rather than split: a manifest with an arm64 half nothing runs
+  # would be cost without a consumer. If coordinare is ever deployed on arm64,
+  # split this the way the performer images above are split.
   build-daemon:
     name: Build and Push Daemon Image
     needs: create-tag
     runs-on:
       - self-hosted
       - linux
+      - x64
     permissions:
       contents: read
       packages: write
@@ -324,6 +487,7 @@ jobs:
     runs-on:
       - self-hosted
       - linux
+      - x64
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -371,12 +535,13 @@ jobs:
     name: Tag Latest
     needs:
       - create-tag
-      - build-base
-      - build-full
+      - manifest-base
+      - manifest-full
       - build-daemon
     runs-on:
       - self-hosted
       - linux
+      - x64
     permissions:
       contents: read
       packages: write
@@ -391,24 +556,28 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # `latest` is built with imagetools from the per-arch tags, not by pulling
+      # and re-pushing. A pull collapses a multi-arch manifest to the puller's
+      # own architecture, so `docker pull && docker tag && docker push` would
+      # quietly publish a single-arch `latest` from a multi-arch release.
       - name: Tag base, full and daemon images as latest
         run: |
           REGISTRY=$(cat registry)
           DAEMON_REGISTRY=$(cat registry-daemon)
           VERSION=${{ needs.create-tag.outputs.version }}
 
-          docker pull "${REGISTRY}-base:${VERSION}"
-          docker tag "${REGISTRY}-base:${VERSION}" "${REGISTRY}-base:latest"
-          docker push "${REGISTRY}-base:latest"
+          docker buildx imagetools create -t "${REGISTRY}-base:latest" \
+            "${REGISTRY}-base:${VERSION}-amd64" \
+            "${REGISTRY}-base:${VERSION}-arm64"
 
-          docker pull "${REGISTRY}-full:${VERSION}"
-          docker tag "${REGISTRY}-full:${VERSION}" "${REGISTRY}-full:latest"
-          docker push "${REGISTRY}-full:latest"
+          docker buildx imagetools create -t "${REGISTRY}-full:latest" \
+            "${REGISTRY}-full:${VERSION}-amd64" \
+            "${REGISTRY}-full:${VERSION}-arm64"
 
-          docker pull "${DAEMON_REGISTRY}:${VERSION}"
-          docker tag "${DAEMON_REGISTRY}:${VERSION}" "${DAEMON_REGISTRY}:latest"
-          docker push "${DAEMON_REGISTRY}:latest"
+          # The daemon is amd64 only, so its latest is a straight retag.
+          docker buildx imagetools create -t "${DAEMON_REGISTRY}:latest" \
+            "${DAEMON_REGISTRY}:${VERSION}"
 
-          echo "Tagged ${REGISTRY}-base:latest → ${VERSION}"
-          echo "Tagged ${REGISTRY}-full:latest → ${VERSION}"
-          echo "Tagged ${DAEMON_REGISTRY}:latest → ${VERSION}"
+          echo "Tagged ${REGISTRY}-base:latest → ${VERSION} (amd64 + arm64)"
+          echo "Tagged ${REGISTRY}-full:latest → ${VERSION} (amd64 + arm64)"
+          echo "Tagged ${DAEMON_REGISTRY}:latest → ${VERSION} (amd64)"

@@ -438,12 +438,58 @@ class TestDaemonImageBuild:
         assert "docker push" in body
 
     def test_it_follows_the_existing_image_jobs_rather_than_inventing_a_pattern(self) -> None:
-        """Same registry, same version source, same runner as build-base/build-full."""
+        """Same version source, same permissions, same pinned fleet as the amd64
+        performer image job.
+
+        Compared against ``build-base-amd64`` rather than a single ``build-base``:
+        the performer images are built once per architecture and joined into a
+        manifest, while the daemon is amd64 only because it is deployed to the
+        cluster cluster and nowhere else. The amd64 leg is therefore the right
+        thing to hold it against.
+        """
         jobs = self._workflow()["jobs"]
-        daemon, base = jobs["build-daemon"], jobs["build-base"]
+        daemon, base = jobs["build-daemon"], jobs["build-base-amd64"]
         assert daemon["needs"] == base["needs"], "version must come from the same job"
         assert daemon["runs-on"] == base["runs-on"]
         assert daemon["permissions"] == base["permissions"]
+
+    def test_every_image_job_is_pinned_to_an_architecture(self) -> None:
+        """The failure this guards against cost two main builds.
+
+        Asking only for ``[self-hosted, linux]`` matches the amd64 cluster pods
+        AND the arm64 spark boxes, so the architecture an image was built for
+        was decided by whichever runner picked the job up. Building a full image
+        FROM a base of the other architecture fails with "exec format error",
+        and every publish job downstream is skipped.
+        """
+        jobs = self._workflow()["jobs"]
+        for name, job in jobs.items():
+            labels = job.get("runs-on") or []
+            if not isinstance(labels, list) or "self-hosted" not in labels:
+                continue
+            assert ("x64" in labels) or ("macos" in labels), (
+                f"{name} asks for {labels}, which does not pin an architecture"
+            )
+
+    def test_the_performer_images_are_published_for_both_architectures(self) -> None:
+        """A manifest, not a single-arch image wearing the release tag."""
+        jobs = self._workflow()["jobs"]
+        for image in ("base", "full"):
+            assert f"build-{image}-amd64" in jobs
+            assert f"build-{image}-arm64" in jobs
+            manifest = jobs[f"manifest-{image}"]
+            body = yaml.safe_dump(manifest)
+            assert "imagetools create" in body
+            assert f"{image}:${{VERSION}}-amd64" in body.replace("$${", "${")
+            assert f"{image}:${{VERSION}}-arm64" in body.replace("$${", "${")
+
+    def test_latest_is_assembled_rather_than_pulled_and_retagged(self) -> None:
+        """A pull collapses a multi-arch manifest to the puller's own
+        architecture, so pull-and-retag would quietly publish a single-arch
+        latest from a multi-arch release."""
+        body = yaml.safe_dump(self._workflow()["jobs"]["tag-latest"])
+        assert "imagetools create" in body
+        assert "docker pull" not in body
 
     def test_the_daemon_image_is_also_tagged_latest(self) -> None:
         jobs = self._workflow()["jobs"]
