@@ -143,6 +143,16 @@ def render_anthropic(request: LLMRequest, model: str, *, tools_enabled: bool) ->
 # --- inbound request parsing (CLI body -> LLMRequest) ----------------------
 
 
+def _generation_parameters(body: dict[str, Any]) -> dict[str, Any]:
+    out = {key: body[key] for key in ("temperature", "top_p", "stop", "seed", "response_format") if key in body}
+    for key in ("max_completion_tokens", "max_output_tokens", "max_tokens"):
+        if key in body:
+            out["max_tokens"] = body[key]
+            break
+    return out
+
+
+
 def _openai_content_text(content: Any) -> str:
     """Plain text from an OpenAI chat-completions message ``content`` — either a
     string, or a list of content-parts (``[{"type": "text", "text": "..."}]``).
@@ -186,15 +196,17 @@ def to_llm_request_openai(body: dict[str, Any]) -> LLMRequest:
         )
         for t in (body.get("tools") or [])
     )
-    return LLMRequest(messages=tuple(messages), tools=tools, stream=bool(body.get("stream")))
+    return LLMRequest(messages=tuple(messages), tools=tools, stream=bool(body.get("stream")),
+                      generation=_generation_parameters(body))
 
 
 def to_llm_request_anthropic(body: dict[str, Any]) -> LLMRequest:
     """Parse an Anthropic messages request body into an LLMRequest."""
     messages: list[Message] = []
     system = body.get("system")
-    if isinstance(system, str) and system:
-        messages.append(Message.system(system))
+    system_text = _openai_content_text(system)
+    if system_text:
+        messages.append(Message.system(system_text))
     for m in body.get("messages") or []:
         role = m.get("role", "user")
         content = m.get("content")
@@ -225,7 +237,8 @@ def to_llm_request_anthropic(body: dict[str, Any]) -> LLMRequest:
         ToolSchema(name=t.get("name", ""), description=t.get("description", ""), parameters=t.get("input_schema") or {})
         for t in (body.get("tools") or [])
     )
-    return LLMRequest(messages=tuple(messages), tools=tools, stream=bool(body.get("stream")))
+    return LLMRequest(messages=tuple(messages), tools=tools, stream=bool(body.get("stream")),
+                      generation=_generation_parameters(body))
 
 
 def _responses_content_text(content: Any) -> str:
@@ -298,7 +311,8 @@ def to_llm_request_responses(body: dict[str, Any]) -> LLMRequest:
         for t in (body.get("tools") or [])
         if t.get("type") == "function"
     )
-    return LLMRequest(messages=tuple(messages), tools=tools, stream=bool(body.get("stream")))
+    return LLMRequest(messages=tuple(messages), tools=tools, stream=bool(body.get("stream")),
+                      generation=_generation_parameters(body))
 
 
 def _block_text(content: Any) -> str:
@@ -381,6 +395,9 @@ class HttpUpstream:
     auth_style: AuthStyle = "bearer"
     timeout_s: float = _DEFAULT_TIMEOUT_S
     client: httpx.AsyncClient | None = None
+    reasoning_policy: Literal["disable_thinking"] | None = None
+    normalizers: tuple[str, ...] = ()
+    preserve_generation: bool = False
 
     def _base(self) -> str:
         return (self.base_url or _DEFAULT_BASE[self.wire_format]).rstrip("/")
@@ -406,6 +423,15 @@ class HttpUpstream:
         else:
             body = render_openai(request, self.model, tools_enabled=tools_enabled)
             parse = parse_openai
+        if self.preserve_generation:
+            body.update(request.generation)
+        if self.reasoning_policy is not None:
+            if self.reasoning_policy != "disable_thinking" or self.wire_format != "openai":
+                raise UpstreamError("reasoning policy requires OpenAI-compatible self-hosted requests")
+            if self.model.rsplit("/", 1)[-1].lower() == "glm-5.3-flash":
+                raise UpstreamError("disable_thinking is measured harmful for glm-5.3-flash")
+            body.update(request.generation)
+            body["chat_template_kwargs"] = {"enable_thinking": False}
         # think phase is always non-streaming internally
         body.pop("stream", None)
         url = self._base() + self._path()
@@ -415,7 +441,19 @@ class HttpUpstream:
             # default may be httpx's 5s) still honors this upstream's bound.
             resp = await client.post(url, json=body, headers=self._headers(), timeout=self.timeout_s)
             resp.raise_for_status()
-            return parse(resp.json())
+            raw = resp.content
+            if self.normalizers:
+                from performer.proxy.normalizers import NORMALIZER_REGISTRY
+
+                for key in self.normalizers:
+                    normalize_raw = getattr(NORMALIZER_REGISTRY[key], "normalize_raw", None)
+                    if normalize_raw is not None:
+                        raw = normalize_raw(raw)
+            payload = json.loads(raw) if self.normalizers else resp.json()
+            if self.normalizers:
+                for key in self.normalizers:
+                    payload = NORMALIZER_REGISTRY[key].normalize_json(payload)
+            return parse(payload)
         except httpx.HTTPError as exc:
             raise UpstreamError(f"upstream '{self.name}' call failed: {type(exc).__name__}") from exc
         finally:

@@ -63,6 +63,7 @@ def _full_card_context() -> dict[str, Any]:
         # 164: role workflow fields -- the "all fields survive" test must cover
         # them too, not only their dedicated tests (round-one finding that never
         # received a verdict; dispositioned by hand).
+        "reasoning_policy": "disable_thinking",
         "workflow": "qa",
         "workflow_env": {"PORT": "3000", "QA_APP_START_COMMAND": "python app.py"},
         "qa_findings": [{"file": "a.py", "line": 1, "category": "unmet_criterion", "severity": "high"}],
@@ -642,3 +643,16 @@ async def test_scanner_findings_reach_security_backend_prompt(backend: str) -> N
     assert build(absent, *args) == build(absent.model_copy(update={"scanner_findings": []}), *args)
     assert "Coordinare scanner findings" not in build(absent, *args)
     assert "Coordinare scanner findings" not in build(score.model_copy(update={"role": "implementing"}), *args)
+
+
+@pytest.mark.asyncio
+async def test_reasoning_policy_survives_transport_and_score_validation():
+    from performer.models import Score
+
+    transport = _CaptureTransport()
+    await AgentService(transport).dispatch_card({
+        'title': 'Assess', 'id': 'X', 'repo_url': 'https://github.com/org/repo',
+        'branch': 'main', 'workflow': 'assessor', 'reasoning_policy': 'disable_thinking',
+    })
+    score = Score.model_validate(transport.captured_payload)
+    assert score.reasoning_policy == 'disable_thinking'

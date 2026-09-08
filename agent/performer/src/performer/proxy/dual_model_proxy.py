@@ -78,6 +78,9 @@ def build_upstream(ref: dict[str, Any], *, client=None) -> HttpUpstream:
         auth_token=token or None,
         auth_style=ref.get("auth_style", "bearer"),
         client=client,
+        reasoning_policy=ref.get("reasoning_policy"),
+        normalizers=tuple(ref.get("normalizers") or ()),
+        preserve_generation=bool(ref.get("preserve_generation")),
     )
 
 

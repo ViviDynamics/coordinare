@@ -77,6 +77,7 @@ class LLMRequest:
     messages: tuple[Message, ...]
     tools: tuple[ToolSchema, ...] = ()
     stream: bool = False
+    generation: dict[str, Any] = field(default_factory=dict)
 
     def without_tools(self) -> LLMRequest:
         """Return a copy with tools hidden — used for the think (planner) phase."""

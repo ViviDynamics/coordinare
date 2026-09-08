@@ -395,6 +395,13 @@ class ModelEndpoint(BaseModel):
     name: str
     endpoint: str  # references Endpoint.name
     model: str
+    reasoning_policy: Literal["disable_thinking"] | None = None
+
+    @model_validator(mode="after")
+    def _reject_harmful_reasoning_policy(self) -> ModelEndpoint:
+        if self.reasoning_policy and self.model.rsplit("/", 1)[-1].lower() == "glm-5.3-flash":
+            raise ValueError("disable_thinking is measured harmful for glm-5.3-flash: thinking contaminates the answer")
+        return self
 
 
 class Mode(BaseModel):
@@ -1166,6 +1173,11 @@ class ProjectConfiguration(BaseSettings):
                     f"model_endpoint '{me.name}' references unknown endpoint '{me.endpoint}'"
                 )
 
+        for me in self.model_endpoints:
+            endpoint = self.resolve_endpoint(me.endpoint)
+            if me.reasoning_policy and endpoint is not None and endpoint.is_native:
+                raise ValueError(f"reasoning_policy for '{me.name}' requires a self-hosted endpoint")
+
         for mode in self.modes:
             for field in ("tool", "thinking", "classifier"):
                 ref = getattr(mode, field)
@@ -1242,6 +1254,8 @@ class ProjectConfiguration(BaseSettings):
         if me is None:
             return {}
         out: dict[str, str] = {"model": me.model}
+        if me.reasoning_policy is not None:
+            out["reasoning_policy"] = me.reasoning_policy
         ep = self.resolve_endpoint(me.endpoint)
         if ep is None:
             return out
@@ -1277,6 +1291,7 @@ class ProjectConfiguration(BaseSettings):
             "base_url": ep.base_url if ep else None,
             "auth_env": ep.auth_env if ep else None,
             "auth_style": "x-api-key" if kind == "anthropic" else "bearer",
+            **({"reasoning_policy": me.reasoning_policy} if me.reasoning_policy else {}),
         }
 
     def resolve_performer_orchestration(self, role_name: str) -> dict[str, Any] | None:
@@ -1290,7 +1305,12 @@ class ProjectConfiguration(BaseSettings):
         if role is None or role.mode is None:
             return None
         mode = self.resolve_mode(role.mode)
-        if mode is None or mode.strategy == "single":
+        if mode is None:
+            return None
+        if mode.strategy == "single":
+            tool = self._upstream_ref(mode.tool)
+            if tool and tool.get("reasoning_policy"):
+                return {"strategy": "single", "tool": tool}
             return None
         out: dict[str, Any] = {
             "strategy": mode.strategy,
