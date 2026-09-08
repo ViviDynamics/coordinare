@@ -131,9 +131,9 @@ def test_test_targets_use_pytest_var(text: str, target: str) -> None:
     assert "$(PYTEST)" in _recipe(text, target), f"{target} does not use $(PYTEST)"
 
 
-def test_test_all_covers_unit_and_contract(text: str) -> None:
+def test_test_all_covers_entire_coordinare_tree(text: str) -> None:
     recipe = _recipe(text, "test-all")
-    assert "tests/unit" in recipe and "tests/contract" in recipe
+    assert "$(PYTEST) tests/ -q" in recipe
 
 
 def test_ci_is_exact_build_all_parity(text: str) -> None:

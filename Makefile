@@ -76,11 +76,11 @@ test-contract: require-venv ## run the contract test suite
 test-js: require-venv require-node ## run the dashboard client-side JS checks (node, no browser)
 	$(PYTEST) tests/unit/test_138_client_js.py -v
 
-test-all: require-venv ## run the WHOLE tests/ tree (unit + contract)
-	$(PYTEST) tests/unit tests/contract -q
+test-all: require-venv ## run the whole coordinare tests/ tree (default markers apply)
+	$(PYTEST) tests/ -q
 
 ##@ Build
-build: ## local build = CI checks (lint + unit + coverage + performer tests)
+build: ## local build = CI checks (lint + coordinare tests + coverage + performer tests)
 	bin/build
 
 e2e: ## build + Playwright browser (E2E) tests

@@ -2,7 +2,7 @@
 # bin/build — run the same checks as CI locally.
 #
 # Usage:
-#   bin/build           # lint + unit tests + coverage + performer tests
+#   bin/build           # lint + coordinare tests + coverage + performer tests
 #   bin/build --e2e     # also run Playwright browser tests
 #   bin/build --docker  # also build and verify Docker images
 #   bin/build --all     # everything (--e2e + --docker)
@@ -60,33 +60,35 @@ run() {
 # Steps
 # ---------------------------------------------------------------------------
 
-run "Lint (ruff)" \
-  uv run --extra dev ruff check src tests
+# Install both packages before collecting either suite. Coordinare tests import
+# performer backends, including their runtime dependencies. Keep uv from syncing
+# the root project again and removing the separately installed performer.
+step "Install coordinare and performer development dependencies"
+uv sync --extra dev
+uv pip install -e "agent/performer[dev]"
 
-run "Unit tests" \
-  uv run --extra dev pytest tests/unit/ tests/contract/ -q
+PYTEST=(env -u COORDINARE_INFERENCE_MAX_TOKENS -u HERMES_CONTEXT_WINDOW
+        uv run --no-sync pytest)
+
+run "Lint (ruff)" \
+  uv run --no-sync ruff check src tests
+
+run "Coordinare tests" \
+  "${PYTEST[@]}" tests/ -q
 
 run "Coverage (≥ 90%)" \
-  uv run --extra dev pytest tests/unit/ tests/contract/ \
+  "${PYTEST[@]}" tests/ \
     --cov=coordinare --cov-report=term-missing --cov-fail-under=90 -q
 
-step "Performer tests"
-uv venv --allow-existing -q
-uv pip install -e "." -q
-uv pip install -e "agent/performer[dev]" -q
-if uv run pytest agent/performer/tests/ -q; then
-  ok "Performer tests"
-else
-  echo -e "$FAIL Performer tests"
-  FAILED+=("Performer tests")
-fi
+run "Performer tests" \
+  "${PYTEST[@]}" agent/performer/tests/ -q
 
 if [[ $RUN_E2E -eq 1 ]]; then
   run "Install Playwright browsers" \
-    uv run --extra dev playwright install --with-deps chromium firefox
+    uv run --no-sync playwright install --with-deps chromium firefox
 
   run "E2E browser tests" \
-    uv run --extra dev pytest tests/e2e/ \
+    "${PYTEST[@]}" tests/e2e/ \
       --override-ini="addopts=" --browser chromium --browser firefox -v
 else
   skip "E2E browser tests (pass --e2e to enable)"
@@ -112,7 +114,7 @@ if [[ $RUN_DOCKER -eq 1 ]]; then
       -f agent/performer/Dockerfile.extra agent/performer/
 
   step "Docker: verify image size gap (SC-007)"
-  python3 - <<'EOF'
+  if python3 - <<'EOF'
 import subprocess, json
 base = int(json.loads(subprocess.check_output(
   ["docker", "inspect", "--format", "{{json .Size}}", "coordinare-performer:base"])))
@@ -123,7 +125,7 @@ print(f"  base={base/1e6:.0f} MB  full={full/1e6:.0f} MB  gap={gap/1e6:.0f} MB")
 assert gap >= 150_000_000, f"SC-007 FAIL: gap {gap/1e6:.0f} MB < 150 MB"
 print("  SC-007 PASS")
 EOF
-  if [[ $? -eq 0 ]]; then
+  then
     ok "Docker: image size gap (SC-007)"
   else
     echo -e "$FAIL Docker: image size gap (SC-007)"

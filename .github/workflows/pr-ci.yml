@@ -274,6 +274,12 @@ jobs:
       - self-hosted
       - linux
       - x64
+    # Browser OS libraries live in the official image, so this lane does not
+    # require passwordless sudo on whichever self-hosted runner receives it.
+    # Keep the image version aligned with the Playwright package in uv.lock.
+    container:
+      image: mcr.microsoft.com/playwright/python:v1.58.0-noble
+      options: --ipc=host
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -287,9 +293,13 @@ jobs:
         uses: astral-sh/setup-uv@v4
 
       - name: Install Playwright browsers
-        run: uv run --extra dev playwright install --with-deps chromium firefox
+        run: uv run --extra dev playwright install chromium firefox
 
       - name: Run E2E tests
+        # Actions mounts /github/home with the host runner UID. Firefox refuses
+        # to run as container root with that foreign-owned home directory.
+        env:
+          HOME: /root
         run: uv run --extra dev pytest tests/e2e/ --override-ini="addopts=" --browser chromium --browser firefox -v
 
   performer:
