@@ -28,7 +28,7 @@ The stage has no notion of work already on its own branch. Everything it needs t
 
 ## Non-goals
 
-- Enforcing source scope on implementation turns. Reverting source files a milestone's scope did not name would stop the leak at its origin, but architect brief scopes are approximate prose and a milestone that legitimately touches a file its scope understated would lose correct work mid-turn and then fail its green check. Considered and rejected: the resume rules make the leak survivable, which is cheaper and safer than making an approximate scope authoritative.
+- Full enforcement of source scope on implementation turns. #279 instead reverts only source exclusively claimed by another planned milestone; current-scope overlaps and unclaimed helper files remain permitted. Empty or whole-tree current scopes retain their existing unbounded meaning and are not narrowed by another milestone. Reverting source files a milestone's scope did not name would stop the leak at its origin, but architect brief scopes are approximate prose and a milestone that legitimately touches a file its scope understated would lose correct work mid-turn and then fail its green check. Considered and rejected: the resume rules make the leak survivable, which is cheaper and safer than making an approximate scope authoritative.
 - Resuming a milestone whose tests a previous run committed red. `run_milestone` resets the tree to the milestone's start commit when the milestone fails, so a failed milestone leaves nothing behind and this state cannot occur.
 - Carrying the previous run record on the dispatch payload. `Score` has no such field and does not need one: the branch history is the record.
 - Any change to the repair, chore, refactor or bug lane's own shape.
