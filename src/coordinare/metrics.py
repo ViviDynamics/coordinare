@@ -161,7 +161,11 @@ class CoordinareMetrics:
             registry=self.registry,
         )
 
-        # --- Advocate metrics (spec 007) ---
+        # --- Advocate metrics (spec 007; fed by the spec-173 run report) ---
+        # Coordinare no longer performs the scan, so these are recorded when a
+        # card-less advocate run completes, from the outcomes on its record.
+        # Kept rather than deleted: they are an operator surface, and the
+        # information they carry still exists, just one hop away.
         self.advocate_issues_processed_total = Counter(
             "coordinare_advocate_issues_processed_total",
             "Advocate issues processed by action taken",
@@ -176,7 +180,7 @@ class CoordinareMetrics:
         )
         self.advocate_scan_duration_seconds = Histogram(
             "coordinare_advocate_scan_duration_seconds",
-            "Time to complete one advocate scan cycle",
+            "Time inside one advocate run, summed over its steps",
             registry=self.registry,
             buckets=(1, 5, 10, 30, 60),
         )

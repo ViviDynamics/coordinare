@@ -10,15 +10,19 @@ Source of truth: `src/coordinare/lifecycle.py` (`ROLE_TO_STAGE`, `CANONICAL_ORDE
 
 | # | Role | Stage name | What it produces |
 |---|---|---|---|
-| 1 | `advocate` | `advocate` | indexes issue context (the card's intent) |
-| 2 | `assessor` | `assessing` | an assessment of the work |
-| 3 | `architect` | `architecting` | plan + tasks committed |
-| 4 | `implementer` | `implementing` | code + an opened PR |
-| 5 | `reviewer` | `reviewing` | review verdict (approve / changes) |
-| 6 | `security` | `security` | security verdict |
-| 7 | `qa` | `qa` | QA verdict (runs tests against the live env) |
-| 8 | `tech_writer` | `documenting` | maintains the living project wiki (`docs/wiki/`) — spec 124 |
-| 9 | `closer` | `closing_review` | final close-out review |
+| 1 | `assessor` | `assessing` | an assessment of the work |
+| 2 | `architect` | `architecting` | plan + tasks committed |
+| 3 | `implementer` | `implementing` | code + an opened PR |
+| 4 | `reviewer` | `reviewing` | review verdict (approve / changes) |
+| 5 | `security` | `security` | security verdict |
+| 6 | `qa` | `qa` | QA verdict (runs tests against the live env) |
+| 7 | `tech_writer` | `documenting` | maintains the living project wiki (`docs/wiki/`) — spec 124 |
+| 8 | `closer` | `closing_review` | final close-out review |
+
+Two roles run **outside** this lifecycle, on inbound repository issues rather
+than on cards: the `advocate` answers questions from the project's own
+documentation, and the `curator` proposes ready issues to the board's backlog
+for a human to promote. Neither owns a card, and neither appears above.
 
 > `assessing` and `closing_review` are **singleton stages** (clamped to concurrency 1).
 > Not every symphony enables every role — roles are configured per project.

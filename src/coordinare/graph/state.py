@@ -122,12 +122,6 @@ class NotificationServiceProtocol(Protocol):
     async def dispatch(self, event: NotificationEvent) -> None: ...
 
 
-class AdvocateServiceProtocol(Protocol):
-    async def scan_and_respond(self, processed_ids: set[str], *, persona_instructions: str = "") -> set[str]:
-        """Scan open issues, process unhandled ones, return updated processed_ids set."""
-        ...
-
-
 # ---------------------------------------------------------------------------
 # 057 — Symphony Management & Multi-Project Orchestration
 # ---------------------------------------------------------------------------
@@ -178,8 +172,8 @@ class CoordinareState(TypedDict, total=False):
     # 138: dashboard activity feed. Optional by construction (total=False) —
     # every reader uses state.get("activity_log") and no-ops when it is None.
     activity_log: ActivityLog | None
-    advocate_service: AdvocateServiceProtocol | None
-    advocate_history: set[str]
+    # 173: the advocate runs in a performer; coordinare holds only the two label
+    # names, which card selection reads to keep escalated issues out of the board.
     advocate_handled_label: str
     advocate_escalation_label: str
 
@@ -391,7 +385,6 @@ def initial_state() -> CoordinareState:
         "system_error_notified": False,
         "card_clarifications": [],
         "performer_events": [],
-        "advocate_history": set(),
         "advocate_handled_label": "",
         "advocate_escalation_label": "",
         "workspace_manager": None,

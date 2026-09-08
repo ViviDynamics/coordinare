@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AdvocateRecord",
+  "description": "The advocate run's report, carried under the report key 'advocate'.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdict", "issues_seen", "documents_read", "outcomes", "withheld", "model_calls", "write_free_check"],
+  "properties": {
+    "verdict": {"enum": ["advocate_complete", "env_blocked"]},
+    "issues_seen": {"type": "integer", "minimum": 0},
+    "documents_read": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "outcomes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["issue_id", "action", "label_applied", "comment_posted", "model_calls"],
+        "properties": {
+          "issue_id": {"type": "string", "minLength": 1},
+          "action": {"enum": ["replied", "acknowledged", "triaged", "redirected", "escalated"]},
+          "escalation_reason": {"type": ["string", "null"]},
+          "classification": {
+            "type": ["string", "null"],
+            "enum": ["question", "confusion", "complaint", "feature_request", "bug_report", "off_topic", null]
+          },
+          "cited_documents": {"type": "array", "items": {"type": "string"}},
+          "label_applied": {"type": "string"},
+          "comment_posted": {"type": "boolean"},
+          "model_calls": {"type": "integer", "minimum": 0}
+        }
+      }
+    },
+    "withheld": {
+      "description": "Answers the gate refused. Present so a refusal is visible rather than silent.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["issue_id", "reason"],
+        "properties": {
+          "issue_id": {"type": "string", "minLength": 1},
+          "reason": {"type": "string", "minLength": 1},
+          "cited_documents": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "model_calls": {"type": "integer", "minimum": 0},
+    "write_free_check": {"type": "string"}
+  }
+}

@@ -72,6 +72,10 @@ def _full_card_context() -> dict[str, Any]:
         "implementer_single_turn": True,
         # 166: assessor workflow assessment (injected into architecting dispatch only)
         "assessment": {"ready": True, "goal": "Add time entry categories", "expected_behavior": "Users select category", "out_of_scope": [], "questions": [], "assumptions": [], "criteria": [{"surface": "/", "action": "open", "expected": "ok", "kind": "functional"}], "criteria_source": "card", "clarifications": []},
+        # 173: the board node id, carried on a card-less curator dispatch. The
+        # add-to-board mutation silently no-ops without it, which is exactly the
+        # silent-drop class this contract exists to catch.
+        "project_id": "PVT_kwDOtest",
         # 169: reviewer workflow findings (injected into implementing dispatch only)
         "review_findings": {"changed_files": [], "diff_truncated": False, "verdict": "changes_requested", "covered_files": [], "findings": [{"path": "a.py", "line": 1, "category": "logic_error", "problem": "p", "why_blocking": "w", "evidence": "e", "origin": "model"}]},
     }

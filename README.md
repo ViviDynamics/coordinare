@@ -23,7 +23,8 @@ Cards progress through up to 9 configurable roles (unconfigured roles are skippe
 
 | Role | Stage | What it does | Terminal state |
 |------|-------|-------------|---------------|
-| Advocate | `advocate` | Scans issues, adds high-value cards to the board | — |
+| Advocate | `advocate` | Answers inbound issues from the documentation, escalates the rest | — |
+| Curator | `curator` | Proposes ready issues to the board backlog for a human to promote | — |
 | Assessor | `assessing` | Evaluates card sufficiency, asks clarifying questions | — |
 | Architect | `architecting` | Analyses codebase, commits a technical plan to the branch | `plan_committed` |
 | Implementer | `implementing` | Writes code, opens a PR | `pr_opened` |

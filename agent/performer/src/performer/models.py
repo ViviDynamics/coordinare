@@ -147,6 +147,11 @@ class Score(BaseModel):
     # be declared or the field is silently dropped and the role runs the pre-164
     # single-backend path while looking correctly configured.
     workflow: str = ""
+    # 173: the project board's node id, for the curator's add-to-board call.
+    # Nothing conveyed it before, and the add-to-board mutation silently no-ops
+    # without it, so the curator must report an empty value rather than appear
+    # to succeed.
+    project_id: str = ""
     # 164: operator-supplied env for the role workflow (app start/seed command,
     # PORT). Declared here or extra="ignore" drops it in transit.
     workflow_env: dict[str, str] = Field(default_factory=dict)

@@ -2083,6 +2083,69 @@ async def handle_status(
         # suggestions (list), body (str). Existing backends don't produce this yet —
         # the reviewer backend adapter will be implemented separately.
         #
+        # 173: the two card-less intake roles. Both run a workflow that has
+        # already done every GitHub write it intends to do, so the only work
+        # here is to map the verdict onto a terminal status.
+        #
+        # This branch MUST come before the shared tail below: that tail lints,
+        # pushes the branch and opens a pull request for any role that reaches
+        # it, and these roles clone a repository they never modify. A missing
+        # branch here does not fail loudly, it opens pull requests.
+        #
+        # The guard requires the shape, not just the key: a dict carrying only a
+        # verdict is not a workflow report (the same lesson spec 172 recorded).
+        if perf.role in ("advocate", "curator"):
+            _key = "advocate" if perf.role == "advocate" else "curation"
+            _ok = "advocate_complete" if perf.role == "advocate" else "curation_complete"
+            _raw = backend_status.output or ""
+            _ir = _extract_json(_raw) if isinstance(_raw, str) else _raw
+            _rec = _ir.get(_key) if isinstance(_ir, dict) else None
+            if (
+                isinstance(_rec, dict)
+                and _rec.get("verdict") in (_ok, "env_blocked")
+                and isinstance(_rec.get("outcomes"), list)
+                and isinstance(_rec.get("model_calls"), int)
+            ):
+                _verdict = str(_rec.get("verdict") or "")
+                log.info(
+                    "intake.run_reported",
+                    role=perf.role,
+                    verdict=_verdict,
+                    outcomes=len(_rec.get("outcomes") or []),
+                    model_calls=_rec.get("model_calls"),
+                    error=_rec.get("error"),
+                )
+                perf.state = _verdict
+                if _verdict == "env_blocked":
+                    _reason = str(_rec.get("error") or "the intake run could not complete")
+                    perf.open_questions = [_reason]
+                    return PerformerResponse(
+                        status="env_blocked", session_id=perf.session_id,
+                        questions=[_reason], report=_ir,
+                    )
+                return PerformerResponse(
+                    status=_ok, session_id=perf.session_id,
+                    body=f"{len(_rec.get('outcomes') or [])} issue(s) handled",
+                    report=_ir,
+                )
+            # An unusable report must NOT fall through. For every other role a
+            # fall-through lands on the prose path, which is a reasonable
+            # default; for these two it lands on the tail that pushes a branch
+            # and opens a pull request. There is no prose path to fall back to
+            # here, so a malformed report is an error, reported as one.
+            log.warning(
+                "intake.report_unusable",
+                role=perf.role,
+                has_key=isinstance(_ir, dict) and _key in _ir,
+            )
+            perf.state = "error"
+            perf.error_reason = f"{perf.role} run returned no usable report"
+            return PerformerResponse(
+                status="error", session_id=perf.session_id,
+                body=f"{perf.role} run returned no usable report",
+                report=_ir if isinstance(_ir, dict) else None,
+            )
+
         # 042: The "closing_review" stage shares the same code path — its only
         # difference is the persona instructions injected by the coordinare.
         # The closer posts a verdict and, on approval, resolves every open

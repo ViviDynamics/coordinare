@@ -350,7 +350,7 @@ def setting_from_field(
 # The performer roles that can carry a ``mode`` reference (see
 # ProjectConfiguration._validate_orchestration_catalogs).
 _PERFORMER_ROLE_NAMES: tuple[str, ...] = (
-    "default", "advocate", "assessor", "architect", "implementer",
+    "default", "advocate", "curator", "assessor", "architect", "implementer",
     "reviewer", "security", "qa", "tech_writer", "closer", "env_bootstrap",
 )
 

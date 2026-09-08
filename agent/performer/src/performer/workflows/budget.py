@@ -63,6 +63,12 @@ _STEP_BUDGETS: dict[str, int] = {
     # 172 closer workflow: one schema-guarded judgement call over at most 20
     # answered threads with one reprompt; threads are classified by code.
     "closing_judge": 4000,
+    # 173 advocate: one schema-guarded classification per inbound issue with one
+    # reprompt.  An answer quotes documentation, so it needs prose room.
+    "advocate_classify": 6000,
+    # 173 curator: one schema-guarded selection judgement per candidate with one
+    # reprompt.  A verdict plus a short quote from the issue; small by design.
+    "curator_judge": 3000,
 }
 _DEFAULT_BUDGET = 8000
 

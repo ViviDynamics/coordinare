@@ -289,6 +289,7 @@ human_reviewers:                    # Required. GitHub logins who can approve PR
 #   tech_writer — updates docs and changelogs
 #   closer      — verifies all prior feedback was addressed; resolves open review threads
 #   advocate    — answers inbound GitHub issues from external users (separate from lifecycle)
+#   curator     — proposes ready issues to the board backlog (separate from lifecycle)
 #
 # Available backends: codex | claude_code | opencode | opencode_compat | junie | hermes
 #   codex            — OpenAI Codex CLI; needs OPENAI_API_KEY in coordinare environment
@@ -465,6 +466,34 @@ performers:
     max_tokens: 2048
     # 172: run the closing review as a workflow (see specs/172-closer-workflow/quickstart.md).
     # workflow: closer
+
+# --- Card-less intake roles (spec 173) ---
+# Both run as performer runs that coordinare only starts. Neither owns a card,
+# and neither is part of the per-card lifecycle. Both are OFF by default.
+#
+# advocate:
+#   enabled: true
+#   github_repo: your-repo
+#   doc_sources: [README.md, docs/quickstart.md]
+#   confidence_threshold: 0.70          # applies to questions only
+#   handled_label: advocate-handled
+#   escalation_label: needs-human       # an escalated issue is kept off the board
+#   scan_interval_seconds: 900          # a real floor: the poll is ~30s
+#
+# The advocate answers only from the documentation above and only with a
+# citation. An answer naming a file the run did not read is withheld and the
+# issue is escalated instead.
+#
+# curator:
+#   enabled: true
+#   github_repo: your-repo
+#   label: curator-proposed
+#   backlog_column: Backlog             # MUST NOT be a column coordinare dispatches from
+#   max_per_run: 5
+#   scan_interval_seconds: 3600
+#
+# The curator proposes: a qualifying issue lands in the backlog with a comment
+# saying why, and a human moves it on. It never schedules work itself.
 
 # --- Self-hosted backend example (opencode_compat) ---
 # Drop-in alternative for any role above. Add a self-hosted endpoint + model

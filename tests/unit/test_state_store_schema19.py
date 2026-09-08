@@ -8,9 +8,9 @@ from coordinare.state_store import CURRENT_SCHEMA_VERSION, PersistedSession, Wor
 class TestReviewFindingsSchemaV19:
     """Tests for spec 169 review_findings field on PersistedSession."""
 
-    def test_schema_version_is_19(self):
+    def test_schema_version_is_20(self):
         """CURRENT_SCHEMA_VERSION bumped from 18 to 19."""
-        assert CURRENT_SCHEMA_VERSION == 19
+        assert CURRENT_SCHEMA_VERSION == 20  # 173: + the intake gate fields
 
     def test_review_findings_default_none(self):
         """review_findings defaults to None."""

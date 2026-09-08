@@ -596,6 +596,194 @@ async def resolve_review_threads(
     return resolved_ids, failures
 
 
+async def list_open_issues(
+    owner: str,
+    repo: str,
+    token: str,
+    *,
+    first: int = 50,
+    max_pages: int = 5,
+) -> list[dict]:  # type: ignore[type-arg]
+    """Every open issue, with the labels that say whether it was already handled.
+
+    173: the performer had no issue-listing call at all, so a role built on
+    inbound issues had nothing to read.  Paged in the same shape as
+    ``fetch_review_threads``: a bounded walk, because a repository with
+    thousands of open issues must not be enumerated forever.
+
+    Pull requests are issues in GitHub's data model but NOT in this one -- the
+    ``issues`` connection excludes them, which is what both intake roles want.
+
+    Raises GitHubAPIError on a non-success status or a GraphQL ``errors`` body.
+    """
+    _require_token(token, "list_open_issues")
+    graphql_url = get_settings().GITHUB_GRAPHQL_URL.rstrip("/")
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+    }
+    query = """
+    query($owner: String!, $repo: String!, $first: Int!, $cursor: String) {
+      repository(owner: $owner, name: $repo) {
+        issues(states: OPEN, first: $first, after: $cursor,
+               orderBy: {field: CREATED_AT, direction: DESC}) {
+          nodes {
+            id number title body url
+            labels(first: 20) { nodes { name } }
+          }
+          pageInfo { hasNextPage endCursor }
+        }
+      }
+    }
+    """
+
+    issues: list[dict] = []  # type: ignore[type-arg]
+    cursor: str | None = None
+    pages_read = 0
+    async with httpx.AsyncClient(timeout=30) as client:
+        while pages_read < max_pages:
+            resp = await client.post(graphql_url, headers=headers, json={
+                "query": query,
+                "variables": {"owner": owner, "repo": repo, "first": first, "cursor": cursor},
+            })
+            if not resp.is_success:
+                raise GitHubAPIError(resp.status_code, resp.text[:200])
+
+            payload = resp.json()
+            if payload.get("errors"):
+                raise GitHubAPIError(200, str(payload["errors"]))
+
+            connection = (
+                ((payload.get("data") or {}).get("repository") or {}).get("issues") or {}
+            )
+            for node in connection.get("nodes") or []:
+                if not node:
+                    continue
+                label_nodes = ((node.get("labels") or {}).get("nodes")) or []
+                issues.append({
+                    "id": str(node.get("id") or ""),
+                    "number": int(node.get("number") or 0),
+                    "title": node.get("title") or "",
+                    "body": node.get("body") or "",
+                    "url": node.get("url") or "",
+                    "labels": [str(x.get("name") or "") for x in label_nodes if x],
+                })
+
+            pages_read += 1
+            page_info = connection.get("pageInfo") or {}
+            if not page_info.get("hasNextPage"):
+                break
+            cursor = page_info.get("endCursor")
+
+    return issues
+
+
+async def add_labels(
+    owner: str,
+    repo: str,
+    labelable_id: str,
+    label_names: list[str],
+    token: str,
+) -> None:
+    """Apply existing labels to an issue or pull request by node id.
+
+    173: labelling lived only in coordinare.  Labels are resolved by name first
+    because ``addLabelsToLabelable`` takes ids; a name with no label raises
+    rather than passing silently, since a label that never lands is what makes
+    an advocate re-answer the same issue on the next cycle.
+
+    This never CREATES a label: coordinare's bootstrap already ensures the two
+    advocate labels exist, and a run inventing labels is a surprise.
+    """
+    if not label_names:
+        return
+    _require_token(token, "add_labels")
+    graphql_url = get_settings().GITHUB_GRAPHQL_URL.rstrip("/")
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+    }
+
+    label_query = """
+    query($owner: String!, $repo: String!, $name: String!) {
+      repository(owner: $owner, name: $repo) { label(name: $name) { id } }
+    }
+    """
+    mutation = (
+        "mutation($labelableId: ID!, $labelIds: [ID!]!) { "
+        "addLabelsToLabelable(input: {labelableId: $labelableId, labelIds: $labelIds}) "
+        "{ clientMutationId } }"
+    )
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        label_ids: list[str] = []
+        for name in label_names:
+            resp = await client.post(graphql_url, headers=headers, json={
+                "query": label_query,
+                "variables": {"owner": owner, "repo": repo, "name": name},
+            })
+            if not resp.is_success:
+                raise GitHubAPIError(resp.status_code, resp.text[:200])
+            payload = resp.json()
+            if payload.get("errors"):
+                raise GitHubAPIError(200, str(payload["errors"]))
+            label = ((payload.get("data") or {}).get("repository") or {}).get("label") or {}
+            label_id = str(label.get("id") or "")
+            if not label_id:
+                raise GitHubAPIError(404, f"label {name!r} does not exist in {owner}/{repo}")
+            label_ids.append(label_id)
+
+        resp = await client.post(graphql_url, headers=headers, json={
+            "query": mutation,
+            "variables": {"labelableId": labelable_id, "labelIds": label_ids},
+        })
+        if not resp.is_success:
+            raise GitHubAPIError(resp.status_code, resp.text[:200])
+        payload = resp.json()
+        if payload.get("errors"):
+            raise GitHubAPIError(200, str(payload["errors"]))
+
+
+async def add_item_to_project(project_id: str, content_id: str, token: str) -> str:
+    """Add an issue to a project board, returning the new board item id.
+
+    173: this lived only in coordinare, where an unset project id makes it return
+    None -- indistinguishable from a successful add that produced no item.  Here
+    an empty project id RAISES before any request, because a curator that cannot
+    reach the board must report that rather than look like it promoted nothing.
+
+    Setting the item's column is a separate mutation: this call only adds.
+    """
+    _require_token(token, "add_item_to_project")
+    if not project_id.strip():
+        raise GitHubAPIError(400, "project_id is required to add an item to a board")
+    graphql_url = get_settings().GITHUB_GRAPHQL_URL.rstrip("/")
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+    }
+    mutation = (
+        "mutation($projectId: ID!, $contentId: ID!) { "
+        "addProjectV2ItemById(input: {projectId: $projectId, contentId: $contentId}) "
+        "{ item { id } } }"
+    )
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(graphql_url, headers=headers, json={
+            "query": mutation,
+            "variables": {"projectId": project_id, "contentId": content_id},
+        })
+    if not resp.is_success:
+        raise GitHubAPIError(resp.status_code, resp.text[:200])
+    payload = resp.json()
+    if payload.get("errors"):
+        raise GitHubAPIError(200, str(payload["errors"]))
+    item = ((payload.get("data") or {}).get("addProjectV2ItemById") or {}).get("item") or {}
+    item_id = str(item.get("id") or "")
+    if not item_id:
+        raise GitHubAPIError(200, "addProjectV2ItemById returned no item")
+    return item_id
+
+
 async def resolve_pr_review_threads(
     owner: str,
     repo: str,

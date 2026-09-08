@@ -245,12 +245,16 @@ def test_posture_files_never_claim_coordinare_is_open_source() -> None:
 def test_wording_guard_scope_excludes_accurate_third_party_references() -> None:
     """FR-007 — zero false positives on statements about other people's software.
 
-    These two files legitimately describe third-party tools and models as open
-    source. If either ever lands inside ``POSTURE_FILES`` the guard would start
-    failing on accurate prose, which is how a guard gets weakened instead of
-    fixed.
+    This file legitimately describes third-party tools as open source. If it
+    ever lands inside ``POSTURE_FILES`` the guard would start failing on
+    accurate prose, which is how a guard gets weakened instead of fixed.
+
+    Spec 173 removed the second anchor: ``services/scoring.py`` carried a
+    comment about "small open-source models" and was deleted with the in-daemon
+    advocate path. The remaining anchor is listed rather than replaced with an
+    invented one, because prose written to satisfy a test is not evidence.
     """
-    for rel in ("docs/opencode-sdk.md", "src/coordinare/services/scoring.py"):
+    for rel in ("docs/opencode-sdk.md",):
         assert (REPO_ROOT / rel).is_file(), f"expected {rel} to exist"
         assert rel not in POSTURE_FILES, (
             f"{rel} accurately describes third-party software as open source and must "
