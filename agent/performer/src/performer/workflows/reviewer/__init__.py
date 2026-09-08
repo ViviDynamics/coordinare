@@ -29,7 +29,7 @@ from performer.workflows.reviewer.intake import build_intake
 from performer.workflows.reviewer.models import DEFAULT_CATEGORIES, ReviewRecord
 from performer.workflows.reviewer.post import post_review
 from performer.workflows.reviewer.report import build_report, write_free_check
-from performer.workflows.reviewer.survey import run_reviewer_survey, survey_output_lines
+from performer.workflows.reviewer.survey import opened_paths, run_reviewer_survey, survey_output_lines
 
 if TYPE_CHECKING:
     from performer.models import Score, Stand
@@ -93,7 +93,8 @@ class ReviewerWorkflow:
         diff_lines = intake.diff_line_list()
         survey_lines = survey_output_lines(outcome.records())
         gate_kwargs = dict(changed_files=files, prior_comments=intake.prior_comments, diff_lines=diff_lines, survey_lines=survey_lines,
-                           brief_present=intake.brief_present, truncated=intake.diff_truncated, coverage_pass_ran=outcome.coverage_pass_ran)
+                           brief_present=intake.brief_present, truncated=intake.diff_truncated, coverage_pass_ran=outcome.coverage_pass_ran,
+                           surveyed_files=opened_paths(outcome.records(), [f.path for f in before]))
         result = run_gate(before, model_out.dispositions, **gate_kwargs)
         reanchored = []
         if result.dropped:
@@ -101,6 +102,7 @@ class ReviewerWorkflow:
             context = f"## Diff\n{intake.diff_text[:_REANCHOR_DIFF_CHARS]}\n\n## Survey notes\n{survey_text[-10000:]}"
             second = await run_reanchor_step(toolkit, result.dropped, files, self.categories, budgets.max_findings, context)
             reanchored = to_findings(second, self.categories)
+            gate_kwargs["surveyed_files"] |= opened_paths(outcome.records(), [f.path for f in reanchored])
             result = run_gate(before, model_out.dispositions, reanchored=reanchored, **gate_kwargs)
         timed("gate", t)
         log.info("reviewer.gate", kept=len(result.findings), dropped=len(result.dropped), reanchored=len(reanchored), verdict=result.verdict, unread=result.unread_files)

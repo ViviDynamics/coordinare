@@ -75,12 +75,17 @@ def evidence_matches(finding: Finding, diff_lines: list[str], survey_lines: list
 
 
 def anchor_ok(finding: Finding, changed_files: list[ChangedFile], surveyed_files: Iterable[str], diff_lines: list[str], survey_lines: list[str]) -> bool:
-    """FR-006: changed path AND (line in hunks OR file surveyed) AND evidence matches."""
-    if finding.path not in {f.path for f in changed_files}:
+    """A surveyed sink may be unchanged, but its introducing cause must be changed."""
+    changed = {f.path for f in changed_files}
+    surveyed = set(surveyed_files)
+    cause = finding.introduced_by or finding.path
+    if cause not in changed:
         return False
-    if not (anchor_in_hunks(finding, changed_files) or anchor_in_surveyed(finding, surveyed_files)):
-        return False
-    return evidence_matches(finding, diff_lines, survey_lines)
+    if finding.path in changed:
+        placed = anchor_in_hunks(finding, changed_files) or finding.path in surveyed
+    else:
+        placed = finding.path in surveyed
+    return placed and evidence_matches(finding, diff_lines, survey_lines)
 
 
 def has_disposition(comment_id: str, dispositions: Iterable[Any]) -> bool:
@@ -159,7 +164,8 @@ def to_findings(model_findings: Any, categories: Iterable[str]) -> list[Finding]
         if mf.category not in allowed:
             continue
         out.append(Finding(path=mf.path, line=mf.line, category=mf.category, problem=mf.problem,
-                           why_blocking=mf.why_blocking, evidence=mf.evidence, origin="model"))
+                           why_blocking=mf.why_blocking, evidence=mf.evidence, origin="model",
+                           introduced_by=getattr(mf, "introduced_by", "")))
     return out
 
 
@@ -186,8 +192,9 @@ def run_gate(
     truncated: bool,
     coverage_pass_ran: bool,
     reanchored: list[Finding] | None = None,
+    surveyed_files: Iterable[str] = (),
 ) -> GateOutcome:
-    surveyed = [f.path for f in changed_files if f.opened_by_survey]
+    surveyed = set(surveyed_files) | {f.path for f in changed_files if f.opened_by_survey}
     kept, dropped = [], []
     for f in model_findings:
         (kept if anchor_ok(f, changed_files, surveyed, diff_lines, survey_lines) else dropped).append(f)

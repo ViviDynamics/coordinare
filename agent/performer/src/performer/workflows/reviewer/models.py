@@ -48,7 +48,8 @@ DEFAULT_CATEGORIES = (
 class Finding(_Bounded):
     """A code issue identified by the reviewer."""
 
-    path: str  # Changed file path; "" if unanchored prior comment
+    introduced_by: str = ""  # Changed cause; empty preserves legacy changed-path findings.
+    path: str  # Changed or surveyed file path; "" if unanchored prior comment
     line: Annotated[int, Field(ge=0)]  # New-side line number; 0 if unanchored
     category: Annotated[str, StringConstraints(min_length=1, max_length=64)]  # From the configured set (FR-018); the model schema pins it to a Literal
     problem: Annotated[str, StringConstraints(min_length=1, max_length=500)]  # What is wrong
@@ -133,6 +134,7 @@ def model_findings_schema(categories: tuple[str, ...] | list[str], max_findings:
     category_type = Literal[cats]  # type: ignore[valid-type]
 
     class ModelFinding(_Bounded):
+        introduced_by: str = ""
         path: str
         line: Annotated[int, Field(ge=0)]
         category: category_type  # type: ignore[valid-type]
