@@ -489,21 +489,14 @@ async def test_a_process_still_running_is_given_the_full_window():
 
 
 @pytest.mark.asyncio
-async def test_a_missing_port_is_a_warning_that_names_the_fix(caplog):
-    """Round-two review: a missing PORT logged at INFO with no guidance, and
-    the report said only 'never came up'. An operator cannot act on that."""
-    import logging
+async def test_a_missing_port_is_a_warning_that_names_the_fix():
+    """Capture the warning without leaking a stdlib bridge into later tests."""
+    from structlog.testing import capture_logs
 
-    import structlog
-
-    structlog.configure(
-        processors=[structlog.stdlib.render_to_log_kwargs],
-        logger_factory=structlog.stdlib.LoggerFactory(),
-        cache_logger_on_first_use=False,
-    )
-    caplog.set_level(logging.WARNING)
     boot = AppBoot(env={}, workspace=Path("/w"))
-    assert await boot.ensure_serving(object()) is None
+    with capture_logs() as events:
+        assert await boot.ensure_serving(object()) is None
+    assert any(event["log_level"] == "warning" for event in events)
     assert boot.failure_reason is not None
     assert "PORT" in boot.failure_reason
     assert "workflow_env" in boot.failure_reason
