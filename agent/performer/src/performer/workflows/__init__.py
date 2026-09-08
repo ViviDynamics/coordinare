@@ -31,6 +31,7 @@ class UnsupportedWorkflowError(ValueError):
 #: Only names in this dict are resolvable.  An arbitrary importable module name
 #: is NOT a workflow, however well-formed it looks.
 SUPPORTED_WORKFLOWS: dict[str, tuple[str, str]] = {
+    "env_bootstrap": ("performer.workflows.env_bootstrap", "EnvBootstrapWorkflow"),
     "noop": ("performer.workflows.noop", "NoopWorkflow"),
     "qa": ("performer.workflows.qa", "QAWorkflow"),
     "architect": ("performer.workflows.architect", "ArchitectWorkflow"),

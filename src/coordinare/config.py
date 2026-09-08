@@ -482,7 +482,7 @@ class Mode(BaseModel):
 #: coordinare cannot import the performer package in production — the same reason
 #: ``cdn_upload`` exists on both sides.  ``test_config_workflow_field.py`` asserts
 #: the two stay in step wherever both packages are installed.
-KNOWN_WORKFLOWS: frozenset[str] = frozenset({"noop", "qa", "architect", "assessor", "reviewer", "implementer", "security", "documenter", "closer", "advocate", "curator"})
+KNOWN_WORKFLOWS: frozenset[str] = frozenset({"env_bootstrap", "noop", "qa", "architect", "assessor", "reviewer", "implementer", "security", "documenter", "closer", "advocate", "curator"})
 
 
 class PerformerRoleConfig(BaseModel):

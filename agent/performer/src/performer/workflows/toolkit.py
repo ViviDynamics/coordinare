@@ -51,8 +51,10 @@ class Toolkit:
         dom_reader: Callable[[str], list[dict]] | None = None,
         event_sink: Callable[["BackendEvent"], None] | None = None,
         agent_turn_runner: AgentTurnRunner | None = None,
+        bootstrap_step_runner: Callable[[str], Awaitable[dict[str, Any]]] | None = None,
         call_limit: int = 12,
     ) -> None:
+        self._bootstrap_step_runner = bootstrap_step_runner
         self.metrics = metrics
         self._model_call = model_call
         self._command_runner = command_runner
@@ -62,6 +64,12 @@ class Toolkit:
         self._event_sink = event_sink
         self._agent_turn_runner = agent_turn_runner
         self._ceiling = CallCeiling(limit=call_limit)
+
+    async def run_bootstrap_step(self, step: str) -> dict[str, Any]:
+        """Execute a bootstrap gate through the configured production primitive."""
+        if self._bootstrap_step_runner is None:
+            raise RuntimeError("Toolkit has no bootstrap step runner configured")
+        return await self._bootstrap_step_runner(step)
 
     # -- commands ---------------------------------------------------------
 
@@ -237,6 +245,15 @@ class Toolkit:
                 "wall_ms": wall_ms,
                 "harness_commits": [],
             }
+        except asyncio.CancelledError:
+            wall_ms = int((time.monotonic() - started) * 1000)
+            self.metrics.agent_turns += 1
+            self.metrics.turn_durations_ms.append(wall_ms)
+            self.emit(BackendEvent(
+                type=BackendEventType.progress,
+                text=f"turn.end kind={brief.get('kind')} exit_state=cancelled wall_ms={wall_ms}"
+            ))
+            raise
         except BaseException as exc:
             wall_ms = int((time.monotonic() - started) * 1000)
             self.metrics.agent_turns += 1

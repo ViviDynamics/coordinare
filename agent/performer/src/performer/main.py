@@ -2759,6 +2759,30 @@ async def handle_status(
         # surface as backend_status.state == "error" and route through the
         # generic error path elsewhere in this function.
         if perf.role == "env_bootstrap":
+            if perf.score.workflow == "env_bootstrap":
+                from pydantic import ValidationError
+
+                from performer.workflows.env_bootstrap import BootstrapRun
+
+                raw = _extract_json(backend_status.output or "")
+                try:
+                    run = BootstrapRun.model_validate(raw.get("env_bootstrap_run") if isinstance(raw, dict) else None)
+                    if any(not key.startswith("inference_") or key not in PerformerResponse.model_fields for key in run.inference):
+                        raise ValueError("invalid inference fields")
+                    response = PerformerResponse.model_validate({
+                        **run.inference,
+                        "status": "env_bootstrap_complete" if run.status == "complete" else "error",
+                        "session_id": perf.session_id,
+                        "reason": run.reason or None,
+                    }, strict=True)
+                except (ValidationError, ValueError):
+                    perf.state = "error"
+                    perf.error_reason = "invalid bootstrap workflow report"
+                    return PerformerResponse(status="error", session_id=perf.session_id, reason=perf.error_reason)
+                perf.inference_state = run.inference
+                perf.state = "env_bootstrap_complete" if run.status == "complete" else "error"
+                perf.error_reason = run.reason or None
+                return response
             # 107: START declared services BEFORE running verify.sh. verify.sh
             # embeds a LIVE service probe (spec-093 pg_isready/redis PING) that
             # hard-fails when the service isn't running, so it MUST run after the

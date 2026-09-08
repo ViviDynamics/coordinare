@@ -3137,6 +3137,13 @@ class CoordinareDaemon:
         bootstrap_api_key_env: str | None = None
         bootstrap_auth_token_env: str | None = None
         cfg = self._state.get("config")
+        symphony_cfg = (self._state.get("symphony_configs") or {}).get(symphony_name)
+        coordinare_cfg = self._state.get("coordinare_config")
+        if symphony_cfg is not None and coordinare_cfg is not None:
+            from coordinare.config import CoordinareConfiguration, SymphonyConfig
+
+            if isinstance(symphony_cfg, SymphonyConfig) and isinstance(coordinare_cfg, CoordinareConfiguration):
+                cfg = symphony_cfg.effective_config(coordinare_cfg.global_config)
         if cfg is not None and hasattr(cfg, "performers"):
             for _probe_role in ("env_bootstrap", "implementer", "architect", "assessor"):
                 rc = cfg.performers.resolved_role(_probe_role)
@@ -3163,6 +3170,21 @@ class CoordinareDaemon:
                         rc, "auth_token_env", None
                     )
                     break
+        # Bootstrap owns its workflow choice even when its backend falls back.
+        bootstrap_role = getattr(getattr(cfg, "performers", None), "env_bootstrap", None)
+        workflow = getattr(bootstrap_role, "workflow", None)
+        if isinstance(workflow, str) and workflow:
+            dispatch_dict["workflow"] = workflow
+            workflow_env = dict(bootstrap_role.workflow_env)
+            budget = int(getattr(self._state.get("coordinare_config"), "bootstrap_max_seconds", 0) or 0)
+            if workflow == "env_bootstrap" and budget > 0:
+                try:
+                    configured = int(workflow_env.get("ENV_BOOTSTRAP_TIMEOUT_SECONDS", "1800"))
+                except ValueError:
+                    pass  # Preserve invalid input for the workflow's terminal error report.
+                else:
+                    workflow_env["ENV_BOOTSTRAP_TIMEOUT_SECONDS"] = str(min(configured, budget))
+            dispatch_dict["workflow_env"] = workflow_env
         dispatch_dict["backend"] = bootstrap_backend
         if bootstrap_model:
             dispatch_dict["model"] = bootstrap_model

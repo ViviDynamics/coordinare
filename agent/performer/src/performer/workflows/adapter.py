@@ -224,6 +224,9 @@ def build_agent_turn_runner(
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
+        except asyncio.CancelledError:
+            await backend.stop()
+            raise
         except Exception as exc:
             return {
                 "exit_state": "error",
@@ -393,7 +396,7 @@ def build_production_toolkit(
 
     # Build agent_turn_runner for implementer workflow (spec 167 T012)
     agent_turn_runner = None
-    if workflow_name == "implementer" and stand is not None:
+    if workflow_name in {"implementer", "env_bootstrap"} and stand is not None:
         from performer.config import get_settings
 
         backend_name = score.backend or get_settings().AGENT_BACKEND
@@ -412,6 +415,14 @@ def build_production_toolkit(
             max_tokens=max_tokens,
             forward_progress=_forward_progress,
             backend_factory=backend_factory,
+        )
+
+    if workflow_name == "env_bootstrap" and stand is not None:
+        from performer.workflows.bootstrap_environment import BootstrapEnvironment
+
+        return Toolkit(
+            metrics=metrics, event_sink=event_sink, agent_turn_runner=agent_turn_runner,
+            bootstrap_step_runner=BootstrapEnvironment(stand, score).run,
         )
 
     # Assessor workflow is write-free: no command_runner, screenshot_capture, or dom_reader
@@ -543,6 +554,9 @@ class WorkflowAdapter:
         declared and never assigned)."""
         self._events.append(event)
         text = getattr(event, "text", "") or ""
+        if text.startswith("env_bootstrap."):
+            self._current_step = text
+            self._inner_progress = None
         if text.startswith("qa."):
             self._current_step = text[3:]
 
