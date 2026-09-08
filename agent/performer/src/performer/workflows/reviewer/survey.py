@@ -10,6 +10,7 @@ naming the unread files.
 from __future__ import annotations
 
 import re
+import shlex
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -98,3 +99,37 @@ async def run_reviewer_survey(toolkit, intake: Intake, workspace: Path, budget: 
         outcome.coverage_survey = coverage
         outcome.coverage_pass_output = coverage.as_text()[-4000:]
     return outcome, files
+
+
+def opened_paths(records, paths) -> set[str]:
+    """Verify explicit content reads; listings/status and command chains are insufficient."""
+    opened: set[str] = set()
+    for record in records:
+        if not record.allowed or record.exit_code != 0:
+            continue
+        try:
+            lexer = shlex.shlex(record.command, posix=True, punctuation_chars=";&|")
+            lexer.whitespace_split = True
+            argv = list(lexer)
+        except ValueError:
+            continue
+        if not argv or any(token and set(token) <= set(";&|") for token in argv):
+            continue
+        program = argv[0].rsplit("/", 1)[-1]
+        for path in paths:
+            if program in {"cat", "head", "tail", "sed"}:
+                reads = path in argv[1:] or f"./{path}" in argv[1:]
+            elif program == "git":
+                git_args = argv[1:]
+                if git_args and git_args[0] == "--no-pager":
+                    git_args = git_args[1:]
+                safe_flags = {"--no-pager", "--no-color", "--color=never", "--no-ext-diff", "--no-textconv"}
+                show_args = [arg for arg in git_args[1:] if arg not in safe_flags]
+                reads = bool(git_args and git_args[0] == "show" and len(show_args) == 1
+                             and not show_args[0].startswith("-")
+                             and show_args[0].endswith(f":{path}"))
+            else:
+                reads = False
+            if reads:
+                opened.add(path)
+    return opened

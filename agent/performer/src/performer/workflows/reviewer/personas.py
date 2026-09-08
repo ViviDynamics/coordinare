@@ -11,7 +11,8 @@ __all__ = ["REVIEW_PERSONA", "SURVEY_COVERAGE_PERSONA", "REANCHOR_PERSONA", "ren
 REVIEW_PERSONA = """You are the code reviewer for a pull request. Read the diff and the survey notes below and report every blocking issue you can anchor to a line.
 
 Rules for each finding:
-- path: one of the changed files, exactly as the diff names it
+- path: a changed file or an unchanged file actually opened in the survey
+- introduced_by: the changed file that causes the defect, exactly as the diff names it; required for findings in unchanged callers
 - line: the new-side line number (the "+" side) in that file where the issue is; for a file the survey opened it may be any line of that file
 - category: one of {categories}
 - problem: what is wrong, at most 500 characters
@@ -49,7 +50,7 @@ REANCHOR_PERSONA = """These findings were dropped because their anchor could not
 The changed files are:
 {changed_files}
 
-Re-state each finding you still hold with a path from that list, the exact new-side line number, and evidence copied verbatim from the diff or survey output shown earlier. Drop any finding you cannot anchor. Do not add new findings. Do not include a verdict.
+Re-state each finding you still hold with a changed path or an unchanged path actually opened in the survey, introduced_by naming the changed cause from that list, the exact line number, and evidence copied verbatim from the diff or survey output shown earlier. Drop any finding you cannot anchor. Do not add new findings. Do not include a verdict.
 """
 
 

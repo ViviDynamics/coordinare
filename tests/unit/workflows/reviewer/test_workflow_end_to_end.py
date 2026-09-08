@@ -91,7 +91,7 @@ async def test_clean_diff_is_approved_with_one_comment_review():
 async def test_an_anchored_finding_requests_changes_inline():
     result, record, gh, _, _ = await _run([SURVEY, {"findings": [DIV_FINDING], "dispositions": []}], _score())
     assert record.verdict == "changes_requested"
-    assert [f.model_dump() for f in record.findings] == [{**DIV_FINDING, "origin": "model"}]
+    assert [f.model_dump() for f in record.findings] == [{**DIV_FINDING, "origin": "model", "introduced_by": ""}]
     assert gh.reviews[0]["event"] == "REQUEST_CHANGES"
     assert [(c["path"], c["line"]) for c in gh.reviews[0]["comments"]] == [("src/calc.py", 6)]
     assert result.findings[0]["category"] == "logic_error"
@@ -219,3 +219,15 @@ async def test_every_step_is_timed_and_logged(monkeypatch):
     events = {e["event"]: e for e in fake.entries}
     assert events["reviewer.intake"]["files"] == 2
     assert events["reviewer.gate"]["kept"] == 1 and events["reviewer.gate"]["verdict"] == "changes_requested"
+
+
+@pytest.mark.asyncio
+async def test_a_surveyed_unchanged_caller_is_reported_in_review_body():
+    caller = {"path": "src/extra.py", "introduced_by": "src/calc.py", "line": 3,
+              "category": "logic_error", "problem": "Caller assumes the old result",
+              "why_blocking": "New result breaks this unchanged caller", "evidence": "Y = X + 1"}
+    _, record, gh, _, _ = await _run([OPEN_EXTRA, {"findings": [caller], "dispositions": []}], _score())
+    assert record.verdict == "changes_requested"
+    assert [(f.path, f.introduced_by) for f in record.findings] == [("src/extra.py", "src/calc.py")]
+    assert gh.reviews[0]["comments"] == []
+    assert "`src/extra.py:3`" in gh.reviews[0]["body"]
