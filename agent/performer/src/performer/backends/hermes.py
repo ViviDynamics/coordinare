@@ -36,7 +36,7 @@ from pathlib import Path
 import psutil
 import structlog
 
-from performer.backends._card_docs import repair_mandate_prompt_section, card_doc_folder, card_docs_prompt_section, qa_findings_prompt_section, brief_prompt_sections
+from performer.backends._card_docs import scanner_findings_prompt_section, repair_mandate_prompt_section, card_doc_folder, card_docs_prompt_section, qa_findings_prompt_section, brief_prompt_sections
 from performer.backends._env_policy import build_subprocess_env
 from performer.backends.base import BackendStatus
 from performer.models import DIAGNOSTIC_ROLE, BackendEvent, BackendEventType, Score, Stand
@@ -772,6 +772,7 @@ def _build_task_prompt(
     parts += card_docs_prompt_section(score, stand_path)
     parts += qa_findings_prompt_section(score)
     parts += repair_mandate_prompt_section(score)
+    parts += scanner_findings_prompt_section(score)
     parts += brief_prompt_sections(score)
     if score.acceptance_criteria:
         parts += ["## Acceptance Criteria", ""]

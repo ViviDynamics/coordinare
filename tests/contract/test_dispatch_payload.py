@@ -430,7 +430,6 @@ class TestCardContextKeysAreDeclaredOnScore:
     # rather than papered over. Shrink this set; never grow it.
     _KNOWN_DROPPED: ClassVar[set[str]] = {
         "max_tool_calls",     # persona-slice scope tier cap
-        "scanner_findings",   # 083 security advisory ceiling
         "scope_addon",        # persona-slice prompt addon
         "scope_focus",        # persona-slice focus
     }
@@ -580,3 +579,32 @@ async def test_repair_mandate_reaches_backend_prompt(backend: str) -> None:
     assert build(normal, *args) == build(empty, *args)
     assert "Bounded baseline repair" not in build(normal, *args)
     assert "Bounded baseline repair" not in build(score.model_copy(update={"role": "reviewing"}), *args)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", ["claude_code", "codex", "hermes", "opencode", "opencode_compat", "pi", "junie"])
+async def test_scanner_findings_reach_security_backend_prompt(backend: str) -> None:
+    from importlib import import_module
+
+    from performer.models import Score
+
+    transport = _CaptureTransport()
+    service = AgentService(transport)
+    payload = {
+        "title": "Security review", "id": "X", "role": "security",
+        "repo_url": "https://github.com/org/repo", "branch": "review",
+        "scanner_findings": [{"file": "src/auth.py", "line": 17, "severity": "high",
+                              "category": "sql_injection", "description": "Unescaped SQL parameter", "routing": "implementer"}],
+    }
+    await service.dispatch_card(payload)
+    score = Score.model_validate(transport.captured_payload)
+    build = import_module(f"performer.backends.{backend}")._build_task_prompt
+    args = ([],) if backend == "hermes" else ()
+    prompt = build(score, *args)
+    assert "Coordinare scanner findings (advisory)" in prompt
+    for evidence in ("src/auth.py", "17", "high", "sql_injection", "Unescaped SQL parameter"):
+        assert evidence in prompt
+    absent = Score.model_validate({k: v for k, v in payload.items() if k != "scanner_findings"})
+    assert build(absent, *args) == build(absent.model_copy(update={"scanner_findings": []}), *args)
+    assert "Coordinare scanner findings" not in build(absent, *args)
+    assert "Coordinare scanner findings" not in build(score.model_copy(update={"role": "implementing"}), *args)
