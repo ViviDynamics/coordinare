@@ -14,6 +14,8 @@ concurrency:
   group: pr-ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+# General Linux builds use the ephemeral cluster pool; the persistent WSL2
+# runner also matches linux/x64 but has repeatedly stalled Docker operations.
 jobs:
   lint:
     name: Lint
@@ -22,6 +24,7 @@ jobs:
       - self-hosted
       - linux
       - x64
+      - cluster
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -44,6 +47,7 @@ jobs:
       - self-hosted
       - linux
       - x64
+      - cluster
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -72,6 +76,7 @@ jobs:
       - self-hosted
       - linux
       - x64
+      - cluster
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -116,6 +121,7 @@ jobs:
       - self-hosted
       - linux
       - x64
+      - cluster
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -147,6 +153,7 @@ jobs:
       - self-hosted
       - linux
       - x64
+      - cluster
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -246,6 +253,7 @@ jobs:
       - self-hosted
       - linux
       - x64
+      - cluster
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -274,6 +282,7 @@ jobs:
       - self-hosted
       - linux
       - x64
+      - cluster
     # Browser OS libraries live in the official image, so this lane does not
     # require passwordless sudo on whichever self-hosted runner receives it.
     # Keep the image version aligned with the Playwright package in uv.lock.
@@ -309,6 +318,7 @@ jobs:
       - self-hosted
       - linux
       - x64
+      - cluster
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -332,6 +342,7 @@ jobs:
       - self-hosted
       - linux
       - x64
+      - cluster
     permissions:
       contents: read
       packages: write
@@ -404,6 +415,7 @@ jobs:
       - self-hosted
       - linux
       - x64
+      - cluster
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -446,6 +458,7 @@ jobs:
       - self-hosted
       - linux
       - x64
+      - cluster
     needs:
       - lint
       - test

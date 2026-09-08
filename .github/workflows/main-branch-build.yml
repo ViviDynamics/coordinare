@@ -10,6 +10,8 @@ concurrency:
   group: main-branch-build
   cancel-in-progress: false
 
+# General Linux builds use the ephemeral cluster pool; the persistent WSL2
+# runner also matches linux/x64 but has repeatedly stalled Docker operations.
 jobs:
   derive-version:
     name: Derive Version
@@ -17,6 +19,7 @@ jobs:
       - self-hosted
       - linux
       - x64
+      - cluster
     permissions:
       contents: read
     outputs:
@@ -86,6 +89,7 @@ jobs:
       - self-hosted
       - linux
       - x64
+      - cluster
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -107,6 +111,7 @@ jobs:
       - self-hosted
       - linux
       - x64
+      - cluster
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -134,6 +139,7 @@ jobs:
       - self-hosted
       - linux
       - x64
+      - cluster
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -166,6 +172,7 @@ jobs:
       - self-hosted
       - linux
       - x64
+      - cluster
     permissions:
       contents: write
     outputs:
@@ -225,6 +232,7 @@ jobs:
       - self-hosted
       - linux
       - x64
+      - cluster
     permissions:
       contents: read
       packages: write
@@ -295,6 +303,7 @@ jobs:
       - self-hosted
       - linux
       - x64
+      - cluster
     permissions:
       contents: read
       packages: write
@@ -330,6 +339,7 @@ jobs:
       - self-hosted
       - linux
       - x64
+      - cluster
     permissions:
       contents: read
       packages: write
@@ -409,6 +419,7 @@ jobs:
       - self-hosted
       - linux
       - x64
+      - cluster
     permissions:
       contents: read
       packages: write
@@ -446,6 +457,7 @@ jobs:
       - self-hosted
       - linux
       - x64
+      - cluster
     permissions:
       contents: read
       packages: write
@@ -488,6 +500,7 @@ jobs:
       - self-hosted
       - linux
       - x64
+      - cluster
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -542,6 +555,7 @@ jobs:
       - self-hosted
       - linux
       - x64
+      - cluster
     permissions:
       contents: read
       packages: write
