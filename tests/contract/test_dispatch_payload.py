@@ -428,11 +428,7 @@ class TestCardContextKeysAreDeclaredOnScore:
     # never reaches a backend prompt. Declaring the field is necessary but not
     # sufficient -- each also needs a consumer -- so they are tracked here
     # rather than papered over. Shrink this set; never grow it.
-    _KNOWN_DROPPED: ClassVar[set[str]] = {
-        "max_tool_calls",     # persona-slice scope tier cap
-        "scope_addon",        # persona-slice prompt addon
-        "scope_focus",        # persona-slice focus
-    }
+    _KNOWN_DROPPED: ClassVar[set[str]] = set()
 
     @staticmethod
     def _injected_keys() -> set[str]:
@@ -545,6 +541,44 @@ class TestPriorClarificationsContract:
             for c in intake.clarifications
         ), f"prior Q&A missing from intake: {intake.clarifications}"
         assert intake.answered_rounds == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", ["claude_code", "codex", "hermes", "opencode", "opencode_compat", "pi", "junie", "openclaw"])
+async def test_scope_context_reaches_every_backend_prompt(backend: str) -> None:
+    from importlib import import_module
+
+    from performer.models import Score
+
+    transport = _CaptureTransport()
+    payload = {"id": "X", "title": "Scoped review", "repo_url": "https://github.com/o/r", "branch": "review",
+               "role": "reviewing", "scope_focus": "authentication boundary", "scope_addon": "skim the changed validation",
+               "persona_instructions": "Original persona"}
+    await AgentService(transport).dispatch_card(payload)
+    score = Score.model_validate(transport.captured_payload)
+    build = import_module(f"performer.backends.{backend}")._build_task_prompt
+    args = ([],) if backend == "hermes" else ()
+    prompt = build(score, *args)
+    assert "authentication boundary" in prompt and "skim the changed validation" in prompt
+    assert score.persona_instructions == "Original persona"
+    closer = score.model_copy(update={"role": "closer", "scope_addon": ""})
+    prompt = build(closer, *args)
+    assert "authentication boundary" in prompt
+    assert "scope_addon" not in prompt and "max_tool_calls" not in prompt
+    absent = Score.model_validate({k: v for k, v in payload.items() if k not in {"scope_focus", "scope_addon"}})
+    assert "Persona scope" not in build(absent, *args)
+
+
+@pytest.mark.parametrize("backend", ["codex", "hermes", "opencode", "opencode_compat", "pi", "junie", "openclaw"])
+def test_unsupported_tool_caps_are_explicit(backend: str) -> None:
+    from importlib import import_module
+
+    from performer.models import Score
+
+    score = Score(title="Review", repo_url="https://github.com/o/r", branch="review", max_tool_calls=2)
+    build = import_module(f"performer.backends.{backend}")._build_task_prompt
+    with pytest.raises(ValueError, match="max_tool_calls is unsupported"):
+        build(score, *([],) if backend == "hermes" else ())
 
 
 @pytest.mark.asyncio
