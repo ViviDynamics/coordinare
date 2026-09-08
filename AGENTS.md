@@ -12,7 +12,7 @@ every task. It is a thin façade over `bin/` and `.venv` (nothing is reimplement
 ```sh
 make help          # list all targets, grouped (dev / test / build / run / release / clean)
 make test          # unit tests (env-unset applied automatically)
-make test-all      # the WHOLE tests/ tree (unit + contract) — run before pushing
+make test-all      # the WHOLE tests/ tree (default markers apply) — run before pushing
 make lint          # ruff check src/ tests/   (make fmt = auto-fix)
 make ci            # full CI parity — exactly what `bin/build --all` runs
 make run           # start the daemon (sources .env first, or fails loudly)

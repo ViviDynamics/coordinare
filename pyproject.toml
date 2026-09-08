@@ -160,7 +160,10 @@ branch = true
 # and test_bootstrap.py.
 omit = ["src/coordinare/__main__.py"]
 
+# Keep pytest-cov exit status aligned with its two-decimal summary: otherwise
+# 89.92% rounds to 90% and exits successfully while printing a failure.
 [tool.coverage.report]
+precision = 2
 show_missing = true
 fail_under = 90
 exclude_lines = [

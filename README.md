@@ -205,7 +205,7 @@ See `config.example.yaml` for the full, commented notification routing reference
 ### Run tests
 
 ```bash
-bin/build              # Lint + unit tests + coverage + performer tests
+bin/build              # Install dev dependencies; lint, coordinare + performer tests, coverage
 bin/build --e2e        # Include Playwright browser tests
 bin/build --all        # Everything including Docker image builds
 ```
