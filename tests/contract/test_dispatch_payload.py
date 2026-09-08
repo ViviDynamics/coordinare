@@ -430,7 +430,6 @@ class TestCardContextKeysAreDeclaredOnScore:
     # rather than papered over. Shrink this set; never grow it.
     _KNOWN_DROPPED: ClassVar[set[str]] = {
         "max_tool_calls",     # persona-slice scope tier cap
-        "repair_mandate",     # 090-L3 baseline-repair mandate
         "scanner_findings",   # 083 security advisory ceiling
         "scope_addon",        # persona-slice prompt addon
         "scope_focus",        # persona-slice focus
@@ -547,3 +546,37 @@ class TestPriorClarificationsContract:
             for c in intake.clarifications
         ), f"prior Q&A missing from intake: {intake.clarifications}"
         assert intake.answered_rounds == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", ["claude_code", "codex", "hermes", "opencode", "opencode_compat", "pi", "junie"])
+async def test_repair_mandate_reaches_backend_prompt(backend: str) -> None:
+    from importlib import import_module
+
+    from performer.models import Score
+
+    transport = _CaptureTransport()
+    service = AgentService(transport)
+    payload = {
+        "title": "Repair CI", "id": "X", "role": "implementing",
+        "repo_url": "https://github.com/org/repo", "branch": "repair",
+        "repair_mandate": {
+            "type": "baseline_repair", "attempt": 1, "max_attempts": 2,
+            "inherited_checks": [{"name": "Inherited lint", "normalized_reason": "Baseline import error"}],
+            "instruction": "Standing rule duplicate",
+        },
+    }
+    await service.dispatch_card(payload)
+    score = Score.model_validate(transport.captured_payload)
+    build = import_module(f"performer.backends.{backend}")._build_task_prompt
+    args = ([],) if backend == "hermes" else ()
+    prompt = build(score, *args)
+    assert "Bounded baseline repair" in prompt
+    assert "Inherited lint: Baseline import error" in prompt
+    assert "Attempt 1 of 2" in prompt
+    assert "Standing rule duplicate" not in prompt
+    normal = Score.model_validate({k: v for k, v in payload.items() if k != "repair_mandate"})
+    empty = normal.model_copy(update={"repair_mandate": None})
+    assert build(normal, *args) == build(empty, *args)
+    assert "Bounded baseline repair" not in build(normal, *args)
+    assert "Bounded baseline repair" not in build(score.model_copy(update={"role": "reviewing"}), *args)

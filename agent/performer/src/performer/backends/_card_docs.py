@@ -213,3 +213,20 @@ def _documentation_brief_lines(brief: dict) -> list[str]:
     if modules:
         lines += ["", "Modules involved: " + ", ".join(f"`{x.get('path', '')}`" for x in modules)]
     return lines
+
+
+def repair_mandate_prompt_section(score: Score) -> list[str]:
+    """Carry coordinare's bounded repair targeting into every implementer harness."""
+    mandate = getattr(score, "repair_mandate", None)
+    if getattr(score, "role", "") != "implementing" or not mandate:
+        return []
+    return [
+        "", "## Bounded baseline repair", "",
+        "Repair the shared baseline cause of the inherited checks below.",
+        f"Attempt {mandate.get('attempt')} of {mandate.get('max_attempts')}.",
+        "Inherited checks:",
+        *(f"- {check.get('name', '')}: {check.get('normalized_reason', '')}"
+          for check in mandate.get("inherited_checks", [])),
+        # The standing persona already carries the test-integrity instruction.
+        "",
+    ]
