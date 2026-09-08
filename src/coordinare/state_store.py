@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-CURRENT_SCHEMA_VERSION: int = 19  # 169: + PersistedSession.review_findings; 166: + assessment; 165: + blueprint, .documenting_side
+CURRENT_SCHEMA_VERSION: int = 20  # 173: + advocate/curator intake gate fields on EnvCacheStateSnapshot; 169: + PersistedSession.review_findings; 166: + assessment; 165: + blueprint, .documenting_side
 
 # Lowest schema_version we still know how to read.  v1 snapshots are upgraded
 # in-memory at load time (065 Fix 7b: active_sessions added in v2; v1 snapshots
@@ -600,6 +600,20 @@ class EnvCacheStateSnapshot(BaseModel):
     last_wiki_init_at: datetime | None = None
     last_wiki_init_succeeded: bool | None = None
     last_wiki_init_error: str | None = None
+    # 173 (schema v20): the two card-less intake roles.  Old snapshots load with
+    # these defaults (no migration).  ``*_in_flight`` is transient (not here).
+    advocate_attempts: int = 0
+    advocate_exhausted: bool = False
+    last_advocate_run_at: datetime | None = None
+    last_advocate_succeeded: bool | None = None
+    last_advocate_error: str | None = None
+    last_advocate_issues_seen: int = 0
+    curator_attempts: int = 0
+    curator_exhausted: bool = False
+    last_curator_run_at: datetime | None = None
+    last_curator_succeeded: bool | None = None
+    last_curator_error: str | None = None
+    last_curator_issues_seen: int = 0
 
 
 class WorkflowSnapshot(BaseModel):

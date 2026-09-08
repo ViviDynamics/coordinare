@@ -7,8 +7,12 @@ import pytest
 
 
 @pytest.mark.asyncio
-async def test_advocate_labeled_todo_items_not_dispatched() -> None:
-    """Issues with advocate-handled label in TODO are skipped — not dispatched."""
+async def test_advocate_escalated_todo_items_not_dispatched() -> None:
+    """173 (FR-022): an ESCALATED issue is skipped, because a human owns it.
+
+    This used to pin the handled label too. Spec 173 narrowed the filter
+    deliberately: an issue the advocate merely answered was excluded forever,
+    so an acknowledged feature request could never become work."""
     from coordinare.graph.nodes.check_board import check_board
 
     github = AsyncMock()
@@ -17,14 +21,13 @@ async def test_advocate_labeled_todo_items_not_dispatched() -> None:
         "titles": {"item-1": "A question about billing"},
         "descriptions": {"item-1": "I have a billing question."},
         "issue_numbers": {"item-1": 1},
-        "item_labels": {"item-1": ["advocate-handled"]},
+        "item_labels": {"item-1": ["needs-human"]},
     }
 
     state = {
         "github_service": github,
         "advocate_handled_label": "advocate-handled",
         "advocate_escalation_label": "needs-human",
-        "advocate_history": set(),
     }
     result = await check_board(state)
 
@@ -49,7 +52,6 @@ async def test_escalation_labeled_todo_items_not_dispatched() -> None:
         "github_service": github,
         "advocate_handled_label": "advocate-handled",
         "advocate_escalation_label": "needs-human",
-        "advocate_history": set(),
     }
     result = await check_board(state)
 
@@ -74,7 +76,6 @@ async def test_unlabeled_todo_items_dispatched() -> None:
         "github_service": github,
         "advocate_handled_label": "advocate-handled",
         "advocate_escalation_label": "needs-human",
-        "advocate_history": set(),
     }
     result = await check_board(state)
 
@@ -99,7 +100,6 @@ async def test_no_advocate_labels_configured_does_not_filter() -> None:
         "github_service": github,
         "advocate_handled_label": "",  # not configured
         "advocate_escalation_label": "",
-        "advocate_history": set(),
     }
     result = await check_board(state)
 

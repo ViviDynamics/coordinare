@@ -82,6 +82,27 @@ class EnvCacheState(BaseModel):
     last_wiki_init_succeeded: bool | None = None
     last_wiki_init_error: str | None = None
 
+    # 173: the two card-less intake roles (advocate, curator).  Same shape as
+    # the wiki-init gate above, one block per role.  ``*_in_flight`` is
+    # transient and absent from the snapshot for the same reason
+    # ``bootstrap_in_flight`` is: a crash mid-run must not leave a marker on
+    # disk that blocks the role forever.
+    advocate_in_flight: bool = False
+    advocate_attempts: int = 0
+    advocate_exhausted: bool = False
+    last_advocate_run_at: datetime | None = None
+    last_advocate_succeeded: bool | None = None
+    last_advocate_error: str | None = None
+    last_advocate_issues_seen: int = 0
+
+    curator_in_flight: bool = False
+    curator_attempts: int = 0
+    curator_exhausted: bool = False
+    last_curator_run_at: datetime | None = None
+    last_curator_succeeded: bool | None = None
+    last_curator_error: str | None = None
+    last_curator_issues_seen: int = 0
+
 
 class BootstrapJobPayload(BaseModel):
     """Dispatch payload for an env_bootstrap performer job."""

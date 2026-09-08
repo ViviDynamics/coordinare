@@ -647,7 +647,7 @@ def test_legacy_personas_list_returns_all_roles(temp_config_path):
     assert resp.status_code == 200
     body = resp.json()
     assert {p["role"] for p in body} == {
-        "advocate", "architect", "assessor", "closer", "implementer",
+        "advocate", "architect", "assessor", "closer", "curator", "implementer",
         "qa", "reviewer", "security", "tech_writer",
     }
     for p in body:

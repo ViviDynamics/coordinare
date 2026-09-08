@@ -1172,17 +1172,17 @@ def _make_personas_app(tmp_path, config_path=None):
     return TestClient(app, base_url="http://127.0.0.1:8090")
 
 
-def test_get_personas_returns_list_of_nine_roles(tmp_path) -> None:
-    """GET /api/personas returns 9 roles (042: added closer)."""
+def test_get_personas_returns_list_of_ten_roles(tmp_path) -> None:
+    """GET /api/personas returns 10 roles (173: added curator; 042: closer)."""
     client = _make_personas_app(tmp_path)
     res = client.get("/api/personas")
     assert res.status_code == 200
     data = res.json()
     assert isinstance(data, list)
-    assert len(data) == 9
+    assert len(data) == 10
     roles = {p["role"] for p in data}
     assert roles == {
-        "advocate", "assessor", "architect", "implementer",
+        "advocate", "curator", "assessor", "architect", "implementer",
         "reviewer", "security", "qa", "tech_writer", "closer",
     }
 

@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CurationRecord",
+  "description": "The curator run's report, carried under the report key 'curation'.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdict", "candidates_seen", "outcomes", "rejected_judgements", "model_calls", "write_free_check"],
+  "properties": {
+    "verdict": {"enum": ["curation_complete", "env_blocked"]},
+    "candidates_seen": {"type": "integer", "minimum": 0},
+    "outcomes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["issue_id", "action", "reason"],
+        "properties": {
+          "issue_id": {"type": "string", "minLength": 1},
+          "action": {"enum": ["added", "skipped", "rejected"]},
+          "reason": {"type": "string"},
+          "board_item_id": {"type": ["string", "null"]},
+          "column": {"type": ["string", "null"]}
+        }
+      }
+    },
+    "rejected_judgements": {
+      "description": "Judgements the gate refused, with why. A reason quoting text absent from the issue lands here.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["issue_id", "reason"],
+        "properties": {
+          "issue_id": {"type": "string", "minLength": 1},
+          "reason": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "model_calls": {"type": "integer", "minimum": 0},
+    "write_free_check": {"type": "string"}
+  }
+}

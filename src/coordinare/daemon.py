@@ -529,9 +529,6 @@ _GLOBAL_STATE_KEYS: tuple[str, ...] = (
     "last_poll_at",
     "github_retry_queue",
     "github_retry_after",
-    # advocate_history is union-merged across all session results below so
-    # no issue processed by any concurrent tick is re-scanned next cycle.
-    "advocate_history",
     # phase is NOT included here; it is derived explicitly from active_sessions
     # after the merge loop to avoid misreporting the daemon as idle when only
     # the first completed session had phase="idle" while others are still active.
@@ -804,6 +801,8 @@ class CoordinareDaemon:
         # holds other dispatch. Poll-task refs kept to prevent GC.
         self._wiki_init_requests: set[str] = set()
         self._wiki_init_poll_tasks: set[asyncio.Task[None]] = set()
+        # 173: poll tasks for the two card-less intake runs.
+        self._intake_poll_tasks: set[asyncio.Task[None]] = set()
         # 165: completion polls for documenter side runs (out-of-lifecycle).
         self._documenting_side_tasks: set[asyncio.Task[Any]] = set()
         from coordinare.services.wiki_init import WikiInitService
@@ -1537,21 +1536,12 @@ class CoordinareDaemon:
                     _sessions_after[_active_card_id] = state_to_session(self._state)
             return
 
-        # Pre-fanout: run advocate_scan exactly once so N concurrent sessions don't
-        # each call scan_and_respond independently (duplicate comments/labels/load).
-        # The flag signals per-session advocate_scan invocations to be no-ops.
-        if self._state.get("advocate_service") is not None:
-            from coordinare.graph.nodes.advocate import advocate_scan
-
-            self._state = await advocate_scan(self._state)  # type: ignore[assignment]
-        self._state["_advocate_scan_done"] = True  # type: ignore[typeddict-unknown-key]
-
         # Pre-fanout: give every session ONE shared marker map per per-cycle key.
         # `dict(self._state)` is a shallow copy, so seeding here means every session
         # mutates the same dict instead of each setdefault-ing a private one (#247).
-        # Placed AFTER advocate_scan on purpose: that call REASSIGNS self._state, so
-        # seeding earlier would risk the replacement dropping the seeded keys. This is
-        # still before the fanout, which is all the fix requires.
+        # 173: this used to sit after the advocate scan, which reassigned
+        # self._state; that scan is gone, so the only requirement left is that
+        # the seeding happens before the fanout.
         seed_shared_cycle_markers(self._state)  # type: ignore[arg-type]
 
         # Pre-flight: poll board once so all concurrent sessions share the cache
@@ -1717,7 +1707,6 @@ class CoordinareDaemon:
         # go unfilled until at least one existing session becomes eligible.
         if not any(e.eligible for e in eligibilities.values()):
             self._state = await self._graph.ainvoke(self._state)  # type: ignore[assignment]
-            self._state.pop("_advocate_scan_done", None)  # type: ignore[misc]
             # 069: mirror flat-state mutations back onto active_sessions[active_card_id]
             # so the next cycle's _derive_global_phase / slot_manager.sync_from_sessions
             # see the same view as the per-session fanout writeback at line 911.  Without
@@ -1887,7 +1876,6 @@ class CoordinareDaemon:
         cleared_ops: set[str] = set()
         first_global_merged = False
         merged_retry_queue: list[dict] | None = None
-        merged_advocate_history: set[str] | None = None
         cross_mutations: dict[str, dict] = {}
         for result in results:
             if not result.ok or result.skipped or not result.global_updates:
@@ -1899,16 +1887,9 @@ class CoordinareDaemon:
                         "_cross_session_mutations",
                         "github_retry_queue",
                         "github_retry_after",
-                        "advocate_history",
                     ):
                         self._state[k] = v  # type: ignore[literal-required]
                 first_global_merged = True
-            ah = result.global_updates.get("advocate_history")
-            if isinstance(ah, set):
-                if merged_advocate_history is None:
-                    merged_advocate_history = set(ah)
-                else:
-                    merged_advocate_history |= ah
             rq = result.global_updates.get("github_retry_queue")
             if isinstance(rq, list):
                 session_ops = {
@@ -1974,8 +1955,6 @@ class CoordinareDaemon:
                 if isinstance(e, dict) and isinstance(e.get("retry_at"), datetime)
             ]
             self._state["github_retry_after"] = min(retry_ats) if retry_ats else None  # type: ignore[literal-required]
-        if merged_advocate_history is not None:
-            self._state["advocate_history"] = merged_advocate_history  # type: ignore[literal-required]
 
         # Apply cross-session mutations as a baseline before direct results so
         # each session's own tick result takes precedence over mutations from a
@@ -2006,9 +1985,6 @@ class CoordinareDaemon:
         for card_id in completed_ids:
             del active_sessions[card_id]
             logger.info("session_completed", card_id=card_id)
-
-        # Clear the per-cycle advocate sentinel so the next cycle runs a fresh scan.
-        self._state.pop("_advocate_scan_done", None)  # type: ignore[misc]
 
         self._state["active_sessions"] = active_sessions
         # Derive global phase from the highest-priority session phase so the
@@ -2794,6 +2770,138 @@ class CoordinareDaemon:
         workspace_info = WorkspaceInfo(path=None, branch=branch, repo_url=repo_url, github_token=token)
         return ctx, workspace_info
 
+    async def _maybe_dispatch_intake(self, role: str, symphony_name: str, github: Any) -> None:
+        """Start one card-less intake run when the gate allows it (spec 173).
+
+        Coordinare's whole job for these two roles: decide, dispatch, record. It
+        classifies nothing and posts nothing itself.
+        """
+        from coordinare.services.intake_dispatch import (
+            build_card_context,
+            build_workflow_env,
+            register_failure,
+            should_run,
+        )
+        from coordinare.services.persona_service import get_effective_instructions
+        from coordinare.workspace import WorkspaceInfo
+
+        cfg = self._state.get("config")
+        if cfg is None:
+            return
+        role_cfg = getattr(cfg, role, None)
+        if role_cfg is None or not getattr(role_cfg, "enabled", False):
+            return
+        ec = (self._state.get("env_cache") or {}).get(symphony_name)
+        if ec is None:
+            return
+        if not should_run(
+            ec, role,
+            enabled=True,
+            interval_seconds=int(getattr(role_cfg, "scan_interval_seconds", 900)),
+        ):
+            return
+
+        svc = (self._state.get("performer_services") or {}).get("assessing")
+        if svc is None:
+            logger.warning("intake.no_performer_service", role=role, symphony=symphony_name)
+            return
+
+        org = str(getattr(cfg, "github_org", "") or "")
+        repo = str(getattr(role_cfg, "github_repo", "") or "")
+        if not (org and repo):
+            logger.warning("intake.repo_unknown", role=role, symphony=symphony_name)
+            return
+
+        token = ""
+        sym_wm = (self._state.get("symphony_workspace_managers") or {}).get(symphony_name)
+        if sym_wm is not None and hasattr(sym_wm, "get_fresh_github_token"):
+            try:
+                token = await sym_wm.get_fresh_github_token() or ""
+            except Exception as exc:
+                logger.warning("intake.token_fetch_failed", role=role, error=str(exc))
+        if not token:
+            import os
+
+            token = os.environ.get("GITHUB_TOKEN", "")
+        if not token:
+            logger.warning("intake.no_github_token", role=role, symphony=symphony_name)
+            return
+
+        try:
+            persona = get_effective_instructions(role, cfg.personas)
+        except Exception:
+            persona = ""
+        backend = str(getattr(role_cfg, "backend", "") or "hermes")
+        try:
+            model_block = cfg.resolve_performer_dispatch_model(role)
+        except Exception:
+            model_block = {}
+
+        card_context = build_card_context(
+            role,  # type: ignore[arg-type]
+            symphony_name=symphony_name,
+            org=org,
+            repo=repo,
+            persona=persona,
+            backend=backend,
+            model_block=model_block,
+            project_id=str(getattr(github, "project_id", "") or ""),
+            workflow_env=build_workflow_env(role, role_cfg),  # type: ignore[arg-type]
+        )
+        workspace_info = WorkspaceInfo(
+            path=None,
+            branch=card_context["branch"],
+            repo_url=card_context["repo_url"],
+            github_token=token,
+        )
+
+        # The marker goes up BEFORE the dispatch and comes down on a synchronous
+        # failure. Setting it afterwards clobbers the reset that failure performs
+        # and wedges the role until the process restarts.
+        setattr(ec, f"{role}_in_flight", True)
+        try:
+            result = await svc.dispatch_card(card_context, workspace_info=workspace_info)
+        except Exception as exc:
+            setattr(ec, f"{role}_in_flight", False)
+            register_failure(ec, role, f"dispatch failed: {exc}", max_attempts=3)  # type: ignore[arg-type]
+            logger.warning("intake.dispatch_failed", role=role, error=str(exc))
+            return
+
+        session_id = (result or {}).get("session_id") or (result or {}).get("job_id")
+        if not session_id:
+            setattr(ec, f"{role}_in_flight", False)
+            register_failure(ec, role, "dispatch returned no session id", max_attempts=3)  # type: ignore[arg-type]
+            return
+
+        logger.info("intake.dispatched", role=role, symphony=symphony_name, session_id=session_id)
+        task = asyncio.create_task(
+            self._poll_intake_completion(role, symphony_name, svc, session_id)
+        )
+        self._intake_poll_tasks.add(task)
+        task.add_done_callback(self._intake_poll_tasks.discard)
+
+    async def _poll_intake_completion(
+        self, role: str, symphony_name: str, svc: Any, session_id: str
+    ) -> None:
+        """Poll one intake run to terminal and record what it did (spec 173)."""
+        from coordinare.services.intake_dispatch import TERMINAL_BY_ROLE, handle_run_result
+
+        ec = (self._state.get("env_cache") or {}).get(symphony_name)
+        if ec is None:
+            return
+        terminal = {TERMINAL_BY_ROLE[role], "env_blocked", "error", "failed", "blocked", "cancelled"}
+        status: dict = {}
+        for _ in range(60):  # 10 min at 10s; a read-only run has no reason to exceed it
+            await asyncio.sleep(10)
+            try:
+                status = await svc.check_status(session_id)
+            except Exception as exc:
+                logger.debug("intake.poll_error", role=role, error=str(exc))
+                continue
+            if ((status or {}).get("status") or (status or {}).get("state")) in terminal:
+                break
+        handle_run_result(ec, role, status, self._state)  # type: ignore[arg-type]
+
     async def _execute_wiki_init_dispatch(self, symphony_name: str, github: Any) -> None:
         """124(US2): dispatch a CARDLESS documenter run in init mode to seed the
         symphony's ``docs/wiki``, then poll → auto-merge the seed PR via
@@ -3370,6 +3478,15 @@ class CoordinareDaemon:
                                 llm_chat=self._get_manifest_llm_chat(),
                                 clean_verify_fn=_clean_verify_fn,
                             )
+
+                        # 173: the two card-less intake runs (advocate, curator).
+                        # Gated, rate limited and dispatched straight from here:
+                        # neither owns a card, so neither can go through the
+                        # graph node, which refuses a dispatch without one.
+                        for _irole in ("advocate", "curator"):
+                            _igh = _sym_gh_svcs.get(_ec_sym_name)
+                            if _igh is not None:
+                                await self._maybe_dispatch_intake(_irole, _ec_sym_name, _igh)
 
                         # 124(US2): drain manual wiki-init requests (dashboard
                         # "Init wiki" button). Operator-initiated, so it dispatches

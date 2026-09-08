@@ -51,7 +51,6 @@ from coordinare.metrics import METRICS, _coordinare_version
 from coordinare.models.notification import EventType, NotificationEvent, NotificationSeverity
 from coordinare.observability import HEALTH, bind_symphony, clear_symphony
 from coordinare.resilience import CircuitBreaker, ResilientAgentService, RetryConfig
-from coordinare.services.advocate import AdvocateService
 from coordinare.services.agent_service import AgentService
 from coordinare.services.board_provider import GitHubProjectsBoardProvider
 from coordinare.services.github import GitHubService
@@ -1002,9 +1001,13 @@ async def _bootstrap_services(
         "slot_manager": slot_manager,
     }
 
+    # 173: the advocate runs in a performer now, so coordinare no longer builds
+    # a service to do its work. It still ensures the two labels EXIST, because
+    # the run applies them by name and a missing label would make every reply
+    # look unsent, and it still publishes them for the card-selection filter.
     if config.advocate.enabled:
         try:
-            label_ids = await github.ensure_labels_exist(
+            await github.ensure_labels_exist(
                 config.github_org,
                 config.advocate.github_repo,
                 config.advocate.handled_label,
@@ -1012,28 +1015,8 @@ async def _bootstrap_services(
             )
         except Exception as exc:
             logger.warning("advocate_label_setup_failed", error=str(exc))
-            label_ids = {}
-
-        from coordinare.services.scoring import BackendScorer
-
-        # Scoring uses the configured ConductingBackend so the LLM choice
-        # follows config.conducting.backend rather than being hardcoded.
-        # Adding additional ScoringProviderProtocol implementations (e.g. a
-        # second provider for cross-checking) only requires registering them
-        # here; the advocate_scan node itself requires no changes (FR-005).
-        advocate_service = AdvocateService(
-            github=github,
-            notification_service=notification_service,
-            config=config.advocate,
-            github_org=config.github_org,
-            label_ids=label_ids,
-            scorers=[BackendScorer(conducting_backend, provider_name=config.conducting.backend)],
-        )
-        service_state["advocate_service"] = advocate_service
         service_state["advocate_handled_label"] = config.advocate.handled_label
         service_state["advocate_escalation_label"] = config.advocate.escalation_label
-    else:
-        service_state["advocate_service"] = None
 
     return service_state
 

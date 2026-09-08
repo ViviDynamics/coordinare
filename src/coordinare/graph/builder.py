@@ -4,7 +4,6 @@ from typing import Any, cast
 
 from langgraph.graph import END, START, StateGraph
 
-from coordinare.graph.nodes.advocate import advocate_scan
 from coordinare.graph.nodes.assess_card import assess_card
 from coordinare.graph.nodes.check_board import check_board
 from coordinare.graph.nodes.classify_human_feedback import classify_human_feedback
@@ -34,7 +33,6 @@ async def _placeholder_node(state: CoordinareState) -> CoordinareState:
 
 
 _DEFAULT_NODES: dict[str, Any] = {
-    "advocate_scan": advocate_scan,
     "route_issue_comments": route_issue_comments,
     "check_board": check_board,
     "assess_card": assess_card,
@@ -68,7 +66,6 @@ class CoordinareGraphBuilder:
     def build(self) -> Any:
         graph = StateGraph(CoordinareState)
 
-        graph.add_node("advocate_scan", cast("Any", self._node("advocate_scan")))
         graph.add_node("route_issue_comments", cast("Any", self._node("route_issue_comments")))
         graph.add_node("check_board", cast("Any", self._node("check_board")))
         graph.add_node("assess_card", cast("Any", self._node("assess_card")))
@@ -83,8 +80,9 @@ class CoordinareGraphBuilder:
         graph.add_node("handle_system_error", cast("Any", self._node("handle_system_error")))
         graph.add_node("notify", cast("Any", self._node("notify")))
 
-        graph.add_edge(START, "advocate_scan")
-        graph.add_edge("advocate_scan", "route_issue_comments")
+        # 173: the advocate scan was a node here; it runs in a performer now,
+        # dispatched straight from the daemon, so the graph starts at the router.
+        graph.add_edge(START, "route_issue_comments")
         graph.add_edge("route_issue_comments", "check_board")
         # 074: classify_scope is a no-op when persona_scope.enabled is False
         # (default) — it sits between board pickup and the dispatcher so the

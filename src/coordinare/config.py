@@ -206,9 +206,10 @@ class PersonaConfig(BaseModel):
 
 
 class PersonasConfig(BaseModel):
-    """Container for all nine role personas."""
+    """Container for all ten role personas."""
 
     advocate: PersonaConfig = Field(default_factory=PersonaConfig)
+    curator: PersonaConfig = Field(default_factory=PersonaConfig)
     assessor: PersonaConfig = Field(default_factory=PersonaConfig)
     architect: PersonaConfig = Field(default_factory=PersonaConfig)
     implementer: PersonaConfig = Field(default_factory=PersonaConfig)
@@ -481,7 +482,7 @@ class Mode(BaseModel):
 #: coordinare cannot import the performer package in production — the same reason
 #: ``cdn_upload`` exists on both sides.  ``test_config_workflow_field.py`` asserts
 #: the two stay in step wherever both packages are installed.
-KNOWN_WORKFLOWS: frozenset[str] = frozenset({"noop", "qa", "architect", "assessor", "reviewer", "implementer", "security", "documenter", "closer"})
+KNOWN_WORKFLOWS: frozenset[str] = frozenset({"noop", "qa", "architect", "assessor", "reviewer", "implementer", "security", "documenter", "closer", "advocate", "curator"})
 
 
 class PerformerRoleConfig(BaseModel):
@@ -681,7 +682,6 @@ class AdvocateConfig(BaseModel):
     # repository's default branch). Override if docs live on a dedicated branch
     # (e.g. "docs", "stable").
     doc_branch: str = "HEAD"
-    scoring_models: list[str] = Field(default_factory=lambda: ["claude"])
     handled_label: str = "advocate-handled"
     escalation_label: str = "needs-human"
     holding_comment_template: str = (
@@ -702,11 +702,60 @@ class AdvocateConfig(BaseModel):
     )
     support_channel_url: str = ""
     github_repo: str = ""
+    # 173: a floor between runs.  The daemon poll is ~30s and a webhook can
+    # shorten a cycle to nearly nothing, so "once per cycle" is not a rate
+    # limit.  This is the cooldown the intake gate measures against
+    # ``last_advocate_run_at``.
+    scan_interval_seconds: int = Field(default=900, ge=60, le=86400)
 
     @model_validator(mode="after")
     def _validate_github_repo_when_enabled(self) -> AdvocateConfig:
         if self.enabled and not self.github_repo.strip():
             msg = "advocate.github_repo must be non-empty when advocate.enabled is True"
+            raise ValueError(msg)
+        return self
+
+
+# ---------------------------------------------------------------------------
+# 173 - Board-curating intake config model
+# ---------------------------------------------------------------------------
+
+#: Columns coordinare dispatches work from.  The curator proposes; a human
+#: promotes.  Targeting one of these would put work straight into the pipeline
+#: on a model's judgement, which is the one thing the role must not do.
+_DISPATCH_COLUMNS = frozenset({"TODO", "IN_PROGRESS", "IN_REVIEW"})
+
+_DEFAULT_SELECTION_CRITERIA = [
+    "Clear, testable acceptance criteria",
+    "Well-defined scope (single concern, not a meta-epic)",
+    "No unresolved blockers, open questions, or external dependencies",
+]
+
+
+class CuratorConfig(BaseModel):
+    """The board-intake role: propose ready work, never promote it."""
+
+    enabled: bool = False
+    github_repo: str = ""
+    label: str = "curator-proposed"
+    backlog_column: str = "Backlog"
+    criteria: list[str] = Field(
+        default_factory=lambda: list(_DEFAULT_SELECTION_CRITERIA)
+    )
+    scan_interval_seconds: int = Field(default=3600, ge=60, le=86400)
+    max_per_run: int = Field(default=5, ge=1, le=50)
+
+    @model_validator(mode="after")
+    def _validate_when_enabled(self) -> CuratorConfig:
+        if self.enabled and not self.github_repo.strip():
+            msg = "curator.github_repo must be non-empty when curator.enabled is True"
+            raise ValueError(msg)
+        if self.backlog_column.strip().upper().replace(" ", "_") in _DISPATCH_COLUMNS:
+            msg = (
+                f"curator.backlog_column must not be a column coordinare "
+                f"dispatches from (got {self.backlog_column!r}); the curator "
+                f"proposes work and a human promotes it"
+            )
             raise ValueError(msg)
         return self
 
@@ -946,6 +995,7 @@ class ProjectConfiguration(BaseSettings):
     resilience: ResilienceConfig = Field(default_factory=ResilienceConfig)
     notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
     advocate: AdvocateConfig = Field(default_factory=AdvocateConfig)
+    curator: CuratorConfig = Field(default_factory=CuratorConfig)
     personas: PersonasConfig = Field(default_factory=PersonasConfig)
     performers: PerformersConfig = Field(default_factory=PerformersConfig)
     # 080 — dual-model orchestration catalogs (reference-by-name; see Endpoint/ModelEndpoint/Mode)
@@ -1128,7 +1178,7 @@ class ProjectConfiguration(BaseSettings):
         # contents so a stray mode reference is caught even with empty catalogs.
         mode_names = {m.name for m in self.modes}
         for role_name in (
-            "default", "advocate", "assessor", "architect", "implementer",
+            "default", "advocate", "curator", "assessor", "architect", "implementer",
             "reviewer", "security", "qa", "tech_writer", "closer", "env_bootstrap",
         ):
             role = getattr(self.performers, role_name, None)

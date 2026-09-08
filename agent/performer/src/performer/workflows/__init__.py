@@ -40,6 +40,8 @@ SUPPORTED_WORKFLOWS: dict[str, tuple[str, str]] = {
     "security": ("performer.workflows.security", "SecurityWorkflow"),
     "documenter": ("performer.workflows.documenter", "DocumenterWorkflow"),
     "closer": ("performer.workflows.closer", "CloserWorkflow"),
+    "advocate": ("performer.workflows.advocate", "AdvocateWorkflow"),
+    "curator": ("performer.workflows.curator", "CuratorWorkflow"),
 }
 
 

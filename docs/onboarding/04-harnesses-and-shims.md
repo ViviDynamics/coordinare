@@ -456,3 +456,35 @@ what let a local open model meet the harness's frontier-model expectations.
 
 Next: **[05 — Configuration Compositions](05-configuration.md)**.
 </content>
+
+### Role workflows: advocate and curator (spec 173)
+
+These two are unlike the eight before them. They own no card, they are not part
+of the per-card lifecycle, and coordinare starts them rather than performing
+them. Before spec 173 the advocate ran inside the daemon: coordinare read the
+issues, called a model, and posted the replies itself. That is why it never
+received the bounded steps, budgets and schema guards every other role has.
+
+Both now run as card-less performer runs, dispatched straight from the daemon
+in the shape the wiki-seeding run already used, and both do their own GitHub
+work.
+
+**advocate** answers inbound issues. It reads the configured documentation from
+the working copy, escalates anything matching a sensitive keyword before making
+any model call, classifies the rest in one guarded call, and then posts a reply
+only if every document that reply cites is one the run actually read. An answer
+that cites a file the run never opened is withheld and the issue is escalated
+instead. That check is possible only because the persona travels as instruction
+and the documentation travels as evidence: when they were one blob, an answer
+could "cite" a heading that was an instruction.
+
+**curator** proposes work. It judges each open issue against the configured
+criteria in one guarded call, and a judgement whose stated reason quotes text
+the issue does not contain is rejected. A qualifying issue is added to the
+board's backlog with a label and a comment saying why. It never places a card
+in the column coordinare dispatches from, and it never moves one: a human
+decides what becomes work.
+
+Neither run commits, pushes or opens a pull request, and each carries the
+executed `git status --porcelain` on its record as proof. Both are off by
+default; see the blocks in `config.example.yaml`.

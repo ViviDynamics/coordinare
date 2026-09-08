@@ -43,6 +43,12 @@ PerformerStatusType = Literal[
     "assessment_complete",
     "diagnostic_complete",
     "partial_progress",
+    # 173: the two card-less intake roles.  Both MUST be here: TERMINAL_STATUSES
+    # is derived from this Literal, so a status missing from it never breaks the
+    # job poll loop and the run hangs until coordinare reaps it.  Neither is a
+    # failure -- an advocate that escalated every issue still did its job.
+    "advocate_complete",
+    "curation_complete",
     "healthy",
     "unhealthy",
 ]

@@ -1,80 +1,68 @@
-"""SC-006 performance test — advocate scan processes 20 issues within 10 s."""
+"""Advocate throughput (spec 007 SC-006, rewritten for spec 173).
+
+The original measured ``AdvocateService.scan_and_respond`` over 20 issues. That
+service is gone: the advocate runs in a performer now. The property it guarded
+is still worth guarding, so this measures the equivalent on the new path, with
+every external call mocked to return instantly. It validates the run's own
+overhead, not network latency, and it fails if issue handling ever becomes
+sequential where it used to be bounded.
+"""
 from __future__ import annotations
 
 import time
-from unittest.mock import AsyncMock, MagicMock
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+from performer.workflows.advocate import AdvocateWorkflow
 
-from coordinare.config import AdvocateConfig
-from coordinare.models.advocate import IssueType, ScoringProvider
-from coordinare.services.advocate import AdvocateService
-from coordinare.services.scoring import ScoringResult
+from tests.unit.workflows.advocate._fakes import FakeGitHub, FakeToolkit, issue
 
 
-def _make_issues(n: int) -> list[dict]:
-    return [
-        {
-            "id": f"issue-{i}",
-            "number": i,
-            "title": f"How do I use feature {i}?",
-            "body": "I need help.",
-            "url": f"https://github.com/org/repo/issues/{i}",
-            "labels": {"nodes": []},
-        }
-        for i in range(1, n + 1)
-    ]
+def _issues(n: int) -> list[dict]:
+    return [issue(i, title=f"How do I use feature {i}?", body="I need help.") for i in range(1, n + 1)]
 
 
 @pytest.mark.asyncio
-async def test_advocate_scan_20_issues_within_10_seconds() -> None:
-    """SC-006: processing 20 issues must complete in ≤ 10 s of wall time.
+async def test_an_advocate_run_handles_20_issues_within_10_seconds(tmp_path: Path) -> None:
+    """SC-006 and spec-173 SC-009: 20 issues in one run, well inside the budget."""
+    (tmp_path / "README.md").write_text("Run `make start`.")
+    gh = FakeGitHub(_issues(20))
+    replies = [{"classifications": [
+        {"issue_id": f"I_{i}", "classification": "question", "confidence": 0.9,
+         "reasoning": "covered", "answer": "Based on `README.md`: run make start.",
+         "cited_documents": ["README.md"]}
+        for i in range(1, 21)
+    ]}]
+    tk = FakeToolkit(replies)
+    stand = SimpleNamespace(path=tmp_path, branch="advocate/perf")
 
-    All external I/O (GitHub API, Claude API) is mocked with coroutines that
-    return instantly, so this test validates concurrency overhead only, not
-    network latency. Any regression that introduces blocking calls or
-    sequential issue processing will break this budget.
-    """
-    issues = _make_issues(20)
+    from tests.unit.workflows.advocate._fakes import score
 
-    github = AsyncMock()
-    github.list_open_issues = AsyncMock(return_value=issues)
-    github.get_file_content = AsyncMock(return_value="# README\nDocumentation here.")
-    github.add_labels = AsyncMock()
-    github.add_comment = AsyncMock()
-
-    scorer_result = ScoringResult(
-        provider=ScoringProvider(provider_name="claude", score=0.90, reasoning="clear"),
-        classification=IssueType.question,
-        response_text="Based on `README.md`: the answer is here.",
-        source_documents=["README.md"],
+    started = time.monotonic()
+    result = await AdvocateWorkflow(lister=gh.lister, poster=gh).run(
+        stand, score(workflow_env={"ADVOCATE_MAX_ISSUES_PER_CALL": "20"}), tk
     )
-    mock_scorer = MagicMock()
-    mock_scorer.score = AsyncMock(return_value=scorer_result)
+    elapsed = time.monotonic() - started
 
-    config = AdvocateConfig(
-        enabled=True,
-        github_repo="coordinare",
-        confidence_threshold=0.70,
-        doc_sources=["README.md"],
+    record = result.report["advocate"]
+    assert record["issues_seen"] == 20
+    assert len(record["outcomes"]) == 20
+    assert elapsed <= 10.0, f"20 issues took {elapsed:.2f}s"
+
+
+@pytest.mark.asyncio
+async def test_issues_are_batched_rather_than_one_call_each(tmp_path: Path) -> None:
+    """The bound that makes the budget hold: a repository with many unhandled
+    issues must not cost one model call per issue."""
+    (tmp_path / "README.md").write_text("Run `make start`.")
+    gh = FakeGitHub(_issues(20))
+    tk = FakeToolkit([{"classifications": []}, {"classifications": []}])
+    stand = SimpleNamespace(path=tmp_path, branch="advocate/perf")
+
+    from tests.unit.workflows.advocate._fakes import score
+
+    await AdvocateWorkflow(lister=gh.lister, poster=gh).run(
+        stand, score(workflow_env={"ADVOCATE_MAX_ISSUES_PER_CALL": "10"}), tk
     )
-
-    service = AdvocateService(
-        github=github,
-        notification_service=None,
-        config=config,
-        github_org="org",
-        label_ids={"advocate-handled": "lh", "needs-human": "le"},
-        scorers=[mock_scorer],
-    )
-
-    start = time.monotonic()
-    await service.scan_and_respond(set())
-    elapsed = time.monotonic() - start
-
-    assert elapsed < 10.0, (
-        f"SC-006 violated: advocate scan for 20 issues took {elapsed:.2f}s (budget: 10s)"
-    )
-    # All 20 issues must have been acted on
-    assert github.add_labels.call_count == 20
-    assert github.add_comment.call_count == 20
+    assert tk.metrics.model_calls == 2, "20 issues at 10 per call is 2 calls, not 20"

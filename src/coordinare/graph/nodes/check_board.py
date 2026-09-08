@@ -1411,12 +1411,13 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
             if not todo:
                 return state
     if todo:
-        # Filter out items carrying advocate labels (FR-001a)
+        # 173 (FR-022): exclude only ESCALATED issues. An escalated issue is one
+        # a human now owns, and picking it up would work against them. An issue
+        # the advocate merely ANSWERED used to be excluded too, which meant a
+        # feature request it acknowledged could never become work: permanently
+        # invisible to the board, with nothing saying so.
         advocate_labels = set()
-        handled = state.get("advocate_handled_label", "")
         escalation = state.get("advocate_escalation_label", "")
-        if handled:
-            advocate_labels.add(str(handled))
         if escalation:
             advocate_labels.add(str(escalation))
 

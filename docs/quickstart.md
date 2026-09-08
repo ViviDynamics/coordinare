@@ -125,7 +125,8 @@ provisioning nine before you have seen one card succeed.
 | `qa` | Validates acceptance criteria | No |
 | `tech_writer` | Maintains `docs/wiki/` | No |
 | `closer` | Final pass before human review | No |
-| `advocate` | Scans issues and proposes cards | No |
+| `advocate` | Answers inbound issues from the documentation | No |
+| `curator` | Proposes ready issues to the board backlog | No |
 
 Unconfigured roles are skipped, not failed.
 
