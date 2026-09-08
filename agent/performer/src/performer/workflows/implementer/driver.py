@@ -98,6 +98,7 @@ class RunContext:
     runner_kind: str
     test_command: str
     baseline: Baseline
+    plans: list[MilestonePlan] = field(default_factory=list)
     lane: str = "feature"
     lane_source: str = "unknown"
     issue_number: int = 0
@@ -258,7 +259,8 @@ async def run_turn(
             reverts = [{"path": p, "kind": "reverted_investigation", "reason": "investigation turns are write-free"} for p in sorted(changed)]
             changed = {}
         else:
-            violations = scope_violations(brief.kind, changed, ctx.runner_kind, brief.scope_paths or None, docs_tree=DOCS_TREE, milestone_test_files=milestone_test_files)
+            violations = scope_violations(brief.kind, changed, ctx.runner_kind, brief.scope_paths or None, docs_tree=DOCS_TREE, milestone_test_files=milestone_test_files,
+                                          foreign_scope_paths=[scope for plan in ctx.plans if plan.index != brief.milestone_index for scope in _scope_list(plan)])
             if violations:
                 await git.revert_paths(ctx.workspace, [v["path"] for v in violations])
                 reverts = violations

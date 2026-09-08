@@ -183,11 +183,27 @@ def vacuous_test_check(summary: TestSummary, baseline: Baseline) -> bool:
     return True
 
 
-def scope_violations(kind: str, changed_paths: dict[str, str], runner_kind: str, scope_paths: list[str] | None = None, docs_tree: str = "docs/", milestone_test_files: list[str] | None = None) -> list[dict[str, str]]:
+def foreign_source_path(path: str, own_scopes: list[str], foreign_scopes: list[str]) -> bool:
+    """Only another milestone's exclusive declared source ownership is enforced."""
+    if not own_scopes or any(scope.strip() in {"", ".", "./"} for scope in own_scopes):
+        return False
+
+    def claimed(scopes: list[str]) -> bool:
+        for scope in scopes:
+            scope = scope.strip().removeprefix("./").rstrip("/")
+            if scope and scope != "." and (path == scope or path.startswith(scope + "/")):
+                return True
+        return False
+
+    return not is_test_path(path) and not claimed(own_scopes) and claimed(foreign_scopes)
+
+
+def scope_violations(kind: str, changed_paths: dict[str, str], runner_kind: str, scope_paths: list[str] | None = None, docs_tree: str = "docs/", milestone_test_files: list[str] | None = None, foreign_scope_paths: list[str] | None = None) -> list[dict[str, str]]:
     """Detect out-of-scope edits (FR-008).
 
-    A tests turn may only change test files. Any turn may not change documentation.
-    Tracks which paths were reverted and why.
+    Tests turns may only change test files. Implementation turns may not write
+    tests or source owned exclusively by another milestone. Documentation changes
+    require explicit current-scope ownership. Records each reverted path and cause.
 
     Args:
         kind: Turn kind ("tests", "implement", "repair").
@@ -195,6 +211,8 @@ def scope_violations(kind: str, changed_paths: dict[str, str], runner_kind: str,
         runner_kind: Stack kind.
         scope_paths: Optional scope paths to filter by.
         docs_tree: Documentation tree prefix (default "docs/").
+        milestone_test_files: Tests admitted for the current milestone.
+        foreign_scope_paths: Explicit source ownership of other planned milestones.
 
     Returns:
         List of dicts recording reverted paths and reasons.
@@ -235,6 +253,12 @@ def scope_violations(kind: str, changed_paths: dict[str, str], runner_kind: str,
                     "reason": "implementation turn may only touch this milestone's test files (spec 167 FR-008)"
                 })
                 continue
+        if kind == "implement" and foreign_source_path(path, scope_paths or [], foreign_scope_paths or []):
+            violations.append({
+                "path": path, "kind": "reverted_foreign_source",
+                "reason": "source belongs exclusively to another planned milestone (#279)",
+            })
+            continue
         if kind == "tests":
             if not is_test_path(path):
                 violations.append({

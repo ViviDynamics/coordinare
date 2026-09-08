@@ -588,8 +588,12 @@ async def test_an_implementation_turn_may_not_pre_write_later_milestones_tests(t
     harness = Harness(repo, {"TESTS": _tests_turn, "IMPLEMENT": impl_over_delivering})
     report, _ = await _run(repo, _score(milestones=_milestones(2)), harness, Edges())
     run = report["implementer_run"]
-    assert [r["kind"] for r in run["scope_reverts"]] == ["reverted_foreign_test"]
-    assert [r["path"] for r in run["scope_reverts"]] == ["tests/test_m1.py"]
+    assert sorted((r["kind"], r["path"]) for r in run["scope_reverts"]) == [
+        ("reverted_foreign_source", "src/m1.py"),
+        ("reverted_foreign_test", "tests/test_m1.py"),
+    ]
+    assert run["status"] == "pr_opened", run["reason"]
+    assert run["milestones_completed"] == 2
     assert [b["persona_kind"] for b in harness.briefs][:3] == ["TESTS", "IMPLEMENT", "TESTS"], "milestone two still gets its tests turn"
 
 
@@ -624,14 +628,11 @@ async def test_a_re_dispatch_resumes_instead_of_repeating_the_whole_plan(tmp_pat
     repo, _ = _repo(tmp_path)
     score = _score(milestones=_milestones(2))
 
-    first = Harness(repo, {"TESTS": _tests_turn, "IMPLEMENT": _over_delivering_impl})
-    report_one, _ = await _run(repo, score, first, Edges())
-    run_one = report_one["implementer_run"]
-    assert run_one["status"] == "partial_progress" and "red was not observed" in run_one["reason"]
-    assert run_one["next_focus_milestone"] == "milestone 1"
-    assert _log(repo) == ["feat(#7): milestone 0", "test(#7): failing tests for milestone 0"]
-    assert (repo / "src" / "m1.py").exists(), "the over-delivered source stayed on the branch"
-    assert not (repo / "tests" / "test_m1.py").exists(), "its foreign test was reverted"
+    # Seed the historical branch produced before #279. New runs now prevent
+    # the leak, but deployed branches with old commits must still resume.
+    _card_commit(repo, {"tests/test_m0.py": "EXPECTS src/m0.py\n"}, "test(#7): failing tests for milestone 0")
+    _card_commit(repo, {"src/m0.py": "M0 = True\n", "src/m1.py": "M1 = True\n"}, "feat(#7): milestone 0")
+    assert not (repo / "tests" / "test_m1.py").exists()
 
     second = Harness(repo, {"TESTS": _tests_turn, "IMPLEMENT": _impl_turn})
     edges = Edges()

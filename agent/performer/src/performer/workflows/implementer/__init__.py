@@ -254,7 +254,7 @@ class ImplementerWorkflow:
             timed("baseline", t)
             ctx = RunContext(
                 toolkit=toolkit, stand=stand, score=score, budgets=budgets, runner_kind=runner_kind,
-                test_command=test_command, baseline=baseline, lane=lane, lane_source=lane_source,
+                test_command=test_command, baseline=baseline, plans=plans, lane=lane, lane_source=lane_source,
                 issue_number=int(getattr(score, "issue_number", 0) or 0),
             )
             for key, value in (ctx_overrides or {}).items():
