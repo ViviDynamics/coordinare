@@ -94,6 +94,11 @@ def _model_caller(score: "Score"):
         if token:
             headers["Authorization"] = f"Bearer {token}"
         max_tokens = _effective_max_tokens(max_tokens, getattr(score, "max_tokens", None))
+        from performer.backends._scope import scope_prompt_section
+
+        scope = scope_prompt_section(score, "workflow")
+        if scope:
+            content = [{"type": "text", "text": "\n".join(scope)}, *content]
         body = {
             "model": score.model or "",
             "max_tokens": max_tokens,
@@ -526,6 +531,8 @@ class WorkflowAdapter:
         temperature: float | None = None,
         max_tokens: int | None = None,
     ) -> None:
+        if getattr(score, "max_tool_calls", None) is not None:
+            raise ValueError(f"max_tool_calls is unsupported by the {self.workflow_name} workflow")
         self._event_sink = self._on_event
         toolkit = (
             self._toolkit_factory(self._metrics, self._on_event)

@@ -18,6 +18,9 @@ import json
 import os
 import re
 import signal
+import shlex
+import sys
+import tempfile
 import time
 from collections import deque
 from pathlib import Path
@@ -26,6 +29,7 @@ from typing import IO
 import psutil
 import structlog
 
+from performer.backends._scope import scope_prompt_section
 from performer.backends._card_docs import scanner_findings_prompt_section, repair_mandate_prompt_section, card_docs_prompt_section, qa_findings_prompt_section, brief_prompt_sections
 from performer.backends._env_policy import build_subprocess_env
 from performer.backends.base import BackendStatus
@@ -91,6 +95,8 @@ class ClaudeCodeBackend:
         self._shim: ClaudeCodeShim | None = None
         self._model: str | None = None  # 037: per-role model selection
         self._max_tokens: int | None = None  # 055: output token cap
+        self._tool_budget_dir = None
+        self._tool_budget_settings: str | None = None
         self._persona: str | None = None  # FR-016: routed via --append-system-prompt
         # Accumulates assistant text blocks across the stream; flushed into
         # BackendStatus.output on result.success.  Reset at every _launch so
@@ -160,6 +166,18 @@ class ClaudeCodeBackend:
         max_tokens: int | None = None,
     ) -> None:
         """Build the prompt and launch ``claude --print --output-format stream-json``."""
+        if self._tool_budget_dir is not None:
+            self._tool_budget_dir.cleanup()
+        self._tool_budget_dir = None
+        self._tool_budget_settings = None
+        if score.max_tool_calls is not None:
+            scope_prompt_section(score, "claude_code")  # reject unsupported platforms
+            self._tool_budget_dir = tempfile.TemporaryDirectory(prefix="coordinare-tool-budget-")
+            command = shlex.join([sys.executable, str(Path(__file__).with_name("_tool_budget_hook.py")),
+                                  self._tool_budget_dir.name, str(score.max_tool_calls)])
+            self._tool_budget_settings = json.dumps({"hooks": {"PreToolUse": [{
+                "matcher": "", "hooks": [{"type": "command", "command": command}],
+            }]}})
         self._stand = stand
         self._git_env = stand.git_env
         self._cache_env = stand.cache_env
@@ -179,6 +197,8 @@ class ClaudeCodeBackend:
         await self._launch(prompt)
 
     def get_status(self) -> BackendStatus:
+        if self._tool_budget_dir and (Path(self._tool_budget_dir.name) / "exhausted").exists():
+            return BackendStatus(state="error", error_reason="TOOL_BUDGET_EXHAUSTED: max_tool_calls reached")
         # Liveness fallback: if the subprocess has exited but the reader task
         # never produced a terminal stream-json event (e.g. CLI crashed before
         # emitting result.success, or the reader_task is wedged on a half-open
@@ -292,6 +312,8 @@ class ClaudeCodeBackend:
             "--dangerously-skip-permissions",
             "--permission-mode", "bypassPermissions",
         ]
+        if self._tool_budget_settings is not None:
+            args += ["--settings", self._tool_budget_settings]
         if self._model:
             args += ["--model", self._model]
         # 077: the Claude Code CLI has no `--max-tokens` flag (passing it aborts
@@ -716,6 +738,7 @@ def _build_task_prompt(
     parts += qa_findings_prompt_section(score)
     parts += repair_mandate_prompt_section(score)
     parts += scanner_findings_prompt_section(score)
+    parts += scope_prompt_section(score, "claude_code")
     parts += brief_prompt_sections(score)
     if score.acceptance_criteria:
         parts += ["## Acceptance Criteria", ""]

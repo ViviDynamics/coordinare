@@ -29,6 +29,7 @@ import aiohttp
 import psutil
 import structlog
 
+from performer.backends._scope import scope_prompt_section
 from performer.backends._card_docs import scanner_findings_prompt_section, repair_mandate_prompt_section, card_docs_prompt_section, qa_findings_prompt_section, brief_prompt_sections
 from performer.backends._env_policy import build_subprocess_env
 from performer.backends.base import BackendStatus
@@ -668,6 +669,7 @@ def _build_task_prompt(
     parts += qa_findings_prompt_section(score)
     parts += repair_mandate_prompt_section(score)
     parts += scanner_findings_prompt_section(score)
+    parts += scope_prompt_section(score, "codex")
     parts += brief_prompt_sections(score)
     if score.acceptance_criteria:
         parts += ["## Acceptance Criteria", ""]

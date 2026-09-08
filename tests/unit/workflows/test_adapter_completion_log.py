@@ -91,7 +91,8 @@ def test_step_budget_is_capped_by_the_role_max_tokens():
 
 
 @pytest.mark.asyncio
-async def test_model_call_logs_timing_and_parses_the_response_once(monkeypatch):
+@pytest.mark.parametrize("scope", [False, True])
+async def test_model_call_logs_timing_and_parses_the_response_once(monkeypatch, scope):
     import performer.workflows.adapter as adapter_mod
     from performer.config import get_settings
 
@@ -135,6 +136,8 @@ async def test_model_call_logs_timing_and_parses_the_response_once(monkeypatch):
     class _S:
         model = "m"
         max_tokens = 12288
+        scope_focus = "authentication boundary" if scope else ""
+        scope_addon = "skim changed validation" if scope else ""
 
     fake = _fake_log(monkeypatch)
     reply = await adapter_mod._model_caller(_S())("persona", [{"type": "text", "text": "hi"}], 16000)
@@ -142,7 +145,26 @@ async def test_model_call_logs_timing_and_parses_the_response_once(monkeypatch):
     get_settings.cache_clear()
     assert reply.finish_reason == "stop" and reply.reasoning_content == "r"
     assert sent["body"]["max_tokens"] == 12288, "doubled budget must be capped by the role"
+    messages = sent["body"]["messages"]
+    assert messages[0] == {"role": "system", "content": "persona"}
+    if scope:
+        assert "authentication boundary" in messages[1]["content"][0]["text"]
+        assert "skim changed validation" in messages[1]["content"][0]["text"]
+    else:
+        assert messages[1]["content"] == [{"type": "text", "text": "hi"}]
     assert parses["n"] == 1, "the response body is parsed once"
     entry = next(e for e in fake.entries if e["event"] == "workflow.model_call")
     assert entry["completion_tokens"] == 42 and entry["max_tokens"] == 12288
     assert isinstance(entry["elapsed_ms"], int)
+
+
+@pytest.mark.asyncio
+async def test_workflows_reject_unsupported_tool_caps_before_dispatch():
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    factory = Mock()
+    adapter = WorkflowAdapter("noop", toolkit_factory=factory)
+    with pytest.raises(ValueError, match="max_tool_calls is unsupported"):
+        await adapter.start(object(), SimpleNamespace(max_tool_calls=2))
+    factory.assert_not_called()
