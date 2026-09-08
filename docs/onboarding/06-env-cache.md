@@ -104,3 +104,39 @@ performer own env setup end-to-end is simpler and more robust.
 
 Next: **[07 — Roadmap](07-roadmap.md)**.
 </content>
+
+## Optional bounded bootstrap workflow (174)
+
+Select the workflow on the bootstrap role using the same backend and mode catalogs
+as the existing deployment. For example, with a mode already named `bootstrap-mode`:
+
+```yaml
+performers:
+  env_bootstrap:
+    backend: codex
+    mode: bootstrap-mode
+    workflow: env_bootstrap
+    workflow_env:
+      ENV_BOOTSTRAP_MAX_REPAIRS: "1"
+      ENV_BOOTSTRAP_TIMEOUT_SECONDS: "1800"
+```
+
+The workflow runs installation through the configured harness, then service inference,
+readiness (when coordinare manages services), and verification. If readiness or verification
+fails, the next bounded turn receives the actual failure text and repairs the existing
+cache. It re-runs the ordered gates before reporting success. Default repair budget is
+one; accepted range is zero to two. The whole workflow defaults to 1800 seconds (range
+1..3600), limited further by the daemon's positive bootstrap time budget. Outer bootstrap
+attempt limits and clean consumer-container verification still apply.
+
+The workflow requires a passing verify.sh. If coordinare supplied verify.sh or activate.sh,
+it records their fingerprints in performer memory before installation and rejects changed,
+missing, or symlinked artifacts. This catches accidental installer rewrites; it does not
+sandbox hostile code running with the performer's own privileges. Git change reports alone
+cannot protect files in the separate cache mount.
+
+Progress events name install, inference, readiness, verify, repair and report. Step durations
+and harness-turn counts are available in workflow metrics. A timeout stops the inner harness;
+cancelling verification also kills its process group. The workflow adds no planning/judging
+model calls. Removing `workflow` preserves the legacy bootstrap behavior, including its
+degraded missing-verifier handling. No workflow is inherited from a fallback implementer role.

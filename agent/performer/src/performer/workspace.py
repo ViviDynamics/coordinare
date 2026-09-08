@@ -668,6 +668,17 @@ def _record_env_cache_activation_failure(reason: str) -> None:
         )
 
 
+async def _kill_cache_process_group(proc: asyncio.subprocess.Process) -> None:
+    """Stop a cancelled cache script and its children, then reap the script."""
+    import signal
+
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    await proc.wait()
+
+
 async def _start_env_cache_services(
     env_cache_path: str, cache_env: dict[str, str]
 ) -> None:
@@ -723,6 +734,7 @@ async def _start_env_cache_services(
     # were up (observed live as a bogus 300s "services-start timeout" while the DB
     # was actually running). proc.wait() returns the moment the main script process
     # exits, independent of any orphaned background jobs.
+    proc = None
     out_fd, out_path = tempfile.mkstemp(prefix="services-start.", suffix=".log")
     try:
         try:
@@ -732,16 +744,18 @@ async def _start_env_cache_services(
                     stdout=out_fh,
                     stderr=asyncio.subprocess.STDOUT,
                     env=env,
+                    start_new_session=True,
                 )
                 await asyncio.wait_for(proc.wait(), timeout=_SERVICES_START_TIMEOUT_S)
+        except asyncio.CancelledError:
+            if proc is not None:
+                await _kill_cache_process_group(proc)
+            raise
         except (OSError, asyncio.TimeoutError) as exc:
             # builtin TimeoutError subclasses OSError (3.10+), so check it first.
             timed_out = isinstance(exc, asyncio.TimeoutError)
-            if timed_out:
-                try:
-                    proc.kill()  # best-effort; proc exists once wait_for started
-                except Exception:
-                    pass
+            if timed_out and proc is not None:
+                await _kill_cache_process_group(proc)
             _record_services_start_failure(
                 script=str(start),
                 returncode="timeout" if timed_out else type(exc).__name__,
@@ -788,15 +802,23 @@ async def _run_env_cache_health_check(
     health = Path(env_cache_path) / "services" / "services-health.sh"
     if not health.is_file() or not os.access(health, os.X_OK):
         return
+    proc = None
     try:
         proc = await asyncio.create_subprocess_exec(
             "bash", str(health),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
+            start_new_session=True,
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60.0)
+    except asyncio.CancelledError:
+        if proc is not None:
+            await _kill_cache_process_group(proc)
+        raise
     except (OSError, asyncio.TimeoutError) as exc:
+        if proc is not None:
+            await _kill_cache_process_group(proc)
         log.warning(
             "env_cache.services_health_failed",
             env_cache_path=env_cache_path,
@@ -935,12 +957,14 @@ async def run_env_cache_verify(
     if not verify.is_file():
         return None, "verify.sh absent"
     env = {**os.environ, **(cache_env or {})}
+    proc = None
     try:
         proc = await asyncio.create_subprocess_exec(
             "bash", str(verify),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             env=env,
+            start_new_session=True,
         )
         out_b, _ = await asyncio.wait_for(proc.communicate(), timeout=180.0)
     except (OSError, asyncio.TimeoutError) as exc:
@@ -948,6 +972,11 @@ async def run_env_cache_verify(
             "env_cache.verify_errored", env_cache_path=env_cache_path, error=str(exc)
         )
         return False, f"verify.sh did not run cleanly: {exc}"
+    finally:
+        # 174: an outer workflow cancellation must not leave verify or its
+        # children writing into the cache after the run has ended.
+        if proc is not None:
+            await _kill_cache_process_group(proc)
     out = out_b.decode(errors="replace")
     if proc.returncode != 0:
         log.warning(

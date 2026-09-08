@@ -146,6 +146,8 @@ class Score(BaseModel):
     # 164: optional role workflow name. Score uses extra="ignore", so this MUST
     # be declared or the field is silently dropped and the role runs the pre-164
     # single-backend path while looking correctly configured.
+    verify_provided: bool = False  # 174: protected bootstrap artifact
+    activate_provided: bool = False
     workflow: str = ""
     # 173: the project board's node id, for the curator's add-to-board call.
     # Nothing conveyed it before, and the add-to-board mutation silently no-ops

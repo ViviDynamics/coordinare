@@ -4838,3 +4838,24 @@ def test_backfill_terminal_failure_reason_ignores_success() -> None:
     resp = PerformerResponse(status="pr_opened", session_id="sid")
     out = _backfill_terminal_failure_reason(resp)
     assert out.reason is None
+
+
+@pytest.mark.parametrize("report,expected", [
+    ({"status": "complete", "reason": "", "repairs": 0, "inference": {"inference_succeeded": True}}, "env_bootstrap_complete"),
+    ({"status": "error", "reason": "repair exhausted"}, "error"),
+    ({"status": "complete", "inference": None}, "error"),
+    ({"status": "complete", "reason": "", "repairs": 0, "inference": {"status": "working"}}, "error"),
+    ({"status": "complete", "reason": "", "repairs": 0, "inference": {"inference_succeeded": "yes"}}, "error"),
+    (None, "error"),
+])
+async def test_bootstrap_workflow_terminal_skips_legacy_tail(report, expected):
+    perf = _make_perf()
+    perf.role = "env_bootstrap"
+    perf.score.workflow = "env_bootstrap"
+    perf.backend.get_status.return_value = BackendStatus(
+        state="done", output=json.dumps({"env_bootstrap_run": report}))
+    with patch("performer.main._run_service_inference", new=AsyncMock()) as inference:
+        response = await handle_status(_msg("status", session_id="sid"), perf, Settings())
+    assert response.status == expected
+    inference.assert_not_awaited()
+    assert perf.state == expected
