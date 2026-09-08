@@ -323,9 +323,43 @@ async def maybe_launch_proxy(
     ``os.environ``). The returned object (if any) exposes ``stop()``, which the
     caller MUST invoke on job teardown to restore env.
     """
+    # 163: an opted-in policy must reach each model independently, including
+    # Responses clients. Canonical orchestration accepts all three CLI wires.
+    policy_active = bool(orchestration and any(
+        isinstance(orchestration.get(leg), dict) and orchestration[leg].get("reasoning_policy")
+        for leg in ("tool", "thinking", "classifier")
+    ))
+    if policy_active:
+        orchestration = {
+            key: {**value, "preserve_generation": True} if key in {"tool", "thinking", "classifier"}
+            and isinstance(value, dict) else value
+            for key, value in orchestration.items()
+        }
+    if policy_active and routing_table is not None:
+        # Apply existing response repairs/auth/reroute to each matching leg;
+        # policy is never borrowed from the executor for a different model.
+        orchestration = dict(orchestration)
+        for leg in ("tool", "thinking", "classifier"):
+            ref = orchestration.get(leg)
+            if not isinstance(ref, dict):
+                continue
+            target = routing_table.resolve(backend_name, ref["model"])
+            if target is None:
+                continue
+            if health_check:
+                target = await _gate_target(target, backend_name, ref["model"], client=health_client,
+                                            timeout=health_timeout, capture_dir=capture_dir)
+            if target.wire_format != "openai":
+                raise ProxyLaunchError("reasoning policy routing requires an OpenAI-compatible upstream")
+            orchestration[leg] = {**ref, "base_url": target.base_url,
+                                  "wire_format": target.wire_format, "auth_style": "bearer",
+                                  "model": target.upstream_model or ref["model"],
+                                  "normalizers": target.normalizers,
+                                  "auth_env": target.upstream_auth_env or ref.get("auth_env")}
+
     # 078 takes precedence: an explicit routing entry pins how this backend
     # reaches its self-hosted upstream regardless of orchestration mode.
-    if routing_table is not None and model is not None:
+    if not policy_active and routing_table is not None and model is not None:
         target = routing_table.resolve(backend_name, model)
         if target is not None:
             if health_check:

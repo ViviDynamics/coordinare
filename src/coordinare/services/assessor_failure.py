@@ -47,13 +47,13 @@ _EMPTY_ANSWER_MARKERS = (
     "no answer",
     "no content",
     "empty completion",
-    "finish_reason=length",
-    "finish reason: length",
-    "finish reason length",
 )
 
 # The answer was cut off mid-stream.
 _TRUNCATED_MARKERS = (
+    "finish_reason=length",
+    "finish reason: length",
+    "finish reason length",
     "truncated",
     "max_tokens reached",
     "max tokens reached",
@@ -77,13 +77,17 @@ _MALFORMED_BODY_MARKERS = (
 )
 
 
-def classify_assessor_failure(reason: str | None) -> AssessorFailureShape | None:
+def classify_assessor_failure(
+    reason: str | None, *, finish_reason: str | None = None,
+) -> AssessorFailureShape | None:
     """Return the assessor failure shape for ``reason``, or ``None``.
 
     ``None`` means "not a transient assessor parse/empty failure" — the caller
     must NOT route it into the retry path. An empty/whitespace reason is treated
     as ``empty_body`` (the upstream produced nothing).
     """
+    if finish_reason in {"length", "max_tokens"}:
+        return "truncated"
     if reason is None:
         return "empty_body"
     text = reason.strip()
@@ -92,6 +96,9 @@ def classify_assessor_failure(reason: str | None) -> AssessorFailureShape | None
     if not text:
         return "empty_body"
     low = text.lower()
+
+    if finish_reason is None and any(m in low for m in _TRUNCATED_MARKERS):
+        return "truncated"
 
     # Order: empty-body (infra) is the most consequential distinction, then
     # parse/malformed, then the answer-content shapes. A reason rarely carries
@@ -102,6 +109,4 @@ def classify_assessor_failure(reason: str | None) -> AssessorFailureShape | None
         return "malformed_body"
     if any(m in low for m in _EMPTY_ANSWER_MARKERS):
         return "empty_answer"
-    if any(m in low for m in _TRUNCATED_MARKERS):
-        return "truncated"
     return None

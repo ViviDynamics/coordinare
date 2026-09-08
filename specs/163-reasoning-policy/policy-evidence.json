@@ -1,0 +1,6 @@
+{
+  "ada/qwen3-14b": {"status": "measured_beneficial", "policy": "disable_thinking", "evidence": "Research R2: reasoning 600 chars to 0; clean parseable JSON."},
+  "ada/qwen3-8b": {"status": "measured_beneficial", "policy": "disable_thinking", "evidence": "Research R2: reasoning suppressed; clean parseable JSON."},
+  "spark/glm-5.3-flash": {"status": "measured_harmful", "policy": "disable_thinking", "evidence": "Research R2: thinking moved into content (188 and 298 chars); JSON failed twice."},
+  "default": {"status": "not_measured", "policy": null, "evidence": "No model-specific observation recorded."}
+}

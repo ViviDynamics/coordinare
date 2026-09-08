@@ -4567,6 +4567,18 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
             state["agent_dispatch_at"] = None
             return state
 
+        # 163: budget exhaustion is actionable before parse/empty-output retries.
+        # Structured finish metadata is authoritative; older backends retain prose fallback.
+        failure_shape = None
+        if marker in {"error", "blocked", "token_limit"}:
+            finish = status.get("finish_reason", status.get("stop_reason"))
+            failure_shape = classify_assessor_failure(
+                str(status.get("reason") or ""),
+                finish_reason=finish if isinstance(finish, str) else None,
+            )
+            if failure_shape == "truncated":
+                marker = "token_limit"
+
         # --- Token-cap exhaustion (055) ---
         if marker == "token_limit":
             reason = str(status.get("reason", ""))
@@ -4740,12 +4752,13 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
             # NOT reclassified — it must not retry forever. The shape is recorded on
             # the persisted system_error_reason (re-classified at exhaustion for US3)
             # and emitted as a secret-free observability record (FR-004).
-            assessor_shape = (
-                classify_assessor_failure(reason) if stage == "assessing" else None
-            )
+            assessor_shape = failure_shape
+            assessor_retry = stage == "assessing" and assessor_shape in {
+                "empty_answer", "empty_body", "malformed_body",
+            }
             if assessor_shape is not None:
                 logger.info(
-                    "assessor.parse_failure",
+                    "assessor.parse_failure" if stage == "assessing" else "performer.parse_failure",
                     card_id=card_id,
                     stage=stage,
                     shape=assessor_shape,
@@ -4755,7 +4768,7 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
                 reason.startswith(_FORMAT_ERROR_PREFIX)
                 or _is_transient_backend_error(reason)
                 or _is_format_contract_error(reason)
-                or assessor_shape is not None
+                or assessor_retry
             ):
                 # Treat backend format-contract failures AND transient backend/
                 # infrastructure crashes (subprocess_exit, server disconnected,
@@ -4774,7 +4787,7 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
                 # by shape at exhaustion (empty_body → ENV_BLOCKED). Idempotent — do
                 # not double-prefix an already-tagged reason.
                 if (
-                    (assessor_shape is not None or _is_format_contract_error(reason))
+                    (assessor_retry or _is_format_contract_error(reason))
                     and not reason.startswith(_FORMAT_ERROR_PREFIX)
                 ):
                     state["system_error_reason"] = f"{_FORMAT_ERROR_PREFIX} {reason}"

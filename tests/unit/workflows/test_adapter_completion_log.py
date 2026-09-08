@@ -92,7 +92,9 @@ def test_step_budget_is_capped_by_the_role_max_tokens():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("scope", [False, True])
-async def test_model_call_logs_timing_and_parses_the_response_once(monkeypatch, scope):
+@pytest.mark.parametrize("policy", [None, "disable_thinking"])
+@pytest.mark.parametrize("explicit_gateway", [False, True])
+async def test_model_call_logs_timing_and_parses_the_response_once(monkeypatch, scope, policy, explicit_gateway):
     import performer.workflows.adapter as adapter_mod
     from performer.config import get_settings
 
@@ -124,6 +126,8 @@ async def test_model_call_logs_timing_and_parses_the_response_once(monkeypatch, 
         async def post(self, url, headers=None, content=None):
             import json as _json
 
+            sent["url"] = url
+            sent["headers"] = headers
             sent["body"] = _json.loads(content)
             return _Resp()
 
@@ -138,11 +142,16 @@ async def test_model_call_logs_timing_and_parses_the_response_once(monkeypatch, 
         max_tokens = 12288
         scope_focus = "authentication boundary" if scope else ""
         scope_addon = "skim changed validation" if scope else ""
+        reasoning_policy = policy
 
     fake = _fake_log(monkeypatch)
-    reply = await adapter_mod._model_caller(_S())("persona", [{"type": "text", "text": "hi"}], 16000)
+    gateway = ("https://captured.test", "captured-token") if explicit_gateway else None
+    reply = await adapter_mod._model_caller(_S(), gateway)("persona", [{"type": "text", "text": "hi"}], 16000)
 
     get_settings.cache_clear()
+    if explicit_gateway:
+        assert sent["url"] == "https://captured.test/chat/completions"
+        assert sent["headers"]["Authorization"] == "Bearer captured-token"
     assert reply.finish_reason == "stop" and reply.reasoning_content == "r"
     assert sent["body"]["max_tokens"] == 12288, "doubled budget must be capped by the role"
     messages = sent["body"]["messages"]
@@ -152,6 +161,7 @@ async def test_model_call_logs_timing_and_parses_the_response_once(monkeypatch, 
         assert "skim changed validation" in messages[1]["content"][0]["text"]
     else:
         assert messages[1]["content"] == [{"type": "text", "text": "hi"}]
+    assert sent["body"].get("chat_template_kwargs") == ({"enable_thinking": False} if policy else None)
     assert parses["n"] == 1, "the response body is parsed once"
     entry = next(e for e in fake.entries if e["event"] == "workflow.model_call")
     assert entry["completion_tokens"] == 42 and entry["max_tokens"] == 12288

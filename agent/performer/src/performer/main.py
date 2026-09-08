@@ -1272,7 +1272,9 @@ async def handle_dispatch(
         if workflow_name:
             from performer.workflows.adapter import WorkflowAdapter
 
-            backend = WorkflowAdapter(workflow_name)
+            backend = WorkflowAdapter(workflow_name, gateway=(
+                settings.LITELLM_PROXY_BASE_URL or "", settings.LITELLM_PROXY_AUTH_TOKEN or "",
+            ))
         else:
             backend = get_backend(backend_name)
         await backend.start(

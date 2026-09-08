@@ -69,7 +69,7 @@ def _command_runner(workspace: "Path"):
     return _run
 
 
-def _model_caller(score: "Score"):
+def _model_caller(score: "Score", gateway: tuple[str, str] | None = None):
     """Call the model through the LiteLLM gateway.
 
     All model traffic goes through the gateway -- the standing rule for this
@@ -83,13 +83,16 @@ def _model_caller(score: "Score"):
 
     async def _call(persona: str, content: list[dict], max_tokens: int) -> ModelReply:
         settings = get_settings()
-        base = (settings.LITELLM_PROXY_BASE_URL or "").strip().rstrip("/")
+        gateway_base, gateway_token = gateway if gateway is not None else (
+            settings.LITELLM_PROXY_BASE_URL or "", settings.LITELLM_PROXY_AUTH_TOKEN or "",
+        )
+        base = gateway_base.strip().rstrip("/")
         if not base:
             raise RuntimeError(
                 "LITELLM_PROXY_BASE_URL is unset; a role workflow cannot reach "
                 "the model gateway"
             )
-        token = (settings.LITELLM_PROXY_AUTH_TOKEN or "").strip()
+        token = gateway_token.strip()
         headers = {"Content-Type": "application/json"}
         if token:
             headers["Authorization"] = f"Bearer {token}"
@@ -107,6 +110,11 @@ def _model_caller(score: "Score"):
                 {"role": "user", "content": content},
             ],
         }
+        policy = getattr(score, "reasoning_policy", None)
+        if policy is not None:
+            if policy != "disable_thinking":
+                raise ValueError(f"unsupported reasoning_policy: {policy}")
+            body["chat_template_kwargs"] = {"enable_thinking": False}
         started = time.monotonic()
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(_MODEL_READ_TIMEOUT_S, connect=_MODEL_CONNECT_TIMEOUT_S)
@@ -375,6 +383,7 @@ def build_production_toolkit(
     max_tokens: int | None = None,
     inner_status_recorder=None,
     backend_factory=None,
+    gateway: tuple[str, str] | None = None,
 ) -> Toolkit:
     """Wire a Toolkit with every primitive a workflow needs at runtime.
 
@@ -434,7 +443,7 @@ def build_production_toolkit(
     if workflow_name == "assessor":
         return Toolkit(
             metrics=metrics,
-            model_call=_model_caller(score),
+            model_call=_model_caller(score, gateway),
             command_runner=None,
             screenshot_capture=None,
             dom_reader=None,
@@ -446,7 +455,7 @@ def build_production_toolkit(
     if workflow_name == "reviewer":
         return Toolkit(
             metrics=metrics,
-            model_call=_model_caller(score),
+            model_call=_model_caller(score, gateway),
             command_runner=_command_runner(workspace),
             screenshot_capture=None,
             dom_reader=None,
@@ -458,7 +467,7 @@ def build_production_toolkit(
     if workflow_name == "security":
         return Toolkit(
             metrics=metrics,
-            model_call=_model_caller(score),
+            model_call=_model_caller(score, gateway),
             command_runner=_command_runner(workspace),
             screenshot_capture=None,
             dom_reader=None,
@@ -470,7 +479,7 @@ def build_production_toolkit(
     if workflow_name == "documenter":
         return Toolkit(
             metrics=metrics,
-            model_call=_model_caller(score),
+            model_call=_model_caller(score, gateway),
             command_runner=_command_runner(workspace),
             screenshot_capture=None,
             dom_reader=None,
@@ -482,7 +491,7 @@ def build_production_toolkit(
     if workflow_name == "closer":
         return Toolkit(
             metrics=metrics,
-            model_call=_model_caller(score),
+            model_call=_model_caller(score, gateway),
             command_runner=None,
             screenshot_capture=None,
             dom_reader=None,
@@ -492,7 +501,7 @@ def build_production_toolkit(
 
     return Toolkit(
         metrics=metrics,
-        model_call=_model_caller(score),
+        model_call=_model_caller(score, gateway),
         command_runner=_command_runner(workspace),
         screenshot_capture=_capture,
         dom_reader=read_dom,
@@ -504,7 +513,8 @@ def build_production_toolkit(
 class WorkflowAdapter:
     """Runs a RoleWorkflow behind the BackendAdapter protocol."""
 
-    def __init__(self, workflow_name: str, *, toolkit_factory=None) -> None:
+    def __init__(self, workflow_name: str, *, toolkit_factory=None, gateway: tuple[str, str] | None = None) -> None:
+        self._gateway = gateway
         self.workflow_name = workflow_name
         self._workflow = get_workflow(workflow_name)
         self._toolkit_factory = toolkit_factory
@@ -548,6 +558,7 @@ class WorkflowAdapter:
                 temperature=temperature,
                 max_tokens=max_tokens,
                 inner_status_recorder=self.record_inner_status,
+                gateway=self._gateway,
             )
         )
         log.info(

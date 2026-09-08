@@ -28,9 +28,7 @@ def test_malformed_body_shapes(reason: str) -> None:
 @pytest.mark.parametrize(
     "reason",
     [
-        "model returned empty content with finish_reason=length",
         "empty content: the model produced no answer",
-        "finish_reason=length",
     ],
 )
 def test_empty_answer_shapes(reason: str) -> None:
@@ -54,6 +52,8 @@ def test_empty_body_shapes(reason: str) -> None:
 @pytest.mark.parametrize(
     "reason",
     [
+        "model returned empty content with finish_reason=length",
+        "finish_reason=length",
         "response truncated before completion",
         "output truncated: max_tokens reached",
     ],

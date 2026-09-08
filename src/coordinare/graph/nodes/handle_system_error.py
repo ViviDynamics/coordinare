@@ -78,6 +78,16 @@ async def handle_system_error(state: CoordinareState) -> CoordinareState:
     card = state.get("current_card") or {}
     card_id = str(card.get("id", ""))
 
+    # 163: a persisted pre-upgrade truncation must not re-enter the unchanged
+    # system-error retry loop either. New failures take monitor's token-limit path.
+    if classify_assessor_failure(state.get("system_error_reason")) == "truncated":
+        state["phase"] = "blocked"
+        state["open_questions"] = [
+            "The model exhausted its output budget. Raise the performer output token cap "
+            "or shorten the prompt before retrying."
+        ]
+        return state
+
     if count < _MAX_RETRIES:
         elapsed = (now - last_at).total_seconds() if last_at else _RETRY_INTERVAL
         if elapsed < _RETRY_INTERVAL:
@@ -134,10 +144,8 @@ async def handle_system_error(state: CoordinareState) -> CoordinareState:
         # must act on capacity), not a generic card-fault terminal error. A
         # malformed-body exhaustion is a content failure and blocks normally.
         stage = str(state.get("performer_stage") or "")
-        assessor_shape = (
-            classify_assessor_failure(reason) if stage == "assessing" else None
-        )
-        is_env_blocked = assessor_shape == "empty_body"
+        assessor_shape = classify_assessor_failure(reason)
+        is_env_blocked = stage == "assessing" and assessor_shape == "empty_body"
         cause = (
             "Assessor model unavailable/overloaded — the assessor upstream "
             "returned empty responses across all retries."
@@ -181,7 +189,7 @@ async def handle_system_error(state: CoordinareState) -> CoordinareState:
         # carry the right pattern.
         env_pattern_id = (
             "assessor_model_unavailable"
-            if assessor_shape == "empty_body"
+            if stage == "assessing" and assessor_shape == "empty_body"
             else "transient_error_budget_exhausted"
         )
         notification_service = state.get("notification_service")
