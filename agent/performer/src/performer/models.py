@@ -162,6 +162,7 @@ class Score(BaseModel):
     # prescribes a fix.
     qa_findings: list[dict] = Field(default_factory=list)
     repair_mandate: dict[str, Any] | None = None
+    scanner_findings: list[dict[str, Any]] = Field(default_factory=list)
     # 165: reader-specific projections of the architect's blueprint, derived by
     # coordinare at dispatch. Each reader gets only its own slice (data-model.md
     # disjointness rule). Declared here or extra="ignore" drops them in transit.
