@@ -1,0 +1,26 @@
+# Replace the gateway URL and model IDs with names served by your own gateway.
+schema_version = 1
+
+[llm_clients.gateway]
+format = "openai_chat"
+base_url = "https://litellm.example.com/v1"
+api_key_env = "LITELLM_MASTER_KEY"
+
+[targets.weak]
+id = "your-weak-model"
+llm_client = "gateway"
+# Mechanical tool following does not need a long reasoning trace.
+extra_body = { chat_template_kwargs = { enable_thinking = false } }
+
+[targets.strong]
+id = "your-strong-model"
+llm_client = "gateway"
+
+[routes.agent]
+id = "agent"
+type = "llm_classifier"
+mode = "escalation"
+classifier_target = "strong"
+strong_target = "strong"
+weak_target = "weak"
+escalation = { confirmations = 2, recent_turn_window = 28, window_message_chars = 500 }

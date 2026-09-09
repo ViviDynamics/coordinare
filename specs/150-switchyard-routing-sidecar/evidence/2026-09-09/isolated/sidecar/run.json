@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "run_id": "20260909-033526",
+  "started_at": "2026-09-09T03:35:26.308272Z",
+  "finished_at": "2026-09-09T03:45:27.326005Z",
+  "wall_clock_seconds": 601.017733,
+  "config_fingerprint": {
+    "hash": "8715a516cf254dd1",
+    "source_path": "<materialized>"
+  },
+  "approver_policy": "gates_green",
+  "fixture_manifest": "tiny-multiply",
+  "cards": [
+    {
+      "card_id": "PVTI_1",
+      "issue_ref": "https://fake/bench-org/bench-repo/issues/1",
+      "title": "Implement multiply()",
+      "fixture_id": "tiny-multiply",
+      "final_state": "error",
+      "reached_stages": [
+        "implementing"
+      ],
+      "dispatches": [
+        {
+          "stage": "implementing",
+          "role": "implementing",
+          "model": "agent",
+          "backend": "claude_code",
+          "job_id": "803f70f0-0062-4aa1-8320-67974809ea7a",
+          "session_id": "517c29e1-0f5b-4900-81db-a1391a1f4ea2",
+          "container_id": "32372ca02cf6146aea1bcdad4cb58d0582262c170ff889490b4205077e534367",
+          "status": "cancelled",
+          "terminal_marker": null,
+          "started_at": "2026-09-09T03:35:26.765799Z",
+          "finished_at": null,
+          "seconds": null,
+          "tokens_processed": null,
+          "raw_summary_ref": null
+        }
+      ],
+      "gate_decisions": [],
+      "ci_results": [],
+      "merge": {
+        "merged": false,
+        "merge_commit": null,
+        "approved_by": null
+      },
+      "timing": {
+        "first_dispatch_at": "2026-09-09T03:35:26.765799Z",
+        "terminal_at": "2026-09-09T03:45:27.326005Z",
+        "seconds": null
+      },
+      "cost": {
+        "tokens_processed": null,
+        "cost_usd": null,
+        "cost_estimated": true
+      }
+    }
+  ],
+  "totals": {
+    "tokens_processed": null,
+    "cost_usd": null,
+    "cost_estimated": true,
+    "cards_total": 1,
+    "cards_merged": 0,
+    "cards_terminal_nonmerge": 1
+  }
+}

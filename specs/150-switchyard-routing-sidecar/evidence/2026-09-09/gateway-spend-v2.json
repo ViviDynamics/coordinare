@@ -1,0 +1,93 @@
+{
+  "status": 200,
+  "records": [
+    {
+      "request_id": "chatcmpl-8ae89f2d56401a1a",
+      "model": "openai/glm-5.3-flash",
+      "model_group": "spark/glm-5.3-flash",
+      "spend": 0.0,
+      "total_tokens": 2270,
+      "prompt_tokens": 2198,
+      "completion_tokens": 72,
+      "startTime": "2026-09-09T02:45:07.935+00:00",
+      "status": "success"
+    },
+    {
+      "request_id": "chatcmpl-a40c91a7175699d0",
+      "model": "openai/qwen3-8b",
+      "model_group": "ada/qwen3-8b",
+      "spend": 0.0,
+      "total_tokens": 386,
+      "prompt_tokens": 56,
+      "completion_tokens": 330,
+      "startTime": "2026-09-09T02:44:59.790+00:00",
+      "status": "success"
+    },
+    {
+      "request_id": "chatcmpl-95e81c09b36eb618",
+      "model": "openai/glm-5.3-flash",
+      "model_group": "spark/glm-5.3-flash",
+      "spend": 0.0,
+      "total_tokens": 2236,
+      "prompt_tokens": 2173,
+      "completion_tokens": 63,
+      "startTime": "2026-09-09T02:44:55.749+00:00",
+      "status": "success"
+    },
+    {
+      "request_id": "chatcmpl-b776279d47e7eaaf",
+      "model": "openai/qwen3-8b",
+      "model_group": "ada/qwen3-8b",
+      "spend": 0.0,
+      "total_tokens": 825,
+      "prompt_tokens": 25,
+      "completion_tokens": 800,
+      "startTime": "2026-09-09T02:44:35.970+00:00",
+      "status": "success"
+    },
+    {
+      "request_id": "chatcmpl-93c1edae3af0c1dd",
+      "model": "openai/glm-5.3-flash",
+      "model_group": "spark/glm-5.3-flash",
+      "spend": 0.0,
+      "total_tokens": 74,
+      "prompt_tokens": 49,
+      "completion_tokens": 25,
+      "startTime": "2026-09-09T02:44:34.821+00:00",
+      "status": "success"
+    },
+    {
+      "request_id": "chatcmpl-b668247d42c7ac8f",
+      "model": "openai/glm-5.3-flash",
+      "model_group": "spark/glm-5.3-flash",
+      "spend": 0.0,
+      "total_tokens": 74,
+      "prompt_tokens": 27,
+      "completion_tokens": 47,
+      "startTime": "2026-09-09T02:44:33.308+00:00",
+      "status": "success"
+    },
+    {
+      "request_id": "chatcmpl-a63747819271dd6f",
+      "model": "openai/qwen3-8b",
+      "model_group": "ada/qwen3-8b",
+      "spend": 0.0,
+      "total_tokens": 352,
+      "prompt_tokens": 56,
+      "completion_tokens": 296,
+      "startTime": "2026-09-09T02:44:26.014+00:00",
+      "status": "success"
+    },
+    {
+      "request_id": "chatcmpl-8baa76afcce92e1f",
+      "model": "openai/qwen3-8b",
+      "model_group": "ada/qwen3-8b",
+      "spend": 0.0,
+      "total_tokens": 784,
+      "prompt_tokens": 25,
+      "completion_tokens": 759,
+      "startTime": "2026-09-09T02:44:07.259+00:00",
+      "status": "success"
+    }
+  ]
+}

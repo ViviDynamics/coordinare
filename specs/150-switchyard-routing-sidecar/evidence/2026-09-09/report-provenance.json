@@ -1,0 +1,21 @@
+{
+  "date_utc": "2026-09-09",
+  "gateway": "https://litellm.vividynamics.com",
+  "weak": "ada/qwen3-8b",
+  "strong_and_judge": "spark/glm-5.3-flash",
+  "switchyard_version": "0.2.0",
+  "performer_image": "coordinare-performer:150-full",
+  "performer_image_id": "sha256:97c7513c99745780e8096fbfc8ce87903a1e93f8185a6f0d33c9ed092df53ac7",
+  "observed_claude_version": "2.1.266",
+  "fixture": "tiny-multiply",
+  "repeats": 1,
+  "budget_seconds_per_cell": 600,
+  "initial_diagnostic_thinking_enabled": true,
+  "final_weak_thinking_enabled": false,
+  "valid_whole_lifecycle_sources": ["board-static", "board-sidecar-final"],
+  "isolated_implementer_sources": ["isolated/static", "isolated/sidecar"],
+  "isolated_approval": "synthetic human approval gated by real pytest",
+  "excluded_source": "board-sidecar",
+  "exclusion_reason": "Operator cleanup interrupted its simulated Git listener; replaced by board-sidecar-final.",
+  "other_gateway_workload": "The harness sweep used the same gateway during part of the comparison. No isolated-throughput claim is made."
+}

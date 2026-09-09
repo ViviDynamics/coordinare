@@ -1,0 +1,98 @@
+[
+  {
+    "route": "static-weak",
+    "status": 200,
+    "seconds": 18.782,
+    "model": "ada/qwen3-8b",
+    "usage": {
+      "completion_tokens": 759,
+      "prompt_tokens": 25,
+      "total_tokens": 784,
+      "completion_tokens_details": {
+        "reasoning_tokens": 752
+      }
+    },
+    "correct": true,
+    "response": "\n\n391",
+    "error": null
+  },
+  {
+    "route": "static-weak",
+    "status": 200,
+    "seconds": 7.294,
+    "model": "ada/qwen3-8b",
+    "usage": {
+      "completion_tokens": 296,
+      "prompt_tokens": 56,
+      "total_tokens": 352,
+      "completion_tokens_details": {
+        "reasoning_tokens": 289
+      }
+    },
+    "correct": true,
+    "response": "\n\n374",
+    "error": null
+  },
+  {
+    "route": "static-strong",
+    "status": 200,
+    "seconds": 1.513,
+    "model": "spark/glm-5.3-flash",
+    "usage": {
+      "completion_tokens": 47,
+      "prompt_tokens": 27,
+      "total_tokens": 74
+    },
+    "correct": true,
+    "response": "391",
+    "error": null
+  },
+  {
+    "route": "static-strong",
+    "status": 200,
+    "seconds": 1.075,
+    "model": "spark/glm-5.3-flash",
+    "usage": {
+      "completion_tokens": 25,
+      "prompt_tokens": 49,
+      "total_tokens": 74
+    },
+    "correct": true,
+    "response": "374",
+    "error": null
+  },
+  {
+    "route": "sidecar",
+    "status": 200,
+    "seconds": 23.887,
+    "model": "ada/qwen3-8b",
+    "usage": {
+      "completion_tokens": 800,
+      "completion_tokens_details": {
+        "reasoning_tokens": 793
+      },
+      "prompt_tokens": 25,
+      "total_tokens": 825
+    },
+    "correct": true,
+    "response": "\n\n391",
+    "error": null
+  },
+  {
+    "route": "sidecar",
+    "status": 200,
+    "seconds": 12.336,
+    "model": "ada/qwen3-8b",
+    "usage": {
+      "completion_tokens": 330,
+      "completion_tokens_details": {
+        "reasoning_tokens": 323
+      },
+      "prompt_tokens": 56,
+      "total_tokens": 386
+    },
+    "correct": true,
+    "response": "\n\n374",
+    "error": null
+  }
+]

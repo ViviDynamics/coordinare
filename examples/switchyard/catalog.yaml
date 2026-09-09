@@ -1,0 +1,14 @@
+# Merge these fragments into a config based on config.example.yaml. No new kind.
+endpoints:
+  - name: switchyard
+    kind: litellm
+    base_url: http://host.docker.internal:4008
+    auth_env: SWITCHYARD_API_KEY
+model_endpoints:
+  - {name: escalated-agent, endpoint: switchyard, model: agent}
+modes:
+  - {name: switchyard-evaluation, strategy: single, tool: escalated-agent}
+performers:
+  implementer: {backend: claude_code, mode: switchyard-evaluation}
+# The endpoint's performer image must contain spec150's session-header support.
+# Mount routing.yaml and enable SELFHOSTED_ROUTING_CONFIG on that performer.

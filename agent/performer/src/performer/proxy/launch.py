@@ -346,6 +346,11 @@ async def maybe_launch_proxy(
             target = routing_table.resolve(backend_name, ref["model"])
             if target is None:
                 continue
+            if target.upstream_session_header is not None:
+                raise ProxyLaunchError(
+                    "upstream_session_header requires the self-hosted shim; "
+                    "reasoning policies use the canonical proxy and are not supported"
+                )
             if health_check:
                 target = await _gate_target(target, backend_name, ref["model"], client=health_client,
                                             timeout=health_timeout, capture_dir=capture_dir)

@@ -1,0 +1,4 @@
+2026-09-09 03:41:40 push_branch.rebase_conflict: cannot rebase; unstaged changes.
+2026-09-09 03:41:40 job_executor_failed job_id=803f70f0-0062-4aa1-8320-67974809ea7a
+The raw benchmark dispatch remained terminal_marker=null until budget cancellation.
+Tracked separately: https://github.com/ViviDynamics/coordinare/issues/306
