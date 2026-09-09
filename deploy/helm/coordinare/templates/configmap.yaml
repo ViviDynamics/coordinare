@@ -29,6 +29,9 @@ data:
     {{/* A loopback bind is unreachable from a Service. The spec-144 guard, not
          the bind address, is what constrains access here. */}}
     {{- $_ := set $cfg "dashboard_host" "0.0.0.0" }}
+    {{- if not (hasKey $cfg "dashboard_auth_token") }}
+    {{- $_ := set $cfg "dashboard_auth_token" "${COORDINARE_DASHBOARD_AUTH_TOKEN}" }}
+    {{- end }}
     {{- $_ := set $cfg "dashboard_port" (int .Values.dashboard.port) }}
     {{- $_ := set $cfg "health_check_port" (int .Values.health.port) }}
     {{- $_ := set $cfg "trusted_dashboard_hosts" (include "coordinare.trustedHosts" . | fromYamlArray) }}

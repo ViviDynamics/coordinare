@@ -1045,6 +1045,8 @@ async def _run(
     coordinare_config: CoordinareConfiguration | None = None,
     config_mode: Literal["legacy", "multi_symphony"] = "legacy",
 ) -> None:
+    from coordinare.dashboard_auth import validate_dashboard_bind
+    validate_dashboard_bind(config.dashboard_host, config.dashboard_auth_token)
     run_mode = os.getenv("COORDINARE_RUN_MODE", "shell").strip().lower() or "shell"
     graph = CoordinareGraphBuilder().build()
 
@@ -1212,6 +1214,11 @@ async def _run(
             trusted_hosts=config.trusted_dashboard_hosts,
         ),
         guard_exempt_paths=_guard_exempt,
+        signed_webhook_paths=(
+            frozenset({config.webhooks.path})
+            if config.webhooks.enabled and config.webhooks.secret else frozenset()
+        ),
+        auth_token=config.dashboard_auth_token,
     )
 
     if config.webhooks.enabled and config.webhooks.secret:
@@ -1225,7 +1232,8 @@ async def _run(
         )
 
     # Spec 144 (#198), FR-020/FR-021. Only fires for a non-loopback bind.
-    warn_if_dashboard_exposed(config.dashboard_host, config.dashboard_port, log=logger)
+    if config.dashboard_auth_token is None:
+        warn_if_dashboard_exposed(config.dashboard_host, config.dashboard_port, log=logger)
 
     dashboard_server = uvicorn.Server(
         uvicorn.Config(

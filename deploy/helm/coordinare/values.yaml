@@ -136,8 +136,8 @@ dashboard:
 
   # EXTRA trusted hostnames, beyond the ones the chart adds for you.
   #
-  # Read this before adding to it. The dashboard has NO AUTHENTICATION (spec 143
-  # will add it). Spec 144 guards it by refusing any request whose Host header is
+  # A dashboard token is required via COORDINARE_DASHBOARD_AUTH_TOKEN in the
+  # configured Secret. Spec 144 also refuses any request whose Host header is
   # not loopback, and leaves this list empty by default so the safe posture is
   # what you get by doing nothing.
   #
@@ -151,9 +151,8 @@ dashboard:
   trustedHosts: []
 
   ingress:
-    # Off by default, and think hard before turning it on: an Ingress publishes
-    # an UNAUTHENTICATED dashboard. Anyone who reaches it can rewrite
-    # configuration, cancel work, and delete symphonies.
+    # Off by default. Configure TLS and optionally SSO at the proxy before
+    # publishing the dashboard. Token holders have full operator privileges.
     enabled: false
     className: ""
     annotations: {}

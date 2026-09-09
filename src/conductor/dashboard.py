@@ -32,6 +32,8 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
     from pathlib import Path
 
+    from pydantic import SecretStr
+
     from coordinare.daemon import CoordinareDaemon
     from coordinare.metrics import CoordinareMetrics
     from coordinare.observability import HealthRegistry
@@ -4471,6 +4473,8 @@ def create_dashboard_app(
     *,
     permitted_origins: PermittedOrigins | None = None,
     guard_exempt_paths: frozenset[str] | None = None,
+    auth_token: SecretStr | None = None,
+    signed_webhook_paths: frozenset[str] = frozenset(),
 ) -> FastAPI:
     """Create the dashboard FastAPI application.
 
@@ -4487,6 +4491,12 @@ def create_dashboard_app(
     operator's bind address, port, and any trusted proxy hostname are honoured.
     """
     app = FastAPI(title="coordinare-dashboard")
+    if auth_token is not None:
+        from coordinare.dashboard_auth import DashboardAuthentication
+        app.add_middleware(
+            DashboardAuthentication, token=auth_token,
+            signed_webhook_paths=signed_webhook_paths,
+        )
 
     # Spec 144 (#198). Installed BEFORE the request logger deliberately.
     # FastAPI middleware is outermost-last, so the logger added below wraps this
