@@ -1,6 +1,6 @@
 """138: gate for the dashboard's inlined activity-feed JavaScript.
 
-Slices the feed JS verbatim out of ``_DASHBOARD_HTML`` and executes it under
+Combines the inline feed JS and shipped activity-stream script and executes them under
 node against a DOM stub (``tests/js/activity_feed_checks.js``), covering the
 quickstart checks C1, C2, C4, C6-C11 and the timing logic behind C3.
 
@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from coordinare.dashboard import _DASHBOARD_HTML
+from coordinare.dashboard import _ACTIVITY_STREAM_JS, _DASHBOARD_HTML
 
 _CHECKS_JS = Path(__file__).resolve().parents[1] / "js" / "activity_feed_checks.js"
 
@@ -52,7 +52,7 @@ def _extract_feed_js() -> str:
     esc = re.search(r"function esc\(s\) \{.*?\n\}", _DASHBOARD_HTML, re.S)
     if esc is None:
         raise AssertionError("the shared esc() helper is no longer in _DASHBOARD_HTML")
-    return esc.group(0) + "\n\n" + feed_js
+    return esc.group(0) + "\n\n" + _ACTIVITY_STREAM_JS + "\n" + feed_js
 
 
 def test_feed_js_slice_is_complete() -> None:

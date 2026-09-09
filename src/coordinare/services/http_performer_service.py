@@ -423,6 +423,7 @@ class HTTPPerformerService:
         return {
             "status": "ok",
             "session_id": session_id,
+            "performer_id": self._config.id,
             "job_id": job_id,
             "accepted": True,
             "container_id": ephemeral_job.container_id if ephemeral_job is not None else None,

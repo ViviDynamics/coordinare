@@ -603,7 +603,11 @@ async def test_persona_instructions_present_in_payload_when_configured() -> None
     await dispatch_card(state)
 
     assert agent.captured_context is not None
-    assert agent.captured_context.get("persona_instructions") == "Always write tests first."
+    assert agent.captured_context.get("persona_instructions") == "Always write tests first." + (
+        "\n\nWrite all user-facing progress updates, summaries, findings, and explanations "
+        "in English. Preserve code, paths, quoted source text, and machine-readable "
+        "protocol fields exactly; do not translate those values."
+    )
 
 
 @pytest.mark.asyncio
@@ -621,7 +625,11 @@ async def test_persona_instructions_equals_default_when_config_field_empty() -> 
 
     assert agent.captured_context is not None
     instructions = agent.captured_context.get("persona_instructions")
-    assert instructions == DEFAULT_INSTRUCTIONS["implementer"]
+    assert instructions == DEFAULT_INSTRUCTIONS["implementer"] + (
+        "\n\nWrite all user-facing progress updates, summaries, findings, and explanations "
+        "in English. Preserve code, paths, quoted source text, and machine-readable "
+        "protocol fields exactly; do not translate those values."
+    )
     assert instructions  # non-empty
 
 
@@ -640,4 +648,8 @@ async def test_persona_instructions_equals_default_when_whitespace_only() -> Non
 
     assert agent.captured_context is not None
     instructions = agent.captured_context.get("persona_instructions")
-    assert instructions == DEFAULT_INSTRUCTIONS["implementer"]
+    assert instructions == DEFAULT_INSTRUCTIONS["implementer"] + (
+        "\n\nWrite all user-facing progress updates, summaries, findings, and explanations "
+        "in English. Preserve code, paths, quoted source text, and machine-readable "
+        "protocol fields exactly; do not translate those values."
+    )

@@ -190,7 +190,9 @@ async def test_prompt_addon_is_structured_input_not_base_mutation() -> None:
     assert result["phase"] == "monitoring_performer"
     ctx = svc.dispatched[0]
     # Base prompt is unmutated …
-    assert ctx["persona_instructions"] == base
+    assert ctx["persona_instructions"] == base + ("\n\nWrite all user-facing progress updates, summaries, findings, and explanations "
+            "in English. Preserve code, paths, quoted source text, and machine-readable "
+            "protocol fields exactly; do not translate those values.")
     assert addon not in ctx["persona_instructions"]
     # … and the addon arrives in its own structured field.
     assert ctx["scope_addon"] == addon
@@ -269,7 +271,9 @@ async def test_persona_without_scope_behavior_runs_as_today() -> None:
     assert "max_tool_calls" not in ctx
     assert "scope_addon" not in ctx
     # The base prompt is still set, and focus may still be surfaced.
-    assert ctx["persona_instructions"] == "REVIEWER BASE"
+    assert ctx["persona_instructions"] == "REVIEWER BASE" + ("\n\nWrite all user-facing progress updates, summaries, findings, and explanations "
+            "in English. Preserve code, paths, quoted source text, and machine-readable "
+            "protocol fields exactly; do not translate those values.")
 
 
 # ---------------------------------------------------------------------------

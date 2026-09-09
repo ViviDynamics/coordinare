@@ -197,7 +197,11 @@ async def test_docs_only_card_skips_security_qa(monkeypatch: pytest.MonkeyPatch)
     assert reviewer_ctx["max_tool_calls"] == 5
     assert reviewer_ctx["scope_addon"] == "scope-narrowed"
     # FR-007: base prompt unmutated.
-    assert reviewer_ctx["persona_instructions"] == "REVIEWER BASE"
+    assert reviewer_ctx["persona_instructions"] == "REVIEWER BASE" + (
+        "\n\nWrite all user-facing progress updates, summaries, findings, and explanations "
+        "in English. Preserve code, paths, quoted source text, and machine-readable "
+        "protocol fields exactly; do not translate those values."
+    )
 
     # FR-009: closer ignored depth (no cap, no addon) but surfaced focus.
     closer_ctx = services["closing_review"].dispatched[0]
@@ -321,7 +325,11 @@ async def test_security_sensitive_card_forces_full(monkeypatch: pytest.MonkeyPat
     sec_ctx = services["security"].dispatched[0]
     assert sec_ctx["max_tool_calls"] == 30
     assert sec_ctx["scope_addon"] == "dig deep"
-    assert sec_ctx["persona_instructions"] == "SECURITY BASE"
+    assert sec_ctx["persona_instructions"] == "SECURITY BASE" + (
+        "\n\nWrite all user-facing progress updates, summaries, findings, and explanations "
+        "in English. Preserve code, paths, quoted source text, and machine-readable "
+        "protocol fields exactly; do not translate those values."
+    )
 
 
 # ---------------------------------------------------------------------------

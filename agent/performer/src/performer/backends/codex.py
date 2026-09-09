@@ -613,12 +613,14 @@ class CodexBackend:
             if delta:
                 self._output_accumulator.append(delta)
                 self._status = BackendStatus(state="working", progress=delta[:_MAX_TEXT])
-                self._emit(BackendEventType.progress, delta)
+                self._emit(BackendEventType.progress, delta, is_delta=True,
+                           stream_id=str(params.get("itemId", "")))
 
         elif method == "item/commandExecution/outputDelta":
             output = params.get("delta", params.get("output", ""))
             if output:
-                self._emit(BackendEventType.tool_use, str(output)[:_MAX_TEXT], detail="shell")
+                self._emit(BackendEventType.tool_use, str(output)[:_MAX_TEXT], detail="shell",
+                           is_delta=True, stream_id=str(params.get("itemId", "")))
 
         elif method == "item/completed":
             item = params.get("item", {})
@@ -647,12 +649,15 @@ class CodexBackend:
         elif method == "item/reasoning/textDelta":
             delta = params.get("delta", "")
             if delta:
-                self._emit(BackendEventType.thinking, delta[:_MAX_TEXT])
+                self._emit(BackendEventType.thinking, delta[:_MAX_TEXT], is_delta=True,
+                           stream_id=str(params.get("itemId", "")))
 
         # All other notifications are no-ops (turn/started, thread/started, etc.)
 
-    def _emit(self, type: BackendEventType, text: str, detail: str = "") -> None:
-        self._event_buffer.append(BackendEvent(type=type, text=text[:_MAX_TEXT], detail=detail))
+    def _emit(self, type: BackendEventType, text: str, detail: str = "", *,
+              is_delta: bool = False, stream_id: str = "") -> None:
+        self._event_buffer.append(BackendEvent(type=type, text=text[:_MAX_TEXT], detail=detail,
+                                               is_delta=is_delta, stream_id=stream_id))
 
 
 def _build_task_prompt(

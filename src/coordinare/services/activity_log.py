@@ -18,6 +18,8 @@ from typing import Any
 
 import structlog
 
+from coordinare.lib.redaction import redact_secrets
+
 logger = structlog.get_logger(__name__)
 
 MAX_ENTRIES = 2000
@@ -39,6 +41,10 @@ class ActivityEntry:
     activity_type: str
     text: str
     truncated: bool
+    session_id: str = ""
+    performer_id: str = ""
+    is_delta: bool = False
+    stream_id: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -51,6 +57,10 @@ class ActivityEntry:
             "activity_type": self.activity_type,
             "text": self.text,
             "truncated": self.truncated,
+            "session_id": self.session_id,
+            "performer_id": self.performer_id,
+            "is_delta": self.is_delta,
+            "stream_id": self.stream_id,
         }
 
 
@@ -96,6 +106,11 @@ class ActivityLog:
         card_title: str = "",
         stage: str = "",
         text: str = "",
+        session_id: str = "",
+        performer_id: str = "",
+        is_delta: bool = False,
+        stream_id: str = "",
+        source_event_id: str = "",
     ) -> ActivityEntry | None:
         """Append one entry. Returns None when suppressed as a duplicate."""
         entry = self._append(
@@ -105,6 +120,9 @@ class ActivityLog:
             card_title=card_title,
             stage=stage,
             text=text,
+            session_id=session_id,
+            performer_id=performer_id,
+            is_delta=is_delta, stream_id=stream_id, source_event_id=source_event_id,
         )
         if entry is not None:
             self._fan_out([entry])
@@ -123,6 +141,11 @@ class ActivityLog:
                 card_title=item.get("card_title", ""),
                 stage=item.get("stage", ""),
                 text=item.get("text", ""),
+                session_id=item.get("session_id", ""),
+                performer_id=item.get("performer_id", ""),
+                is_delta=item.get("is_delta") is True,
+                stream_id=item.get("stream_id", ""),
+                source_event_id=item.get("source_event_id", ""),
             )
             if entry is not None:
                 appended.append(entry)
@@ -157,10 +180,19 @@ class ActivityLog:
         card_title: Any,
         stage: Any,
         text: Any,
+        session_id: Any = "",
+        performer_id: Any = "",
+        is_delta: bool = False,
+        stream_id: Any = "",
+        source_event_id: Any = "",
     ) -> ActivityEntry | None:
         # Truncate BEFORE building the dedup key, or key size is unbounded and
         # dedup diverges between long and short lines (G2).
-        clipped_text, truncated = _clip(text, self._max_text)
+        clipped_text, truncated = _clip(redact_secrets(str(text or "")), self._max_text)
+        sid, _ = _clip(session_id, 200)
+        pid, _ = _clip(performer_id, 200)
+        stream, _ = _clip(stream_id, 200)
+        source_id, _ = _clip(source_event_id, 200)
         clipped_title, _ = _clip(card_title, MAX_TITLE)
         cid, _ = _clip(card_id, 200)
         stage_str, _ = _clip(stage, 80)
@@ -173,7 +205,10 @@ class ActivityLog:
         # `timestamp` and `seq` are deliberately NOT in the key: a re-reported
         # event arrives with a new observation time, so including either would
         # disable suppression entirely and make a wedged agent scroll (FR-022).
-        key = f"{kind}|{cid}|{stage_str}|{clipped_text}"
+        key = f"{kind}|{cid}|{stage_str}|{sid}|{pid}|{clipped_text}"
+        if is_delta and source_id:
+            # Source identity is stable on replay; distinct repeated words survive.
+            key += f"|{stream}|{source_id}"
         seen = self._seen.setdefault(cid, set())
         if key in seen:
             return None
@@ -193,6 +228,9 @@ class ActivityLog:
             activity_type=kind,
             text=clipped_text,
             truncated=truncated,
+            session_id=sid,
+            performer_id=pid,
+            is_delta=is_delta, stream_id=stream,
         )
         self._next_seq += 1
         self._entries.append(entry)

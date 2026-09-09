@@ -472,7 +472,8 @@ async def test_persona_instructions_injected_in_card_context() -> None:
     assert len(svc.dispatched) == 1
     card_ctx = svc.dispatched[0]
     assert "persona_instructions" in card_ctx
-    assert card_ctx["persona_instructions"] == "Always write unit tests first."
+    assert card_ctx["persona_instructions"].startswith("Always write unit tests first.")
+    assert "in English" in card_ctx["persona_instructions"]
 
 
 @pytest.mark.asyncio
@@ -493,7 +494,8 @@ async def test_persona_instructions_default_when_empty() -> None:
 
     assert len(svc.dispatched) == 1
     card_ctx = svc.dispatched[0]
-    assert card_ctx["persona_instructions"] == DEFAULT_INSTRUCTIONS["implementer"]
+    assert card_ctx["persona_instructions"].startswith(DEFAULT_INSTRUCTIONS["implementer"])
+    assert "in English" in card_ctx["persona_instructions"]
 
 
 @pytest.mark.asyncio
@@ -514,7 +516,8 @@ async def test_persona_instructions_for_reviewer_stage() -> None:
 
     assert len(svc.dispatched) == 1
     card_ctx = svc.dispatched[0]
-    assert card_ctx["persona_instructions"] == "Be thorough in reviews."
+    assert card_ctx["persona_instructions"].startswith("Be thorough in reviews.")
+    assert "in English" in card_ctx["persona_instructions"]
 
 
 @pytest.mark.asyncio
@@ -540,8 +543,9 @@ async def test_persona_instructions_for_closing_review_stage() -> None:
     card_ctx = svc.dispatched[0]
     assert card_ctx["role"] == "closing_review"
     assert (
-        card_ctx["persona_instructions"]
-        == "Verify prior threads were addressed; resolve and approve."
+        card_ctx["persona_instructions"].startswith(
+            "Verify prior threads were addressed; resolve and approve."
+        )
     )
 
 

@@ -265,7 +265,7 @@ def test_timestamp_not_in_dedup_key() -> None:
     second = log.record(activity_type="progress", card_id="C1", text="same")
     assert second is None
     assert len(log.snapshot()) == 1
-    key = "progress|C1||same"
+    key = "progress|C1||||same"
     assert key in log._seen["C1"]
 
 
@@ -282,7 +282,45 @@ def test_serialised_entry_shape_matches_the_wire_contract() -> None:
     (entry,) = log.snapshot()
     assert set(entry) == {
         "seq", "timestamp", "card_id", "card_number", "card_title",
-        "stage", "activity_type", "text", "truncated",
+        "stage", "activity_type", "text", "truncated", "session_id", "performer_id", "is_delta", "stream_id",
     }
     assert entry["timestamp"].endswith("+00:00")
     assert entry["card_number"] == 142
+
+
+def test_stream_identity_and_raw_redaction():
+    log = ActivityLog()
+    args = dict(activity_type="progress", card_id="C1", stage="implementing",
+                performer_id="codex", text="正在处理 https://hooks.slack.com/services/T/B/SECRET")
+    first = log.record(**args, session_id="one")
+    assert first is not None
+    assert "SECRET" not in first.text
+    assert "正在处理" in first.text
+    assert log.record(**args, session_id="one") is None
+    assert log.record(**args, session_id="two") is not None
+    assert log.snapshot()[0]["performer_id"] == "codex"
+
+
+def test_monitor_attributes_stream_to_dispatch_session():
+    from coordinare.graph.nodes.monitor_performer import _record_activity_batch
+    log = ActivityLog()
+    state = {"activity_log": log, "agent_dispatch": {"session_id": "dispatch-123", "performer_id": "codex-1"}}
+    _record_activity_batch(state, [{"type": "thinking", "text": "正在思考"}], card_id="C1", stage="implementing")
+    entry, = log.snapshot()
+    assert entry["session_id"] == "dispatch-123"
+    assert entry["performer_id"] == "codex-1"
+    assert entry["activity_type"] == "thinking"
+
+
+def test_stream_fragments_preserve_repeated_words_but_suppress_replay():
+    from coordinare.graph.nodes.monitor_performer import _record_activity_batch
+    log = ActivityLog()
+    state = {"activity_log": log, "agent_dispatch": {"session_id": "s", "performer_id": "p"}}
+    events = [{"type": "progress", "text": " very", "is_delta": True,
+               "stream_id": "message", "timestamp": str(i)} for i in (1, 2)]
+    _record_activity_batch(state, events, card_id="c", stage="implementing")
+    _record_activity_batch(state, events, card_id="c", stage="implementing")
+    entries = log.snapshot()
+    assert len(entries) == 2
+    assert "".join(e["text"] for e in entries) == " very very"
+    assert all(e["is_delta"] and e["stream_id"] == "message" for e in entries)

@@ -36,6 +36,10 @@ def test_text_delta_accumulates_and_reports_progress() -> None:
     assert b._status.state == "working"
     assert b._status.progress  # last delta surfaced as progress
     assert "".join(b._output_accumulator) == "Hello world"
+    events = b.drain_events()
+    assert all(e.is_delta for e in events)
+    assert events[0].stream_id == events[1].stream_id
+    assert "".join(e.text for e in events) == "Hello world"
 
 
 def test_agent_end_sets_done_with_final_assistant_message() -> None:
