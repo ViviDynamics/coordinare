@@ -5180,6 +5180,9 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
                 state["agent_dispatch_at"] = None
                 return state
 
+            # A valid clarification response supersedes a prior retry error.
+            # Current environment/CI holds retain their independent markers.
+            state["system_error_reason"] = None
             state["phase"] = "blocked"
             questions = status.get("questions")
             if isinstance(questions, list) and questions:

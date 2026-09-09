@@ -158,3 +158,44 @@ gate on the date listed.
   regex denylist in `BackendEvent` strips `sk-litellm-…` tokens out of any
   event text that does flow through structured logging.
 - The performer does not persist either value to card state.
+
+## GLM through Chat Completions (262)
+
+For `glm-5.3-flash`, use the active `claude_code` entry in
+`routing.example.yaml`: `strategy: translate`, OpenAI wire, both
+`strip_control_chars` and `strip_reasoning`, and a completion probe. The CLI
+and routing key both use `glm-5.3-flash` in this example. Route selection is
+an exact `(backend, model)` string match: keep the CLI `--model` value and
+the routing entry’s `model` identical, including any namespace prefix. Set
+`upstream_model` to the identifier the upstream OpenAI endpoint expects; it
+may differ from the routing key. The startup probe judges the normalized completion, so a
+reasoning-only reply is usable. Tool calls remain structured through translation.
+
+Mount the routing table and explicitly supply its authentication variable on
+`claude-ephemeral`; a host-only variable is insufficient inside the container:
+
+```yaml
+performer_endpoints:
+  - id: claude-ephemeral
+    mode: ephemeral
+    image: coordinare-performer:extra
+    roles: [assessor, qa, tech_writer, env_bootstrap]
+    env:
+      BACKEND: claude_code
+      SELFHOSTED_ROUTING_CONFIG: /etc/coordinare/routing.yaml
+      SELFHOSTED_HEALTH_TIMEOUT: "120"
+      COORDINARE_PROXY_AUTH: "${LITELLM_MASTER_KEY}"
+      LITELLM_PROXY_AUTH_TOKEN: "${LITELLM_MASTER_KEY}"
+      LITELLM_PROXY_BASE_URL: https://litellm.example.com
+    volumes:
+      - host_path: /absolute/path/to/routing.yaml
+        container_path: /etc/coordinare/routing.yaml
+        mode: ro
+```
+
+Select `backend: claude_code` with the GLM single-model mode on the relevant
+roles, and set the symphony's `env_bootstrap_performer_id: claude-ephemeral`
+when using it for bootstrap. Validate configuration before restart. This is
+an operator opt-in; the generic Anthropic-native example remains available.
+Do not apply `disable_thinking` to this GLM model: the recorded policy experiment
+was harmful. The translate route repairs the wire adaptation instead.

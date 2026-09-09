@@ -95,13 +95,26 @@ async def handle_blocked(state: CoordinareState) -> CoordinareState:
 
     raw_questions = state.get("open_questions")
     questions = [str(item) for item in raw_questions] if isinstance(raw_questions, list) else []
+    ci_decision = state.get("latest_ci_gate_decision") or {}
     system_block = bool(state.get("system_error_reason") or state.get("env_blocked") or
-                        (state.get("latest_ci_gate_decision") or {}).get("verdict") == "escalate")
+                        ci_decision.get("verdict") == "escalate")
     if system_block and not questions:
         env = state.get("env_blocked") or {}
-        questions = [str(state.get("system_error_reason") or env.get("cause") or "CI could not complete")]
+        diagnostic = state.get("system_error_reason") or env.get("cause") or env.get("pattern_id")
+        action = env.get("action")
+        if not diagnostic and ci_decision.get("verdict") == "escalate":
+            names = ", ".join(check["name"] for check in ci_decision.get("failed_checks", [])
+                              if isinstance(check, dict) and isinstance(check.get("name"), str))
+            diagnostic = f"CI gate escalated. Failed checks: {names[:1000]}" if names else "CI gate escalated"
+            action = action or "Inspect the failed checks and repair or rerun CI"
+        diagnostic = diagnostic or "CI could not complete"
+        questions = [f"{diagnostic}. {action}" if action else str(diagnostic)]
     clarifications = state.get("card_clarifications") or []
-    answered_rounds = [c for c in clarifications if isinstance(c, dict) and c.get("answer", "").strip()]
+    answered_rounds = [
+        c for c in clarifications
+        if isinstance(c, dict) and c.get("author") and not _is_bot_author(str(c["author"]))
+        and isinstance(c.get("body"), str) and c["body"].strip()
+    ]
 
     # Forgetfulness guard: if the assessor is re-asking questions the human
     # already answered (human answered, then the bot re-posted the same

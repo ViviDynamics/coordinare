@@ -34,6 +34,21 @@
 #     fast at load. See the junie example at the bottom of this file.
 
 selfhosted_routing:
+  # 262: GLM loses content on LiteLLM's Anthropic adaptation. Translate locally
+  # onto Chat Completions; the completion probe judges AFTER normalizers.
+  # Pass COORDINARE_PROXY_AUTH in the claude-ephemeral endpoint's env (the secret
+  # value belongs in .env). The CLI and routing key both use this exact model.
+  - backend: claude_code
+    model: glm-5.3-flash
+    target:
+      base_url: https://litellm.example.com/v1
+      wire_format: openai
+      strategy: translate
+      upstream_model: glm-5.3-flash
+      upstream_auth_env: COORDINARE_PROXY_AUTH
+      normalizers: [strip_control_chars, strip_reasoning]
+      health_probe: completion
+
   # openclaw reviewer → Ollama-direct. LiteLLM's streaming harmony→tool_calls
   # handling for gpt-oss is broken (LiteLLM #17246/#13300): it leaks raw harmony
   # text instead of structured tool_calls, so review tools never execute. Reroute
