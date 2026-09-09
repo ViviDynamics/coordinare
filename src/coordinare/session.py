@@ -95,6 +95,7 @@ class CardSession(TypedDict, total=False):
     phase_entered_at: datetime | None
     backend_ui_url: str | None
     session_stats: SessionStats | None
+    pipeline_admitted: bool
     last_issue_comment_id: int | None
     processed_issue_comment_ids: set[int]
     feedback_cycle_count: int
@@ -249,6 +250,7 @@ class CardSession(TypedDict, total=False):
 # Fields that live on both CardSession and CoordinareState (flat).
 # Used for round-tripping between session ←→ state.
 _SESSION_FIELDS: tuple[str, ...] = (
+    "pipeline_admitted",
     "current_card",
     "performer_stage",
     "agent_dispatch",
@@ -373,6 +375,7 @@ def create_session_from_card(card: dict[str, Any]) -> CardSession:
         commit_summary=None,
         agent_health_status=None,
         phase="dispatching",
+        pipeline_admitted=False,
         pending_override=None,
         requirements_changed=False,
         requirements_changed_details={},

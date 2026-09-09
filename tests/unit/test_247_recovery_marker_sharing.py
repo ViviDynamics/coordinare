@@ -195,6 +195,8 @@ async def test_the_real_fanout_hands_every_session_the_same_marker_map() -> None
 
     daemon = _make_daemon()
     daemon._graph = graph
+    from types import SimpleNamespace
+    daemon._state["config"] = SimpleNamespace(max_concurrent_cards=2)
     daemon._state["active_sessions"] = {"card-a": _session("card-a"), "card-b": _session("card-b")}
     daemon._state["board_snapshot"] = {"IN_PROGRESS": ["card-a", "card-b"]}
     daemon._state["_board_cache"] = {

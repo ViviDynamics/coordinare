@@ -658,7 +658,8 @@ performers:
 # --- Concurrency ---
 
 # Maximum cards worked in parallel across all symphonies (or per symphony via overrides).
-# Sessions passively awaiting human review do not count toward this limit.
+# A slot stays reserved across performer stages and PR review. Blocked or done
+# issues release it; performer-role capacity adds a separate resource limit.
 # Range: 1–20. Default: 1.
 max_concurrent_cards: 1
 

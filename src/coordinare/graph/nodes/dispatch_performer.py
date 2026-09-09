@@ -888,6 +888,13 @@ async def dispatch_performer(state: CoordinareState) -> CoordinareState:
         # missing-prerequisites branch handles this safely (sets phase=idle).
         return await _dispatch_performer_body(state)
 
+    from coordinare.services.pipeline_budget import dispatch_has_pipeline_slot
+
+    if not dispatch_has_pipeline_slot(state, card_id):
+        logger.info("dispatch_performer.pipeline_capacity", card_id=card_id)
+        state["phase"] = "dispatching"
+        return state
+
     async with dispatch_mutex(card_id, performer_stage):
         side_writer = state.get("documenting_side") or {}
         if performer_stage == "documenting" and isinstance(side_writer, dict):

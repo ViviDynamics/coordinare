@@ -3222,7 +3222,9 @@ function renderActiveWorkPanels(s) {
 
     var liveLine = '';
     if (sess) {
-      var phaseLabel = formatPhaseLabel(sess.phase || '');
+      var skip = (s.session_skip_reasons || {})[iid];
+      var phaseLabel = skip && skip.reason === 'pipeline_capacity'
+        ? 'Queued — issue limit reached' : formatPhaseLabel(sess.phase || '');
       var stage = sess.performer_stage ? formatPhaseLabel(sess.performer_stage) : '';
       var elapsed = sess.agent_dispatch_at ? (fmtAge(sess.agent_dispatch_at) || '') : '';
       var stale = sess.agent_dispatch_at && (Date.now() - new Date(sess.agent_dispatch_at).getTime()) > STALE_THRESHOLD_MS;
@@ -3534,7 +3536,7 @@ function renderPerformersPage(s) {
   var skipHtml = roleSkips.length
     ? '<ul class="detail-list">' + roleSkips.map(function(sr) {
         var r = sr.reason || {};
-        var label = esc(r.reason || 'skipped');
+        var label = r.reason === 'pipeline_capacity' ? 'Queued — issue limit reached' : esc(r.reason || 'skipped');
         var blockers = Array.isArray(r.blockers) && r.blockers.length
           ? ' (blocked by #' + r.blockers.map(function(n) { return esc(String(n)); }).join(', #') + ')' : '';
         return '<li><span style="color:var(--color-accent-orange)">' + esc(sr.card) + '</span> — ' + label + blockers + '</li>';

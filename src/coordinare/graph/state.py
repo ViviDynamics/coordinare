@@ -327,6 +327,7 @@ class CoordinareState(TypedDict, total=False):
     # Cleared at cycle start; populated by _invoke_multi_session for ineligible sessions.
     session_skip_reasons: dict[str, dict[str, Any]]
     # 055: Issue comment idempotency fields.
+    pipeline_admitted: bool
     last_issue_comment_id: int | None
     processed_issue_comment_ids: set[int]
     # 056: Containerized performer endpoint registry — id → PerformerEndpointState.
@@ -441,6 +442,7 @@ def initial_state() -> CoordinareState:
         "github_retry_queue": [],
         "github_retry_after": None,
         "session_skip_reasons": {},
+        "pipeline_admitted": False,
         "last_issue_comment_id": None,
         "processed_issue_comment_ids": set(),
         "performer_endpoints": {},

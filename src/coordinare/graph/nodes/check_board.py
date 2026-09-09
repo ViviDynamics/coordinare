@@ -1689,6 +1689,21 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
                     mode="multi" if max_cards > 1 else "single",
                 )
 
+            # Restored TODO sessions retain their history but reconcile to idle.
+            # Rehydrate them from the board instead of skipping them forever as
+            # already active. The pipeline admission guard controls dispatch.
+            for item in eligible_todo:
+                sess = active_sessions.get(item)
+                if sess is None or sess.get("phase") != "idle":
+                    continue
+                sess["current_card"] = {
+                    **(sess.get("current_card") or {}),
+                    **_build_card_dict(item, board, "TODO"),
+                }
+                sess["phase"] = "dispatching"
+                if state.get("active_card_id") == item:
+                    session_to_state(sess, state)
+
             # 066 T017/FR-002: unified TODO pickup for any N (including N=1).
             # Passive-phase sessions (monitoring_pr) do not consume a concurrency slot.
             active_count = sum(
