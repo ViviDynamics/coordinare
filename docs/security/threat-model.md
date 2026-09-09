@@ -143,12 +143,12 @@ unreliable, and a filter that works most of the time mainly moves the risk somew
 
 ## The dashboard
 
-The dashboard is **unauthenticated by design**. There is no login, and every visitor who can reach
-it has full control: rewriting configuration, cancelling work, deleting symphonies.
-
-**Why**: it is a single-operator control plane bound to **loopback** (`dashboard_host` defaults to
-`127.0.0.1`). Adding authentication is tracked as **spec 143**
-([#197](https://github.com/ViviDynamics/coordinare/issues/197)).
+The dashboard is unauthenticated by default on loopback (`127.0.0.1`). Local
+callers have full operator control: rewriting configuration, cancelling work and
+deleting symphonies. Spec 143 adds optional shared-token authentication and refuses
+non-loopback dashboard binds without a token. When enabled, authentication covers
+reads, mutations and SSE. See [dashboard authentication](dashboard-auth.md) for
+browser/API access, TLS, token rotation and reverse-proxy SSO.
 
 **What defends it today** (spec 144, this document's own work): a localhost guard rejects any
 request whose `Host` is not local, and any state-changing request whose `Origin` is not local.
@@ -167,11 +167,11 @@ A request with **no** `Origin` is allowed: browsers always send one on non-GET r
 absence means the caller is not a browser, and forgery requires a browser. Scripts and probes keep
 working; the `Host` check still applies to them.
 
-**Residual risk**: the guard is a locality check, not authentication. **Anyone who can make
-requests from your machine, or from any host you have added to `trusted_dashboard_hosts`, has full
-control.** That includes any other process on your machine and anyone with a shell on it. If you
-bind `dashboard_host` beyond loopback, you have put an unauthenticated control plane on a network,
-and coordinare warns loudly at startup when you do. It cannot stop you.
+**Residual risk**: without auth, processes on the local machine retain full
+operator access. With auth, every token holder has that authority; this is not a
+multi-user authorization system. The Host/Origin guard remains active alongside
+authentication. Remote deployments must use TLS and protect the proxy-to-backend
+hop. A token does not isolate Coordinare from other processes sharing its host.
 
 ## Health endpoints
 
@@ -255,7 +255,7 @@ someone noticing.
 
 ## What this document does not cover
 
-- **Authentication for the dashboard.** Spec 143 ([#197](https://github.com/ViviDynamics/coordinare/issues/197)).
+- **Per-user dashboard roles.** Spec 143 supplies shared operator authentication; a user store and per-user permissions remain outside its scope.
 - **Sandboxing performers more strongly**, or removing the `docker.sock` mount. Both are
   substantially larger pieces of work than this document's hardening.
 - **Rate limiting or audit logging** for the dashboard.

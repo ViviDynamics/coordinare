@@ -1,8 +1,8 @@
 """Localhost guard for the dashboard (spec 144 / issue #198).
 
-The dashboard has no authentication by design: it is a loopback control plane,
-and adding a login is spec 143's job. That decision is only safe if a page in the
-operator's browser cannot drive it. This module is what makes that true.
+The dashboard defaults to a loopback control plane. Spec 143 adds optional
+authentication; these Host/Origin checks remain active in both modes so a foreign
+page in the operator's browser cannot drive the control plane.
 
 **Two checks, two different attacks.** Neither substitutes for the other, and
 dropping either one leaves a real hole:
@@ -24,7 +24,7 @@ The complete decision table lives in
 ``tests/unit/test_144_threat_model_trust_boundaries.py`` mirrors it row for row.
 
 This guard authenticates nothing. A permitted local caller is fully trusted,
-which is the current posture.
+when optional dashboard authentication is disabled.
 """
 
 from __future__ import annotations

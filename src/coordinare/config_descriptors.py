@@ -170,6 +170,7 @@ _DEFAULT_ANNOTATION = FieldAnnotation()
 _ANNOTATIONS: dict[str, FieldAnnotation] = {
     # --- secrets ---
     "global.github_token": FieldAnnotation(secret=True),
+    "global.dashboard_auth_token": FieldAnnotation(secret=True, restart_required=True),
     # --- restart-required process bindings ---
     "global.dashboard_port": FieldAnnotation(restart_required=True),
     "global.dashboard_host": FieldAnnotation(restart_required=True),

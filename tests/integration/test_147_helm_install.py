@@ -177,6 +177,7 @@ state:
   size: 1Gi
 secrets:
   GITHUB_TOKEN: smoke-test-token
+  COORDINARE_DASHBOARD_AUTH_TOKEN: smoke-test-dashboard-token-not-a-real-secret
 config:
   github_org: ViviDynamics
   human_reviewers: [smoke]
@@ -400,6 +401,7 @@ state:
   size: 1Gi
 secrets:
   GITHUB_TOKEN: smoke-test-token
+  COORDINARE_DASHBOARD_AUTH_TOKEN: smoke-test-dashboard-token-not-a-real-secret
 extraContainers:
   - name: github-stub
     image: {IMAGE}

@@ -972,6 +972,7 @@ class ProjectConfiguration(BaseSettings):
     health_check_host: str = "0.0.0.0"
     dashboard_port: int = Field(default=8090)
     dashboard_host: str = "127.0.0.1"
+    dashboard_auth_token: SecretStr | None = None
     # Extra hostnames permitted by the dashboard's localhost guard, for an operator
     # who deliberately fronts it with a proxy. Empty by default so the safe posture
     # is what you get by doing nothing; widening it requires naming an exact host,

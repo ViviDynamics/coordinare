@@ -1323,7 +1323,9 @@ def test_clarifications_card_appears_with_data(
 ) -> None:
     """Clarifications card appears when clarifications exist."""
     page.goto(live_server_url)
-    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    # "Idle" is also the static HTML default; it does not prove subscription.
+    # Wait for the first received snapshot before broadcasting this update.
+    page.wait_for_function("window._lastState !== null", timeout=_WAIT_SSE)
 
     store.broadcaster.broadcast(
         _full_snapshot(

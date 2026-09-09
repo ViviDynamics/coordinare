@@ -15,7 +15,8 @@ kubectl create namespace coordinare
 
 kubectl create secret generic coordinare-credentials \
   --namespace coordinare \
-  --from-literal=GITHUB_TOKEN=...
+  --from-literal=GITHUB_TOKEN=... \
+  --from-literal=COORDINARE_DASHBOARD_AUTH_TOKEN="$(openssl rand -hex 32)"
 
 helm install coordinare deploy/helm/coordinare \
   --namespace coordinare \
@@ -155,3 +156,11 @@ You should see `pods` and `pods/log`, and nothing else.
   outside, so coordinare could not reach the performers it starts.
 - **`/metrics` is not exposed** by default; it discloses card counts, model
   identifiers and error rates.
+
+
+The dashboard requires the `COORDINARE_DASHBOARD_AUTH_TOKEN` Secret entry because
+its container binds a non-loopback address. The chart references the variable
+name; never put the token into `config` or a committed values file. Connect through
+port-forwarding, then use username `operator` and the token as the browser password.
+The Service stays ClusterIP. For ingress/SSO and TLS, follow
+[dashboard authentication](../../../docs/security/dashboard-auth.md).
