@@ -88,7 +88,7 @@ KICKED_BACK = "kicked_back"
 #: string nothing matches. The comment this replaces listed four and the code
 #: already had five.
 EligibilityReason = Literal[
-    "eligible", "blocked_column", "dependency_blocked", "missing_card", "kicked_back"
+    "eligible", "blocked_column", "dependency_blocked", "missing_card", "kicked_back", "pipeline_capacity"
 ]
 
 #: How many BLOCKED sessions may run their graph in one cycle. Each one is a
@@ -439,6 +439,7 @@ def _persist_active_sessions(active_sessions: dict[str, Any]) -> dict[str, Persi
             documenting_side=documenting_side,
             processed_issue_comment_ids=comment_ids,
             last_issue_comment_id=last_issue_comment_id,
+            pipeline_admitted=bool(sess.get("pipeline_admitted", False)),
             feedback_ledger=feedback_ledger,
             feedback_origin_sha=feedback_origin_sha,
             noop_success_retries=noop_success_retries,
@@ -1088,6 +1089,7 @@ class CoordinareDaemon:
                     },
                     "processed_issue_comment_ids": set(persisted.processed_issue_comment_ids),
                     "last_issue_comment_id": persisted.last_issue_comment_id,
+                    "pipeline_admitted": persisted.pipeline_admitted,
                     # 126: restore the terminal-success-floor state so the
                     # feedback contract and no-op budget survive restarts.
                     "feedback_ledger": [
@@ -1564,6 +1566,7 @@ class CoordinareDaemon:
         also pre-seeded so rebase detection fires at most once per cycle.
         """
         active_sessions: dict = self._state.get("active_sessions") or {}
+        self._state.pop("_pipeline_selected", None)
 
         # 048: Sync SlotManager with current sessions to free stale slots
         # from crashed/expired performers before dispatching new ones.
@@ -1741,6 +1744,19 @@ class CoordinareDaemon:
             card_id: _compute_eligibility(card_id, session, board_snapshot, dep_graph)
             for card_id, session in active_sessions.items()
         }
+
+        from coordinare.services.pipeline_budget import select_pipelines
+
+        selected = select_pipelines(
+            active_sessions, self._max_concurrent_cards(),
+            {cid for cid, eligibility in eligibilities.items() if eligibility.eligible},
+        )
+        self._state["_pipeline_selected"] = selected
+        for cid, eligibility in eligibilities.items():
+            if eligibility.eligible and cid not in selected:
+                eligibilities[cid] = SessionEligibility(
+                    card_id=cid, eligible=False, reason="pipeline_capacity",
+                )
 
         # Record skip reasons for ineligible sessions.
         skip_reasons: dict[str, dict] = {}

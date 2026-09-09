@@ -720,3 +720,36 @@ def test_dashboard_session_summary_fields() -> None:
     assert s["card_tokens_total"] == 500
     assert s["card_cost_estimate"] == 1.5
     assert s["phase"] == "dispatching"
+
+
+@pytest.mark.asyncio
+async def test_restored_todo_sessions_resume_without_losing_history() -> None:
+    from coordinare.graph.nodes.check_board import check_board
+    from coordinare.services.pipeline_budget import select_pipelines
+    from coordinare.session import session_to_state
+
+    github = AsyncMock()
+    github.poll_board.return_value = _make_board(["PVI_1", "PVI_2"])
+    state = _state_with_config(max_concurrent_cards=1)
+    state["github_service"] = github
+    sessions = {}
+    for cid in ("PVI_1", "PVI_2"):
+        sess = create_session_from_card({"id": cid})
+        sess.update(phase="idle", performer_stage="implementing",
+                    last_issue_comment_id=42, processed_issue_comment_ids=[41, 42])
+        sessions[cid] = sess
+    state["active_sessions"] = sessions
+    state["active_card_id"] = "PVI_1"
+    session_to_state(sessions["PVI_1"], state)
+
+    result = await check_board(state)
+
+    assert result["phase"] == "dispatching"
+    for sess in result["active_sessions"].values():
+        assert sess["phase"] == "dispatching"
+        assert sess["current_card"]["status"] == "TODO"
+        assert sess["current_card"]["title"].startswith("Card ")
+        assert sess["performer_stage"] == "implementing"
+        assert sess["last_issue_comment_id"] == 42
+        assert sess["processed_issue_comment_ids"] == [41, 42]
+    assert select_pipelines(result["active_sessions"], 1) == {"PVI_1"}

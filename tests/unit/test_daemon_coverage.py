@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1112,7 +1113,8 @@ def test_compute_eligibility_satisfied_deps_are_eligible() -> None:
 # --- async fanout: concurrent invocation ---
 
 @pytest.mark.asyncio
-async def test_invoke_multi_session_concurrent_eligible() -> None:
+@pytest.mark.parametrize("limit", [1, 2])
+async def test_invoke_multi_session_concurrent_eligible(limit) -> None:
     """All eligible sessions must be invoked concurrently via asyncio.gather."""
     invocation_order: list[str] = []
 
@@ -1126,6 +1128,7 @@ async def test_invoke_multi_session_concurrent_eligible() -> None:
 
     daemon = _make_daemon()
     daemon._graph = graph
+    daemon._state["config"] = SimpleNamespace(max_concurrent_cards=limit)
 
     daemon._state["active_sessions"] = {
         "card-a": _make_session("card-a"),
@@ -1148,8 +1151,10 @@ async def test_invoke_multi_session_concurrent_eligible() -> None:
     await daemon._invoke_multi_session()
 
     assert "card-a" in invocation_order
-    assert "card-b" in invocation_order
-    assert graph.ainvoke.call_count == 2
+    assert ("card-b" in invocation_order) == (limit == 2)
+    assert graph.ainvoke.call_count == limit
+    if limit == 1:
+        assert daemon._state["session_skip_reasons"]["card-b"]["reason"] == "pipeline_capacity"
 
 
 # --- skip reasons: blocked and dependency ---

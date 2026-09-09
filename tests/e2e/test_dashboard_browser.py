@@ -1971,3 +1971,16 @@ def test_active_performers_renders_two_concurrent_sessions(
     tiles = page.locator("#active-performer-tiles")
     expect(tiles).to_contain_text("Fix the auth bug", timeout=_WAIT_LIVE)
     expect(tiles).to_contain_text("Add keyboard nav", timeout=_WAIT_LIVE)
+
+
+@pytest.mark.e2e
+def test_pipeline_queue_is_distinct_from_dispatching(page, live_server_url, store):
+    page.goto(live_server_url)
+    expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
+    session = _active_session("queued-card", "Queued work", "implementing")
+    session["phase"] = "dispatching"
+    store.broadcaster.broadcast(_full_snapshot(
+        active_sessions=[session], active_session_count=1,
+        session_skip_reasons={"queued-card": {"reason": "pipeline_capacity"}},
+    ))
+    expect(page.locator("#swimlane-section")).to_contain_text("Queued — issue limit reached")

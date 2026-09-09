@@ -401,6 +401,7 @@ class PersistedSession(BaseModel):
     # GitHub comment IDs are monotonic, so largest == newest); restored as a
     # set into the session.  Numeric IDs only — never comment bodies.
     processed_issue_comment_ids: list[int] = Field(default_factory=list)
+    pipeline_admitted: bool = False
     last_issue_comment_id: int | None = None
     # 126 (schema v15+): terminal-success-floor state.  feedback_ledger holds
     # the per-item feedback contract (stamped at bounce, disposed by the
