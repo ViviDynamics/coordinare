@@ -1,0 +1,19 @@
+{
+  "date_utc": "2026-09-09",
+  "gateway": "https://litellm.vividynamics.com",
+  "model": "spark/glm-5.3-flash",
+  "fixture": "tiny-multiply",
+  "repeats": 1,
+  "budget_seconds_per_point": 600,
+  "performer_image": "coordinare-performer:full",
+  "performer_image_id": "sha256:caabbf22e60f8e0682cc28bf2a1926af8321a464bf2d901e0726466944c2f4ca",
+  "observed_claude_version": "2.1.266",
+  "vendor_tools_installed_at_startup": true,
+  "baseline_source": "sweep/baseline/1",
+  "final_cells_source": "sweep-final",
+  "baseline_reuse_note": "Completed Claude baseline preserved unchanged. Its unused CODEX_PROVIDER_WIRE_API=chat variable was removed before every final nonbaseline cell; no actual Codex observation used that invalid setting.",
+  "excluded_sources": ["pilot", "pilot-fixed", "pilot-final", "sweep/* except baseline"],
+  "excluded_reason": "Preparation or operator-interrupted samples; pilot-final is supplemental successful-stage evidence, not included in the ranking.",
+  "other_gateway_workload": "A separate Switchyard experiment used the same gateway during part of this sweep. No isolated-throughput claim is made.",
+  "known_usage_defect": "https://github.com/ViviDynamics/coordinare/issues/305"
+}

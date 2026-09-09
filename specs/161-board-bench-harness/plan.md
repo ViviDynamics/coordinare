@@ -181,3 +181,30 @@ None. Every functional requirement is assigned to a task in
 healthy inference host, currently unresponsive) is a dependency, not a deferral: the code
 path is implemented and unit-tested with recorded artifacts, and only the live
 confirmation run waits on the host.
+
+## Issue #251 live completion (2026-09-09)
+
+The LiteLLM gateway now responds and advertises spark/glm-5.3-flash. Keep that model
+fixed and retain the shipped harness choices. Repair the sweep's missing real_config
+handoff and derive ephemeral BACKEND startup values from each materialized role;
+otherwise the nominal comparison installs the baseline harness. Shared endpoints
+must split by selected backend, preserving all other container settings. Reject
+mismatched persistent endpoints because their installed harness cannot be changed.
+Use the fake GitHub boundary, retain failed/insufficient evidence, and keep deployment
+selection advisory. A bounded live pilot precedes a serial sweep; secrets remain in
+environment variables, never benchmark artifacts. No production routing changes.
+
+Analysis: FR-014 through FR-018 require real selected-harness execution; T040 requires
+live evidence. The two runner gaps prevent that requirement and are in scope. No new
+dependency, service architecture, schema or unrelated harness repair is necessary.
+
+The live entrypoint fixes GLM through LiteLLM, leaves Codex’s wire enum unset per
+its backend contract, and caps each point at ten minutes. The final evidence must
+exclude operator-interrupted samples, retain the completed baseline unchanged,
+and disclose any reused baseline configuration fields that were inactive for Claude.
+
+Concrete gateway/model values and the reproducible live launcher are retained
+under this spec's `live/` directory. Public onboarding examples must not point
+readers at internal infrastructure (spec145); the tracked-file guard remains
+unchanged. Run `PYTHONPATH=src:agent/performer/src .venv/bin/python
+specs/161-board-bench-harness/live/bench_harness_live.py --output <fresh-dir>`.

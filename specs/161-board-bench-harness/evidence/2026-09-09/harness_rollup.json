@@ -1,0 +1,207 @@
+{
+  "schema_version": 1,
+  "run_ids": [
+    "20260909-030033",
+    "20260909-041517",
+    "20260909-040506",
+    "20260909-032443",
+    "20260909-033453",
+    "20260909-031441",
+    "20260909-035456",
+    "20260909-034455"
+  ],
+  "rows": [
+    {
+      "role": "architecting",
+      "backend": "claude_code",
+      "dispatches": 8,
+      "credit": 8,
+      "harness_defect": 0,
+      "environment": 0,
+      "inconclusive": 0,
+      "seconds_total": 1008.759893,
+      "tokens_total": 0,
+      "tokens_partial": false,
+      "runs_contributing": 8,
+      "per_run_scalars": [
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ],
+      "unknown_markers": []
+    },
+    {
+      "role": "assessing",
+      "backend": "claude_code",
+      "dispatches": 10,
+      "credit": 8,
+      "harness_defect": 0,
+      "environment": 0,
+      "inconclusive": 2,
+      "seconds_total": 314.352668,
+      "tokens_total": 0,
+      "tokens_partial": true,
+      "runs_contributing": 8,
+      "per_run_scalars": [
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ],
+      "unknown_markers": []
+    },
+    {
+      "role": "implementing",
+      "backend": "claude_code",
+      "dispatches": 6,
+      "credit": 6,
+      "harness_defect": 0,
+      "environment": 0,
+      "inconclusive": 0,
+      "seconds_total": 1203.440146,
+      "tokens_total": 0,
+      "tokens_partial": false,
+      "runs_contributing": 6,
+      "per_run_scalars": [
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ],
+      "unknown_markers": []
+    },
+    {
+      "role": "implementing",
+      "backend": "codex",
+      "dispatches": 1,
+      "credit": 1,
+      "harness_defect": 0,
+      "environment": 0,
+      "inconclusive": 0,
+      "seconds_total": 51.746123,
+      "tokens_total": null,
+      "tokens_partial": false,
+      "runs_contributing": 1,
+      "per_run_scalars": [
+        1.0
+      ],
+      "unknown_markers": []
+    },
+    {
+      "role": "implementing",
+      "backend": "opencode",
+      "dispatches": 1,
+      "credit": 1,
+      "harness_defect": 0,
+      "environment": 0,
+      "inconclusive": 0,
+      "seconds_total": 81.387331,
+      "tokens_total": null,
+      "tokens_partial": false,
+      "runs_contributing": 1,
+      "per_run_scalars": [
+        1.0
+      ],
+      "unknown_markers": []
+    },
+    {
+      "role": "reviewing",
+      "backend": "claude_code",
+      "dispatches": 5,
+      "credit": 2,
+      "harness_defect": 0,
+      "environment": 0,
+      "inconclusive": 3,
+      "seconds_total": 522.29801,
+      "tokens_total": 0,
+      "tokens_partial": true,
+      "runs_contributing": 5,
+      "per_run_scalars": [
+        1.0,
+        1.0
+      ],
+      "unknown_markers": []
+    },
+    {
+      "role": "reviewing",
+      "backend": "codex",
+      "dispatches": 1,
+      "credit": 1,
+      "harness_defect": 0,
+      "environment": 0,
+      "inconclusive": 0,
+      "seconds_total": 93.533436,
+      "tokens_total": null,
+      "tokens_partial": false,
+      "runs_contributing": 1,
+      "per_run_scalars": [
+        1.0
+      ],
+      "unknown_markers": []
+    },
+    {
+      "role": "reviewing",
+      "backend": "junie",
+      "dispatches": 1,
+      "credit": 0,
+      "harness_defect": 0,
+      "environment": 0,
+      "inconclusive": 1,
+      "seconds_total": 0.0,
+      "tokens_total": null,
+      "tokens_partial": false,
+      "runs_contributing": 1,
+      "per_run_scalars": [],
+      "unknown_markers": []
+    },
+    {
+      "role": "reviewing",
+      "backend": "openclaw",
+      "dispatches": 1,
+      "credit": 0,
+      "harness_defect": 0,
+      "environment": 0,
+      "inconclusive": 1,
+      "seconds_total": 50.633496,
+      "tokens_total": null,
+      "tokens_partial": false,
+      "runs_contributing": 1,
+      "per_run_scalars": [],
+      "unknown_markers": [
+        "error"
+      ]
+    },
+    {
+      "role": "security",
+      "backend": "openclaw",
+      "dispatches": 1,
+      "credit": 0,
+      "harness_defect": 0,
+      "environment": 0,
+      "inconclusive": 1,
+      "seconds_total": 34.408118,
+      "tokens_total": null,
+      "tokens_partial": false,
+      "runs_contributing": 1,
+      "per_run_scalars": [],
+      "unknown_markers": [
+        "error"
+      ]
+    }
+  ],
+  "generated_at": "2026-09-09T04:25:44.862320Z",
+  "artifact_schema_versions": [
+    1
+  ]
+}

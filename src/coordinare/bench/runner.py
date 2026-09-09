@@ -370,6 +370,10 @@ async def run_board(
     if config is not None:
         daemon.state["config"] = config.global_config
         daemon.state["symphony_configs"] = {s.name: s for s in config.symphonies}
+        from coordinare.graph.state import SymphonyRuntimeState
+        daemon.state["symphony_states"] = {
+            s.name: SymphonyRuntimeState(name=s.name) for s in config.symphonies
+        }
 
     # Build the fake server up front (real mode) so the finally can always tear it
     # down — even if start()/wiring raises partway (FR-009, D9).

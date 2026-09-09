@@ -1,0 +1,154 @@
+{
+  "schema_version": 1,
+  "run_id": "20260909-032443",
+  "started_at": "2026-09-09T03:24:43.207499Z",
+  "finished_at": "2026-09-09T03:34:53.959924Z",
+  "wall_clock_seconds": 610.752425,
+  "config_fingerprint": {
+    "hash": "a3d05ead4a972c21",
+    "source_path": "<materialized>"
+  },
+  "approver_policy": "gates_green",
+  "fixture_manifest": "tiny-multiply",
+  "cards": [
+    {
+      "card_id": "PVTI_1",
+      "issue_ref": "https://fake/bench-org/bench-repo/issues/1",
+      "title": "Implement multiply()",
+      "fixture_id": "tiny-multiply",
+      "final_state": "error",
+      "reached_stages": [
+        "assessing",
+        "architecting",
+        "implementing",
+        "reviewing"
+      ],
+      "dispatches": [
+        {
+          "stage": "assessing",
+          "role": "assessing",
+          "model": "spark/glm-5.3-flash",
+          "backend": "claude_code",
+          "job_id": "44631c2c-91d6-4e4b-b2c7-248979c5c7e2",
+          "session_id": "84a3231a-1404-429e-901e-7176468781a0",
+          "container_id": "dd7b37b4c51c1b641fe576b8cad6601f537f7dcdef40ed957e3fff630d3b55da",
+          "status": "succeeded",
+          "terminal_marker": "assessment_complete",
+          "started_at": "2026-09-09T03:24:43.732465Z",
+          "finished_at": "2026-09-09T03:25:16.283226Z",
+          "seconds": 32.550761,
+          "tokens_processed": 0,
+          "raw_summary_ref": null
+        },
+        {
+          "stage": "architecting",
+          "role": "architecting",
+          "model": "spark/glm-5.3-flash",
+          "backend": "claude_code",
+          "job_id": "b162f89b-aa79-4c72-9bba-2b0ac3fd214a",
+          "session_id": "29e9bb87-fec6-4886-b1e2-fce7b04760bd",
+          "container_id": "bcebea7b4f41ee29ed12f329b9bd14b397b7d7c8088a3c0dbf05f5d5777766f1",
+          "status": "succeeded",
+          "terminal_marker": "plan_committed",
+          "started_at": "2026-09-09T03:25:16.465662Z",
+          "finished_at": "2026-09-09T03:27:48.099642Z",
+          "seconds": 151.63398,
+          "tokens_processed": 0,
+          "raw_summary_ref": null
+        },
+        {
+          "stage": "implementing",
+          "role": "implementing",
+          "model": "spark/glm-5.3-flash",
+          "backend": "claude_code",
+          "job_id": "276990c2-dd83-4871-a0d5-e2b98b66fe7a",
+          "session_id": "625c2c38-dd79-4c5d-9ac8-3377a95a4a4d",
+          "container_id": "0620b1f1a7a437e2596d6ff5e9083c75fb62e81d99c1e79acb3069f69dd697a6",
+          "status": "succeeded",
+          "terminal_marker": "pr_opened",
+          "started_at": "2026-09-09T03:27:48.366824Z",
+          "finished_at": "2026-09-09T03:31:29.760926Z",
+          "seconds": 221.394102,
+          "tokens_processed": 0,
+          "raw_summary_ref": null
+        },
+        {
+          "stage": "assessing",
+          "role": "assessing",
+          "model": "spark/glm-5.3-flash",
+          "backend": "claude_code",
+          "job_id": "fb074023-8626-4ba6-998c-6396d3e479f5",
+          "session_id": "fc5e736e-6f6f-4957-be6e-cdb7d463968c",
+          "container_id": "6aa188289e0f8e1a52f985a206a4ac25355be0fd12aac05c77a1dc36a95eab0f",
+          "status": "cancelled",
+          "terminal_marker": null,
+          "started_at": "2026-09-09T03:33:03.757644Z",
+          "finished_at": null,
+          "seconds": null,
+          "tokens_processed": null,
+          "raw_summary_ref": null
+        },
+        {
+          "stage": "reviewing",
+          "role": "reviewing",
+          "model": "spark/glm-5.3-flash",
+          "backend": "codex",
+          "job_id": "4e1d311f-8824-4179-95a8-edf1dde39c5d",
+          "session_id": "4757df5b-bdb7-43f7-b6bd-9e07c9085b45",
+          "container_id": "f56077981e48fe2ffef52ce20334eb3249942dcef45e5bed31750e8f7355c8e6",
+          "status": "failed",
+          "terminal_marker": "changes_requested",
+          "started_at": "2026-09-09T03:31:30.040060Z",
+          "finished_at": "2026-09-09T03:33:03.573496Z",
+          "seconds": 93.533436,
+          "tokens_processed": null,
+          "raw_summary_ref": null
+        }
+      ],
+      "gate_decisions": [
+        {
+          "stage": "ci",
+          "verdict": "pass",
+          "head_sha": "3edbd859e58347ad565aa54d1e5196f443c03b12",
+          "required_checks": [],
+          "failed_checks": [],
+          "decided_at": null
+        }
+      ],
+      "ci_results": [
+        {
+          "head_sha": "3edbd859e58347ad565aa54d1e5196f443c03b12",
+          "required_checks": [
+            "pytest"
+          ],
+          "conclusion": "success",
+          "pytest_exit": 0,
+          "summary_ref": null
+        }
+      ],
+      "merge": {
+        "merged": false,
+        "merge_commit": null,
+        "approved_by": null
+      },
+      "timing": {
+        "first_dispatch_at": "2026-09-09T03:24:43.732465Z",
+        "terminal_at": "2026-09-09T03:34:53.959924Z",
+        "seconds": null
+      },
+      "cost": {
+        "tokens_processed": 0,
+        "cost_usd": 0.0,
+        "cost_estimated": true
+      }
+    }
+  ],
+  "totals": {
+    "tokens_processed": 0,
+    "cost_usd": 0.0,
+    "cost_estimated": true,
+    "cards_total": 1,
+    "cards_merged": 0,
+    "cards_terminal_nonmerge": 1
+  }
+}

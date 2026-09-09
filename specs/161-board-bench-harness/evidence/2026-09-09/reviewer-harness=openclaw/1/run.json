@@ -1,0 +1,138 @@
+{
+  "schema_version": 1,
+  "run_id": "20260909-031441",
+  "started_at": "2026-09-09T03:14:41.826563Z",
+  "finished_at": "2026-09-09T03:24:43.175532Z",
+  "wall_clock_seconds": 601.348969,
+  "config_fingerprint": {
+    "hash": "432fdb359a0c84a8",
+    "source_path": "<materialized>"
+  },
+  "approver_policy": "gates_green",
+  "fixture_manifest": "tiny-multiply",
+  "cards": [
+    {
+      "card_id": "PVTI_1",
+      "issue_ref": "https://fake/bench-org/bench-repo/issues/1",
+      "title": "Implement multiply()",
+      "fixture_id": "tiny-multiply",
+      "final_state": "error",
+      "reached_stages": [
+        "assessing",
+        "architecting",
+        "implementing",
+        "reviewing"
+      ],
+      "dispatches": [
+        {
+          "stage": "assessing",
+          "role": "assessing",
+          "model": "spark/glm-5.3-flash",
+          "backend": "claude_code",
+          "job_id": "b664f36f-df2f-4cae-a3f5-e9c77a29d8fd",
+          "session_id": "c0c7d438-be25-442b-8fac-631c9cf370e3",
+          "container_id": "b890bd69c10c32f155aa9529b49270648f79ac9cee52eee2afd361bc415e9c96",
+          "status": "succeeded",
+          "terminal_marker": "assessment_complete",
+          "started_at": "2026-09-09T03:14:42.530243Z",
+          "finished_at": "2026-09-09T03:15:25.105133Z",
+          "seconds": 42.57489,
+          "tokens_processed": 0,
+          "raw_summary_ref": null
+        },
+        {
+          "stage": "architecting",
+          "role": "architecting",
+          "model": "spark/glm-5.3-flash",
+          "backend": "claude_code",
+          "job_id": "1634798b-0119-4878-9d31-59922e691551",
+          "session_id": "de5fefe7-28c2-4ca0-a377-0a930cd8dc71",
+          "container_id": "b8b6662cc53c8218964f19b9416ea7b3516e4460b9cf60239bc6b21c2b37c660",
+          "status": "succeeded",
+          "terminal_marker": "plan_committed",
+          "started_at": "2026-09-09T03:15:25.286553Z",
+          "finished_at": "2026-09-09T03:18:21.257675Z",
+          "seconds": 175.971122,
+          "tokens_processed": 0,
+          "raw_summary_ref": null
+        },
+        {
+          "stage": "implementing",
+          "role": "implementing",
+          "model": "spark/glm-5.3-flash",
+          "backend": "claude_code",
+          "job_id": "71528524-6b91-4405-9cc9-dca1438814ba",
+          "session_id": "8174155b-5364-45b5-a0e9-fb71caf4f5ef",
+          "container_id": "4cae484610ac345610398e396aa6cf0104f7d8201d4ad6fc6bd84dadb5828369",
+          "status": "succeeded",
+          "terminal_marker": "pr_opened",
+          "started_at": "2026-09-09T03:18:21.443836Z",
+          "finished_at": "2026-09-09T03:23:29.730009Z",
+          "seconds": 308.286173,
+          "tokens_processed": 0,
+          "raw_summary_ref": null
+        },
+        {
+          "stage": "reviewing",
+          "role": "reviewing",
+          "model": "spark/glm-5.3-flash",
+          "backend": "openclaw",
+          "job_id": "859888f1-7810-4e8f-9ed4-90243abd7c17",
+          "session_id": "8ba037b7-abd3-4ae0-b766-5dc58afca2f3",
+          "container_id": "6e5e1905ed797940688d11ded203bff86a0488511fe0bb50a6467629fb293379",
+          "status": "error",
+          "terminal_marker": "error",
+          "started_at": "2026-09-09T03:23:30.110069Z",
+          "finished_at": "2026-09-09T03:24:20.743565Z",
+          "seconds": 50.633496,
+          "tokens_processed": null,
+          "raw_summary_ref": null
+        }
+      ],
+      "gate_decisions": [
+        {
+          "stage": "ci",
+          "verdict": "pass",
+          "head_sha": "516d90d42590111de9fd2cf496b6f387f08f5146",
+          "required_checks": [],
+          "failed_checks": [],
+          "decided_at": null
+        }
+      ],
+      "ci_results": [
+        {
+          "head_sha": "516d90d42590111de9fd2cf496b6f387f08f5146",
+          "required_checks": [
+            "pytest"
+          ],
+          "conclusion": "success",
+          "pytest_exit": 0,
+          "summary_ref": null
+        }
+      ],
+      "merge": {
+        "merged": false,
+        "merge_commit": null,
+        "approved_by": null
+      },
+      "timing": {
+        "first_dispatch_at": "2026-09-09T03:14:42.530243Z",
+        "terminal_at": "2026-09-09T03:24:43.175532Z",
+        "seconds": null
+      },
+      "cost": {
+        "tokens_processed": 0,
+        "cost_usd": 0.0,
+        "cost_estimated": true
+      }
+    }
+  ],
+  "totals": {
+    "tokens_processed": 0,
+    "cost_usd": 0.0,
+    "cost_estimated": true,
+    "cards_total": 1,
+    "cards_merged": 0,
+    "cards_terminal_nonmerge": 1
+  }
+}

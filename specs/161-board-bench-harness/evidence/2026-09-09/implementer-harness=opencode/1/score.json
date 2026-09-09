@@ -1,0 +1,43 @@
+{
+  "schema_version": 2,
+  "run_id": "20260909-040506",
+  "run_ref": "run.json",
+  "artifact_schema_version": 1,
+  "scored_at": "2026-09-09T04:15:17.752723Z",
+  "judged": false,
+  "judge_model": null,
+  "deterministic_only": true,
+  "view": "config_comparison",
+  "weights": {
+    "w_correctness": 1.0,
+    "w_cost": 0.1,
+    "w_time": 0.1,
+    "cost_budget_usd": 1.0,
+    "time_budget_seconds": 600.0
+  },
+  "cards": [
+    {
+      "card_id": "PVTI_1",
+      "fixture_id": "tiny-multiply",
+      "expected_final_state": "merged",
+      "observed_final_state": "error",
+      "category": "FAIL_HARNESS",
+      "correct": false,
+      "deterministic_ok": false,
+      "deterministic_detail": "harness failure: final_state=error, dispatches=5",
+      "judge_correct": null,
+      "judge_quality": null,
+      "judge_reason": ""
+    }
+  ],
+  "components": {
+    "correctness_rate": null,
+    "harness_failure_rate": 1.0,
+    "tokens_processed": 0,
+    "cost_usd": 0.0,
+    "cost_estimated": true,
+    "wall_clock_seconds": 610.831164
+  },
+  "scalar": null,
+  "cost_component_missing": false
+}

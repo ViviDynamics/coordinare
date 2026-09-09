@@ -1,0 +1,35 @@
+selfhosted_routing:
+- backend: claude_code
+  model: spark/glm-5.3-flash
+  target:
+    base_url: https://litellm.vividynamics.com/v1
+    wire_format: openai
+    strategy: translate
+    upstream_model: spark/glm-5.3-flash
+    upstream_auth_env: COORDINARE_PROXY_AUTH
+    normalizers:
+    - strip_control_chars
+    - strip_reasoning
+    health_probe: completion
+- backend: opencode
+  model: spark/glm-5.3-flash
+  target:
+    base_url: https://litellm.vividynamics.com
+    wire_format: openai
+    strategy: normalize
+    health_probe: completion
+    normalizers:
+    - strip_control_chars
+    - strip_reasoning
+    upstream_auth_env: COORDINARE_PROXY_AUTH
+- backend: junie
+  model: spark/glm-5.3-flash
+  target:
+    base_url: https://litellm.vividynamics.com
+    wire_format: openai
+    strategy: normalize
+    health_probe: completion
+    normalizers:
+    - strip_control_chars
+    - strip_reasoning
+    upstream_auth_env: COORDINARE_PROXY_AUTH

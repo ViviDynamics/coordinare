@@ -115,7 +115,7 @@ ranked table with a winner, a declared tie, or an explicit insufficient-evidence
 - [x] T037 [US3] Implement `HarnessScore` and the harness-comparison objective mirroring `compute_scalar`, in `src/coordinare/bench/harness_rank.py` (FR-010, FR-024)
 - [x] T038 [US3] Implement `HarnessRanking` with the tie rule, the configurable conclusive minimum, and the four verdicts, in `src/coordinare/bench/harness_rank.py` (FR-019 through FR-022)
 - [x] T039 [US3] Implement the ranking writer at the sweep root and a `python -m coordinare.bench.harness_rank <sweep-dir>` entrypoint (FR-023, FR-026) in `src/coordinare/bench/harness_rank.py`
-- [ ] T040 [US3] **BLOCKED (external, still open at merge)**: execute a real-performer confirmation run on the single self-hosted model and record the resulting per-role ranking in the PR body. Blocked on the Spark inference host, currently unresponsive (accepts TCP, returns zero bytes on HTTP, SSH banner timeout). Do NOT drop or fake this; if still blocked at merge, note it explicitly as unverified-live and keep it open under #248.
+- [x] T040 [US3] Real fixed-model eight-point sweep completed 2026-09-09 under #251; all swept roles report insufficient_evidence at min_conclusive=3. See live-evaluation.md and retained evidence.
 
 ---
 
@@ -199,3 +199,10 @@ data already on disk, and it is the only slice that cannot be blocked by infrast
 Add US2 next so fresh comparable data can be generated. US3 last, since it is the only
 part that needs a healthy inference host, and its live confirmation (T040) is currently
 blocked.
+
+## Issue #251 completion
+
+- [x] T041 Pass each materialized root's global config to the real board runner.
+- [x] T042 Derive ephemeral backend startup settings, split shared endpoints, and test baseline immutability.
+- [x] T043 Run a real fixed-model pilot and sweep through LiteLLM, retaining all failures.
+- [x] T044 Publish per-role recommendations and evidence limits; independent/Copilot review and validation recorded in PR #303; merge is gated on final-head CI.

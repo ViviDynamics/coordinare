@@ -41,6 +41,8 @@ def _add_shared_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument("--resolution", type=float, default=0.01,
                    help="target standard error of the mean scalar (with --noise-report)")
     p.add_argument("--max-repeats", type=int, default=10, help="cap on derived repeats")
+    p.add_argument("--wall-clock-budget", type=float, default=1200.0,
+                   help="real mode: hard deadline in seconds per run (default: 1200)")
     p.add_argument("--max-cycles", type=int, default=None, help="hard cycle budget per run")
     p.add_argument("--human-login", default="reviewer1", help="approving reviewer login")
     p.add_argument("--cost-rate", type=float, default=3.0, help="USD per million tokens (estimate)")
@@ -147,6 +149,7 @@ async def _main_async(args: argparse.Namespace) -> int:
         weights=_weights(args), judge=judge, judge_model=judge_model,
         stub=not args.real, human_login=args.human_login,
         max_cycles=args.max_cycles, cost_per_million_tokens=args.cost_rate,
+        wall_clock_budget_seconds=args.wall_clock_budget,
     )
 
     c = artifact.coverage

@@ -1,0 +1,233 @@
+{
+  "schema_version": 1,
+  "space_name": "harness",
+  "mode": "ablation",
+  "substrate_mode": "real",
+  "repeats": 1,
+  "repeats_source": "operator",
+  "noise_report_ref": null,
+  "weights": {
+    "w_correctness": 1.0,
+    "w_cost": 0.1,
+    "w_time": 0.1,
+    "cost_budget_usd": 1.0,
+    "time_budget_seconds": 600.0
+  },
+  "baseline": {
+    "point_id": "baseline",
+    "kind": "baseline",
+    "dimension": null,
+    "value": null,
+    "candidate": null,
+    "fingerprint": "74aa6ba16b36c74e",
+    "duplicate_of": null,
+    "score_refs": [
+      "baseline/1/score.json"
+    ],
+    "mean_scalar": null,
+    "mean_components": {
+      "harness_failure_rate": 1.0,
+      "tokens_processed": 0.0,
+      "cost_usd": 0.0,
+      "wall_clock_seconds": 610.976695
+    },
+    "failed": false,
+    "error": ""
+  },
+  "points": [
+    {
+      "point_id": "reviewer-harness=openclaw",
+      "kind": "ablation",
+      "dimension": "reviewer-harness",
+      "value": "openclaw",
+      "candidate": null,
+      "fingerprint": "432fdb359a0c84a8",
+      "duplicate_of": null,
+      "score_refs": [
+        "reviewer-harness=openclaw/1/score.json"
+      ],
+      "mean_scalar": null,
+      "mean_components": {
+        "harness_failure_rate": 1.0,
+        "tokens_processed": 0.0,
+        "cost_usd": 0.0,
+        "wall_clock_seconds": 601.348969
+      },
+      "failed": false,
+      "error": ""
+    },
+    {
+      "point_id": "reviewer-harness=codex",
+      "kind": "ablation",
+      "dimension": "reviewer-harness",
+      "value": "codex",
+      "candidate": null,
+      "fingerprint": "a3d05ead4a972c21",
+      "duplicate_of": null,
+      "score_refs": [
+        "reviewer-harness=codex/1/score.json"
+      ],
+      "mean_scalar": null,
+      "mean_components": {
+        "harness_failure_rate": 1.0,
+        "tokens_processed": 0.0,
+        "cost_usd": 0.0,
+        "wall_clock_seconds": 610.752425
+      },
+      "failed": false,
+      "error": ""
+    },
+    {
+      "point_id": "reviewer-harness=junie",
+      "kind": "ablation",
+      "dimension": "reviewer-harness",
+      "value": "junie",
+      "candidate": null,
+      "fingerprint": "202506d09e16b9ee",
+      "duplicate_of": null,
+      "score_refs": [
+        "reviewer-harness=junie/1/score.json"
+      ],
+      "mean_scalar": null,
+      "mean_components": {
+        "harness_failure_rate": 1.0,
+        "tokens_processed": 0.0,
+        "cost_usd": 0.0,
+        "wall_clock_seconds": 601.574716
+      },
+      "failed": false,
+      "error": ""
+    },
+    {
+      "point_id": "security-harness=openclaw",
+      "kind": "ablation",
+      "dimension": "security-harness",
+      "value": "openclaw",
+      "candidate": null,
+      "fingerprint": "9953eb9d98eb85a5",
+      "duplicate_of": null,
+      "score_refs": [
+        "security-harness=openclaw/1/score.json"
+      ],
+      "mean_scalar": null,
+      "mean_components": {
+        "harness_failure_rate": 1.0,
+        "tokens_processed": 0.0,
+        "cost_usd": 0.0,
+        "wall_clock_seconds": 600.463056
+      },
+      "failed": false,
+      "error": ""
+    },
+    {
+      "point_id": "security-harness=codex",
+      "kind": "ablation",
+      "dimension": "security-harness",
+      "value": "codex",
+      "candidate": null,
+      "fingerprint": "16f14eb2f022fe55",
+      "duplicate_of": null,
+      "score_refs": [
+        "security-harness=codex/1/score.json"
+      ],
+      "mean_scalar": null,
+      "mean_components": {
+        "harness_failure_rate": 1.0,
+        "tokens_processed": 0.0,
+        "cost_usd": 0.0,
+        "wall_clock_seconds": 610.790081
+      },
+      "failed": false,
+      "error": ""
+    },
+    {
+      "point_id": "implementer-harness=opencode",
+      "kind": "ablation",
+      "dimension": "implementer-harness",
+      "value": "opencode",
+      "candidate": null,
+      "fingerprint": "0d9e4ad9c780f9f7",
+      "duplicate_of": null,
+      "score_refs": [
+        "implementer-harness=opencode/1/score.json"
+      ],
+      "mean_scalar": null,
+      "mean_components": {
+        "harness_failure_rate": 1.0,
+        "tokens_processed": 0.0,
+        "cost_usd": 0.0,
+        "wall_clock_seconds": 610.831164
+      },
+      "failed": false,
+      "error": ""
+    },
+    {
+      "point_id": "implementer-harness=codex",
+      "kind": "ablation",
+      "dimension": "implementer-harness",
+      "value": "codex",
+      "candidate": null,
+      "fingerprint": "a3ba9b9c79c8a324",
+      "duplicate_of": null,
+      "score_refs": [
+        "implementer-harness=codex/1/score.json"
+      ],
+      "mean_scalar": null,
+      "mean_components": {
+        "harness_failure_rate": 1.0,
+        "tokens_processed": 0.0,
+        "cost_usd": 0.0,
+        "wall_clock_seconds": 610.80388
+      },
+      "failed": false,
+      "error": ""
+    }
+  ],
+  "deltas": [],
+  "ranking": [],
+  "coverage": {
+    "declared_points": 8,
+    "scored_points": 0,
+    "dropped": [
+      {
+        "point_id": "baseline",
+        "reason": "unrankable score (no scalar)"
+      },
+      {
+        "point_id": "reviewer-harness=openclaw",
+        "reason": "unrankable score (no scalar)"
+      },
+      {
+        "point_id": "reviewer-harness=codex",
+        "reason": "unrankable score (no scalar)"
+      },
+      {
+        "point_id": "reviewer-harness=junie",
+        "reason": "unrankable score (no scalar)"
+      },
+      {
+        "point_id": "security-harness=openclaw",
+        "reason": "unrankable score (no scalar)"
+      },
+      {
+        "point_id": "security-harness=codex",
+        "reason": "unrankable score (no scalar)"
+      },
+      {
+        "point_id": "implementer-harness=opencode",
+        "reason": "unrankable score (no scalar)"
+      },
+      {
+        "point_id": "implementer-harness=codex",
+        "reason": "unrankable score (no scalar)"
+      }
+    ],
+    "notes": [
+      "Live baseline uses Claude for all roles; original harness choices unchanged.",
+      "Budget exhaustion and missing role observations are evidence limits, never wins.",
+      "dimension 'reviewer-harness': choice 'claude_code' coincides with the baseline and was not re-run",
+      "dimension 'security-harness': choice 'claude_code' coincides with the baseline and was not re-run",
+      "dimension 'implementer-harness': choice 'claude_code' coincides with the baseline and was not re-run"
+    ]
+  }
+}

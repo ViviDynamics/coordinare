@@ -298,6 +298,42 @@ def _mean_components(scores: list[ScoreObject]) -> dict[str, float]:
     return out
 
 
+def _real_point_config(config: Any) -> Any:
+    """Install the selected harness in each ephemeral benchmark container.
+
+    BACKEND controls cold-start CLI installation; changing only performers.<role>
+    would dispatch a different harness into the baseline's container. Split a
+    shared endpoint when its roles select different backends, without mutating
+    the materialized configuration used for fingerprinting.
+    """
+    endpoints = []
+    used_ids = {ep.id for ep in config.performer_endpoints}
+    for ep in config.performer_endpoints:
+        groups: dict[str, list[str]] = {}
+        for role in ep.roles:
+            selected = config.performers.resolved_role(role)
+            backend = selected.backend if selected else ep.env.get("BACKEND", "")
+            groups.setdefault(backend, []).append(role)
+        if ep.mode != "ephemeral":
+            if any(backend != ep.env.get("BACKEND") for backend in groups):
+                raise ValueError(
+                    f"real sweep endpoint {ep.id!r} must be ephemeral to select a harness"
+                )
+            endpoints.append(ep)
+            continue
+        for backend, roles in groups.items():
+            endpoint_id = ep.id
+            if len(groups) > 1:
+                endpoint_id = f"{ep.id}-bench-{backend}"
+                while endpoint_id in used_ids:
+                    endpoint_id += "-split"
+                used_ids.add(endpoint_id)
+            endpoints.append(ep.model_copy(update={
+                "id": endpoint_id, "roles": roles, "env": {**ep.env, "BACKEND": backend},
+            }))
+    return config.model_copy(update={"performer_endpoints": endpoints})
+
+
 async def _run_point(
     spec: PointSpec,
     loaded: LoadedSpace,
@@ -312,6 +348,7 @@ async def _run_point(
     human_login: str,
     max_cycles: int | None,
     cost_per_million_tokens: float,
+    wall_clock_budget_seconds: float,
 ) -> PointResult:
     result = PointResult(
         point_id=spec.point_id, kind=spec.kind, dimension=spec.dimension,
@@ -328,6 +365,8 @@ async def _run_point(
                 human_login=human_login, max_cycles=max_cycles,
                 cost_per_million_tokens=cost_per_million_tokens,
                 stub=stub, config=cfg,
+                real_config=_real_point_config(cfg.global_config) if not stub else None,
+                wall_clock_budget_seconds=wall_clock_budget_seconds,
             )
             score = score_run(artifact, fixtures, weights=weights, judge=judge, judge_model=judge_model)
             score.write(repeat_dir)
@@ -361,10 +400,13 @@ async def run_sweep(
     human_login: str = "reviewer1",
     max_cycles: int | None = None,
     cost_per_million_tokens: float = 3.0,
+    wall_clock_budget_seconds: float = 1200.0,
 ) -> SweepArtifact:
     """Execute one sweep; write and return the validated artifact."""
     from coordinare.bench.fixtures import tiny_fixture  # local: avoids cycle at import
 
+    if not math.isfinite(wall_clock_budget_seconds) or wall_clock_budget_seconds <= 0:
+        raise ValueError("wall_clock_budget_seconds must be finite and positive")
     session = Path(session_dir)
     session.mkdir(parents=True, exist_ok=True)
     fixtures = fixtures or [tiny_fixture()]
@@ -380,6 +422,7 @@ async def run_sweep(
         repeats=repeats, weights=weights, judge=judge, judge_model=judge_model,
         stub=stub, human_login=human_login, max_cycles=max_cycles,
         cost_per_million_tokens=cost_per_million_tokens,
+        wall_clock_budget_seconds=wall_clock_budget_seconds,
     )
     results = [await _run_point(spec, loaded, fixtures, session, **run_kwargs) for spec in specs]
 
