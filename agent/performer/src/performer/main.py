@@ -1533,6 +1533,7 @@ async def _poll_check_runs(perf: Performance, settings: Settings | None) -> Perf
             status="blocked",
             session_id=perf.session_id,
             questions=questions,
+            reason=questions[0],
         )
 
     if perf.check_attempt >= max_attempts:
@@ -1543,6 +1544,7 @@ async def _poll_check_runs(perf: Performance, settings: Settings | None) -> Perf
             status="blocked",
             session_id=perf.session_id,
             questions=questions,
+            reason=questions[0],
         )
 
     perf.check_attempt += 1

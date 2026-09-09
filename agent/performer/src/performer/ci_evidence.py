@@ -62,10 +62,14 @@ async def fetch_failure_evidence(
     remaining_chars = 32_000
     names: list[str] = []
     platform = False
+    access_denied = False
     async with httpx.AsyncClient(headers=headers, timeout=10) as client:
         async def get(url: str, **kwargs: Any) -> Any:
+            nonlocal access_denied
             try:
                 response = await client.get(url, **kwargs)
+                if response.status_code in (401, 403):
+                    access_denied = True
                 response.raise_for_status()
                 return response.json()
             except (httpx.HTTPError, ValueError):
@@ -103,4 +107,4 @@ async def fetch_failure_evidence(
                                 names, platform = failed_step_context(job, document)
                         except (KeyError, TypeError, ValueError, yaml.YAMLError):
                             pass
-    return {'annotations': annotations, 'failed_steps': names, 'setup_failure': platform}
+    return {'annotations': annotations, 'failed_steps': names, 'setup_failure': platform, 'access_denied': access_denied}

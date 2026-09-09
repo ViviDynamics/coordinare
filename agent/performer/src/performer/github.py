@@ -122,6 +122,7 @@ async def get_check_runs(owner: str, repo: str, ref: str, token: str) -> list[di
         evidence = await fetch_failure_evidence(_github_api(), token, owner, repo, int(run.get("id") or 0), run.get("details_url"))
         messages = [*evidence["annotations"], *evidence["failed_steps"]]
         run["setup_failure"] = evidence["setup_failure"]
+        run["evidence_access_denied"] = evidence.get("access_denied", False)
         if messages:
             output = dict(run.get("output") or {})
             output["summary"] = "\n".join([str(output.get("summary") or ""), *messages])

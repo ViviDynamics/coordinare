@@ -74,3 +74,48 @@ async def test_job_setup_survives_annotations_permission_failure():
     checks = await get_check_runs('org', 'repo', 'abc', 'test')
     assert checks[0]['setup_failure'] is True
     assert all(call.request.url.host == 'api.github.com' for call in respx.calls)
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_denied_ci_evidence_holds_without_model_repair():
+    root = 'https://api.github.com/repos/org/repo'
+    respx.get(root + '/commits/abc/check-runs').respond(200, json={'check_runs': [{
+        'id': 197, 'name': 'Install dependencies', 'status': 'completed',
+        'conclusion': 'failure', 'output': {},
+        'details_url': 'https://github.com/org/repo/actions/runs/11/job/22',
+    }]})
+    respx.get(root + '/check-runs/197/annotations').respond(403)
+    respx.get(root + '/actions/jobs/22').respond(403)
+    checks = await get_check_runs('org', 'repo', 'abc', 'test')
+    ctx = SimpleNamespace(get_check_runs=AsyncMock(return_value=checks), github_api_calls=0,
+                          budgets=SimpleNamespace(ci_wait_s=1, ci_repairs=3), push=AsyncMock(),
+                          toolkit=SimpleNamespace(agent_turn=AsyncMock()))
+    with pytest.raises(InfrastructureBlocked, match='denied access'):
+        await run_ci_phase(ctx, head_sha='abc', quality=[], rerun_green=AsyncMock())
+    ctx.push.assert_not_awaited()
+    ctx.toolkit.agent_turn.assert_not_awaited()
+
+
+def test_recorded_tool_cache_error_is_infrastructure():
+    from performer.infrastructure import infrastructure_reason
+    assert 'tool-cache permissions' in infrastructure_reason(
+        "Error: EACCES: permission denied, mkdir '/opt/hostedtoolcache'")
+    assert infrastructure_reason("EACCES: permission denied, open '/app/report.txt'") is None
+
+
+@pytest.mark.asyncio
+async def test_legacy_status_poll_holds_without_incrementing_attempts(monkeypatch):
+    from performer.main import _poll_check_runs
+    checks = [{'name': 'Install dependencies', 'status': 'completed',
+               'conclusion': 'failure', 'evidence_access_denied': True}]
+    monkeypatch.setattr('performer.main.get_check_runs', AsyncMock(return_value=checks))
+    perf = SimpleNamespace(pr_head_sha='abc', session_id='session', state='checking',
+                           pr_url='https://github.com/org/repo/pull/197', pr_node_id=None,
+                           check_attempt=0, check_no_progress_streak=0,
+                           score=SimpleNamespace(owner_repo=('org', 'repo'), effective_github_token='test'))
+    result = await _poll_check_runs(perf, None)
+    assert result.status == 'env_blocked'
+    assert 'denied access' in result.reason
+    assert perf.check_attempt == 0
+    assert perf.check_no_progress_streak == 0
