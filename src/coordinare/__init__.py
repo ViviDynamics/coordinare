@@ -8,7 +8,7 @@ from typing import Any
 
 import structlog
 
-from coordinare.lib.redaction import redact_mapping
+from coordinare.lib.redaction import RedactingFormatter, redact_mapping
 
 
 def _redact_processor(_: Any, __: str, event_dict: MutableMapping[str, Any]) -> Mapping[str, Any]:
@@ -32,6 +32,9 @@ def configure_logging(log_level: str | None = None, *, structured: bool | None =
     )
 
     logging.basicConfig(level=level, format="%(message)s")
+    for handler in logging.getLogger().handlers:
+        if not isinstance(handler.formatter, RedactingFormatter):
+            handler.setFormatter(RedactingFormatter(handler.formatter or logging.Formatter()))
     renderer: structlog.types.Processor = (
         structlog.processors.JSONRenderer() if structured_enabled else structlog.dev.ConsoleRenderer()
     )
@@ -40,9 +43,9 @@ def configure_logging(log_level: str | None = None, *, structured: bool | None =
             structlog.contextvars.merge_contextvars,
             structlog.processors.TimeStamper(fmt="iso", utc=True),
             structlog.processors.add_log_level,
-            _redact_processor,
             structlog.processors.StackInfoRenderer(),
             structlog.processors.format_exc_info,
+            _redact_processor,
             renderer,
         ],
         wrapper_class=structlog.make_filtering_bound_logger(level),

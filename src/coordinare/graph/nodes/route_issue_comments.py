@@ -10,6 +10,8 @@ fetches any new comments, classifies them, and updates session state:
 """
 from __future__ import annotations
 
+import asyncio
+from time import monotonic
 from typing import TYPE_CHECKING
 
 import structlog
@@ -26,6 +28,12 @@ if TYPE_CHECKING:
     from coordinare.graph.state import CoordinareState
 
 logger = structlog.get_logger(__name__)
+
+
+# Bound restart catch-up: one comment-heavy card must not hold every monitor tick.
+_COMMENTS_PER_TICK = 5
+_COMMENT_BUDGET_SECONDS = 20.0
+_CLASSIFIER_TIMEOUT_SECONDS = 15.0
 
 
 async def route_issue_comments(state: CoordinareState) -> CoordinareState:
@@ -52,37 +60,36 @@ async def route_issue_comments(state: CoordinareState) -> CoordinareState:
     if not events:
         return state
 
-    # 123 US6 (FR-015): dedup BEFORE the AI classifier runs — never re-classify a
-    # comment already in ``processed_issue_comment_ids``.  The watermark is still
-    # advanced across ALL fetched events (below) so an already-processed comment
-    # is not re-fetched next cycle.
+    # Process an ordered prefix so the watermark never skips deferred comments.
+    events = sorted(events, key=lambda event: event.comment_id)
     new_max_id = since_id or 0
-    for event in events:
-        if event.comment_id > new_max_id:
-            new_max_id = event.comment_id
-    unprocessed = [e for e in events if e.comment_id not in processed]
-
-    # 123 US6 (FR-016): if every fetched comment was already processed, skip the
-    # AI classification call entirely — advance the watermark and return as a
-    # no-op rather than looping through already-handled comments.
-    if not unprocessed:
-        logger.debug(
-            "route_issue_comments.all_processed_skip",
-            card_id=card_id,
-            issue_number=issue_number,
-            fetched=len(events),
-        )
-        state["last_issue_comment_id"] = new_max_id if new_max_id else since_id
-        return state
+    deadline = monotonic() + _COMMENT_BUDGET_SECONDS
+    handled = 0
 
     conducting_backend = state.get("conducting_backend")
     clarifications: list[dict] = list(state.get("card_clarifications") or [])
     requirements_changed: bool = bool(state.get("requirements_changed"))
 
-    for event in unprocessed:
-        label = await classify_issue_comment_ai(
-            event.body, event.author, conducting_backend
-        )
+    for event in events:
+        if event.comment_id in processed:
+            new_max_id = max(new_max_id, event.comment_id)
+            continue
+        remaining = deadline - monotonic()
+        if handled >= _COMMENTS_PER_TICK or remaining <= 0:
+            logger.info("route_issue_comments.deferred", card_id=card_id)
+            break
+        try:
+            async with asyncio.timeout(min(_CLASSIFIER_TIMEOUT_SECONDS, remaining)):
+                label = await classify_issue_comment_ai(
+                    event.body, event.author, conducting_backend
+                )
+        except TimeoutError:
+            # The existing keyword fallback preserves the original comment body
+            # for scope changes/clarifications when the model is unavailable.
+            label = None
+            logger.info("route_issue_comments.classifier_timeout", card_id=card_id)
+        handled += 1
+        new_max_id = max(new_max_id, event.comment_id)
         classifier = "ai"
         if label is None:
             label = classify_issue_comment(event.body)
