@@ -2952,6 +2952,28 @@ async def handle_status(
                         progress="implementer workflow: CI green",
                     )
                 if _status == "partial_progress":
+                    # #278: failed milestones reset to their start commit. Push
+                    # the surviving committed milestones before this clone dies,
+                    # without creating a PR for an incomplete task.
+                    try:
+                        await push_branch(perf.stand, perf.score)
+                    except Exception as exc:
+                        perf.state = "env_blocked"
+                        detail = " ".join(_format_failure_excerpt(str(exc), limit=400).split())[:400]
+                        reason = f"Partial progress checkpoint push failed: {detail}"
+                        log.warning("implementer.checkpoint_push_failed", error_type=type(exc).__name__,
+                                    session_id=perf.session_id)
+                        return PerformerResponse(
+                            status="env_blocked", session_id=perf.session_id,
+                            reason=reason, report=_ir,
+                        )
+                    # push_branch may rebase onto concurrent remote work.
+                    try:
+                        _head = await get_head_sha(perf.stand)
+                    except Exception as exc:
+                        log.warning("implementer.checkpoint_head_failed", error_type=type(exc).__name__,
+                                    session_id=perf.session_id)
+                        _head = None
                     perf.state = "waiting_for_checks"
                     return PerformerResponse(
                         status="partial_progress", session_id=perf.session_id, report=_ir,
