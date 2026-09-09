@@ -37,12 +37,10 @@ _ITEM = {
 }
 
 
-def test_current_schema_version_is_20() -> None:
-    """Spec 173 bumps the snapshot schema to v20 (per-role intake gate fields on
-    the env-cache snapshot). Spec 169 bumped it to v19 (per-card review_findings),
-    166 to v18 (assessment), 165 to v17 (blueprint and documenting_side): all
-    still present, just no longer current."""
-    assert CURRENT_SCHEMA_VERSION == 20  # 173: + advocate/curator intake gate
+def test_current_schema_version_is_21() -> None:
+    """Spec 141 advances snapshots to v21 for attempt identity, daily log path
+    and pending content-failure source. All prior fields remain supported."""
+    assert CURRENT_SCHEMA_VERSION == 21  # 141: + attempt identity and log path
 
 
 def test_old_session_loads_with_surfaced_stale_reviews_default() -> None:

@@ -102,13 +102,13 @@ As a researcher building a routing model, I want all `spec_*` fields captured at
 | `model_tier` | `str \| null` | start | new | `"cheap"` \| `"mid"` \| `"frontier"` \| null — tier taxonomy does not yet exist; inferred from model name or config |
 | `model_name` | `str \| null` | start/end | partial | Model ID from config at dispatch; may need performer response to confirm |
 | `routing_reason` | `str` | start | new | `"default_policy"` always until router lands; `"explore_random"` \| `"router_v1"` \| `"manual"` are future values |
-| `started_at` | `str` (ISO UTC) | both | new | Timestamp at `dispatch_card`; denormalized onto end rows so `wall_time_s` is independently verifiable without fetching the start row |
+| `started_at` | `str \| null` (ISO UTC) | both | new | Timestamp at `dispatch_card`; denormalized onto end rows so `wall_time_s` is independently verifiable without fetching the start row |
 | `ended_at` | `str \| null` (ISO UTC) | end | new | Timestamp at verdict; not currently persisted |
 | `wall_time_s` | `float \| null` | end | new | Derived from `ended_at - started_at` |
 | `tokens_in` | `int \| null` | end | partial | `card_tokens_total` exists but is a lifetime aggregate; per-attempt counts need performer response |
 | `tokens_out` | `int \| null` | end | partial | Same as above |
 | `verdict` | `str \| null` | end | partial | Mapped from `StageVerdict.verdict` (free-text str) using the table below. Unrecognized values map to `"error"` — never `"fail"` — so unknown values cannot masquerade as task difficulty. |
-| `verdict_source` | `str \| null` | end | new | `"qa_role"` \| `"human"` \| `"grader"` — needs derivation from which node closed the attempt |
+| `verdict_source` | `str \| null` | end | new | `"qa_role"` \| `"human"` \| `"grader"` \| `"system"` — derived from the content-feedback or terminal path |
 | `terminal_state` | `str \| null` | end | new | `"merged"` \| `"blocked"` \| `"abandoned"` \| null; derivable from which terminal node runs |
 | `spec_word_count` | `int \| null` | start | new | Word count of card description at dispatch time |
 | `spec_has_acceptance_tests` | `bool \| null` | start | new | Heuristic: presence of "given/when/then" or "acceptance" in card body |
@@ -179,3 +179,20 @@ Fields excluded from the v1 main schema due to implementation cost or missing de
 - **A-007**: The `bounces_total` Prometheus counter (spec 009 extension, feat/per-role-quality-metrics) remains in place as a real-time aggregate signal. AttemptRecords are the historical source of truth; the counter is derived convenience. They are complementary, not redundant.
 
 - **A-008**: If the daemon restarts between `open_attempt` and `close_attempt`, `AttemptLog._log_paths` is lost. The log path for the in-flight attempt MUST be persisted on `PersistedSession` alongside `last_attempt_id` so it survives restarts. On recovery, `close_attempt` reads the stored path from `PersistedSession` rather than falling back to today's date. Implementation is deferred to T-A2 when `AttemptLog` is wired into the graph nodes.
+
+
+## T-A2 maintainer review clarifications
+
+- Attempts start only after a successful implementing dispatch, including lifecycles
+  that begin with assessment. Content rejection closes the previous attempt before
+  opening its child. Infrastructure retries retain the existing attempt.
+- Workflow snapshot v21 stores `last_attempt_id`, `last_attempt_log_path`, and
+  `last_attempt_failure_source` through flat state and CardSession. The last field
+  records pending content rejection across restart; it is not raw feedback.
+- Recovered start timestamps and wall times are null when unavailable. The persisted
+  daily file path still guarantees that the end row joins the original start row.
+- System failures/timeouts use `system` provenance, QA/security content rejection
+  uses `qa_role`, and human/review/merge decisions use the existing `human` category.
+- With no performer log directory, logs resolve under `logs/attempts` beside the
+  configuration file (or the resolved state-file directory for programmatic startup).
+- The one-day operational check SC-001 is performed after deployment.

@@ -341,6 +341,20 @@ def _persist_active_sessions(active_sessions: dict[str, Any]) -> dict[str, Persi
             if isinstance(noop_raw, int) and not isinstance(noop_raw, bool)
             else 0
         )
+        # 141: persist in-flight attempt telemetry IDs so close_attempt can
+        # write to the correct JSONL file after a daemon restart (A-008).
+        last_attempt_id_raw = sess.get("last_attempt_id")
+        last_attempt_id_val = (
+            str(last_attempt_id_raw)
+            if isinstance(last_attempt_id_raw, str) and last_attempt_id_raw
+            else None
+        )
+        last_attempt_log_path_raw = sess.get("last_attempt_log_path")
+        last_attempt_log_path_val = (
+            str(last_attempt_log_path_raw)
+            if isinstance(last_attempt_log_path_raw, str) and last_attempt_log_path_raw
+            else None
+        )
         # 165: the blueprint is a plain dict (validated on the performer side);
         # the side-run record is validated here so a corrupt entry drops to
         # None instead of failing the snapshot save.
@@ -418,6 +432,12 @@ def _persist_active_sessions(active_sessions: dict[str, Any]) -> dict[str, Persi
             feedback_ledger=feedback_ledger,
             feedback_origin_sha=feedback_origin_sha,
             noop_success_retries=noop_success_retries,
+            last_attempt_id=last_attempt_id_val,
+            last_attempt_log_path=last_attempt_log_path_val,
+            last_attempt_failure_source=sess.get("last_attempt_failure_source")
+            if isinstance(sess.get("last_attempt_failure_source"), str)
+            and sess.get("last_attempt_failure_source") in {"human", "qa_role", "grader"}
+            else None,
             assessment=assessment,
             review_findings=review_findings,
         )
@@ -843,7 +863,11 @@ class CoordinareDaemon:
         if isinstance(sessions, dict):
             session_stages: tuple = tuple(
                 sorted(
-                    (str(cid), str((s or {}).get("performer_stage") or ""))
+                    (
+                        str(cid), str((s or {}).get("performer_stage") or ""),
+                        str((s or {}).get("last_attempt_id") or ""),
+                        str((s or {}).get("last_attempt_failure_source") or ""),
+                    )
                     for cid, s in sessions.items()
                     if isinstance(s, dict) or s is None
                 )
@@ -1061,6 +1085,11 @@ class CoordinareDaemon:
                     ],
                     "feedback_origin_sha": persisted.feedback_origin_sha,
                     "noop_success_retries": persisted.noop_success_retries,
+                    # 141: restore in-flight attempt IDs so terminal nodes can
+                    # call close_attempt after a daemon restart (A-008).
+                    "last_attempt_id": persisted.last_attempt_id,
+                    "last_attempt_log_path": persisted.last_attempt_log_path,
+                    "last_attempt_failure_source": persisted.last_attempt_failure_source,
                     # 165: the blueprint and the documenter side run survive a
                     # restart so the remaining briefs and the side run's
                     # once-per-hash rule still hold.
@@ -1080,6 +1109,19 @@ class CoordinareDaemon:
                     session_dict["current_card"] = {"id": card_id}
                 restored_sessions[card_id] = session_dict
             self._state["active_sessions"] = restored_sessions
+            # 141 A-008: re-register any in-flight attempt with AttemptLog so
+            # close_attempt writes the end row to the correct JSONL file even
+            # after a midnight rollover + restart.
+            attempt_log = self._state.get("attempt_log")
+            if attempt_log is not None:
+                from pathlib import Path as _Path
+                for _card_id, _sess in restored_sessions.items():
+                    _aid = _sess.get("last_attempt_id")
+                    _alp = _sess.get("last_attempt_log_path")
+                    _card = _sess.get("current_card") or {}
+                    _task_id = str(_card.get("id", "") or _card_id)
+                    if isinstance(_aid, str) and _aid and isinstance(_alp, str) and _alp:
+                        attempt_log.reopen_attempt(_aid, _task_id, _Path(_alp))
         elif snapshot.active_card_id and self._state.get("current_card"):
             # 066 FR-005 / T004: v1-snapshot synthesis.  Pre-Fix-7 snapshots
             # populated active_card_id + per-card top-level fields but had no

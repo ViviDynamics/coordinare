@@ -357,6 +357,8 @@ async def classify_human_feedback(state: CoordinareState) -> CoordinareState:
     processed_ids: set[str] = state.get("processed_review_ids") or set()
     new_ids = {str(r.get("id", "")) for r in pending_reviews if isinstance(r, dict) and r.get("id")}
     state["processed_review_ids"] = processed_ids | new_ids
+    if state.get("last_attempt_id"):
+        state["last_attempt_failure_source"] = "human"
     state["relay_feedback"] = pending_reviews  # type: ignore[typeddict-unknown-key]
     state["pending_reviews"] = []
     state["performer_stage"] = target_stage

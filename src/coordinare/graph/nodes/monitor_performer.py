@@ -733,6 +733,11 @@ def _feedback_cycle_exhausted(
     triage without digging through logs or cross-referencing the PR
     timeline.
     """
+    # Mark content feedback even when the cycle budget is disabled.
+    if state.get("last_attempt_id") and reason_label in {"changes_requested", "qa_failed", "security_failed"}:
+        state["last_attempt_failure_source"] = (
+            "qa_role" if source_stage in {"qa", "security"} else "human"
+        )
     max_cycles = _feedback_cycle_budget(state)
     if max_cycles <= 0:
         return None  # 0 disables the bound
@@ -4581,6 +4586,8 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
 
         # --- Token-cap exhaustion (055) ---
         if marker == "token_limit":
+            from coordinare.services.attempt_telemetry import close_attempt
+            close_attempt(state, "timeout", "system", "blocked")
             reason = str(status.get("reason", ""))
             current_max = state.get("card_context", {}).get("max_tokens")
             if current_max:
@@ -4684,6 +4691,8 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
                 state["agent_dispatch_at"] = None
                 return state
             # decision == "block" — exhausted retry budget; move to BLOCKED
+            from coordinare.services.attempt_telemetry import close_attempt
+            close_attempt(state, "timeout", "system", "blocked")
             state["phase"] = "blocked"
             state["open_questions"] = [
                 f"Performer stage '{stage}' idle-timed-out the configured "
@@ -4874,6 +4883,8 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
                 # block with a diagnostic so a human can investigate.
                 error_count = state.get("system_error_count", 0)
                 if error_count >= 3:
+                    from coordinare.services.attempt_telemetry import close_attempt
+                    close_attempt(state, "timeout", "system", "blocked")
                     reason = str(status.get("reason", "unknown"))
                     logger.warning(
                         "monitor_performer.relay_retry_budget_exceeded",

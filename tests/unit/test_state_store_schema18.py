@@ -30,8 +30,8 @@ _ASSESSMENT = {
 }
 
 
-def test_schema_version_is_20() -> None:
-    assert CURRENT_SCHEMA_VERSION == 20  # 173: + the intake gate fields
+def test_schema_version_is_21() -> None:
+    assert CURRENT_SCHEMA_VERSION == 21  # 141: + attempt identity, log path and pending content source
 
 
 def test_new_assessment_field_defaults_to_none() -> None:

@@ -302,5 +302,12 @@ async def handle_blocked(state: CoordinareState) -> CoordinareState:
     symphony = state.get("symphony_name", "__default__")
     METRICS.cards_outcome_total.labels(symphony=symphony, outcome="blocked").inc()
 
+    from coordinare.services.attempt_telemetry import close_attempt
+    failure_source = state.get("last_attempt_failure_source")
+    if failure_source in {"human", "qa_role", "grader"} and not state.get("env_blocked"):
+        close_attempt(state, "fail", failure_source, "blocked")
+    else:
+        close_attempt(state, "error", "system", "blocked")
+
     state["phase"] = "blocked"
     return state

@@ -974,6 +974,22 @@ async def _bootstrap_services(
             stage = _ROLE_TO_STAGE[role]
             role_timeouts[stage] = role_config.timeout_seconds
 
+    # 141: anchor relative paths to the config directory, or the state location
+    # when services are bootstrapped without an on-disk config.
+    from coordinare.attempt_log import AttemptLog
+    _attempt_base = (
+        config_path.resolve().parent if config_path is not None
+        else config.state_file_path.resolve().parent
+    )
+    _performer_logs = getattr(config, "performer_log_dir", None)
+    _attempt_log_dir = (
+        Path(_performer_logs) / "attempts" if _performer_logs is not None
+        else _attempt_base / "logs" / "attempts"
+    )
+    if not _attempt_log_dir.is_absolute():
+        _attempt_log_dir = _attempt_base / _attempt_log_dir
+    attempt_log = AttemptLog(log_dir=_attempt_log_dir)
+
     service_state: CoordinareState = {
         "config": config,
         "config_path": config_path,
@@ -989,6 +1005,8 @@ async def _bootstrap_services(
         # dashboard and graph nodes must share one instance or pushed entries
         # land in a log nobody serves.
         "activity_log": activity_log,
+        # 141: attempt telemetry singleton
+        "attempt_log": attempt_log,
         "human_reviewers": config.human_reviewers,
         "trusted_bot_reviewers": config.trusted_bot_reviewers,
         "blocked_reminder_hours": config.blocked_reminder_hours,

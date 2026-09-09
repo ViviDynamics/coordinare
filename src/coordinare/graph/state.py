@@ -301,6 +301,9 @@ class CoordinareState(TypedDict, total=False):
     feedback_ledger: list[dict[str, Any]]
     feedback_origin_sha: str | None
     noop_success_retries: int
+    last_attempt_id: str | None
+    last_attempt_log_path: str | None
+    last_attempt_failure_source: str | None
     # 046: Dependency state for the current card — list of unsatisfied blocker
     # dicts [{issue_number, title, column, issue_url, source}].  Populated by
     # check_board's dependency filtering and consumed by dashboard + notifications.
@@ -354,6 +357,9 @@ class CoordinareState(TypedDict, total=False):
     snapshot_save_fn: Any
     # Performer service registry, keyed by performer id — same reason as above.
     performer_services_by_id: dict[str, Any]
+    # 141: AttemptLog singleton.  Typed Any so LangGraph's runtime annotation
+    # resolver never imports attempt_log at graph-build time.
+    attempt_log: Any
 
     # 064: Closer PR-checks gate — per-card cache of last poll for tick fast-path.
     # Keyed by card_id; resets when PR HEAD SHA changes.
@@ -421,6 +427,9 @@ def initial_state() -> CoordinareState:
         "feedback_ledger": [],
         "feedback_origin_sha": None,
         "noop_success_retries": 0,
+        "last_attempt_id": None,
+        "last_attempt_log_path": None,
+        "last_attempt_failure_source": None,
         "blocked_by_dependencies": [],
         "last_known_main_sha": None,
         "last_rebase_round": None,
@@ -454,6 +463,8 @@ def initial_state() -> CoordinareState:
         "multi_pr_divergence": None,
         "wedge_count_window": {},
         "reconciliation_decisions_last_startup": {},
+        # 141: attempt telemetry singleton — wired in by _bootstrap_services
+        "attempt_log": None,
     }
 
 
