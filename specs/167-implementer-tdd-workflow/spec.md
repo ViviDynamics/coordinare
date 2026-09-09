@@ -232,3 +232,8 @@ The blueprint marks the card `tests`: existing behaviour lacks tests. Each miles
 ## Rollout
 
 Default off. Enabled per symphony by setting `workflow: implementer` on the implementer role after the five fixtures pass in CI and `single` and `two_milestones` have each been run once live in a performer container with turn and round durations recorded against the budgets. The performer images must be rebuilt (base, full, extra) before enabling. Recommended order: enable on a symphony that already runs `workflow: architect`, so the milestones come from a blueprint.
+
+
+## Partial-progress checkpoint amendment (#278)
+
+A partial-progress workflow report causes the performer to push surviving commits before returning the terminal response. Failed milestones have already reset to their start commit; uncommitted files are not committed by this checkpoint. No PR is opened for partial work. Existing PRs track their branch normally. Push failure returns ENV_BLOCKED with its cause rather than claiming a durable checkpoint. A successful push refreshes head_after because the shared push helper can rebase onto concurrent work. The next dispatch fetches this branch and spec 171 resumes from its completed milestones.
