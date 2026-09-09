@@ -1497,6 +1497,16 @@ async def _poll_check_runs(perf: Performance, settings: Settings | None) -> Perf
             progress="CI checks in progress...",
         )
 
+    # Infrastructure failures never enter the model repair/no-progress loop.
+    from performer.infrastructure import check_infrastructure_reason
+
+    if cause := check_infrastructure_reason(failed):
+        perf.state = "env_blocked"
+        return PerformerResponse(status="env_blocked", session_id=perf.session_id, reason=cause,
+                                 pr_url=perf.pr_url, pr_node_id=perf.pr_node_id,
+                                 report={"ci_infrastructure": {"head_sha": perf.pr_head_sha,
+                                         "check_names": [str(run.get("name") or "check") for run in failed], "cause": cause}})
+
     # verdict == "fail"
     max_attempts = settings.CHECK_MAX_ATTEMPTS if settings is not None else 3
     no_progress_limit = settings.CHECK_NO_PROGRESS_LIMIT if settings is not None else 2
@@ -2983,7 +2993,8 @@ async def handle_status(
                     )
                 if _status == "env_blocked":
                     perf.state = "env_blocked"
-                    return PerformerResponse(status="env_blocked", session_id=perf.session_id, reason=_reason, report=_ir)
+                    return PerformerResponse(status="env_blocked", session_id=perf.session_id, reason=_reason, report=_ir,
+                                             pr_url=_ir.get("pr_url"), pr_node_id=_ir.get("pr_node_id"))
                 perf.state = "changes_requested"
                 return PerformerResponse(
                     status="changes_requested", session_id=perf.session_id, reason=_reason,

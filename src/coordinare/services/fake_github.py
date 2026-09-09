@@ -104,8 +104,10 @@ class FakeGitHubService(CardIdentityMap):
         human_reviewers: list[str] | None = None,
         approver: Callable[[dict[str, Any]], bool] | None = None,
         test_command: tuple[str, ...] = DEFAULT_TEST_COMMAND,
+        git_auth_enabled: bool = True,
         work_dir: str | Path | None = None,
     ) -> None:
+        self._git_auth_enabled = git_auth_enabled
         self._bare_repo = Path(bare_repo_path)
         self._org = org
         self._project_name = project_name
@@ -152,10 +154,10 @@ class FakeGitHubService(CardIdentityMap):
             logger.warning("fake_github.aclose_failed", error=str(exc))
 
     async def current_token(self) -> str:
-        return "fake-token"
+        return await self._current_token()
 
     async def _current_token(self) -> str:
-        return "fake-token"
+        return "fake-token" if self._git_auth_enabled else ""
 
     # ---- harness setup helpers (not part of the Protocol) ----------------
 

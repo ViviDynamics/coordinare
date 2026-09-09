@@ -95,6 +95,11 @@ async def handle_blocked(state: CoordinareState) -> CoordinareState:
 
     raw_questions = state.get("open_questions")
     questions = [str(item) for item in raw_questions] if isinstance(raw_questions, list) else []
+    system_block = bool(state.get("system_error_reason") or state.get("env_blocked") or
+                        (state.get("latest_ci_gate_decision") or {}).get("verdict") == "escalate")
+    if system_block and not questions:
+        env = state.get("env_blocked") or {}
+        questions = [str(state.get("system_error_reason") or env.get("cause") or "CI could not complete")]
     clarifications = state.get("card_clarifications") or []
     answered_rounds = [c for c in clarifications if isinstance(c, dict) and c.get("answer", "").strip()]
 
@@ -103,7 +108,7 @@ async def handle_blocked(state: CoordinareState) -> CoordinareState:
     # clarification with no newer human reply), stop re-blocking and re-queue
     # for dispatch. Re-blocking again would loop indefinitely on questions
     # that have effectively been answered. See _reask_loop_detected.
-    if questions and _reask_loop_detected(clarifications):
+    if not system_block and questions and _reask_loop_detected(clarifications):
         logger.info(
             "handle_blocked_clarification_loop_broken",
             card_id=card_id,
@@ -242,9 +247,10 @@ async def handle_blocked(state: CoordinareState) -> CoordinareState:
         if issue_id:
             try:
                 header = coordinare_attribution(state.get("config"), stage)
+                label = "System blocked — operator action required" if system_block else "Needs input"
                 await board_provider.add_card_comment(
                     issue_id,
-                    f"{header}\n\n**{role_label}** — Needs input:\n{question_lines}",
+                    f"{header}\n\n**{role_label}** — {label}:\n{question_lines}",
                 )
                 clear_deferred_github_operation(state, "handle_blocked_comment")
             except Exception as exc:

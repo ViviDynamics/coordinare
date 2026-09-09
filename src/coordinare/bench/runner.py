@@ -328,6 +328,9 @@ async def run_board(
     bare = materialize_repo(fixtures, scratch / "repos")
     fake = FakeGitHubService(
         bare_repo_path=bare,
+        # Stub dispatch uses the local bare repository directly. Exposing an auth
+        # token enables live ls-remote preflight against the configured GitHub host.
+        git_auth_enabled=not stub,
         human_reviewers=[human_login],
         approver=gates_green,
         work_dir=scratch / "ci",

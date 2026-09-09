@@ -128,6 +128,11 @@ def _match_env_signature(output: str) -> str | None:
     """
     if _TEST_FAILURE_MARKERS.search(output):
         return None
+    from performer.infrastructure import infrastructure_reason
+
+    infra = infrastructure_reason(output)
+    if infra:
+        return infra
     haystack = output.lower()
     for sig in _ENV_FAILURE_SIGNATURES:
         if sig in haystack:

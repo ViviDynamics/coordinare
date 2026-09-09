@@ -260,7 +260,7 @@ async def test_env_blocked_dispatches_distinct_operator_notification() -> None:
     assert len(notifier.events) == 1
     event = notifier.events[0]
     assert event.event_type == EventType.env_blocked
-    assert event.dedup_key == f"env_blocked:{'a' * 40}:artifact_storage_quota"
+    assert event.dedup_key == "env_blocked:" + result["latest_ci_gate_decision"]["env_blocked_checks"][0]["head_signature"]
     assert event.payload["pattern_id"] == "artifact_storage_quota"
     assert "storage" in event.payload["action"].lower()
     # secret-free: payload carries only identifiers/cause/action
@@ -304,9 +304,9 @@ async def test_env_blocked_multiple_patterns_aggregated_in_notification() -> Non
     assert result["latest_ci_gate_decision"]["verdict"] == "hold"
     assert len(notifier.events) == 1
     ev = notifier.events[0]
-    # dedup key = sorted set of distinct pattern ids
+    # The notification identity uses job/error signatures across unrelated heads.
     assert ev.payload["pattern_id"] == "artifact_storage_quota+runner_offline"
-    assert ev.dedup_key.endswith("artifact_storage_quota+runner_offline")
+    assert ev.dedup_key == "env_blocked:" + "|".join(sorted(c["head_signature"] for c in result["latest_ci_gate_decision"]["env_blocked_checks"]))
     # both causes named, not just the first
     assert "storage" in ev.payload["cause"].lower()
     assert "runner" in ev.payload["cause"].lower()
@@ -499,10 +499,9 @@ async def test_env_blocked_gate_off_dispatches_no_operator_notification() -> Non
 
 
 @pytest.mark.asyncio
-async def test_env_blocked_renotifies_once_after_resume_then_reblock() -> None:
+async def test_env_blocked_operator_resume_does_not_bypass_shared_cooldown() -> None:
     """095 (T017/FR-004/FR-006): a flapping infra block — block (notify once),
-    operator resumes (env_blocked cleared), then the SAME block recurs — must
-    re-notify exactly once, not stay silent on the recurrence."""
+    operator resumes (env_blocked cleared), then the SAME block recurs — stays within the shared infrastructure cooldown (263)."""
     from coordinare.models.notification import EventType
 
     class _CapturingNotifier:
@@ -531,9 +530,9 @@ async def test_env_blocked_renotifies_once_after_resume_then_reblock() -> None:
     # 2) Condition cleared (operator acted) — dedup state reset to None.
     state["env_blocked"] = None
 
-    # 3) Same infra block recurs → re-notifies exactly once more.
+    # 3) The same unresolved incident stays quiet within its cooldown.
     await monitor_performer(state)
-    assert len(notifier.events) == 2
+    assert len(notifier.events) == 1
     assert notifier.events[-1].event_type == EventType.env_blocked
 
 
