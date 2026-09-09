@@ -281,14 +281,18 @@ class PiBackend:
     def _handle_event(self, event: dict[str, Any]) -> None:
         etype = str(event.get("type", ""))
 
-        if etype == "message_update":
+        if etype == "message_start":
+            self._message_seq = getattr(self, "_message_seq", 0) + 1
+
+        elif etype == "message_update":
             ame = event.get("assistantMessageEvent") or {}
             if isinstance(ame, dict) and ame.get("type") == "text_delta":
                 delta = str(ame.get("delta", ""))
                 if delta:
                     self._output_accumulator.append(delta)
                     self._status = BackendStatus(state="working", progress=delta[:_MAX_TEXT])
-                    self._emit(BackendEventType.progress, delta)
+                    self._emit(BackendEventType.progress, delta, is_delta=True,
+                               stream_id=str(getattr(self, "_message_seq", 0)))
 
         elif etype == "tool_execution_start":
             tool = str(event.get("toolName", "tool"))[:_MAX_TEXT]
@@ -313,8 +317,10 @@ class PiBackend:
                 self._saw_terminal = True
                 self._status = BackendStatus(state="error", error_reason=msg)
 
-    def _emit(self, type: BackendEventType, text: str, detail: str = "") -> None:
-        self._event_buffer.append(BackendEvent(type=type, text=text[:_MAX_TEXT], detail=detail))
+    def _emit(self, type: BackendEventType, text: str, detail: str = "", *,
+              is_delta: bool = False, stream_id: str = "") -> None:
+        self._event_buffer.append(BackendEvent(type=type, text=text[:_MAX_TEXT], detail=detail,
+                                               is_delta=is_delta, stream_id=stream_id))
 
 
 def _extract_final_assistant_text(messages: Any) -> str:

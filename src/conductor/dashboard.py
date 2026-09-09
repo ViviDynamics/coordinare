@@ -975,6 +975,11 @@ td { padding: 4px 8px; border-bottom: 1px solid var(--color-bg-elevated); }
 .af-liveness { margin-left: auto; color: var(--color-accent-green); white-space: nowrap; }
 .af-liveness.af-not-live { color: var(--color-accent-yellow); }
 .af-log { max-height: 320px; overflow-y: auto; overflow-x: hidden; background: var(--color-bg-base); border: 1px solid var(--color-bg-elevated); border-radius: 4px; font-size: 12px; }
+.af-raw { white-space: pre-wrap; overflow-wrap: anywhere; padding-left: 12px; }
+.af-tool { white-space: pre-wrap; overflow-wrap: anywhere; }
+.af-raw-label { color: var(--color-text-muted); padding: 6px 12px; }
+.af-row details { grid-column: 1 / -1; min-width: 0; width: 100%; }
+.af-row summary { cursor: pointer; }
 .af-row { display: grid; grid-template-columns: 62px minmax(0, 1fr); gap: 6px; padding: 3px 6px; border-bottom: 1px solid var(--color-bg-surface); align-items: start; }
 .af-row:last-child { border-bottom: none; }
 .af-time { color: var(--color-text-muted); white-space: nowrap; font-size: 11px; padding-top: 2px; }
@@ -1266,6 +1271,7 @@ td { padding: 4px 8px; border-bottom: 1px solid var(--color-bg-elevated); }
 
 </div><!-- /#main-content -->
 
+<script src="/static/activity-streams.js"></script>
 <script>
 mermaid.initialize({
   startOnLoad: false,
@@ -3759,8 +3765,9 @@ var AF_SILENCE_MS = 40000;   // ~2.5 keepalive intervals (FR-026)
 var AF_LABELS = {
   progress: 'PROGRESS', tool_use: 'TOOL', thinking: 'THINKING', cost: 'COST',
   stage_change: 'STAGE', recovered: 'RECOVERED', quiet: 'QUIET',
-  stall: 'STALL', stuck: 'STUCK', error: 'ERROR'
+  stall: 'STALL', stuck: 'STUCK', error: 'ERROR', blocked: 'BLOCKED', completed: 'COMPLETED'
 };
+var _afGroupingActive = false; // older SSE payloads lack session attribution
 var _afEntries = [];        // retained entries, oldest-first
 var _afSeen = {};           // seq -> true; reconnect backfill must not double-insert
 var _afFilter = '';
@@ -3775,20 +3782,6 @@ function afTime(iso) {
   try { return new Date(iso).toLocaleTimeString(); } catch(e) { return ''; }
 }
 
-function afRowHtml(e) {
-  var who = e.card_number ? ('#' + e.card_number) : (e.card_title || e.card_id || '');
-  var where = (who ? who : '') + (e.stage ? ' ' + e.stage : '');
-  // The kind chip is a visible TEXT prefix, so severity is never carried by
-  // colour alone (WCAG 1.4.1).
-  return '<div class="af-row">' +
-    '<span class="af-time">' + esc(afTime(e.timestamp)) + '</span>' +
-    '<span class="af-body">' +
-      '<span class="af-kind ev-' + esc(e.activity_type) + '">' + esc(afLabel(e.activity_type)) + '</span>' +
-      (where ? '<span class="af-card">' + esc(where) + '</span>' : ' ') +
-      esc(e.text || '') + (e.truncated ? '&hellip;' : '') +
-    '</span>' +
-  '</div>';
-}
 
 function afMatches(e) { return !_afFilter || e.card_id === _afFilter; }
 
@@ -3800,13 +3793,23 @@ function afAppend(entries) {
   for (var i = 0; i < entries.length; i++) {
     var e = entries[i];
     if (e == null || _afSeen[e.seq]) continue;
+    if (e.session_id) _afGroupingActive = true;
     _afSeen[e.seq] = true;
+    var prev = _afEntries[_afEntries.length - 1];
+    e._afGroupKey = afCanGroup(prev, e) ? prev._afGroupKey : e.seq;
     _afEntries.push(e);
     // FR-032: any real entry ends the card's quiet episode.
     if (e.card_id && e.activity_type !== 'quiet') delete _afQuietCards[e.card_id];
     if (!afMatches(e)) continue;
     html = afRowHtml(e) + html;   // batch is oldest-first; newest ends up on top
     added++;
+  }
+  while (_afEntries.length > AF_MAX_ROWS) delete _afSeen[_afEntries.shift().seq];
+  if (_afGroupingActive) {
+    afSyncGroups(false);
+    afUpdateEmpty();
+    afUpdateFilterOptions();
+    return;
   }
   if (added) {
     // Prepend ONLY the new rows. A full re-render would make
@@ -3823,6 +3826,11 @@ function afRender() {
   // Full re-render — filter changes only, never a live update.
   var feed = document.getElementById('activity-feed');
   if (!feed) return;
+  if (_afGroupingActive) {
+    afSyncGroups(true);
+    afUpdateEmpty();
+    return;
+  }
   var html = '';
   for (var i = 0; i < _afEntries.length; i++) {
     if (afMatches(_afEntries[i])) html = afRowHtml(_afEntries[i]) + html;
@@ -3848,6 +3856,7 @@ function afUpdateFilterOptions() {
     seen[e.card_id] = true;
     cards.push(e);
   }
+  if (_afFilter && !seen[_afFilter]) cards.push({card_id:_afFilter, card_title:_afFilter + ' (no retained activity)'});
   var key = cards.map(function(e) { return e.card_id; }).join(',');
   if (key === sel.getAttribute('data-cards')) return;
   sel.setAttribute('data-cards', key);
@@ -4001,6 +4010,101 @@ _ACTIVE_PHASES = {"monitoring_performer", "monitoring_agent", "dispatching"}
 # FastAPI app factory
 # ---------------------------------------------------------------------------
 
+
+
+_ACTIVITY_STREAM_JS = """var AF_SUMMARIES = {
+  progress: 'Performer reported progress.', thinking: 'Performer is reasoning.',
+  tool_use: 'Performer used a tool.', cost: 'Usage updated.',
+  stage_change: 'Workflow stage changed.', recovered: 'Work recovered.',
+  quiet: 'No recent activity.', stall: 'Performer stalled.', stuck: 'Work is stuck.',
+  error: 'An error was reported.', blocked: 'Work is blocked.', completed: 'Work completed.'
+};
+function afSummary(e) { return AF_SUMMARIES[e.activity_type] || 'Activity reported.'; }
+function afRawHtml(entries) {
+  var blocks = [];
+  entries.forEach(function(e) {
+    var previous = blocks[blocks.length - 1];
+    var fragment = (e.text || '') + (e.truncated ? '\u2026 [truncated]' : '');
+    if (previous && e.is_delta && previous.delta &&
+        previous.kind === e.activity_type && previous.stream === (e.stream_id || '')) {
+      previous.text += fragment;
+    } else {
+      blocks.push({text:fragment, kind:e.activity_type,
+                   delta:!!e.is_delta, stream:e.stream_id || ''});
+    }
+  });
+  return blocks.map(function(b) {
+    return b.kind === 'tool_use' ? '<pre class="af-tool"><code>' + esc(b.text) + '</code></pre>' :
+      '<p>' + esc(b.text) + '</p>';
+  }).join('');
+}
+function afCanGroup(a, b) {
+  var stream = {progress:true, thinking:true, tool_use:true};
+  return !!(a && b && a.session_id && a.performer_id &&
+    stream[a.activity_type] && stream[b.activity_type] &&
+    a.card_id === b.card_id && a.stage === b.stage &&
+    a.session_id === b.session_id && a.performer_id === b.performer_id);
+}
+function afGroups() {
+  var groups = [];
+  _afEntries.forEach(function(e) {
+    var g = groups[groups.length - 1];
+    if (g && afCanGroup(g.entries[g.entries.length - 1], e)) g.entries.push(e);
+    else groups.push({key: e._afGroupKey == null ? e.seq : e._afGroupKey, entries:[e]});
+  });
+  return groups;
+}
+function afRowHtml(e, group) {
+  var entries = group ? group.entries : [e];
+  var who = e.card_number ? ('#' + e.card_number) : (e.card_title || e.card_id || '');
+  var where = who + (e.stage ? ' ' + e.stage : '');
+  var count = entries.length;
+  var key = group ? group.key : e.seq;
+  return '<div class="af-row">' +
+    '<details id="af-group-' + esc(String(key)) + '">' +
+    '<summary><span class="af-time">' + esc(afTime(e.timestamp)) + '</span> ' +
+    '<span class="af-kind ev-' + esc(e.activity_type) + '">' + esc(afLabel(e.activity_type)) + '</span>' +
+    '<span class="af-card">' + esc(where) + '</span> ' +
+    '<span class="af-summary">' + esc(afSummary(e)) + ' (' + count +
+    (count === 1 ? ' update)' : ' updates)') + '</span></summary>' +
+    '<div class="af-raw-label">Raw output (may contain other languages; retained text only)</div>' +
+    '<div class="af-raw">' + afRawHtml(entries) + '</div>' +
+    '</details></div>';
+}
+function afSyncGroups(reset) {
+  var feed = document.getElementById('activity-feed');
+  if (!feed) return;
+  if (reset) feed.innerHTML = '';
+  var wanted = {}, html = '';
+  afGroups().forEach(function(g) {
+    var e = g.entries[g.entries.length - 1];
+    if (!afMatches(e)) return;
+    var id = 'af-group-' + g.key;
+    wanted[id] = true;
+    var node = document.getElementById(id);
+    if (!node) { html = afRowHtml(e, g) + html; return; }
+    // Preserve the details element and its summary: open state and keyboard
+    // focus survive streaming updates. Only text/diagnostic children change.
+    node.querySelector('.af-time').textContent = afTime(e.timestamp);
+    var chip = node.querySelector('.af-kind');
+    chip.className = 'af-kind ev-' + e.activity_type;
+    chip.textContent = afLabel(e.activity_type);
+    node.querySelector('.af-summary').textContent = afSummary(e) + ' (' +
+      g.entries.length + (g.entries.length === 1 ? ' update)' : ' updates)');
+    var raw = node.querySelector('.af-raw');
+    var signature = g.entries[0].seq + ':' + e.seq;
+    if (raw.getAttribute('data-events') !== signature) {
+      raw.innerHTML = afRawHtml(g.entries);
+      raw.setAttribute('data-events', signature);
+    }
+  });
+  if (html) feed.insertAdjacentHTML('afterbegin', html);
+  // Raw retention is authoritative, even when all incoming events are filtered.
+  feed.querySelectorAll('details[id^="af-group-"]').forEach(function(node) {
+    if (!wanted[node.id]) node.parentElement.remove();
+  });
+}
+"""
 
 
 #: 155 (#202): the assistant's page and behaviour, kept OUT of ``_DASHBOARD_HTML``
@@ -4530,6 +4634,11 @@ def create_dashboard_app(
             log_kwargs["streaming"] = True
         _log.info("http_request", **log_kwargs)
         return response
+
+    @app.get("/static/activity-streams.js")
+    async def activity_stream_script() -> Response:
+        return Response(_ACTIVITY_STREAM_JS, media_type="application/javascript",
+                        headers={"Cache-Control": "no-cache"})
 
     @app.get("/", response_class=HTMLResponse)
     async def dashboard() -> HTMLResponse:

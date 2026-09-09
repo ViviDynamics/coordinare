@@ -872,6 +872,11 @@ _ACTIVITY_TYPE_BY_EVENT = {
     "cost": "cost",
     "error": "error",
     "output": "progress",
+    "completed": "completed",
+    "completion": "completed",
+    "blocked": "blocked",
+    "failed": "error",
+    "failure": "error",
 }
 
 
@@ -887,6 +892,8 @@ def _activity_attribution(state: CoordinareState, card_id: str, stage: str) -> d
         "card_number": card.get("issue_number"),
         "card_title": card.get("title", ""),
         "stage": stage,
+        "session_id": str((state.get("agent_dispatch") or {}).get("session_id") or ""),
+        "performer_id": str((state.get("agent_dispatch") or {}).get("performer_id") or stage),
     }
 
 
@@ -927,6 +934,9 @@ def _record_activity_batch(
             {
                 "activity_type": _ACTIVITY_TYPE_BY_EVENT.get(str(ev.get("type", "")), "progress"),
                 "text": ev.get("text") or ev.get("detail") or "",
+                "is_delta": ev.get("is_delta") is True,
+                "stream_id": ev.get("stream_id", ""),
+                "source_event_id": str(ev.get("timestamp") or ""),
                 **attribution,
             }
             for ev in events

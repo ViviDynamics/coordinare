@@ -51,6 +51,8 @@ class BackendEvent(BaseModel):
     type: BackendEventType
     text: str               # human-readable one-line summary (≤ 200 chars)
     detail: str = ""        # optional longer detail (file path, tool args, etc.)
+    is_delta: bool = False
+    stream_id: str = ""
 
     @model_validator(mode="before")
     @classmethod

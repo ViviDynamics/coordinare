@@ -145,10 +145,13 @@ class TestHandleNotification:
 
     def test_agent_message_delta_emits_progress(self) -> None:
         adapter = CodexBackend()
-        adapter._handle_notification("item/agentMessage/delta", {"delta": "thinking..."})
+        adapter._handle_notification("item/agentMessage/delta", {"delta": " thinking...", "itemId": "message-1"})
         events = adapter.drain_events()
         assert len(events) == 1
         assert events[0].type == BackendEventType.progress
+        assert events[0].is_delta is True
+        assert events[0].stream_id == "message-1"
+        assert events[0].text == " thinking..."
 
     def test_agent_message_delta_empty_is_noop(self) -> None:
         adapter = CodexBackend()

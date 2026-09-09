@@ -1511,6 +1511,11 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
     role = _persona_role_for_stage(performer_stage)
     if role is not None:
         card_context["persona_instructions"] = get_effective_instructions(role, personas)
+        card_context["persona_instructions"] += (
+            "\n\nWrite all user-facing progress updates, summaries, findings, and explanations "
+            "in English. Preserve code, paths, quoted source text, and machine-readable "
+            "protocol fields exactly; do not translate those values."
+        )
 
     # Include relay feedback when present (reviewer / QA feedback loops).
     relay_feedback: list[dict[str, Any]] | None = state.get("relay_feedback")  # type: ignore[assignment]

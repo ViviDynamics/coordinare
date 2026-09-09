@@ -184,3 +184,26 @@ One test per guarantee G1–G11, plus:
 | `test_wedged_agent_reemits_nothing` | Re-recording an unchanged batch 100× appends zero entries (SC-009) — the headline behaviour |
 | `test_memory_ceiling_under_flood` | 100k oversized records leave ≤ 2000 entries, each ≤ 200 chars (SC-013) |
 | `test_timestamp_not_in_dedup_key` | Same event at two different times appends once — guards the invariant most at risk of being broken |
+
+
+## 2026-09-09 additive stream attribution (#315, #316)
+
+Activity entries additionally carry `session_id` and `performer_id` strings
+(each bounded to 200 characters, empty when unavailable). Both are optional
+keyword arguments to `record` and supported keys in `record_many`. Dedup includes
+these identities so the same text in a new session remains a new event.
+
+The client groups consecutive progress/thinking/tool entries only when all
+attribution fields match and both new identity fields are nonempty. Lifecycle
+and failure entries interrupt groups. Raw entries remain oldest-first on the
+wire; retention remains 2,000 entries with 200-character redacted text. Collapsed
+rows use deterministic English status labels; expansion exposes the retained
+original text with an explicit language/truncation label.
+
+`is_delta` (default false) and `stream_id` (default empty) identify text fragments
+within a message. Clients concatenate consecutive deltas only when activity type
+and stream identity match, in wire order, preserving whitespace. Non-delta tool
+events are distinct code blocks. Raw diagnostics have no repeated timestamps.
+The monitor uses the source event timestamp for delta replay suppression, so two
+distinct occurrences of the same word are retained; this is not the activity
+observation timestamp. Legacy events keep content-based suppression.
