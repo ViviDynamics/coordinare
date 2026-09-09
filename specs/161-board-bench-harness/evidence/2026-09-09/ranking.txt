@@ -1,0 +1,17 @@
+architecting: INSUFFICIENT_EVIDENCE
+  1. claude_code    scalar=0.8319  credit=8/8 conclusive  defects=0  runs=8
+
+assessing: INSUFFICIENT_EVIDENCE
+  1. claude_code    scalar=0.9476  credit=8/8 conclusive  defects=0  runs=8
+
+implementing: INSUFFICIENT_EVIDENCE
+  1. claude_code    scalar=0.7994  credit=6/6 conclusive  defects=0  runs=6
+  insufficient evidence (<3 conclusive): codex, opencode
+
+reviewing: INSUFFICIENT_EVIDENCE
+  insufficient evidence (<3 conclusive): claude_code, codex, junie, openclaw
+
+security: INSUFFICIENT_EVIDENCE
+  insufficient evidence (<3 conclusive): openclaw
+
+advisory only: no live configuration was modified

@@ -1,0 +1,203 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-09-09T04:25:44.863370Z",
+  "run_ids": [
+    "20260909-030033",
+    "20260909-041517",
+    "20260909-040506",
+    "20260909-032443",
+    "20260909-033453",
+    "20260909-031441",
+    "20260909-035456",
+    "20260909-034455"
+  ],
+  "view": "harness_comparison",
+  "weights": {
+    "w_correctness": 1.0,
+    "w_cost": 0.1,
+    "w_time": 0.1,
+    "cost_budget_usd": 1.0,
+    "time_budget_seconds": 600.0
+  },
+  "rankings": [
+    {
+      "role": "architecting",
+      "ordered": [
+        {
+          "role": "architecting",
+          "backend": "claude_code",
+          "view": "harness_comparison",
+          "weights": {
+            "w_correctness": 1.0,
+            "w_cost": 0.1,
+            "w_time": 0.1,
+            "cost_budget_usd": 1.0,
+            "time_budget_seconds": 600.0
+          },
+          "credit_rate": 1.0,
+          "seconds": 1008.759893,
+          "tokens": 0,
+          "scalar": 0.831873,
+          "cost_component_missing": false,
+          "evidence": {
+            "role": "architecting",
+            "backend": "claude_code",
+            "dispatches": 8,
+            "credit": 8,
+            "harness_defect": 0,
+            "environment": 0,
+            "inconclusive": 0,
+            "seconds_total": 1008.759893,
+            "tokens_total": 0,
+            "tokens_partial": false,
+            "runs_contributing": 8,
+            "per_run_scalars": [
+              1.0,
+              1.0,
+              1.0,
+              1.0,
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "unknown_markers": []
+          }
+        }
+      ],
+      "ties": [],
+      "insufficient_evidence": [],
+      "verdict": "insufficient_evidence",
+      "min_conclusive": 3,
+      "single_run": false
+    },
+    {
+      "role": "assessing",
+      "ordered": [
+        {
+          "role": "assessing",
+          "backend": "claude_code",
+          "view": "harness_comparison",
+          "weights": {
+            "w_correctness": 1.0,
+            "w_cost": 0.1,
+            "w_time": 0.1,
+            "cost_budget_usd": 1.0,
+            "time_budget_seconds": 600.0
+          },
+          "credit_rate": 1.0,
+          "seconds": 314.352668,
+          "tokens": 0,
+          "scalar": 0.947608,
+          "cost_component_missing": true,
+          "evidence": {
+            "role": "assessing",
+            "backend": "claude_code",
+            "dispatches": 10,
+            "credit": 8,
+            "harness_defect": 0,
+            "environment": 0,
+            "inconclusive": 2,
+            "seconds_total": 314.352668,
+            "tokens_total": 0,
+            "tokens_partial": true,
+            "runs_contributing": 8,
+            "per_run_scalars": [
+              1.0,
+              1.0,
+              1.0,
+              1.0,
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "unknown_markers": []
+          }
+        }
+      ],
+      "ties": [],
+      "insufficient_evidence": [],
+      "verdict": "insufficient_evidence",
+      "min_conclusive": 3,
+      "single_run": false
+    },
+    {
+      "role": "implementing",
+      "ordered": [
+        {
+          "role": "implementing",
+          "backend": "claude_code",
+          "view": "harness_comparison",
+          "weights": {
+            "w_correctness": 1.0,
+            "w_cost": 0.1,
+            "w_time": 0.1,
+            "cost_budget_usd": 1.0,
+            "time_budget_seconds": 600.0
+          },
+          "credit_rate": 1.0,
+          "seconds": 1203.440146,
+          "tokens": 0,
+          "scalar": 0.799427,
+          "cost_component_missing": false,
+          "evidence": {
+            "role": "implementing",
+            "backend": "claude_code",
+            "dispatches": 6,
+            "credit": 6,
+            "harness_defect": 0,
+            "environment": 0,
+            "inconclusive": 0,
+            "seconds_total": 1203.440146,
+            "tokens_total": 0,
+            "tokens_partial": false,
+            "runs_contributing": 6,
+            "per_run_scalars": [
+              1.0,
+              1.0,
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "unknown_markers": []
+          }
+        }
+      ],
+      "ties": [],
+      "insufficient_evidence": [
+        "codex",
+        "opencode"
+      ],
+      "verdict": "insufficient_evidence",
+      "min_conclusive": 3,
+      "single_run": false
+    },
+    {
+      "role": "reviewing",
+      "ordered": [],
+      "ties": [],
+      "insufficient_evidence": [
+        "claude_code",
+        "codex",
+        "junie",
+        "openclaw"
+      ],
+      "verdict": "insufficient_evidence",
+      "min_conclusive": 3,
+      "single_run": false
+    },
+    {
+      "role": "security",
+      "ordered": [],
+      "ties": [],
+      "insufficient_evidence": [
+        "openclaw"
+      ],
+      "verdict": "insufficient_evidence",
+      "min_conclusive": 3,
+      "single_run": false
+    }
+  ]
+}

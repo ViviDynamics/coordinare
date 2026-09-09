@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import signal
 import socket
 from datetime import UTC, datetime
 from pathlib import Path
@@ -178,6 +179,7 @@ class FakeGitHubServer:
             str(git_root),
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
+            start_new_session=os.name == "posix",
         )
 
     def _build_app(self) -> web.Application:
@@ -236,7 +238,10 @@ class FakeGitHubServer:
         """Kill the daemon + close the server. Best-effort; never raises."""
         if self._git_proc is not None:
             with contextlib.suppress(ProcessLookupError):
-                self._git_proc.kill()
+                if os.name == "posix":
+                    os.killpg(self._git_proc.pid, signal.SIGKILL)
+                else:
+                    self._git_proc.kill()
             with contextlib.suppress(Exception):
                 await self._git_proc.wait()
             self._git_proc = None
