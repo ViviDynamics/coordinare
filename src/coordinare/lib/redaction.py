@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Mapping
 from typing import Any
@@ -20,6 +21,7 @@ SENSITIVE_KEYS = {
 # performer-side patterns in ``agent/performer/src/performer/models.py`` —
 # keep these lists in sync when adding new token formats.
 _SECRET_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"https://hooks\.slack(?:-gov)?\.com/services/[^\s\"\'<>]+"),
     re.compile(r"github_pat_[A-Za-z0-9_]{82,}"),      # fine-grained PAT
     re.compile(r"ghp_[A-Za-z0-9]{36}"),               # classic PAT
     re.compile(r"gho_[A-Za-z0-9]{36}"),               # OAuth app token
@@ -47,6 +49,8 @@ def _is_sensitive_key(key: str) -> bool:
 
 
 def redact_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return redact_secrets(value)
     if isinstance(value, Mapping):
         return redact_mapping(value)
     if isinstance(value, list):
@@ -63,3 +67,14 @@ def redact_mapping(payload: Mapping[str, Any]) -> dict[str, Any]:
             redacted[key] = redact_value(value)
     return redacted
 
+
+
+class RedactingFormatter(logging.Formatter):
+    """Redact the final rendered record, including exception and stack text."""
+
+    def __init__(self, delegate: logging.Formatter) -> None:
+        super().__init__()
+        self.delegate = delegate
+
+    def format(self, record: logging.LogRecord) -> str:
+        return redact_secrets(self.delegate.format(record))

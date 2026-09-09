@@ -799,11 +799,16 @@ class DashboardStore:
         for i, (sym_name, sym_cfg) in enumerate(symphony_configs.items()):
             sym_state = symphony_states.get(sym_name)
             last_poll_raw = getattr(sym_state, "last_poll_at", None) if sym_state else None
+            cache = (daemon.state.get("env_cache") or {}).get(sym_name)
             sym_entry = {
                 "name": sym_name,
                 "priority": i,
                 "github_project_number": getattr(sym_cfg, "github_project_number", None),
                 "env_bootstrap_performer_id": getattr(sym_cfg, "env_bootstrap_performer_id", None),
+                "bootstrap_in_flight": bool(getattr(cache, "bootstrap_in_flight", False)),
+                "cache_dir_ready": bool(getattr(cache, "cache_dir_ready", False)),
+                "last_bootstrap_succeeded": getattr(cache, "last_bootstrap_succeeded", None),
+                "last_bootstrap_error": getattr(cache, "last_bootstrap_error", None),
                 "cycle_count": getattr(sym_state, "cycle_count", 0) if sym_state else 0,
                 "error_count": getattr(sym_state, "error_count", 0) if sym_state else 0,
                 "last_poll_at": (
@@ -3975,7 +3980,7 @@ es.onopen = function() {
 
 document.addEventListener('DOMContentLoaded', function() {
   router(); // initial route
-  assistantAvailable(); // 155: reveals the Assistant link only when enabled
+  if (typeof assistantAvailable === 'function') assistantAvailable();
   setInterval(afTick, 5000);   // 138: silence timer + quiet detection
 });
 

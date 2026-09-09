@@ -403,3 +403,53 @@ async def test_us6_all_new_comments_classified_no_regression():
     await route_issue_comments(state)
 
     assert backend.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_bounded_backlog_preserves_watermark_and_eventual_delivery(monkeypatch):
+    import importlib
+    module = importlib.import_module('coordinare.graph.nodes.route_issue_comments')
+    monkeypatch.setattr(module, '_COMMENTS_PER_TICK', 2)
+    state = initial_state()
+    state['github_service'] = _GitHub(comments=[
+        {'id': i, 'author': 'alice', 'body': f'please also add feature {i}', 'created_at': 't'}
+        for i in [5, 1, 4, 2, 3]
+    ])
+    state['current_card'] = {'id': 'ITEM_1', 'issue_number': 42}
+    await route_issue_comments(state)
+    assert state['last_issue_comment_id'] == 2
+    assert state['processed_issue_comment_ids'] == {1, 2}
+    await route_issue_comments(state)
+    assert state['last_issue_comment_id'] == 4
+    await route_issue_comments(state)
+    assert state['last_issue_comment_id'] == 5
+    assert [c['comment_id'] for c in state['card_clarifications']] == [1, 2, 3, 4, 5]
+
+
+@pytest.mark.asyncio
+async def test_stalled_classifier_cannot_hold_monitor_cycle(monkeypatch):
+    import asyncio
+    import importlib
+    module = importlib.import_module('coordinare.graph.nodes.route_issue_comments')
+    monkeypatch.setattr(module, '_COMMENT_BUDGET_SECONDS', 0.02)
+    monkeypatch.setattr(module, '_CLASSIFIER_TIMEOUT_SECONDS', 0.01)
+    cancelled = asyncio.Event()
+
+    async def stuck(*args):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    monkeypatch.setattr(module, 'classify_issue_comment_ai', stuck)
+    state = initial_state()
+    state['github_service'] = _GitHub(comments=[
+        {'id': i, 'author': 'alice', 'body': f'please also add feature {i}', 'created_at': 't'}
+        for i in range(1, 11)
+    ])
+    state['current_card'] = {'id': 'ITEM_1', 'issue_number': 42}
+    await asyncio.wait_for(route_issue_comments(state), timeout=1)
+    assert cancelled.is_set()
+    assert 0 < state['last_issue_comment_id'] < 10
+    assert state['requirements_changed']
+    assert state['card_clarifications'][0]['body'] == 'please also add feature 1'
