@@ -22,7 +22,7 @@ from performer.workflows.base import WorkflowResult
 from performer.workflows.documenter.budgets import DocumenterBudgets
 from performer.workflows.documenter.commit import commit_docs
 from performer.workflows.documenter.gate import GateInput, gate_page
-from performer.workflows.documenter.gather import gather_page, hunks_for_page
+from performer.workflows.documenter.gather import gather_page, hunks_for_page, with_analysis_inputs
 from performer.workflows.documenter.index import generate_readme
 from performer.workflows.documenter.inventory import build_inventory, extract_citations, first_paragraph, path_like_tokens, repository_layout
 from performer.workflows.documenter.models import POINTER_FILES, DocsRecord, PageResult, WikiPage
@@ -85,15 +85,24 @@ class DocumenterWorkflow:
         timed("intake", t)
         log.info("documenter.intake", mode=mode, files=len(changed), truncated=detect_truncation(diff_text), inventory=len(inventory), brief=bool(brief))
 
+        findings = getattr(score, "documentation_findings", None) or {}
+        analysis_paths = []
+        for entry in findings.values() if isinstance(findings, dict) else []:
+            record_findings = entry.get("findings") if isinstance(entry, dict) else None
+            if isinstance(record_findings, dict):
+                analysis_paths.extend(p for p in record_findings.get("covered_files", []) if isinstance(p, str))
+
         # plan (code only)
         self._step(toolkit, "plan")
         t = time.monotonic()
         brief_docs = [d for d in (brief.get("docs") or []) if isinstance(d, dict)]
-        plans, deferred, refused = build_plan(mode, brief_docs, [f.path for f in changed], inventory, layout, budgets.plan_cap)
+        plans, deferred, refused = build_plan(mode, brief_docs, list(dict.fromkeys([f.path for f in changed] + analysis_paths)), inventory, layout, budgets.plan_cap)
         # A brief page without modules of its own gathers the brief's modules, else the
         # changed files: the live round gathered nothing for a new page and the model,
         # rightly, refused to invent paths.
-        fallback_modules = [str(m) for m in (brief.get("modules") or []) if isinstance(m, str)] or [f.path for f in changed]
+        fallback_modules = [m.get("path", "") if isinstance(m, dict) else m
+                            for m in (brief.get("modules") or []) if isinstance(m, (str, dict))]
+        fallback_modules = [p for p in fallback_modules if isinstance(p, str) and p] or [f.path for f in changed]
         plans = [pl.model_copy(update={"modules": fallback_modules[: budgets.gather_max_commands]}) if pl.source == "brief" and not pl.modules else pl for pl in plans]
         # Init pages gather their own evidence: the package's files, the project files, the test tree.
         plans = [pl.model_copy(update={"modules": _init_modules(pl, tree, layout)[: budgets.gather_max_commands]}) if pl.source == "init" and not pl.modules else pl for pl in plans]
@@ -115,6 +124,8 @@ class DocumenterWorkflow:
             self._step(toolkit, "gather", plan.path)
             t = time.monotonic()
             evidence, current, evidence_text = await gather_page(toolkit, workspace, plan, max_commands=budgets.gather_max_commands, max_output_chars=budgets.gather_max_output_chars)
+            evidence_text = with_analysis_inputs(evidence_text, findings,
+                                                 max_chars=budgets.gather_max_commands * budgets.gather_max_output_chars)
             record.evidence[plan.path] = evidence.model_dump()
             page = pages_by_path.get(plan.path)
             hunks = hunks_for_page(plan, changed, page.citations if page else [], diff_text)
@@ -151,8 +162,10 @@ class DocumenterWorkflow:
             record.readme_generated = True
             results.append(PageResult(path=WIKI_README, kind=None, action="generated", dropped=False, size=len(readme)))
 
+        # Early runs share the implementation branch and stay strictly in docs/.
+        # Root agent pointers are refreshed only by final reconciliation.
         # pointers
-        if changed_wiki or mode == "init" or index_only:
+        if not getattr(score, "documenting_side_run", False) and (changed_wiki or mode == "init" or index_only):
             self._step(toolkit, "pointers")
             t = time.monotonic()
             first_three = [(p.title, p.path) for p in final_pages if p.path != WIKI_README][:3]

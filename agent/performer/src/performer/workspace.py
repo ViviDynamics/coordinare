@@ -1059,6 +1059,8 @@ def _documenter_tree(score: Score) -> str | None:
     when this dispatch is not a documenter side run (165 FR-015)."""
     if getattr(score, "role", "") != "documenting":
         return None
+    if getattr(score, "documenting_side_run", None) is False:
+        return None
     if not (getattr(score, "documentation_brief", None) or {}):
         return None
     env = getattr(score, "workflow_env", None) or {}

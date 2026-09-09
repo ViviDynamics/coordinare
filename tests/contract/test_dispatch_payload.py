@@ -71,6 +71,9 @@ def _full_card_context() -> dict[str, Any]:
         "documentation_brief": {"summary": "s", "docs": [{"topic": "t", "location": "wiki/x.md", "say": "y"}]},
         "verification_brief": {"summary": "s", "criteria": [{"surface": "/", "action": "open", "expected": "ok", "kind": "functional"}]},
         "implementer_single_turn": True,
+        "documentation_findings": {"qa": {"role": "qa", "source_head": "abc", "findings": {"passed": True}}},
+        "completed_documentation": {"head_sha": "abc", "paths": ["docs/wiki/api.md"]},
+        "documenting_side_run": False,
         # 166: assessor workflow assessment (injected into architecting dispatch only)
         "assessment": {"ready": True, "goal": "Add time entry categories", "expected_behavior": "Users select category", "out_of_scope": [], "questions": [], "assumptions": [], "criteria": [{"surface": "/", "action": "open", "expected": "ok", "kind": "functional"}], "criteria_source": "card", "clarifications": []},
         # 173: the board node id, carried on a card-less curator dispatch. The

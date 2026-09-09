@@ -212,7 +212,8 @@ def reset_blueprint_for_architect(state: Any, performer_stage: str | None) -> bo
         return False
     had = bool(state.get("blueprint")) or state.get("documenting_side") is not None
     state["blueprint"] = None
-    state["documenting_side"] = None
+    if not isinstance(state.get("documenting_side"), dict) or (state["documenting_side"].get("status") != "running" and not state["documenting_side"].get("writer_active")):
+        state["documenting_side"] = None
     if had:
         logger.info("blueprint.reset_for_architect", card_id=state.get("card_id"))
     return had
@@ -888,6 +889,17 @@ async def dispatch_performer(state: CoordinareState) -> CoordinareState:
         return await _dispatch_performer_body(state)
 
     async with dispatch_mutex(card_id, performer_stage):
+        side_writer = state.get("documenting_side") or {}
+        if performer_stage == "documenting" and isinstance(side_writer, dict):
+            if side_writer.get("status") == "running":
+                logger.info("documenting_side.final_waiting", card_id=card_id)
+                return state
+            if side_writer.get("writer_active"):
+                state["phase"] = "blocked"
+                state["system_error_reason"] = "Early documenter status is unavailable; confirm that its writer has stopped before final documentation can run."
+                logger.warning("documenting_side.writer_unconfirmed", card_id=card_id)
+                return state
+
         guard = await check_inflight(state, card_id, performer_stage)
         if guard.advice == "refuse":
             # Another in-flight session for this (card, stage) already
@@ -1559,6 +1571,10 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
             card_context["scanner_findings"] = scanner_findings
 
     # 164: hand the previous QA round's repair brief to the implementer.
+    from coordinare.services.documentation_findings import inject as inject_documentation
+    from coordinare.services.documentation_findings import reset as reset_documentation
+    reset_documentation(state, str(performer_stage or ""))
+    inject_documentation(card_context, state, str(performer_stage or ""))
     inject_qa_findings(card_context, state, role=role)
     # 166: a re-dispatched assessor replaces the assessment; until it reports,
     # there is none. Then inject into architecting only.

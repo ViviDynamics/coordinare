@@ -586,3 +586,43 @@ async def test_handle_stale_session_clears_when_no_container() -> None:
     assert decision == ReconciliationDecision.FRESH_DISPATCHED
     assert state["agent_dispatch"] == {}
     assert state["phase"] == "dispatching"
+
+
+@pytest.mark.asyncio
+async def test_175_early_documenter_adopted_without_foreground_dispatch():
+    from coordinare.config import PerformerEndpointConfig
+    from coordinare.services.http_performer_service import HTTPPerformerService
+    service = HTTPPerformerService(PerformerEndpointConfig(id="doc", roles=["documenting"], mode="ephemeral", image="example:latest"))
+    sess = {"phase": "dispatching", "performer_stage": "documenting", "agent_dispatch": {},
+            "documenting_side": {"status": "running", "session_id": "side-session", "job_id": "runner-job"}}
+    state = {"active_sessions": {"c1": sess}, "performer_services": {"documenting": service}}
+    docker = _MockDockerExecutor(containers=[_make_container(session_id="side-session")])
+    report = await run_startup_reconciliation(state, docker_executor=docker)
+    assert service.has_live_session("side-session")
+    assert service._active_jobs["side-session"].endpoint == "http://127.0.0.1:55555"
+    assert service._active_jobs["side-session"].job_id == "runner-job"
+    from unittest.mock import AsyncMock
+    client = service._active_jobs["side-session"].client
+    client.get_job = AsyncMock(side_effect=RuntimeError("stop after URL observation"))
+    with pytest.raises(RuntimeError, match="URL observation"):
+        await service.check_status("side-session")
+    client.get_job.assert_awaited_once_with("runner-job")
+    assert not docker.stopped and not report.orphans_swept
+    assert sess["agent_dispatch"] == {}
+    await service._active_jobs["side-session"].client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stopped", [True, False])
+async def test_175_restart_requires_confirmed_writer_stop(stopped):
+    from coordinare.config import PerformerEndpointConfig
+    from coordinare.services.http_performer_service import HTTPPerformerService
+    service = HTTPPerformerService(PerformerEndpointConfig(id="doc", roles=["documenting"], mode="ephemeral", image="example:latest"))
+    sess = {"phase": "blocked", "documenting_side": {"status": "running", "session_id": "side-session", "job_id": "runner-job"}}
+    docker = _MockDockerExecutor(containers=[_make_container(session_id="side-session")], port=None)
+    async def stop(*args, **kwargs):
+        return stopped
+    docker.stop_container = stop
+    await run_startup_reconciliation({"active_sessions": {"c1": sess}, "performer_services": {"documenting": service}}, docker_executor=docker)
+    assert sess["documenting_side"]["status"] == "failed"
+    assert sess["documenting_side"]["writer_active"] is (not stopped)

@@ -22,6 +22,9 @@ class _WM:
 
 class _Role:
     backend = "codex"
+    effort = None
+    temperature = None
+    max_tokens = None
 
 
 class _Performers:
@@ -75,7 +78,8 @@ async def test_resolve_builds_the_documenter_dispatch(monkeypatch):
     ctx, ws = resolved
     assert ctx["role"] == "documenting" and ctx["repo_url"] == "https://github.com/ViviDynamics/website.git"
     assert ctx["branch"] == "coordinare/c1/feature" and ctx["backend"] == "codex" and ctx["model"] == "example/model"
-    assert ctx["persona_instructions"] == "TECH WRITER PERSONA"
+    assert ctx["persona_instructions"].startswith("TECH WRITER PERSONA")
+    assert "write only under docs/" in ctx["persona_instructions"]
     assert set(ctx["documentation_brief"]) == {"summary", "docs", "modules"}
     assert ws.github_token == "ghs_fresh" and ws.branch == "coordinare/c1/feature"
 

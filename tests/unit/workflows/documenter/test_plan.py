@@ -202,3 +202,11 @@ class TestBuildPlan:
 
         # Should include some skeleton pages
         assert len(plans) >= 0
+
+
+def test_175_existing_brief_page_is_read_and_merged():
+    page = WikiPage(path="docs/wiki/api.md", kind="reference", title="API", citations=[], links=[], size=200)
+    plans, _, _ = select_pages([{"location": page.path, "say": ["New behavior"]}], [], [page], 8)
+    selected = [plan for plan in plans if plan.path == page.path]
+    assert len(selected) == 1
+    assert selected[0].exists is True

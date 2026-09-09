@@ -28,6 +28,7 @@ from typing import Any
 
 import structlog
 
+from performer.backends._card_docs import completed_documentation_prompt_section
 from performer.noise_paths import AGENT_CONFIG_DIRS
 from performer.test_results import TestSummary
 from performer.workflows.implementer import commits as git
@@ -183,6 +184,7 @@ def _build_brief(
     if extra_values:
         values.update(extra_values)
     persona = render(persona_kind, **values)
+    persona += "\n".join(completed_documentation_prompt_section(ctx.score))
     if ctx.investigation_note and persona_kind in ("TESTS", "IMPLEMENT", "REPAIR_TESTS", "REPAIR_IMPLEMENT"):
         persona += "\n\nInvestigation note from the bug investigation turn:\n" + ctx.investigation_note[:4000]
     return TurnBrief(

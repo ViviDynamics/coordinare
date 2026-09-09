@@ -216,6 +216,7 @@ class CardSession(TypedDict, total=False):
     # state_store).  MUST round-trip through session ↔ state or the skip gate
     # forgets recorded verdicts between cycles and re-dispatches passed stages.
     stage_verdicts: dict[str, dict[str, Any]]
+    documentation_findings: dict[str, Any]
     blueprint: dict[str, Any] | None
     documenting_side: dict[str, Any] | None
     # 166: the assessor's structured assessment (goal, expected_behavior,
@@ -313,6 +314,7 @@ _SESSION_FIELDS: tuple[str, ...] = (
     "env_blocked",
     # 165: the architect blueprint (source of the three briefs) and the
     # documenter side-run record; both per-card and restart-safe.
+    "documentation_findings",
     "blueprint",
     "documenting_side",
     # 096: per-card auto-rebase anti-thrash marker (main_sha, head_sha, outcome).
@@ -418,6 +420,7 @@ def create_session_from_card(card: dict[str, Any]) -> CardSession:
         assessor_open_questions=[],
         # 125: no verdicts recorded yet for a freshly-picked-up card
         stage_verdicts={},
+        documentation_findings={},
         blueprint=None,
         assessment=None,
         review_findings=None,

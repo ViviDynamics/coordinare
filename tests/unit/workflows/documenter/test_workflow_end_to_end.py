@@ -279,3 +279,31 @@ async def test_an_index_only_plan_regenerates_the_readme_with_no_model_call(tmp_
     finally:
         import performer.workflows.documenter as wf
         wf.build_plan = original
+
+
+@pytest.mark.asyncio
+async def test_175_side_integrates_structured_findings_without_root_pointer_writes(tmp_path):
+    repo = make_repo(tmp_path)
+    add_payments(repo)
+    score = _score("", {**BRIEF, "modules": [{"path": "src/payments/ledger.py", "note": "Payment ledger"}]})
+    score.documenting_side_run = True
+    score.documentation_findings = {
+        "reviewing": {"role": "reviewing", "source_head": "priorhead", "content_hash": "hash", "findings": {"verdict": "approved", "findings": [{"body": "Currency amounts are integer cents"}]}}
+    }
+    seen = []
+
+    async def model_call(persona, content, max_tokens):
+        seen.append(persona)
+        if "Write the page `docs/wiki/payments.md`" in persona:
+            return ModelReply(content=json.dumps(_reply("write", PAYMENTS_PAGE)), finish_reason="stop")
+        return ModelReply(content=json.dumps(_reply("unchanged", reason="current")), finish_reason="stop")
+
+    toolkit = Toolkit(metrics=WorkflowMetrics(), model_call=model_call, command_runner=_run_command, call_limit=20)
+    result = await DocumenterWorkflow(committer=local_committer).run(Stand(path=repo, branch="feat/payments"), score, toolkit)
+    docs = result.report["docs"]
+    assert docs["verdict"] == "docs_committed"
+    assert docs["files_written"] and all(p.startswith("docs/") for p in docs["files_written"])
+    assert docs["pointers_refreshed"] == []
+    assert any("src/payments/ledger.py" in entry["modules"] for entry in docs["plan"])
+    assert any("Currency amounts are integer cents" in p and "priorhead" in p for p in seen)
+    assert (repo / "docs/wiki/payments.md").exists()

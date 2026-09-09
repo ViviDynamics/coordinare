@@ -425,6 +425,7 @@ def _persist_active_sessions(active_sessions: dict[str, Any]) -> dict[str, Persi
             transient_error_cycles=transient_error_cycles,
             assessor_open_questions=assessor_open_questions,
             stage_verdicts=stage_verdicts,
+            documentation_findings=sess.get("documentation_findings") or {},
             blueprint=blueprint,
             documenting_side=documenting_side,
             processed_issue_comment_ids=comment_ids,
@@ -1093,6 +1094,7 @@ class CoordinareDaemon:
                     # 165: the blueprint and the documenter side run survive a
                     # restart so the remaining briefs and the side run's
                     # once-per-hash rule still hold.
+                    "documentation_findings": dict(persisted.documentation_findings),
                     "blueprint": dict(persisted.blueprint) if persisted.blueprint else None,
                     "documenting_side": (
                         persisted.documenting_side.model_dump(mode="json")
@@ -1161,6 +1163,7 @@ class CoordinareDaemon:
                     "feedback_origin_sha": None,
                     "noop_success_retries": 0,
                     # 165: fresh-card defaults.
+                    "documentation_findings": {},
                     "blueprint": None,
                     "documenting_side": None,
                 }
@@ -2019,6 +2022,15 @@ class CoordinareDaemon:
             if result.ok:
                 # Only overwrite on success; preserves any cross-session
                 # mutations applied above for sessions whose own tick failed.
+                # A side poll can finish while fanout holds an older copy. Preserve
+                # its terminal record instead of resurrecting the running snapshot.
+                live_side = (active_sessions.get(result.card_id) or {}).get("documenting_side")
+                result_side = result.session_state.get("documenting_side")
+                if (isinstance(live_side, dict) and isinstance(result_side, dict)
+                        and live_side.get("session_id") == result_side.get("session_id")
+                        and live_side.get("status") in {"done", "failed"}
+                        and (result_side.get("status") == "running" or result_side.get("writer_active"))):
+                    result.session_state["documenting_side"] = dict(live_side)
                 active_sessions[result.card_id] = result.session_state
                 sess = result.session_state
                 if sess.get("phase", "idle") == "idle" and sess.get("current_card") is None:
@@ -2740,7 +2752,13 @@ class CoordinareDaemon:
         from coordinare.services import documenting_side as _ds
 
         svc = (self._state.get("performer_services") or {}).get("documenting")
-        sessions = self._state.get("active_sessions") or {}
+        def current_sessions() -> dict[str, Any]:
+            current = dict(self._state.get("active_sessions") or {})
+            for runtime in (self._state.get("symphony_states") or {}).values():
+                current.update(getattr(runtime, "active_sessions", None) or {})
+            return current
+
+        sessions = current_sessions()
         if svc is None or not sessions:
             return
 
@@ -2753,7 +2771,11 @@ class CoordinareDaemon:
             task.add_done_callback(self._documenting_side_tasks.discard)
 
         try:
-            await _ds.run_cycle(sessions, svc=svc, resolve=_resolve, spawn=_spawn)
+            if not hasattr(self, "_documenting_side_polling"):
+                self._documenting_side_polling = set()
+            await _ds.run_cycle(sessions, svc=svc, resolve=_resolve, spawn=_spawn,
+                                get_session=lambda cid: current_sessions().get(cid),
+                                polling=self._documenting_side_polling)
         except Exception as exc:
             logger.warning("documenting_side.cycle_failed", error=str(exc)[:200])
 
@@ -2791,7 +2813,13 @@ class CoordinareDaemon:
         if not token:
             return None
         cfg = self._state.get("config")
+        sym_cfg = (self._state.get("symphony_configs") or {}).get(symphony)
+        coordinare_cfg = self._state.get("coordinare_config")
+        global_cfg = getattr(coordinare_cfg, "global_config", None) or cfg
+        if sym_cfg is not None and hasattr(sym_cfg, "effective_config") and global_cfg is not None:
+            cfg = sym_cfg.effective_config(global_cfg)
         persona, backend, model_block = "", "codex", {}
+        workflow_fields: dict[str, Any] = {}
         if cfg is not None:
             try:
                 persona = get_effective_instructions("tech_writer", cfg.personas)
@@ -2800,15 +2828,32 @@ class CoordinareDaemon:
             rc = cfg.performers.resolved_role("tech_writer") if hasattr(cfg, "performers") else None
             if rc is not None and getattr(rc, "backend", None):
                 backend = rc.backend
+            if rc is not None:
+                from coordinare.services.performer_tuning import translate_tuning
+                workflow_fields.update(translate_tuning(rc))
+                if getattr(rc, "workflow", None):
+                    workflow_fields["workflow"] = rc.workflow
+                if getattr(rc, "workflow_env", None):
+                    workflow_fields["workflow_env"] = dict(rc.workflow_env)
+            if hasattr(cfg, "resolve_performer_orchestration"):
+                orchestration = cfg.resolve_performer_orchestration("tech_writer")
+                if orchestration is not None:
+                    workflow_fields["orchestration"] = orchestration
+            for key in ("github_api_url", "github_graphql_url"):
+                value = getattr(cfg, key, None)
+                if value:
+                    workflow_fields[key] = value
             try:
                 model_block = cfg.resolve_performer_dispatch_model("tech_writer")
             except Exception:
                 model_block = {}
-        repo_url = f"https://github.com/{org}/{repo}.git"
+        git_base = getattr(sym_wm, "_performer_git_base_url", None) or getattr(cfg, "performer_git_base_url", None) or getattr(cfg, "git_base_url", "https://github.com")
+        repo_url = f"{str(git_base).rstrip('/')}/{org}/{repo}.git"
         ctx = _ds.build_card_context(
             card, session, persona=persona, backend=backend, model_block=model_block,
-            repo_url=repo_url, base_branch=str(card.get("base_branch") or "main"),
+            repo_url=repo_url, base_branch=str(card.get("base_branch") or getattr(cfg, "base_branch", None) or "main"),
         )
+        ctx.update(workflow_fields)
         workspace_info = WorkspaceInfo(path=None, branch=branch, repo_url=repo_url, github_token=token)
         return ctx, workspace_info
 
@@ -3475,6 +3520,9 @@ class CoordinareDaemon:
                     _active_sessions = self._state.get("active_sessions") or {}
                     _slot_mgr.sync_from_sessions(_active_sessions)
 
+                # Side writers are independent of env-cache bootstrap availability.
+                await self._dispatch_documenting_side_runs(self._state.get("symphony_github_services") or {})
+
                 # 057: Multi-symphony orchestration
                 symphony_configs = self._state.get("symphony_configs") or {}
                 _multi_symphony = bool(symphony_configs)
@@ -3557,7 +3605,6 @@ class CoordinareDaemon:
                         # regardless of the default-off auto-gate and holds nothing.
                         # 165: documenter side runs for cards whose blueprint has a
                         # documentation brief and that have moved past architecting.
-                        await self._dispatch_documenting_side_runs(_sym_gh_svcs)
                         if self._wiki_init_requests:
                             for _wsym in list(self._wiki_init_requests):
                                 self._wiki_init_requests.discard(_wsym)
