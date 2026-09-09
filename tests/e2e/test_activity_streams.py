@@ -106,3 +106,73 @@ def test_raw_stream_reconstructs_sentences_and_separates_messages_and_tools(page
     page.evaluate('entries => afAppend(entries)', [separate])
     expect(paragraphs).to_have_count(3)
     assert paragraphs.nth(2).text_content() == "Another message."
+
+
+def test_usage_reports_stay_with_stream_without_splitting_text_or_hiding_lifecycle(page, live_server_url):
+    page.goto(live_server_url)
+
+    def event(seq, **changes):
+        result = _event(seq)
+        result.update(changes)
+        return result
+
+    events = [
+        event(0, text='We', is_delta=True, stream_id='message'),
+        event(1, activity_type='cost', text='100 tokens, $0.01'),
+        event(2, text=' can proceed.', is_delta=True, stream_id='message'),
+        event(3, activity_type='tool_use', text='pytest tests/'),
+        event(4, activity_type='cost', text='250 tokens, $0.03'),
+    ]
+    page.evaluate('entries => afAppend(entries)', events)
+    row = page.locator('#activity-feed > .af-row')
+    expect(row).to_have_count(1)
+    summary = row.locator('details > summary').first
+    expect(summary).to_contain_text('Performer used a tool. (5 updates)')
+    summary.click()
+    summary.focus()
+    assert row.locator('.af-raw > p').text_content() == 'We can proceed.'
+    expect(row.locator('.af-tool code')).to_have_text('pytest tests/')
+    usage = row.locator('.af-usage')
+    expect(usage.locator('summary')).to_have_text('Usage reports (2)')
+    expect(usage.locator('p').first).not_to_be_visible()
+    usage.locator('summary').click()
+    expect(usage.locator('p')).to_have_text(['100 tokens, $0.01', '250 tokens, $0.03'])
+    summary.focus()
+    update = event(5, activity_type='cost', text='300 tokens, <script>$0.04</script>')
+    page.evaluate('entries => afAppend(entries)', [update])
+    expect(summary).to_be_focused()
+    expect(usage).to_have_attribute('open', '')
+    expect(usage.locator('p')).to_have_count(3)
+    expect(usage.locator('p').last).to_have_text('300 tokens, <script>$0.04</script>')
+    assert row.locator('script').count() == 0
+    usage.locator('summary').focus()
+    # Retention updates can rebuild raw details, including a focused usage summary.
+    page.evaluate('entries => afAppend(entries)', [event(6, activity_type='cost', text='350 tokens')])
+    expect(usage.locator('summary')).to_be_focused()
+    page.evaluate('entries => afAppend(entries)', [*events, update])
+    expect(usage.locator('p')).to_have_count(4)
+    expect(row).to_have_count(1)
+    # A usage event cannot bridge failures, lifecycle boundaries or sessions.
+    page.evaluate('entries => afAppend(entries)', [
+        event(7, activity_type='error'), event(8, activity_type='cost'),
+        event(9, activity_type='blocked'), event(10, activity_type='cost'),
+        event(11, activity_type='completed'), event(12, activity_type='cost'),
+        event(13, activity_type='cost', session_id='next'),
+        event(14, activity_type='cost', card_id='other'),
+        event(15, activity_type='cost', performer_id='other'),
+        event(16, activity_type='cost', stage='reviewing'),
+    ])
+    expect(row).to_have_count(11)
+    for label in ['ERROR', 'BLOCKED', 'COMPLETED']:
+        expect(page.locator('#activity-feed .af-kind').filter(has_text=label)).to_have_count(1)
+    page.locator('#af-filter').select_option('other')
+    expect(row).to_have_count(1)
+    # Usage-only traffic is coalesced and still respects the retention cap.
+    page.evaluate('entries => afAppend(entries)', [
+        event(i, activity_type='cost') for i in range(17, 2021)
+    ])
+    expect(row).to_have_count(0)
+    page.locator('#af-filter').select_option('')
+    expect(row).to_have_count(1)
+    assert page.evaluate('_afEntries.length') == 2000
+    expect(row.locator('.af-usage summary')).to_have_text('Usage reports (2000)')

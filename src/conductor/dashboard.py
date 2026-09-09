@@ -4022,7 +4022,9 @@ _ACTIVITY_STREAM_JS = """var AF_SUMMARIES = {
 function afSummary(e) { return AF_SUMMARIES[e.activity_type] || 'Activity reported.'; }
 function afRawHtml(entries) {
   var blocks = [];
+  var usage = [];
   entries.forEach(function(e) {
+    if (e.activity_type === 'cost') { usage.push(e); return; }
     var previous = blocks[blocks.length - 1];
     var fragment = (e.text || '') + (e.truncated ? '\u2026 [truncated]' : '');
     if (previous && e.is_delta && previous.delta &&
@@ -4033,13 +4035,28 @@ function afRawHtml(entries) {
                    delta:!!e.is_delta, stream:e.stream_id || ''});
     }
   });
-  return blocks.map(function(b) {
+  var output = blocks.map(function(b) {
     return b.kind === 'tool_use' ? '<pre class="af-tool"><code>' + esc(b.text) + '</code></pre>' :
       '<p>' + esc(b.text) + '</p>';
   }).join('');
+  if (usage.length) {
+    // Snapshots may be cumulative or incremental depending on the backend.
+    // Preserve the reported values; never infer a total by adding them here.
+    output += '<details class="af-usage"><summary>Usage reports (' + usage.length +
+      ')</summary>' + usage.map(function(e) {
+        return '<p>' + esc((e.text || '') + (e.truncated ? '\u2026 [truncated]' : '')) + '</p>';
+      }).join('') + '</details>';
+  }
+  return output;
+}
+function afRepresentative(entries) {
+  for (var i = entries.length - 1; i >= 0; i--) {
+    if (entries[i].activity_type !== 'cost') return entries[i];
+  }
+  return entries[entries.length - 1];
 }
 function afCanGroup(a, b) {
-  var stream = {progress:true, thinking:true, tool_use:true};
+  var stream = {progress:true, thinking:true, tool_use:true, cost:true};
   return !!(a && b && a.session_id && a.performer_id &&
     stream[a.activity_type] && stream[b.activity_type] &&
     a.card_id === b.card_id && a.stage === b.stage &&
@@ -4056,13 +4073,15 @@ function afGroups() {
 }
 function afRowHtml(e, group) {
   var entries = group ? group.entries : [e];
+  var latest = entries[entries.length - 1];
+  e = afRepresentative(entries);
   var who = e.card_number ? ('#' + e.card_number) : (e.card_title || e.card_id || '');
   var where = who + (e.stage ? ' ' + e.stage : '');
   var count = entries.length;
   var key = group ? group.key : e.seq;
   return '<div class="af-row">' +
     '<details id="af-group-' + esc(String(key)) + '">' +
-    '<summary><span class="af-time">' + esc(afTime(e.timestamp)) + '</span> ' +
+    '<summary><span class="af-time">' + esc(afTime(latest.timestamp)) + '</span> ' +
     '<span class="af-kind ev-' + esc(e.activity_type) + '">' + esc(afLabel(e.activity_type)) + '</span>' +
     '<span class="af-card">' + esc(where) + '</span> ' +
     '<span class="af-summary">' + esc(afSummary(e)) + ' (' + count +
@@ -4077,7 +4096,8 @@ function afSyncGroups(reset) {
   if (reset) feed.innerHTML = '';
   var wanted = {}, html = '';
   afGroups().forEach(function(g) {
-    var e = g.entries[g.entries.length - 1];
+    var latest = g.entries[g.entries.length - 1];
+    var e = afRepresentative(g.entries);
     if (!afMatches(e)) return;
     var id = 'af-group-' + g.key;
     wanted[id] = true;
@@ -4085,16 +4105,24 @@ function afSyncGroups(reset) {
     if (!node) { html = afRowHtml(e, g) + html; return; }
     // Preserve the details element and its summary: open state and keyboard
     // focus survive streaming updates. Only text/diagnostic children change.
-    node.querySelector('.af-time').textContent = afTime(e.timestamp);
+    node.querySelector('.af-time').textContent = afTime(latest.timestamp);
     var chip = node.querySelector('.af-kind');
     chip.className = 'af-kind ev-' + e.activity_type;
     chip.textContent = afLabel(e.activity_type);
     node.querySelector('.af-summary').textContent = afSummary(e) + ' (' +
       g.entries.length + (g.entries.length === 1 ? ' update)' : ' updates)');
     var raw = node.querySelector('.af-raw');
-    var signature = g.entries[0].seq + ':' + e.seq;
+    var signature = g.entries[0].seq + ':' + latest.seq;
     if (raw.getAttribute('data-events') !== signature) {
+      var usage = raw.querySelector('.af-usage');
+      var usageOpen = usage && usage.open;
+      var usageFocused = usage && document.activeElement === usage.querySelector('summary');
       raw.innerHTML = afRawHtml(g.entries);
+      usage = raw.querySelector('.af-usage');
+      if (usage) {
+        usage.open = !!usageOpen;
+        if (usageFocused) usage.querySelector('summary').focus();
+      }
       raw.setAttribute('data-events', signature);
     }
   });

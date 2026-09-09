@@ -207,3 +207,17 @@ events are distinct code blocks. Raw diagnostics have no repeated timestamps.
 The monitor uses the source event timestamp for delta replay suppression, so two
 distinct occurrences of the same word are retained; this is not the activity
 observation timestamp. Legacy events keep content-based suppression.
+
+### Usage presentation (#318)
+
+Attributed `cost` entries participate in consecutive progress/thinking/tool groups
+when card, stage, session and performer match. They do not interrupt adjacent text
+deltas from the same message. Lifecycle and error entries still end a group.
+
+The header describes the latest non-cost event (or usage when the group contains
+only cost events), with the timestamp of the latest event. Retained usage text is
+available in a nested **Usage reports** disclosure, in chronological order. The
+client does not add these reports: backends may supply cumulative snapshots or
+incremental values. Existing dashboard usage totals and server-side accounting
+are unchanged. Replay suppression and the 2000-entry retention cap still apply
+to every raw event, including usage. Unattributed legacy events remain separate.
