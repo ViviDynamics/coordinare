@@ -2050,7 +2050,7 @@ async def _classify_head_failures(
     failed_names: list[str],
     failed_conclusion: str,
     url_by_name: dict[str, str],
-) -> dict[str, list[Any]]:
+) -> dict[str, Any]:
     """Observe-only 090-L2 classification of each failing HEAD check.
 
     Returns the four classification lists as ``CIGateDecision`` kwargs, or an
@@ -2073,7 +2073,12 @@ async def _classify_head_failures(
     env_patterns = list(getattr(env_cfg, "patterns", []) or []) if env_on else None
     try:
         base_rollup = await svc.get_base_branch_check_rollup(rollup.base_ref or "main")
+        if env_on and base_rollup is not None:
+            base_rollup = await svc.enrich_failure_evidence(base_rollup)
         baseline_index = _build_baseline_index(base_rollup)
+        if env_on and hasattr(svc, "refresh_peer_rollups"):
+            await svc.refresh_peer_rollups(rollup.pr_number)
+        structural_causes: dict[str, Any] = {}
         head_by_name = {c.name: c for c in rollup.checks}
 
         inherited: list[FailedCheckWithSignature] = []
@@ -2112,6 +2117,17 @@ async def _classify_head_failures(
             origin = classify_failure_origin(
                 fc, head_reason, baseline_index, env_patterns=env_patterns
             )
+            if env_on:
+                from coordinare.services.env_signature import EnvCause
+
+                if entry is not None and getattr(entry, "setup_failure", False):
+                    structural_causes[name] = EnvCause("ci_setup_failure", "CI failed during runner/platform setup",
+                                                       "Repair runner setup or platform credentials, then rerun the failed job")
+                elif head_reason and hasattr(svc, "unrelated_failure_seen") and svc.unrelated_failure_seen(rollup, name, head_sig) is True:
+                    structural_causes[name] = EnvCause("ci_shared_failure", "The same CI failure occurs on an unrelated head",
+                                                       "Inspect the shared runner/service or base-branch failure, then rerun CI")
+                if name in structural_causes:
+                    origin = "env_blocked"
             if origin == "env_blocked":
                 env_blocked.append(fc)
             elif l2_on:
@@ -2140,7 +2156,7 @@ async def _classify_head_failures(
             base_fetched=baseline_index is not None,
         )
         # L2 lists only when L2 is on; env_blocked_checks only when env gate is on.
-        result: dict[str, list[Any]] = {}
+        result: dict[str, Any] = {}
         if l2_on:
             result["inherited_checks"] = inherited
             result["introduced_checks"] = introduced
@@ -2148,6 +2164,7 @@ async def _classify_head_failures(
             result["unknown_checks"] = unknown
         if env_on:
             result["env_blocked_checks"] = env_blocked
+            result["env_causes"] = structural_causes
         return result
     except Exception as exc:
         logger.warning(
@@ -2280,6 +2297,7 @@ async def _maybe_env_blocked_hold(
     resolved: dict[str, Any],
     now_iso: str,
     stash: Any,
+    evidence_service: Any = None,
 ) -> tuple[dict[str, Any], bool] | None:
     """095 (US1/US2): HOLD the card when a required failure is an infra/environment
     block — no code change can fix it, so do NOT bounce or re-dispatch. Surface
@@ -2306,7 +2324,7 @@ async def _maybe_env_blocked_hold(
     for fc in env_blocked:
         entry = head_by_name.get(fc.name)
         reason = normalize_reason(entry.title, entry.summary) if entry else ""
-        ec = match_env_signature(reason, patterns)
+        ec = (classification.get("env_causes") or {}).get(fc.name) or match_env_signature(reason, patterns)
         if ec is not None and ec.pattern_id not in matched:
             matched[ec.pattern_id] = (ec.cause, ec.action)
     if matched:
@@ -2347,6 +2365,20 @@ async def _maybe_env_blocked_hold(
     already_notified = (
         prior.get("head_sha") == head_sha and prior.get("pattern_id") == pattern_id
     )
+    if evidence_service is not None and prior:
+        try:
+            retried = await evidence_service.retry_recovered_infrastructure(rollup, prior)
+            if retried:
+                logger.info("ci_gate.infrastructure_recovered_rechecking", pr=pr_num, jobs=retried)
+        except Exception as exc:
+            logger.warning("ci_gate.infrastructure_recovery_probe_failed", error_type=type(exc).__name__)
+    signature = "|".join(sorted(c.head_signature for c in env_blocked))
+    notification_service = state.get("notification_service")
+    if evidence_service is not None and notification_service is not None:
+        cooldown = getattr(notification_service, "card_blocked_reminder_cooldown_seconds", 3600)
+        if not isinstance(cooldown, (int, float)):
+            cooldown = 3600
+        already_notified = not evidence_service.claim_env_notification(signature, cooldown)
     if not already_notified:
         # FR-009: the card is held on the infra block, but the operator signal
         # must still distinguish any OTHER failing checks so a code defect
@@ -2385,7 +2417,7 @@ async def _maybe_env_blocked_hold(
                     event_type=EventType.env_blocked,
                     severity=NotificationSeverity.warning,
                     source="monitor_performer",
-                    dedup_key=f"env_blocked:{head_sha}:{pattern_id}",
+                    dedup_key=f"env_blocked:{signature}",
                     payload={
                         "event_type": EventType.env_blocked.value,
                         "severity": NotificationSeverity.warning.value,
@@ -2401,6 +2433,8 @@ async def _maybe_env_blocked_hold(
                     },
                 ))
             except Exception:
+                if evidence_service is not None:
+                    evidence_service.release_env_notification(signature)
                 logger.warning(
                     "ci_gate.env_blocked_notify_failed",
                     pr=pr_num,
@@ -2425,9 +2459,21 @@ async def _maybe_env_blocked_hold(
             "pattern_id": pattern_id,
             "cause": cause,
             "action": action,
+            "check_names": sorted(c.name for c in env_blocked),
+            "retried_jobs": prior.get("retried_jobs", []) if prior.get("head_sha") == head_sha else [],
+            "retried_checks": prior.get("retried_checks", []) if prior.get("head_sha") == head_sha else [],
+            "blocked_at": (prior.get("blocked_at") or now_iso) if prior.get("head_sha") == head_sha else now_iso,
         },
     }
     return (updates, True)
+
+
+def _retain_infrastructure_hold(state: CoordinareState, updates: dict[str, Any]) -> bool:
+    """A pending rerun on the same head retains the outage's retry budget."""
+    prior = state.get("env_blocked") or {}
+    decision = updates.get("latest_ci_gate_decision") or {}
+    return bool(prior.get("check_names") and decision.get("verdict") == "hold"
+                and prior.get("head_sha") == decision.get("head_sha"))
 
 
 async def _evaluate_ci_gate(
@@ -2476,6 +2522,9 @@ async def _evaluate_ci_gate(
             _svc_cache[cache_key] = PrChecksService(github, owner, repo)
         svc = _svc_cache[cache_key]
         rollup = await svc.get_pr_check_rollup(pr_num)
+        env_cfg = _get_env_blocked_gate_config(state)
+        if env_cfg is not None and getattr(env_cfg, "enabled", False):
+            rollup = await svc.enrich_failure_evidence(rollup)
 
         # Warn once per HEAD when the GraphQL context cap is reached so
         # operators know the required-checks set may be incomplete (>100
@@ -2689,9 +2738,12 @@ async def _evaluate_ci_gate(
             resolved=resolved,
             now_iso=now_iso,
             stash=_stash,
+            evidence_service=svc,
         )
         if env_hold is not None:
             return env_hold
+
+        classification.pop("env_causes", None)
 
         # BOUNCE — count this attempt and decide bounce vs escalate.
         bounce_counter[head_sha] = bounce_counter.get(head_sha, 0) + 1
@@ -3180,7 +3232,7 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
             # 095 (FR-008): any non-env-hold verdict means the infra block is not
             # active this cycle — clear the dedup state so a later recurrence of
             # the same (head, pattern) re-notifies (auto-resume / flapping).
-            if "env_blocked" not in ci_updates:
+            if "env_blocked" not in ci_updates and not _retain_infrastructure_hold(state, ci_updates):
                 state["env_blocked"] = None  # type: ignore[typeddict-unknown-key]
             if ci_stop:
                 return state
@@ -3974,6 +4026,22 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
             state["agent_dispatch_at"] = None
             return state
 
+        # 263: remote CI infrastructure is unrelated to the dependency cache.
+        ci_infra = (status.get("report") or {}).get("ci_infrastructure")
+        if marker == "env_blocked" and isinstance(ci_infra, dict):
+            state.update(_record_pr_artefacts(state, status))
+            state["agent_dispatch"] = {}
+            state["agent_dispatch_at"] = None
+            state["system_error_reason"] = str(ci_infra.get("cause") or status.get("reason") or "CI infrastructure unavailable")
+            pr_url = status.get("pr_url") or (state.get("current_card") or {}).get("pr_url")
+            state["env_blocked"] = {**ci_infra, "pattern_id": "ci_infrastructure", "blocked_at": datetime.now(UTC).isoformat(),
+                                    "action": "Repair the shared CI infrastructure; the PR will recheck its own jobs"}
+            # The next monitor cycle re-evaluates the shared CI gate, without a
+            # model dispatch, local-cache invalidation or repair-counter update.
+            state["phase"] = "monitoring_performer" if (pr_url and getattr(_get_ci_gate_config(state), "enabled", False)
+                                        and getattr(_get_env_blocked_gate_config(state), "enabled", False)) else "blocked"
+            return state
+
         # --- 089 (US2): implementer local-test gate env-blocked — role-agnostic ---
         # The local test run failed coinciding with a spec-088 env-cache signal,
         # so there is no code defect to fix. Per spec.md (US2, FR-005, SC-003) the
@@ -4150,7 +4218,7 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
                     state[key] = value  # type: ignore[literal-required]
                 # 095 (FR-008): clear stale env-hold dedup state on any non-env
                 # verdict so a recurrence re-notifies (auto-resume / flapping).
-                if "env_blocked" not in ci_updates:
+                if "env_blocked" not in ci_updates and not _retain_infrastructure_hold(state, ci_updates):
                     state["env_blocked"] = None  # type: ignore[typeddict-unknown-key]
                 if ci_stop:
                     return state
@@ -4757,6 +4825,7 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
         # --- Error status (FR-006) ---
         if marker == "error":
             reason = str(status.get("reason", ""))
+            state["system_error_reason"] = reason or "The performer failed without a diagnostic reason"
             # 098 US1 (FR-001/FR-007): the assessor (junie) harness terminal-errors
             # whenever its strict parser cannot build issue.md from a flaky upstream
             # response (empty answer / control chars / empty body). Scoped to the

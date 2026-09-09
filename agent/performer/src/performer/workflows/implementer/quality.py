@@ -58,6 +58,11 @@ async def _run_set(ctx: RunContext, commands: list[str], attempt_number: int, at
             )
         )
         if check.exit_code != 0:
+            from performer.infrastructure import InfrastructureBlocked
+            from performer.test_results import _match_env_signature
+
+            if cause := _match_env_signature(check.output_excerpt or ""):
+                raise InfrastructureBlocked(cause)
             log.info("implementer.quality_failed", command=cmd, attempt=attempt_number, exit_code=check.exit_code)
             return cmd, check.output_excerpt or ""
     return None

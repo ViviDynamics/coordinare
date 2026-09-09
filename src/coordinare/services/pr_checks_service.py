@@ -41,6 +41,9 @@ class CheckEntry(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     name: str
+    check_run_id: int | None = None
+    setup_failure: bool = False
+    completed_at: datetime | None = None
     status: CheckStatus
     conclusion: CheckConclusion | None = None
     is_required: bool = False
@@ -94,6 +97,8 @@ _STATUS_CHECK_ROLLUP = """
                 nodes {
                   __typename
                   ... on CheckRun {
+                    databaseId
+                    completedAt
                     name
                     status
                     conclusion
@@ -313,6 +318,8 @@ def _parse_context_nodes(
             output = node.get("output") or {}
             entry = CheckEntry(
                 name=name,
+                check_run_id=node.get("databaseId"),
+                completed_at=node.get("completedAt"),
                 status=_normalize_status(node.get("status")),
                 conclusion=_normalize_conclusion(node.get("conclusion")),
                 is_required=branch_protection_readable and name in required_names,
@@ -497,6 +504,146 @@ class PrChecksService:
         self._bpr_forbidden_at: float = 0.0
         # FR-027: surface a persistently unreadable base branch (spec-090 F2).
         self._baseline_failures = _BaselineFetchFailureTracker(owner, repo)
+        self._evidence_cache: dict[int, tuple[float, dict[str, Any]]] = {}
+        self._observations: deque[CheckRollup] = deque(maxlen=100)
+        self._peer_refreshed_at = 0.0
+        self._env_announcements: dict[str, float] = {}
+
+    async def enrich_failure_evidence(self, rollup: CheckRollup) -> CheckRollup:
+        from coordinare.services.ci_evidence import fetch_failure_evidence
+
+        entries = []
+        for entry in rollup.checks:
+            if entry.conclusion not in {"failure", "timed_out", "startup_failure", "action_required"} or not entry.check_run_id:
+                entries.append(entry)
+                continue
+            try:
+                cached = self._evidence_cache.get(entry.check_run_id)
+                if cached and time.monotonic() - cached[0] < 60:
+                    evidence = cached[1]
+                else:
+                    evidence = await fetch_failure_evidence(self._gh, self._owner, self._repo,
+                                                            entry.check_run_id, entry.details_url)
+                    if len(self._evidence_cache) >= 200:
+                        self._evidence_cache.pop(next(iter(self._evidence_cache)))
+                    self._evidence_cache[entry.check_run_id] = (time.monotonic(), evidence)
+                text = [entry.summary or "", *evidence['annotations'], *evidence['failed_steps']]
+                entry = entry.model_copy(update={"title": "\n".join(t for t in [entry.title or "", *evidence['annotations'], *evidence['failed_steps']] if t) or entry.title,
+                                                 "summary": "\n".join(t for t in text if t),
+                                                 "setup_failure": evidence['setup_failure']})
+            except Exception as exc:
+                logger.warning("pr_checks.failure_evidence_unavailable", check_run_id=entry.check_run_id,
+                               error_type=type(exc).__name__)
+            entries.append(entry)
+        enriched = rollup.model_copy(update={"checks": entries})
+        self._observations.append(enriched)
+        return enriched
+
+    async def refresh_peer_rollups(self, current_pr: int) -> None:
+        list_prs = getattr(self._gh, "list_prs_by_branch_prefix", None)
+        if not callable(list_prs) or time.monotonic() - self._peer_refreshed_at < 60:
+            return
+        self._peer_refreshed_at = time.monotonic()
+        try:
+            peers = await list_prs(self._owner, self._repo, "coordinare/", limit=10)
+            if not isinstance(peers, list):
+                return
+            for peer in peers:
+                number = peer.get("number")
+                if isinstance(number, int) and number != current_pr:
+                    await self.enrich_failure_evidence(await self.get_pr_check_rollup(number))
+        except Exception as exc:
+            logger.warning("pr_checks.peer_evidence_unavailable", error_type=type(exc).__name__)
+
+    def claim_env_notification(self, signature: str, cooldown: float) -> bool:
+        now = time.monotonic()
+        prior = self._env_announcements.get(signature)
+        if prior is not None and now - prior < cooldown:
+            return False
+        if len(self._env_announcements) >= 1000:
+            self._env_announcements.pop(next(iter(self._env_announcements)))
+        self._env_announcements[signature] = now
+        return True
+
+    def release_env_notification(self, signature: str) -> None:
+        self._env_announcements.pop(signature, None)
+
+    def unrelated_failure_seen(self, rollup: CheckRollup, name: str, signature: str) -> bool:
+        from coordinare.services.failure_signature import make_failure_signature
+
+        return any(
+            other.head_sha != rollup.head_sha
+            and (other.rollup_origin == "base" or other.pr_number != rollup.pr_number)
+            and any(check.name == name and check.conclusion and
+                    make_failure_signature(check.name, check.conclusion, check.title, check.summary)[0] == signature
+                    for check in other.checks)
+            for other in self._observations
+        )
+
+    def infrastructure_recovered(self, check_names: list[str], blocked_head: str, blocked_at: datetime) -> bool:
+        return bool(check_names) and all(any(
+            rollup.head_sha != blocked_head and any(check.name == name and check.conclusion == "success"
+                                                    and check.completed_at is not None and check.completed_at > blocked_at
+                                                    for check in rollup.checks)
+            for rollup in self._observations
+        ) for name in check_names)
+
+    async def retry_recovered_infrastructure(self, rollup: CheckRollup, prior: dict[str, Any]) -> list[int]:
+        """Retry each blocked Actions job once after a fresh independent green.
+
+        A different head's success releases the infrastructure hold by rechecking
+        this PR, never by treating its still-red checks as passing.
+        """
+        import re
+
+        import httpx
+
+        names = prior.get("check_names") or []
+        try:
+            blocked_at = datetime.fromisoformat(prior["blocked_at"])
+        except (KeyError, TypeError, ValueError):
+            return []
+        if blocked_at.tzinfo is None or prior.get("head_sha") != rollup.head_sha:
+            return []
+        if not self.infrastructure_recovered(names, rollup.head_sha, blocked_at):
+            return []
+        already = set(prior.get("retried_jobs") or [])
+        attempted_names = set(prior.get("retried_checks") or [])
+        candidates = []
+        retryable = {"failure", "timed_out", "startup_failure", "action_required"}
+        for check in rollup.checks:
+            match = re.search(r"/actions/runs/\d+/job/(\d+)", check.details_url or "")
+            if check.name in names and check.name not in attempted_names and check.conclusion in retryable and match:
+                job_id = int(match.group(1))
+                if job_id not in already:
+                    candidates.append((job_id, check.name))
+        if not candidates:
+            return []
+        fresh = await self.get_pr_check_rollup(rollup.pr_number)
+        if fresh.head_sha != rollup.head_sha:
+            return []
+        token = await self._gh.current_token()
+        root = f"{self._gh._rest_api_base()}/repos/{self._owner}/{self._repo}"
+        attempted = []
+        async with httpx.AsyncClient(timeout=10, headers={"Authorization": f"Bearer {token}",
+                                                       "Accept": "application/vnd.github+json"}) as client:
+            for job_id, check_name in candidates:
+                response = await client.get(f"{root}/actions/jobs/{job_id}")
+                response.raise_for_status()
+                job = response.json()
+                if (job.get("head_sha") != rollup.head_sha or job.get("status") != "completed"
+                        or job.get("conclusion") not in retryable):
+                    continue
+                # Record before POST: an ambiguous response must not cause a duplicate retry.
+                attempted.append(job_id)
+                prior.setdefault("retried_jobs", []).append(job_id)
+                prior.setdefault("retried_checks", []).append(check_name)
+                try:
+                    response = await client.post(f"{root}/actions/jobs/{job_id}/rerun")
+                    response.raise_for_status()
+                except httpx.HTTPError as exc:
+                    logger.warning("pr_checks.infrastructure_retry_unconfirmed", job_id=job_id, error_type=type(exc).__name__)
+        return attempted
 
     async def get_pr_check_rollup(self, pr_number: int) -> CheckRollup:
         variables = {"owner": self._owner, "repo": self._repo, "pr": pr_number}

@@ -438,7 +438,9 @@ async def _attempt_blocked_card_recovery(
             if sess.get("env_blocked"):
                 active_reasons.append(BlockReason.ENV_BLOCKED)
                 _symphony = str(state.get("current_symphony") or "")
-                sig["env_recovered"] = _env_cache_recovered(state, _symphony)
+                # A healthy dependency cache says nothing about an Actions outage.
+                # CI holds re-evaluate their own checks in monitor_performer.
+                sig["env_recovered"] = not bool(sess["env_blocked"].get("check_names")) and _env_cache_recovered(state, _symphony)
                 sig["prior_stage"] = _prior_stage_column(sess)
                 if not sig["env_recovered"]:
                     logger.debug(

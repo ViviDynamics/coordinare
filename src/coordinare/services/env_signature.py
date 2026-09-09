@@ -34,6 +34,13 @@ class EnvCause:
 # action) are operator-facing; they carry no secret values.
 _BUILTIN_PATTERNS: tuple[tuple[str, str, str, str], ...] = (
     (
+        "registry_auth",
+        r"login attempt to .* failed with status: (401|403)|"
+        r"(pull|push|registry|docker login).*(unauthorized|authentication required|403 forbidden|401 unauthorized)",
+        "CI registry authentication failed",
+        "Check runner registry credentials and registry/proxy access policy; repository changes cannot repair runner access",
+    ),
+    (
         "artifact_storage_quota",
         r"artifact storage quota|createartifact.*quota|storage quota has been hit",
         "CI artifact-storage quota exhausted",

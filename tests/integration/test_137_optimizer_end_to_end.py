@@ -8,6 +8,7 @@ Deterministic and free — stubbed performers, judging disabled.
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import yaml
 from scripts.board_optimize import main as optimize_main
@@ -43,7 +44,10 @@ def _space(tmp_path: Path):
 
 
 class TestOptimizerEndToEnd:
-    async def test_stub_search_reconciles_and_reports(self, tmp_path: Path) -> None:
+    async def test_stub_search_reconciles_and_reports(self, tmp_path: Path, monkeypatch) -> None:
+        fetch = AsyncMock(side_effect=AssertionError("stub benchmark attempted live git access"))
+        monkeypatch.setattr("coordinare.daemon.fetch_main_sha", fetch)
+        monkeypatch.setattr("coordinare.services.rebase.fetch_main_sha", fetch)
         loaded = _space(tmp_path)
         session = tmp_path / "session"
         evaluate = real_evaluator(loaded, [tiny_fixture()], session)
@@ -52,6 +56,7 @@ class TestOptimizerEndToEnd:
             evaluator_kind="stub",
         )
 
+        fetch.assert_not_awaited()
         assert (session / "optimizer.json").exists()
         assert (session / "optimizer-report.md").exists()
         assert OptimizerArtifact.load(session / "optimizer.json") == artifact

@@ -14,6 +14,7 @@ import time
 
 import structlog
 
+from performer.infrastructure import CIInfrastructureBlocked, check_infrastructure_reason
 from performer.workflows.implementer.cycle import no_progress_check
 from performer.workflows.implementer.driver import RunContext
 from performer.workflows.implementer.models import CIAttempt
@@ -125,6 +126,10 @@ async def run_ci_phase(ctx: RunContext, *, head_sha: str, quality: list[str], re
             return attempts
         if verdict == "pending":
             raise CIPending(pending)
+        infrastructure = check_infrastructure_reason(failed)
+        if infrastructure:
+            attempts[-1].repair_needed = False
+            raise CIInfrastructureBlocked(infrastructure, sha, names)
         excerpt = await _excerpt(ctx, failed)
         attempts[-1].log_excerpt = excerpt[-2000:]
         if prior_failing and no_progress_check(prior_failing, names):

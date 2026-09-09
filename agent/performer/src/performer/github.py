@@ -1,6 +1,7 @@
 """GitHub API client — PR creation, default branch detection, and check-run polling."""
 from __future__ import annotations
 
+
 from typing import Literal
 
 import httpx
@@ -112,7 +113,20 @@ async def get_check_runs(owner: str, repo: str, ref: str, token: str) -> list[di
         resp = await client.get(url, headers=headers, params={"per_page": "100"})
     if not resp.is_success:
         raise GitHubAPIError(resp.status_code, resp.text)
-    return resp.json().get("check_runs", [])
+    runs = resp.json().get("check_runs", [])
+    from performer.ci_evidence import fetch_failure_evidence
+
+    for run in runs:
+        if run.get("conclusion") not in {"failure", "startup_failure", "action_required", "timed_out"}:
+            continue
+        evidence = await fetch_failure_evidence(_github_api(), token, owner, repo, int(run.get("id") or 0), run.get("details_url"))
+        messages = [*evidence["annotations"], *evidence["failed_steps"]]
+        run["setup_failure"] = evidence["setup_failure"]
+        if messages:
+            output = dict(run.get("output") or {})
+            output["summary"] = "\n".join([str(output.get("summary") or ""), *messages])
+            run["output"] = output
+    return runs
 
 
 async def get_check_run_logs(

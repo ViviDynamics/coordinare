@@ -32,6 +32,7 @@ from performer.workflows.implementer.baseline import (
 )
 from performer.workflows.implementer import commits as git
 from performer.workflows.implementer.budgets import ImplementerBudgets
+from performer.infrastructure import CIInfrastructureBlocked, InfrastructureBlocked
 from performer.workflows.implementer.ci import CIFailed, CIPending, run_ci_phase
 from performer.workflows.implementer.driver import MilestoneFailed, RunContext, _green_phase, run_milestone
 from performer.workflows.implementer.models import MilestonePlan, PerMilestoneRecord, RunRecord
@@ -215,6 +216,7 @@ class ImplementerWorkflow:
         status, reason, next_focus = "env_blocked", "", None
         quality_attempts: list = []
         ci_attempts: list = []
+        ci_infrastructure: dict | None = None
         resumed_from: int | None = None
         remaining: list[MilestonePlan] = []
 
@@ -340,7 +342,10 @@ class ImplementerWorkflow:
         except CIFailed as exc:
             status, reason = "partial_progress", f"CI checks {', '.join(exc.check_names)}: {exc.reason}\n{exc.excerpt[-1500:]}"
             next_focus = remaining[-1].goal if remaining else None
-        except CIPending as exc:
+        except CIInfrastructureBlocked as exc:
+            status, reason = "env_blocked", str(exc)
+            ci_infrastructure = {"head_sha": exc.head_sha, "check_names": exc.check_names, "cause": str(exc)}
+        except (CIPending, InfrastructureBlocked) as exc:
             status, reason = "env_blocked", str(exc)
         except _PushFailed as exc:
             status, reason = "partial_progress", exc.reason
@@ -386,6 +391,7 @@ class ImplementerWorkflow:
         )
         report = {
             "implementer_run": record.model_dump(),
+            "ci_infrastructure": ci_infrastructure,
             "pr_url": ctx.pr_url if ctx else None,
             "pr_node_id": ctx.pr_node_id if ctx else None,
             "workflow_metrics": {

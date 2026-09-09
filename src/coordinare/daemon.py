@@ -233,12 +233,12 @@ def _persist_active_sessions(active_sessions: dict[str, Any]) -> dict[str, Persi
             else None
         )
         # 095: per-card ENV_BLOCKED hold/dedup state.  Persist a dict of
-        # string-valued identifiers (head_sha/pattern_id/cause/action) so a
+        # identifiers and diagnostic strings (head_sha/pattern_id/cause/action) so a
         # still-active block does not re-notify the operator after a restart
         # (FR-006).  The dedup check keys on head_sha + pattern_id, so a dict
         # missing or corrupting EITHER would silently break dedup; degrade the
         # WHOLE thing to None (re-notify once) unless both are non-empty strings.
-        # cause/action are best-effort strings carried alongside.
+        # cause/action are best-effort strings; 263 also carries retry history.
         env_blocked_raw = sess.get("env_blocked")
         env_blocked: dict[str, Any] | None = None
         if isinstance(env_blocked_raw, dict):
@@ -246,10 +246,19 @@ def _persist_active_sessions(active_sessions: dict[str, Any]) -> dict[str, Persi
             pid = env_blocked_raw.get("pattern_id")
             if isinstance(hs, str) and hs and isinstance(pid, str) and pid:
                 env_blocked = {"head_sha": hs, "pattern_id": pid}
-                for k in ("cause", "action"):
+                for k in ("cause", "action", "blocked_at"):
                     v = env_blocked_raw.get(k)
                     if isinstance(v, str):
                         env_blocked[k] = v
+                # 263: retain the outage identity and attempted retries across
+                # restarts; dropping them allows a second retry on the same head.
+                for k in ("check_names", "retried_checks"):
+                    values = env_blocked_raw.get(k)
+                    if isinstance(values, list):
+                        env_blocked[k] = [v for v in values if isinstance(v, str) and v]
+                jobs = env_blocked_raw.get("retried_jobs")
+                if isinstance(jobs, list):
+                    env_blocked["retried_jobs"] = [v for v in jobs if type(v) is int and v > 0]
         # 096: per-card auto-rebase anti-thrash marker. Persist only when all
         # three keys are non-empty strings; anything malformed degrades to None
         # (re-attempt allowed) so a corrupt marker never wedges a card.

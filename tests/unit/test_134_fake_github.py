@@ -210,3 +210,13 @@ async def test_fake_never_raises_on_unknown_or_degraded_input(bench_repo: Path, 
     # post_comment (latent swallowed call on the real service) is tolerated + recorded
     await fake.post_comment(1, "hi")
     assert any(e["kind"] == "post_comment" for e in fake.events)
+
+
+@pytest.mark.parametrize("kwargs,expected", [({}, "fake-token"), ({"git_auth_enabled": True}, "fake-token"),
+                                             ({"git_auth_enabled": False}, "")])
+async def test_git_auth_can_be_disabled_without_changing_real_mode_default(
+    tmp_path: Path, kwargs: dict[str, bool], expected: str,
+) -> None:
+    fake = FakeGitHubService(bare_repo_path=tmp_path / "repo.git", work_dir=tmp_path / "work", **kwargs)
+    assert await fake.current_token() == expected
+    assert await fake._current_token() == expected

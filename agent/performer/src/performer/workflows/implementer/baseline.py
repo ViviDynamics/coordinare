@@ -129,6 +129,12 @@ async def run_tests(toolkit, command: str, runner_kind: str, cwd: Path, timeout_
     output = run_result.output_excerpt or ""
     exit_code = run_result.exit_code
 
+    from performer.infrastructure import InfrastructureBlocked
+    from performer.test_results import _match_env_signature
+
+    if exit_code != 0 and (cause := _match_env_signature(output)):
+        raise InfrastructureBlocked(cause)
+
     parsed = parse_test_output(
         runner_kind=runner_kind if runner_kind != "unknown" else "make",
         output=output,
