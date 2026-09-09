@@ -121,7 +121,7 @@ def select_pages(
                 kind=data["kind"],
                 source="brief",
                 justification=data["topic"],
-                exists=False,
+                exists=any(page.path == location for page in inventory),
                 say=data["say"],
                 modules=data["modules"],
             )

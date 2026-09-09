@@ -58,7 +58,7 @@ def test_a_new_blueprint_hash_dispatches_again():
 def test_card_context_carries_only_the_documentation_brief():
     ctx = build_card_context({"id": "c1", "title": "T", "body": "B", "issue_number": 7}, _session(),
                              persona="p", backend="codex", model_block={"model": "m"}, repo_url="https://x/y.git", base_branch="main")
-    assert ctx["role"] == "documenting" and ctx["doc_mode"] == "blueprint"
+    assert ctx["role"] == "documenting" and ctx["doc_mode"] == "update"
     assert set(ctx["documentation_brief"]) == {"summary", "docs", "modules"}
     assert "implementation_brief" not in ctx and "verification_brief" not in ctx
     assert ctx["branch"] == "coordinare/c1/x" and ctx["model"] == "m" and ctx["issue_number"] == 7

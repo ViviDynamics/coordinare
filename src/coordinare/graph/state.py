@@ -276,6 +276,7 @@ class CoordinareState(TypedDict, total=False):
     stage_verdicts: dict[str, dict[str, Any]]
     # 165: the architect's blueprint (source of the three briefs) and the
     # documenter side-run record; per card, restart-safe (schema v17).
+    documentation_findings: dict[str, Any]
     blueprint: dict[str, Any] | None
     documenting_side: dict[str, Any] | None
     # 166: the assessor's structured assessment (goal, expected_behavior,
@@ -416,6 +417,7 @@ def initial_state() -> CoordinareState:
         "assessor_open_questions": [],
         # 125: stage-verdict memory + one-shot override forcing flag
         "stage_verdicts": {},
+        "documentation_findings": {},
         "blueprint": None,
         "documenting_side": None,
         # 166: assessor structured assessment

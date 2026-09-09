@@ -6,6 +6,7 @@ Every command passes the spec-165 allow-list before it runs and is recorded.
 """
 from __future__ import annotations
 
+import json
 import shlex
 from pathlib import Path
 
@@ -67,3 +68,26 @@ async def gather_page(toolkit, workspace: Path, plan: PagePlan, *, max_commands:
             evidence_parts.append(f"### {target}\n```\n{output}\n```")
     evidence = PageEvidence(commands=records, chars=sum(r["chars"] for r in records))
     return evidence, current, "\n\n".join(evidence_parts)
+
+
+def with_analysis_inputs(evidence: str, findings: dict, *, max_chars: int) -> str:
+    """Share the existing evidence budget with a bounded slice from each role."""
+    if not findings:
+        return evidence
+    heading = "\n\nStructured analysis inputs (verify prior source-head claims against the current repository):\n"
+    analysis_budget = min(4000, max_chars // 3)
+    entries = list(findings.items())[:5]
+    per_role = max(0, (analysis_budget - len(heading)) // max(1, len(entries)))
+    sections = []
+    for role, entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        attribution = f"Role {role}; source head {str(entry.get('source_head') or 'unknown')[:64]}\n"
+        payload = json.dumps(entry.get("findings") or {}, sort_keys=True, ensure_ascii=True)
+        space = max(0, per_role - len(attribution) - 1)
+        if len(payload) > space:
+            marker = " [truncated]"
+            payload = (payload[:max(0, space - len(marker))] + marker)[:space]
+        sections.append((attribution + payload + "\n")[:per_role])
+    analysis = (heading + "".join(sections))[:analysis_budget]
+    return evidence[:max(0, max_chars - len(analysis))] + analysis

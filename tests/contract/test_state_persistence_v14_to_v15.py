@@ -37,10 +37,9 @@ _ITEM = {
 }
 
 
-def test_current_schema_version_is_21() -> None:
-    """Spec 141 advances snapshots to v21 for attempt identity, daily log path
-    and pending content-failure source. All prior fields remain supported."""
-    assert CURRENT_SCHEMA_VERSION == 21  # 141: + attempt identity and log path
+def test_current_schema_version_is_22() -> None:
+    """Spec 175 adds attributed documentation findings; prior fields remain supported."""
+    assert CURRENT_SCHEMA_VERSION == 22  # 175: + attributed documentation findings
 
 
 def test_old_session_loads_with_surfaced_stale_reviews_default() -> None:

@@ -170,6 +170,9 @@ class Score(BaseModel):
     # coordinare at dispatch. Each reader gets only its own slice (data-model.md
     # disjointness rule). Declared here or extra="ignore" drops them in transit.
     implementation_brief: dict = Field(default_factory=dict)
+    documentation_findings: dict = Field(default_factory=dict)
+    completed_documentation: dict = Field(default_factory=dict)
+    documenting_side_run: bool | None = None
     documentation_brief: dict = Field(default_factory=dict)
     verification_brief: dict = Field(default_factory=dict)
     # 166: the assessor's structured assessment for one card (goal,

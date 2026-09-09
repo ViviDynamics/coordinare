@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-CURRENT_SCHEMA_VERSION: int = 21  # 141: + persisted attempt identity and log path
+CURRENT_SCHEMA_VERSION: int = 22  # 175: per-role documentation findings
 
 # Lowest schema_version we still know how to read.  v1 snapshots are upgraded
 # in-memory at load time (065 Fix 7b: active_sessions added in v2; v1 snapshots
@@ -175,20 +175,22 @@ class StageVerdict(BaseModel):
 
 
 class DocumentingSideRun(BaseModel):
-    """165: the documenter side run for one blueprint (schema v17+).
+    """Early documenter identity and outcome, deduplicated by blueprint and findings.
 
-    Dispatched at most once per ``blueprint_hash`` once the card has advanced
-    past architecting and the blueprint's documentation brief is non-empty.
-    A failed run is recorded and not retried within the card; the
-    end-of-lifecycle documenting pass (spec 125) still runs unchanged.
+    Runner job_id restores HTTP polling after restart. Unknown writer status
+    retains the lock until a poll or confirmed stop proves quiescence.
     """
 
     model_config = ConfigDict(extra="ignore")
 
     status: Literal["pending", "running", "done", "failed"] = "pending"
     blueprint_hash: str
+    writer_active: bool = False
+    findings_hash: str | None = None
+    paths: list[str] = Field(default_factory=list)
     dispatched_at: datetime | None = None
     session_id: str | None = None
+    job_id: str | None = None
     head_sha: str | None = None
     result_reason: str | None = None
 
@@ -425,6 +427,14 @@ class PersistedSession(BaseModel):
     # blueprint is the validated Blueprint (data-model.md) plus size,
     # blueprint_hash and created_at; briefs are projected from it at dispatch
     # and never stored. Defaults keep v1-v16 snapshots loading unchanged.
+    documentation_findings: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("documentation_findings", mode="before")
+    @classmethod
+    def _clean_documentation_findings(cls, value: Any) -> dict[str, Any]:
+        from coordinare.services.documentation_findings import clean_findings
+        return clean_findings(value)
+
     blueprint: dict[str, Any] | None = None
     documenting_side: DocumentingSideRun | None = None
     # 166 (schema v18+): the assessor's structured assessment for one card.

@@ -3607,7 +3607,8 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
             _bp = _bp_report.get("blueprint")
             if isinstance(_bp, dict) and _bp.get("milestones"):
                 state["blueprint"] = dict(_bp)
-                state["documenting_side"] = None
+                if not isinstance(state.get("documenting_side"), dict) or (state["documenting_side"].get("status") != "running" and not state["documenting_side"].get("writer_active")):
+                    state["documenting_side"] = None
                 logger.info(
                     "blueprint.lifted",
                     card_id=card_id,
@@ -4064,6 +4065,11 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
             state["agent_dispatch"] = {}
             state["agent_dispatch_at"] = None
             return state
+
+        from coordinare.services.documentation_findings import (
+            collect as collect_documentation_findings,
+        )
+        collect_documentation_findings(state, stage, marker, status)
 
         # --- Terminal success states ---
         if marker in TERMINAL_SUCCESS_STATES:

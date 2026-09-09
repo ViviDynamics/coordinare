@@ -30,8 +30,8 @@ _ASSESSMENT = {
 }
 
 
-def test_schema_version_is_21() -> None:
-    assert CURRENT_SCHEMA_VERSION == 21  # 141: + attempt identity, log path and pending content source
+def test_schema_version_is_22() -> None:
+    assert CURRENT_SCHEMA_VERSION == 22  # 175: + attributed documentation findings
 
 
 def test_new_assessment_field_defaults_to_none() -> None:

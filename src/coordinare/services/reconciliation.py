@@ -60,6 +60,10 @@ async def run_startup_reconciliation(
     started_monotonic = time.monotonic()
 
     in_flight_sessions = _collect_in_flight_sessions(state)
+    side_sessions = {card_id: sess for card_id, sess in (state.get("active_sessions") or {}).items()
+                     if isinstance(sess, dict) and isinstance(sess.get("documenting_side"), dict)
+                     and (sess["documenting_side"].get("status") == "running" or sess["documenting_side"].get("writer_active"))
+                     and sess["documenting_side"].get("session_id")}
     logger.info(
         "daemon.reconciliation_pass_started",
         cards_to_process=len(in_flight_sessions),
@@ -72,7 +76,7 @@ async def run_startup_reconciliation(
     # in-flight set to compare against; a snapshot with no in-flight
     # cards means we cannot distinguish a true orphan from a container
     # spawned by another tool on the host.
-    if not in_flight_sessions:
+    if not in_flight_sessions and not side_sessions:
         completed_at = datetime.now(UTC)
         wall_clock = time.monotonic() - started_monotonic
         logger.info(
@@ -160,6 +164,13 @@ async def run_startup_reconciliation(
         )
         decisions[card_id] = decision
 
+    # Early documenters own independent jobs and must survive restart alongside
+    # the foreground performer. Never clear foreground dispatch during recovery.
+    for card_id, sess in side_sessions.items():
+        if time.monotonic() >= deadline:
+            break
+        await _restore_documenting_side(state, card_id, sess, by_session, docker_executor)
+
     # FR-005: orphan sweep — any container with a session_id NOT in the
     # snapshot is a leftover from a previous daemon run that exited
     # uncleanly.  Stop them all.
@@ -167,6 +178,7 @@ async def run_startup_reconciliation(
         str((sess.get("agent_dispatch") or {}).get("session_id") or "")
         for sess in in_flight_sessions.values()
     }
+    persisted_session_ids.update(str(sess["documenting_side"]["session_id"]) for sess in side_sessions.values())
     persisted_session_ids.discard("")
     for container in containers:
         if time.monotonic() >= deadline:  # pragma: no cover — operational backstop
@@ -432,6 +444,34 @@ def _collect_in_flight_sessions(state: CoordinareState) -> dict[str, dict[str, A
             continue
         in_flight[card_id] = sess
     return in_flight
+
+
+async def _restore_documenting_side(state, card_id, sess, by_session, docker_executor) -> None:
+    """Adopt an early writer, or confirm it stopped before releasing its lock."""
+    from coordinare.services.documenting_side import record_result
+
+    service = _resolve_service(state, "documenting")
+    if service is None or _is_persistent_mode(service):
+        return
+    from coordinare.services.docker_runtime import DockerRuntime
+
+    if not isinstance(getattr(service, "_runtime", None), DockerRuntime):
+        # Docker enumeration cannot establish absence of a Kubernetes writer.
+        return
+    session_id = str(sess["documenting_side"]["session_id"])
+    container = by_session.get(session_id)
+    if container is None:
+        record_result(sess, status="failed", head_sha=None, reason="side writer absent at restart")
+        return
+    job_id = sess["documenting_side"].get("job_id")
+    if (job_id and await _probe_job_runner_health(container, docker_executor)
+            and await _adopt(state, card_id, container, session_id, service, docker_executor)):
+        service._active_jobs[session_id].job_id = str(job_id)
+        return
+    stopped = await docker_executor.stop_container(container.container_id, timeout=5.0)
+    record_result(sess, status="failed", head_sha=None,
+                  reason="side writer stopped at restart" if stopped else "side writer stop unconfirmed at restart",
+                  writer_active=not stopped)
 
 
 async def _classify_and_act(

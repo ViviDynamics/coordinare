@@ -121,3 +121,37 @@ documenting stage) no longer parks a card forever — it retries first (spec 119
 
 Next: **[04 — Harnesses & Shims](04-harnesses-and-shims.md)**.
 </content>
+
+
+## Analysis and documentation handoff
+
+With the structured role workflows configured, assessing, architecting, reviewing,
+security, and QA report findings rather than writing living documentation. Coordinare
+retains a bounded record per role, with its source head and content hash. Reviewer
+and security records are independent. A new dispatch clears that role's prior record;
+raw command outputs are not copied into this documentation carrier.
+
+The architect's documentation brief starts an early documenter alongside implementation.
+It uses the symphony's configured documenting workflow, model, tuning, and GitHub URLs.
+New completed findings schedule another update after the current writer finishes.
+Early runs write under `docs/`; the final documenting stage reconciles the implemented
+head and updates root pointers. Existing pages are read and integrated rather than
+repeated as new pages. The documenter verifies earlier analysis against the checkout. Structured inputs share
+the configured gather evidence budget, with at most 4,000 characters divided across
+the five roles; clipped records retain their role and source-head attribution.
+An implementer receives completed documentation paths and their head when available;
+the structured implementation brief remains authoritative and implementation does not
+wait for prose.
+
+Only one documenter writes a card at a time. Final documentation waits for an active
+early run. After restart, persistent services resume polling and Docker ephemeral jobs
+are adopted through startup reconciliation. Confirmed absent or stopped Docker writers
+release the lock. Unknown status or an unconfirmed stop preserves the writer lock and
+blocks final documentation; verify the remote writer has stopped before operator recovery.
+Docker enumeration cannot establish whether a Kubernetes writer is absent, so that
+case retains the lock until status can be confirmed. Status probes remain bounded even
+after the job's one-hour observation budget expires.
+
+Snapshot schema 22 stores these records; older snapshots load empty findings. Legacy
+prose roles and `architecture_plan_path` remain supported. Configure the structured
+workflows to use the single-author path; this change does not enable workflows by default.
