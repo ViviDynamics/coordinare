@@ -4,6 +4,8 @@ from __future__ import annotations
 import re
 
 _PATTERNS = (
+    (r"(?:EACCES|EPERM|permission denied)[^\n]*[/]opt/hostedtoolcache",
+     "Runner tool-cache permissions prevent CI setup; repair the runner tool cache"),
     (r'login attempt to.*failed with status:\s*(401|403)|(?:registry|docker login|pull access).*?(?:unauthorized|authentication required|403 forbidden|401 unauthorized)',
      'Registry authentication failed; repair CI registry credentials or its authentication proxy'),
     (r'artifact storage.*(?:quota|limit)|storage quota.*(?:exhausted|hit)',
@@ -44,4 +46,7 @@ def check_infrastructure_reason(checks: list[dict]) -> str | None:
         reason = infrastructure_reason(text)
         if reason:
             return reason
+    if any(check.get('evidence_access_denied') for check in checks):
+        return ('Cannot diagnose failed CI because GitHub denied access to failure evidence; '
+                'grant the performer Checks and Actions read permissions, then retry CI inspection')
     return None

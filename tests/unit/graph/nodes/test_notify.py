@@ -268,10 +268,8 @@ async def test_notify_performer_stage_none_does_not_leak_string_none() -> None:
 
 
 @pytest.mark.asyncio
-async def test_blocked_notification_includes_dependency_context() -> None:
-    """046 T028: When blocked_by_dependencies is non-empty, the Slack
-    summary should show blocker issue numbers and columns instead of
-    the generic open_questions preview."""
+async def test_blocked_notification_preserves_dependency_question() -> None:
+    """A real dependency question remains visible without board-wide overrides."""
     fake = FakeNotificationService()
     state = initial_state()
     state["current_card"] = {
@@ -293,8 +291,7 @@ async def test_blocked_notification_includes_dependency_context() -> None:
     assert len(fake.dispatched) == 1
     summary = fake.dispatched[0].payload["summary"]
     assert "#90" in summary
-    assert "IN_PROGRESS" in summary
-    assert "waiting on" in summary
+    assert "Depends on #90" in summary
 
 
 @pytest.mark.asyncio
@@ -733,3 +730,25 @@ def test_persona_scope_signature_overrides_order_invariant() -> None:
     a = _scope({"impl": {"depth": "normal", "focus": "x", "overrides": ["a", "b"]}})
     b = _scope({"impl": {"depth": "normal", "focus": "x", "overrides": ["b", "a"]}})
     assert _persona_scope_signature(a) == _persona_scope_signature(b)
+
+
+@pytest.mark.asyncio
+async def test_ci_block_ignores_other_cards_queued_dependencies():
+    fake = FakeNotificationService()
+    state = initial_state()
+    state.update(current_card={"id": "188", "title": "Assignments", "status": "BLOCKED"},
+                 phase="blocked", notification_service=fake,
+                 open_questions=["CI checks failed: Install dependencies"],
+                 blocked_by_dependencies=[{"issue_number": 143, "column": "TODO"}])
+    await notify(state)
+    event = fake.dispatched[0]
+    assert event.event_type == EventType.card_blocked
+    assert "CI checks failed: Install dependencies" in event.payload["summary"]
+    assert "#143" not in event.payload["summary"]
+    assert event.payload["open_questions"] == state["open_questions"][0]
+
+
+def test_dependency_direction_does_not_reverse_blocks():
+    from coordinare.services.dependency import parse_dependencies
+
+    assert parse_dependencies('Depends on #160. Blocks #143 in practice.') == [160]

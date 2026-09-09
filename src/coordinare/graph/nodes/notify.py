@@ -457,18 +457,9 @@ async def notify(state: CoordinareState) -> CoordinareState:
         # 069 FR-003: empty-questions case is suppressed earlier; we can
         # safely index here without the "needs input" fallback.
         questions_preview = open_questions[0][:80]
-        # 046: If the card is blocked due to dependencies, include blocker
-        # issue numbers and columns in the summary so the Slack message
-        # is actionable without cross-referencing the board.
-        blocked_deps = state.get("blocked_by_dependencies") or []
-        if blocked_deps:
-            dep_labels = ", ".join(
-                f"#{d.get('issue_number', '?')} ({d.get('column') or 'off-board'})"
-                for d in blocked_deps[:3]
-            )
-            summary = f"🚫 {display_title} — blocked: waiting on {dep_labels}"
-        else:
-            summary = f"🚫 {display_title} — blocked: {questions_preview}"
+        # Board-wide dependency filtering describes queued TODO cards, not the
+        # cause of this performer's terminal response. Preserve its actual reason.
+        summary = f"🚫 {display_title} — blocked: {questions_preview}"
     elif event_type == EventType.card_merged:
         summary = f"✅ {display_title} — merged!"
     elif prev_status and status and prev_status != status:
