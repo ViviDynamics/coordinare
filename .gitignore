@@ -275,3 +275,6 @@ tmp/
 id_rsa
 id_ed25519
 credentials.json
+
+# Operational attempt telemetry
+logs/attempts/

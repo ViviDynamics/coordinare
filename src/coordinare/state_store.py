@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-CURRENT_SCHEMA_VERSION: int = 20  # 173: + advocate/curator intake gate fields on EnvCacheStateSnapshot; 169: + PersistedSession.review_findings; 166: + assessment; 165: + blueprint, .documenting_side
+CURRENT_SCHEMA_VERSION: int = 21  # 141: + persisted attempt identity and log path
 
 # Lowest schema_version we still know how to read.  v1 snapshots are upgraded
 # in-memory at load time (065 Fix 7b: active_sessions added in v2; v1 snapshots
@@ -410,6 +410,17 @@ class PersistedSession(BaseModel):
     feedback_ledger: list[FeedbackItemRecord] = Field(default_factory=list)
     feedback_origin_sha: str | None = None
     noop_success_retries: int = 0
+    # 141 (schema v21+): attempt telemetry.  last_attempt_id is the UUID
+    # returned by AttemptLog.open_attempt at dispatch time; written back to
+    # PersistedSession immediately so it survives a daemon restart between
+    # open_attempt and close_attempt (FR-008 / A-008).  last_attempt_log_path
+    # is the JSONL file path snapshotted at open time — on recovery,
+    # AttemptLog.reopen_attempt uses it so the end row lands in the same file
+    # as the start row even after a midnight rollover + restart.  Optional /
+    # default None keeps v1-v20 snapshots loading unchanged.
+    last_attempt_id: str | None = None
+    last_attempt_log_path: str | None = None
+    last_attempt_failure_source: str | None = None
     # 165 (schema v17+): the architect blueprint and the documenter side run.
     # blueprint is the validated Blueprint (data-model.md) plus size,
     # blueprint_hash and created_at; briefs are projected from it at dispatch

@@ -298,3 +298,101 @@ def test_each_row_is_newline_terminated(log: AttemptLog, tmp_path: Path) -> None
     log.close_attempt(attempt_id=attempt_id, verdict="pass", verdict_source="qa_role")
     files = list(tmp_path.glob("*.jsonl"))
     assert files[0].read_text().endswith("\n")
+
+
+# ---------------------------------------------------------------------------
+# log_path_for — path accessor for persistence (A-008)
+# ---------------------------------------------------------------------------
+
+
+def test_log_path_for_returns_path_after_open(log: AttemptLog, tmp_path: Path) -> None:
+    """log_path_for returns the file path that open_attempt wrote row 1 to."""
+    attempt_id = log.open_attempt(task_id="card-1", routing_reason="default_policy")
+    path = log.log_path_for(attempt_id)
+    assert path is not None
+    assert path.endswith(".jsonl")
+
+
+def test_log_path_for_returns_none_for_unknown_id(log: AttemptLog) -> None:
+    """log_path_for returns None when the attempt_id is not registered."""
+    assert log.log_path_for("no-such-id") is None
+
+
+def test_log_path_for_returns_none_after_close(log: AttemptLog, tmp_path: Path) -> None:
+    """log_path_for returns None after close_attempt removes the entry."""
+    attempt_id = log.open_attempt(task_id="card-1", routing_reason="default_policy")
+    log.close_attempt(attempt_id=attempt_id, verdict="pass", verdict_source="qa_role")
+    assert log.log_path_for(attempt_id) is None
+
+
+def test_log_path_for_returns_string_not_path_object(log: AttemptLog, tmp_path: Path) -> None:
+    """log_path_for returns a str, not a Path, for easy JSON serialisation."""
+    attempt_id = log.open_attempt(task_id="card-1", routing_reason="default_policy")
+    result = log.log_path_for(attempt_id)
+    assert isinstance(result, str)
+
+
+# ---------------------------------------------------------------------------
+# reopen_attempt — restart recovery (A-008)
+# ---------------------------------------------------------------------------
+
+
+def test_reopen_attempt_allows_close_to_write_correct_file(tmp_path: Path) -> None:
+    """After a simulated restart, reopen_attempt lets close_attempt write to the original file."""
+    log = AttemptLog(log_dir=tmp_path)
+    attempt_id = log.open_attempt(task_id="card-1", routing_reason="default_policy")
+    original_path = log.log_path_for(attempt_id)
+    assert original_path is not None
+
+    # Simulate restart: create a fresh AttemptLog with empty _open_attempts
+    log2 = AttemptLog(log_dir=tmp_path)
+    log2.reopen_attempt(attempt_id, "card-1", Path(original_path))
+    log2.close_attempt(attempt_id=attempt_id, verdict="pass", verdict_source="qa_role")
+
+    # Both rows must be in the same file
+    rows = _read_rows(tmp_path)
+    assert len(rows) == 2
+    assert rows[0]["attempt_id"] == rows[1]["attempt_id"]
+
+
+def test_reopen_attempt_is_idempotent(tmp_path: Path) -> None:
+    """Calling reopen_attempt twice with the same attempt_id does not overwrite the first entry."""
+    log = AttemptLog(log_dir=tmp_path)
+    attempt_id = log.open_attempt(task_id="card-1", routing_reason="default_policy")
+    original_path = log.log_path_for(attempt_id)
+    assert original_path is not None
+
+    log2 = AttemptLog(log_dir=tmp_path)
+    log2.reopen_attempt(attempt_id, "card-1", Path(original_path))
+    log2.reopen_attempt(attempt_id, "card-1", Path("/some/other/path.jsonl"))  # second call ignored
+
+    assert log2.log_path_for(attempt_id) == original_path
+
+
+def test_reopen_attempt_wall_time_is_null_after_restart(tmp_path: Path) -> None:
+    """wall_time_s is null after restart because started_at is unknown."""
+    log = AttemptLog(log_dir=tmp_path)
+    attempt_id = log.open_attempt(task_id="card-1", routing_reason="default_policy")
+    original_path = log.log_path_for(attempt_id)
+
+    log2 = AttemptLog(log_dir=tmp_path)
+    log2.reopen_attempt(attempt_id, "card-1", Path(original_path))
+    log2.close_attempt(attempt_id=attempt_id, verdict="pass", verdict_source="qa_role")
+
+    rows = _read_rows(tmp_path)
+    end_row = next(r for r in rows if r.get("verdict") == "pass")
+    assert end_row["wall_time_s"] is None
+
+
+def test_restored_attempt_uses_saved_directory_when_current_log_dir_is_unwritable(tmp_path: Path) -> None:
+    original = AttemptLog(tmp_path / "original")
+    attempt_id = original.open_attempt("card-1", "default_policy")
+    saved_path = Path(original.log_path_for(attempt_id))
+    invalid_dir = tmp_path / "not-a-directory"
+    invalid_dir.write_text("a file cannot be mkdir'd")
+    restored = AttemptLog(invalid_dir)
+    restored.reopen_attempt(attempt_id, "card-1", saved_path)
+    restored.close_attempt(attempt_id, "pass", "human", "merged")
+    rows = [json.loads(line) for line in saved_path.read_text().splitlines()]
+    assert len(rows) == 2
+    assert rows[-1]["verdict"] == "pass"

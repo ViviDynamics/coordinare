@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 Verdict = Literal["pass", "fail", "error", "timeout"]
-VerdictSource = Literal["qa_role", "human", "grader"]
+VerdictSource = Literal["qa_role", "human", "grader", "system"]
 TerminalState = Literal["merged", "blocked", "abandoned"]
 
 _VERDICT_MAP: dict[str, Verdict] = {
@@ -62,7 +62,7 @@ def map_verdict(raw: str) -> Verdict:
 
 @dataclass(frozen=True)
 class _OpenAttempt:
-    started_at: str
+    started_at: str | None
     task_id: str
     log_path: Path
 
@@ -84,13 +84,31 @@ class AttemptLog:
         self._log_dir = log_dir
         self._open_attempts: dict[str, _OpenAttempt] = {}
 
+    def reopen_attempt(self, attempt_id: str, task_id: str, log_path: Path) -> None:
+        """Restore an in-flight attempt from PersistedSession after a daemon restart (A-008).
+
+        started_at is unknown after restart — wall_time_s in the end row will be null.
+        No-ops if the attempt_id is already registered (idempotent).
+        """
+        if attempt_id not in self._open_attempts:
+            self._open_attempts[attempt_id] = _OpenAttempt(
+                started_at=None,  # unknown after restart; wall_time_s will be null
+                task_id=task_id,
+                log_path=log_path,
+            )
+
+    def log_path_for(self, attempt_id: str) -> str | None:
+        """Return the log path for an open attempt as a string (for persistence per A-008)."""
+        open_attempt = self._open_attempts.get(attempt_id)
+        return str(open_attempt.log_path) if open_attempt is not None else None
+
     def _log_path(self) -> Path:
         date = datetime.now(UTC).strftime("%Y-%m-%d")
         return self._log_dir / f"{date}.jsonl"
 
     def _append(self, row: dict[str, Any], path: Path) -> None:
         try:
-            self._log_dir.mkdir(parents=True, exist_ok=True)
+            path.parent.mkdir(parents=True, exist_ok=True)
             with open(path, "a", encoding="utf-8") as fh:
                 fh.write(json.dumps(row) + "\n")
         except Exception as exc:
@@ -156,6 +174,7 @@ class AttemptLog:
         open_attempt = self._open_attempts.pop(attempt_id, None)
         if open_attempt is None:
             logger.warning("attempt_log.close_unknown_attempt", attempt_id=attempt_id)
+            return
         started_at = open_attempt.started_at if open_attempt else None
         task_id = open_attempt.task_id if open_attempt else None
         log_path = open_attempt.log_path if open_attempt else self._log_path()

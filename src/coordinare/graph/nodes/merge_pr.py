@@ -147,5 +147,8 @@ async def merge_pr(state: CoordinareState) -> CoordinareState:
     symphony = state.get("symphony_name", "__default__")
     METRICS.cards_outcome_total.labels(symphony=symphony, outcome="merged").inc()
 
+    from coordinare.services.attempt_telemetry import close_attempt
+    close_attempt(state, "pass", "human", "merged")
+
     state["phase"] = "idle"
     return state

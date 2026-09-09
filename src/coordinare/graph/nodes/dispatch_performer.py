@@ -2036,6 +2036,12 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
         from coordinare.metrics import METRICS
         METRICS.card_cost_estimate_dollars.set(0)
 
+    # Attempts begin with implementation even when assessment/architecture
+    # precedes it in the lifecycle. A failed dispatch never reaches this point.
+    if performer_stage == "implementing":
+        from coordinare.services.attempt_telemetry import start_attempt
+        start_attempt(state, card, card_context.get("model"))
+
     # Clear relay_feedback so it isn't re-sent to subsequent roles.
     state["relay_feedback"] = []  # type: ignore[typeddict-unknown-key]
     state["agent_dispatch"] = result

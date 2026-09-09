@@ -247,5 +247,8 @@ async def handle_system_error(state: CoordinareState) -> CoordinareState:
 
         state["system_error_notified"] = True
 
+        from coordinare.services.attempt_telemetry import close_attempt
+        close_attempt(state, "error", "system", None)
+
     state["phase"] = "idle"
     return state

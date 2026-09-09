@@ -240,6 +240,9 @@ class CardSession(TypedDict, total=False):
     feedback_ledger: list[dict[str, Any]]
     feedback_origin_sha: str | None
     noop_success_retries: int
+    last_attempt_id: str | None
+    last_attempt_log_path: str | None
+    last_attempt_failure_source: str | None
 
 
 # Fields that live on both CardSession and CoordinareState (flat).
@@ -337,6 +340,9 @@ _SESSION_FIELDS: tuple[str, ...] = (
     "feedback_ledger",
     "feedback_origin_sha",
     "noop_success_retries",
+    "last_attempt_id",
+    "last_attempt_log_path",
+    "last_attempt_failure_source",
 )
 
 
@@ -420,6 +426,9 @@ def create_session_from_card(card: dict[str, Any]) -> CardSession:
         feedback_ledger=[],
         feedback_origin_sha=None,
         noop_success_retries=0,
+        last_attempt_id=None,
+        last_attempt_log_path=None,
+        last_attempt_failure_source=None,
     )
 
 
