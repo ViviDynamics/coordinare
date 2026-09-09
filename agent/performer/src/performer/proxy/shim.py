@@ -28,6 +28,7 @@ plus the normalizer decision (which keys ran) — never tokens or bodies
 from __future__ import annotations
 
 import os
+import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -136,6 +137,7 @@ class SelfHostedShim:
     env_restores: list = field(default_factory=list)
     _runner: Any = None
     _owns_client: bool = False
+    _session_id: str = field(default_factory=lambda: str(uuid.uuid4()), init=False)
 
     @property
     def _normalizer_keys(self) -> list[str]:
@@ -228,6 +230,10 @@ class SelfHostedShim:
                     if k.lower() not in ("authorization", "api-key", "x-api-key")
                 }
                 fwd["Authorization"] = f"Bearer {token}"
+        session_header = self.target.upstream_session_header
+        if session_header is not None:
+            fwd = {k: v for k, v in fwd.items() if k.lower() != session_header}
+            fwd[session_header] = self._session_id
         return fwd
 
     def normalize_raw(self, raw: bytes) -> bytes:

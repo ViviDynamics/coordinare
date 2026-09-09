@@ -1,0 +1,18 @@
+# Opt-in standalone operator service; not included by the default compose file.
+services:
+  switchyard:
+    image: switchyard-server:0.2.0
+    build:
+      context: ../../specs/150-switchyard-routing-sidecar/spike
+    command: ["--config", "/etc/switchyard/routes.toml", "--routing-log-file", "/var/log/switchyard/routing.jsonl"]
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?export the LiteLLM gateway key}
+      RUST_LOG: info
+    ports:
+      - "${SWITCHYARD_BIND_ADDRESS:-127.0.0.1}:4008:4000"
+    volumes:
+      - ${SWITCHYARD_ROUTES_FILE:-./routes.toml}:/etc/switchyard/routes.toml:ro
+      - switchyard-logs:/var/log/switchyard
+    restart: "no"
+volumes:
+  switchyard-logs:

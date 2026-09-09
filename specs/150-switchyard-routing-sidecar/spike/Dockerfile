@@ -4,7 +4,7 @@
 FROM rust:1.96-slim AS build
 RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev ca-certificates \
     && rm -rf /var/lib/apt/lists/*
-RUN cargo install --locked switchyard-server --root /out
+RUN cargo install --locked switchyard-server --version 0.2.0 --root /out
 
 # Trixie, not bookworm: the rust:1.96-slim build stage is trixie-based and the
 # binary links GLIBC 2.38, which bookworm (2.36) does not have. The image builds

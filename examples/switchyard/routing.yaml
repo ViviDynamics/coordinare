@@ -1,0 +1,13 @@
+# Mount into the performer and set SELFHOSTED_ROUTING_CONFIG to its container path.
+selfhosted_routing:
+  - backend: claude_code
+    model: agent
+    target:
+      base_url: http://host.docker.internal:4008/v1
+      wire_format: openai
+      strategy: translate
+      upstream_model: agent
+      upstream_auth_env: ANTHROPIC_AUTH_TOKEN
+      upstream_session_header: x-switchyard-session-id
+      health_probe: completion
+      normalizers: [strip_control_chars, strip_reasoning]

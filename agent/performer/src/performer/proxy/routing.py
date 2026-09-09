@@ -80,10 +80,16 @@ class TargetDescriptor(BaseModel):
     # the env var; the NAME is all that is configured. Auth-free upstreams (Ollama)
     # ignore the header, so this is safe everywhere.
     upstream_auth_env: str | None = None
+    # 150: a per-job shim identity, stable across turns; opt-in for escalation.
+    upstream_session_header: Literal["x-switchyard-session-id"] | None = None
 
     @model_validator(mode="after")
     def _validate_strategy(self) -> TargetDescriptor:
+        if self.upstream_session_header and self.reroute_upstream:
+            raise ValueError("upstream_session_header cannot use a direct-reroute health fallback")
         if self.strategy == "reroute":
+            if self.upstream_session_header is not None:
+                raise ValueError("upstream_session_header requires a shim, not direct reroute")
             if self.normalizers:
                 raise ValueError(
                     "reroute strategy must declare no normalizers "
