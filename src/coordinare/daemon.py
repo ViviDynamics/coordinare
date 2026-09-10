@@ -436,6 +436,7 @@ def _persist_active_sessions(active_sessions: dict[str, Any]) -> dict[str, Persi
             stage_verdicts=stage_verdicts,
             documentation_findings=sess.get("documentation_findings") or {},
             blueprint=blueprint,
+            blueprint_signature=sess.get("blueprint_signature") or None,
             documenting_side=documenting_side,
             processed_issue_comment_ids=comment_ids,
             last_issue_comment_id=last_issue_comment_id,
@@ -1107,6 +1108,7 @@ class CoordinareDaemon:
                     # once-per-hash rule still hold.
                     "documentation_findings": dict(persisted.documentation_findings),
                     "blueprint": dict(persisted.blueprint) if persisted.blueprint else None,
+                    "blueprint_signature": persisted.blueprint_signature,
                     "documenting_side": (
                         persisted.documenting_side.model_dump(mode="json")
                         if persisted.documenting_side is not None
@@ -1176,6 +1178,7 @@ class CoordinareDaemon:
                     # 165: fresh-card defaults.
                     "documentation_findings": {},
                     "blueprint": None,
+                    "blueprint_signature": None,
                     "documenting_side": None,
                 }
             }

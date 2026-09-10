@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-CURRENT_SCHEMA_VERSION: int = 22  # 175: per-role documentation findings
+CURRENT_SCHEMA_VERSION: int = 23  # 331: blueprint_signature for planning reuse
 
 # Lowest schema_version we still know how to read.  v1 snapshots are upgraded
 # in-memory at load time (065 Fix 7b: active_sessions added in v2; v1 snapshots
@@ -253,6 +253,10 @@ class PersistedSession(BaseModel):
     system_error_reason: str | None = None
     system_error_notified: bool = False
     requirements_changed: bool = False
+    # 331: identity of the requirements the persisted blueprint was planned
+    # against. Lets a restart reuse a still-valid plan instead of re-running
+    # the architect. v1-v22 snapshots load with None and simply re-plan once.
+    blueprint_signature: str | None = None
     # 069: per-card blocked-notification watermark.  Mirrors
     # ``CardSession.last_blocked_notified_at`` so a restart does not lose the
     # dedup gate that prevents re-spamming Slack and re-posting the GitHub

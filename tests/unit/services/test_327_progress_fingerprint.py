@@ -133,7 +133,7 @@ def test_two_repeats_is_not_yet_a_loop() -> None:
     """Boundary below MIN_REPEATS. Found in review: mutating MIN_REPEATS from 3
     to 2 left every test passing, so the threshold was unprotected. Text that
     merely repeats twice is ordinary output and must not be canonicalised."""
-    assert progress_fingerprint([{"text": "ab" * 2}]) == "abab"
-    assert not progress_fingerprint([{"text": "ab" * 2}]).startswith("~")
+    # 329 added a tool-activity prefix, so compare the text half.
+    assert progress_fingerprint([{"text": "ab" * 2}]).split("|", 1)[1] == "abab"
     # Three repeats is a loop and must be canonicalised.
-    assert progress_fingerprint([{"text": "ab" * 3}]).startswith("~")
+    assert progress_fingerprint([{"text": "ab" * 3}]).split("|", 1)[1].startswith("~")

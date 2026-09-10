@@ -27,13 +27,41 @@ from collections.abc import Mapping
 # How many trailing events to consider. Deltas are tiny (a few characters), so
 # the old 3-event window could not span even one cycle of a short loop, let
 # alone the several repetitions needed to recognise one.
-WINDOW_EVENTS = 40
-# Upper bound on the text we analyse and on the value we return.
+WINDOW_EVENTS = 200
+# Upper bound on the value we RETURN.
 MAX_FINGERPRINT = 480
+#: Upper bound on the text we ANALYSE. Deliberately much larger than the
+#: returned value: a repeating cycle is only visible across several
+#: repetitions, and deltas are a handful of characters each. Measuring novelty
+#: over a 480-char slice of the live loop scored 0.39 and missed it, while the
+#: same stream over its full window scored 0.03.
+ANALYSIS_CHARS = 6000
 # A string counts as a loop only if its repeating unit fits at least this many
 # times. Requiring real repetitions keeps ordinary short output -- which often
 # has a long "period" equal to its own length -- from being canonicalised.
 MIN_REPEATS = 3
+#: 329: event types that mean the performer actually DID something. Tool
+#: activity is the one progress signal a rambling model cannot fake -- the live
+#: loop on website #160 froze its tool calls at 01:29:24 and then streamed text
+#: for another ~8 minutes.
+TOOL_EVENT_TYPES = frozenset({"tool_use", "tool_call", "local_shell_call"})
+#: 329: a loop that PARAPHRASES itself has no exact repeating unit, so the
+#: period test above cannot see it. Novelty catches it: the share of word
+#: n-grams in the recent window that are distinct. Measured on captured live
+#: streams -- degenerate loops scored 0.017-0.051, while genuine output
+#: (rspec names, migration logs, npm lines, prose planning) scored 0.554-1.0.
+#: 0.15 sits ~3x above the worst loop and ~3.6x below the least novel real
+#: output.
+NOVELTY_GRAM = 5
+NOVELTY_FLOOR = 0.15
+#: Below this many words there is not enough signal to judge novelty, so the
+#: window is left alone rather than guessed at.
+NOVELTY_MIN_WORDS = 60
+#: Returned in place of the text when the window is a paraphrasing loop. It is
+#: deliberately CONSTANT: two consecutive polls of a loop must produce equal
+#: fingerprints, and the loop's own content is not stable enough to hash (the
+#: distinct n-gram set drifts as the window slides).
+LOOP_MARKER = "~repetition-loop"
 
 
 def _smallest_period(text: str) -> int:
@@ -70,6 +98,57 @@ def _minimal_rotation(unit: str) -> str:
     return min(unit[i:] + unit[:i] for i in range(len(unit)))
 
 
+def _tool_signature(events: list[object]) -> str:
+    """Identity of the most recent tool activity.
+
+    Changes whenever the performer runs another command or edit, which is
+    genuine forward progress no matter what the prose is doing. Stays constant
+    while a model only talks -- including when tool events have aged out of the
+    backend's capped event list entirely, which is what a long loop looks like.
+    """
+    latest = None
+    for event in events:
+        if isinstance(event, Mapping) and event.get("type") in TOOL_EVENT_TYPES:
+            latest = event
+    if latest is None:
+        return "t0"
+    # Identity of the NEWEST tool event only -- deliberately not a count. The
+    # backend returns a capped, sliding window, so a count falls 5,4,3,2,1,0 as
+    # old tool events age out, and every one of those decrements would read as
+    # fresh progress and reset the stall timer. The newest event is the LAST to
+    # age out, so a wedged turn changes this at most once.
+    return "t:" + str(latest.get("text") or "")[:80]
+
+
+def _text_fingerprint(tail: str, limit: int) -> str:
+    """Canonical form of the recent text, collapsing both kinds of loop.
+
+    Novelty is tested BEFORE periodicity. A paraphrasing loop is often *partly*
+    periodic, and which period the border test happens to find shifts as the
+    window slides -- so letting the period branch win first produced a
+    different canonical form on each poll and defeated the whole point. The
+    novelty verdict is a constant, so it cannot drift.
+    """
+    words = tail.split()
+    if len(words) >= NOVELTY_MIN_WORDS:
+        grams = [
+            tuple(words[i : i + NOVELTY_GRAM])
+            for i in range(len(words) - NOVELTY_GRAM + 1)
+        ]
+        if grams and (len(set(grams)) / len(grams)) < NOVELTY_FLOOR:
+            # Almost nothing in this window is new: a loop, however it words
+            # itself. Deliberately content-free, so successive polls agree.
+            return LOOP_MARKER
+    period = _smallest_period(tail)
+    if 0 < period <= len(tail) // MIN_REPEATS:
+        # Exactly periodic: collapse to a rotation-invariant representative.
+        # Reached for short cycles that carry too few words to judge novelty.
+        return ("~" + _minimal_rotation(tail[:period]))[:limit]
+    # The TAIL, not the head: new work arrives at the end, and slicing from the
+    # front would leave the fingerprint unchanged while the agent kept working.
+    return tail[-limit:]
+
+
 def progress_fingerprint(
     events: object,
     *,
@@ -103,13 +182,11 @@ def progress_fingerprint(
     normalised = " ".join("".join(texts).split())
     if not normalised:
         return ""
-    # Bound the analysed text before the periodicity scan, so cost is capped.
-    tail = normalised[-limit:]
+    # Bound the analysed text so cost is capped, but analyse far more than we
+    # return -- see ANALYSIS_CHARS.
+    tail = normalised[-ANALYSIS_CHARS:]
 
-    period = _smallest_period(tail)
-    if 0 < period <= len(tail) // MIN_REPEATS:
-        # Periodic: collapse to a rotation-invariant representative. The "~"
-        # prefix keeps a loop's canonical form from colliding with a literal
-        # message that happens to equal it.
-        return ("~" + _minimal_rotation(tail[:period]))[:limit]
-    return tail
+    # Tool activity first: it is the signal a looping model cannot produce.
+    tool_part = _tool_signature(events)[:120]
+    text_part = _text_fingerprint(tail, max(1, limit - len(tool_part) - 1))
+    return f"{tool_part}|{text_part}"

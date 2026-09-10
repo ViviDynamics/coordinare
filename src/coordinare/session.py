@@ -219,6 +219,7 @@ class CardSession(TypedDict, total=False):
     stage_verdicts: dict[str, dict[str, Any]]
     documentation_findings: dict[str, Any]
     blueprint: dict[str, Any] | None
+    blueprint_signature: str | None
     documenting_side: dict[str, Any] | None
     # 166: the assessor's structured assessment (goal, expected_behavior,
     # out_of_scope, questions, assumptions, criteria with source, carried
@@ -318,6 +319,7 @@ _SESSION_FIELDS: tuple[str, ...] = (
     # documenter side-run record; both per-card and restart-safe.
     "documentation_findings",
     "blueprint",
+    "blueprint_signature",
     "documenting_side",
     # 096: per-card auto-rebase anti-thrash marker (main_sha, head_sha, outcome).
     # Round-trips per-card so a BLOCKED/FAILED conflict isn't re-attempted every
@@ -425,6 +427,7 @@ def create_session_from_card(card: dict[str, Any]) -> CardSession:
         stage_verdicts={},
         documentation_findings={},
         blueprint=None,
+        blueprint_signature=None,
         assessment=None,
         review_findings=None,
         documenting_side=None,
