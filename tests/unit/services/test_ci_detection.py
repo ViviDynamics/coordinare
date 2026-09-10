@@ -14,7 +14,7 @@ from coordinare.services.ci_detection import _verify_tool, detect
 # These tests verify file-convention detection logic, not tool installation.
 @pytest.fixture(autouse=True)
 def _mock_verify_tool():
-    with patch("coordinare.services.ci_detection._verify_tool", return_value=True):
+    with patch("coordinare_ci_detection._verify_tool", return_value=True):
         yield
 
 # ---------------------------------------------------------------------------
@@ -208,7 +208,7 @@ class TestToolVerification:
     def test_verify_tool_returns_false_nulls_lint_command(self, tmp_path: Path) -> None:
         """When _verify_tool returns False, lint_command is set to None."""
         (tmp_path / "pyproject.toml").write_text('[tool.ruff]\nname = "foo"\n[project.optional-dependencies]\ndev = ["pytest"]\n')
-        with patch("coordinare.services.ci_detection._verify_tool", return_value=False):
+        with patch("coordinare_ci_detection._verify_tool", return_value=False):
             result = detect(tmp_path)
         assert result.stack == "python"
         assert result.lint_command is None
@@ -217,7 +217,7 @@ class TestToolVerification:
     def test_verify_tool_returncode_zero_keeps_lint_command(self, tmp_path: Path) -> None:
         """When _verify_tool returns True, lint_command is preserved."""
         (tmp_path / "pyproject.toml").write_text('[tool.ruff]\nname = "foo"\n[project.optional-dependencies]\ndev = ["pytest"]\n')
-        with patch("coordinare.services.ci_detection._verify_tool", return_value=True):
+        with patch("coordinare_ci_detection._verify_tool", return_value=True):
             result = detect(tmp_path)
         assert result.stack == "python"
         assert result.lint_command == "ruff check ."

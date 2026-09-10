@@ -31,7 +31,7 @@ def detect_lint_command(score, workspace: Path) -> str | None:
     if isinstance(gate, dict) and gate.get("lint_command"):
         return str(gate["lint_command"])
     try:
-        from coordinare.services.ci_detection import detect
+        from coordinare_ci_detection import detect
     except ImportError:
         return None
     try:
@@ -97,9 +97,15 @@ def detect_test_command(score, workspace: Path) -> tuple[str, str, str]:
         return (with_test_names(score.test_command), stack_from_command(score.test_command), "score.test_command")
 
     try:
-        from coordinare.services.ci_detection import detect
-    except ImportError:
-        raise NoTestRunner("coordinare ci_detection not available")
+        from coordinare_ci_detection import detect
+    except ImportError as exc:  # pragma: no cover - packaging failure, not a repo condition
+        # 339: this used to import coordinare.services.ci_detection, which the
+        # performer image does not ship, so EVERY in-container run took this
+        # branch and reported a packaging bug as a repository problem.
+        raise NoTestRunner(
+            "CI detection package unavailable in this image (coordinare-ci-detection "
+            f"is not installed): {exc}"
+        ) from exc
 
     result = detect(workspace)
     if not result or not result.test_command:

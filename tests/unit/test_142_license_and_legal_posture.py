@@ -877,7 +877,14 @@ PERMISSIVE_FAMILIES = frozenset({"BSD"})
 #: declare the ELv2 reference instead (FR-003, FR-004). All three reported
 #: UNKNOWN before this feature, which is the gap FR-003 closes and the reason
 #: this exemption must exist rather than simply rejecting UNKNOWN everywhere.
-FIRST_PARTY = frozenset({"coordinare", "performer", "coordinare-service-inference"})
+FIRST_PARTY = frozenset(
+    # Our own packages in this repository. They carry no third-party
+    # distribution obligation: they are covered by the repo-root LICENSE and
+    # NOTICE, which is why each declares LicenseRef-Elastic-License-2.0
+    # rather than an OSI identifier. 339 added coordinare-ci-detection, the shared
+    # CI/test-command detection the performer image installs.
+    {"coordinare", "performer", "coordinare-service-inference", "coordinare-ci-detection"}
+)
 
 #: ``(lock file, root package)`` for each project coordinare distributes.
 DISTRIBUTED_PROJECTS = (
