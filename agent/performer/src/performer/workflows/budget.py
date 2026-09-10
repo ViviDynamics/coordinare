@@ -81,9 +81,13 @@ class Budget:
     """The token allowance for one model call."""
 
     max_tokens: int
+    ceiling: int | None = None
 
     def doubled(self) -> "Budget":
-        return Budget(max_tokens=self.max_tokens * 2)
+        tokens = self.max_tokens * 2
+        if self.ceiling is not None:
+            tokens = min(tokens, self.ceiling)
+        return Budget(max_tokens=tokens, ceiling=self.ceiling)
 
     @classmethod
     def for_step(cls, step: str) -> "Budget":

@@ -74,7 +74,7 @@ async def cancel_active_card(
     # card starts fresh without stale performer_stage or relay_feedback.
     lifecycle_seq = state.get("lifecycle_sequence") or ["implementing"]
     state["phase"] = "idle"
-    _retire_active_session(state)
+    _retire_active_session(state, trigger="card_cancelled")
     state["agent_dispatch"] = {}
     state["agent_dispatch_at"] = None
     state["workspace_path"] = None

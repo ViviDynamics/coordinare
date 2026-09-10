@@ -231,3 +231,33 @@ async def test_a_retry_that_would_exceed_the_ceiling_is_refused():
     tk = Toolkit(metrics=WorkflowMetrics(), model_call=_model, call_limit=1)
     with pytest.raises(ModelCallCeilingExceeded):
         await tk.call_model(persona="p", schema=Tiny, content=[], budget=Budget(1000))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('configured,expected', [(32768, 32768), (4000, 4000), (0, 8000), (None, 8000)])
+async def test_role_token_budget_reaches_structured_step(configured, expected):
+    seen = []
+
+    async def call(persona, content, max_tokens):
+        seen.append(max_tokens)
+        return ModelReply('{"ok": true}', 'stop')
+
+    toolkit = Toolkit(metrics=WorkflowMetrics(), model_call=call, role_max_tokens=configured)
+    await toolkit.call_model(persona='blueprint', schema=Tiny, content=[],
+                             budget=Budget.for_step('blueprint'))
+    assert seen == [expected]
+
+
+@pytest.mark.asyncio
+async def test_role_budget_truncation_reports_actual_wire_cap():
+    seen = []
+
+    async def call(persona, content, max_tokens):
+        seen.append(max_tokens)
+        return ModelReply('', 'length')
+
+    toolkit = Toolkit(metrics=WorkflowMetrics(), model_call=call, role_max_tokens=32768)
+    with pytest.raises(TruncatedResponse, match='max_tokens=32768'):
+        await toolkit.call_model(persona='blueprint', schema=Tiny, content=[],
+                                 budget=Budget.for_step('blueprint'))
+    assert seen == [32768, 32768]
