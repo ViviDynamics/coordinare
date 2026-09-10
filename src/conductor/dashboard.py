@@ -3767,7 +3767,10 @@ var AF_SILENCE_MS = 40000;   // ~2.5 keepalive intervals (FR-026)
 var AF_LABELS = {
   progress: 'PROGRESS', tool_use: 'TOOL', thinking: 'THINKING', cost: 'COST',
   stage_change: 'STAGE', recovered: 'RECOVERED', quiet: 'QUIET',
-  stall: 'STALL', stuck: 'STUCK', error: 'ERROR', blocked: 'BLOCKED', completed: 'COMPLETED'
+  stall: 'STALL', stuck: 'STUCK', error: 'ERROR', blocked: 'BLOCKED', completed: 'COMPLETED',
+  // 327 added this activity type but only to AF_SUMMARIES, so the chip fell
+  // back to the raw uppercased type while every other type had a short label.
+  stream_truncated: 'TRUNCATED'
 };
 var _afGroupingActive = false; // older SSE payloads lack session attribution
 var _afEntries = [];        // retained entries, oldest-first
