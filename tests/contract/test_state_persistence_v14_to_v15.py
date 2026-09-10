@@ -37,9 +37,9 @@ _ITEM = {
 }
 
 
-def test_current_schema_version_is_22() -> None:
+def test_current_schema_version_is_23() -> None:
     """Spec 175 adds attributed documentation findings; prior fields remain supported."""
-    assert CURRENT_SCHEMA_VERSION == 22  # 175: + attributed documentation findings
+    assert CURRENT_SCHEMA_VERSION == 23  # 175: + attributed documentation findings
 
 
 def test_old_session_loads_with_surfaced_stale_reviews_default() -> None:

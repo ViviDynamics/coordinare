@@ -20,6 +20,7 @@ from coordinare.graph.nodes.monitor_performer import monitor_performer
 from coordinare.graph.state import initial_state
 from coordinare.models.notification import EventType
 from coordinare.services.activity_log import ActivityLog
+from coordinare.services.progress_fingerprint import progress_fingerprint
 from tests.utils.fake_notification import FakeNotificationService
 
 # ---------------------------------------------------------------------------
@@ -134,7 +135,11 @@ async def test_stall_watchdog_trip_reaches_the_feed() -> None:
     state["coordinare_config"] = coordinare_cfg
     # Progress last observed well past the stall threshold.
     state["last_progress_at"] = datetime.now(UTC) - timedelta(seconds=600)
-    state["last_progress_fingerprint"] = "still working"
+    # 329: derive the prior fingerprint from the same helper the node uses,
+    # so this test cannot drift from the implementation's format.
+    state["last_progress_fingerprint"] = progress_fingerprint(
+        [{"type": "progress", "text": "still working"}]
+    )
 
     await monitor_performer(state)
 

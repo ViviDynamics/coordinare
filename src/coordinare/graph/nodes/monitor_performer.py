@@ -3670,6 +3670,14 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
             _bp = _bp_report.get("blueprint")
             if isinstance(_bp, dict) and _bp.get("milestones"):
                 state["blueprint"] = dict(_bp)
+                # 331: stamp the requirements this plan answers, so a later
+                # dispatch can tell "still valid" from "needs replanning"
+                # instead of unconditionally re-running the architect.
+                from coordinare.graph.nodes.dispatch_performer import (
+                    stamp_blueprint_signature,
+                )
+
+                stamp_blueprint_signature(state)
                 if not isinstance(state.get("documenting_side"), dict) or (state["documenting_side"].get("status") != "running" and not state["documenting_side"].get("writer_active")):
                     state["documenting_side"] = None
                 logger.info(

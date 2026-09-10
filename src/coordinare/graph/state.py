@@ -278,6 +278,8 @@ class CoordinareState(TypedDict, total=False):
     # documenter side-run record; per card, restart-safe (schema v17).
     documentation_findings: dict[str, Any]
     blueprint: dict[str, Any] | None
+    # 331: requirements identity the blueprint was planned against.
+    blueprint_signature: str | None
     documenting_side: dict[str, Any] | None
     # 166: the assessor's structured assessment (goal, expected_behavior,
     # out_of_scope, questions, assumptions, criteria with source, carried
@@ -420,6 +422,7 @@ def initial_state() -> CoordinareState:
         "stage_verdicts": {},
         "documentation_findings": {},
         "blueprint": None,
+        "blueprint_signature": None,
         "documenting_side": None,
         # 166: assessor structured assessment
         "assessment": None,

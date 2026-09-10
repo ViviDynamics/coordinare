@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
 import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -201,6 +202,64 @@ _BRIEF_FOR_ROLE: dict[str, tuple[str, tuple[str, ...]]] = {
 def project_brief(blueprint: dict[str, Any], fields: tuple[str, ...]) -> dict[str, Any]:
     """The reader-specific slice of *blueprint*: listed fields only, copied."""
     return {k: copy.deepcopy(blueprint[k]) for k in fields if k in blueprint}
+
+
+def blueprint_requirements_signature(state: Any) -> str:
+    """Identity of the requirements a blueprint was planned against.
+
+    331: the spec-125 verdict cache cannot cover architecting -- it keys on the
+    live PR head, and at planning time there is no PR. So planning reuse is
+    keyed on the REQUIREMENTS instead: the card itself, the clarifications
+    answered so far, and whether requirements were flagged as changed. Any of
+    those moving invalidates the plan, which is exactly when re-architecting is
+    the right call.
+    """
+    # Read the card from state, never from a caller-supplied argument: the
+    # first cut of this took a `card` parameter and the two call sites passed
+    # DIFFERENT things (the stamping site passed a key that does not exist on
+    # CoordinareState), so the stored signature could never match the checked
+    # one and reuse silently never fired. One source, no divergence.
+    raw_card = state.get("current_card")
+    card = raw_card if isinstance(raw_card, dict) else {}
+    clarifications = state.get("card_clarifications") or []
+    ids = sorted(
+        str(c.get("comment_id"))
+        for c in clarifications
+        if isinstance(c, dict) and c.get("comment_id") is not None
+    )
+    parts = [
+        str(card.get("id") or ""),
+        str(card.get("title") or ""),
+        "|".join(ids),
+        "1" if state.get("requirements_changed") else "0",
+    ]
+    return hashlib.sha256("\x00".join(parts).encode("utf-8")).hexdigest()[:32]
+
+
+def stamp_blueprint_signature(state: Any) -> str:
+    """Record the requirements the freshly lifted blueprint answers."""
+    signature = blueprint_requirements_signature(state)
+    state["blueprint_signature"] = signature
+    return signature
+
+
+def blueprint_reuse_allowed(state: Any, performer_stage: str | None) -> bool:
+    """True when a persisted blueprint still answers the current requirements.
+
+    Fail-closed: anything unexpected (no blueprint, no recorded signature,
+    queued feedback, changed requirements) re-runs the architect as before.
+    """
+    if performer_stage != "architecting":
+        return False
+    blueprint = state.get("blueprint")
+    if not isinstance(blueprint, dict) or not blueprint:
+        return False
+    if state.get("requirements_changed") or state.get("relay_feedback"):
+        return False
+    recorded = str(state.get("blueprint_signature") or "").strip()
+    if not recorded:
+        return False
+    return recorded == blueprint_requirements_signature(state)
 
 
 def reset_blueprint_for_architect(state: Any, performer_stage: str | None) -> bool:
@@ -1110,6 +1169,22 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
     # record/override/pending-feedback/head uncertainty dispatches normally.
     # ``live_head`` (when fetched) is reused by the documenting gate below so
     # one mergeability call powers both decisions.
+    # 331: a blueprint planned against unchanged requirements is still valid,
+    # so re-running the architect after a restart is pure waste (website #160
+    # produced the same "add architecture plan" commit three times). Placed
+    # BEFORE reset_blueprint_for_architect so reuse short-circuits the reset.
+    if blueprint_reuse_allowed(state, performer_stage):
+        logger.info(
+            "dispatch_performer.stage_skipped",
+            reason="blueprint_reused",
+            card_id=card_id,
+            performer_stage=performer_stage,
+        )
+        updates = _advance_stage(state)
+        for key, value in updates.items():
+            state[key] = value  # type: ignore[literal-required]
+        return state
+
     live_head: str | None = None
     if isinstance(card, dict) and card_id:
         cache_skip, live_head = await _verdict_cache_check(
