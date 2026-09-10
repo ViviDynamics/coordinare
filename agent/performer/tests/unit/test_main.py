@@ -3917,7 +3917,7 @@ class TestRunTestCheck:
         """T009: detect().test_command is None → skip (passed=True, command=None)."""
         from performer.main import _run_test_check
 
-        with patch("coordinare.services.ci_detection.detect", return_value=_detection(None)):
+        with patch("coordinare_ci_detection.detect", return_value=_detection(None)):
             result = await _run_test_check(Path("/tmp/x"))
         assert result.passed is True
         assert result.command is None
@@ -3927,7 +3927,7 @@ class TestRunTestCheck:
         from performer.main import _run_test_check
 
         with (
-            patch("coordinare.services.ci_detection.detect", return_value=_detection("pytest")),
+            patch("coordinare_ci_detection.detect", return_value=_detection("pytest")),
             patch("performer.main.run_command", new=AsyncMock(return_value=_ci_run_result(True, duration=2.0))),
         ):
             result = await _run_test_check(Path("/tmp/x"))
@@ -3941,7 +3941,7 @@ class TestRunTestCheck:
         from performer.main import _run_test_check
 
         with (
-            patch("coordinare.services.ci_detection.detect", return_value=_detection("pytest")),
+            patch("coordinare_ci_detection.detect", return_value=_detection("pytest")),
             patch(
                 "performer.main.run_command",
                 new=AsyncMock(return_value=_ci_run_result(False, stdout="3 failed", stderr="AssertionError")),
@@ -3960,7 +3960,7 @@ class TestRunTestCheck:
         from performer.main import _run_test_check
 
         with (
-            patch("coordinare.services.ci_detection.detect", return_value=_detection("pytest")),
+            patch("coordinare_ci_detection.detect", return_value=_detection("pytest")),
             patch(
                 "performer.main.run_command",
                 new=AsyncMock(
@@ -3985,7 +3985,7 @@ class TestRunTestCheck:
         from performer.main import _run_test_check
 
         with (
-            patch("coordinare.services.ci_detection.detect", return_value=_detection("pytest")),
+            patch("coordinare_ci_detection.detect", return_value=_detection("pytest")),
             patch(
                 "performer.main.run_command",
                 new=AsyncMock(
@@ -4013,7 +4013,7 @@ class TestRunTestCheck:
             ]
         )
         with (
-            patch("coordinare.services.ci_detection.detect", return_value=_detection("pytest")),
+            patch("coordinare_ci_detection.detect", return_value=_detection("pytest")),
             patch("performer.main.run_command", new=run_command),
             patch("performer.workspace.consume_services_start_failure", return_value=None),
             patch("performer.workspace.consume_env_cache_health_failure", return_value=False),
@@ -4033,7 +4033,7 @@ class TestRunTestCheck:
             ]
         )
         with (
-            patch("coordinare.services.ci_detection.detect", return_value=_detection("pytest")),
+            patch("coordinare_ci_detection.detect", return_value=_detection("pytest")),
             patch("performer.main.run_command", new=run_command),
             patch("performer.workspace.consume_services_start_failure", return_value=None),
             patch("performer.workspace.consume_env_cache_health_failure", return_value=False),
@@ -4055,7 +4055,7 @@ class TestRunTestCheck:
             ]
         )
         with (
-            patch("coordinare.services.ci_detection.detect", return_value=_detection("pytest")),
+            patch("coordinare_ci_detection.detect", return_value=_detection("pytest")),
             patch("performer.main.run_command", new=run_command),
             patch("performer.workspace.consume_services_start_failure", return_value=None),
             patch("performer.workspace.consume_env_cache_health_failure", return_value=False),
@@ -4071,7 +4071,7 @@ class TestRunTestCheck:
 
         run_command = AsyncMock(return_value=_ci_run_result(False, stdout="1 failed"))
         with (
-            patch("coordinare.services.ci_detection.detect", return_value=_detection("pytest")),
+            patch("coordinare_ci_detection.detect", return_value=_detection("pytest")),
             patch("performer.main.run_command", new=run_command),
             patch(
                 "performer.workspace.consume_services_start_failure",
@@ -4088,7 +4088,7 @@ class TestRunTestCheck:
         from performer.main import _run_test_check
 
         with (
-            patch("coordinare.services.ci_detection.detect", return_value=_detection("pytest")),
+            patch("coordinare_ci_detection.detect", return_value=_detection("pytest")),
             patch(
                 "performer.main.run_command",
                 new=AsyncMock(return_value=_ci_run_result(True)),
@@ -4120,7 +4120,7 @@ class TestRunTestCheck:
         )
         run_command = AsyncMock(return_value=_ci_run_result(False, stdout=failure))
         with (
-            patch("coordinare.services.ci_detection.detect", return_value=_detection("pytest")),
+            patch("coordinare_ci_detection.detect", return_value=_detection("pytest")),
             patch("performer.main.run_command", new=run_command),
             patch("performer.workspace.consume_services_start_failure", return_value=None),
             patch("performer.workspace.consume_env_cache_health_failure", return_value=False),
@@ -4144,7 +4144,7 @@ class TestRunTestCheck:
             "========================= 1 error in 0.42s ===========================\n"
         )
         with (
-            patch("coordinare.services.ci_detection.detect", return_value=_detection("pytest")),
+            patch("coordinare_ci_detection.detect", return_value=_detection("pytest")),
             patch(
                 "performer.main.run_command",
                 new=AsyncMock(return_value=_ci_run_result(False, stdout=failure)),
@@ -4169,7 +4169,7 @@ class TestRunTestCheck:
             "1 error in 0.42s\n"
         )
         with (
-            patch("coordinare.services.ci_detection.detect", return_value=_detection("pytest")),
+            patch("coordinare_ci_detection.detect", return_value=_detection("pytest")),
             patch(
                 "performer.main.run_command",
                 new=AsyncMock(return_value=_ci_run_result(False, stdout=failure)),
@@ -4334,7 +4334,7 @@ class TestRunTestCheck:
             _ci_run_result(False, stdout=coloured),
         ])
         with (
-            patch("coordinare.services.ci_detection.detect", return_value=_detection("pytest")),
+            patch("coordinare_ci_detection.detect", return_value=_detection("pytest")),
             patch("performer.main.run_command", new=run_command),
             patch("performer.workspace.consume_services_start_failure", return_value=None),
             patch("performer.workspace.consume_env_cache_health_failure", return_value=False),
@@ -4383,7 +4383,7 @@ class TestRunTestCheck:
             return_value=_ci_run_result(False, stdout="40 failed, 2 passed in 91.02s")
         )
         with (
-            patch("coordinare.services.ci_detection.detect", return_value=_detection("pytest")),
+            patch("coordinare_ci_detection.detect", return_value=_detection("pytest")),
             patch("performer.main.run_command", new=run_command),
             patch("performer.workspace.consume_services_start_failure", return_value=None),
             patch("performer.workspace.consume_env_cache_health_failure", return_value=False),
@@ -4408,7 +4408,7 @@ class TestRunTestCheck:
             ]
         )
         with (
-            patch("coordinare.services.ci_detection.detect", return_value=_detection("pytest")),
+            patch("coordinare_ci_detection.detect", return_value=_detection("pytest")),
             patch("performer.main.run_command", new=run_command),
             patch("performer.workspace.consume_services_start_failure", return_value=None),
             patch("performer.workspace.consume_env_cache_health_failure", return_value=False),
@@ -4433,7 +4433,7 @@ class TestRunTestCheck:
             ]
         )
         with (
-            patch("coordinare.services.ci_detection.detect", return_value=_detection("pytest")),
+            patch("coordinare_ci_detection.detect", return_value=_detection("pytest")),
             patch("performer.main.run_command", new=run_command),
             patch("performer.workspace.consume_services_start_failure", return_value=None),
             patch("performer.workspace.consume_env_cache_health_failure", return_value=False),
@@ -4455,7 +4455,7 @@ class TestRunTestCheck:
             ]
         )
         with (
-            patch("coordinare.services.ci_detection.detect", return_value=_detection("pytest")),
+            patch("coordinare_ci_detection.detect", return_value=_detection("pytest")),
             patch("performer.main.run_command", new=run_command),
             patch("performer.workspace.consume_services_start_failure", return_value=None),
             patch("performer.workspace.consume_env_cache_health_failure", return_value=False),
@@ -4475,7 +4475,7 @@ class TestRunTestCheck:
             side_effect=[_ci_run_result(False, stdout=same), _ci_run_result(False, stdout=same)]
         )
         with (
-            patch("coordinare.services.ci_detection.detect", return_value=_detection("pytest")),
+            patch("coordinare_ci_detection.detect", return_value=_detection("pytest")),
             patch("performer.main.run_command", new=run_command),
             patch("performer.workspace.consume_services_start_failure", return_value=None),
             patch("performer.workspace.consume_env_cache_health_failure", return_value=False),
@@ -4511,7 +4511,7 @@ class TestRunTestCheck:
             )
         )
         with (
-            patch("coordinare.services.ci_detection.detect", return_value=_detection("pytest")),
+            patch("coordinare_ci_detection.detect", return_value=_detection("pytest")),
             patch("performer.main.run_command", new=run_command),
             patch("performer.workspace.consume_services_start_failure", return_value=None),
             patch("performer.workspace.consume_env_cache_health_failure", return_value=False),
@@ -4539,7 +4539,7 @@ class TestRunTestCheck:
             )
         )
         with (
-            patch("coordinare.services.ci_detection.detect", return_value=_detection("pytest")),
+            patch("coordinare_ci_detection.detect", return_value=_detection("pytest")),
             patch("performer.main.run_command", new=run_command),
             patch("performer.workspace.consume_services_start_failure", return_value=None),
             patch("performer.workspace.consume_env_cache_health_failure", return_value=False),
@@ -4692,7 +4692,7 @@ class TestRunTestCheckEnvBlocked:
         from performer.main import _run_test_check
 
         with (
-            patch("coordinare.services.ci_detection.detect", return_value=_detection("pytest")),
+            patch("coordinare_ci_detection.detect", return_value=_detection("pytest")),
             patch("performer.main.run_command", new=AsyncMock(return_value=_ci_run_result(False, stderr="boom"))),
             patch("performer.workspace.consume_services_start_failure", return_value="postgres failed to start"),
             patch("performer.workspace.consume_env_cache_health_failure", return_value=False),
@@ -4706,7 +4706,7 @@ class TestRunTestCheckEnvBlocked:
         from performer.main import _run_test_check
 
         with (
-            patch("coordinare.services.ci_detection.detect", return_value=_detection("pytest")),
+            patch("coordinare_ci_detection.detect", return_value=_detection("pytest")),
             patch("performer.main.run_command", new=AsyncMock(return_value=_ci_run_result(False, stderr="boom"))),
             patch("performer.workspace.consume_services_start_failure", return_value=None),
             patch("performer.workspace.consume_env_cache_health_failure", return_value=True),
@@ -4720,7 +4720,7 @@ class TestRunTestCheckEnvBlocked:
         from performer.main import _run_test_check
 
         with (
-            patch("coordinare.services.ci_detection.detect", return_value=_detection("pytest")),
+            patch("coordinare_ci_detection.detect", return_value=_detection("pytest")),
             patch("performer.main.run_command", new=AsyncMock(return_value=_ci_run_result(False, stderr="timed out"))),
             patch("performer.workspace.consume_services_start_failure", return_value="services never came up"),
             patch("performer.workspace.consume_env_cache_health_failure", return_value=False),
@@ -4732,7 +4732,7 @@ class TestRunTestCheckEnvBlocked:
         from performer.main import _run_test_check
 
         with (
-            patch("coordinare.services.ci_detection.detect", return_value=_detection("pytest")),
+            patch("coordinare_ci_detection.detect", return_value=_detection("pytest")),
             patch("performer.main.run_command", new=AsyncMock(return_value=_ci_run_result(False, stderr="timed out"))),
             patch("performer.workspace.consume_services_start_failure", return_value=None),
             patch("performer.workspace.consume_env_cache_health_failure", return_value=False),
@@ -4748,7 +4748,7 @@ class TestRunTestCheckEnvBlocked:
         services = MagicMock(return_value="should not be read")
         health = MagicMock(return_value=True)
         with (
-            patch("coordinare.services.ci_detection.detect", return_value=_detection("pytest")),
+            patch("coordinare_ci_detection.detect", return_value=_detection("pytest")),
             patch("performer.main.run_command", new=AsyncMock(return_value=_ci_run_result(True))),
             patch("performer.workspace.consume_services_start_failure", new=services),
             patch("performer.workspace.consume_env_cache_health_failure", new=health),

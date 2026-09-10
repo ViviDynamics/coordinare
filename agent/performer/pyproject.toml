@@ -21,10 +21,12 @@ dependencies = [
     "uvicorn[standard]>=0.32",
     "pyyaml>=6",
     "coordinare-service-inference",
+    "coordinare-ci-detection",
 ]
 
 [tool.uv.sources]
 coordinare-service-inference = { path = "../../packages/service_inference", editable = true }
+coordinare-ci-detection = { path = "../../packages/ci_detection", editable = true }
 
 [project.optional-dependencies]
 dev = [

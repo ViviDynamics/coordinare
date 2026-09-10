@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "coordinare-ci-detection"
+version = "0.1.0"
+description = "Repository CI/test-command detection, shared by coordinare and the performer."
+requires-python = ">=3.12"
+# Matches the repo posture (spec 142): source-available under ELv2, same as
+# packages/service_inference. No separate license file here, no OSI classifier.
+license = "LicenseRef-Elastic-License-2.0"
+dependencies = [
+    "structlog>=24.1.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

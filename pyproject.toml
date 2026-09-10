@@ -31,6 +31,7 @@ dependencies = [
     "PyJWT[crypto]>=2.8",
     "jinja2>=3.1",
     "coordinare-service-inference",
+    "coordinare-ci-detection",
     # Spec 146 (#200): the Kubernetes transport. The alternative is hand-rolling
     # REST against the API server including in-cluster ServiceAccount token
     # handling, TLS trust, and watch semantics — more code, and code that is
@@ -40,6 +41,7 @@ dependencies = [
 
 [tool.uv.sources]
 coordinare-service-inference = { path = "packages/service_inference", editable = true }
+coordinare-ci-detection = { path = "packages/ci_detection", editable = true }
 
 [project.optional-dependencies]
 dev = [

@@ -108,7 +108,7 @@ async def _run_ci_check(stand_path: Path, label: str = "performer") -> tuple[boo
     fix the issue or bail with an error.
     """
     try:
-        from coordinare.services.ci_detection import detect
+        from coordinare_ci_detection import detect
     except ImportError:
         # Performer may be deployed without the coordinare package installed
         # (standalone mode).  Fall back gracefully — the coordinare-side gate
@@ -246,7 +246,7 @@ async def _run_test_check(
     so the coordinare-side remote CI gate remains the authoritative backstop.
     """
     try:
-        from coordinare.services.ci_detection import detect
+        from coordinare_ci_detection import detect
     except ImportError:
         log.info("test_check.coordinare_not_available", label=label)
         return LocalTestResult(passed=True, command=None, output="", duration_seconds=0.0)
