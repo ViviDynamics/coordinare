@@ -33,6 +33,7 @@ from coordinare.services.failure_signature import make_failure_signature, normal
 from coordinare.services.github import PermanentGitHubError
 from coordinare.services.pr_checks_policy import _is_failure, decide
 from coordinare.services.pr_checks_service import PrChecksService
+from coordinare.services.progress_fingerprint import progress_fingerprint
 from coordinare.services.required_checks_resolver import resolve
 from coordinare.services.test_integrity_guard import analyze_diff
 from coordinare.transport.base import TransportError
@@ -3909,10 +3910,14 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
             # watchdog could never trip on it (observed: an implementer emitted
             # the same "Task Complete" message 89+ times over 2h and was only
             # stopped by the performer's own session timeout).
-            _evs = new_events if isinstance(new_events, list) else []
-            _fp = "|".join(
-                str(e.get("text", "")) for e in _evs[-3:] if isinstance(e, dict)
-            )[:480]
+            #
+            # 327: the text itself is canonicalised so that a model looping on a
+            # short CYCLE delivered as token deltas also reads as a stall. The
+            # chunk boundaries land at a different point in the cycle on every
+            # poll, so the raw text of the last few events is a different
+            # rotation each time and kept resetting the timer (website #160
+            # burned ~50 minutes that way with zero tool calls).
+            _fp = progress_fingerprint(new_events)
             _prev_fp = state.get("last_progress_fingerprint")
             _made_progress = (_prev_fp is None) or (_fp != _prev_fp)
             state["last_progress_fingerprint"] = _fp

@@ -19,6 +19,7 @@ from coordinare.graph.nodes.monitor_performer import (
     monitor_performer,
 )
 from coordinare.graph.state import initial_state
+from coordinare.services.progress_fingerprint import progress_fingerprint
 from coordinare.transport.base import TransportError
 from coordinare.transport.http_transport import PerformerAuthError
 
@@ -3129,7 +3130,7 @@ async def test_stall_watchdog_trips_on_stable_full_event_list() -> None:
     service = _Performer({"status": "working", "events": events})
     state = _stalled_state(service, stall=600, retries=2)
     # prior poll saw the SAME stable list -> fingerprint already matches it
-    state["last_progress_fingerprint"] = "|".join(e["text"] for e in events[-3:])
+    state["last_progress_fingerprint"] = progress_fingerprint(events)
     with patch("coordinare.services.dispatch_guard.drain_or_reap", new=AsyncMock()):
         result = await monitor_performer(state)
     assert result["phase"] == "dispatching"  # tripped -> kill + retry
@@ -3151,11 +3152,43 @@ async def test_stall_watchdog_trips_on_repeated_identical_output() -> None:
     )
     state = _stalled_state(service, stall=600, retries=2)
     # Prior poll saw a SHORTER list and FEWER tokens, but the same trailing text.
-    state["last_progress_fingerprint"] = "|".join([done["text"]] * 3)
+    state["last_progress_fingerprint"] = progress_fingerprint(events)
     state["card_tokens_total"] = 120_000
     with patch("coordinare.services.dispatch_guard.drain_or_reap", new=AsyncMock()):
         result = await monitor_performer(state)
     assert result["phase"] == "dispatching"  # tripped despite growth
+    assert result["performer_stage"] == "architecting"
+
+
+@pytest.mark.asyncio
+async def test_stall_watchdog_trips_on_rotating_delta_cycle() -> None:
+    """327 regression (website #160): the model looped on a short cycle
+    delivered as token deltas. Every poll saw a different ROTATION of the same
+    repeating text, so the old last-3-events fingerprint changed and reset the
+    timer -- measured live, on 3 of 5 consecutive polls. ~50 minutes burned in
+    `architecting` with zero tool calls and zero commits while
+    stall_timeout_seconds=900 was configured and enabled."""
+    cycle = "Go.\nTool.\nNo.\n"
+    stream = cycle * 400
+
+    def _window(offset: int) -> list[dict]:
+        # Ragged delta chunks, exactly as the backend emitted them: the chunk
+        # boundaries do not align to the cycle.
+        out: list[dict] = []
+        pos = offset
+        for size in (11, 13, 4, 9, 6) * 12:
+            out.append({"type": "progress", "is_delta": True, "text": stream[pos : pos + size]})
+            pos += size
+        return out
+
+    events = _window(7)
+    service = _Performer({"status": "working", "events": events})
+    state = _stalled_state(service, stall=600, retries=2)
+    # The previous poll saw the SAME loop at a different offset.
+    state["last_progress_fingerprint"] = progress_fingerprint(_window(3))
+    with patch("coordinare.services.dispatch_guard.drain_or_reap", new=AsyncMock()):
+        result = await monitor_performer(state)
+    assert result["phase"] == "dispatching"  # tripped -> kill + retry
     assert result["performer_stage"] == "architecting"
 
 

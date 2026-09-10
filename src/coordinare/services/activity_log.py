@@ -26,6 +26,16 @@ MAX_ENTRIES = 2000
 MAX_TEXT = 200
 MAX_TITLE = 80
 MAX_SEEN_PER_CARD = 256
+# 327: the most delta entries any ONE stream may occupy in the shared log.
+# A degenerate model loop emits ~10 deltas/second; without a per-stream cap a
+# single looping message fills all MAX_ENTRIES slots within minutes and evicts
+# every other card's activity from the feed. The dashboard already concatenates
+# consecutive same-stream deltas into one displayed block, so the cap costs no
+# information that was actually being rendered.
+MAX_STREAM_ENTRIES = 200
+# How many stream budgets to remember. Bounded so the counters cannot become
+# their own leak on a long-running daemon.
+MAX_TRACKED_STREAMS = 128
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,12 +96,18 @@ class ActivityLog:
         maxlen: int = MAX_ENTRIES,
         max_text: int = MAX_TEXT,
         max_seen_per_card: int = MAX_SEEN_PER_CARD,
+        max_stream_entries: int = MAX_STREAM_ENTRIES,
+        max_tracked_streams: int = MAX_TRACKED_STREAMS,
     ) -> None:
         self._entries: deque[ActivityEntry] = deque(maxlen=maxlen)
         self._max_text = max_text
         self._max_seen = max_seen_per_card
+        self._max_stream_entries = max_stream_entries
+        self._max_tracked_streams = max_tracked_streams
         self._seen: dict[str, set[str]] = {}
         self._seen_order: dict[str, deque[str]] = {}
+        # 327: per-stream delta budgets. Insertion-ordered; oldest evicted.
+        self._stream_counts: dict[str, int] = {}
         self._next_seq = 0
         # Live fan-out, set once by DashboardStore to broadcaster.broadcast_activity.
         # None everywhere else (tests, non-dashboard embeddings).
@@ -197,6 +213,42 @@ class ActivityLog:
         cid, _ = _clip(card_id, 200)
         stage_str, _ = _clip(stage, 80)
         kind, _ = _clip(activity_type, 40)
+
+        # 327: bound how much of the shared log one delta stream may occupy, so
+        # a looping model cannot evict every other card's activity. The stream
+        # keeps its budget under LRU so an ACTIVE stream is never the one
+        # dropped from the bookkeeping.
+        if is_delta and stream:
+            used = self._stream_counts.pop(stream, 0)
+            self._stream_counts[stream] = used + 1  # re-insert: most recent last
+            while len(self._stream_counts) > self._max_tracked_streams:
+                # Evict the oldest stream that has NOT yet hit its cap. Dropping
+                # a capped stream would hand it a fresh budget the moment it is
+                # seen again, so one looping message could flood the log twice
+                # over. The dict stays bounded either way: when every tracked
+                # stream is capped, the oldest of those goes.
+                victim = next(
+                    (
+                        sid_
+                        for sid_, count in self._stream_counts.items()
+                        if sid_ != stream and count <= self._max_stream_entries
+                    ),
+                    None,
+                )
+                if victim is None:
+                    victim = next(sid_ for sid_ in self._stream_counts if sid_ != stream)
+                self._stream_counts.pop(victim)
+            if used > self._max_stream_entries:
+                return None  # already announced below; drop the rest quietly
+            if used == self._max_stream_entries:
+                # Say it once, rather than silently swallowing the output.
+                kind = "stream_truncated"
+                clipped_text, truncated = _clip(
+                    f"stream {stream} exceeded {self._max_stream_entries} updates "
+                    "(looping or unusually long); further deltas are truncated",
+                    self._max_text,
+                )
+                is_delta = False
         try:
             number = int(card_number) if card_number is not None else None
         except (TypeError, ValueError):

@@ -4019,7 +4019,8 @@ _ACTIVITY_STREAM_JS = """var AF_SUMMARIES = {
   tool_use: 'Performer used a tool.', cost: 'Usage updated.',
   stage_change: 'Workflow stage changed.', recovered: 'Work recovered.',
   quiet: 'No recent activity.', stall: 'Performer stalled.', stuck: 'Work is stuck.',
-  error: 'An error was reported.', blocked: 'Work is blocked.', completed: 'Work completed.'
+  error: 'An error was reported.', blocked: 'Work is blocked.', completed: 'Work completed.',
+  stream_truncated: 'Output was truncated (stream too long).'
 };
 function afSummary(e) { return AF_SUMMARIES[e.activity_type] || 'Activity reported.'; }
 function afRawHtml(entries) {
