@@ -1519,6 +1519,33 @@ class CIRunResult:
 _MAX_OUTPUT = 2000  # truncate stdout/stderr to this many chars
 
 
+def _command_shell() -> str:
+    """The shell workflow-lane commands run under (#351).
+
+    ``asyncio.create_subprocess_shell`` uses ``/bin/sh``, which on the
+    performer image is dash. dash honours ``$ENV`` only for *interactive*
+    shells, so a non-interactive ``sh -c`` never sources the env-cache
+    activation script -- and the spec-117 activated devenv is invisible.
+    Measured in a live container mid-run:
+
+        sh -c   'bundle --version'  ->  sh: 1: bundle: not found
+        bash -c 'bundle --version'  ->  4.0.15
+
+    bash honours ``BASH_ENV`` for non-interactive shells, which is precisely
+    the hook ``Dockerfile.full`` already sets up (``ENV BASH_ENV=
+    /etc/devenv-activate.sh``). Running under bash makes the image's existing,
+    intended activation path work rather than adding a second one.
+
+    A login shell (``-lc``) would also work, but it drags in ``/etc/profile``
+    -- and on a macOS dev host, ``path_helper`` -- which changes behaviour for
+    every host-side caller of this function for no benefit here.
+
+    Falls back to ``/bin/sh`` where bash is absent, which restores exactly the
+    previous behaviour.
+    """
+    return shutil.which("bash") or "/bin/sh"
+
+
 def _fail_result(
     cmd: str, start: float, stderr_msg: str, *, timed_out: bool = False
 ) -> CIRunResult:
@@ -1571,7 +1598,12 @@ async def run_command(
     start = _time.monotonic()
     proc: asyncio.subprocess.Process | None = None
     try:
-        proc = await asyncio.create_subprocess_shell(
+        # 351: explicitly under bash, not create_subprocess_shell's /bin/sh --
+        # see _command_shell(). dash ignores BASH_ENV, so the activated devenv
+        # was invisible to every command this function ran.
+        proc = await asyncio.create_subprocess_exec(
+            _command_shell(),
+            "-c",
             cmd,
             cwd=str(cwd),
             stdout=asyncio.subprocess.PIPE,
