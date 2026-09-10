@@ -683,13 +683,18 @@ class ClaudeCodeBackend:
                 session_id = event.get("session_id")
                 if session_id:
                     self._session_id = session_id
+                # The current CLI emits `total_cost_usd`; `cost_usd` is the
+                # older shape. Reading only the old key dropped the dollar
+                # figure from every real run's cost event.
                 cost = event.get("cost_usd")
-                usage = event.get("usage", {})
-                input_t = event.get("input_tokens") or usage.get("input_tokens", 0)
-                output_t = event.get("output_tokens") or usage.get("output_tokens", 0)
-                tokens = (input_t or 0) + (output_t or 0)
+                if not isinstance(cost, int | float) or isinstance(cost, bool):
+                    cost = event.get("total_cost_usd")
+                if not isinstance(cost, int | float) or isinstance(cost, bool):
+                    cost = None
+                tokens = _result_tokens(event)
                 cost_str = f" · ${cost:.4f}" if cost is not None else ""
-                self._emit(BackendEventType.cost, f"{tokens:,} tokens{cost_str}")
+                tokens_str = "usage unknown" if tokens is None else f"{tokens:,} tokens"
+                self._emit(BackendEventType.cost, f"{tokens_str}{cost_str}")
                 stop_reason = event.get("stop_reason") or None
                 if stop_reason == "max_tokens":
                     self._emit(BackendEventType.error, "output token limit reached")
@@ -723,6 +728,55 @@ class ClaudeCodeBackend:
         # transient 504 followed by recovery doesn't trip the cap later.
         self._api_retry_count = 0
         return True
+
+
+# 305: every token field a Claude Code `result` event can carry. The two cache
+# fields are input tokens the model actually processed, and on a real turn they
+# are nearly all of the input: a cache-heavy blueprint step reports
+# input_tokens=4 against cache_read_input_tokens=88_000. Summing only
+# input+output under-reports such a turn by orders of magnitude.
+_RESULT_TOKEN_FIELDS = (
+    "input_tokens",
+    "output_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+)
+
+
+def _is_token_count(value: object) -> bool:
+    """An int that is not a bool. ``isinstance(True, int)`` is True in Python,
+    and a stray boolean must not be summed as 1 token."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _result_tokens(event: dict) -> int | None:  # type: ignore[type-arg]
+    """Total tokens for a `result` event, or ``None`` when it reports no usage.
+
+    Absence of usage is UNKNOWN, not zero. A proxy that strips `usage` from the
+    upstream response leaves the CLI with nothing to report, and a 0 there is
+    indistinguishable from a measured zero downstream: it sums into the
+    benchmark artifact, prices at $0.00, and leaves `cost_component_missing`
+    false, so an unmeasured run reads as a free one. Present-but-zero usage is
+    still evidence and is preserved as 0.
+
+    Each field is read from the nested ``usage`` block (the current CLI shape)
+    and falls back to the event top level (the older shape). That order matters:
+    reading the top level first lets a legacy ``input_tokens: 0`` shadow a
+    populated ``usage`` and silently discard the real count.
+    """
+    usage = event.get("usage")
+    if not isinstance(usage, dict):
+        usage = {}
+    total = 0
+    measured = False
+    for field in _RESULT_TOKEN_FIELDS:
+        value = usage.get(field)
+        if not _is_token_count(value):
+            value = event.get(field)
+        if _is_token_count(value):
+            total += value
+            measured = True
+    return total if measured else None
 
 
 def _build_task_prompt(

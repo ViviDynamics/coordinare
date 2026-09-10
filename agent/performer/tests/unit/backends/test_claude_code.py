@@ -668,6 +668,137 @@ class TestClaudeCodeBackendGetStatus:
         assert adapter.get_status().tokens_processed == 50
 
     # ------------------------------------------------------------------
+    # 305: usage accounting. Cache tokens are most of a Claude Code turn's
+    # input, and an absent `usage` block means UNKNOWN, never zero.
+    # ------------------------------------------------------------------
+
+    def test_result_usage_counts_cache_tokens(self) -> None:
+        """A real cache-heavy `result` event: cache reads/creations are input
+        tokens and must be counted. Summing only input+output under-reports a
+        Claude Code turn by orders of magnitude (4 + 900 instead of 100,904)."""
+        adapter = ClaudeCodeBackend()
+        adapter._handle_event({
+            "type": "result",
+            "subtype": "success",
+            "session_id": "sess-1",
+            "total_cost_usd": 0.42,
+            "usage": {
+                "input_tokens": 4,
+                "cache_creation_input_tokens": 12_000,
+                "cache_read_input_tokens": 88_000,
+                "output_tokens": 900,
+            },
+        })
+        assert adapter.get_status().tokens_processed == 100_904
+
+    def test_result_without_usage_reports_unknown_not_zero(self) -> None:
+        """A terminal result carrying no usage at all (e.g. a proxy that strips
+        it) is UNKNOWN. Reporting 0 makes an unmeasured run read as a measured
+        $0.00 all the way into the benchmark artifact."""
+        adapter = ClaudeCodeBackend()
+        adapter._handle_event({
+            "type": "result", "subtype": "success", "session_id": "sess-2",
+        })
+        status = adapter.get_status()
+        assert status.state == "done"
+        assert status.tokens_processed is None
+
+    def test_result_with_empty_usage_reports_unknown_not_zero(self) -> None:
+        """An empty `usage` dict is the same absence of evidence as no key."""
+        adapter = ClaudeCodeBackend()
+        adapter._handle_event({
+            "type": "result", "subtype": "success", "usage": {},
+        })
+        assert adapter.get_status().tokens_processed is None
+
+    def test_max_tokens_result_without_usage_reports_unknown_not_zero(self) -> None:
+        """The truncation branch reports usage on the same contract as success."""
+        adapter = ClaudeCodeBackend()
+        adapter._handle_event({
+            "type": "result", "subtype": "success", "stop_reason": "max_tokens",
+        })
+        status = adapter.get_status()
+        assert status.state == "error"
+        assert status.stop_reason == "max_tokens"
+        assert status.tokens_processed is None
+
+    def test_max_tokens_result_counts_cache_tokens(self) -> None:
+        adapter = ClaudeCodeBackend()
+        adapter._handle_event({
+            "type": "result", "subtype": "success", "stop_reason": "max_tokens",
+            "usage": {"input_tokens": 1, "cache_read_input_tokens": 5_000,
+                      "output_tokens": 10},
+        })
+        assert adapter.get_status().tokens_processed == 5_011
+
+    def test_result_reports_a_genuine_zero_as_zero(self) -> None:
+        """Present-but-zero usage is measured evidence, not absence. Collapsing
+        it to None would be the mirror of the bug this guards."""
+        adapter = ClaudeCodeBackend()
+        adapter._handle_event({
+            "type": "result", "subtype": "success",
+            "usage": {"input_tokens": 0, "output_tokens": 0},
+        })
+        assert adapter.get_status().tokens_processed == 0
+
+    def test_a_legacy_top_level_zero_does_not_shadow_the_nested_usage(self) -> None:
+        """Review finding: the nested `usage` block is the current CLI shape and
+        must win. Reading the top level first let a legacy `input_tokens: 0`
+        discard a populated usage block (500 tokens lost, 700 -> 200)."""
+        adapter = ClaudeCodeBackend()
+        adapter._handle_event({
+            "type": "result", "subtype": "success", "input_tokens": 0,
+            "usage": {"input_tokens": 500, "output_tokens": 200},
+        })
+        assert adapter.get_status().tokens_processed == 700
+
+    def test_top_level_fields_are_still_read_when_there_is_no_usage_block(self) -> None:
+        """The legacy shape keeps working: fallback, not removal."""
+        adapter = ClaudeCodeBackend()
+        adapter._handle_event({
+            "type": "result", "subtype": "success",
+            "input_tokens": 100, "output_tokens": 50,
+        })
+        assert adapter.get_status().tokens_processed == 150
+
+    def test_a_boolean_is_never_summed_as_a_token_count(self) -> None:
+        """isinstance(True, int) is True in Python; a stray bool must not add 1."""
+        adapter = ClaudeCodeBackend()
+        adapter._handle_event({
+            "type": "result", "subtype": "success",
+            "usage": {"input_tokens": True, "output_tokens": True},
+        })
+        assert adapter.get_status().tokens_processed is None
+
+    def test_the_current_cli_cost_key_reaches_the_cost_event(self) -> None:
+        """Review finding: the CLI emits `total_cost_usd`, but only `cost_usd`
+        was read, so every real run lost its dollar figure."""
+        adapter = ClaudeCodeBackend()
+        adapter._handle_event({
+            "type": "result", "subtype": "success", "total_cost_usd": 0.42,
+            "usage": {"input_tokens": 10, "output_tokens": 20},
+        })
+        cost = [e for e in adapter.drain_events() if e.type.value == "cost"]
+        assert cost[0].text == "30 tokens · $0.4200"
+
+    def test_the_legacy_cost_key_still_works(self) -> None:
+        adapter = ClaudeCodeBackend()
+        adapter._handle_event({
+            "type": "result", "subtype": "success", "cost_usd": 0.0025,
+            "usage": {"input_tokens": 10, "output_tokens": 20},
+        })
+        cost = [e for e in adapter.drain_events() if e.type.value == "cost"]
+        assert "$0.0025" in cost[0].text
+
+    def test_unknown_usage_emits_a_cost_event_that_does_not_claim_zero(self) -> None:
+        adapter = ClaudeCodeBackend()
+        adapter._handle_event({"type": "result", "subtype": "success"})
+        cost = [e for e in adapter.drain_events() if e.type.value == "cost"]
+        assert len(cost) == 1
+        assert "0 tokens" not in cost[0].text
+        assert "unknown" in cost[0].text.lower()
+
+    # ------------------------------------------------------------------
     # api_retry handling — guards against the "504 then SSE stalls" wedge
     # ------------------------------------------------------------------
 
