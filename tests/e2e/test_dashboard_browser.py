@@ -107,16 +107,31 @@ def _active_session(
     card_title: str = "Fix the bug",
     stage: str = "implementing",
     phase: str = "monitoring_performer",
+    **telemetry: Any,
 ) -> dict:
-    """Return a single active_sessions list entry."""
-    return {
+    """Return a single active_sessions list entry.
+
+    348: performer telemetry rides on the session, not on top-level state.
+    build_snapshot always emits these keys per session, so the fixture has to
+    as well -- a top-level-only shape is one the real payload never has.
+    """
+    session = {
         "card_id": card_id,
         "card_title": card_title,
         "phase": phase,
         "performer_stage": stage,
         "card_tokens_total": 0,
         "card_cost_estimate": 0.0,
+        "performer_events": [],
+        "performer_metrics": None,
+        "session_stats": None,
+        "performer_logs": [],
+        "backend_ui_url": None,
+        "performer_backend": None,
+        "session_id": None,
     }
+    session.update(telemetry)
+    return session
 
 
 # ---------------------------------------------------------------------------
@@ -881,8 +896,12 @@ def test_performers_page_keyboard_drilldown_stays_open_during_sse_updates(
     store.broadcaster.broadcast(
         _full_snapshot(
             role_utilization=[{"role": "implementing", "active": 1, "max": 1, "queued": 0}],
-            active_sessions=[_active_session("PVTI_1", "Keyboard flow", "implementing")],
-            performer_events=[{"type": "progress", "text": "Initial"}],
+            active_sessions=[
+                _active_session(
+                    "PVTI_1", "Keyboard flow", "implementing",
+                    performer_events=[{"type": "progress", "text": "Initial"}],
+                )
+            ],
         )
     )
     row = page.locator("#performers-page-tbody tr[data-role='implementing']")
@@ -894,12 +913,60 @@ def test_performers_page_keyboard_drilldown_stays_open_during_sse_updates(
     store.broadcaster.broadcast(
         _full_snapshot(
             role_utilization=[{"role": "implementing", "active": 1, "max": 1, "queued": 0}],
-            active_sessions=[_active_session("PVTI_1", "Keyboard flow", "implementing")],
-            performer_events=[{"type": "progress", "text": "Updated"}],
+            active_sessions=[
+                _active_session(
+                    "PVTI_1", "Keyboard flow", "implementing",
+                    performer_events=[{"type": "progress", "text": "Updated"}],
+                )
+            ],
         )
     )
     expect(page.locator("#performers-page-detail-view")).to_be_visible(timeout=_WAIT_LIVE)
     expect(page.locator("#performers-page-detail")).to_contain_text("Updated", timeout=_WAIT_LIVE)
+
+
+# ---------------------------------------------------------------------------
+# 348: telemetry belongs to the session, not to whoever rendered last
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.e2e
+def test_performer_detail_shows_only_the_selected_roles_telemetry(
+    page: Page, live_server_url: str, store: DashboardStore
+) -> None:
+    """348: two live roles must not show each other's events.
+
+    Before the fix the panel read one global blob, so whichever card synced to
+    top-level state last was rendered under every role.
+    """
+    page.goto(f"{live_server_url}/performers")
+    expect(page.locator("#performers-page")).to_be_visible(timeout=_WAIT_NAV)
+
+    store.broadcaster.broadcast(
+        _full_snapshot(
+            role_utilization=[
+                {"role": "implementing", "active": 1, "max": 1, "queued": 0},
+                {"role": "architecting", "active": 1, "max": 1, "queued": 0},
+            ],
+            active_sessions=[
+                _active_session(
+                    "PVTI_1", "Timesheet rules", "implementing",
+                    performer_events=[{"type": "tool_use", "text": "IMPLEMENTER-EVENT"}],
+                ),
+                _active_session(
+                    "PVTI_2", "Blueprint draft", "architecting",
+                    performer_events=[{"type": "text", "text": "ARCHITECT-EVENT"}],
+                ),
+            ],
+        )
+    )
+
+    impl_row = page.locator("#performers-page-tbody tr[data-role='implementing']")
+    expect(impl_row).to_be_visible(timeout=_WAIT_LIVE)
+    impl_row.click()
+    detail = page.locator("#performers-page-detail")
+    expect(detail).to_contain_text("IMPLEMENTER-EVENT", timeout=_WAIT_LIVE)
+    expect(detail).not_to_contain_text("ARCHITECT-EVENT")
 
 
 # ---------------------------------------------------------------------------

@@ -272,6 +272,12 @@ class SSEBroadcaster:
 # Dashboard store
 # ---------------------------------------------------------------------------
 
+# 348: how many of a session's ``performer_events`` travel on each session
+# summary. The detail panel renders the last 12; the token derivation scans
+# backwards for the most recent ``cost`` event. 40 covers both with room to
+# spare while keeping the SSE payload bounded when several cards are live.
+SESSION_EVENT_LIMIT = 40
+
 
 class DashboardStore:
     """In-process state for the dashboard: cycle history + SSE broadcaster.
@@ -606,6 +612,20 @@ class DashboardStore:
             _sess_dispatch = sess.get("agent_dispatch_at")
             _sess_agent_dispatch = sess.get("agent_dispatch") or {}
             active_session_summaries.append({
+                # 348: per-session performer telemetry. These fields round-trip
+                # through _SESSION_FIELDS, so in shared-pool/multi-symphony mode
+                # the session entry is the only place they exist -- the daemon
+                # aggregates active_sessions and phase and nothing else, which
+                # left every live panel on /performers permanently empty.
+                "performer_events": list(sess.get("performer_events") or [])[
+                    -SESSION_EVENT_LIMIT:
+                ],
+                "performer_metrics": sess.get("performer_metrics"),
+                "session_stats": self._serialise_session_stats(sess.get("session_stats")),
+                "backend_ui_url": sess.get("backend_ui_url"),
+                "performer_backend": str(_sess_agent_dispatch.get("backend") or "") or None,
+                "session_id": _sess_agent_dispatch.get("session_id") or None,
+                "performer_logs": self._session_performer_logs(daemon, _sess_stage, sid),
                 "card_id": sid,
                 "card_title": str(sess_card.get("title", "")),
                 "issue_number": sess_card.get("issue_number"),
@@ -642,6 +662,18 @@ class DashboardStore:
             _top_card_id = str(card_dict.get("id") or _dispatch.get("session_id") or "active")
             _top_card_title = str(card_dict.get("title") or (snapshot.active_card_title if snapshot else "") or "")
             active_session_summaries.append({
+                # 348: mirror the per-session telemetry keys from top-level state
+                # so the UI can read the session row unconditionally, without a
+                # separate single-symphony code path.
+                "performer_events": performer_events[-SESSION_EVENT_LIMIT:],
+                "performer_metrics": performer_metrics,
+                "session_stats": self._serialise_session_stats(
+                    daemon.state.get("session_stats")
+                ),
+                "backend_ui_url": daemon.state.get("backend_ui_url"),
+                "performer_backend": performer_backend,
+                "session_id": _dispatch.get("session_id") or None,
+                "performer_logs": performer_logs,
                 "card_id": _top_card_id,
                 "card_title": _top_card_title,
                 "issue_number": card_dict.get("issue_number"),
@@ -748,6 +780,44 @@ class DashboardStore:
                 "config_version": daemon.state.get("config_version", 0),
             },
         }
+
+    @staticmethod
+    def _session_performer_logs(daemon: Any, stage: str, card_id: str) -> list[str]:
+        """Return the stderr/stdout buffer of the service serving this card (348).
+
+        Mirrors monitor_performer's service resolution but is strictly
+        read-only: it reads the pool's existing slot rather than calling
+        ``acquire()``, so rendering the dashboard can never consume a
+        performer slot.
+
+        The buffer lives on the service *instance*, and with
+        ``max_concurrency > 1`` each slot holds a different instance -- so
+        resolving by slot is what makes the logs belong to this card rather
+        than to whichever card the primary service happened to run last.
+        When the card holds no slot there is no honest answer, so this
+        returns nothing rather than another card's output. The legacy
+        single-service path (no slot pools at all) keeps its old behaviour.
+        """
+        slot_mgr = daemon.state.get("slot_manager")
+        pools = getattr(slot_mgr, "pools", None)
+        service: Any = None
+        if isinstance(pools, dict) and pools:
+            pool = pools.get(stage)
+            slots = getattr(pool, "active_slots", None) or {}
+            slot = slots.get(card_id)
+            services = getattr(pool, "services", None) or []
+            if slot is None:
+                return []
+            idx = getattr(slot, "service_index", 0)
+            if 0 <= idx < len(services):
+                service = services[idx]
+        else:
+            service = daemon.state.get("agent_service")
+        if service is None or not hasattr(service, "get_agent_logs"):
+            return []
+        with contextlib.suppress(Exception):
+            return list(service.get_agent_logs())
+        return []
 
     @staticmethod
     def _serialise_session_stats(stats: Any) -> dict | None:
@@ -1674,9 +1744,13 @@ function renderState(s) {
     a.textContent = s.project_name + ' Board';
     linkEl.appendChild(a);
   }
-  var cardTokensTotal = (s.card_tokens_total || 0);
+  // 348/305: prefer the monitored session; top-level is empty in shared-pool
+  // mode, which is why live usage displayed a flat zero.
+  var tokenSource = activeSess || s;
+  var cardTokensTotal = (tokenSource.card_tokens_total || s.card_tokens_total || 0);
   if (!(cardTokensTotal > 0)) {
-    var fallbackTokens = derivePerformerTokenTotal(s);
+    var fallbackTokens = derivePerformerTokenTotal(tokenSource);
+    if (fallbackTokens == null && tokenSource !== s) fallbackTokens = derivePerformerTokenTotal(s);
     if (fallbackTokens != null) cardTokensTotal = fallbackTokens;
   }
   document.getElementById('card-tokens-total').textContent =
@@ -3279,9 +3353,8 @@ function renderCardDetailContent(sess, s) {
     : esc(rawElapsed);
   var cost = sess.agent_dispatch_at
     ? '$' + (sess.card_cost_estimate || 0).toFixed(4) : '—';
-  // TODO(054): performer_logs is a flat list from the single agent service; when
-  // multi-card is fully live this should be keyed by sess.card_id.
-  var logs = Array.isArray(s.performer_logs) ? s.performer_logs.slice(-20) : [];
+  // 348 (closes TODO(054)): logs come from the service holding this card's slot.
+  var logs = Array.isArray(sess.performer_logs) ? sess.performer_logs.slice(-20) : [];
   var logsHtml = logs.length
     ? logs.map(function(line) { return '<div style="font-family:monospace;font-size:11px;padding:1px 0;white-space:pre-wrap;word-break:break-all">' + esc(line) + '</div>'; }).join('')
     : '<div style="color:var(--color-text-muted);font-style:italic;padding:4px 0">No log entries yet.</div>';
@@ -3489,12 +3562,20 @@ function renderPerformersPage(s) {
       return '<li>' + esc(sess.card_title || sess.card_id || '—') + cid + '</li>';
     }).join('') + '</ul>'
     : '<div class="muted">No active session currently running for this role.</div>';
-  var sessionStats = s.session_stats;
+  // 348: the panels below describe ONE card -- name it.
+  var telemetryFor = selectedSessions.length > 1
+    ? '<div class="muted" style="margin-top:4px;font-size:12px">Live panels below show <strong>' + esc((selectedSessions[0] || {}).card_title || (selectedSessions[0] || {}).card_id || '—') + '</strong> (' + String(selectedSessions.length) + ' cards on this role).</div>'
+    : '';
+  // 348: telemetry is per-card, so read the session running this role rather
+  // than top-level state (null in shared-pool mode). No fallback: a role with
+  // no live session genuinely has no data.
+  var sel = selectedSessions[0] || {};
+  var sessionStats = sel.session_stats;
   var statsLine = sessionStats
     ? esc((sessionStats.title || '') + (sessionStats.title ? ' · ' : '') + sessionStats.files_changed + ' files · +' + sessionStats.lines_added + '/-' + sessionStats.lines_removed + ' lines')
     : 'No session stats available yet.';
-  var metrics = s.performer_metrics || {};
-  var tokenTotal = derivePerformerTokenTotal(s);
+  var metrics = sel.performer_metrics || {};
+  var tokenTotal = derivePerformerTokenTotal(sel);
   var metricsLine = (metrics && metrics.pid != null)
     ? (
       'PID ' + String(metrics.pid) +
@@ -3502,24 +3583,24 @@ function renderPerformersPage(s) {
       ' · Memory ' + esc(fmtBytes(metrics.memory_bytes)) +
       ' · Tokens ' + esc(tokenTotal != null ? tokenTotal.toLocaleString() : '—')
     )
-    : 'No live metrics available yet.';
-  var events = Array.isArray(s.performer_events) ? s.performer_events.slice(-12) : [];
+    : (tokenTotal != null
+        ? 'Tokens ' + esc(tokenTotal.toLocaleString()) + ' · no process metrics (containerised performer)'
+        : 'No live metrics available yet.');
+  var events = Array.isArray(sel.performer_events) ? sel.performer_events.slice(-12) : [];
   var eventsHtml = events.length
     ? '<ul class="detail-list">' + events.map(function(ev) {
       return '<li><strong>' + esc(ev.type || 'event') + ':</strong> ' + esc(ev.text || '') + '</li>';
     }).join('') + '</ul>'
     : '<div class="muted">No live events yet.</div>';
-  // TODO(054): performer_logs is a flat list from the single agent service; when
-  // multi-card is fully live this should be keyed by the active session's card_id.
-  var logs = Array.isArray(s.performer_logs) ? s.performer_logs.slice(-20) : [];
+  var logs = Array.isArray(sel.performer_logs) ? sel.performer_logs.slice(-20) : [];
   var logsHtml = logs.length
     ? '<div class="detail-log">' + logs.map(function(line) { return '<div>' + esc(line) + '</div>'; }).join('') + '</div>'
     : '<div class="muted">No stderr logs yet.</div>';
 
-  var backendLine = esc(s.performer_backend || 'performer');
-  if (s.backend_ui_url) {
+  var backendLine = esc(sel.performer_backend || 'performer');
+  if (sel.backend_ui_url) {
     try {
-      var parsed = new URL(s.backend_ui_url);
+      var parsed = new URL(sel.backend_ui_url);
       if (parsed.protocol === 'http:' && (parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost')) {
         backendLine += ' &middot; <a href="' + esc(parsed.href) + '" target="_blank" rel="noopener noreferrer">Open in browser &#8599;</a>';
       }
@@ -3546,8 +3627,8 @@ function renderPerformersPage(s) {
   detailEl.innerHTML =
     '<div><strong>' + humanPhase(selectedRole) + '</strong>' + statusBadge + '</div>' +
     '<div class="muted" style="margin-top:4px">Active / Idle / Max: ' + String(row.active != null ? row.active : 0) + ' / ' + String(Math.max(0, (row.max != null ? row.max : 0) - (row.active != null ? row.active : 0))) + ' / ' + String(row.max != null ? row.max : 0) + '</div>' +
-    '<div class="detail-block"><strong>Card Context</strong>' + roleCardsHtml + (skipHtml ? '<div style="margin-top:8px"><span style="color:var(--color-accent-yellow);font-size:12px">Skipped this cycle:</span>' + skipHtml + '</div>' : '') + '</div>' +
-    '<div class="detail-block"><strong>Session</strong><div class="muted" style="margin-top:4px">Session: ' + esc(s.agent_session_id || '—') + ' &middot; Uptime: ' + esc(fmtAge(s.agent_dispatch_at) || '—') + '</div><div class="muted" style="margin-top:4px">' + backendLine + '</div><div class="muted" style="margin-top:4px">' + statsLine + '</div></div>' +
+    '<div class="detail-block"><strong>Card Context</strong>' + roleCardsHtml + telemetryFor + (skipHtml ? '<div style="margin-top:8px"><span style="color:var(--color-accent-yellow);font-size:12px">Skipped this cycle:</span>' + skipHtml + '</div>' : '') + '</div>' +
+    '<div class="detail-block"><strong>Session</strong><div class="muted" style="margin-top:4px">Session: ' + esc(sel.session_id || s.agent_session_id || '—') + ' &middot; Uptime: ' + esc(fmtAge(sel.agent_dispatch_at || s.agent_dispatch_at) || '—') + '</div><div class="muted" style="margin-top:4px">' + backendLine + '</div><div class="muted" style="margin-top:4px">' + statsLine + '</div></div>' +
     '<div class="detail-block"><strong>Metrics</strong><div class="muted" style="margin-top:4px">' + metricsLine + '</div></div>' +
     '<div class="detail-block"><strong>Live Events</strong>' + eventsHtml + '</div>' +
     '<div class="detail-block"><strong>Process Logs (stderr)</strong>' + logsHtml + '</div>';

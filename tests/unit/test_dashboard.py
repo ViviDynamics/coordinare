@@ -203,8 +203,8 @@ def test_cfg_item_block_forces_readonly_when_section_not_editable() -> None:
     assert "(item.settings || []).map(cfgFieldRow)" not in _DASHBOARD_HTML
 
 
-def test_dashboard_html_under_160kb() -> None:
-    """T036: _DASHBOARD_HTML must not exceed the 160 KB size budget (raised to accommodate
+def test_dashboard_html_under_168kb() -> None:
+    """T036: _DASHBOARD_HTML must not exceed the 168 KB size budget (raised to accommodate
     multi-page layout, navbar, active-performer tiles, performers/personas/history pages — 049,
     Global Config edit page — 058, CSS design tokens + phase-label + health widget — 059,
     env-bootstrap card + symphonies-list bootstrap button — 060, the 081 live-config
@@ -212,9 +212,17 @@ def test_dashboard_html_under_160kb() -> None:
     081 US3 routing-table CRUD surface: nested target editors + create/edit/delete — T041, and
     the 081 Copilot-review hardening: store-aware save payloads + stable-key field derivation, and
     the 138 activity feed: panel markup, .ev-* severity tokens, live append with seq dedup,
-    silence timer, client-side quiet detection, and the per-card filter)."""
+    silence timer, client-side quiet detection, and the per-card filter, and the 348 per-session
+    performer telemetry panels).
+
+    Raised 160 -> 168 KB for 348, which landed with 170 bytes of headroom left under the old
+    cap -- tight enough that the next unrelated change would have failed here. The guard is
+    against unbounded growth, not against this KB in particular. Inlining the whole front end
+    in one Python string is what makes the budget bite; /static/activity-streams.js is the
+    precedent for moving JS out, and #349 tracks doing that.
+    """
     size = len(_DASHBOARD_HTML.encode())
-    assert size < 160 * 1024, f"_DASHBOARD_HTML is {size} bytes (limit: {160 * 1024})"
+    assert size < 168 * 1024, f"_DASHBOARD_HTML is {size} bytes (limit: {168 * 1024})"
 
 
 def test_history_page_is_live_container_not_coming_soon_stub() -> None:
