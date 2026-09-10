@@ -400,6 +400,9 @@ def _persist_active_sessions(active_sessions: dict[str, Any]) -> dict[str, Persi
         )
         out[cid] = PersistedSession(
             card_id=cid,
+            last_progress_at=sess.get("last_progress_at"),
+            last_progress_fingerprint=sess.get("last_progress_fingerprint"),
+            idle_timeout_retries=sess.get("idle_timeout_retries") or {},
             performer_stage=(sess.get("performer_stage") or None),
             phase=(sess.get("phase") or None),
             lifecycle_completed_at=completed,
@@ -983,7 +986,10 @@ class CoordinareDaemon:
             else None,
             processed_review_ids=sorted(self._state.get("processed_review_ids") or set()),
             surfaced_stale_reviews=dict(self._state.get("surfaced_stale_reviews") or {}),
-            active_sessions=_persist_active_sessions(self._state.get("active_sessions") or {}),
+            active_sessions=_persist_active_sessions({
+                **getattr(self, "_unassigned_restored_sessions", {}),
+                **(self._state.get("active_sessions") or {}),
+            }),
             env_cache=_persist_env_cache(self._state.get("env_cache") or {}),
             # 096: persist the rebase baseline so a main advance that happened
             # while the daemon was down is seen as drift on the next startup.
@@ -1109,6 +1115,9 @@ class CoordinareDaemon:
                     "documentation_findings": dict(persisted.documentation_findings),
                     "blueprint": dict(persisted.blueprint) if persisted.blueprint else None,
                     "blueprint_signature": persisted.blueprint_signature,
+                    "last_progress_at": persisted.last_progress_at,
+                    "last_progress_fingerprint": persisted.last_progress_fingerprint,
+                    "idle_timeout_retries": dict(persisted.idle_timeout_retries),
                     "documenting_side": (
                         persisted.documenting_side.model_dump(mode="json")
                         if persisted.documenting_side is not None
@@ -1249,11 +1258,16 @@ class CoordinareDaemon:
         sym_states = self._state.get("symphony_states") or {}
         if len(sym_states) == 1:
             (sym_state,) = sym_states.values()
+            sym_state.active_sessions = dict(self._state.get("active_sessions") or {})
             current_card = self._state.get("current_card")
             if current_card is not None and sym_state.active_card is None:
                 sym_state.active_card = current_card
             if sym_state.previous_phase is None:
                 sym_state.previous_phase = snapshot.phase
+        elif sym_states:
+            # Project item IDs are board-specific. Retain legacy sessions until
+            # a successful read proves which board owns each ID.
+            self._unassigned_restored_sessions = dict(self._state.get("active_sessions") or {})
 
     @staticmethod
     def _infer_phase_from_board_column(column: str) -> WorkflowPhase:
@@ -1268,6 +1282,10 @@ class CoordinareDaemon:
 
     async def _reconcile_with_board(self, snapshot: WorkflowSnapshot) -> None:
         """Query the live board and reconcile restored state against it."""
+        if len(self._state.get("symphony_states") or {}) > 1:
+            logger.warning("restart_reconcile.ambiguous_session_ownership",
+                           session_count=len(snapshot.active_sessions))
+            return
         github = self._state.get("github_service")
         # In multi-symphony mode the global github_service exists but is not
         # initialized (project_id=0, no field_cache — project_number lives
@@ -1283,6 +1301,9 @@ class CoordinareDaemon:
         try:
             board = await board_of(self._state, github).poll_board()
             board_snapshot = board.get("snapshot", {})
+            if not snapshot.active_card_id:
+                self._reconcile_sessions_with_board(board_snapshot, snapshot)
+                return
             found_column: str | None = None
             for column, card_ids in board_snapshot.items():
                 if isinstance(card_ids, list) and snapshot.active_card_id in card_ids:
@@ -1326,6 +1347,13 @@ class CoordinareDaemon:
                 "board_reconciliation_skipped",
                 error=str(exc),
             )
+        finally:
+            sym_states = self._state.get("symphony_states") or {}
+            if len(sym_states) == 1:
+                (runtime,) = sym_states.values()
+                runtime.active_sessions = dict(self._state.get("active_sessions") or {})
+                runtime.active_card = self._state.get("current_card")
+                runtime.previous_phase = self._state.get("phase", "idle")
 
     def _reconcile_sessions_with_board(
         self, board_snapshot: dict, snapshot: WorkflowSnapshot | None = None
@@ -1779,6 +1807,14 @@ class CoordinareDaemon:
         # maintenance.  Without this, check_board never fires and available slots
         # go unfilled until at least one existing session becomes eligible.
         if not any(e.eligible for e in eligibilities.values()):
+            # The symphony swap restores the card pointer, not its flat fields.
+            # Without hydration, fallback writes aggregate defaults (assessing,
+            # blueprint=None) over a completed plan when the last worker blocks.
+            focus = self._state.get("active_card_id")
+            if focus in active_sessions:
+                session_to_state(active_sessions[focus], self._state)
+                self._state["active_card_id"] = focus
+                _rederive_current_card(self._state)
             self._state = await self._graph.ainvoke(self._state)  # type: ignore[assignment]
             # 069: mirror flat-state mutations back onto active_sessions[active_card_id]
             # so the next cycle's _derive_global_phase / slot_manager.sync_from_sessions
@@ -2120,6 +2156,21 @@ class CoordinareDaemon:
             _sym_sessions = (
                 (getattr(sym_state, "active_sessions", None) or {}) if sym_state is not None else {}
             )
+            pending = getattr(self, "_unassigned_restored_sessions", {})
+            if pending and sym_state is not None:
+                service = (self._state.get("symphony_github_services") or {}).get(symphony_name)
+                if service is None:
+                    raise RuntimeError("Cannot route restored sessions without a board service")
+                board = await service.poll_board()
+                snapshot = board.get("snapshot")
+                if not isinstance(snapshot, dict):
+                    raise RuntimeError("Cannot route restored sessions from an invalid board read")
+                member_ids = {str(cid) for ids in snapshot.values()
+                              if isinstance(ids, list) for cid in ids}
+                for cid in list(pending):
+                    if cid in member_ids:
+                        _sym_sessions[cid] = pending.pop(cid)
+                sym_state.active_sessions = dict(_sym_sessions)
             _active_sym_count = sum(
                 1 for sess in _sym_sessions.values() if sess.get("phase") not in NON_SLOT_PHASES
             )
@@ -3419,7 +3470,7 @@ class CoordinareDaemon:
                         )
                     )
                     # T020: Board reconciliation after restore
-                    if snapshot.active_card_id:
+                    if snapshot.active_card_id or snapshot.active_sessions:
                         await self._reconcile_with_board(snapshot)
                 else:
                     self._emit(

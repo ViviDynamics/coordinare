@@ -53,7 +53,9 @@ class Toolkit:
         agent_turn_runner: AgentTurnRunner | None = None,
         bootstrap_step_runner: Callable[[str], Awaitable[dict[str, Any]]] | None = None,
         call_limit: int = 12,
+        role_max_tokens: int | None = None,
     ) -> None:
+        self._role_max_tokens = role_max_tokens
         self._bootstrap_step_runner = bootstrap_step_runner
         self.metrics = metrics
         self._model_call = model_call
@@ -139,6 +141,11 @@ class Toolkit:
         """
         if self._model_call is None:  # pragma: no cover - wiring error
             raise RuntimeError("Toolkit has no model call configured")
+
+        # The configured role budget applies to every structured step too.
+        # The adapter still enforces smaller operator caps on the wire.
+        if self._role_max_tokens is not None and self._role_max_tokens > 0:
+            budget = Budget(max_tokens=self._role_max_tokens, ceiling=self._role_max_tokens)
 
         # The model is told the schema up front. Enforcing a shape the model was
         # never shown produces confidently wrong field names -- which is exactly

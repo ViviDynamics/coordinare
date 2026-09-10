@@ -239,6 +239,9 @@ class CoordinareState(TypedDict, total=False):
     # _rederive_current_card() to refresh the top-level current_card mirror
     # (FR-010).  None outside of per-session steps and when no card is in flight.
     active_card_id: str | None
+    last_progress_at: datetime | None
+    last_progress_fingerprint: str | None
+    idle_timeout_retries: dict[str, dict[str, Any]]
     # 045: Number of times reviewer/security/qa has returned a non-terminal
     # "changes_requested" / "_failed" marker for this card, routing back to
     # an earlier stage (usually implementer).  Bounded by
@@ -409,6 +412,8 @@ def initial_state() -> CoordinareState:
         "card_tokens_total": 0,
         "card_cost_estimate": 0.0,
         "card_budget_alert_sent": False,
+        "last_progress_at": None,
+        "last_progress_fingerprint": None,
         "active_sessions": {},
         "active_card_id": None,
         "feedback_cycle_count": 0,
@@ -504,7 +509,7 @@ def _set_current_card(state: CoordinareState, card: dict) -> None:
     _rederive_current_card(state)
 
 
-def _retire_active_session(state: CoordinareState) -> None:
+def _retire_active_session(state: CoordinareState, *, trigger: str = "session_retired") -> None:
     """066 FR-010: retire the active session and clear the derived mirror.
 
     Stronger than a mirror-only clear: this *removes* the active_sessions
@@ -524,6 +529,15 @@ def _retire_active_session(state: CoordinareState) -> None:
         sessions = {}
         state["active_sessions"] = sessions
     if active_id and active_id in sessions:
+        session = sessions[active_id]
+        if isinstance(session, dict) and session.get("blueprint"):
+            import structlog
+
+            structlog.get_logger(__name__).warning(
+                "blueprint.discarded", card_id=active_id,
+                previous_stage=session.get("performer_stage"),
+                new_stage=None, trigger=trigger,
+            )
         del sessions[active_id]
     state["active_card_id"] = None
     _rederive_current_card(state)

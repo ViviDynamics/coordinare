@@ -70,3 +70,14 @@ def test_architect_toolkit_has_all_capabilities():
     assert toolkit._command_runner is not None
     assert toolkit._screenshot_capture is not None
     assert toolkit._dom_reader is not None
+
+
+def test_production_toolkits_pass_the_configured_role_budget():
+    score = Score(title='Test', description='Test card',
+                  repo_url='https://github.com/test/test', branch='main',
+                  model='example/model', max_tokens=32768)
+    for role in ['assessor', 'architect', 'implementer', 'reviewer', 'security',
+                 'qa', 'documenter', 'closer']:
+        toolkit = build_production_toolkit(score, metrics=WorkflowMetrics(),
+                                           event_sink=lambda _: None, workflow_name=role)
+        assert toolkit._role_max_tokens == 32768, role

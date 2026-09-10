@@ -19,6 +19,8 @@ import uuid
 
 import pytest
 
+from tests.utils.egress_measurement import ConnectionObservation, compare_observations
+
 NAMESPACE = "default"
 IMAGE = "coordinare-daemon:dev"
 
@@ -92,6 +94,10 @@ def test_the_verdict_matches_what_the_cluster_actually_does(clients) -> None:
     # Independent measurement: deny-all egress on a Pod that demonstrably has
     # network access, then see whether it still reaches the outside.
     manual_pods: list[str] = []
+    run_id = uuid.uuid4().hex[:8]
+    policy_name = f"manual-deny-{run_id}"
+    target = clients[0].read_namespaced_service("kubernetes", "default").spec.cluster_ip
+    diagnostics = []
     subprocess.run(
         [
             "kubectl",
@@ -99,7 +105,7 @@ def test_the_verdict_matches_what_the_cluster_actually_does(clients) -> None:
             NAMESPACE,
             "delete",
             "networkpolicy",
-            "manual-deny",
+            policy_name,
             "--ignore-not-found",
         ],
         capture_output=True,
@@ -110,9 +116,9 @@ def test_the_verdict_matches_what_the_cluster_actually_does(clients) -> None:
         input=(
             "apiVersion: networking.k8s.io/v1\n"
             "kind: NetworkPolicy\n"
-            "metadata: {name: manual-deny}\n"
+            f"metadata: {{name: {policy_name}}}\n"
             "spec:\n"
-            "  podSelector: {matchLabels: {manual-egress-probe: 'yes'}}\n"
+            f"  podSelector: {{matchLabels: {{manual-egress-probe: '{run_id}'}}}}\n"
             "  policyTypes: [Egress]\n"
             "  egress: []\n"
         ),
@@ -121,76 +127,44 @@ def test_the_verdict_matches_what_the_cluster_actually_does(clients) -> None:
         timeout=60,
         check=True,
     )
-    def _manual_attempt(name: str) -> str:
-        """``reached`` / ``blocked`` / ``never_ran`` for one hand-run Pod.
+    def _manual_attempt(name: str, *, restricted: bool) -> ConnectionObservation:
+        # Explicit connection-failure marker distinguishes a network observation
+        # from a kubectl attach/startup failure. Never record raw pod diagnostics.
+        import json
 
-        Three states, for the same reason ``_outcome`` has three: a Pod that never
-        ran produces no connection, and reading that as "blocked" makes this
-        comparison claim enforcement the cluster does not provide — the one
-        direction that must never be guessed. That is not hypothetical here. The
-        marker and the unique name were both missing, and the effect was a referee
-        that reported "blocked" whenever ``kubectl run`` failed, including when the
-        fixed name collided with the previous run's Pod while it was Terminating.
-        """
-        result = subprocess.run(
-            [
-                "kubectl",
-                "-n",
-                NAMESPACE,
-                "run",
-                name,
-                "--image",
-                IMAGE,
-                "--restart=Never",
-                "--rm",
-                "-i",
-                "--quiet",
-                "--labels",
-                "manual-egress-probe=yes",
-                "--overrides",
-                '{"spec":{"containers":[{"name":"' + name + '","image":"' + IMAGE + '",'
-                '"imagePullPolicy":"Never","command":["/app/.venv/bin/python","-c",'
-                "\"import socket;print('ATTEMPTED',flush=True);"
-                "socket.create_connection(('10.96.0.1',443),timeout=8);"
-                "print('REACHED')\"]}]}}",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=300,
+        script = (
+            "import socket,sys\nprint('ATTEMPTED',flush=True)\n"
+            f"try: socket.create_connection(({target!r},443),timeout=8).close()\n"
+            "except OSError as exc:\n print('CONNECT_FAILED',flush=True)\n"
+            " print(type(exc).__name__,flush=True)\n sys.exit(1)\n"
+            "print('REACHED',flush=True)\n"
         )
-        out = result.stdout or ""
-        if "REACHED" in out:
-            return "reached"
-        if "ATTEMPTED" not in out:
-            return "never_ran"
-        return "blocked"
+        overrides = {"spec": {"containers": [{"name": name, "image": IMAGE,
+                     "imagePullPolicy": "Never",
+                     "command": ["/app/.venv/bin/python", "-c", script]}]}}
+        manual_pods.append(name)
+        result = subprocess.run(
+            ["kubectl", "-n", NAMESPACE, "run", name, "--image", IMAGE,
+             "--restart=Never", "--rm", "-i", "--quiet", "--labels",
+             f"manual-egress-probe={run_id if restricted else 'control-' + run_id}",
+             "--overrides", json.dumps(overrides)],
+            capture_output=True, text=True, timeout=300,
+        )
+        observation = ConnectionObservation(result.returncode, result.stdout or "")
+        diagnostics.append({"pod": name, "restricted": restricted,
+                            "returncode": result.returncode, "outcome": observation.outcome,
+                            "stderr_present": bool(result.stderr)})
+        return observation
 
     try:
-        # 154 (#233): this comparison used to race exactly as the probe did — apply a
-        # policy, measure immediately, and read the CNI's programming window as "not
-        # enforced". A racy check cannot referee a probe that no longer races: it
-        # would fail a correct probe roughly as often as it caught a broken one.
-        #
-        # It stays an independent check. It applies its own policy and runs its own
-        # Pods; only the discipline of not concluding from a single reach is shared.
-        # Unique per run, for the reason the probe's own Pods are: a fixed name
-        # collides with the previous run's Pod while it is still Terminating, and
-        # the failed `kubectl run` used to read as "blocked".
-        run_id = uuid.uuid4().hex[:8]
-        manual_pods.append(f"manual-probe-{run_id}")
-        outcome = _manual_attempt(manual_pods[-1])
-        if outcome == "reached":
-            # Settle: an unprogrammed policy also lets the first attempt through.
-            manual_pods.append(f"manual-probe-again-{run_id}")
-            outcome = _manual_attempt(manual_pods[-1])
-        if outcome == "never_ran":
-            pytest.skip(
-                "the hand-run comparison Pod never ran, so it cannot referee the "
-                "probe. Reporting inconclusive rather than reading silence as "
-                "'blocked' — that is how this check used to claim enforcement the "
-                "cluster does not provide."
-            )
-        manually_blocked = outcome == "blocked"
+        before = _manual_attempt(f"manual-control-before-{run_id}", restricted=False)
+        restricted = [
+            _manual_attempt(f"manual-probe-{i}-{run_id}", restricted=True) for i in range(2)
+        ]
+        after = _manual_attempt(f"manual-control-after-{run_id}", restricted=False)
+        manually_blocked = compare_observations(before, restricted, after)
+        if manually_blocked is None:
+            pytest.skip(f"independent measurement inconclusive: {diagnostics}")
     finally:
         subprocess.run(
             [
@@ -199,7 +173,7 @@ def test_the_verdict_matches_what_the_cluster_actually_does(clients) -> None:
                 NAMESPACE,
                 "delete",
                 "networkpolicy",
-                "manual-deny",
+                policy_name,
                 "--ignore-not-found",
             ],
             capture_output=True,
@@ -212,11 +186,12 @@ def test_the_verdict_matches_what_the_cluster_actually_does(clients) -> None:
                 timeout=60,
             )
 
+    assert verdict.conclusive, verdict.detail
     assert verdict.enforced == manually_blocked, (
         f"the probe says enforced={verdict.enforced} but a hand-run deny-all "
         f"{'blocked' if manually_blocked else 'did not block'} traffic. One of them "
         "is wrong, and it matters which: reporting enforcement that is not there "
-        "tells an operator performers are contained when they are not."
+        f"tells an operator performers are contained when they are not. {diagnostics}"
     )
 
 

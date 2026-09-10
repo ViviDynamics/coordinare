@@ -1267,9 +1267,11 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
             # and fall through to TODO pickup (which is also guarded against
             # overwriting current_card when a session is loaded).
             pass
-        elif state.get("system_error_notified"):
+        elif state.get("system_error_notified") and not _cur_id:
+            # Legacy no-focus notification state has nothing to retire. A
+            # focused blocked session must still take the comment-poll path
+            # below, retaining its plan and accepting operator answers.
             state["phase"] = "idle"
-            _retire_active_session(state)
             # Don't return yet when there are TODO cards we could pick up.
             if not todo:
                 return state
@@ -1757,7 +1759,7 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
             return state
         # Clear stale current_card so persisted snapshots don't carry
         # forward a card that's no longer eligible.
-        _retire_active_session(state)
+        _retire_active_session(state, trigger="todo_ineligible")
 
     # 069: same guard for the no-TODO path — an IN_PROGRESS session with an
     # empty TODO column would otherwise be clobbered to phase="idle" and

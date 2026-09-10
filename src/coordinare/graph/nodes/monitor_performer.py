@@ -177,7 +177,7 @@ def _reconcile_board_mismatch(
             expected_column=expected_column,
         )
         state["phase"] = "idle"
-        _retire_active_session(state)
+        _retire_active_session(state, trigger="board_card_missing")
         state["agent_dispatch"] = {}
         state["agent_dispatch_at"] = None
         _reset_token_counters(state)
@@ -192,7 +192,7 @@ def _reconcile_board_mismatch(
             actual_column=actual_column,
         )
         state["phase"] = "idle"
-        _retire_active_session(state)
+        _retire_active_session(state, trigger="board_backward_move")
         state["agent_dispatch"] = {}
         state["agent_dispatch_at"] = None
         state["relay_feedback"] = []
@@ -211,7 +211,7 @@ def _reconcile_board_mismatch(
         )
         lifecycle_seq = state.get("lifecycle_sequence") or ["implementing"]
         state["phase"] = "idle"
-        _retire_active_session(state)
+        _retire_active_session(state, trigger="board_card_done")
         state["agent_dispatch"] = {}
         state["agent_dispatch_at"] = None
         state["relay_feedback"] = []
@@ -3935,6 +3935,13 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
                 _lp = _now_w
             if _stall_secs > 0:
                 _stalled_for = (_now_w - _lp).total_seconds()
+                logger.debug(
+                    "monitor_performer.stall_watchdog_checked",
+                    card_id=card_id,
+                    threshold_seconds=_stall_secs,
+                    made_progress=_made_progress,
+                    stalled_seconds=round(_stalled_for),
+                )
                 if _stalled_for > _stall_secs:
                     logger.warning(
                         "monitor_performer.stall_watchdog_tripped",
@@ -4686,17 +4693,26 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
             from coordinare.services.attempt_telemetry import close_attempt
             close_attempt(state, "timeout", "system", "blocked")
             reason = str(status.get("reason", ""))
-            current_max = state.get("card_context", {}).get("max_tokens")
+            from coordinare.graph.nodes.dispatch_performer import _persona_role_for_stage
+
+            role = _persona_role_for_stage(stage) or stage
+            config = state.get("config")
+            role_config = (
+                config.performers.resolved_role(role)
+                if config is not None and hasattr(config, "performers") else None
+            )
+            current_max = getattr(role_config, "max_tokens", None)
+            if current_max is None:
+                current_max = state.get("card_context", {}).get("max_tokens")
             if current_max:
                 advice = (
                     f"The {stage} performer hit its output token cap ({current_max:,} tokens). "
-                    f"Raise `performers.{stage}.max_tokens` in your config, or set it to `0` "
-                    f"(unlimited) to remove the cap."
+                    f"Raise `performers.{role}.max_tokens` to a larger positive value in your config."
                 )
             else:
                 advice = (
                     f"The {stage} performer hit the backend's output token cap. "
-                    f"Set `performers.{stage}.max_tokens` to a higher value, or `0` for unlimited."
+                    f"Set `performers.{role}.max_tokens` to a larger positive value."
                 )
             logger.warning(
                 "monitor_performer.token_limit",
@@ -4707,10 +4723,10 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
             )
             if github is not None:
                 try:
-                    issue_number = card.get("issue_number") or state.get("issue_number")
-                    if issue_number:
-                        await github.post_comment(
-                            int(issue_number),
+                    issue_id = card.get("issue_id") or card.get("content_id")
+                    if issue_id:
+                        await github.add_comment(
+                            str(issue_id),
                             f"**Performer blocked — output token limit reached**\n\n{advice}",
                         )
                 except Exception as exc:

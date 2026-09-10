@@ -444,6 +444,7 @@ def build_production_toolkit(
         return Toolkit(
             metrics=metrics,
             model_call=_model_caller(score, gateway),
+            role_max_tokens=getattr(score, "max_tokens", None),
             command_runner=None,
             screenshot_capture=None,
             dom_reader=None,
@@ -456,6 +457,7 @@ def build_production_toolkit(
         return Toolkit(
             metrics=metrics,
             model_call=_model_caller(score, gateway),
+            role_max_tokens=getattr(score, "max_tokens", None),
             command_runner=_command_runner(workspace),
             screenshot_capture=None,
             dom_reader=None,
@@ -468,6 +470,7 @@ def build_production_toolkit(
         return Toolkit(
             metrics=metrics,
             model_call=_model_caller(score, gateway),
+            role_max_tokens=getattr(score, "max_tokens", None),
             command_runner=_command_runner(workspace),
             screenshot_capture=None,
             dom_reader=None,
@@ -480,6 +483,7 @@ def build_production_toolkit(
         return Toolkit(
             metrics=metrics,
             model_call=_model_caller(score, gateway),
+            role_max_tokens=getattr(score, "max_tokens", None),
             command_runner=_command_runner(workspace),
             screenshot_capture=None,
             dom_reader=None,
@@ -492,6 +496,7 @@ def build_production_toolkit(
         return Toolkit(
             metrics=metrics,
             model_call=_model_caller(score, gateway),
+            role_max_tokens=getattr(score, "max_tokens", None),
             command_runner=None,
             screenshot_capture=None,
             dom_reader=None,
@@ -502,6 +507,7 @@ def build_production_toolkit(
     return Toolkit(
         metrics=metrics,
         model_call=_model_caller(score, gateway),
+        role_max_tokens=getattr(score, "max_tokens", None),
         command_runner=_command_runner(workspace),
         screenshot_capture=_capture,
         dom_reader=read_dom,

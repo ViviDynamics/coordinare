@@ -315,6 +315,8 @@ class PersistedSession(BaseModel):
     # keyed by ``f"{card_id}:{performer_stage}"``.  Serialised as plain dicts
     # for JSON portability; the typed model lives in
     # ``coordinare.services.dispatcher_dedup_models.IdleTimeoutRetryRecord``.
+    last_progress_at: datetime | None = None
+    last_progress_fingerprint: str | None = None
     idle_timeout_retries: dict[str, dict[str, Any]] = Field(default_factory=dict)
     # Audit timestamp set by ``monitor_performer._record_pr_artefacts``
     # whenever a successful turn's PR fields are written through to state
