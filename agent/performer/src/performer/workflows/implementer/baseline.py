@@ -19,9 +19,15 @@ __all__ = ["NoTestRunner", "detect_baseline", "detect_test_command", "run_tests"
 
 
 class NoTestRunner(Exception):
-    """Raised when no test command is detected before the first turn."""
+    """Raised when no test command is detected, or the detected one cannot run."""
 
     pass
+
+
+# POSIX: the shell exits 127 when the command name cannot be found. Distinct
+# from 126 (found but not executable) and from any exit code a test runner
+# itself produces, so it is safe to treat as "the runner is not installed".
+_COMMAND_NOT_FOUND = 127
 
 
 def detect_lint_command(score, workspace: Path) -> str | None:
@@ -169,6 +175,21 @@ async def capture_baseline(toolkit, score, workspace: Path) -> Baseline:
     log.info("baseline.running", command=test_command, stack=stack)
 
     parsed = await run_tests(toolkit, test_command, stack, workspace, timeout_s=600)
+
+    # 352: a detected command that cannot execute is an environment failure,
+    # not a repository without tests. Exit 127 is the shell's unambiguous
+    # "command not found". Without this the baseline comes back empty
+    # (no names, 0 passed, 0 failed), which is indistinguishable from a
+    # test-free repo, so the TDD lane proceeds, reads the runner's own error
+    # as "the tests did not fail for the right reason", and burns a full
+    # repair cycle per turn -- indefinitely, since every turn fails
+    # identically. NoTestRunner routes to env_blocked, which holds the card
+    # and pages an operator instead.
+    if parsed.exit_code == _COMMAND_NOT_FOUND:
+        raise NoTestRunner(
+            f"test command is not executable in this environment: {test_command!r} "
+            f"exited {_COMMAND_NOT_FOUND}: {' '.join(parsed.raw_tail.split())[:200]}"
+        )
 
     test_names = parsed.test_names_passed or []
     failed_names = parsed.test_names_failed or []
