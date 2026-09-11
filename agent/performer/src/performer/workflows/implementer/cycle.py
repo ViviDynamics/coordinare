@@ -202,8 +202,10 @@ def scope_violations(kind: str, changed_paths: dict[str, str], runner_kind: str,
     """Detect out-of-scope edits (FR-008).
 
     Tests turns may only change test files. Implementation turns may not write
-    tests or source owned exclusively by another milestone. Documentation changes
-    require explicit current-scope ownership. Records each reverted path and cause.
+    tests at all -- not another milestone's, and not the ones that established
+    this milestone's red (#364) -- nor source owned exclusively by another
+    milestone. Documentation changes require explicit current-scope ownership.
+    Records each reverted path and cause.
 
     Args:
         kind: Turn kind ("tests", "implement", "repair").
@@ -242,17 +244,29 @@ def scope_violations(kind: str, changed_paths: dict[str, str], runner_kind: str,
             })
             continue
 
-        if kind == "implement" and milestone_test_files is not None:
-            # the implementation turn works the milestone's own tests; writing
-            # tests for LATER milestones pre-empts their tests turn (a live
-            # round implemented and tested milestone two during milestone one)
-            if is_test_path(path) and path not in milestone_test_files:
-                violations.append({
-                    "path": path,
-                    "kind": "reverted_foreign_test",
-                    "reason": "implementation turn may only touch this milestone's test files (spec 167 FR-008)"
-                })
-                continue
+        if kind == "implement" and is_test_path(path):
+            # #364: an implementation turn edits no tests at all, not even this
+            # milestone's own. Writing tests for a LATER milestone pre-empts its
+            # tests turn (a live round implemented and tested milestone two
+            # during milestone one) -- that was the original rule. Editing THIS
+            # milestone's tests is worse and was permitted: the red observation
+            # is the evidence that the test tests something, and a turn that can
+            # rewrite the test afterwards can weaken it until green passes. CI
+            # then runs the weakened test and passes too, so no downstream gate
+            # catches it. The test written at red is the specification; if it is
+            # wrong, the honest move is to fail the milestone and re-plan, which
+            # is what going back to red means here.
+            foreign = milestone_test_files is not None and path not in milestone_test_files
+            violations.append({
+                "path": path,
+                "kind": "reverted_foreign_test" if foreign else "reverted_own_test",
+                "reason": (
+                    "implementation turn must not write another milestone's tests (spec 167 FR-008)"
+                    if foreign else
+                    "implementation turn must not edit the tests that established red (#364)"
+                ),
+            })
+            continue
         if kind == "implement" and foreign_source_path(path, scope_paths or [], foreign_scope_paths or []):
             violations.append({
                 "path": path, "kind": "reverted_foreign_source",
