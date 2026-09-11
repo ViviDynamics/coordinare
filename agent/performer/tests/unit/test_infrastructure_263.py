@@ -40,8 +40,16 @@ async def test_annotations_reach_workflow_hold_with_zero_repairs():
 @pytest.mark.asyncio
 @pytest.mark.parametrize('phase', ['tests', 'quality'])
 async def test_local_failure_holds_before_repairs(tmp_path, phase):
+    # 365: the model reads the output and says this is the box, not the code.
+    # Previously a substring list did; the assertion under test -- that an
+    # infrastructure failure holds BEFORE any repair turn -- is unchanged.
+    from performer.workflows.implementer.observe import TestObservation
     toolkit = SimpleNamespace(run_command=AsyncMock(return_value=SimpleNamespace(exit_code=1, output_excerpt=REGISTRY)),
-                              agent_turn=AsyncMock())
+                              agent_turn=AsyncMock(),
+                              call_model=AsyncMock(return_value=TestObservation(
+                                  outcome='could_not_run',
+                                  environment_problem='Registry authentication failed',
+                              )))
     with pytest.raises(InfrastructureBlocked, match='Registry authentication'):
         if phase == 'tests':
             await run_tests(toolkit, 'pytest', 'pytest', tmp_path)

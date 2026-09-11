@@ -44,6 +44,15 @@ _STEP_BUDGETS: dict[str, int] = {
     "observe": 3000,
     "judge": 8000,
     "report": 0,    # no model call
+    # 365 implementer: reading a test run and judging the red. Named for the
+    # workflow because the bare "observe"/"judge" above are QA's and mean
+    # something else -- these were briefly requested under those names and
+    # silently took the default instead, which is the failure mode a .get()
+    # with a fallback always has. Observing returns every test identifier the
+    # runner printed, so it takes the larger floor; the judgement is a bool, a
+    # 500-character reason and an enum.
+    "implementer_observe": 8000,
+    "implementer_judge_red": 3000,
     # 165 architect workflow: the survey proposal is a short list; the
     # blueprint is plan-sized, so it takes the plan floor.
     "survey": 3000,

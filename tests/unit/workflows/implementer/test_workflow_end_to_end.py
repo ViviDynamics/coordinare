@@ -24,6 +24,8 @@ from performer.workflows.base import WorkflowMetrics
 from performer.workflows.implementer import ImplementerWorkflow
 from performer.workflows.toolkit import Toolkit
 
+from tests.eval.implementer_scenarios.fakes import stub_model_call
+
 _G = ["git", "-c", "user.email=e@x", "-c", "user.name=t"]
 
 
@@ -172,10 +174,19 @@ class Edges:
 
 
 async def _run(repo, score, harness, edges: Edges, **overrides):
-    async def no_model(*_a, **_k):
-        raise AssertionError("the implementer workflow makes no model calls")
+    """365: the implementer now makes two model calls per test run.
 
-    toolkit = Toolkit(metrics=WorkflowMetrics(), model_call=no_model, command_runner=_fake_test_runner(repo), agent_turn_runner=harness, call_limit=12)
+    It previously made none -- this fixture asserted exactly that -- because the
+    runner output was parsed by hand, per runner, and the red verdict was a
+    boolean. Both are now the model's, so the fake has to answer them.
+
+    The stand-in reads the fake runner's own PASSED/FAILED lines, which is the
+    same thing the model does with a real runner's output, and judges red the
+    way the deleted rule did: a changed test file with a failure in it. Keeping
+    that equivalence is what lets every existing flow in this file go on
+    asserting the behaviour it was written for.
+    """
+    toolkit = Toolkit(metrics=WorkflowMetrics(), model_call=stub_model_call(), command_runner=_fake_test_runner(repo), agent_turn_runner=harness, call_limit=64)
     stand = Stand(path=repo, branch="feat/x")
     result = await ImplementerWorkflow().run(stand, score, toolkit, ctx_overrides=edges.overrides(**overrides))
     return result.report, toolkit
@@ -201,7 +212,13 @@ async def test_two_milestones_build_test_first_one_at_a_time(tmp_path):
     assert list(run["phase_durations_ms"]) == ["intake", "plan", "baseline", "resume", "milestones", "quality", "local_gate", "push_pr", "ci_wait"]
     assert run["resumed_from_milestone"] is None, "a fresh branch resumes nothing"
     assert [r["satisfied_by"] for r in run["per_milestone"]] == ["this_run", "this_run"]
-    assert toolkit.metrics.agent_turns == 4 and toolkit.metrics.model_calls == 0
+    # 365: this asserted model_calls == 0. The implementer was the only workflow
+    # that never used the model layer -- it parsed runner output by hand, per
+    # runner, and decided red with a boolean. The model is now consulted on every
+    # test run (read the output, then judge whether the red is the expected one),
+    # so zero would mean the reading and the judgement had been bypassed.
+    assert toolkit.metrics.agent_turns == 4
+    assert toolkit.metrics.model_calls == 8, "one observe + one judge per test run"
 
 
 # --- US2: vacuous and stuck are bounded ----------------------------------------

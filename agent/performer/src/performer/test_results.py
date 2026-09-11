@@ -15,7 +15,6 @@ from dataclasses import dataclass
 
 __all__ = [
     "TestSummary",
-    "parse_test_output",
     "_strip_ansi",
     "_reported_failure_count",
     "_match_env_signature",
@@ -88,6 +87,14 @@ class TestSummary:
         test_names_failed: List of failing test identifiers, or None.
         exit_code: Process exit code.
         raw_tail: Last 2000 chars of output for debugging.
+        observation: The model's reading of this run, when there was one
+            (``workflows.implementer.observe.TestObservation``). Untyped here
+            to keep this low-level module free of a workflow import. This
+            summary is a lossy projection -- it has no room for an outcome, a
+            load error or an environment problem -- so anything that needs the
+            full reading must take it from here rather than infer it back from
+            the counts. None when nothing was read: the exit-127 short circuit,
+            or a summary built directly by a test.
     """
 
     passed: bool
@@ -96,6 +103,7 @@ class TestSummary:
     test_names_failed: list[str] | None = None
     exit_code: int | None = None
     raw_tail: str = ""
+    observation: object | None = None
 
 
 def _strip_ansi(text: str) -> str:
@@ -168,141 +176,3 @@ def _format_failure_excerpt(output: str, *, limit: int = 1500) -> str:
     return f"{head}\n…[truncated]…\n{tail}"
 
 
-def parse_test_output(
-    runner_kind: str,
-    output: str,
-    exit_code: int,
-) -> TestSummary:
-    """Parse test runner output into a TestSummary.
-
-    Args:
-        runner_kind: One of "pytest", "rspec", "jest", "minitest", "make".
-        output: Raw test command stdout/stderr.
-        exit_code: Process exit code.
-
-    Returns:
-        TestSummary with passed, failed count, test names (when available),
-        exit_code, and output tail for debugging.
-    """
-    stripped = _strip_ansi(output.strip())
-    passed = exit_code == 0
-    failed = _reported_failure_count(stripped)
-    raw_tail = stripped[-(2000):] if len(stripped) > 2000 else stripped
-
-    test_names_passed = None
-    test_names_failed = None
-
-    if runner_kind == "pytest":
-        # Parse pytest --collect-only -q or summary lines like "PASSED tests/x.py::test_y"
-        test_names_passed, test_names_failed = _parse_pytest_names(stripped)
-    elif runner_kind == "rspec":
-        # Parse rspec documentation format
-        test_names_passed, test_names_failed = _parse_rspec_names(stripped)
-    elif runner_kind == "jest":
-        # Parse jest test list and ✓/✕ lines
-        test_names_passed, test_names_failed = _parse_jest_names(stripped)
-    elif runner_kind == "minitest":
-        # Parse minitest format
-        test_names_passed, test_names_failed = _parse_minitest_names(stripped)
-
-    return TestSummary(
-        passed=passed,
-        failed=failed,
-        test_names_passed=test_names_passed,
-        test_names_failed=test_names_failed,
-        exit_code=exit_code,
-        raw_tail=raw_tail,
-    )
-
-
-def _parse_pytest_names(output: str) -> tuple[list[str] | None, list[str] | None]:
-    """Parse pytest output for test identifiers.
-
-    Looks for lines like:
-      PASSED tests/x.py::test_y
-      FAILED tests/x.py::test_z
-    or from --collect-only:
-      tests/x.py::test_y
-    """
-    passed = []
-    failed = []
-
-    for line in output.split("\n"):
-        line = line.strip()
-        if line.startswith("PASSED "):
-            name = line[7:].strip()
-            if name:
-                passed.append(name)
-        elif line.startswith("FAILED "):
-            name = line[7:].strip()
-            if name:
-                failed.append(name)
-        elif line.startswith("ERROR "):
-            # a collection error names the file, not a test: the whole file failed
-            name = line[6:].split(" - ", 1)[0].strip()
-            if name and name not in failed:
-                failed.append(name)
-        elif "::" in line and not line.startswith(" "):
-            # Assume --collect-only format
-            name = line.strip()
-            if name and not name.startswith(("PASSED", "FAILED", "ERROR")):
-                passed.append(name)
-
-    return (passed if passed else None, failed if failed else None)
-
-
-def _parse_rspec_names(output: str) -> tuple[list[str] | None, list[str] | None]:
-    """Parse rspec documentation-format output for test identifiers.
-
-    Looks for lines like:
-      ✓ should do something
-      ✗ should fail
-    """
-    passed = []
-    failed = []
-
-    for line in output.split("\n"):
-        line = line.strip()
-        if line.startswith("✓ "):
-            name = line[2:].strip()
-            if name:
-                passed.append(name)
-        elif line.startswith("✗ "):
-            name = line[2:].strip()
-            if name:
-                failed.append(name)
-
-    return (passed if passed else None, failed if failed else None)
-
-
-def _parse_jest_names(output: str) -> tuple[list[str] | None, list[str] | None]:
-    """Parse jest output for test identifiers.
-
-    Looks for lines like:
-      ✓ test name
-      ✕ failed test
-    or from --listTests output.
-    """
-    passed = []
-    failed = []
-
-    for line in output.split("\n"):
-        line = line.strip()
-        if line.startswith("✓ "):
-            name = line[2:].strip()
-            if name:
-                passed.append(name)
-        elif line.startswith("✕ "):
-            name = line[2:].strip()
-            if name:
-                failed.append(name)
-
-    return (passed if passed else None, failed if failed else None)
-
-
-def _parse_minitest_names(output: str) -> tuple[list[str] | None, list[str] | None]:
-    """Parse minitest output for test identifiers.
-
-    Minitest does not output individual test names easily; return None.
-    """
-    return (None, None)

@@ -10,7 +10,7 @@ from pathlib import Path
 
 import structlog
 
-from performer.test_results import parse_test_output, TestSummary
+from performer.test_results import TestSummary
 from performer.workflows.implementer.models import Baseline
 
 log = structlog.get_logger(__name__)
@@ -47,32 +47,12 @@ def detect_lint_command(score, workspace: Path) -> str | None:
     return getattr(result, "lint_command", None) or None
 
 
-def with_test_names(command: str) -> str:
-    """Make the runner print per-test names so red and green can read them:
-    pytest gets ``-rA`` when it has no ``-r`` flag; other runners are unchanged."""
-    if stack_from_command(command) == "pytest" and " -r" not in f" {command}" and "--report" not in command:
-        return command + " -rA"
-    return command
 
 
-KNOWN_RUNNERS = ("pytest", "rspec", "jest", "minitest")
 
 
-def runner_kind_for(detected_stack: str | None, command: str) -> str:
-    """The runner kind the output parsers understand: a detected value only
-    when it already names a runner, else what the command implies."""
-    if detected_stack in KNOWN_RUNNERS:
-        return detected_stack
-    return stack_from_command(command)
 
 
-def stack_from_command(command: str) -> str:
-    """The runner kind a test command implies, so its output can be parsed."""
-    text = (command or "").lower()
-    for needle, stack in (("pytest", "pytest"), ("rspec", "rspec"), ("jest", "jest"), ("vitest", "jest"), ("rake test", "minitest"), ("minitest", "minitest")):
-        if needle in text:
-            return stack
-    return "unknown"
 
 
 def detect_test_command(score, workspace: Path) -> tuple[str, str, str]:
@@ -97,10 +77,10 @@ def detect_test_command(score, workspace: Path) -> tuple[str, str, str]:
     if hasattr(score, "local_test_gate_config") and score.local_test_gate_config:
         test_command = score.local_test_gate_config.get("command")
         if test_command:
-            return (with_test_names(test_command), stack_from_command(test_command), "score.local_test_gate_config")
+            return (test_command, "", "score.local_test_gate_config")
 
     if hasattr(score, "test_command") and score.test_command:
-        return (with_test_names(score.test_command), stack_from_command(score.test_command), "score.test_command")
+        return (score.test_command, "", "score.test_command")
 
     try:
         from coordinare_ci_detection import detect
@@ -116,44 +96,49 @@ def detect_test_command(score, workspace: Path) -> tuple[str, str, str]:
     result = detect(workspace)
     if not result or not result.test_command:
         raise NoTestRunner("no test command detected")
-    command = with_test_names(result.test_command)
+    command = result.test_command
 
     # ci_detection's stack is a language ("python", "ruby"); the parsers need the
     # RUNNER. A live round parsed no names because "python" matched no parser.
-    return (command, runner_kind_for(getattr(result, "stack", None), command), "coordinare.ci_detection")
+    # 365: no runner_kind. Nothing downstream parses by runner any more.
+    return (command, "", "coordinare.ci_detection")
 
 
-async def run_tests(toolkit, command: str, runner_kind: str, cwd: Path, timeout_s: int = 600) -> TestSummary:
-    """Run the test command and parse results (FR-004).
+async def run_tests(toolkit, command: str, runner_kind: str, cwd: Path, timeout_s: int = 600, *, files: list[str] | None = None) -> TestSummary:
+    """Run the test command and have the model read what it printed (#365).
 
-    Args:
-        toolkit: Execution toolkit with run_command method.
-        command: Test command to run.
-        runner_kind: Stack kind ("pytest", "rspec", "jest", "make", etc.).
-        cwd: Working directory for the command.
-        timeout_s: Command timeout in seconds.
+    ``runner_kind`` is retained in the signature for call-site compatibility and
+    is no longer consulted: there is no per-runner parsing left. The model reads
+    whatever the runner emitted, which is what makes this work on a stack
+    coordinare has never seen.
 
-    Returns:
-        TestSummary with parsed test results.
+    An environment problem is the model's call too, not a substring list. The
+    old ``_ENV_FAILURE_SIGNATURES`` was deliberately incomplete -- its own
+    comment says so -- because a list cannot tell ``RecordNotFound`` from a
+    missing test runner. A model reading the output can.
     """
-    run_result = await toolkit.run_command(command, cwd=cwd, timeout_s=timeout_s)
+    from performer.infrastructure import InfrastructureBlocked
+    from performer.workflows.implementer.observe import observe_tests
 
+    run_result = await toolkit.run_command(command, cwd=cwd, timeout_s=timeout_s)
     output = run_result.output_excerpt or ""
     exit_code = run_result.exit_code
 
-    from performer.infrastructure import InfrastructureBlocked
-    from performer.test_results import _match_env_signature
+    # 352: exit 127 is the shell saying the command name does not exist. That is
+    # a POSIX fact rather than a judgement, so it short-circuits ahead of the
+    # model -- there is nothing to read, and capture_baseline turns it into the
+    # env_blocked hold.
+    if exit_code == _COMMAND_NOT_FOUND:
+        return TestSummary(passed=False, failed=None, exit_code=exit_code, raw_tail=output[-2000:])
 
-    if exit_code != 0 and (cause := _match_env_signature(output)):
-        raise InfrastructureBlocked(cause)
-
-    parsed = parse_test_output(
-        runner_kind=runner_kind if runner_kind != "unknown" else "make",
-        output=output,
-        exit_code=exit_code,
-    )
-
-    return parsed
+    observation = await observe_tests(toolkit, command, output, exit_code, list(files or []))
+    if observation.outcome == "could_not_run":
+        raise InfrastructureBlocked(observation.environment_problem or "the test runner could not execute")
+    if observation.outcome == "unreadable":
+        raise InfrastructureBlocked(
+            "could not read the test runner's output: " + (observation.summary or "no interpretation possible")
+        )
+    return observation.to_summary(exit_code, output[-2000:])
 
 
 async def capture_baseline(toolkit, score, workspace: Path) -> Baseline:

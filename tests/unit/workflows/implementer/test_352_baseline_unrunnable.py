@@ -23,11 +23,27 @@ from performer.workflows.implementer.baseline import NoTestRunner, capture_basel
 from performer.workflows.implementer.models import Baseline
 
 
+def _observation_for(exit_code: int, output: str):
+    """Stand in for the model reading the runner output (#365).
+
+    Mirrors what a model would say about these fixtures' output so the
+    assertions under test -- which are about baselines and env holds, not about
+    how the output was read -- keep their original meaning.
+    """
+    from performer.workflows.implementer.observe import TestObservation
+
+    if exit_code == 0:
+        return TestObservation(outcome="all_passed", passed=["example"])
+    return TestObservation(outcome="assertion_failure", failed=["example"], summary=output[:200])
+
+
+
 def _toolkit(*, exit_code: int, output: str) -> MagicMock:
     toolkit = MagicMock()
     toolkit.run_command = AsyncMock(
         return_value=MagicMock(output_excerpt=output, exit_code=exit_code)
     )
+    toolkit.call_model = AsyncMock(return_value=_observation_for(exit_code, output))
     return toolkit
 
 
