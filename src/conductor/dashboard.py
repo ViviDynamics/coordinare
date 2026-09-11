@@ -272,6 +272,14 @@ class SSEBroadcaster:
 # Dashboard store
 # ---------------------------------------------------------------------------
 
+# The size ceiling for the inlined front end, asserted by two separate test
+# modules. It lives here, beside what it measures, because it previously
+# existed as the literal ``160 * 1024`` in both of them: #348 and #346 were
+# each green alone, and together put the page 19 bytes over, turning main red
+# on a guard neither PR appeared to touch. One constant cannot diverge.
+# #349 tracks moving the JS to /static so this can come back down.
+DASHBOARD_HTML_BUDGET_BYTES = 168 * 1024
+
 # 348: how many of a session's ``performer_events`` travel on each session
 # summary. The detail panel renders the last 12; the token derivation scans
 # backwards for the most recent ``cost`` event. 40 covers both with room to
