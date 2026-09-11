@@ -9,6 +9,10 @@ labeled ENV_BLOCKED — FR-003).
 
 Pure and deterministic; matches against the already-lowercased, drift-stripped
 normalized reason produced by ``failure_signature.normalize_reason``.
+
+368: Model-based judgment augments regex matching. ``match_env_signature_with_model``
+makes an async LLM call to classify environmental failures when the regex patterns
+don't match (fail-safe: falls back to regex results if model call fails).
 """
 from __future__ import annotations
 
@@ -18,6 +22,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from coordinare.config import EnvSignaturePattern
+    from coordinare.services.conducting import ConductingBackend
 
 
 @dataclass(frozen=True)
@@ -113,4 +118,87 @@ def match_env_signature(
     return None
 
 
-__all__ = ["EnvCause", "match_env_signature"]
+async def match_env_signature_with_model(
+    reason: str,
+    patterns: list[EnvSignaturePattern],
+    backend: ConductingBackend | None = None,
+) -> EnvCause | None:
+    """Classify environmental failures using model judgment when regex doesn't match.
+
+    (368) First tries the regex-based ``match_env_signature``. If it matches,
+    returns immediately (fast path). If no regex match and a model backend is
+    available, makes an async LLM call to judge whether the failure is
+    environmental. Falls back to None (fail-safe) if the model call fails or
+    times out.
+
+    This is a daemon-friendly variant: it respects timeouts, handles failures
+    gracefully, and never blocks other cards. The downstream gates (CI must pass,
+    reviewer must approve, security must pass) already validate outcomes, so
+    conservative failures are safe.
+
+    Args:
+        reason: the normalized failure reason (already lowercased/drift-stripped)
+        patterns: operator-supplied env signature patterns
+        backend: the conducting backend (async model service); if None or model
+            call fails, falls back to regex-only classification
+
+    Returns:
+        EnvCause if the failure is environmental, else None (fail-safe).
+    """
+    # Fast path: regex patterns match
+    regex_result = match_env_signature(reason, patterns)
+    if regex_result is not None:
+        return regex_result
+
+    # Slow path: no regex match, try model if available
+    if backend is None:
+        return None
+
+    try:
+        prompt = (
+            "You are classifying CI failures as environmental or not.\n\n"
+            "Environmental failures are infrastructure/operator issues that no code change can fix:\n"
+            "  - Storage quota exhausted (artifact storage, disk space)\n"
+            "  - Runner offline or unavailable\n"
+            "  - Billing/spending limits\n"
+            "  - Registry/authentication failures\n"
+            "  - Permission/access issues (hostedtoolcache, Docker, etc.)\n"
+            "  - Network/connectivity issues\n\n"
+            "Code failures are issues the implementer can fix:\n"
+            "  - Test assertion failures\n"
+            "  - Syntax errors\n"
+            "  - Logic errors\n"
+            "  - Missing dependencies (if the repo can install them)\n"
+            "  - Lint/style violations\n\n"
+            f"Failure reason (normalized):\n{reason}\n\n"
+            'Respond ONLY with JSON: {{"is_environmental": bool, "pattern_id": "category_name", "reason": "brief explanation"}}'
+        )
+
+        response = await backend.prompt(prompt, response_format="json")
+        data = response.get("data")
+        if not isinstance(data, dict):
+            # Model returned non-JSON or unparseable response
+            return None
+
+        is_env = data.get("is_environmental", False)
+        pattern_id = str(data.get("pattern_id", "model_judgment")).strip()
+        explanation = str(data.get("reason", "")).strip()
+
+        if not is_env:
+            return None
+
+        # Environmental failure detected by model; construct EnvCause
+        # Use pattern_id from model for tracing, and a generic action
+        return EnvCause(
+            pattern_id=f"model:{pattern_id}" if pattern_id else "model:environmental",
+            cause=f"Environmental/infrastructure failure (model-detected): {explanation}",
+            action="Investigate infrastructure status, runner availability, quota limits, or permissions",
+        )
+
+    except Exception:
+        # Model call failed, timeout, or returned garbage
+        # Fall back to regex-only result (already checked above, which is None)
+        return None
+
+
+__all__ = ["EnvCause", "match_env_signature", "match_env_signature_with_model"]
