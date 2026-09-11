@@ -4,12 +4,14 @@ from __future__ import annotations
 import pytest
 from performer.workflows.base import WorkflowMetrics
 from performer.workflows.budget import ModelReply
+from performer.workflows.documenter import MAX_ROOT_EVIDENCE, _init_modules
 from performer.workflows.documenter.inventory import (
     build_inventory,
     extract_citations,
     repository_layout,
     wiki_links,
 )
+from performer.workflows.documenter.models import RepositoryLayout
 from performer.workflows.project_shape import ProjectShape, ProjectShapeUnknown
 from performer.workflows.toolkit import Toolkit
 
@@ -214,3 +216,57 @@ class TestRepositoryLayout:
                 self._toolkit(ProjectShape(cannot_determine="no manifest I recognise")),
                 tmp_path, {"README"},
             )
+
+
+class TestInitEvidenceNamesNoManifestAndNoExtension:
+    """The last two hardcoded lists in the documenter (#364, finished in #367).
+
+    `_init_modules` chose evidence for an init-mode page from a six-name
+    manifest list and a six-extension source tuple. A repository whose manifest
+    is `mix.exs` offered no project files; one written in Elixir, Swift or
+    Kotlin offered no source files. The init page was then written from nothing,
+    and nothing recorded that it had been.
+    """
+
+    @staticmethod
+    def _plan(path: str):
+        from types import SimpleNamespace
+        return SimpleNamespace(path=path)
+
+    @staticmethod
+    def _layout(dirs: list[str]):
+        return RepositoryLayout(
+            project_name="week", has_ci=False, test_command_hint="",
+            packages=[{"path": d, "size": 100, "has_tests": False} for d in dirs],
+        )
+
+    def test_a_stack_with_none_of_the_old_names_still_gets_evidence(self):
+        """mix.exs and .ex: no entry in either deleted list."""
+        tree = {"mix.exs", "README.md", "lib/week.ex", "lib/week/server.ex", "test/week_test.exs"}
+        got = _init_modules(self._plan("docs/wiki/architecture.md"), tree, self._layout(["lib"]))
+        assert "mix.exs" in got, "the project's own manifest was invisible"
+        assert any(p.endswith(".ex") for p in got), "its source was invisible"
+
+    def test_a_repository_whose_only_root_file_is_unknown_still_surfaces_it(self):
+        """The sharpest version: nothing here appeared in either deleted list."""
+        tree = {"shard.yml", "src/week.cr"}
+        got = _init_modules(self._plan("docs/wiki/architecture.md"), tree, self._layout(["src"]))
+        assert got == ["shard.yml", "src/week.cr"]
+
+    def test_setup_pages_get_the_repositorys_own_root_files(self):
+        tree = {"Cargo.toml", "Justfile", "rust-toolchain.toml", "src/main.rs"}
+        got = _init_modules(self._plan("docs/wiki/setup.md"), tree, self._layout(["src"]))
+        assert "Cargo.toml" in got and "Justfile" in got
+
+    def test_root_evidence_is_bounded(self):
+        """A repository with fifty root files must not put them all in a prompt."""
+        tree = {f"file{i}.toml" for i in range(50)} | {"src/a.py"}
+        got = _init_modules(self._plan("docs/wiki/setup.md"), tree, self._layout(["src"]))
+        assert len([p for p in got if "/" not in p]) <= MAX_ROOT_EVIDENCE
+
+    def test_tests_are_still_excluded_from_architecture_evidence(self):
+        """The one filter that survives, because it is about role, not stack."""
+        tree = {"go.mod", "pkg/app.go", "pkg/tests/app_test.go"}
+        got = _init_modules(self._plan("docs/wiki/architecture.md"), tree, self._layout(["pkg"]))
+        assert "pkg/tests/app_test.go" not in got
+        assert "pkg/app.go" in got

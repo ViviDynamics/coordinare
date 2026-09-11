@@ -281,17 +281,45 @@ def _summary(inventory: list[WikiPage], brief: dict, workspace: Path) -> str:
     return str(brief.get("summary") or "Project documentation for developers and coding agents.")
 
 
+#: How many root files to offer as evidence. A bound, not a list of which ones
+#: count -- the interesting file might be mix.exs, a Justfile or deno.json.
+MAX_ROOT_EVIDENCE = 6
+
+
 def _init_modules(plan, tree: set[str], layout) -> list[str]:
-    """Evidence files for an init-mode page, chosen by the page's role (live round: none were gathered)."""
-    project_files = [p for p in ("pyproject.toml", "package.json", "README.md", "Makefile", "setup.cfg", "pytest.ini") if p in tree]
+    """Evidence files for an init-mode page, chosen by the page's role.
+
+    367 finished here. This held the last two hardcoded lists in the documenter:
+    a six-name manifest list (``pyproject.toml``, ``package.json``, ...) and a
+    source-extension tuple ``(".py", ".ts", ".js", ".go", ".rs", ".rb")``. Both
+    are the same defect as the probes in ``inventory.py`` -- a repository whose
+    manifest is ``mix.exs`` offered no project files, and one written in Elixir,
+    Swift or Kotlin offered no source files, so an init page was written from
+    nothing and nothing recorded that.
+
+    Root files are bounded in number by the repository's own shape, so take them
+    all rather than naming the ones coordinare happens to know. Source files come
+    from the directories the MODEL named as holding the source, so they need no
+    extension filter: that judgement was already made.
+    """
+    project_files = sorted(p for p in tree if "/" not in p)[:MAX_ROOT_EVIDENCE]
     ci = sorted(p for p in tree if p.startswith(".github/workflows/"))[:2]
     stem = Path(plan.path).stem
     if stem == "architecture":
         mains = []
         for pkg in (layout.packages if layout else [])[:4]:
-            files = sorted(p for p in tree if p.startswith(pkg["path"] + "/") and p.endswith((".py", ".ts", ".js", ".go", ".rs", ".rb")))
+            prefix = pkg["path"] + "/"
+            files = sorted(
+                p for p in tree
+                if p.startswith(prefix)
+                and not any(seg in ("tests", "test") for seg in p.split("/")[1:-1])
+            )
             mains.extend(files[:1])
-        return project_files[:1] + mains
+        # Two root files rather than one: without a name list there is no
+        # "prefer the manifest" ordering to rely on, and an architecture page
+        # wants both the project's description and how it is built. Ranking
+        # them would be the list again, in a comparator.
+        return project_files[:2] + mains
     if stem == "setup":
         return project_files + ci
     if stem == "testing":
