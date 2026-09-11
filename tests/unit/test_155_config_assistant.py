@@ -600,9 +600,13 @@ class TestTheFeatureIsOffUntilItIsTurnedOn:
         time, so enabling the feature costs the operator who enabled it and nobody
         else.
         """
-        from coordinare.dashboard import _ASSISTANT_FRAGMENT, _DASHBOARD_HTML
+        from coordinare.dashboard import (
+            _ASSISTANT_FRAGMENT,
+            _DASHBOARD_HTML,
+            DASHBOARD_HTML_BUDGET_BYTES,
+        )
 
-        assert len(_DASHBOARD_HTML.encode()) < 160 * 1024
+        assert len(_DASHBOARD_HTML.encode()) < DASHBOARD_HTML_BUDGET_BYTES
         assert len(_ASSISTANT_FRAGMENT.encode()) > 4000, (
             "the fragment looks empty — if the panel moved back into the shared "
             "page, the budget test will fail for a reason nobody will connect to this"

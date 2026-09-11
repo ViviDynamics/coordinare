@@ -221,8 +221,12 @@ def test_dashboard_html_under_168kb() -> None:
     in one Python string is what makes the budget bite; /static/activity-streams.js is the
     precedent for moving JS out, and #349 tracks doing that.
     """
+    from coordinare.dashboard import DASHBOARD_HTML_BUDGET_BYTES
+
     size = len(_DASHBOARD_HTML.encode())
-    assert size < 168 * 1024, f"_DASHBOARD_HTML is {size} bytes (limit: {168 * 1024})"
+    assert size < DASHBOARD_HTML_BUDGET_BYTES, (
+        f"_DASHBOARD_HTML is {size} bytes (limit: {DASHBOARD_HTML_BUDGET_BYTES})"
+    )
 
 
 def test_history_page_is_live_container_not_coming_soon_stub() -> None:
