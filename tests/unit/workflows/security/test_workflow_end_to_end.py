@@ -110,7 +110,7 @@ async def test_clean_change_passes_with_one_comment_review():
     assert [r.tool for r in record.scan] == ["semgrep", "bandit"] and all(r.exit_code == 0 for r in record.scan)
     assert result.report["write_free_check"]["passed"] is True and state["commands"][-1].startswith("git status --porcelain")
     steps = [e.text for e in events if e.text.startswith("security.")]
-    assert steps == ["security.intake", "security.scan", "security.survey", "security.findings", "security.gate", "security.post", "security.report"]
+    assert steps == ["security.intake", "security.tooling", "security.scan", "security.survey", "security.findings", "security.gate", "security.post", "security.report"]
     assert set(STATES) >= {s.split(".", 1)[1] for s in steps}
     assert result.report["workflow_metrics"]["model_calls"] == 2 and result.report["workflow_metrics"]["commands_run"] >= 3
 
@@ -203,7 +203,7 @@ async def test_a_broken_scanner_holds_before_any_model_call(kind, tool, needle):
     assert state["i"] == 0, "no model call after a scanner failure"
     assert gh.reviews == [] and record.blocking == []
     steps = [e.text for e in events if e.text.startswith("security.")]
-    assert steps == ["security.intake", "security.scan", "security.report"]
+    assert steps == ["security.intake", "security.tooling", "security.scan", "security.report"]
 
 
 @pytest.mark.asyncio
@@ -250,7 +250,7 @@ async def test_every_step_is_timed_and_logged(monkeypatch):
     monkeypatch.setattr(security_mod, "log", fake)
     result, _, _, _, _ = await _run([SURVEY, {"findings": [INJECTION]}], _score())
     durations = result.metrics.step_durations_ms
-    assert list(durations) == ["intake", "scan", "survey", "findings", "gate", "post", "report"]
+    assert list(durations) == ["intake", "tooling", "scan", "survey", "findings", "gate", "post", "report"]
     assert result.report["workflow_metrics"]["step_durations_ms"] == durations
     events = {e["event"]: e for e in fake.entries}
     assert events["security.scan"]["findings"] == 0 and events["security.gate"]["verdict"] == "security_failed"

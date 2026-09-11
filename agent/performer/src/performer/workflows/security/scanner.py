@@ -1,8 +1,13 @@
-"""Security workflow scanner: runs semgrep and bandit, normalizes output.
+"""Security workflow scanner: runs model-determined security tooling, normalizes output.
 
-Spec 170 FR-003, FR-004: The scan runs inside the performer, fails closed on
-any tool problem (missing, crash, unparseable output), and produces normalized
-findings matching the coordinare's security_scanner.py output for parity (FR-020).
+Spec 366: The model determines what security tooling applies to this repository.
+The scan runs inside the performer, fails closed on any tool problem (missing,
+crash, unparseable output, tool not applicable), and produces normalized findings
+matching the coordinare's security_scanner.py output for parity (FR-020).
+
+This reverses spec 170's design (scan before model call) — the justification is
+that a mechanical floor that scans nothing on three of four languages is not a
+floor. Abstention now properly reads as unavailable (env_blocked) not as a pass.
 """
 
 from __future__ import annotations
@@ -136,12 +141,12 @@ def normalize_bandit(result: dict) -> dict:
 
 
 def build_semgrep_command(files: list[str], config: str) -> list[str]:
-    """Build semgrep command."""
+    """Build semgrep command. Kept for backward compatibility and testing."""
     return ["semgrep", "--config", config, "--json", *files]
 
 
 def build_bandit_command(files: list[str]) -> list[str]:
-    """Build bandit command."""
+    """Build bandit command. Kept for backward compatibility and testing."""
     return ["bandit", "-f", "json", "-r", *files]
 
 
@@ -170,33 +175,37 @@ async def _run_tool(
     return (exit_code, stdout, stderr, duration)
 
 
-_TOOLS: tuple[tuple[str, Callable[[list[str], SecurityBudgets], list[str]], Callable[[dict], dict]], ...] = (
-    ("semgrep", lambda files, budgets: build_semgrep_command(files, budgets.semgrep_config), normalize_semgrep),
-    ("bandit", lambda files, budgets: build_bandit_command(files), normalize_bandit),
-)
-
-
 async def run_scan(
     files: list[str],
     repo_root: Path,
     *,
+    tools: list[tuple[str, Callable[[list[str], SecurityBudgets], list[str]], Callable[[dict], dict]]] | None = None,
     runner: Callable | None = None,
     budgets: SecurityBudgets,
 ) -> tuple[list[dict], list[ScanResult]]:
-    """Run semgrep then bandit over files, return (findings, results).
+    """Run model-determined security tools over files, return (findings, results).
+
+    Spec 366: The model determines what scanning applies to this repository by
+    specifying the tools list. Each tool is a (name, build_fn, normalize_fn) tuple.
+    build_fn(files, budgets) -> argv; normalize_fn(result) -> normalized_finding.
+
+    If tools is None or empty, raises ScannerUnavailable to fail closed when no
+    applicable scanning determined (abstention must not read as a pass).
 
     findings: list of dicts in the spec-022 schema. results: one ScanResult per tool
     that ran. Raises ScannerUnavailable on a missing tool, a crash, a timeout, an
-    exit code other than 0 or 1, or malformed output; the exception carries the
-    ScanResults of the tools that completed before it (``exc.results``).
+    exit code other than 0 or 1, malformed output, or no applicable tools;
+    the exception carries the ScanResults of the tools that completed before it.
     """
     if not files:
         return ([], [])
     if runner is None:
         runner = default_runner
+    if not tools:
+        raise ScannerUnavailable("(no applicable tools)", "model determined no scanning applies to this repository")
     findings: list[dict] = []
     results: list[ScanResult] = []
-    for tool, build, normalize in _TOOLS:
+    for tool, build, normalize in tools:
         argv = build(files, budgets)
         try:
             exit_code, stdout, _stderr, duration = await _run_tool(argv, repo_root, tool, runner, budgets)

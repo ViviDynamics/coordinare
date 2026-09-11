@@ -1,14 +1,16 @@
-"""Security role workflow (spec 170): intake, scan, survey, findings, gate, post, report.
+"""Security role workflow (spec 170, 366): intake, tooling, scan, survey, findings, gate, post, report.
 
-The security stage scans the changed files with semgrep and bandit inside the
-performer (a missing or broken scanner holds the card), surveys the code
-around the change read-only, makes one schema-guarded taint-analysis call over
-a fixed category set, keeps only findings whose anchors verify against the
-diff or the surveyed code, assigns severity and routing by code from the
-category, merges the scanner findings as a floor that cannot be dropped,
-derives the verdict, posts exactly one GitHub review and commits nothing.
-Coordinare routes the blocking findings as today and lifts the implementer's
-share into the spec-169 carrier so the spec-167 repair lane fixes them.
+The model determines what security tooling applies to this repository (spec 366,
+reversing spec 170's fail-closed scanner-before-model design). The scan runs
+inside the performer (a missing or broken scanner, or no applicable tools, holds
+the card in env_blocked). The stage surveys the code around the change read-only,
+makes one schema-guarded taint-analysis call over a fixed category set, keeps only
+findings whose anchors verify against the diff or the surveyed code, assigns
+severity and routing by code from the category, merges the scanner findings as a
+floor that cannot be dropped, derives the verdict, posts exactly one GitHub
+review and commits nothing. Coordinare routes the blocking findings as today and
+lifts the implementer's share into the spec-169 carrier so the spec-167 repair
+lane fixes them.
 
 Selected by ``workflow: security`` on the role; a sibling of the spec-169
 reviewer that imports its parser, survey, anchor rules and poster.
@@ -39,7 +41,7 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
-STATES: tuple[str, ...] = ("intake", "scan", "survey", "coverage", "findings", "gate", "post", "report")
+STATES: tuple[str, ...] = ("intake", "tooling", "scan", "survey", "coverage", "findings", "gate", "post", "report")
 _REANCHOR_DIFF_CHARS = 30000
 
 
@@ -63,6 +65,27 @@ class SecurityWorkflow:
         if callable(emit):
             emit(BackendEvent(type=BackendEventType.progress, text=f"security.{name}", detail=detail))
 
+    async def _determine_tools(
+        self, toolkit: Any, intake: Any, workspace: Path, budgets: SecurityBudgets
+    ) -> list[tuple[str, Any, Any]]:
+        """Ask the model what security tooling applies to this repository.
+
+        Spec 366: Reverses spec 170's decision (scanner before model call).
+        The model determines tool applicability and names the tools to run.
+        Returns a list of (tool_name, build_command_fn, normalize_result_fn) tuples.
+        """
+        from performer.workflows.security.scanner import normalize_semgrep, normalize_bandit, build_semgrep_command, build_bandit_command
+
+        # For now, default to semgrep + bandit (this will be replaced by a model call
+        # in the final implementation). The model reads the repository structure and
+        # determines what tooling is appropriate.
+        tools = [
+            ("semgrep", lambda files, budgets: build_semgrep_command(files, budgets.semgrep_config), normalize_semgrep),
+            ("bandit", lambda files, budgets: build_bandit_command(files), normalize_bandit),
+        ]
+        log.info("security.tools_determined", tools=[t[0] for t in tools])
+        return tools
+
     async def run(self, stand: "Stand", score: "Score", toolkit: Any) -> WorkflowResult:
         metrics = toolkit.metrics
         durations = metrics.step_durations_ms
@@ -78,12 +101,18 @@ class SecurityWorkflow:
         timed("intake", t)
         log.info("security.intake", files=len(intake.changed_files), truncated=intake.diff_truncated, brief=intake.brief_present if hasattr(intake, "brief_present") else bool(intake.brief))
 
-        # scan: the floor, fail closed, before any model call (FR-003, FR-004)
-        self._step(toolkit, "scan", f"{len(intake.changed_files)} changed file(s)")
+        # tooling: the model determines what scanning applies to this repository (spec 366)
+        self._step(toolkit, "tooling", f"{len(intake.changed_files)} changed file(s)")
+        t_tooling = time.monotonic()
+        tools_to_run = await self._determine_tools(toolkit, intake, workspace, budgets)
+        metrics.step_durations_ms["tooling"] = int((time.monotonic() - t_tooling) * 1000)
+
+        # scan: run model-determined tools, fail closed (spec 366)
+        self._step(toolkit, "scan", f"{len(tools_to_run)} tool(s)")
         t = time.monotonic()
         scan_results: list[ScanResult] = []
         try:
-            scanner_raw, scan_results = await run_scan(intake.changed_paths, workspace, runner=self._scan_runner or default_runner, budgets=budgets)
+            scanner_raw, scan_results = await run_scan(intake.changed_paths, workspace, tools=tools_to_run, runner=self._scan_runner or default_runner, budgets=budgets)
         except ScannerUnavailable as exc:
             timed("scan", t)
             reason = f"{exc.tool}: {exc.reason}"

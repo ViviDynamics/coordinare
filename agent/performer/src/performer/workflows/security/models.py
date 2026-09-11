@@ -81,7 +81,7 @@ class SecurityFinding(_Bounded):
     severity: Literal["critical", "high", "medium", "low"]
     routing: Literal["implementer", "architect"]
     introduced_by: str  # A changed file
-    tool: Literal["model", "semgrep", "bandit"]
+    tool: str  # "model" or the scanner tool name determined by the model (spec 366)
     downgraded: bool = False
     downgrade_reason: Annotated[str, StringConstraints(max_length=300)] = ""
 
@@ -101,9 +101,15 @@ class SecurityFinding(_Bounded):
 
 
 class ScanResult(_Bounded):
-    """Result of running a single scanner tool."""
+    """Result of running a single scanner tool.
 
-    tool: Literal["semgrep", "bandit"]
+    The tool name is determined at runtime by the model's judgement of what
+    scanning applies to this repository. Spec 366: rather than a fixed pair
+    (semgrep + bandit), the model decides what tooling is appropriate,
+    reversing spec 170's fail-closed scanner-before-model design.
+    """
+
+    tool: str  # Tool name determined by model (e.g. "semgrep", "bandit", "golangci-lint", etc.)
     command: str  # Shell-quoted command that was run
     exit_code: int | None  # None if tool crashed before exiting
     finding_count: Annotated[int, Field(ge=0)]
