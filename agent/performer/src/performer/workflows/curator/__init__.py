@@ -42,6 +42,8 @@ class CuratorWorkflow:
     """Sequences the curator steps; only code advances the sequence."""
 
     name = "curator"
+    #: 343: ordered steps, the single source for the wire and the latch.
+    steps = STATES
 
     def __init__(self, lister=None, board=None) -> None:
         self._lister = lister

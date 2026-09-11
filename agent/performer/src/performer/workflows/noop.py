@@ -19,6 +19,8 @@ class NoopWorkflow:
     """A workflow that does nothing, successfully."""
 
     name = "noop"
+    #: 343: no user-visible sequence, so nothing to trail.
+    steps: tuple[str, ...] = ()
 
     async def run(
         self,

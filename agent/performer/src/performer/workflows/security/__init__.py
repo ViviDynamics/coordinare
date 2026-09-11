@@ -53,6 +53,8 @@ class SecurityWorkflow:
     """Sequences the security steps; only code advances the sequence."""
 
     name = "security"
+    #: 343: ordered steps, the single source for the wire and the latch.
+    steps = STATES
 
     def __init__(self, categories: tuple[str, ...] = SECURITY_CATEGORIES, poster=None, scan_runner=None) -> None:
         self.categories = tuple(categories)

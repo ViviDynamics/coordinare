@@ -47,6 +47,8 @@ class ReviewerWorkflow:
     """Sequences the reviewer steps; only code advances the sequence."""
 
     name = "reviewer"
+    #: 343: ordered steps, the single source for the wire and the latch.
+    steps = STATES
 
     def __init__(self, categories: tuple[str, ...] = DEFAULT_CATEGORIES, poster=None) -> None:
         self.categories = tuple(categories)

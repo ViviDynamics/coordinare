@@ -35,6 +35,8 @@ class AssessorWorkflow:
     """Sequences the four assessor steps; only code advances the sequence."""
 
     name = "assessor"
+    #: 343: ordered steps, the single source for the wire and the latch.
+    steps = STEPS
 
     @staticmethod
     def _step(toolkit, name: str, detail: str = "") -> None:

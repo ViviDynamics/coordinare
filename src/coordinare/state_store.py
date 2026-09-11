@@ -323,6 +323,9 @@ class PersistedSession(BaseModel):
     workflow_step: str | None = None
     workflow_step_entered_at: datetime | None = None
     workflow_step_trail: list[dict[str, Any]] = Field(default_factory=list)
+    # 343 P2: the workflow's own declared step list, reported over the wire
+    # contract so the trail can show the steps still to come.
+    workflow_steps: list[str] = Field(default_factory=list)
     idle_timeout_retries: dict[str, dict[str, Any]] = Field(default_factory=dict)
     # Audit timestamp set by ``monitor_performer._record_pr_artefacts``
     # whenever a successful turn's PR fields are written through to state

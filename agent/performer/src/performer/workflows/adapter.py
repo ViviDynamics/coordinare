@@ -572,17 +572,41 @@ class WorkflowAdapter:
         )
         self._task = asyncio.create_task(self._run(stand, score, toolkit))
 
+    @property
+    def workflow_steps(self) -> tuple[str, ...]:
+        """343: the ordered steps this workflow emits, for the wire contract.
+
+        Read off the workflow rather than duplicated here, so the list the
+        dashboard renders is the same tuple the workflow iterates.
+        """
+        steps = getattr(self._workflow, "steps", ())
+        return tuple(steps) if isinstance(steps, tuple | list) else ()
+
     def _on_event(self, event) -> None:
         """Buffer for drain_events(), and keep get_status() honest about the
-        step that is actually running (round-two review: _current_step was
-        declared and never assigned)."""
+        step that is actually running.
+
+        343: this used to latch only the ``env_bootstrap.`` and ``qa.``
+        prefixes, so for the other eight workflows ``_current_step`` was never
+        assigned and ``get_status().progress`` fell back to inner-harness text
+        or the literal string "running". The step was emitted and then thrown
+        away. Every workflow now latches, matched against its OWN declared
+        step list: a bare shape check would let model prose that happens to
+        read ``word.word`` register as a step transition.
+        """
         self._events.append(event)
         text = getattr(event, "text", "") or ""
         if text.startswith("env_bootstrap."):
+            # Pre-existing shape: env_bootstrap keeps the prefix and clears
+            # inner progress. Other workflows report the bare step name.
             self._current_step = text
             self._inner_progress = None
-        if text.startswith("qa."):
-            self._current_step = text[3:]
+            return
+        prefix = f"{self.workflow_name}."
+        if text.startswith(prefix):
+            step = text[len(prefix):]
+            if step in self.workflow_steps:
+                self._current_step = step
 
     def set_inner_progress(self, text: str) -> None:
         """Set progress text from inner harness (spec 167 R-e).

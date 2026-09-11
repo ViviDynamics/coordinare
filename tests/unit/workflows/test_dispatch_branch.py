@@ -225,7 +225,12 @@ async def test_get_status_reports_the_step_actually_running():
     for the whole run. Step events now drive it."""
     from performer.models import BackendEvent, BackendEventType
 
-    adapter = WorkflowAdapter("noop")
+    # 343: the adapter is now built for the workflow whose events it is fed.
+    # This used to pass a `qa.` event to a `noop` adapter, which worked only
+    # because the latch matched the `qa.` prefix on ANY adapter. Matching each
+    # adapter against its own declared steps is what stops model prose shaped
+    # like `self.assertEqual` registering as a step.
+    adapter = WorkflowAdapter("qa")
     adapter._on_event(BackendEvent(type=BackendEventType.progress, text="qa.judge"))
     assert adapter._current_step == "judge"
     assert len(adapter.drain_events()) == 1

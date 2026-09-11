@@ -62,6 +62,8 @@ class AdvocateWorkflow:
     """Sequences the advocate steps; only code advances the sequence."""
 
     name = "advocate"
+    #: 343: ordered steps, the single source for the wire and the latch.
+    steps = STATES
 
     def __init__(self, lister=None, poster=None) -> None:
         self._lister = lister

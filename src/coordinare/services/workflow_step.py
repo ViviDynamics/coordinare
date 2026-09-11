@@ -144,3 +144,28 @@ def latch_workflow_step(
         entered_at=entered_at.isoformat(),
     )
     return True
+
+
+def latch_declared_steps(state: dict, status: dict) -> None:
+    """Record the step sequence the performer says its workflow will run.
+
+    ``latch_workflow_step`` records what HAS happened. This is what is coming,
+    and the two together are what let the dashboard show a position in a
+    sequence rather than a bare current step.
+
+    Latched rather than assigned: a status poll that omits the field -- an older
+    performer, or a response between workflows -- must not erase a sequence
+    already reported. Anything that is not a list of non-empty strings is
+    ignored, because this arrives over the wire from a process coordinare does
+    not control.
+
+    An adversarial review found this missing altogether: the performer sent
+    ``workflow_steps``, coordinare declared the field in three places and
+    initialised it to ``[]``, and nothing ever read it.
+    """
+    declared = status.get("workflow_steps")
+    if not isinstance(declared, list):
+        return
+    clean = [str(x) for x in declared if isinstance(x, str) and x.strip()]
+    if clean:
+        state["workflow_steps"] = clean[:MAX_STEP_TRAIL]

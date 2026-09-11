@@ -63,6 +63,13 @@ class RoleWorkflow(Protocol):
     """Strategy interface implemented by each role workflow."""
 
     name: str
+    #: 343: the ordered step names this workflow emits, as the single source of
+    #: truth for both the adapter's current-step latch and the step list that
+    #: rides out on the wire. Declared here rather than read off the module so
+    #: coordinare never has to import performer internals to know them (the #339
+    #: coupling, in mirror image). Empty for a workflow with no user-visible
+    #: sequence.
+    steps: tuple[str, ...]
 
     async def run(
         self,

@@ -126,6 +126,13 @@ class PerformerResponse(BaseModel):
     files_modified: list[str] = Field(default_factory=list)  # 024: doc files committed by tech writer
     metrics: PerformerMetrics | None = None
     events: list[dict] = Field(default_factory=list)  # serialised BackendEvent list
+    # 343: the ordered step names of the workflow driving this session, sent on
+    # `working` responses so the dashboard can render position in the whole
+    # sequence rather than only the steps it has observed so far. Optional on
+    # purpose: an older performer image never sends it and coordinare degrades
+    # to the observed trail. Coordinare must not import the performer package to
+    # learn these, so the wire is the seam.
+    workflow_steps: list[str] | None = None
     # 063 Phase 4 (T023): True when services-health.sh exited non-zero during
     # workspace setup. Coordinare uses this to force env-cache regeneration.
     env_cache_health_failed: bool = False
