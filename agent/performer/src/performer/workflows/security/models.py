@@ -49,23 +49,6 @@ ROUTING: dict[str, str] = {"broken_authorization": "architect"}
 
 BLOCKING = frozenset({"critical", "high"})
 
-CWE_TO_CATEGORY: dict[str, str] = {
-    "89": "injection",
-    "78": "injection",
-    "79": "injection",
-    "943": "injection",
-    "94": "injection",
-    "798": "hardcoded_secret",
-    "502": "insecure_deserialization",
-    "22": "path_traversal",
-    "918": "ssrf",
-    "285": "broken_authorization",
-    "639": "broken_authorization",
-    "287": "broken_authorization",
-    "306": "broken_authorization",
-    "327": "weak_crypto",
-    "200": "information_leak",
-}
 
 
 class SecurityFinding(_Bounded):
@@ -181,6 +164,5 @@ __all__ = [
     "CATEGORY_TABLE",
     "ROUTING",
     "BLOCKING",
-    "CWE_TO_CATEGORY",
     "model_security_findings_schema",
 ]

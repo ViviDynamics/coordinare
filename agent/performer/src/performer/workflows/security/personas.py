@@ -25,7 +25,7 @@ Classify each finding into one of these categories. If none fit exactly, use 'ot
 ### Diff (changed files)
 {diff}
 
-### Scanner Findings (semgrep + bandit)
+### Scanner Findings
 {scan_findings}
 
 ### Survey Notes (code opened by your previous turn)
@@ -79,7 +79,11 @@ Do NOT include severity, routing, or verdict keys.
 
 
 def render_scan_findings(findings: list[dict]) -> str:
-    """Render scanner findings (semgrep + bandit) in readable format."""
+    """Render scanner findings in readable format.
+
+    Names no tool: the model chose what to run here, and each finding carries
+    the name of the tool that produced it.
+    """
     if not findings:
         return "(none)"
     lines = []

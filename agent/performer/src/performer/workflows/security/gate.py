@@ -4,20 +4,20 @@ Every rule is a pure function with its own test, shown to fail under one
 mutation (data-model "Rule predicates"). The anchor rule is the reviewer's,
 widened for a sink in a file the survey opened and tied to the PR through
 ``introduced_by``. Severity and routing come from the category table. Scanner
-findings are rule findings with the tool's severity and can never be dropped.
+findings carry the reading's category, scored by the same table, and can
+never be dropped.
 """
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
 from performer.workflows.reviewer.gate import anchor_in_hunks, anchor_in_surveyed, evidence_matches, full_coverage
 from performer.workflows.reviewer.models import ChangedFile
-from performer.workflows.security.models import BLOCKING, CATEGORY_TABLE, CWE_TO_CATEGORY, ROUTING, SecurityFinding
+from performer.workflows.security.models import BLOCKING, CATEGORY_TABLE, ROUTING, SECURITY_CATEGORIES, SecurityFinding
 
 __all__ = [
-    "GateOutcome", "anchor_ok_security", "severity_for", "routing_for", "apply_downgrade", "map_scanner_category",
+    "GateOutcome", "anchor_ok_security", "severity_for", "routing_for", "apply_downgrade",
     "scanner_to_findings", "normalise_tool_path", "to_findings", "merge_scanner_findings", "split_blocking", "verdict", "run_gate", "MAX_MODEL_SURVIVORS", "MAX_SCANNER_FINDINGS",
 ]
 
@@ -57,37 +57,6 @@ def anchor_ok_security(f: SecurityFinding, changed_files: list[ChangedFile], sur
     return evidence_matches(f, diff_lines, survey_lines)
 
 
-_KEYWORD_CATEGORIES: tuple[tuple[tuple[str, ...], str], ...] = (
-    (("sql", "inject", "xss", "command", "shell", "eval", "exec-", "template"), "injection"),
-    (("secret", "credential", "hardcoded", "password", "api-key", "apikey", "token"), "hardcoded_secret"),
-    (("deserial", "pickle", "yaml-load", "marshal", "unpickle"), "insecure_deserialization"),
-    (("traversal", "path-join", "path_join"), "path_traversal"),
-    (("ssrf", "request-forgery"), "ssrf"),
-    (("crypto", "cipher", "hash", "md5", "sha1", "random", "tls", "ssl"), "weak_crypto"),
-    (("authz", "authoriz", "permission", "idor", "access-control"), "broken_authorization"),
-    (("debug", "traceback", "expose", "leak", "verbose"), "information_leak"),
-)
-
-
-def map_scanner_category(raw: str) -> str:
-    """A CWE number (as a whole token) maps through the table; a rule id maps by keyword; anything else is other_insecure_pattern.
-
-    The live round showed semgrep rules without CWE metadata (``python.flask.security.injection.tainted-sql-string``)
-    landing in the fallback and never collapsing into the model's ``injection`` finding at the same line.
-    """
-    text = str(raw or "").strip()
-    cwe_tokens = [text] if text.isdigit() else []
-    cwe_tokens += re.findall(r"\bCWE-(\d+)\b", text)
-    for token in cwe_tokens:
-        if token in CWE_TO_CATEGORY:
-            return CWE_TO_CATEGORY[token]
-    lowered = text.lower()
-    for needles, category in _KEYWORD_CATEGORIES:
-        if any(n in lowered for n in needles):
-            return category
-    return _FALLBACK_CATEGORY
-
-
 def normalise_tool_path(path: str) -> str:
     """Tool paths as the diff names them: bandit reports ``./app/web.py`` for ``app/web.py``."""
     text = str(path or "").strip()
@@ -96,25 +65,49 @@ def normalise_tool_path(path: str) -> str:
     return text
 
 
-def scanner_to_findings(raw: list[dict[str, Any]], tool_of: dict[str, str] | None = None) -> list[SecurityFinding]:
-    """Tool findings in the 083 shape become rule findings with the tool's severity (FR-011)."""
+def scanner_to_findings(raw: list[dict[str, Any]]) -> list[SecurityFinding]:
+    """A scanner reading becomes rule findings (FR-011), reworked for #366.
+
+    Three things used to be recovered here by machinery that only worked for
+    two known scanners:
+
+    - the tool, by testing whether the description started with ``bandit:``
+    - the category, by pulling CWE numbers out of a string and looking them up
+      in a 15-entry table, then falling back to a keyword list when semgrep
+      tagged a SQL injection with CWE-915 and CWE-704
+    - and, when both missed, ``other_insecure_pattern``
+
+    All three are the shape #364 forbids: coordinare knowing the output formats
+    and taxonomies of specific tools. The model reads the scanner's output and
+    says what kind of issue each finding is; the tool is stamped by the runner
+    that ran it.
+
+    What coordinare keeps is policy, not stack knowledge: the category decides
+    the severity and the routing, through the same table that governs model
+    findings. "An injection is high severity" is this project's rule about
+    risk, and it holds whatever language the injection is written in -- and
+    keeping it here is what stops a reading from calling a SQL injection "low".
+    A category outside the allowed set cannot dodge that by being unrecognised;
+    it lands in the fallback and is still scored.
+    """
+    allowed = set(SECURITY_CATEGORIES)
     out: list[SecurityFinding] = []
     for r in raw:
         if not isinstance(r, dict):
             continue
-        description = str(r.get("description") or "")
-        tool = "bandit" if description.startswith("bandit:") else "semgrep"
-        category = map_scanner_category(str(r.get("category") or ""))
-        if category == _FALLBACK_CATEGORY:
-            # Live round: semgrep tags tainted-sql-string with CWE-915 and CWE-704, which say nothing
-            # about injection; the rule id does. A CWE that maps nowhere defers to the rule id's words.
-            category = map_scanner_category(description)
-        path = normalise_tool_path(str(r.get("file") or ""))
+        tool = str(r.get("tool") or "scanner")[:64]
+        category = str(r.get("category") or "")
+        if category not in allowed:
+            category = _FALLBACK_CATEGORY
+        description = str(r.get("description") or r.get("problem") or "")
+        path = normalise_tool_path(str(r.get("file") or r.get("path") or ""))
+        severity = severity_for(category)
         out.append(SecurityFinding(
             path=path, line=max(int(r.get("line") or 0), 0), category=category,
-            problem=(description or f"{tool} finding")[:500], why_blocking=f"reported by {tool} as {r.get('severity')}"[:500],
-            evidence="", origin="rule", severity=str(r.get("severity") or "medium"), routing=routing_for(category),
-            introduced_by=path, tool=tool,
+            problem=(description or f"{tool} finding")[:500],
+            why_blocking=f"reported by {tool} as {category}"[:500],
+            evidence=str(r.get("evidence") or "")[:500], origin="rule", severity=severity,
+            routing=routing_for(category), introduced_by=path, tool=tool,
         ))
     return out
 
@@ -176,8 +169,17 @@ def run_gate(
     for f in reanchored or []:
         if anchor_ok_security(f, changed_files, surveyed, diff_lines, survey_lines):
             kept.append(f)
-    scanner = scanner_to_findings(scanner_raw)[:MAX_SCANNER_FINDINGS]
-    # The model's survivors are capped; the tools' findings are never sliced out (FR-011).
+    # FR-011: the anchor rule never drops a tool's finding. The 200 bound is a
+    # separate, documented one (data-model "at most 200"), and it used to slice
+    # positionally -- so a repository with more than 200 scanner findings whose
+    # blocking ones happened to land after position 200 lost them, and the
+    # verdict passed. Order by blocking first, so the bound can only ever drop
+    # findings that were not going to fail the round.
+    scanner = sorted(
+        scanner_to_findings(scanner_raw),
+        key=lambda f: f.severity not in BLOCKING,
+    )[:MAX_SCANNER_FINDINGS]
+    # The model's survivors are capped by their own bound.
     merged = merge_scanner_findings(kept[:MAX_MODEL_SURVIVORS], scanner)
     blocking, advisory = split_blocking(merged)
     coverage_ok = full_coverage(changed_files, truncated, coverage_pass_ran)

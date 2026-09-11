@@ -13,7 +13,6 @@ class TestSecurityBudgets:
         """Defaults are applied when env vars are absent."""
         budgets = SecurityBudgets.from_env({})
         assert budgets.scan_timeout_s == 120
-        assert budgets.semgrep_config == "auto"
         assert budgets.survey_max_commands == 12
         assert budgets.survey_max_output_chars == 4000
         assert budgets.max_findings == 30
@@ -22,14 +21,12 @@ class TestSecurityBudgets:
         """Environment variables override defaults."""
         env = {
             "SECURITY_SCAN_TIMEOUT_S": "180",
-            "SECURITY_SEMGREP_CONFIG": "p/security-audit",
             "SECURITY_SURVEY_MAX_COMMANDS": "10",
             "SECURITY_SURVEY_MAX_OUTPUT_CHARS": "5000",
             "SECURITY_MAX_FINDINGS": "20",
         }
         budgets = SecurityBudgets.from_env(env)
         assert budgets.scan_timeout_s == 180
-        assert budgets.semgrep_config == "p/security-audit"
         assert budgets.survey_max_commands == 10
         assert budgets.survey_max_output_chars == 5000
         assert budgets.max_findings == 20

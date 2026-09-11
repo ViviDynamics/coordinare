@@ -13,10 +13,9 @@ floor. Abstention now properly reads as unavailable (env_blocked) not as a pass.
 from __future__ import annotations
 
 import asyncio
-import json
 import shlex
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 import structlog
 
@@ -26,26 +25,6 @@ from performer.workflows.security.models import ScanResult
 logger = structlog.get_logger(__name__)
 
 # CWE numbers whose semgrep WARNING findings escalate to high rather than medium.
-_DANGEROUS_CWES = frozenset(
-    {
-        "20",  # Improper Input Validation
-        "22",  # Path Traversal
-        "78",  # OS Command Injection
-        "79",  # Cross-site Scripting
-        "89",  # SQL Injection
-        "94",  # Code Injection
-        "200",  # Information Exposure
-        "287",  # Improper Authentication
-        "306",  # Missing Authentication
-        "327",  # Broken/Risky Crypto
-        "352",  # CSRF
-        "434",  # Unrestricted Upload
-        "502",  # Insecure Deserialization
-        "611",  # XXE
-        "798",  # Hardcoded Credentials
-        "918",  # SSRF
-    }
-)
 
 
 class ScannerUnavailable(Exception):
@@ -62,92 +41,8 @@ class ScannerUnavailable(Exception):
         super().__init__(f"{tool}: {reason}")
 
 
-def cwe_numbers(metadata: dict) -> list[str]:
-    """Extract bare CWE numbers from semgrep metadata (e.g., ['CWE-78: ...'])."""
-    raw = metadata.get("cwe") if isinstance(metadata, dict) else None
-    if raw is None:
-        return []
-    items = raw if isinstance(raw, list) else [raw]
-    numbers: list[str] = []
-    for item in items:
-        text = str(item)
-        # "CWE-78: OS Command Injection" -> "78"
-        marker = "CWE-"
-        if marker in text:
-            tail = text.split(marker, 1)[1]
-            num = "".join(ch for ch in tail if ch.isdigit() or ch == ":")
-            num = num.split(":", 1)[0]
-            if num:
-                numbers.append(num)
-    return numbers
 
 
-def safe_category(value: str) -> str:
-    """Keep category labels short and free of embedded payload text."""
-    return value.strip()[:80]
-
-
-def normalize_semgrep(result: dict) -> dict:
-    """Normalize a semgrep finding to the spec-022 schema."""
-    extra = result.get("extra", {}) or {}
-    metadata = extra.get("metadata", {}) or {}
-    severity = str(extra.get("severity", "INFO")).upper()
-    cwes = cwe_numbers(metadata)
-    dangerous = any(c in _DANGEROUS_CWES for c in cwes)
-
-    if severity in {"ERROR", "CRITICAL"}:
-        normalized = "critical"
-    elif severity == "WARNING":
-        normalized = "high" if dangerous else "medium"
-    else:  # INFO and anything unknown -> low
-        normalized = "low"
-
-    category = cwes[0] if cwes else str(result.get("check_id", "semgrep"))
-    return {
-        "severity": normalized,
-        "category": safe_category(category),
-        "description": f"semgrep:{result.get('check_id', 'rule')}",
-        "file": str(result.get("path", "")),
-        "line": int((result.get("start", {}) or {}).get("line", 0) or 0),
-        "routing": "implementer",
-    }
-
-
-def normalize_bandit(result: dict) -> dict:
-    """Normalize a bandit finding to the spec-022 schema."""
-    sev = str(result.get("issue_severity", "LOW")).upper()
-    conf = str(result.get("issue_confidence", "LOW")).upper()
-
-    if sev == "HIGH" and conf == "HIGH":
-        normalized = "critical"
-    elif (sev == "HIGH" and conf == "MEDIUM") or (sev == "MEDIUM" and conf == "HIGH"):
-        normalized = "high"
-    elif sev == "MEDIUM":
-        normalized = "medium"
-    elif sev == "HIGH":  # HIGH/LOW
-        normalized = "high"
-    else:  # LOW/*
-        normalized = "low"
-
-    category = str(result.get("test_name") or result.get("test_id") or "bandit")
-    return {
-        "severity": normalized,
-        "category": safe_category(category),
-        "description": f"bandit:{result.get('test_id', 'check')}",
-        "file": str(result.get("filename", "")),
-        "line": int(result.get("line_number", 0) or 0),
-        "routing": "implementer",
-    }
-
-
-def build_semgrep_command(files: list[str], config: str) -> list[str]:
-    """Build semgrep command. Kept for backward compatibility and testing."""
-    return ["semgrep", "--config", config, "--json", *files]
-
-
-def build_bandit_command(files: list[str]) -> list[str]:
-    """Build bandit command. Kept for backward compatibility and testing."""
-    return ["bandit", "-f", "json", "-r", *files]
 
 
 #: Exit codes that mean the tool ran: 0 (clean) and 1 (findings). Anything else is a tool problem.
@@ -179,7 +74,8 @@ async def run_scan(
     files: list[str],
     repo_root: Path,
     *,
-    tools: list[tuple[str, Callable[[list[str], SecurityBudgets], list[str]], Callable[[dict], dict]]] | None = None,
+    tools: list[Any] | None = None,
+    read: Callable | None = None,
     runner: Callable | None = None,
     budgets: SecurityBudgets,
 ) -> tuple[list[dict], list[ScanResult]]:
@@ -205,20 +101,43 @@ async def run_scan(
         raise ScannerUnavailable("(no applicable tools)", "model determined no scanning applies to this repository")
     findings: list[dict] = []
     results: list[ScanResult] = []
-    for tool, build, normalize in tools:
-        argv = build(files, budgets)
+    examined_any: set[str] = set()
+    unexamined: list[str] = []
+    for tool in tools:
+        argv = list(tool.argv)
         try:
-            exit_code, stdout, _stderr, duration = await _run_tool(argv, repo_root, tool, runner, budgets)
-            try:
-                payload = json.loads(stdout)
-            except (json.JSONDecodeError, ValueError):
-                raise ScannerUnavailable(tool, "emitted unparseable JSON")
+            exit_code, stdout, _stderr, duration = await _run_tool(argv, repo_root, tool.name, runner, budgets)
         except ScannerUnavailable as exc:
             exc.results = list(results)
             raise
-        tool_findings = [normalize(result) for result in (payload.get("results", []) or [])]
-        findings.extend(tool_findings)
-        results.append(ScanResult(tool=tool, command=shlex.join(argv), exit_code=exit_code, finding_count=len(tool_findings), duration_ms=duration))
+        # 366: the model reads the tool's own output. No per-tool normalizer,
+        # and no JSON-shape assumption -- a scanner that prints a table is as
+        # readable as one that prints JSON, and neither needs coordinare to
+        # learn its format.
+        reading = await read(tool.name, argv, stdout, files)
+        examined_any.update(reading.examined_paths())
+        unexamined.extend(f"{c.path} ({tool.name}: {c.reason})" for c in reading.unexamined())
+        # The tool's identity is known exactly here, so stamp it. The gate used
+        # to recover it by testing whether the description started with
+        # "bandit:", which only works in a world with two scanners whose names
+        # coordinare already knows -- the world #366 exists to leave.
+        findings.extend({**f, "tool": tool.name} for f in reading.findings)
+        results.append(ScanResult(
+            tool=tool.name, command=shlex.join(argv), exit_code=exit_code,
+            finding_count=len(reading.findings), duration_ms=duration,
+        ))
+
+    # 366: the defect this exists to stop. bandit on a Ruby repository exits 0
+    # with zero findings and an errors block nobody read, so "examined nothing"
+    # was indistinguishable from "found nothing". An abstention is a hold, not
+    # a pass.
+    if not examined_any:
+        exc = ScannerUnavailable(
+            ", ".join(t.name for t in tools),
+            "examined none of the %d changed file(s): %s" % (len(files), "; ".join(unexamined[:5]) or "no tool reported reading any of them"),
+        )
+        exc.results = list(results)
+        raise exc
     return (findings, results)
 
 
@@ -242,12 +161,6 @@ async def default_runner(argv: list[str], cwd: Path, timeout_s: int) -> tuple[in
 
 __all__ = [
     "ScannerUnavailable",
-    "normalize_semgrep",
-    "normalize_bandit",
-    "cwe_numbers",
-    "safe_category",
-    "build_semgrep_command",
-    "build_bandit_command",
     "run_scan",
     "default_runner",
 ]

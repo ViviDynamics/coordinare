@@ -387,6 +387,7 @@ async def test_the_security_workflow_runs_behind_the_same_adapter_seam(tmp_path)
     from performer.workflows.security import SecurityWorkflow
     from performer.workflows.toolkit import Toolkit
 
+    from tests.eval.security_scenarios.stub_model import answer_tooling_and_reading
     from tests.unit.workflows.security.test_workflow_end_to_end import (
         INJECTION,
         SURVEY,
@@ -399,6 +400,13 @@ async def test_the_security_workflow_runs_behind_the_same_adapter_seam(tmp_path)
     state = {"i": 0}
 
     async def model_call(persona, content, max_tokens):
+        # 366 added two model calls before the scripted steps. Answering them
+        # off this list would advance the ordinal and hand the survey step the
+        # findings reply; the shared answerer keeps `replies` meaning what it
+        # meant when this test was written.
+        answered = answer_tooling_and_reading(persona, content)
+        if answered is not None:
+            return answered
         reply = replies[min(state["i"], len(replies) - 1)]
         state["i"] += 1
         return ModelReply(content=json.dumps(reply), finish_reason="stop")

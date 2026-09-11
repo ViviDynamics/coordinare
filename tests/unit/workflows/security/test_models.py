@@ -14,7 +14,6 @@ import pytest
 from performer.workflows.security.models import (
     BLOCKING,
     CATEGORY_TABLE,
-    CWE_TO_CATEGORY,
     ROUTING,
     SECURITY_CATEGORIES,
     ScanResult,
@@ -64,12 +63,6 @@ class TestSecurityCategories:
     def test_blocking_set(self):
         assert frozenset({"critical", "high"}) == BLOCKING
 
-    def test_cwe_mapping_completeness(self):
-        """CWE_TO_CATEGORY maps known CWEs to expected categories."""
-        assert CWE_TO_CATEGORY["78"] == "injection"
-        assert CWE_TO_CATEGORY["798"] == "hardcoded_secret"
-        assert CWE_TO_CATEGORY["285"] == "broken_authorization"
-        assert CWE_TO_CATEGORY["327"] == "weak_crypto"
 
 
 class TestSecurityFinding:

@@ -67,24 +67,68 @@ class SecurityWorkflow:
 
     async def _determine_tools(
         self, toolkit: Any, intake: Any, workspace: Path, budgets: SecurityBudgets
-    ) -> list[tuple[str, Any, Any]]:
-        """Ask the model what security tooling applies to this repository.
+    ) -> list[Any]:
+        """Ask the model what security scanning applies to this repository (#366).
 
-        Spec 366: Reverses spec 170's decision (scanner before model call).
-        The model determines tool applicability and names the tools to run.
-        Returns a list of (tool_name, build_command_fn, normalize_result_fn) tuples.
+        Replaces a fixed `semgrep + bandit` pair. That pair produced a passing
+        verdict on every non-Python repository, because bandit exits 0 having
+        parsed nothing and the old code read only its ``results`` array.
+
+        An empty plan is a hold, never a pass: `run_scan` raises
+        ``ScannerUnavailable`` on an empty tool list, which routes to the
+        existing env_blocked path.
         """
-        from performer.workflows.security.scanner import normalize_semgrep, normalize_bandit, build_semgrep_command, build_bandit_command
+        from performer.workflows.budget import Budget
+        from performer.workflows.security.tooling import ScanPlan, plan_persona
 
-        # For now, default to semgrep + bandit (this will be replaced by a model call
-        # in the final implementation). The model reads the repository structure and
-        # determines what tooling is appropriate.
-        tools = [
-            ("semgrep", lambda files, budgets: build_semgrep_command(files, budgets.semgrep_config), normalize_semgrep),
-            ("bandit", lambda files, budgets: build_bandit_command(files), normalize_bandit),
-        ]
-        log.info("security.tools_determined", tools=[t[0] for t in tools])
-        return tools
+        listing = "\n".join(f"- {p}" for p in intake.changed_paths[:200])
+        content = [{
+            "type": "text",
+            "text": (
+                f"Changed files in this pull request:\n{listing}\n\n"
+                "Decide what static security scanning applies to this repository "
+                "and return the plan JSON."
+            ),
+        }]
+        plan: ScanPlan = await toolkit.call_model(
+            persona=plan_persona(), schema=ScanPlan, content=content,
+            budget=Budget.for_step("security_tooling"),
+        )
+        log.info(
+            "security.tools_determined",
+            tools=[tool.name for tool in plan.tools],
+            nothing_applies=plan.nothing_applies or None,
+        )
+        return list(plan.tools)
+
+    def _scan_reader(self, toolkit: Any) -> Any:
+        """Read one scanner's raw output with the model (#366).
+
+        No per-tool normalizer and no JSON-shape assumption. The reader also
+        reports, per file, whether the tool actually examined it -- which is the
+        signal the old code threw away and the reason an unscanned repository
+        could pass.
+        """
+        from performer.workflows.budget import Budget
+        from performer.workflows.security.tooling import ScanReading, read_persona
+
+        async def read(tool: str, argv: list[str], stdout: str, files: list[str]) -> ScanReading:
+            listing = "\n".join(f"- {p}" for p in files[:200])
+            content = [{
+                "type": "text",
+                "text": (
+                    f"Tool: {tool}\nCommand: {' '.join(argv)}\n\n"
+                    f"Files it was given:\n{listing}\n\n"
+                    f"Raw output:\n{stdout[-40000:]}\n\n"
+                    "Return the findings and per-file coverage JSON."
+                ),
+            }]
+            return await toolkit.call_model(
+                persona=read_persona(), schema=ScanReading, content=content,
+                budget=Budget.for_step("security_scan_read"),
+            )
+
+        return read
 
     async def run(self, stand: "Stand", score: "Score", toolkit: Any) -> WorkflowResult:
         metrics = toolkit.metrics
@@ -112,7 +156,7 @@ class SecurityWorkflow:
         t = time.monotonic()
         scan_results: list[ScanResult] = []
         try:
-            scanner_raw, scan_results = await run_scan(intake.changed_paths, workspace, tools=tools_to_run, runner=self._scan_runner or default_runner, budgets=budgets)
+            scanner_raw, scan_results = await run_scan(intake.changed_paths, workspace, tools=tools_to_run, read=self._scan_reader(toolkit), runner=self._scan_runner or default_runner, budgets=budgets)
         except ScannerUnavailable as exc:
             timed("scan", t)
             reason = f"{exc.tool}: {exc.reason}"

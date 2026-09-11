@@ -31,6 +31,30 @@ SEMGREP_SQLI = {"check_id": "python.flask.sqli", "path": "src/db.py", "start": {
 BANDIT_MD5 = {"test_id": "B324", "test_name": "hashlib", "filename": "src/db.py", "line_number": 8, "issue_severity": "MEDIUM", "issue_confidence": "LOW"}  # MEDIUM/LOW normalises to medium
 
 
+def _category_a_reader_would_give(record: dict) -> str:
+    """What a model reading this scanner record would call it.
+
+    The stand-in for a judgement, not a reimplementation of one: #366 deleted
+    coordinare's CWE table and keyword list precisely so that naming the kind of
+    issue is the reader's job. The fake has to do that job for the fixtures it
+    is given, and the fact that it reads the record's own words -- rather than
+    being handed the answer -- is what keeps these tests honest about where the
+    category comes from.
+
+    Severity is deliberately absent. The reader says what kind of issue it is;
+    coordinare's category table says how bad that kind is, for scanner and model
+    findings alike, so a reading cannot call a SQL injection low.
+    """
+    blob = json.dumps(record).lower()
+    if "cwe-798" in blob or "secret" in blob or "hardcoded" in blob:
+        return "hardcoded_secret"
+    if "cwe-89" in blob or "sqli" in blob or "injection" in blob:
+        return "injection"
+    if "hashlib" in blob or "md5" in blob or "b324" in blob:
+        return "weak_crypto"
+    return "other_insecure_pattern"
+
+
 class FakeGitHub:
     def __init__(self, fail=False):
         self.reviews, self.fail = [], fail
@@ -67,6 +91,51 @@ def _toolkit(replies):
     state = {"i": 0, "commands": []}
 
     async def model_call(persona, content, max_tokens):
+        # 366: tool selection and output reading are model calls now. Answer
+        # them from the persona rather than from the ordered reply list, so
+        # every existing test's `replies` still lines up with the steps it was
+        # written for.
+        if "opening an unfamiliar repository" in persona:
+            state["planned"] = state.get("planned", 0) + 1
+            return ModelReply(
+                content=json.dumps({
+                    "tools": [
+                        {"name": "semgrep", "argv": ["semgrep", "--json", "."], "why": "python sources"},
+                        {"name": "bandit", "argv": ["bandit", "-f", "json", "-r", "."], "why": "python sources"},
+                    ],
+                    "nothing_applies": "",
+                }),
+                finish_reason="stop",
+            )
+        if "reading the raw output of a security scanner" in persona:
+            text = "".join(c.get("text", "") for c in content)
+            tool_name = next((ln.split(":", 1)[1].strip() for ln in text.splitlines() if ln.startswith("Tool:")), "scanner")
+            given = [ln[2:] for ln in text.splitlines() if ln.startswith("- ")]
+            payload = {}
+            for line in text.splitlines():
+                if line.startswith("{"):
+                    try:
+                        payload = json.loads(line)
+                    except Exception:
+                        payload = {}
+            return ModelReply(
+                content=json.dumps({
+                    "findings": [
+                        {
+                            "category": _category_a_reader_would_give(r),
+                            "description": f"{tool_name}:{r.get('check_id', r.get('test_id', 'rule'))}",
+                            "file": str(r.get("path", r.get("filename", ""))),
+                            "line": int((r.get("start", {}) or {}).get("line", r.get("line_number", 0)) or 0),
+                        }
+                        for r in (payload.get("results", []) if isinstance(payload, dict) else [])
+                    ],
+                    # the fake scanners read everything they are handed; the
+                    # abstention path is covered directly in test_scanner.py
+                    "coverage": [{"path": g, "examined": True, "reason": ""} for g in given],
+                    "summary": "",
+                }),
+                finish_reason="stop",
+            )
         reply = replies[min(state["i"], len(replies) - 1)]
         state["i"] += 1
         return ModelReply(content=json.dumps(reply), finish_reason="stop")
@@ -112,8 +181,24 @@ async def test_clean_change_passes_with_one_comment_review():
     steps = [e.text for e in events if e.text.startswith("security.")]
     assert steps == ["security.intake", "security.tooling", "security.scan", "security.survey", "security.findings", "security.gate", "security.post", "security.report"]
     assert set(STATES) >= {s.split(".", 1)[1] for s in steps}
-    assert result.report["workflow_metrics"]["model_calls"] == 2 and result.report["workflow_metrics"]["commands_run"] >= 3
+    # Spec 366: planning (1) + reading per tool (2) + survey (1) + findings (1) = 5 model calls
+    assert result.report["workflow_metrics"]["model_calls"] == 5 and result.report["workflow_metrics"]["commands_run"] >= 3
 
+
+@pytest.mark.asyncio
+async def test_unparseable_output_is_read_rather_than_held():
+    """366: coordinare no longer has an opinion about a scanner's output format.
+
+    Spec 170 treated output it could not parse as a broken tool, because it had
+    one hand-written normalizer per tool and anything else was unreadable. The
+    model reads whatever the scanner printed, so a table, a log or a sentence is
+    as readable as JSON -- and a tool coordinare has never heard of needs no code
+    change. What still holds the card is a tool that examined nothing, which is
+    a fact about coverage rather than about syntax.
+    """
+    _, record, _, _, _ = await _run([SURVEY, {"findings": [INJECTION]}], _score(), scanner=fake_scanner(garbage="semgrep"))
+    assert record.verdict != "env_blocked", "unparseable output is not a broken scanner"
+    assert [r.tool for r in record.scan] == ["semgrep", "bandit"], "both tools still ran and were read"
 
 @pytest.mark.asyncio
 async def test_an_injection_is_blocking_inline_and_routed_to_the_implementer():
@@ -194,15 +279,27 @@ async def test_advisories_pass_with_one_comment_listing_them():
     assert gh.reviews[0]["event"] == "COMMENT" and "bandit" in gh.reviews[0]["body"] and "`src/db.py:8`" in gh.reviews[0]["body"]
 
 
-@pytest.mark.parametrize("kind,tool,needle", [("missing", "semgrep", "binary not found"), ("timeout", "bandit", "timed out"), ("garbage", "semgrep", "unparseable"), ("empty", "bandit", "no output")])
+# "garbage" is deliberately absent: under 366 a scanner printing something
+# coordinare cannot parse is not a broken scanner, it is a scanner whose output
+# the model reads. That case is asserted directly below, and the abstention it
+# can still produce -- a reader that cannot tell whether any file was examined
+# -- holds through the coverage floor in test_scanner.py.
+@pytest.mark.parametrize("kind,tool,needle", [("missing", "semgrep", "binary not found"), ("timeout", "bandit", "timed out"), ("empty", "bandit", "no output")])
 @pytest.mark.asyncio
-async def test_a_broken_scanner_holds_before_any_model_call(kind, tool, needle):
+async def test_a_broken_scanner_holds_after_planning_and_before_reading(kind, tool, needle):
+    """Spec 366 reverses spec 170: the model now plans the tools before scanners run.
+
+    A broken scanner holds the card in env_blocked after the planning step but
+    before any attempt to read the output. The spec-170 assertion that scan runs
+    before ANY model call is deliberately reversed here.
+    """
     scanner = fake_scanner(**{kind: tool})
     _, record, gh, events, state = await _run([SURVEY, {"findings": [INJECTION]}], _score(), scanner=scanner)
     assert record.verdict == "env_blocked" and tool in record.hold_reason and needle in record.hold_reason
-    assert state["i"] == 0, "no model call after a scanner failure"
+    assert state["i"] == 0, "no normal reply model calls consumed (planning and reading are separate calls)"
     assert gh.reviews == [] and record.blocking == []
     steps = [e.text for e in events if e.text.startswith("security.")]
+    # Spec 366: tooling (planning), scan (failure), report. No survey/findings/gate/post because scan failed.
     assert steps == ["security.intake", "security.tooling", "security.scan", "security.report"]
 
 
@@ -229,11 +326,34 @@ async def test_a_dirty_tree_fails_the_round():
     calls = {"n": 0}
 
     async def model(persona, content, max_tokens):
+        # 366: the two new persona-dispatched calls must NOT advance the
+        # ordinal. This counter picks which scripted reply the survey and
+        # findings steps get; counting the tooling and reading calls too made
+        # the survey step receive the findings reply, which then failed schema
+        # validation against SurveyProposal. The step order did not change --
+        # the counter's meaning did.
+        if "opening an unfamiliar repository" in persona:
+            return ModelReply(
+                content=json.dumps({
+                    "tools": [
+                        {"name": "semgrep", "argv": ["semgrep", "--json", "."], "why": "python sources"},
+                        {"name": "bandit", "argv": ["bandit", "-f", "json", "-r", "."], "why": "python sources"},
+                    ],
+                    "nothing_applies": "",
+                }),
+                finish_reason="stop",
+            )
+        if "reading the raw output of a security scanner" in persona:
+            return ModelReply(
+                content=json.dumps({"findings": [], "coverage": [{"path": "src/db.py", "examined": True, "reason": ""}], "summary": ""}),
+                finish_reason="stop",
+            )
         calls["n"] += 1
-        return ModelReply(content=json.dumps(SURVEY if calls["n"] == 1 else NO_FINDINGS), finish_reason="stop")
+        reply = SURVEY if calls["n"] == 1 else NO_FINDINGS
+        return ModelReply(content=json.dumps(reply), finish_reason="stop")
 
     async def runner(cmd, cwd, timeout_s):
-        return (0, " M src/db.py\n") if cmd.startswith("git status") else (0, "ok")
+        return (0, " M src/db.py\n") if cmd.startswith("git status") else (0, "{}")
 
     tk = Toolkit(metrics=WorkflowMetrics(), model_call=model, command_runner=runner, call_limit=12)
     with pytest.raises(SecurityWroteToTree):

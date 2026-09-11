@@ -1,449 +1,208 @@
-"""Unit tests for the security workflow scanner (spec 170).
+"""Unit tests for the security workflow scanner (spec 170, reworked for #366).
 
-Strategy: mock the async runner to test normalization, ScannerUnavailable
-handling, the no-files path, and command building.
+The tool pair and the per-tool normalizers are gone: the model decides what to
+scan with and reads what the scanners printed. What remains mechanical here is
+running a command, classifying its exit, and — the point of #366 — refusing to
+call a scan clean when nothing was actually examined.
+
+The suite this replaces had 22 tests, 21 of which exercised
+``normalize_semgrep`` / ``normalize_bandit`` / ``build_*_command`` /
+``cwe_numbers`` / ``safe_category``. Those are deleted by design, so their tests
+are deleted with them rather than rewritten against a shim.
 """
-
 from __future__ import annotations
 
-import json as _json
 from pathlib import Path
-from pathlib import Path as _Path
 
 import pytest
-import pytest as _pytest
-from performer.workflows.security.budgets import SecurityBudgets as _Budgets
-from performer.workflows.security.scanner import (
-    ScannerUnavailable,
-    build_bandit_command,
-    build_semgrep_command,
-    cwe_numbers,
-    normalize_bandit,
-    normalize_semgrep,
-    run_scan,
-    safe_category,
-)
-from performer.workflows.security.scanner import ScannerUnavailable as _Unavailable
-from performer.workflows.security.scanner import run_scan as _run_scan
+from performer.workflows.security.budgets import SecurityBudgets
+from performer.workflows.security.scanner import ScannerUnavailable, run_scan
+from performer.workflows.security.tooling import ExaminedFile, ScanReading, ScanTool
+
+BUDGETS = SecurityBudgets()
+FILES = ["app/models/week.rb", "app/controllers/weeks_controller.rb"]
 
 
-class TestNormalizers:
-    """Test that normalization matches coordinare behavior."""
-
-    def test_normalize_semgrep_error_level(self):
-        result = {
-            "check_id": "python.lang.security.audit.dangerous-system-call",
-            "path": "app.py",
-            "start": {"line": 10},
-            "extra": {
-                "severity": "ERROR",
-                "message": "Found user input flowing into os.system",
-                "metadata": {"cwe": ["CWE-78: OS Command Injection"]},
-            },
-        }
-        finding = normalize_semgrep(result)
-        assert finding["severity"] == "critical"
-        assert finding["file"] == "app.py"
-        assert finding["line"] == 10
-
-    def test_normalize_semgrep_warning_dangerous_cwe(self):
-        result = {
-            "check_id": "javascript.browser.security.insecure-innerhtml",
-            "path": "ui.js",
-            "start": {"line": 20},
-            "extra": {
-                "severity": "WARNING",
-                "message": "innerHTML assignment from user input",
-                "metadata": {"cwe": ["CWE-79: Cross-site Scripting"]},
-            },
-        }
-        finding = normalize_semgrep(result)
-        assert finding["severity"] == "high"
-        assert finding["line"] == 20
-
-    def test_normalize_semgrep_warning_safe_cwe(self):
-        result = {
-            "check_id": "python.lang.best-practice",
-            "path": "util.py",
-            "start": {"line": 5},
-            "extra": {
-                "severity": "WARNING",
-                "message": "Variable name is too short",
-                "metadata": {"cwe": ["CWE-500: Not a security CWE"]},
-            },
-        }
-        finding = normalize_semgrep(result)
-        assert finding["severity"] == "medium"
-
-    def test_normalize_semgrep_info_level(self):
-        result = {
-            "check_id": "info.rule",
-            "path": "app.py",
-            "start": {"line": 1},
-            "extra": {"severity": "INFO", "metadata": {}},
-        }
-        finding = normalize_semgrep(result)
-        assert finding["severity"] == "low"
-
-    def test_normalize_bandit_high_high(self):
-        result = {
-            "filename": "app.py",
-            "line_number": 15,
-            "issue_severity": "HIGH",
-            "issue_confidence": "HIGH",
-            "test_id": "B602",
-            "test_name": "subprocess_popen_with_shell_equals_true",
-        }
-        finding = normalize_bandit(result)
-        assert finding["severity"] == "critical"
-        assert finding["line"] == 15
-
-    def test_normalize_bandit_high_medium(self):
-        result = {
-            "filename": "app.py",
-            "line_number": 10,
-            "issue_severity": "HIGH",
-            "issue_confidence": "MEDIUM",
-            "test_id": "B602",
-        }
-        finding = normalize_bandit(result)
-        assert finding["severity"] == "high"
-
-    def test_normalize_bandit_medium_high(self):
-        result = {
-            "filename": "app.py",
-            "line_number": 10,
-            "issue_severity": "MEDIUM",
-            "issue_confidence": "HIGH",
-            "test_id": "B602",
-        }
-        finding = normalize_bandit(result)
-        assert finding["severity"] == "high"
-
-    def test_normalize_bandit_medium(self):
-        result = {
-            "filename": "app.py",
-            "line_number": 10,
-            "issue_severity": "MEDIUM",
-            "issue_confidence": "LOW",
-            "test_id": "B602",
-        }
-        finding = normalize_bandit(result)
-        assert finding["severity"] == "medium"
-
-    def test_normalize_bandit_high_low(self):
-        result = {
-            "filename": "app.py",
-            "line_number": 10,
-            "issue_severity": "HIGH",
-            "issue_confidence": "LOW",
-            "test_id": "B602",
-        }
-        finding = normalize_bandit(result)
-        assert finding["severity"] == "high"
-
-    def test_normalize_bandit_low(self):
-        result = {
-            "filename": "app.py",
-            "line_number": 10,
-            "issue_severity": "LOW",
-            "issue_confidence": "HIGH",
-            "test_id": "B602",
-        }
-        finding = normalize_bandit(result)
-        assert finding["severity"] == "low"
+def _tool(name: str = "semgrep", argv: list[str] | None = None) -> ScanTool:
+    return ScanTool(name=name, argv=argv or [name, "--json", *FILES], why="applies here")
 
 
-class TestCweNumbers:
-    """Test CWE extraction from semgrep metadata."""
+def _runner(exit_code: int = 0, stdout: str = "{}", stderr: str = ""):
+    async def run(argv, cwd, timeout_s):
+        return (exit_code, stdout, stderr)
 
-    def test_cwe_numbers_single(self):
-        metadata = {"cwe": ["CWE-78: OS Command Injection"]}
-        assert cwe_numbers(metadata) == ["78"]
-
-    def test_cwe_numbers_multiple(self):
-        metadata = {"cwe": ["CWE-89: SQL Injection", "CWE-79: XSS"]}
-        assert cwe_numbers(metadata) == ["89", "79"]
-
-    def test_cwe_numbers_string_not_list(self):
-        metadata = {"cwe": "CWE-798: Hardcoded Credentials"}
-        assert cwe_numbers(metadata) == ["798"]
-
-    def test_cwe_numbers_empty(self):
-        metadata = {"cwe": []}
-        assert cwe_numbers(metadata) == []
-
-    def test_cwe_numbers_missing(self):
-        metadata = {}
-        assert cwe_numbers(metadata) == []
-
-    def test_cwe_numbers_none_metadata(self):
-        assert cwe_numbers(None) == []
+    return run
 
 
-class TestSafeCategory:
-    """Test category label sanitization."""
+def _reader(*, examined: list[str] | None = None, findings: list[dict] | None = None, unexamined_reason: str = "could not parse"):
+    """A stand-in for the model read."""
+    seen = FILES if examined is None else examined
 
-    def test_safe_category_short(self):
-        assert safe_category("injection") == "injection"
+    async def read(tool, argv, stdout, files):
+        return ScanReading(
+            findings=list(findings or []),
+            coverage=[
+                ExaminedFile(path=p, examined=p in seen, reason="" if p in seen else unexamined_reason)
+                for p in files
+            ],
+        )
 
-    def test_safe_category_strips_whitespace(self):
-        assert safe_category("  whitespace  ") == "whitespace"
-
-    def test_safe_category_caps_at_80(self):
-        long_name = "x" * 100
-        result = safe_category(long_name)
-        assert len(result) == 80
-
-
-class TestBuildCommands:
-    """Test command builder functions."""
-
-    def test_build_semgrep_command(self):
-        cmd = build_semgrep_command(["app.py", "util.py"], "auto")
-        assert cmd == ["semgrep", "--config", "auto", "--json", "app.py", "util.py"]
-
-    def test_build_bandit_command(self):
-        cmd = build_bandit_command(["app.py", "util.py"])
-        assert cmd == ["bandit", "-f", "json", "-r", "app.py", "util.py"]
+    return read
 
 
-class FakeScannerUnavailable:
-    """Fake runner that signals scanner unavailable."""
-
-    def __init__(self, tool: str, reason: str):
-        self.tool = tool
-        self.reason = reason
-
-    async def __call__(self, argv, cwd, timeout_s):
-        raise ScannerUnavailable(self.tool, self.reason)
-
-
-class FakeScannerOutput:
-    """Fake runner that returns canned output."""
-
-    def __init__(self, semgrep_out: dict, bandit_out: dict):
-        self.semgrep_out = semgrep_out
-        self.bandit_out = bandit_out
-
-    async def __call__(self, argv, cwd, timeout_s):
-        import json
-
-        tool = argv[0]
-        if tool == "semgrep":
-            return (0, json.dumps(self.semgrep_out), "")
-        else:
-            return (0, json.dumps(self.bandit_out), "")
-
-
-def _default_tools(budgets):
-    """Helper to create default tool list for testing (semgrep + bandit)."""
-    return [
-        ("semgrep", lambda files, budgets: build_semgrep_command(files, budgets.semgrep_config), normalize_semgrep),
-        ("bandit", lambda files, budgets: build_bandit_command(files), normalize_bandit),
-    ]
-
-
-class TestRunScan:
-    """Test async run_scan function."""
+class TestAbstentionIsNotAPass:
+    """#366: the defect this rework exists to remove."""
 
     @pytest.mark.asyncio
-    async def test_run_scan_no_files(self):
-        """With no files, returns ([], []) without running."""
-        async def dummy_runner(argv, cwd, timeout_s):
-            raise AssertionError("should not be called")
+    async def test_a_tool_that_examined_nothing_holds_the_card(self):
+        """bandit on a Ruby repo: exit 0, no findings, parsed nothing.
 
-        from performer.workflows.security.budgets import SecurityBudgets
-
-        budgets = SecurityBudgets(scan_timeout_s=120, semgrep_config="auto", survey_max_commands=12, survey_max_output_chars=4000, max_findings=30)
-        findings, results = await run_scan([], Path("."), runner=dummy_runner, budgets=budgets)
-        assert findings == []
-        assert results == []
-
-    @pytest.mark.asyncio
-    async def test_run_scan_clean(self):
-        """Clean scan returns empty findings list."""
-        runner = FakeScannerOutput({"results": [], "errors": []}, {"results": [], "errors": [], "metrics": {}})
-
-        from performer.workflows.security.budgets import SecurityBudgets
-
-        budgets = SecurityBudgets(scan_timeout_s=120, semgrep_config="auto", survey_max_commands=12, survey_max_output_chars=4000, max_findings=30)
-        tools = _default_tools(budgets)
-        findings, results = await run_scan(["app.py"], Path("."), tools=tools, runner=runner, budgets=budgets)
-        assert findings == []
-        assert len(results) == 2  # semgrep and bandit
-        assert all(r.finding_count == 0 for r in results)
+        Previously indistinguishable from a clean scan, which is how every
+        non-Python repository got a passing security verdict.
+        """
+        with pytest.raises(ScannerUnavailable) as exc:
+            await run_scan(
+                FILES, Path("/repo"), tools=[_tool("bandit")],
+                read=_reader(examined=[]), runner=_runner(0, '{"results": []}'),
+                budgets=BUDGETS,
+            )
+        assert "examined none" in exc.value.reason
+        assert "could not parse" in exc.value.reason, "the operator needs the tool's own reason"
 
     @pytest.mark.asyncio
-    async def test_run_scan_semgrep_unavailable(self):
-        """Semgrep binary missing raises ScannerUnavailable."""
-        runner = FakeScannerUnavailable("semgrep", "binary not found")
-
-        from performer.workflows.security.budgets import SecurityBudgets
-
-        budgets = SecurityBudgets(scan_timeout_s=120, semgrep_config="auto", survey_max_commands=12, survey_max_output_chars=4000, max_findings=30)
-        tools = _default_tools(budgets)
-        with pytest.raises(ScannerUnavailable) as exc_info:
-            await run_scan(["app.py"], Path("."), tools=tools, runner=runner, budgets=budgets)
-        assert exc_info.value.tool == "semgrep"
-        assert "binary not found" in exc_info.value.reason
-
-    @pytest.mark.asyncio
-    async def test_run_scan_tool_order(self):
-        """Scan runs semgrep then bandit in order."""
-        call_order = []
-
-        async def ordered_runner(argv, cwd, timeout_s):
-            tool = argv[0]
-            call_order.append(tool)
-            import json
-
-            if tool == "semgrep":
-                return (0, json.dumps({"results": [], "errors": []}), "")
-            else:
-                return (0, json.dumps({"results": [], "errors": [], "metrics": {}}), "")
-
-        from performer.workflows.security.budgets import SecurityBudgets
-
-        budgets = SecurityBudgets(scan_timeout_s=120, semgrep_config="auto", survey_max_commands=12, survey_max_output_chars=4000, max_findings=30)
-        tools = _default_tools(budgets)
-        await run_scan(["app.py"], Path("."), tools=tools, runner=ordered_runner, budgets=budgets)
-        assert call_order == ["semgrep", "bandit"]
-
-    @pytest.mark.asyncio
-    async def test_run_scan_malformed_json(self):
-        """Malformed JSON output raises ScannerUnavailable."""
-        async def bad_json_runner(argv, cwd, timeout_s):
-            return (1, "not valid json {{{", "")
-
-        from performer.workflows.security.budgets import SecurityBudgets
-
-        budgets = SecurityBudgets(scan_timeout_s=120, semgrep_config="auto", survey_max_commands=12, survey_max_output_chars=4000, max_findings=30)
-        tools = _default_tools(budgets)
-        with pytest.raises(ScannerUnavailable) as exc_info:
-            await run_scan(["app.py"], Path("."), tools=tools, runner=bad_json_runner, budgets=budgets)
-        assert "unparseable JSON" in exc_info.value.reason
-
-    @pytest.mark.asyncio
-    async def test_run_scan_empty_output(self):
-        """Empty output raises ScannerUnavailable."""
-        async def empty_runner(argv, cwd, timeout_s):
-            return (1, "", "")
-
-        from performer.workflows.security.budgets import SecurityBudgets
-
-        budgets = SecurityBudgets(scan_timeout_s=120, semgrep_config="auto", survey_max_commands=12, survey_max_output_chars=4000, max_findings=30)
-        tools = _default_tools(budgets)
-        with pytest.raises(ScannerUnavailable) as exc_info:
-            await run_scan(["app.py"], Path("."), tools=tools, runner=empty_runner, budgets=budgets)
-        assert "produced no output" in exc_info.value.reason
-
-    @pytest.mark.asyncio
-    async def test_run_scan_no_applicable_tools(self):
-        """Spec 366: No applicable tools raises ScannerUnavailable with env_blocked reason."""
-        async def dummy_runner(argv, cwd, timeout_s):
-            raise AssertionError("should not be called")
-
-        from performer.workflows.security.budgets import SecurityBudgets
-
-        budgets = SecurityBudgets(scan_timeout_s=120, semgrep_config="auto", survey_max_commands=12, survey_max_output_chars=4000, max_findings=30)
-        # Empty tools list means model determined no scanning applies
-        with pytest.raises(ScannerUnavailable) as exc_info:
-            await run_scan(["app.py"], Path("."), tools=[], runner=dummy_runner, budgets=budgets)
-        assert exc_info.value.tool == "(no applicable tools)"
-        assert "no scanning applies" in exc_info.value.reason
-
-    @pytest.mark.asyncio
-    async def test_run_scan_none_tools(self):
-        """Spec 366: None tools (default) raises ScannerUnavailable with env_blocked reason."""
-        async def dummy_runner(argv, cwd, timeout_s):
-            raise AssertionError("should not be called")
-
-        from performer.workflows.security.budgets import SecurityBudgets
-
-        budgets = SecurityBudgets(scan_timeout_s=120, semgrep_config="auto", survey_max_commands=12, survey_max_output_chars=4000, max_findings=30)
-        # None tools means model determined no scanning applies
-        with pytest.raises(ScannerUnavailable) as exc_info:
-            await run_scan(["app.py"], Path("."), tools=None, runner=dummy_runner, budgets=budgets)
-        assert exc_info.value.tool == "(no applicable tools)"
-        assert "no scanning applies" in exc_info.value.reason
-
-    @pytest.mark.asyncio
-    async def test_run_scan_custom_tools(self):
-        """Spec 366: Model can specify custom tools beyond semgrep/bandit."""
-        runner = FakeScannerOutput({"results": [], "errors": []}, {"results": [], "errors": [], "metrics": {}})
-
-        from performer.workflows.security.budgets import SecurityBudgets
-
-        budgets = SecurityBudgets(scan_timeout_s=120, semgrep_config="auto", survey_max_commands=12, survey_max_output_chars=4000, max_findings=30)
-        # Custom tool: golangci-lint
-        custom_tools = [
-            ("golangci-lint", lambda files, budgets: ["golangci-lint", "run", *files], normalize_semgrep),
-        ]
-        findings, results = await run_scan(["main.go"], Path("."), tools=custom_tools, runner=runner, budgets=budgets)
+    async def test_partial_coverage_is_not_a_hold(self):
+        """One file unread is information, not a stop. Zero read is a stop."""
+        _findings, results = await run_scan(
+            FILES, Path("/repo"), tools=[_tool()],
+            read=_reader(examined=[FILES[0]]), runner=_runner(0, "{}"),
+            budgets=BUDGETS,
+        )
         assert len(results) == 1
-        assert results[0].tool == "golangci-lint"
-        assert findings == []
+
+    @pytest.mark.asyncio
+    async def test_coverage_from_any_tool_is_enough(self):
+        """A Python-only tool abstaining is fine if another tool read the code."""
+        _findings, results = await run_scan(
+            FILES, Path("/repo"),
+            tools=[_tool("bandit"), _tool("semgrep")],
+            read=_reader(examined=FILES), runner=_runner(0, "{}"),
+            budgets=BUDGETS,
+        )
+        assert len(results) == 2
+
+    @pytest.mark.asyncio
+    async def test_the_hold_carries_the_results_of_tools_that_ran(self):
+        with pytest.raises(ScannerUnavailable) as exc:
+            await run_scan(
+                FILES, Path("/repo"), tools=[_tool("bandit")],
+                read=_reader(examined=[]), runner=_runner(0, "{}"), budgets=BUDGETS,
+            )
+        assert len(getattr(exc.value, "results", [])) == 1
 
 
-class TestScannerUnavailable:
-    """Test ScannerUnavailable exception."""
+class TestNoApplicableTooling:
+    @pytest.mark.asyncio
+    async def test_an_empty_plan_holds_rather_than_passes(self):
+        """The model judging that nothing applies is never a clean verdict."""
+        with pytest.raises(ScannerUnavailable):
+            await run_scan(FILES, Path("/repo"), tools=[], read=_reader(), runner=_runner(), budgets=BUDGETS)
 
-    def test_scanner_unavailable_attributes(self):
-        exc = ScannerUnavailable("semgrep", "binary not found")
-        assert exc.tool == "semgrep"
-        assert exc.reason == "binary not found"
-        assert "semgrep" in str(exc)
+    @pytest.mark.asyncio
+    async def test_none_tools_holds_too(self):
+        with pytest.raises(ScannerUnavailable):
+            await run_scan(FILES, Path("/repo"), tools=None, read=_reader(), runner=_runner(), budgets=BUDGETS)
 
-
-# --- review findings (spec 170 PR): exit codes and partial results -------------------------------
-
-
-
-
-def _runner(exit_codes: dict[str, int], fail_second: str | None = None):
-    async def runner(argv, cwd, timeout_s):
-        tool = _Path(argv[0]).name
-        if tool == fail_second:
-            raise FileNotFoundError(tool)
-        return exit_codes.get(tool, 0), _json.dumps({"results": [], "errors": []}), ""
-
-    return runner
+    @pytest.mark.asyncio
+    async def test_no_changed_files_is_not_a_hold(self):
+        """Nothing to scan is a different condition from scanning nothing."""
+        findings, results = await run_scan([], Path("/repo"), tools=[_tool()], read=_reader(), runner=_runner(), budgets=BUDGETS)
+        assert findings == [] and results == []
 
 
-@_pytest.mark.asyncio
-@_pytest.mark.parametrize("code", [2, 127, -9])
-async def test_an_exit_code_other_than_zero_or_one_is_a_tool_problem_even_with_json(code):
-    """Review finding: semgrep exit 2 (fatal) or 127 (not found via a wrapper) with a parseable body must hold, not pass."""
-    budgets = _Budgets()
-    tools = [
-        ("semgrep", lambda files, budgets: build_semgrep_command(files, budgets.semgrep_config), normalize_semgrep),
-        ("bandit", lambda files, budgets: build_bandit_command(files), normalize_bandit),
-    ]
-    with _pytest.raises(_Unavailable) as exc:
-        await _run_scan(["a.py"], _Path("."), tools=tools, runner=_runner({"semgrep": code}), budgets=budgets)
-    assert exc.value.tool == "semgrep" and f"exited {code}" in exc.value.reason
+class TestTheModelSuppliesTheCommand:
+    @pytest.mark.asyncio
+    async def test_the_planned_argv_is_what_runs(self):
+        """No build_*_command: coordinare does not compose scanner invocations."""
+        seen: list[list[str]] = []
+
+        async def capture(argv, cwd, timeout_s):
+            seen.append(list(argv))
+            return (0, "{}", "")
+
+        await run_scan(
+            FILES, Path("/repo"),
+            tools=[ScanTool(name="brakeman", argv=["brakeman", "-f", "json"], why="rails app")],
+            read=_reader(), runner=capture, budgets=BUDGETS,
+        )
+        assert seen == [["brakeman", "-f", "json"]]
+
+    @pytest.mark.asyncio
+    async def test_an_arbitrary_tool_name_is_accepted(self):
+        """A stack coordinare has never heard of needs no code change."""
+        _findings, results = await run_scan(
+            FILES, Path("/repo"),
+            tools=[ScanTool(name="gosec", argv=["gosec", "-fmt=json", "./..."], why="go module")],
+            read=_reader(), runner=_runner(), budgets=BUDGETS,
+        )
+        assert results[0].tool == "gosec"
+
+    @pytest.mark.asyncio
+    async def test_findings_come_from_the_reader_not_a_normalizer(self):
+        finding = {"path": "app/models/week.rb", "line": 3, "severity": "high"}
+        findings, results = await run_scan(
+            FILES, Path("/repo"), tools=[_tool()],
+            read=_reader(findings=[finding]), runner=_runner(), budgets=BUDGETS,
+        )
+        # stamped with the tool that produced it. The gate used to recover this
+        # by asking whether the description started with "bandit:", which is a
+        # guess that only works for two scanners coordinare was built knowing.
+        assert findings == [{**finding, "tool": "semgrep"}]
+        assert results[0].finding_count == 1
+
+    @pytest.mark.asyncio
+    async def test_output_that_is_not_json_still_reaches_the_reader(self):
+        """A scanner that prints a table is as readable as one that prints JSON."""
+        got: list[str] = []
+
+        async def read(tool, argv, stdout, files):
+            got.append(stdout)
+            return ScanReading(coverage=[ExaminedFile(path=p, examined=True) for p in files])
+
+        await run_scan(
+            FILES, Path("/repo"), tools=[_tool()], read=read,
+            runner=_runner(0, "WARN app/models/week.rb:3 command injection"), budgets=BUDGETS,
+        )
+        assert got == ["WARN app/models/week.rb:3 command injection"]
 
 
-@_pytest.mark.asyncio
-async def test_exit_one_with_json_is_a_scan_with_findings():
-    budgets = _Budgets()
-    tools = [
-        ("semgrep", lambda files, budgets: build_semgrep_command(files, budgets.semgrep_config), normalize_semgrep),
-        ("bandit", lambda files, budgets: build_bandit_command(files), normalize_bandit),
-    ]
-    findings, results = await _run_scan(["a.py"], _Path("."), tools=tools, runner=_runner({"semgrep": 1, "bandit": 1}), budgets=budgets)
-    assert findings == [] and [r.exit_code for r in results] == [1, 1]
+class TestToolExecutionProblemsStillFailClosed:
+    """Unchanged from spec 170: a tool that did not run is a hold."""
 
+    @pytest.mark.asyncio
+    async def test_missing_binary(self):
+        async def missing(argv, cwd, timeout_s):
+            raise FileNotFoundError(argv[0])
 
-@_pytest.mark.asyncio
-async def test_a_failure_in_the_second_tool_keeps_the_first_tools_result_on_the_exception():
-    """Review finding: semgrep completed, bandit missing; the record must still show semgrep ran."""
-    budgets = _Budgets()
-    tools = [
-        ("semgrep", lambda files, budgets: build_semgrep_command(files, budgets.semgrep_config), normalize_semgrep),
-        ("bandit", lambda files, budgets: build_bandit_command(files), normalize_bandit),
-    ]
-    with _pytest.raises(_Unavailable) as exc:
-        await _run_scan(["a.py"], _Path("."), tools=tools, runner=_runner({}, fail_second="bandit"), budgets=budgets)
-    assert exc.value.tool == "bandit" and [r.tool for r in exc.value.results] == ["semgrep"]
+        with pytest.raises(ScannerUnavailable) as exc:
+            await run_scan(FILES, Path("/repo"), tools=[_tool()], read=_reader(), runner=missing, budgets=BUDGETS)
+        assert "binary not found" in exc.value.reason
+
+    @pytest.mark.asyncio
+    async def test_empty_output(self):
+        with pytest.raises(ScannerUnavailable) as exc:
+            await run_scan(FILES, Path("/repo"), tools=[_tool()], read=_reader(), runner=_runner(0, "   "), budgets=BUDGETS)
+        assert "produced no output" in exc.value.reason
+
+    @pytest.mark.parametrize("code", [2, 3, 127, 137])
+    @pytest.mark.asyncio
+    async def test_an_exit_code_other_than_zero_or_one_is_a_tool_problem(self, code):
+        with pytest.raises(ScannerUnavailable):
+            await run_scan(FILES, Path("/repo"), tools=[_tool()], read=_reader(), runner=_runner(code, "{}"), budgets=BUDGETS)
+
+    @pytest.mark.parametrize("code", [0, 1])
+    @pytest.mark.asyncio
+    async def test_zero_and_one_both_mean_the_tool_ran(self, code):
+        _findings, results = await run_scan(
+            FILES, Path("/repo"), tools=[_tool()], read=_reader(), runner=_runner(code, "{}"), budgets=BUDGETS,
+        )
+        assert results[0].exit_code == code
