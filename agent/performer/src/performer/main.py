@@ -3187,12 +3187,16 @@ async def handle_status(
     # working — attach metrics and drain buffered events
     metrics = collect_metrics(perf.backend, backend_status)
     events = [e.model_dump() for e in perf.backend.drain_events()]
+    # 343: a workflow-backed session self-describes its step sequence. Read via
+    # getattr so every non-workflow backend keeps working untouched.
+    _steps = getattr(perf.backend, "workflow_steps", None)
     return PerformerResponse(
         status="working",
         session_id=perf.session_id,
         progress=backend_status.progress,
         metrics=metrics,
         events=events,
+        workflow_steps=list(_steps) if _steps else None,
     )
 
 

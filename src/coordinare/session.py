@@ -171,6 +171,7 @@ class CardSession(TypedDict, total=False):
     workflow_step: str | None
     workflow_step_entered_at: datetime | None
     workflow_step_trail: list[dict[str, Any]]
+    workflow_steps: list[str]
     # 077 stall watchdog: fingerprint of the last poll's progress signal
     # (event count + last event + token total). Compared between polls to tell
     # real forward progress from a wedged turn re-returning the same events.
@@ -313,6 +314,7 @@ _SESSION_FIELDS: tuple[str, ...] = (
     "workflow_step",
     "workflow_step_entered_at",
     "workflow_step_trail",
+    "workflow_steps",
     "latest_ci_gate_decision",
     "ci_gate_rollup_signature",
     "ci_gate_advisory_failures",
@@ -419,6 +421,7 @@ def create_session_from_card(card: dict[str, Any]) -> CardSession:
         workflow_step=None,
         workflow_step_entered_at=None,
         workflow_step_trail=[],
+        workflow_steps=[],
         last_progress_fingerprint=None,
         latest_ci_gate_decision=None,
         ci_gate_rollup_signature=None,

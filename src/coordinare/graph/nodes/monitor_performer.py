@@ -36,7 +36,11 @@ from coordinare.services.pr_checks_service import PrChecksService
 from coordinare.services.progress_fingerprint import progress_fingerprint
 from coordinare.services.required_checks_resolver import resolve
 from coordinare.services.test_integrity_guard import analyze_diff
-from coordinare.services.workflow_step import is_step_event, latch_workflow_step
+from coordinare.services.workflow_step import (
+    is_step_event,
+    latch_declared_steps,
+    latch_workflow_step,
+)
 from coordinare.transport.base import TransportError
 from coordinare.transport.http_transport import PerformerAuthError
 
@@ -3556,6 +3560,21 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
             # durable -- the activity feed evicts step markers during long
             # turns, so anything deriving the step at render time reads a lie.
             latch_workflow_step(state, new_events)
+
+        # 343: the sequence the workflow says it will run, straight off the
+        # wire. The trail above records what HAS happened; this is what is
+        # coming, and together they are what lets the dashboard show "step 2 of
+        # 6" with the rest greyed ahead rather than a bare current step.
+        #
+        # Adversarial review found this missing entirely: the performer sent
+        # workflow_steps, coordinare declared the field in three places and
+        # initialised it to [], and nothing ever read it. The field was inert,
+        # so the self-description slice -- the whole remaining point of this
+        # change -- did nothing.
+        #
+        # The rule itself lives beside latch_workflow_step, where it can be
+        # tested without standing up this node.
+        latch_declared_steps(state, status)
 
         # Store latest performer metrics for dashboard visibility.
         new_metrics = status.get("metrics")

@@ -82,6 +82,8 @@ class ImplementerWorkflow:
     """Orchestrates the test-first implementer workflow per spec 167."""
 
     name = "implementer"
+    #: 343: ordered steps, the single source for the wire and the latch.
+    steps = STATES
     STATES = STATES
 
     @staticmethod

@@ -13,6 +13,7 @@ from datetime import UTC, datetime, timedelta
 from coordinare.services.workflow_step import (
     MAX_STEP_TRAIL,
     is_step_event,
+    latch_declared_steps,
     latch_workflow_step,
 )
 
@@ -169,3 +170,63 @@ class TestTrail:
         for _ in range(10):
             latch_workflow_step(state, [_step("implementer.baseline")], observed_at=OBSERVED)
         assert len(state["workflow_step_trail"]) == 1
+
+
+class TestTheDeclaredSequenceIsReadOffTheWire:
+    """343: the performer says which steps its workflow will run.
+
+    The trail above records what has happened; this is what is coming, and the
+    two together are what let the dashboard show a position in a sequence
+    rather than a bare current step.
+
+    These exist because an adversarial review found the extraction missing
+    altogether. The performer sent `workflow_steps`, coordinare declared the
+    field in graph/state.py, session.py and state_store.py, initialised it to
+    `[]`, and nothing ever read it -- so the feature was inert and every test
+    passed.
+    """
+
+    def test_the_sequence_is_stored(self) -> None:
+        state: dict = {}
+        latch_declared_steps(state, {"workflow_steps": ["intake", "plan", "baseline", "report"]})
+        assert state["workflow_steps"] == ["intake", "plan", "baseline", "report"]
+
+    def test_a_poll_without_the_field_does_not_erase_it(self) -> None:
+        """An older performer, or a response between workflows.
+
+        Overwriting here would blank the sequence on the next poll and the
+        dashboard would lose the steps ahead mid-run.
+        """
+        state: dict = {"workflow_steps": ["intake", "plan"]}
+        latch_declared_steps(state, {"metrics": {}})
+        assert state["workflow_steps"] == ["intake", "plan"]
+
+    def test_an_empty_list_does_not_erase_it_either(self) -> None:
+        state: dict = {"workflow_steps": ["intake", "plan"]}
+        latch_declared_steps(state, {"workflow_steps": []})
+        assert state["workflow_steps"] == ["intake", "plan"]
+
+    def test_junk_from_the_wire_is_ignored(self) -> None:
+        """This arrives from a process coordinare does not control."""
+        for junk in ({"workflow_steps": "intake,plan"}, {"workflow_steps": {"a": 1}},
+                     {"workflow_steps": None}, {"workflow_steps": 7}):
+            state: dict = {"workflow_steps": ["kept"]}
+            latch_declared_steps(state, junk)
+            assert state["workflow_steps"] == ["kept"], junk
+
+    def test_non_string_and_blank_entries_are_dropped(self) -> None:
+        state: dict = {}
+        latch_declared_steps(state, {"workflow_steps": ["intake", "", None, 3, "  ", "report"]})
+        assert state["workflow_steps"] == ["intake", "report"]
+
+    def test_the_sequence_is_bounded(self) -> None:
+        """A runaway performer must not put an unbounded list into the snapshot."""
+        state: dict = {}
+        latch_declared_steps(state, {"workflow_steps": [f"s{i}" for i in range(MAX_STEP_TRAIL + 25)]})
+        assert len(state["workflow_steps"]) == MAX_STEP_TRAIL
+
+    def test_a_later_sequence_replaces_an_earlier_one(self) -> None:
+        """A card moving to the next role reports that role's steps."""
+        state: dict = {"workflow_steps": ["intake", "plan"]}
+        latch_declared_steps(state, {"workflow_steps": ["survey", "findings", "gate"]})
+        assert state["workflow_steps"] == ["survey", "findings", "gate"]

@@ -245,6 +245,7 @@ class CoordinareState(TypedDict, total=False):
     workflow_step: str | None
     workflow_step_entered_at: datetime | None
     workflow_step_trail: list[dict[str, Any]]
+    workflow_steps: list[str]
     last_progress_fingerprint: str | None
     idle_timeout_retries: dict[str, dict[str, Any]]
     # 045: Number of times reviewer/security/qa has returned a non-terminal
@@ -422,6 +423,10 @@ def initial_state() -> CoordinareState:
         "workflow_step_entered_at": None,
         "workflow_step_trail": [],
         "last_progress_fingerprint": None,
+        # 343 P2: the workflow's own declared step list, as reported over the
+        # wire contract. Lets the trail grey out the steps still to come rather
+        # than showing only what has been observed.
+        "workflow_steps": [],
         "active_sessions": {},
         "active_card_id": None,
         "feedback_cycle_count": 0,

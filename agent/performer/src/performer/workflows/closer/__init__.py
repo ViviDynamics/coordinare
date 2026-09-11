@@ -42,6 +42,8 @@ class CloserWorkflow:
     """Sequences the closer steps; only code advances the sequence."""
 
     name = "closer"
+    #: 343: ordered steps, the single source for the wire and the latch.
+    steps = STATES
 
     def __init__(self, fetcher=None, resolver=None, poster=None) -> None:
         self._fetcher = fetcher

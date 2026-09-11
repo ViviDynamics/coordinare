@@ -32,10 +32,21 @@ def _budget(env: dict[str, str], key: str, default: int, low: int, high: int) ->
     return value
 
 
+#: 343: ordered steps. env_bootstrap emits them with the workflow prefix
+#: retained ("env_bootstrap.install"), unlike the role workflows, and the
+#: adapter's pre-existing latch depends on that; see WorkflowBackendAdapter.
+STEPS: tuple[str, ...] = (
+    "snapshot", "install", "repair", "integrity", "inference", "readiness",
+    "verify", "report",
+)
+
+
 class EnvBootstrapWorkflow:
     """Keep the install harness; bound retries and never trust its success claim."""
 
     name = "env_bootstrap"
+    #: 343: ordered steps, the single source for the wire and the latch.
+    steps = STEPS
 
     async def run(self, stand: Stand, score: Score, toolkit: Toolkit) -> WorkflowResult:
         inference: dict[str, Any] = {}

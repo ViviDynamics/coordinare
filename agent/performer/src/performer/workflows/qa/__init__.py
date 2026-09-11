@@ -79,6 +79,8 @@ class QAWorkflow:
     """Sequences the six QA steps."""
 
     name = "qa"
+    #: 343: ordered steps, the single source for the wire and the latch.
+    steps = STEPS
 
     def __init__(self, boot_factory=None, base_boot_factory=None) -> None:
         """*boot_factory* builds the AppBoot for a run.

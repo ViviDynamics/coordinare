@@ -45,6 +45,8 @@ class DocumenterWorkflow:
     """Sequences the documenter steps; only code advances the sequence."""
 
     name = "documenter"
+    #: 343: ordered steps, the single source for the wire and the latch.
+    steps = STATES
 
     def __init__(self, committer=None) -> None:
         self._committer = committer
