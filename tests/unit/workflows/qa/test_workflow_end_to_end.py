@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import contextlib
+import json
 from pathlib import Path
 from typing import ClassVar
 
 import pytest
 from performer.workflows.base import WorkflowMetrics
 from performer.workflows.models import ExecutedCheck
+from performer.workflows.project_shape import ProjectShape
 from performer.workflows.qa import QAWorkflow
 from performer.workflows.qa.models import JudgeOutput, PlanCheck, TestPlan
 
@@ -27,16 +29,30 @@ class _Score:
 
 
 class _Toolkit:
-    def __init__(self, *, plan, judge, exit_codes=None, dom_before=None, dom_after=None):
+    def __init__(self, *, plan, judge, exit_codes=None, dom_before=None, dom_after=None, shape=None):
         self.metrics = WorkflowMetrics()
         self.events = []
         self._plan, self._judge = plan, judge
+        self._shape = shape or ProjectShape(
+            project_name="app", summary="the app under test",
+            start_command="bin/serve", boot_seconds=30, source_dirs=["src"],
+        )
         self._exit_codes = exit_codes or {}
         self._dom_before, self._dom_after = dom_before or [], dom_after or []
         self._snapshots = 0
         self.ran: list[str] = []
 
     async def call_model(self, *, persona, schema, content, budget):
+        # 367: the boot step asks what this project is and how it starts. This
+        # fake dispatches on schema, so the new call needs a branch rather than
+        # consuming the judge's reply -- which is what it did first, and the
+        # symptom was JudgeOutput having no attribute 'cannot_determine'.
+        #
+        # The contract itself is pinned against the REAL Toolkit in
+        # tests/unit/workflows/test_367_project_shape.py; this only keeps the
+        # existing flows running.
+        if schema is ProjectShape:
+            return self._shape
         return self._plan if schema is TestPlan else self._judge
 
     async def run_command(self, cmd, *, cwd=None, timeout_s=300, plan_check_id=""):
@@ -559,3 +575,67 @@ async def test_a_surface_that_renders_nothing_on_both_sides_is_reported_not_comp
     cats = [f["category"] for f in result.findings]
     assert "step_unavailable" in cats, "an unobservable surface must be surfaced, not silently passed"
     assert any("missing" in f.get("observed", "") for f in result.findings)
+
+
+# --- 367: a repository nobody can characterise stops the run --------------
+
+@pytest.mark.asyncio
+async def test_a_repository_the_model_cannot_characterise_is_an_environment_error():
+    """The floor #367 asks both workflows to keep, taken from QA's own posture.
+
+    QA was the only workflow in the #364 inventory that failed loudly rather
+    than degrading, and the issue is explicit that this is the part worth
+    keeping when the judgement moves to the model. Proceeding with no start
+    command means booting nothing and reporting whatever the checks say about a
+    page that never came up -- a verdict, produced from an empty picture.
+
+    This survived a mutation run in which the stop was replaced by
+    ``boot.shape = None``: all 291 tests passed while QA guessed.
+    """
+    class _Unknowable(_Toolkit):
+        async def call_model(self, *, persona, schema, content, budget):
+            if schema is ProjectShape:
+                return ProjectShape(cannot_determine="no manifest and no layout I recognise")
+            return await super().call_model(persona=persona, schema=schema, content=content, budget=budget)
+
+    tk = _Unknowable(
+        plan=TestPlan(checks=[PlanCheck(id="c1", criterion=CRIT, kind="visual")], surfaces=["/signin"]),
+        judge=JudgeOutput(criteria=[{"criterion": CRIT, "passed": True}]),
+    )
+    result = await QAWorkflow(boot_factory=_serving_boot, base_boot_factory=_base_boot).run(_Stand(), _Score(), tk)
+
+    assert result.report["passed"] is not True, "a repository nobody understood must not produce a pass"
+    assert result.report.get("could_not_verify") or result.report.get("environment_error"), result.report
+    blob = json.dumps(result.report)
+    assert "no manifest and no layout I recognise" in blob, "the operator needs the model's own reason"
+
+
+@pytest.mark.asyncio
+async def test_an_explicit_start_command_survives_a_reading_that_gave_up():
+    """The override is the operator's answer, so the stop must not overrule it.
+
+    They are stating intent about THIS project. QA skips the reading entirely
+    when the override is set, so this run never asks and never stops.
+    """
+    asked = {"n": 0}
+
+    class _Counting(_Toolkit):
+        async def call_model(self, *, persona, schema, content, budget):
+            if schema is ProjectShape:
+                asked["n"] += 1
+                return ProjectShape(cannot_determine="I have no idea what this is")
+            return await super().call_model(persona=persona, schema=schema, content=content, budget=budget)
+
+    def _override_boot(workspace, env=None):
+        from performer.workflows.qa.boot import AppBoot
+        return AppBoot(env={"PORT": "8000", "QA_APP_START_COMMAND": "bin/serve"},
+                       workspace=workspace, port_check=lambda _h, _p: True)
+
+    tk = _Counting(
+        plan=TestPlan(checks=[PlanCheck(id="c1", criterion=CRIT, kind="visual")], surfaces=["/signin"]),
+        judge=JudgeOutput(criteria=[{"criterion": CRIT, "passed": True}]),
+    )
+    result = await QAWorkflow(boot_factory=_override_boot, base_boot_factory=_base_boot).run(_Stand(), _Score(), tk)
+
+    assert asked["n"] == 0, "an operator who answered already must not pay for a reading"
+    assert result.report.get("environment_error") is None

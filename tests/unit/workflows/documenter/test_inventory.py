@@ -1,12 +1,17 @@
 """Tests for inventory building (spec 171)."""
 from __future__ import annotations
 
+import pytest
+from performer.workflows.base import WorkflowMetrics
+from performer.workflows.budget import ModelReply
 from performer.workflows.documenter.inventory import (
     build_inventory,
     extract_citations,
     repository_layout,
     wiki_links,
 )
+from performer.workflows.project_shape import ProjectShape, ProjectShapeUnknown
+from performer.workflows.toolkit import Toolkit
 
 
 class TestExtractCitations:
@@ -107,72 +112,105 @@ class TestBuildInventory:
         assert inventory == []
 
 
+
 class TestRepositoryLayout:
-    """Test repository layout detection."""
+    """The layout is what the model read, plus arithmetic over the paths (#367).
 
-    def test_layout_from_pyproject(self, tmp_path):
-        """Detect project name and structure from pyproject.toml."""
-        # Create minimal pyproject.toml
-        (tmp_path / "pyproject.toml").write_text('[project]\nname = "my-project"\n')
+    These tests used to assert that a project name came from ``pyproject.toml``
+    or ``package.json`` and that a test command was ``pytest`` or ``npm test``.
+    Those probes are gone: they understood two ecosystems and produced an empty
+    picture for every other one, silently. The model reads the repository and
+    says what it is; what stays here is counting.
+    """
 
-        # Create package structure
-        (tmp_path / "src").mkdir()
-        (tmp_path / "src" / "auth").mkdir()
-        (tmp_path / "src" / "api").mkdir()
-        (tmp_path / "tests").mkdir()
+    @staticmethod
+    def _toolkit(shape: ProjectShape) -> Toolkit:
+        async def model_call(persona, content, max_tokens):
+            return ModelReply(content=shape.model_dump_json(), finish_reason="stop")
 
-        # Create some files
-        (tmp_path / "src" / "auth" / "login.py").write_text("pass")
-        (tmp_path / "src" / "api" / "server.py").write_text("pass")
-        (tmp_path / "tests" / "test_auth.py").write_text("pass")
+        return Toolkit(metrics=WorkflowMetrics(), model_call=model_call, call_limit=4)
 
-        tree = {"src/auth/login.py", "src/api/server.py", "tests/test_auth.py"}
-        layout = repository_layout(tmp_path, tree)
+    @pytest.mark.asyncio
+    async def test_the_project_name_is_the_one_the_model_read(self, tmp_path):
+        (tmp_path / "mix.exs").write_text("defmodule Week.MixProject do\nend\n")
+        tree = {"mix.exs", "lib/week.ex"}
+        (tmp_path / "lib").mkdir()
+        (tmp_path / "lib" / "week.ex").write_text("defmodule Week do\nend\n")
 
-        assert layout.project_name == "my-project"
+        layout = await repository_layout(
+            self._toolkit(ProjectShape(project_name="week", test_command="mix test", source_dirs=["lib"])),
+            tmp_path, tree,
+        )
+        assert layout.project_name == "week"
+        assert layout.test_command_hint == "mix test", "a stack the old probes had never heard of"
 
-    def test_layout_from_package_json(self, tmp_path):
-        """Detect project name from package.json when pyproject.toml absent."""
-        (tmp_path / "package.json").write_text('{"name": "node-project"}')
-
-        tree = {"package.json"}
-        layout = repository_layout(tmp_path, tree)
-
-        assert layout.project_name == "node-project"
-
-    def test_layout_fallback_to_dirname(self, tmp_path):
-        """Fall back to directory name when no config files."""
-        tree = {"src/main.py"}
-        layout = repository_layout(tmp_path, tree)
-
+    @pytest.mark.asyncio
+    async def test_a_nameless_reading_falls_back_to_the_directory(self, tmp_path):
+        layout = await repository_layout(
+            self._toolkit(ProjectShape(project_name="", source_dirs=[])), tmp_path, {"src/main.go"},
+        )
         assert layout.project_name == tmp_path.name
 
-    def test_has_ci_detection(self, tmp_path):
-        """Detect CI presence from .github/workflows."""
-        workflows_dir = tmp_path / ".github" / "workflows"
-        workflows_dir.mkdir(parents=True)
-        (workflows_dir / "test.yml").write_text("name: Test")
+    @pytest.mark.asyncio
+    async def test_packages_are_the_directories_the_model_named(self, tmp_path):
+        """Sizes and test-presence are arithmetic over paths; the choice is not.
 
-        tree = {".github/workflows/test.yml"}
-        layout = repository_layout(tmp_path, tree)
+        This replaces an 18-entry file-extension table and a hardcoded list of
+        directory names to skip, neither of which could see a language nobody
+        had added to them.
+        """
+        for rel, text in {
+            "app/models/week.rb": "class Week\nend\n",
+            "lib/helper.rb": "module Helper\nend\n",
+            "spec/week_spec.rb": "describe Week do\nend\n",
+            "node_modules/x/index.js": "// vendored\n",
+        }.items():
+            f = tmp_path / rel
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text(text)
+        tree = {"app/models/week.rb", "lib/helper.rb", "spec/week_spec.rb", "node_modules/x/index.js"}
 
+        layout = await repository_layout(
+            self._toolkit(ProjectShape(project_name="week", source_dirs=["app", "lib"])), tmp_path, tree,
+        )
+        paths = [p["path"] for p in layout.packages]
+        assert sorted(paths) == ["app", "lib"], "exactly the directories the reading named"
+        assert "node_modules" not in paths, "the model excluded it; there is no skip list any more"
+        assert "spec" not in paths, "and it excluded the tests without an extension table"
+        assert all(p["size"] > 0 for p in layout.packages)
+        # Ordering is by size descending, unchanged: the planner picks the
+        # largest package with tests, and that is the behaviour it relies on.
+        sizes = [p["size"] for p in layout.packages]
+        assert sizes == sorted(sizes, reverse=True)
+
+    @pytest.mark.asyncio
+    async def test_a_directory_the_model_invented_is_ignored(self, tmp_path):
+        """A reading is not a guarantee the path exists."""
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "a.py").write_text("x = 1\n")
+        layout = await repository_layout(
+            self._toolkit(ProjectShape(source_dirs=["src", "does_not_exist"])), tmp_path, {"src/a.py"},
+        )
+        assert [p["path"] for p in layout.packages] == ["src"]
+
+    @pytest.mark.asyncio
+    async def test_ci_detection_stays_mechanical(self, tmp_path):
+        """GitHub's workflow path is knowledge of the platform coordinare runs
+        on, not of the project's stack, so it does not need the model."""
+        layout = await repository_layout(
+            self._toolkit(ProjectShape(source_dirs=[])), tmp_path, {".github/workflows/test.yml"},
+        )
         assert layout.has_ci is True
 
-    def test_test_command_hint_pytest(self, tmp_path):
-        """Detect pytest as test command."""
-        (tmp_path / "pyproject.toml").write_text('[project]\nname="test"')
-        (tmp_path / "pytest.ini").write_text("")
+    @pytest.mark.asyncio
+    async def test_a_repository_the_model_cannot_characterise_stops(self, tmp_path):
+        """The floor #367 asks both workflows to keep, taken from QA.
 
-        tree = {"pytest.ini"}
-        layout = repository_layout(tmp_path, tree)
-
-        assert layout.test_command_hint == "pytest"
-
-    def test_test_command_hint_npm(self, tmp_path):
-        """Detect npm test from package.json."""
-        (tmp_path / "package.json").write_text('{"name":"test","scripts":{"test":"jest"}}')
-
-        tree = {"package.json"}
-        layout = repository_layout(tmp_path, tree)
-
-        assert layout.test_command_hint == "npm test"
+        The old code returned an empty layout here and the documenter wrote from
+        a blank picture, with nothing recording that it had not understood.
+        """
+        with pytest.raises(ProjectShapeUnknown):
+            await repository_layout(
+                self._toolkit(ProjectShape(cannot_determine="no manifest I recognise")),
+                tmp_path, {"README"},
+            )

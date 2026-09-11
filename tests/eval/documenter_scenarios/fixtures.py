@@ -56,10 +56,16 @@ def _reply(action, content="", reason=""):
     return {"action": action, "content": content, "reason": reason}
 
 
+# 367: model_calls counts the reading too. Only the fixtures that regenerate the
+# index need it -- the index carries the project's name, and that name used to
+# come free from a pyproject.toml probe that worked for Python and Node and
+# nothing else. Fixtures whose pages are all dropped never reach that point and
+# still make two calls, and `trivial` still makes zero, which is the laziness
+# this change is careful about.
 TRIVIAL = Fixture(name="trivial", change="trivial", brief={}, replies={},
                   expect=Expectation(verdict="docs_committed", min_written=0, max_written=0, model_calls=0, committed=False))
 FEATURE = Fixture(name="feature", change="payments", brief=BRIEF, replies={"docs/wiki/payments.md": _reply("write", PAYMENTS_PAGE)},
-                  expect=Expectation(verdict="docs_committed", min_written=3, max_written=6, model_calls=2, committed=True, readme_generated=True, pointers=True))
+                  expect=Expectation(verdict="docs_committed", min_written=3, max_written=6, model_calls=3, committed=True, readme_generated=True, pointers=True))
 SHAPE = Fixture(name="shape", change="payments", brief=BRIEF,
                 replies={"docs/wiki/payments.md": _reply("write", PAYMENTS_PAGE + "\n## Card #7 changes\n- added charge\n")},
                 expect=Expectation(verdict="docs_committed", min_written=0, max_written=6, model_calls=2, committed=False, dropped_paths=("docs/wiki/payments.md",), live_verdicts=("docs_committed",)))
@@ -70,6 +76,6 @@ INIT = Fixture(name="init", change="init", brief={}, replies={}, with_wiki=False
                expect=Expectation(verdict="docs_committed", min_written=4, max_written=11, model_calls=None, committed=True, readme_generated=True, pointers=True))
 POINTERS = Fixture(name="pointers", change="payments", brief=BRIEF, replies={"docs/wiki/payments.md": _reply("write", PAYMENTS_PAGE)},
                    agents_md="# Agents\n\nBuild with `make`.\n\n<!-- coordinare:wiki-pointer:start -->\nold\n<!-- coordinare:wiki-pointer:end -->\n\nMore rules.\n",
-                   expect=Expectation(verdict="docs_committed", min_written=3, max_written=6, model_calls=2, committed=True, readme_generated=True, pointers=True))
+                   expect=Expectation(verdict="docs_committed", min_written=3, max_written=6, model_calls=3, committed=True, readme_generated=True, pointers=True))
 
 FIXTURES: list[Fixture] = [TRIVIAL, FEATURE, SHAPE, HALLUCINATED, INIT, POINTERS]

@@ -56,11 +56,67 @@ async def _run_command(cmd, cwd, timeout_s):
     return proc.returncode or 0, out.decode(errors="replace")
 
 
+#: 367: the documenter now asks what the project is before it writes about it.
+#: Answering that call from the persona -- rather than letting it fall through
+#: to the page-writing reply -- is what keeps every existing flow in this file
+#: asserting the behaviour it was written for. The contract itself is pinned
+#: against the real Toolkit in tests/unit/workflows/test_367_project_shape.py.
+SHAPE_PERSONA_MARK = "opening a repository you have never seen"
+
+
+def _name_from_root_files(text: str) -> str:
+    """The project's name as a reader would take it from its own manifest.
+
+    Parsed from the root files the call was shown, not handed over: the fixtures
+    assert on the repository's real name, and the old probe read it from a
+    pyproject.toml. Deriving it here keeps that assertion meaningful instead of
+    quietly swapping it for the directory name.
+    """
+    import re
+    m = re.search(r'^\s*name\s*=\s*["\']([^"\']+)["\']', text, re.M)
+    if m:
+        return m.group(1)
+    m = re.search(r'"name"\s*:\s*"([^"]+)"', text)
+    return m.group(1) if m else ""
+
+
+def _shape_reply_if_asked(persona: str, content: list[dict]):
+    """Stand in for the reading, by reading -- not by being handed the answer.
+
+    source_dirs is derived from the tree the call was actually shown, which is
+    what a model does and what keeps these tests honest: a fixed list would have
+    quietly made every init-mode fixture look like a one-package repository
+    regardless of what the fixture built.
+    """
+    if SHAPE_PERSONA_MARK not in persona:
+        return None
+    text = "".join(c.get("text", "") for c in content)
+    tops: list[str] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if "/" not in line or line.startswith(("-", "#")) or " " in line:
+            continue
+        top = line.split("/", 1)[0]
+        if top and not top.startswith(".") and top not in tops and top not in ("tests", "test", "docs", "node_modules"):
+            tops.append(top)
+    return ModelReply(
+        content=json.dumps({
+            "project_name": _name_from_root_files(text), "summary": "the repository under test",
+            "test_command": "pytest", "start_command": "", "boot_seconds": 30,
+            "source_dirs": tops, "cannot_determine": "",
+        }),
+        finish_reason="stop",
+    )
+
+
 def _toolkit(replies_by_path: dict[str, dict]):
     calls = {"paths": []}
 
     async def model_call(persona, content, max_tokens):
         import re
+        shaped = _shape_reply_if_asked(persona, content)
+        if shaped is not None:
+            return shaped  # before the append: it is not a page write
         m = re.search(r"Write the page `([^`]+)`", persona)
         path = m.group(1) if m else None
         calls["paths"].append(path)
@@ -116,6 +172,9 @@ async def test_a_trivial_card_makes_no_model_call_and_no_commit(tmp_path):
     before = head(repo)
     record, result, _, calls = await _run(repo, _score(diff), {})
     assert record.plan == [] and record.verdict == "docs_committed" and record.files_written == []
+    # 367 kept this at zero deliberately. The shape reading is taken lazily and
+    # only when something consults it, so a card with nothing to document never
+    # asks what the project is -- there is nothing to spend the answer on.
     assert calls["paths"] == [] and result.metrics.model_calls == 0 and head(repo) == before
 
 
@@ -275,7 +334,13 @@ async def test_an_index_only_plan_regenerates_the_readme_with_no_model_call(tmp_
         import performer.workflows.documenter as wf
         wf.build_plan = plan_mod_build
         record2, result2, _, calls2 = await _run(repo, _score(diff), {})
-        assert record2.readme_generated and calls2["paths"] == [] and result2.metrics.model_calls == 0
+        # 367: no PAGE was written -- which is what this test is about, and
+        # calls2["paths"] still says so. The one model call is the shape
+        # reading: regenerating the index puts the project's name on it, and the
+        # name used to come free from a pyproject.toml probe that only worked
+        # for Python and Node. It is a reading now, and it costs one call.
+        assert record2.readme_generated and calls2["paths"] == []
+        assert result2.metrics.model_calls == 1, "the project's name, read once"
     finally:
         import performer.workflows.documenter as wf
         wf.build_plan = original
@@ -293,6 +358,9 @@ async def test_175_side_integrates_structured_findings_without_root_pointer_writ
     seen = []
 
     async def model_call(persona, content, max_tokens):
+        shaped = _shape_reply_if_asked(persona, content)
+        if shaped is not None:
+            return shaped
         seen.append(persona)
         if "Write the page `docs/wiki/payments.md`" in persona:
             return ModelReply(content=json.dumps(_reply("write", PAYMENTS_PAGE)), finish_reason="stop")
@@ -307,3 +375,44 @@ async def test_175_side_integrates_structured_findings_without_root_pointer_writ
     assert any("src/payments/ledger.py" in entry["modules"] for entry in docs["plan"])
     assert any("Currency amounts are integer cents" in p and "priorhead" in p for p in seen)
     assert (repo / "docs/wiki/payments.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_a_repository_nobody_can_characterise_holds_in_the_write_phase(tmp_path):
+    """The stop must hold at BOTH call sites, not just the planning one.
+
+    The reading is lazy, so in update mode the plan never asks and the write
+    phase -- regenerating the index, which carries the project's name -- is
+    where an uncharacterisable repository first surfaces. Adversarial review
+    found that site unguarded: the stop became an unhandled exception instead
+    of the env_blocked hold it is everywhere else, turning a designed hold into
+    a crash.
+    """
+    repo = make_repo(tmp_path)
+    diff = add_payments(repo)
+
+    async def model_call(persona, content, max_tokens):
+        if SHAPE_PERSONA_MARK in persona:
+            return ModelReply(
+                content=json.dumps({
+                    "project_name": "", "summary": "", "test_command": "", "start_command": "",
+                    "boot_seconds": 30, "source_dirs": [],
+                    "cannot_determine": "the build is driven by something I cannot read",
+                }),
+                finish_reason="stop",
+            )
+        # only the brief's page is written, exactly as the passing fixtures do:
+        # a reply the contract gate accepts, so a write actually happens and the
+        # index regeneration -- the write-phase call site -- is reached.
+        if "payments.md" in persona:
+            return ModelReply(content=json.dumps(_reply("write", PAYMENTS_PAGE)), finish_reason="stop")
+        return ModelReply(content=json.dumps(_reply("unchanged", reason="fine")), finish_reason="stop")
+
+    toolkit = Toolkit(metrics=WorkflowMetrics(), model_call=model_call,
+                      command_runner=_run_command, call_limit=20)
+    result = await DocumenterWorkflow(committer=local_committer).run(
+        Stand(path=repo, branch="feat/payments"), _score(diff, BRIEF), toolkit
+    )
+    docs = result.report["docs"]
+    assert docs["verdict"] == "env_blocked", "a crash where the design promises a hold"
+    assert "cannot read" in (docs["hold_reason"] or ""), "the operator needs the model's own reason"

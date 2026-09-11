@@ -449,6 +449,7 @@ async def test_the_documenter_workflow_runs_behind_the_same_adapter_seam(tmp_pat
     from performer.workflows.documenter import DocumenterWorkflow
     from performer.workflows.toolkit import Toolkit
 
+    from tests.eval.documenter_scenarios.stub_model import answer_project_shape
     from tests.unit.workflows.documenter._repo import add_payments, local_committer, make_repo
     from tests.unit.workflows.documenter.test_workflow_end_to_end import (
         BRIEF,
@@ -460,6 +461,13 @@ async def test_the_documenter_workflow_runs_behind_the_same_adapter_seam(tmp_pat
     diff = add_payments(repo)
 
     async def model_call(persona, content, max_tokens):
+        # 367: the documenter asks what the project is before writing about it.
+        # Answering that from the shared stand-in rather than letting it fall
+        # through to the page reply -- the fourth harness to need this, which
+        # is why the answer is imported rather than written again.
+        shaped = answer_project_shape(persona, content)
+        if shaped is not None:
+            return shaped
         reply = {"action": "write", "content": PAYMENTS_PAGE, "reason": ""} if "payments.md" in persona else {"action": "unchanged", "content": "", "reason": "fine"}
         return ModelReply(content=json.dumps(reply), finish_reason="stop")
 
