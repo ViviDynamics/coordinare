@@ -240,6 +240,11 @@ class CoordinareState(TypedDict, total=False):
     # (FR-010).  None outside of per-session steps and when no card is in flight.
     active_card_id: str | None
     last_progress_at: datetime | None
+    # 343: which workflow step this card is in, when it entered, and the
+    # observed trail of transitions.
+    workflow_step: str | None
+    workflow_step_entered_at: datetime | None
+    workflow_step_trail: list[dict[str, Any]]
     last_progress_fingerprint: str | None
     idle_timeout_retries: dict[str, dict[str, Any]]
     # 045: Number of times reviewer/security/qa has returned a non-terminal
@@ -413,6 +418,9 @@ def initial_state() -> CoordinareState:
         "card_cost_estimate": 0.0,
         "card_budget_alert_sent": False,
         "last_progress_at": None,
+        "workflow_step": None,
+        "workflow_step_entered_at": None,
+        "workflow_step_trail": [],
         "last_progress_fingerprint": None,
         "active_sessions": {},
         "active_card_id": None,

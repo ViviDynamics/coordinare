@@ -36,6 +36,7 @@ from coordinare.services.pr_checks_service import PrChecksService
 from coordinare.services.progress_fingerprint import progress_fingerprint
 from coordinare.services.required_checks_resolver import resolve
 from coordinare.services.test_integrity_guard import analyze_diff
+from coordinare.services.workflow_step import is_step_event, latch_workflow_step
 from coordinare.transport.base import TransportError
 from coordinare.transport.http_transport import PerformerAuthError
 
@@ -973,7 +974,15 @@ def _record_activity_batch(
     with contextlib.suppress(Exception):
         log.record_many([
             {
-                "activity_type": _ACTIVITY_TYPE_BY_EVENT.get(str(ev.get("type", "")), "progress"),
+                # 343: a step boundary is its own kind of entry, not generic
+                # progress. Classified from the same predicate the latch uses,
+                # so the feed and the trail can never disagree about what
+                # counts as a step.
+                "activity_type": (
+                    "workflow_step"
+                    if is_step_event(ev)
+                    else _ACTIVITY_TYPE_BY_EVENT.get(str(ev.get("type", "")), "progress")
+                ),
                 "text": ev.get("text") or ev.get("detail") or "",
                 "is_delta": ev.get("is_delta") is True,
                 "stream_id": ev.get("stream_id", ""),
@@ -3542,6 +3551,11 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
             # content is the log's job (FR-022, FR-023). A positional cursor
             # would break anyway — the source list is a rolling [-100:].
             _record_activity_batch(state, new_events, card_id=card_id, stage=stage)
+            # 343: latch the workflow step here, in the same invocation that
+            # observed the batch. Latching at observation is what makes it
+            # durable -- the activity feed evicts step markers during long
+            # turns, so anything deriving the step at render time reads a lie.
+            latch_workflow_step(state, new_events)
 
         # Store latest performer metrics for dashboard visibility.
         new_metrics = status.get("metrics")

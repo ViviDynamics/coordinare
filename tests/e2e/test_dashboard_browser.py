@@ -129,6 +129,9 @@ def _active_session(
         "backend_ui_url": None,
         "performer_backend": None,
         "session_id": None,
+        "workflow_step": None,
+        "workflow_step_entered_at": None,
+        "workflow_step_trail": [],
     }
     session.update(telemetry)
     return session
@@ -967,6 +970,72 @@ def test_performer_detail_shows_only_the_selected_roles_telemetry(
     detail = page.locator("#performers-page-detail")
     expect(detail).to_contain_text("IMPLEMENTER-EVENT", timeout=_WAIT_LIVE)
     expect(detail).not_to_contain_text("ARCHITECT-EVENT")
+
+
+# ---------------------------------------------------------------------------
+# 343: which workflow step, and how long it has been there
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.e2e
+def test_performer_detail_shows_the_workflow_step_trail(
+    page: Page, live_server_url: str, store: DashboardStore
+) -> None:
+    """343: completed steps, the current one marked, and an elapsed timer."""
+    page.goto(f"{live_server_url}/performers")
+    expect(page.locator("#performers-page")).to_be_visible(timeout=_WAIT_NAV)
+
+    store.broadcaster.broadcast(
+        _full_snapshot(
+            role_utilization=[{"role": "implementing", "active": 1, "max": 1, "queued": 0}],
+            active_sessions=[
+                _active_session(
+                    "PVTI_1", "Timesheet rules", "implementing",
+                    workflow_step="implementer.baseline",
+                    workflow_step_entered_at="2026-09-11T01:16:39+00:00",
+                    workflow_step_trail=[
+                        {"step": "implementer.intake", "entered_at": "2026-09-11T01:10:00+00:00"},
+                        {"step": "implementer.plan", "entered_at": "2026-09-11T01:12:00+00:00"},
+                        {"step": "implementer.baseline", "entered_at": "2026-09-11T01:16:39+00:00"},
+                    ],
+                )
+            ],
+        )
+    )
+    row = page.locator("#performers-page-tbody tr[data-role='implementing']")
+    expect(row).to_be_visible(timeout=_WAIT_LIVE)
+    row.click()
+
+    trail = page.locator("#performers-page-detail .step-trail")
+    expect(trail).to_be_visible(timeout=_WAIT_LIVE)
+    # Completed steps, then the current one. Role prefix is stripped: the role
+    # is already the heading, so repeating it in every chip is noise.
+    expect(trail).to_contain_text("intake")
+    expect(trail).to_contain_text("plan")
+    expect(trail).to_contain_text("baseline")
+    expect(trail).not_to_contain_text("implementer.baseline")
+
+
+@pytest.mark.e2e
+def test_a_performer_with_no_workflow_step_renders_no_trail(
+    page: Page, live_server_url: str, store: DashboardStore
+) -> None:
+    """The pre-164 freeform path emits no step markers; absence is the signal."""
+    page.goto(f"{live_server_url}/performers")
+    expect(page.locator("#performers-page")).to_be_visible(timeout=_WAIT_NAV)
+
+    store.broadcaster.broadcast(
+        _full_snapshot(
+            role_utilization=[{"role": "implementing", "active": 1, "max": 1, "queued": 0}],
+            active_sessions=[_active_session("PVTI_1", "Freeform card", "implementing")],
+        )
+    )
+    row = page.locator("#performers-page-tbody tr[data-role='implementing']")
+    expect(row).to_be_visible(timeout=_WAIT_LIVE)
+    row.click()
+
+    expect(page.locator("#performers-page-detail")).to_be_visible(timeout=_WAIT_LIVE)
+    expect(page.locator("#performers-page-detail .step-trail")).to_have_count(0)
 
 
 # ---------------------------------------------------------------------------

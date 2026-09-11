@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-CURRENT_SCHEMA_VERSION: int = 23  # 331: blueprint_signature for planning reuse
+CURRENT_SCHEMA_VERSION: int = 24  # 343: workflow_step trail for per-performer position
 
 # Lowest schema_version we still know how to read.  v1 snapshots are upgraded
 # in-memory at load time (065 Fix 7b: active_sessions added in v2; v1 snapshots
@@ -317,6 +317,12 @@ class PersistedSession(BaseModel):
     # ``coordinare.services.dispatcher_dedup_models.IdleTimeoutRetryRecord``.
     last_progress_at: datetime | None = None
     last_progress_fingerprint: str | None = None
+    # 343: the workflow step this card is in and when it entered it. Persisted
+    # so the answer survives a daemon restart and outlives the performer job,
+    # which is exactly when "where did it get to?" is asked.
+    workflow_step: str | None = None
+    workflow_step_entered_at: datetime | None = None
+    workflow_step_trail: list[dict[str, Any]] = Field(default_factory=list)
     idle_timeout_retries: dict[str, dict[str, Any]] = Field(default_factory=dict)
     # Audit timestamp set by ``monitor_performer._record_pr_artefacts``
     # whenever a successful turn's PR fields are written through to state
