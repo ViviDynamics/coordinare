@@ -14,6 +14,7 @@ did before this workflow existed.
 """
 from __future__ import annotations
 
+import inspect
 import os
 import tempfile
 import time
@@ -31,6 +32,7 @@ from performer.workflows.qa.observe import diff_observations
 from performer.workflows.qa.baseline import cleanup_worktree, run_baseline_step
 from performer.qa_capture import app_base_url
 from performer.workflows.qa.boot import AppBoot
+from performer.workflows.project_shape import ProjectShape, ProjectShapeUnknown, detect_shape, repo_tree
 from performer.workflows.qa.plan import effective_criteria, EmptyPlan, run_plan_step
 
 if TYPE_CHECKING:
@@ -51,7 +53,25 @@ def _accepts_env(factory) -> bool:
         return False
 
 
-def _default_base_boot(worktree: Path, head_env: dict[str, str] | None = None) -> AppBoot:
+def _call_base_factory(factory, worktree, env, shape):
+    """Call a base-boot factory with as much as it will accept.
+
+    The factory is injectable, and existing tests supply one-argument and
+    two-argument fakes. Passing the shape unconditionally would break them, and
+    not passing it at all is the defect this exists to fix.
+    """
+    try:
+        params = inspect.signature(factory).parameters
+    except (TypeError, ValueError):
+        params = {}
+    if len(params) >= 3:
+        return factory(worktree, env, shape)
+    if _accepts_env(factory):
+        return factory(worktree, env)
+    return factory(worktree)
+
+
+def _default_base_boot(worktree: Path, head_env: dict[str, str] | None = None, shape: "ProjectShape | None" = None) -> AppBoot:
     """Boot the merge-base app on its own free port.
 
     Inherits the HEAD app's environment rather than the process environment: it
@@ -72,7 +92,12 @@ def _default_base_boot(worktree: Path, head_env: dict[str, str] | None = None) -
         port = s.getsockname()[1]
     env = dict(head_env if head_env is not None else os.environ)
     env["PORT"] = str(port)
-    return AppBoot(env=env, workspace=worktree)
+    # 367: the baseline needs the same reading as the head app. It is the SAME
+    # project at an older commit, so how to start it is the same answer -- and
+    # without it start_command_for falls through to None and the baseline never
+    # boots, which adversarial review found would break every visual or flow
+    # run that does not set QA_APP_START_COMMAND.
+    return AppBoot(env=env, workspace=worktree, shape=shape)
 
 
 class QAWorkflow:
@@ -205,6 +230,27 @@ class QAWorkflow:
         # them needs a base URL, and a base URL needs a serving app.
         base_url: str | None = None
         if plan.needs_baseline():
+            # 367: how this project starts, and how long that takes, are the
+            # model's to say. This replaced a Rails/Django/Node branch that
+            # named its own three frameworks in the failure message, and a flat
+            # 60s default chosen by reasoning about Rails migrations.
+            #
+            # Asked here rather than at intake, for two reasons: a command-only
+            # plan never boots and so never needs it, and an operator who set
+            # QA_APP_START_COMMAND has already answered the question. Both skip
+            # the call entirely, so nothing pays for a reading it will not use.
+            #
+            # A repository the model cannot characterise is an environment
+            # error. QA has always stopped rather than guessed, which is the
+            # posture #367 asks the documenter to adopt too.
+            if not str(boot.env.get("QA_APP_START_COMMAND") or "").strip():
+                try:
+                    boot.shape = await detect_shape(toolkit, workspace, await repo_tree(toolkit, workspace))
+                except ProjectShapeUnknown as exc:
+                    log.warning("qa.project_shape_unknown", reason=exc.reason[:200])
+                    return self._environment_error(
+                        "could not work out how to start this project: " + exc.reason[:300], metrics
+                    )
             self._step(toolkit, "boot", detail=planned_base_url or "")
             base_url = await boot.ensure_serving(toolkit)
             if base_url is None:
@@ -234,9 +280,11 @@ class QAWorkflow:
                     merge_base=merge_base,
                     worktree_dir=worktree_dir,
                     base_url=base_url,
-                    boot_base=lambda wt: self._base_boot_factory(wt, boot.env)
-                    if _accepts_env(self._base_boot_factory)
-                    else self._base_boot_factory(wt),
+                    # The reading goes with it: same project, older commit,
+                    # same answer for how to start it. Passed positionally only
+                    # when the factory accepts it, so injected two-argument
+                    # fakes in tests keep working.
+                    boot_base=lambda wt: _call_base_factory(self._base_boot_factory, wt, boot.env, getattr(boot, "shape", None)),
                 )
             except Exception as exc:  # noqa: BLE001
                 # A missing baseline makes the delta unknowable. Recorded so the

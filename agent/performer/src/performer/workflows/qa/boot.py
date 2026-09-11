@@ -29,7 +29,8 @@ from urllib.parse import urljoin, urlsplit
 
 import structlog
 
-from performer.qa_capture import _port_serving, _terminate, app_base_url, infer_app_start_command
+from performer.qa_capture import _port_serving, _terminate, app_base_url
+from performer.workflows.project_shape import ProjectShape  # noqa: F401  (annotation)
 from performer.workflows.qa.models import TestPlan
 
 log = structlog.get_logger(__name__)
@@ -73,35 +74,53 @@ def rebase_origin(url: str, origin: str | None) -> str:
 DEFAULT_BOOT_TIMEOUT_S = 60.0
 
 
-def boot_timeout_from(env: dict[str, str]) -> float:
+def boot_timeout_from(env: dict[str, str], shape: "ProjectShape | None" = None) -> float:
     """How long to wait for the app to answer, from QA_APP_BOOT_TIMEOUT.
 
-    A fixed default is wrong in both directions: too short for a Rails app that
+    A fixed default is wrong in both directions: too short for an app that
     migrates on startup, needlessly long for a stub that answers in 200ms. The
-    operator knows which they have. A malformed value falls back rather than
-    failing the run -- a typo in an env var must not take QA down with it.
+    operator knows which they have, and the override still wins.
+
+    367: the fallback used to be a flat 60 seconds, chosen in a comment that
+    reasoned about Rails migrations -- the same embedded knowledge as the
+    framework list, in a threshold instead. The model has just read the boot
+    path and says how long starting it plausibly takes. A malformed value falls
+    back rather than failing the run: a typo in an env var must not take QA down
+    with it.
     """
     raw = str(env.get("QA_APP_BOOT_TIMEOUT") or "").strip()
+    fallback = float(shape.boot_seconds) if shape is not None else DEFAULT_BOOT_TIMEOUT_S
     if not raw:
-        return DEFAULT_BOOT_TIMEOUT_S
+        return fallback
     try:
         value = float(raw)
     except ValueError:
-        log.warning("qa.boot.bad_timeout", value=raw, using=DEFAULT_BOOT_TIMEOUT_S)
-        return DEFAULT_BOOT_TIMEOUT_S
+        log.warning("qa.boot.bad_timeout", value=raw, using=fallback)
+        return fallback
     if value <= 0:
-        log.warning("qa.boot.bad_timeout", value=raw, using=DEFAULT_BOOT_TIMEOUT_S)
-        return DEFAULT_BOOT_TIMEOUT_S
+        log.warning("qa.boot.bad_timeout", value=raw, using=fallback)
+        return fallback
     return value
 
 
-def start_command_for(workspace: Path, env: dict[str, str]) -> str | None:
-    """The command that starts the app, explicit override first."""
+def start_command_for(env: dict[str, str], shape: "ProjectShape | None" = None) -> str | None:
+    """The command that starts the app, explicit override first (#367).
+
+    The override still wins. An operator naming the command for THIS project is
+    stating intent, not encoding stack knowledge, and they know things the
+    repository does not say.
+
+    Behind it, ``infer_app_start_command`` used to branch Rails, then Django,
+    then Node, and return None for everything else -- and it said so in the
+    failure message, which is how this became an issue. The model has read the
+    repository and says how it starts.
+    """
     override = str(env.get("QA_APP_START_COMMAND") or "").strip()
     if override:
         return override
-    inferred = infer_app_start_command(Path(workspace), env)
-    return shlex.join(inferred) if inferred else None
+    if shape is not None and shape.start_command.strip():
+        return shape.start_command.strip()
+    return None
 
 
 class AppBoot:
@@ -117,10 +136,12 @@ class AppBoot:
         sleep=None,
         boot_timeout: float | None = None,
         poll_interval: float = 1.0,
+        shape: "ProjectShape | None" = None,
     ) -> None:
         self.env = dict(env)
+        self.shape = shape
         if boot_timeout is None:
-            boot_timeout = boot_timeout_from(self.env)
+            boot_timeout = boot_timeout_from(self.env, shape)
         self.workspace = Path(workspace)
         self._port_check = port_check
         self._spawn = spawn or self._default_spawn
@@ -145,8 +166,36 @@ class AppBoot:
 
     @staticmethod
     def _default_spawn(cmd: str, cwd: Path, env: dict[str, str]):
+        """Start the app. The operator's command gets a shell; the model's does not.
+
+        367 regression, found by adversarial review. Before this change the
+        only command reaching ``shell=True`` from inference was built by code
+        and passed through ``shlex.join`` -- quoted by construction. Replacing
+        that inference with a model-supplied string handed a raw string to a
+        shell, so ``bin/serve; anything`` would run the second half too.
+
+        The distinction that fixes it is real rather than cosmetic. An operator
+        setting QA_APP_START_COMMAND is a trusted human who may legitimately
+        want shell semantics (``RAILS_ENV=test bin/rails server``), and taking
+        that away would break their configuration. A start command the model
+        read out of a repository is supposed to be a command, not a script, so
+        it is split and exec'd with no shell between it and the process.
+
+        The performer is a sandboxed container that already runs model-authored
+        code, so this is not the last line of defence -- but silently dropping
+        quoting that used to be there is a regression whatever the blast radius.
+        """
+        override = str(env.get("QA_APP_START_COMMAND") or "").strip()
+        if cmd == override:
+            return subprocess.Popen(
+                cmd, shell=True, cwd=str(cwd), env=env,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        argv = shlex.split(cmd)
+        if not argv:
+            raise ValueError(f"start command is not runnable: {cmd!r}")
         return subprocess.Popen(
-            cmd, shell=True, cwd=str(cwd), env=env,
+            argv, cwd=str(cwd), env=env,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
 
@@ -198,12 +247,18 @@ class AppBoot:
                 )
                 return None
 
-        cmd = start_command_for(self.workspace, self.env)
+        cmd = start_command_for(self.env, self.shape)
         if not cmd:
+            # 367: this used to name the three frameworks it knew, which is how
+            # the limitation became an issue. The model reads the repository
+            # now, so a missing command means it judged this not to be something
+            # that can be started and browsed -- a library or a CLI -- or the
+            # shape never reached this boot.
             self.failure_reason = (
-                "no start command: infer_app_start_command recognises only Rails, "
-                "Django and Node projects, and this is none of them. Set "
-                "QA_APP_START_COMMAND in the role's workflow_env."
+                "no start command: the model did not identify a way to start "
+                "this project so a browser could reach it. Set "
+                "QA_APP_START_COMMAND in the role's workflow_env if it does "
+                "have one."
             )
             log.warning(
                 "qa.boot.no_start_command",
@@ -212,7 +267,15 @@ class AppBoot:
             )
             return None
 
-        self._proc = self._spawn(cmd, self.workspace, self.env)
+        try:
+            self._proc = self._spawn(cmd, self.workspace, self.env)
+        except (ValueError, OSError) as exc:
+            # An unbalanced quote in a model-read command, or a binary that is
+            # not there. Either is a boot that did not happen, and the run says
+            # so rather than raising through the workflow.
+            self.failure_reason = f"the start command could not be run ({cmd!r}): {exc}"
+            log.warning("qa.boot.spawn_failed", command=cmd[:200], error=str(exc)[:200])
+            return None
         deadline = time.monotonic() + self._boot_timeout
         while True:
             # A process that has already exited will never open the port. Bail

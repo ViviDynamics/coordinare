@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import re
 
-import json
 from pathlib import Path
+from typing import Any
 
 from performer.workflows.documenter.markdown import parse_frontmatter, backticked_tokens, links
 from performer.workflows.documenter.models import WikiPage, RepositoryLayout
@@ -17,7 +17,6 @@ __all__ = [
 ]
 
 
-_SOURCE_SUFFIXES = frozenset({".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".rb", ".java", ".cs", ".php", ".kt", ".swift", ".c", ".cc", ".cpp", ".h", ".scala", ".ex", ".exs"})
 
 
 _RELATIVE_PATH = re.compile(r"^[A-Za-z0-9_.-]+(?:(?:/[A-Za-z0-9_.-]+)+/?|/)$")  # a/b, a/b/, or a bare directory a/
@@ -231,55 +230,40 @@ def build_inventory(workspace: Path, tree: set[str]) -> list[WikiPage]:
     return pages
 
 
-def repository_layout(workspace: Path, tree: set[str]) -> RepositoryLayout:
-    """Detect repository structure for init mode.
+async def repository_layout(toolkit: Any, workspace: Path, tree: set[str]) -> RepositoryLayout:
+    """What this repository is, as the model read it (#367).
 
-    Args:
-        workspace: The repository root.
-        tree: Set of all repository paths.
+    This used to probe for ``pyproject.toml``, ``package.json``, ``pytest.ini``
+    and ``setup.cfg``, map the first hit to ``pytest`` or ``npm test``, and pick
+    out source directories with an 18-entry file-extension table and a hardcoded
+    list of directory names to skip. It therefore understood Python and Node
+    repositories, and produced an empty picture for everything else -- silently,
+    which is how a documenter came to write about projects it could not read.
 
-    Returns:
-        RepositoryLayout with project name, packages, CI presence, and test hint.
+    The model reads the layout and the root files and says what the project is.
+    What stays mechanical here is arithmetic over paths the model named: how big
+    a directory is and whether tests live in it. That is counting, not judgement.
+
+    Raises:
+        ProjectShapeUnknown: the model could not characterise the repository, so
+            the card stops rather than documenting a blank picture.
     """
-    # Detect project name
-    project_name = workspace.name
+    from performer.workflows.project_shape import detect_shape
 
-    if (workspace / "pyproject.toml").exists():
-        import tomllib
+    shape = await detect_shape(toolkit, workspace, tree)
 
-        try:
-            with open(workspace / "pyproject.toml", "rb") as f:
-                data = tomllib.load(f)
-                project_name = data.get("project", {}).get("name", workspace.name)
-        except Exception:
-            pass
-
-    if (workspace / "package.json").exists():
-        try:
-            with open(workspace / "package.json") as f:
-                data = json.load(f)
-                project_name = data.get("name", workspace.name)
-        except Exception:
-            pass
-
-    # Detect packages: top-level directories holding source files. Size is bytes on
-    # disk; has_tests when a tests or test directory exists at the top level or inside
-    # the package. Documentation, test, tooling and vendor directories are not packages.
-    packages = []
-    skip = {"docs", "doc", "tests", "test", "node_modules", "vendor", "build", "dist", "specs", "scripts", "bin"}
-    repo_has_tests = any(p.split("/", 1)[0] in ("tests", "test") for p in tree if "/" in p)
     by_dir: dict[str, list[str]] = {}
     for path_str in tree:
         if "/" not in path_str:
             continue
-        top = path_str.split("/", 1)[0]
-        if top.startswith(".") or top in skip:
-            continue
-        by_dir.setdefault(top, []).append(path_str)
-    for top, files in by_dir.items():
-        sources = [f for f in files if Path(f).suffix.lower() in _SOURCE_SUFFIXES]
-        if not sources:
-            continue
+        by_dir.setdefault(path_str.split("/", 1)[0], []).append(path_str)
+
+    repo_has_tests = any(p.split("/", 1)[0] in ("tests", "test") for p in tree if "/" in p)
+    packages = []
+    for top in shape.source_dirs:
+        files = by_dir.get(top)
+        if not files:
+            continue  # the model named a directory the tree does not have
         size = 0
         for f in files:
             try:
@@ -288,23 +272,15 @@ def repository_layout(workspace: Path, tree: set[str]) -> RepositoryLayout:
                 continue
         inner_tests = any(part in ("tests", "test") for f in files for part in Path(f).parts[1:-1])
         packages.append({"path": top, "size": size, "has_tests": repo_has_tests or inner_tests})
-
-    # Sort by size descending
     packages.sort(key=lambda p: p["size"], reverse=True)
 
-    # Detect CI
+    # GitHub's workflow path, which is knowledge of the platform coordinare runs
+    # on rather than of the project's stack.
     has_ci = any(p.startswith(".github/workflows/") for p in tree)
 
-    # Detect test command hint
-    test_command_hint = ""
-    if (workspace / "pyproject.toml").exists() or any(p in tree for p in ["pytest.ini", "setup.cfg"]):
-        test_command_hint = "pytest"
-    elif (workspace / "package.json").exists():
-        test_command_hint = "npm test"
-
     return RepositoryLayout(
-        project_name=project_name,
+        project_name=shape.project_name or workspace.name,
         packages=packages,
         has_ci=has_ci,
-        test_command_hint=test_command_hint,
+        test_command_hint=shape.test_command,
     )

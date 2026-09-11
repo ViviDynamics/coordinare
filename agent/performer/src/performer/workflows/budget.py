@@ -44,6 +44,10 @@ _STEP_BUDGETS: dict[str, int] = {
     "observe": 3000,
     "judge": 8000,
     "report": 0,    # no model call
+    # 367 documenter + qa: reading a repository and working out what it is.
+    # One call, and the answer is a handful of short strings plus a directory
+    # list, but it is read from a few hundred paths and every root file.
+    "project_shape": 3000,
     # 366 security: choosing what to scan with, and reading what it printed.
     # Caught by 365's AST guard, which is the point of that guard -- both names
     # were being requested and silently taking the default. The plan is a short

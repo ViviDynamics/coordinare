@@ -25,6 +25,7 @@ from performer.workflows.documenter.gate import GateInput, gate_page
 from performer.workflows.documenter.gather import gather_page, hunks_for_page, with_analysis_inputs
 from performer.workflows.documenter.index import generate_readme
 from performer.workflows.documenter.inventory import build_inventory, extract_citations, first_paragraph, path_like_tokens, repository_layout
+from performer.workflows.project_shape import ProjectShapeUnknown, repo_tree
 from performer.workflows.documenter.models import POINTER_FILES, DocsRecord, PageResult, WikiPage
 from performer.workflows.documenter.plan import build_plan
 from performer.workflows.documenter.pointers import render_pointer_section, replace_between_markers
@@ -83,7 +84,18 @@ class DocumenterWorkflow:
         brief = getattr(score, "documentation_brief", None)
         brief = dict(brief) if isinstance(brief, dict) and brief else {}
         inventory = build_inventory(workspace, tree)
-        layout = repository_layout(workspace, tree)  # the project name comes from here in both modes
+        # 367: the model reads the repository and says what it is. Asked once
+        # and only when something actually needs it -- init mode plans from the
+        # layout, and the write path puts the project's name on a page. A card
+        # with nothing to document never asks, which is what keeps a trivial
+        # card free.
+        _layout: list = []
+
+        async def layout_or_hold():
+            """The reading, memoised. Raises ProjectShapeUnknown to stop."""
+            if not _layout:
+                _layout.append(await repository_layout(toolkit, workspace, tree))
+            return _layout[0]
         timed("intake", t)
         log.info("documenter.intake", mode=mode, files=len(changed), truncated=detect_truncation(diff_text), inventory=len(inventory), brief=bool(brief))
 
@@ -98,6 +110,17 @@ class DocumenterWorkflow:
         self._step(toolkit, "plan")
         t = time.monotonic()
         brief_docs = [d for d in (brief.get("docs") or []) if isinstance(d, dict)]
+        # Only init mode plans from the layout; build_plan takes None otherwise,
+        # so an update-mode card never pays for a reading it will not consult.
+        try:
+            layout = await layout_or_hold() if mode == "init" else None
+        except ProjectShapeUnknown as exc:
+            timed("plan", t)
+            log.warning("documenter.project_shape_unknown", reason=exc.reason[:200])
+            record = DocsRecord(mode=mode, changed_files=[], plan=[], results=[], files_written=[],
+                                verdict="env_blocked",
+                                hold_reason="could not work out what this repository is: " + exc.reason[:300])
+            return self._finish(toolkit, record, metrics)
         plans, deferred, refused = build_plan(mode, brief_docs, list(dict.fromkeys([f.path for f in changed] + analysis_paths)), inventory, layout, budgets.plan_cap)
         # A brief page without modules of its own gathers the brief's modules, else the
         # changed files: the live round gathered nothing for a new page and the model,
@@ -158,7 +181,19 @@ class DocumenterWorkflow:
         index_only = all(pl.source == "index" for pl in plans)
         if changed_wiki or mode == "init" or index_only:
             summary = _summary(inventory, brief, workspace)
-            project = layout.project_name or _project_name(workspace)
+            # The second call site for the reading, and the one the laziness
+            # created: in update mode the plan never asked, so this is where a
+            # repository nobody could characterise first surfaces. Adversarial
+            # review found it unguarded -- the stop became an unhandled
+            # exception here instead of the env_blocked hold it is everywhere
+            # else, which is a crash where the design promises a hold.
+            try:
+                project = (await layout_or_hold()).project_name or _project_name(workspace)
+            except ProjectShapeUnknown as exc:
+                log.warning("documenter.project_shape_unknown", reason=exc.reason[:200], phase="write")
+                record.verdict = "env_blocked"
+                record.hold_reason = "could not work out what this repository is: " + exc.reason[:300]
+                return self._finish(toolkit, record, metrics)
             readme = generate_readme(project, summary, [p for p in final_pages if p.path != WIKI_README])
             writes[WIKI_README] = readme
             record.readme_generated = True
@@ -213,8 +248,8 @@ class DocumenterWorkflow:
 
 
 async def _tree(toolkit, workspace: Path) -> set[str]:
-    result = await toolkit.run_command("git ls-files", cwd=workspace, timeout_s=60)
-    return {line.strip() for line in (result.output_excerpt or "").splitlines() if line.strip()}
+    """Kept as a name this module already uses; the reading lives in one place."""
+    return await repo_tree(toolkit, workspace)
 
 
 async def _head(toolkit, workspace: Path) -> str | None:

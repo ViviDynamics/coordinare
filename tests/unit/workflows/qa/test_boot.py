@@ -9,8 +9,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from performer.workflows.project_shape import ProjectShape
 from performer.workflows.qa.boot import (
+    DEFAULT_BOOT_TIMEOUT_S,
     AppBoot,
+    boot_timeout_from,
     resolve_target,
     start_command_for,
 )
@@ -52,22 +55,55 @@ def test_plan_flow_targets_are_rewritten_in_place():
 
 # --- an explicit start command, because inference cannot cover everything ---
 
-def test_an_explicit_start_command_wins_over_inference(tmp_path):
-    """infer_app_start_command is deliberately conservative and returns None for
-    anything it does not recognise. Without an override, such a project can
-    never be booted for QA at all."""
-    cmd = start_command_for(tmp_path, {"QA_APP_START_COMMAND": "python app.py", "PORT": "8000"})
+def test_an_explicit_start_command_wins_over_the_reading(tmp_path):
+    """The operator's override still beats everything (#367).
+
+    They are stating intent about THIS project and know things the repository
+    does not say. QA also skips the model call entirely when the override is
+    set, so an operator never pays for a reading they have already overruled.
+    """
+    shape = ProjectShape(start_command="bin/rails server", boot_seconds=90)
+    cmd = start_command_for({"QA_APP_START_COMMAND": "python app.py", "PORT": "8000"}, shape)
     assert cmd == "python app.py"
 
 
-def test_inference_is_used_when_no_override_is_given(tmp_path):
-    (tmp_path / "manage.py").write_text("# django")
-    cmd = start_command_for(tmp_path, {"PORT": "8123"})
-    assert cmd is not None and "manage.py" in cmd and "8123" in cmd
+def test_the_reading_supplies_the_command_when_there_is_no_override():
+    """This used to be a Django branch keyed on manage.py existing.
+
+    Nothing here is Django, or Rails, or Node -- the three the old
+    infer_app_start_command knew -- and it still boots.
+    """
+    shape = ProjectShape(summary="a Phoenix app", start_command="mix phx.server", boot_seconds=45)
+    assert start_command_for({"PORT": "8123"}, shape) == "mix phx.server"
 
 
-def test_an_unrecognised_project_with_no_override_yields_no_command(tmp_path):
-    assert start_command_for(tmp_path, {"PORT": "8000"}) is None
+def test_no_shape_and_no_override_yields_no_command():
+    """A boot nobody described is not a boot to guess at."""
+    assert start_command_for({"PORT": "8000"}) is None
+
+
+def test_a_project_the_model_says_has_no_server_yields_no_command():
+    """An empty start_command is an answer: a library is not browsable.
+
+    Distinct from cannot_determine, which stops the card. This one proceeds
+    without a boot, which is correct for a library.
+    """
+    shape = ProjectShape(summary="a Go library", test_command="go test ./...", start_command="")
+    assert start_command_for({"PORT": "8000"}, shape) is None
+
+
+def test_the_boot_timeout_comes_from_the_reading_not_a_fixed_default():
+    """The 60s default was chosen by reasoning about Rails migrations.
+
+    The model has just read the boot path, so it is better placed to say. The
+    operator's override still wins, and a malformed override falls back to the
+    reading rather than failing the run.
+    """
+    shape = ProjectShape(start_command="bin/serve", boot_seconds=240)
+    assert boot_timeout_from({}, shape) == 240.0
+    assert boot_timeout_from({"QA_APP_BOOT_TIMEOUT": "30"}, shape) == 30.0
+    assert boot_timeout_from({"QA_APP_BOOT_TIMEOUT": "not-a-number"}, shape) == 240.0
+    assert boot_timeout_from({}) == DEFAULT_BOOT_TIMEOUT_S, "no reading falls back to the flat default"
 
 
 # --- booting ---
@@ -503,7 +539,7 @@ async def test_a_missing_port_is_a_warning_that_names_the_fix():
 
 
 @pytest.mark.asyncio
-async def test_an_unrecognised_project_names_the_override_that_would_fix_it():
+async def test_a_project_with_no_start_command_names_the_override_that_would_fix_it():
     class _TK:
         async def run_command(self, cmd, **kw):
             class R:
@@ -518,8 +554,13 @@ async def test_an_unrecognised_project_names_the_override_that_would_fix_it():
                    port_check=lambda h, p: False)
     assert await boot.ensure_serving(_TK()) is None
     assert boot.failure_reason is not None
-    assert "QA_APP_START_COMMAND" in boot.failure_reason
-    assert "infer" in boot.failure_reason.lower()
+    assert "QA_APP_START_COMMAND" in boot.failure_reason, "the operator needs the way out"
+    # 367: the reason used to name Rails, Django and Node -- the three
+    # frameworks the inference knew -- which is how its limits became an issue.
+    # The message must not name a framework list, because there no longer is one.
+    lowered = boot.failure_reason.lower()
+    for framework in ("rails", "django", "node", "infer_app_start_command"):
+        assert framework not in lowered, f"the reason still names {framework!r}"
 
 
 @pytest.mark.asyncio
@@ -624,3 +665,64 @@ async def test_the_health_check_url_is_shell_quoted():
         "the URL must arrive as ONE argument however hostile PROTOCOL is"
     )
     assert "touch" not in " ".join(argv[:-1])
+
+
+# --- 367 review findings: the three the suite did not catch ----------------
+
+def test_a_model_read_command_is_not_run_through_a_shell(tmp_path):
+    """A regression this change introduced, found by adversarial review.
+
+    Before 367 the only inferred command reaching shell=True was built by code
+    and passed through shlex.join, so it was quoted by construction. Replacing
+    that inference with a model-supplied string handed a raw string to a shell.
+    """
+    marker = tmp_path / "pwned"
+    evil = f"/bin/echo hi; touch {marker}"
+    proc = AppBoot._default_spawn(evil, tmp_path, {"PORT": "8000"})
+    proc.wait()
+    assert not marker.exists(), "the ';' ran as a shell separator, not as an argument"
+
+
+def test_the_operators_own_command_keeps_its_shell(tmp_path):
+    """Deliberately preserved: they may want `RAILS_ENV=test bin/rails server`.
+
+    An operator setting QA_APP_START_COMMAND is a trusted human stating intent
+    about this project. Taking shell semantics away would break configurations
+    that legitimately rely on them.
+    """
+    marker = tmp_path / "operator-ran-this"
+    cmd = f"/bin/echo hi; touch {marker}"
+    proc = AppBoot._default_spawn(cmd, tmp_path, {"PORT": "8000", "QA_APP_START_COMMAND": cmd})
+    proc.wait()
+    assert marker.exists(), "the operator's shell semantics were removed"
+
+
+@pytest.mark.asyncio
+async def test_an_unrunnable_command_holds_instead_of_raising(tmp_path):
+    """An unbalanced quote from a reading must not raise through the workflow."""
+    class _TK:
+        async def run_command(self, cmd, **kw):
+            class R:
+                passed, exit_code, output_excerpt, command = True, 0, "", cmd
+            return R()
+
+    shape = ProjectShape(start_command='bin/serve --flag "unbalanced')
+    boot = AppBoot(env={"PORT": "8000"}, workspace=tmp_path,
+                   port_check=lambda _h, _p: False, shape=shape)
+    assert await boot.ensure_serving(_TK()) is None
+    assert boot.failure_reason and "could not be run" in boot.failure_reason
+
+
+def test_the_baseline_gets_the_same_reading_as_the_head_app(tmp_path):
+    """The baseline is the SAME project at an older commit.
+
+    Adversarial review found the reading was never passed to it, so
+    start_command_for fell through to None and the baseline never booted --
+    breaking every visual or flow run that does not set QA_APP_START_COMMAND.
+    """
+    from performer.workflows.qa import _default_base_boot
+
+    shape = ProjectShape(start_command="mix phx.server", boot_seconds=45)
+    base = _default_base_boot(tmp_path, {"PORT": "9999"}, shape)
+    assert base.shape is shape
+    assert start_command_for(base.env, base.shape) == "mix phx.server"
