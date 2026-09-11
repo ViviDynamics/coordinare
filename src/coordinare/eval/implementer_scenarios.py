@@ -24,7 +24,12 @@ from performer.workflows.base import WorkflowMetrics
 from performer.workflows.toolkit import Toolkit
 
 try:
-    from tests.eval.implementer_scenarios.fakes import Harness, _fake_test_runner, _repo
+    from tests.eval.implementer_scenarios.fakes import (
+        Harness,
+        _fake_test_runner,
+        _repo,
+        stub_model_call,
+    )
     from tests.eval.implementer_scenarios.fixtures import FIXTURES
     from tests.eval.implementer_scenarios.scoring import score_run
 except ImportError:
@@ -86,15 +91,12 @@ async def run_fixture(fixture, *, live: bool) -> tuple[dict, dict | None]:
                 score.implementation_brief = {}
             score.implementation_brief["work_kind"] = fixture.work_kind
 
-        async def no_model(*_a, **_k):
-            raise AssertionError("the implementer workflow makes no model calls in stub mode")
-
         toolkit = Toolkit(
             metrics=WorkflowMetrics(),
-            model_call=no_model if not live else None,
+            model_call=stub_model_call() if not live else None,
             command_runner=_fake_test_runner(repo),
             agent_turn_runner=agent_turn_runner,
-            call_limit=12,
+            call_limit=64,
         )
 
         from performer.models import Stand

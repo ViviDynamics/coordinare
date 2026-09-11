@@ -37,7 +37,6 @@ from performer.workflows.implementer.budgets import ImplementerBudgets
 from performer.workflows.implementer.cycle import (
     changed_test_files,
     green_check,
-    red_check,
     scope_violations,
 )
 from performer.workflows.implementer.resume import present_paths, resume_state, scope_segments
@@ -294,8 +293,55 @@ async def run_turn(
     return result, attempt, changed
 
 
-async def _tests(ctx: RunContext) -> TestSummary:
-    return await run_tests(ctx.toolkit, ctx.test_command, ctx.runner_kind, ctx.workspace, ctx.test_timeout_s)
+async def _tests(ctx: RunContext, files: list[str] | None = None) -> TestSummary:
+    return await run_tests(
+        ctx.toolkit, ctx.test_command, ctx.runner_kind, ctx.workspace, ctx.test_timeout_s, files=files
+    )
+
+
+async def _red_observed(ctx: RunContext, milestone: MilestonePlan, files: list[str], summary: TestSummary) -> bool:
+    """Is this the red the milestone expected? The model decides (#365).
+
+    Replaces a boolean whose name branch only ever ran for pytest and whose
+    fallback counted failures. A load error -- the canonical red for a class
+    that does not exist yet -- reports no counts at all and was therefore
+    invisible; that is what made card #106 bounce ten times.
+
+    A mechanical floor remains, and it is about the loop rather than the
+    judgement: a step that changed no test file has not written a test, so
+    there is nothing whose failure could be the expected red.
+
+    The judge is handed the reading ``run_tests`` actually got. An earlier cut
+    of this rebuilt a ``TestObservation`` from the ``TestSummary`` instead, and
+    that reconstruction was the old mistake wearing new clothes: a load error
+    carries no counts, so it flattened to the same summary as a suite that
+    selected nothing and came back out as ``no_tests_ran``. The judge persona
+    says in as many words that a load error IS the expected red and a suite
+    that selected nothing is not, so card #106 -- the case this whole change
+    exists for -- would have been handed the one input that produces the wrong
+    verdict. A summary is a projection; it is not something to invert.
+    """
+    from performer.workflows.implementer.observe import TestObservation, judge_red
+
+    if not files:
+        return False
+    observation = summary.observation
+    if not isinstance(observation, TestObservation):
+        # Nothing was read: the exit-127 short circuit, or a summary built by
+        # hand. A failure nobody could read is not a failure anyone can call
+        # the expected red, and guessing one back from the counts is the thing
+        # above.
+        log.info("implementer.red_unjudgeable", milestone=milestone.index, exit_code=summary.exit_code)
+        return False
+    judgement = await judge_red(ctx.toolkit, milestone.goal, observation, files)
+    log.info(
+        "implementer.red_judged",
+        milestone=milestone.index,
+        expected_red=judgement.is_expected_red,
+        next_action=judgement.next_action,
+        reason=judgement.reason[:200],
+    )
+    return judgement.is_expected_red
 
 
 def _grow_baseline(ctx: RunContext, summary: TestSummary) -> None:
@@ -377,7 +423,7 @@ async def _red_phase(
     record.tests_attempt = attempt
     files = changed_test_files(changed, ctx.runner_kind, brief.scope_paths or None)
     summary = await _tests(ctx) if result.exit_state == "done" else TestSummary(passed=False, failed=None, exit_code=1, raw_tail="turn did not complete")
-    if result.exit_state == "done" and red_check(files, summary, ctx.baseline):
+    if result.exit_state == "done" and await _red_observed(ctx, milestone, files, summary):
         return RedOutcome(files, summary, changed)
     # 171 FR-011: a tests turn that changed NO test file, over tests a previous
     # run of this card already wrote and which pass, is a resume and not a red
@@ -400,7 +446,7 @@ async def _red_phase(
         files = changed_test_files(changed, ctx.runner_kind, brief.scope_paths or None)
         if result2.exit_state == "done":
             summary = await _tests(ctx)
-            if red_check(files, summary, ctx.baseline):
+            if await _red_observed(ctx, milestone, files, summary):
                 return RedOutcome(files, summary, changed)
             # no second FR-011 check here: the reprompt only writes test files,
             # so reaching it means the first turn's judgement already stood.

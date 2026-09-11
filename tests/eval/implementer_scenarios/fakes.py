@@ -143,3 +143,52 @@ def _write(repo: Path, rel: str, text: str) -> None:
     p = repo / rel
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(text)
+
+
+def stub_model_call():
+    """The stub answer to the implementer's two model calls (#365).
+
+    The implementer used to be the only workflow that never touched the model
+    layer, and three separate harnesses each asserted that as an invariant:
+    this eval runner, its pytest wrapper, and the unit end-to-end fixture. The
+    workflow now reads the runner's output and judges the red, so all three had
+    to answer those calls -- which is exactly why the answer lives here once
+    rather than being written out three times. Two of the three copies were
+    found by CI, one at a time, after each earlier fix reported green.
+
+    It reads the fake runner's own PASSED/FAILED lines, so the stub and the
+    fake it is reading cannot drift apart, and judges red the way a pair would:
+    a test file the turn just changed is among the failures.
+    """
+    import json
+
+    from performer.workflows.budget import ModelReply
+
+    async def model_call(persona, content, max_tokens):
+        text = "".join(c.get("text", "") for c in content)
+        if "reading the raw output of a test run" in persona:
+            failed = [ln.split(" ", 1)[1].strip() for ln in text.splitlines() if ln.startswith("FAILED ")]
+            passed = [ln.split(" ", 1)[1].strip() for ln in text.splitlines() if ln.startswith("PASSED ")]
+            outcome = "assertion_failure" if failed else ("all_passed" if passed else "no_tests_ran")
+            return ModelReply(
+                content=json.dumps({
+                    "outcome": outcome, "failed": failed, "passed": passed,
+                    "load_errors": [], "environment_problem": "", "summary": "",
+                }),
+                finish_reason="stop",
+            )
+        if "pair-programming, working test-first" in persona:
+            changed = [ln[2:] for ln in text.splitlines() if ln.startswith("- ")]
+            failed_line = next((ln for ln in text.splitlines() if ln.strip().startswith("failed:")), "")
+            is_red = bool(changed) and any(c.split("::")[0] in failed_line for c in changed)
+            return ModelReply(
+                content=json.dumps({
+                    "is_expected_red": is_red,
+                    "reason": "a changed test file failed" if is_red else "no changed test file failed",
+                    "next_action": "write_the_code" if is_red else "rewrite_the_test",
+                }),
+                finish_reason="stop",
+            )
+        raise AssertionError(f"unexpected model call: {persona[:60]}")
+
+    return model_call

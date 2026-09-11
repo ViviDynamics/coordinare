@@ -27,7 +27,6 @@ log = structlog.get_logger(__name__)
 
 __all__ = [
     "is_test_path",
-    "red_check",
     "green_check",
     "vacuous_test_check",
     "scope_violations",
@@ -72,49 +71,6 @@ def changed_test_files(changed: dict[str, str], runner_kind: str, scope_paths: l
     return sorted(path for path in changed if is_test_path(path))
 
 
-def red_check(changed_test_files: list[str], summary: TestSummary, baseline: Baseline) -> bool:
-    """Check that red is observed (FR-005): at least one test inside a changed
-    test file fails, and the baseline still passes.
-
-    A test file that cannot even import the new code fails at collection;
-    pytest reports that as ``ERROR tests/test_x.py`` and none of that file's
-    tests run, baseline ones included. That is red for the right reason, so
-    baseline tests living in a changed test file are not counted as
-    regressions here (the green check requires all of them to pass).
-    """
-    if not changed_test_files:
-        return False
-    if summary.passed:
-        return False
-
-    baseline_names = set(baseline.test_names or [])
-
-    def in_changed(name: str) -> bool:
-        if "::" not in name and "/" not in name:
-            # a bare test name (a runner that reports no path) cannot be placed
-            # by file; a name the baseline knows is a baseline test, anything
-            # else is attributed to the changed files
-            return name not in baseline_names
-        return any(name == f or name.startswith(f + "::") or name.startswith(f + " ") for f in changed_test_files)
-
-    if summary.test_names_failed is not None or summary.test_names_passed is not None:
-        failed = summary.test_names_failed or []
-        if not any(in_changed(n) for n in failed):
-            return False
-        for name in baseline.test_names or []:
-            if name in failed and not in_changed(name):
-                return False  # a baseline test outside the changed files regressed
-        if summary.test_names_passed is not None:
-            passed_now = set(summary.test_names_passed)
-            for name in baseline.test_names or []:
-                if name not in passed_now and name not in failed and not in_changed(name):
-                    # vanished for another reason (a collection error elsewhere): not red
-                    return False
-        return True
-
-    # counts only: more failures than the baseline had
-    prior = baseline.fail_count or 0
-    return summary.failed is not None and summary.failed > prior
 
 
 def green_check(summary: TestSummary, milestone_tests: list[str] | None, baseline: Baseline) -> bool:

@@ -9,14 +9,31 @@ from performer.workflows.implementer.baseline import NoTestRunner, detect_baseli
 from performer.workflows.implementer.models import Baseline
 
 
+def _observation_for(exit_code: int, output: str):
+    """Stand in for the model reading the runner output (#365).
+
+    Mirrors what a model would say about these fixtures' output so the
+    assertions under test -- which are about baselines and env holds, not about
+    how the output was read -- keep their original meaning.
+    """
+    from performer.workflows.implementer.observe import TestObservation
+
+    if exit_code == 0:
+        return TestObservation(outcome="all_passed", passed=["example"])
+    return TestObservation(outcome="assertion_failure", failed=["example"], summary=output[:200])
+
+
+
 @pytest.mark.asyncio
 async def test_detect_baseline_with_test_command():
     """detect_baseline uses test command from score."""
     toolkit = MagicMock()
+    toolkit.call_model = AsyncMock(return_value=_observation_for(0, ''))
     toolkit.run_command = AsyncMock(return_value=MagicMock(
         output_excerpt="1 passed\n",
         exit_code=0,
     ))
+    toolkit.call_model = AsyncMock(return_value=_observation_for(0, "1 passed"))
 
     score = MagicMock()
     score.workspace_path = Path("/tmp/repo")
@@ -31,6 +48,7 @@ async def test_detect_baseline_with_test_command():
 async def test_detect_baseline_raises_when_no_test_command():
     """detect_baseline raises NoTestRunner when test command not found."""
     toolkit = MagicMock()
+    toolkit.call_model = AsyncMock(return_value=_observation_for(0, ''))
     score = MagicMock()
     score.workspace_path = Path("/tmp/repo")
     score.local_test_gate_config = None
@@ -50,6 +68,7 @@ async def test_detect_baseline_uses_toolkit_run_command():
         return MagicMock(output_excerpt="", exit_code=0)
 
     toolkit = MagicMock()
+    toolkit.call_model = AsyncMock(return_value=_observation_for(0, ''))
     toolkit.run_command = mock_run_command
 
     score = MagicMock()
@@ -58,7 +77,10 @@ async def test_detect_baseline_uses_toolkit_run_command():
 
     await detect_baseline(toolkit, score)
     assert len(call_args) > 0
-    assert call_args[0][0] == "pytest -rA"  # with_test_names adds the report flag
+    # 365: the command is passed through as the repository states it. There is no
+    # per-runner flag injection left -- the model reads whatever format the runner
+    # emits, which is what makes this work on a stack coordinare has never seen.
+    assert call_args[0][0] == "pytest"
     assert call_args[0][1] == Path("/tmp/repo")
 
 
@@ -66,10 +88,12 @@ async def test_detect_baseline_uses_toolkit_run_command():
 async def test_detect_baseline_returns_baseline_model():
     """detect_baseline returns Baseline dataclass."""
     toolkit = MagicMock()
+    toolkit.call_model = AsyncMock(return_value=_observation_for(0, ''))
     toolkit.run_command = AsyncMock(return_value=MagicMock(
         output_excerpt="1 passed\n",
         exit_code=0,
     ))
+    toolkit.call_model = AsyncMock(return_value=_observation_for(0, "1 passed"))
 
     score = MagicMock()
     score.workspace_path = Path("/tmp/repo")
@@ -77,25 +101,9 @@ async def test_detect_baseline_returns_baseline_model():
 
     baseline = await detect_baseline(toolkit, score)
     assert isinstance(baseline, Baseline)
-    assert baseline.stack == "pytest"  # stack_from_command reads the runner off the command
+    # 365: no runner kind is derived any more; nothing downstream parses by runner.
+    assert baseline.stack == ""
     assert baseline.detected_from == "score.local_test_gate_config"
 
 
-def test_pytest_commands_gain_report_all_so_names_reach_the_checks():
-    from performer.workflows.implementer.baseline import with_test_names
 
-    assert with_test_names("pytest") == "pytest -rA"
-    assert with_test_names("python -m pytest -q") == "python -m pytest -q -rA"
-    assert with_test_names("pytest -rfE") == "pytest -rfE"
-    assert with_test_names("bundle exec rspec") == "bundle exec rspec"
-
-
-def test_runner_kind_prefers_the_command_over_a_language_stack():
-    """Fifth live round: ci_detection reported stack "python", which matched no
-    output parser, so a collection error produced no failure names."""
-    from performer.workflows.implementer.baseline import runner_kind_for
-
-    assert runner_kind_for("python", "pytest -rA") == "pytest"
-    assert runner_kind_for("ruby", "bundle exec rspec") == "rspec"
-    assert runner_kind_for("pytest", "pytest") == "pytest"
-    assert runner_kind_for(None, "make test") == "unknown"

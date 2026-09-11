@@ -13,7 +13,13 @@ from performer.workflows.base import WorkflowMetrics
 from performer.workflows.implementer import ImplementerWorkflow
 from performer.workflows.toolkit import Toolkit
 
-from tests.eval.implementer_scenarios.fakes import Edges, Harness, _fake_test_runner, _repo
+from tests.eval.implementer_scenarios.fakes import (
+    Edges,
+    Harness,
+    _fake_test_runner,
+    _repo,
+    stub_model_call,
+)
 from tests.eval.implementer_scenarios.fixtures import FIXTURES
 from tests.eval.implementer_scenarios.scoring import score_run
 
@@ -21,15 +27,12 @@ from tests.eval.implementer_scenarios.scoring import score_run
 async def _run(repo: Path, score, harness: Harness, edges: Edges, **overrides):
     """Run the implementer workflow with fake infrastructure."""
 
-    async def no_model(*_a, **_k):
-        raise AssertionError("the implementer workflow makes no model calls")
-
     toolkit = Toolkit(
         metrics=WorkflowMetrics(),
-        model_call=no_model,
+        model_call=stub_model_call(),
         command_runner=_fake_test_runner(repo),
         agent_turn_runner=harness,
-        call_limit=12,
+        call_limit=64,
     )
     stand = Stand(path=repo, branch="feat/x")
     result = await ImplementerWorkflow().run(
