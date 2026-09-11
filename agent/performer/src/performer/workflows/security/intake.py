@@ -38,7 +38,7 @@ class SecurityIntake:
         """The survey's context: the card, the changed files, the scan findings, the diff head."""
         files = "\n".join(f"- {f.path} ({len(f.hunks)} hunk(s))" for f in self.changed_files) or "(no files parsed)"
         note = " The diff was truncated; unread files must be opened." if self.diff_truncated else ""
-        scan = f"\n\nStatic scan findings (semgrep, bandit):\n{scan_summary}" if scan_summary else ""
+        scan = f"\n\nStatic scan findings:\n{scan_summary}" if scan_summary else ""
         return (
             f"Pull request under security review: {self.title}\n{self.description[:1500]}\n\n"
             f"Changed files:{note}\n{files}{scan}\n\nDiff (first {_DIFF_EXCERPT_CHARS} chars):\n{self.diff_text[:_DIFF_EXCERPT_CHARS]}"

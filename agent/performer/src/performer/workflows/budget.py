@@ -44,6 +44,13 @@ _STEP_BUDGETS: dict[str, int] = {
     "observe": 3000,
     "judge": 8000,
     "report": 0,    # no model call
+    # 366 security: choosing what to scan with, and reading what it printed.
+    # Caught by 365's AST guard, which is the point of that guard -- both names
+    # were being requested and silently taking the default. The plan is a short
+    # list of tools and argv; the reading returns a finding list plus a coverage
+    # line for every file the tool was given, so it takes the larger floor.
+    "security_tooling": 3000,
+    "security_scan_read": 8000,
     # 365 implementer: reading a test run and judging the red. Named for the
     # workflow because the bare "observe"/"judge" above are QA's and mean
     # something else -- these were briefly requested under those names and

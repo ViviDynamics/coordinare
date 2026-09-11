@@ -4202,9 +4202,9 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
                 state["system_error_reason"] = f"the security review could not complete (no code defect):\n{_reason}"
                 state["open_questions"] = [
                     f"The security stage hit an environment blocker ({_reason}). The card is parked in the "
-                    "blocked column: check that semgrep and bandit run in the performer image (and can reach "
-                    "the semgrep registry, or set SECURITY_SEMGREP_CONFIG), GitHub API access from the "
-                    "performer, and the size of the injected diff, then re-run the security stage."
+                    "blocked column: the hold names the tools the model chose and what went wrong with each, "
+                    "so check those run in the performer image, then GitHub API access from the performer and "
+                    "the size of the injected diff, then re-run the security stage."
                 ]
             else:
                 state["system_error_reason"] = (

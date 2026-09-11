@@ -42,8 +42,14 @@ INJECTION = {"path": "src/db.py", "line": 7, "category": "injection", "problem":
              "why_blocking": "an attacker controls the query text", "evidence": 'query = "SELECT * FROM users WHERE id = " + user_id',
              "introduced_by": "src/db.py", "downgrade_reason": ""}
 
-SEMGREP_SECRET = {"severity": "critical", "category": "798", "description": "semgrep:generic.secrets.hardcoded-key", "file": "src/db.py", "line": 6, "routing": "implementer"}
-BANDIT_MD5 = {"severity": "medium", "category": "hashlib", "description": "bandit:B324", "file": "src/db.py", "line": 8, "routing": "implementer"}
+# 366: a scanner reading as it now arrives at the gate. The tool is stamped by
+# the runner that ran it, and the category is what the model reading the
+# output called it -- not a CWE number ("798") or a rule word ("hashlib") for
+# coordinare to look up in a table it no longer has. Severity and routing are
+# absent on purpose: they come from the category, for scanner and model
+# findings alike, so a reading cannot call a SQL injection low.
+SEMGREP_SECRET = {"tool": "semgrep", "category": "hardcoded_secret", "description": "generic.secrets.hardcoded-key", "file": "src/db.py", "line": 6}
+BANDIT_MD5 = {"tool": "bandit", "category": "weak_crypto", "description": "B324", "file": "src/db.py", "line": 8}
 
 
 def changed_files():

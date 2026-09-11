@@ -8,7 +8,6 @@ from performer.workflows.reviewer.models import ChangedFile
 from performer.workflows.security.gate import (
     anchor_ok_security,
     apply_downgrade,
-    map_scanner_category,
     merge_scanner_findings,
     normalise_tool_path,
     routing_for,
@@ -18,6 +17,7 @@ from performer.workflows.security.gate import (
     split_blocking,
     verdict,
 )
+from performer.workflows.security.models import SECURITY_CATEGORIES
 
 from tests.unit.workflows.security._fixtures import (
     BANDIT_MD5,
@@ -70,18 +70,8 @@ def test_anchor_widens_to_surveyed_unchanged_files_but_stays_tied_to_the_pr():
     assert not anchor_ok_security(finding(evidence="made up"), files, [], LINES, []), "hallucinated evidence drops the finding"
 
 
-# map_scanner_category: mutation = map 798 to other_insecure_pattern
-def test_scanner_categories_map_through_the_cwe_table():
-    assert map_scanner_category("798") == "hardcoded_secret"
-    assert map_scanner_category("CWE-89") == "injection"
-    assert map_scanner_category("22") == "path_traversal"
-    assert map_scanner_category("hashlib") == "weak_crypto", "a rule id maps by keyword"
-    assert map_scanner_category("") == "other_insecure_pattern"
-    assert map_scanner_category("B798") == "other_insecure_pattern", "digits inside a tool code are not a CWE"
-
-
-# scanner_to_findings: mutation = drop the tool's severity (use the table)
-def test_scanner_findings_are_rule_findings_with_the_tools_severity():
+# scanner_to_findings: mutation = ignore the reading's category (use the fallback for everything)
+def test_scanner_findings_are_rule_findings_scored_by_their_category():
     out = scanner_to_findings([SEMGREP_SECRET, BANDIT_MD5])
     assert [(f.tool, f.origin, f.severity, f.category, f.line, f.evidence, f.introduced_by) for f in out] == [
         ("semgrep", "rule", "critical", "hardcoded_secret", 6, "", "src/db.py"),
@@ -90,11 +80,42 @@ def test_scanner_findings_are_rule_findings_with_the_tools_severity():
     assert out[0].routing == "implementer"
 
 
+# scanner_to_findings category guard: mutation = keep whatever the reading said
+def test_a_category_the_reading_invented_lands_in_the_fallback():
+    """SecurityFinding.category is a plain string, so this is the only guard.
+
+    The reading names the kind of issue, and a model naming things is a model
+    that can name one that does not exist -- "sql_injection" for "injection",
+    or a CWE it decided to pass through. Nothing downstream validates it:
+    the field is an unconstrained str whose comment merely claims it is one of
+    SECURITY_CATEGORIES. Two things depend on that claim being true: the
+    severity comes from a table keyed by category, and the merge that collapses
+    a model finding into a tool's uses (path, line, category) -- so an invented
+    name silently means "advisory, and duplicated at the same anchor".
+
+    This survived a mutation run with the guard disabled, which is how it got
+    written.
+    """
+    invented = {**SEMGREP_SECRET, "category": "sql_injection"}
+    assert scanner_to_findings([invented])[0].category == "other_insecure_pattern"
+
+    passed_through = {**SEMGREP_SECRET, "category": "CWE-89"}
+    assert scanner_to_findings([passed_through])[0].category == "other_insecure_pattern"
+
+    empty = {**SEMGREP_SECRET, "category": ""}
+    assert scanner_to_findings([empty])[0].category == "other_insecure_pattern"
+
+    assert all(f.category in set(SECURITY_CATEGORIES) for f in scanner_to_findings([invented, passed_through, empty, SEMGREP_SECRET]))
+
+
 # merge_scanner_findings: mutations = keep the model's severity; skip the append
 def test_a_model_finding_at_a_scanner_anchor_collapses_into_the_tools():
-    scanner = scanner_to_findings([{**SEMGREP_SECRET, "line": 7, "category": "89", "severity": "critical"}])
+    # the collapse key is (path, line, category), so the reading has to call
+    # this what the model called it -- which is the point: the category is the
+    # reading's judgement, and agreeing is what makes the two findings one.
+    scanner = scanner_to_findings([{**SEMGREP_SECRET, "line": 7, "category": "injection"}])
     merged = merge_scanner_findings([finding(), finding(line=8)], scanner)
-    assert [(f.tool, f.line, f.severity) for f in merged] == [("model", 8, "high"), ("semgrep", 7, "critical")]
+    assert [(f.tool, f.line, f.severity) for f in merged] == [("model", 8, "high"), ("semgrep", 7, "high")]
     assert merge_scanner_findings([], scanner) == scanner
 
 
@@ -126,19 +147,6 @@ def test_run_gate_end_to_end_orders_the_rules():
     assert hold.verdict == "env_blocked" and hold.unread_files == ["src/extra.py"]
 
 
-# map_scanner_category keyword fallback: mutation = drop the keyword table (everything without a CWE is other_insecure_pattern)
-def test_rule_ids_without_cwe_metadata_map_by_keyword():
-    """Live round: semgrep's tainted-sql-string rules carry no CWE and must still be injection so they collapse into the model's finding."""
-    assert map_scanner_category("python.flask.security.injection.tainted-sql-string.tainted-sql-string") == "injection"
-    assert map_scanner_category("python.sqlalchemy.security.sqlalchemy-execute-raw-query") == "injection"
-    assert map_scanner_category("generic.secrets.security.detected-aws-access-key") == "hardcoded_secret"
-    assert map_scanner_category("python.lang.security.deserialization.pickle") == "insecure_deserialization"
-    assert map_scanner_category("hashlib") == "weak_crypto"
-    assert map_scanner_category("B608") == "other_insecure_pattern", "a bare bandit id carries no category word"
-    assert map_scanner_category("B798") == "other_insecure_pattern", "digits inside an id are not a CWE number"
-    assert map_scanner_category("CWE-1798") == "other_insecure_pattern"
-
-
 # normalise_tool_path: mutation = return the path unchanged
 def test_tool_paths_match_the_diff_paths():
     """Live round: bandit reports ./app/web.py; the diff, the dedup key and the inline comment need app/web.py."""
@@ -163,10 +171,33 @@ def test_tool_findings_are_never_sliced_out_by_the_survivor_cap():
     assert len(result.advisory) == 30, "the model's survivors are capped at the findings cap"
 
 
-# scanner_to_findings category fallback: mutation = drop the description fallback
-def test_a_cwe_that_maps_nowhere_defers_to_the_rule_ids_words():
-    """Live round: semgrep's tainted-sql-string rules carry CWE-915 and CWE-704; the rule id says sql injection."""
-    raw = {"severity": "critical", "category": "915", "description": "semgrep:python.flask.security.injection.tainted-sql-string.tainted-sql-string", "file": "app/web.py", "line": 11, "routing": "implementer"}
-    assert scanner_to_findings([raw])[0].category == "injection"
-    assert scanner_to_findings([{**raw, "category": "798"}])[0].category == "hardcoded_secret", "a CWE that maps wins over the words"
-    assert scanner_to_findings([{**raw, "category": "915", "description": "semgrep:rules.something.odd"}])[0].category == "other_insecure_pattern"
+
+
+# scanner cap ordering: mutation = slice before ordering (the positional slice)
+def test_the_scanner_bound_can_only_drop_findings_that_were_not_going_to_fail():
+    """A repository with more than 200 scanner findings must not pass on ordering.
+
+    The 200 bound is documented and intended (data-model: "at most 200"). What
+    was not intended is that it sliced positionally: findings arrive in tool
+    order then reading order, so a repository whose blocking findings happened
+    to land after position 200 lost every one of them and the round passed.
+    Measured before the fix, 240 advisory findings followed by 10 SQL
+    injections yielded 0 of 10 blocking findings surviving, and a verdict of
+    security_passed.
+
+    Ordering blocking first means the bound can only ever drop findings that
+    were not going to fail the round. This is not the anchor rule of FR-011 --
+    that one is about dropping, and is tested above -- it is the bound.
+    """
+    advisory = [{"tool": "semgrep", "category": "weak_crypto", "description": f"w{i}", "file": "src/db.py", "line": i}
+                for i in range(240)]
+    blocking_raw = [{"tool": "semgrep", "category": "injection", "description": f"sqli{i}", "file": "src/db.py", "line": 1000 + i}
+                    for i in range(10)]
+
+    result = run_gate(
+        [], advisory + blocking_raw, changed_files=changed_files(), diff_lines=LINES,
+        survey_lines=[], surveyed_files=[], truncated=False, coverage_pass_ran=False,
+    )
+    assert len(result.blocking) == 10, "a blocking finding was dropped by the bound, not by a rule"
+    assert result.verdict == "security_failed", "ten SQL injections passed because of list position"
+    assert len(result.blocking) + len(result.advisory) == 200, "the documented bound still holds"
