@@ -129,11 +129,14 @@ def test_state_update_shape_additive_only() -> None:
     assert not missing, f"pre-138 keys removed: {sorted(missing)}"
     added = set(snapshot) - set(_PRE_138_KEYS)
     # 160 added include_unassigned and ownership_hint beside the pre-existing
-    # assignee_filter.
+    # assignee_filter. 343 added stall_timeout_seconds, which the step trail
+    # uses to decide when a step has sat too long -- the per-step fields
+    # themselves live on each active_sessions entry, not at top level.
     assert added == {
         "activity_quiet_threshold_seconds",
         "include_unassigned",
         "ownership_hint",
+        "stall_timeout_seconds",
     }, f"unplanned additions: {sorted(added)}"
     for key, expected in _PRE_138_KEYS.items():
         assert isinstance(snapshot[key], expected), f"{key} changed type"

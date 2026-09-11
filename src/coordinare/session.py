@@ -166,6 +166,11 @@ class CardSession(TypedDict, total=False):
     # forward progress (new events / token growth). Round-trips so the stall
     # window survives the multi-session save/load between poll cycles.
     last_progress_at: datetime | None
+    # 343: which workflow step this card is in, when it entered, and the
+    # observed trail of transitions.
+    workflow_step: str | None
+    workflow_step_entered_at: datetime | None
+    workflow_step_trail: list[dict[str, Any]]
     # 077 stall watchdog: fingerprint of the last poll's progress signal
     # (event count + last event + token total). Compared between polls to tell
     # real forward progress from a wedged turn re-returning the same events.
@@ -302,6 +307,12 @@ _SESSION_FIELDS: tuple[str, ...] = (
     "review_empty_retry_count",
     "last_progress_at",
     "last_progress_fingerprint",
+    # 343: which workflow step this card is in, when it entered, and the
+    # observed trail. Per-card by construction -- two performers are in
+    # different steps at the same moment.
+    "workflow_step",
+    "workflow_step_entered_at",
+    "workflow_step_trail",
     "latest_ci_gate_decision",
     "ci_gate_rollup_signature",
     "ci_gate_advisory_failures",
@@ -405,6 +416,9 @@ def create_session_from_card(card: dict[str, Any]) -> CardSession:
         repair_audit=[],
         review_empty_retry_count=0,
         last_progress_at=None,
+        workflow_step=None,
+        workflow_step_entered_at=None,
+        workflow_step_trail=[],
         last_progress_fingerprint=None,
         latest_ci_gate_decision=None,
         ci_gate_rollup_signature=None,

@@ -368,6 +368,11 @@ class DashboardStore:
                 sess.get("phase"),
                 sess.get("performer_stage"),
                 dispatch.get("container_id"),
+                # 343: a step transition is the most frequent meaningful change
+                # during a turn. Without it here the trail would only refresh
+                # when the stage or phase happened to move, which is minutes to
+                # tens of minutes apart -- the exact gap this is meant to close.
+                sess.get("workflow_step"),
             ))
         return tuple(parts)
 
@@ -633,6 +638,14 @@ class DashboardStore:
                 "backend_ui_url": sess.get("backend_ui_url"),
                 "performer_backend": str(_sess_agent_dispatch.get("backend") or "") or None,
                 "session_id": _sess_agent_dispatch.get("session_id") or None,
+                # 343: which workflow step, since when, and the observed trail.
+                "workflow_step": sess.get("workflow_step"),
+                "workflow_step_entered_at": (
+                    _ws_at.isoformat()
+                    if isinstance((_ws_at := sess.get("workflow_step_entered_at")), datetime)
+                    else (str(_ws_at) if _ws_at else None)
+                ),
+                "workflow_step_trail": list(sess.get("workflow_step_trail") or []),
                 "performer_logs": self._session_performer_logs(daemon, _sess_stage, sid),
                 "card_id": sid,
                 "card_title": str(sess_card.get("title", "")),
@@ -681,6 +694,13 @@ class DashboardStore:
                 "backend_ui_url": daemon.state.get("backend_ui_url"),
                 "performer_backend": performer_backend,
                 "session_id": _dispatch.get("session_id") or None,
+                "workflow_step": daemon.state.get("workflow_step"),
+                "workflow_step_entered_at": (
+                    _tws.isoformat()
+                    if isinstance((_tws := daemon.state.get("workflow_step_entered_at")), datetime)
+                    else (str(_tws) if _tws else None)
+                ),
+                "workflow_step_trail": list(daemon.state.get("workflow_step_trail") or []),
                 "performer_logs": performer_logs,
                 "card_id": _top_card_id,
                 "card_title": _top_card_title,
@@ -714,6 +734,27 @@ class DashboardStore:
 
         return {
             "activity_quiet_threshold_seconds": _qt if isinstance(_qt, int) else 300,
+            # 343: how long a single workflow step may sit before the trail
+            # flags it. The stall watchdog's own threshold is the right one --
+            # it is documented as "above the slowest legitimate no-output gap",
+            # which is exactly the question the trail's timer asks. The quiet
+            # threshold is a different question (no activity at all) and is far
+            # lower; using it would paint a normal six-minute test baseline
+            # amber and train the operator to ignore the colour.
+            "stall_timeout_seconds": (
+                _st
+                if isinstance(
+                    (
+                        _st := getattr(
+                            getattr(daemon.state.get("coordinare_config"), "dispatcher_dedup", None),
+                            "stall_timeout_seconds",
+                            0,
+                        )
+                    ),
+                    int,
+                )
+                else 0
+            ),
             "phase": phase,
             "phase_label": format_phase_label(phase),
             "active_card_title": snapshot.active_card_title if snapshot else None,
@@ -1478,6 +1519,33 @@ function fmtAge(iso) {
   var mins = Math.floor(secs / 60);
   if (mins < 60) return mins + 'm ' + (secs % 60) + 's';
   return Math.floor(mins / 60) + 'h ' + (mins % 60) + 'm';
+}
+
+// 343: the step trail. Completed steps from the observed transitions, the
+// current one marked and carrying a live elapsed timer seeded from snapshot
+// state -- so it survives a browser reload and a daemon restart, neither of
+// which a client-side counter would.
+function stepTrailHtml(sess, slowAfterSeconds) {
+  var cur = sess.workflow_step;
+  if (!cur) return '';
+  var trail = Array.isArray(sess.workflow_step_trail) ? sess.workflow_step_trail : [];
+  var shortName = function(n) { var s = String(n || ''); var i = s.indexOf('.'); return i < 0 ? s : s.slice(i + 1); };
+  // Only steps before the current one are done; the current entry is the last.
+  var done = trail.slice(0, Math.max(0, trail.length - 1));
+  var parts = done.slice(-6).map(function(e) {
+    return '<span class="muted">' + esc(shortName(e.step)) + ' &check;</span>';
+  });
+  var age = fmtAge(sess.workflow_step_entered_at);
+  var secs = sess.workflow_step_entered_at
+    ? Math.floor((Date.now() - new Date(sess.workflow_step_entered_at).getTime()) / 1000) : 0;
+  // 0 means the operator has not said what "too long" is, so say nothing.
+  var slow = slowAfterSeconds > 0 && secs > slowAfterSeconds;
+  var style = slow ? 'color:var(--color-degraded)' : 'color:var(--color-accent-blue)';
+  parts.push('<span style="' + style + ';font-weight:bold" data-step-since="'
+    + esc(sess.workflow_step_entered_at || '') + '">&bull; ' + esc(shortName(cur))
+    + (age ? ' ' + esc(age) : '') + '</span>');
+  var more = done.length > 6 ? '<span class="muted">+' + String(done.length - 6) + ' earlier &middot; </span>' : '';
+  return '<div class="step-trail" style="margin-top:4px;font-size:12px">' + more + parts.join('<span class="muted"> &middot; </span>') + '</div>';
 }
 
 function humanPhase(phase) {
@@ -3635,7 +3703,7 @@ function renderPerformersPage(s) {
   detailEl.innerHTML =
     '<div><strong>' + humanPhase(selectedRole) + '</strong>' + statusBadge + '</div>' +
     '<div class="muted" style="margin-top:4px">Active / Idle / Max: ' + String(row.active != null ? row.active : 0) + ' / ' + String(Math.max(0, (row.max != null ? row.max : 0) - (row.active != null ? row.active : 0))) + ' / ' + String(row.max != null ? row.max : 0) + '</div>' +
-    '<div class="detail-block"><strong>Card Context</strong>' + roleCardsHtml + telemetryFor + (skipHtml ? '<div style="margin-top:8px"><span style="color:var(--color-accent-yellow);font-size:12px">Skipped this cycle:</span>' + skipHtml + '</div>' : '') + '</div>' +
+    '<div class="detail-block"><strong>Card Context</strong>' + roleCardsHtml + telemetryFor + stepTrailHtml(sel, s.stall_timeout_seconds) + (skipHtml ? '<div style="margin-top:8px"><span style="color:var(--color-accent-yellow);font-size:12px">Skipped this cycle:</span>' + skipHtml + '</div>' : '') + '</div>' +
     '<div class="detail-block"><strong>Session</strong><div class="muted" style="margin-top:4px">Session: ' + esc(sel.session_id || s.agent_session_id || '—') + ' &middot; Uptime: ' + esc(fmtAge(sel.agent_dispatch_at || s.agent_dispatch_at) || '—') + '</div><div class="muted" style="margin-top:4px">' + backendLine + '</div><div class="muted" style="margin-top:4px">' + statsLine + '</div></div>' +
     '<div class="detail-block"><strong>Metrics</strong><div class="muted" style="margin-top:4px">' + metricsLine + '</div></div>' +
     '<div class="detail-block"><strong>Live Events</strong>' + eventsHtml + '</div>' +
@@ -3859,7 +3927,9 @@ var AF_LABELS = {
   stall: 'STALL', stuck: 'STUCK', error: 'ERROR', blocked: 'BLOCKED', completed: 'COMPLETED',
   // 327 added this activity type but only to AF_SUMMARIES, so the chip fell
   // back to the raw uppercased type while every other type had a short label.
-  stream_truncated: 'TRUNCATED'
+  stream_truncated: 'TRUNCATED',
+  // 343: step boundaries are the spine of the trail; give them their own chip.
+  workflow_step: 'STEP'
 };
 var _afGroupingActive = false; // older SSE payloads lack session attribution
 var _afEntries = [];        // retained entries, oldest-first
@@ -4112,7 +4182,8 @@ _ACTIVITY_STREAM_JS = """var AF_SUMMARIES = {
   stage_change: 'Workflow stage changed.', recovered: 'Work recovered.',
   quiet: 'No recent activity.', stall: 'Performer stalled.', stuck: 'Work is stuck.',
   error: 'An error was reported.', blocked: 'Work is blocked.', completed: 'Work completed.',
-  stream_truncated: 'Output was truncated (stream too long).'
+  stream_truncated: 'Output was truncated (stream too long).',
+  workflow_step: 'Workflow step started.'
 };
 function afSummary(e) { return AF_SUMMARIES[e.activity_type] || 'Activity reported.'; }
 function afRawHtml(entries) {

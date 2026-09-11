@@ -37,9 +37,9 @@ _ITEM = {
 }
 
 
-def test_current_schema_version_is_23() -> None:
-    """Spec 175 adds attributed documentation findings; prior fields remain supported."""
-    assert CURRENT_SCHEMA_VERSION == 23  # 175: + attributed documentation findings
+def test_current_schema_version_is_24() -> None:
+    """343 adds the per-session workflow step trail; prior fields remain supported."""
+    assert CURRENT_SCHEMA_VERSION == 24  # 343: + workflow_step / entered_at / trail
 
 
 def test_old_session_loads_with_surfaced_stale_reviews_default() -> None:

@@ -30,8 +30,8 @@ _ASSESSMENT = {
 }
 
 
-def test_schema_version_is_23() -> None:
-    assert CURRENT_SCHEMA_VERSION == 23  # 175: + attributed documentation findings
+def test_schema_version_is_24() -> None:
+    assert CURRENT_SCHEMA_VERSION == 24  # 343: + workflow step trail
 
 
 def test_new_assessment_field_defaults_to_none() -> None:
