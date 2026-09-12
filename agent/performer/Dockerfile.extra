@@ -48,5 +48,47 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
        ln -sf /usr/bin/firefox-esr /usr/local/bin/firefox \
     && rm -rf /var/lib/apt/lists/*
 
-# Selenium 4 / the webdrivers gem auto-download geckodriver at runtime; chromedriver
-# is provided by chromium-driver above. Headless is the caller's flag, not baked here.
+# geckodriver: Debian packages firefox-esr but NOT geckodriver, so a Firefox
+# Selenium session has no driver at all. Installed from Mozilla's releases with
+# the same retry shape Dockerfile.full uses for playwright, because a transient
+# network blip during a build should not silently ship a browser that cannot be
+# driven.
+ARG GECKODRIVER_VERSION=0.35.0
+RUN set -eux; \
+    case "${TARGETARCH:-arm64}" in \
+      amd64) GD_ARCH=linux64 ;; \
+      arm64) GD_ARCH=linux-aarch64 ;; \
+      *) GD_ARCH=linux64 ;; \
+    esac; \
+    n=0; until wget -q -O /tmp/gd.tar.gz \
+        "https://github.com/mozilla/geckodriver/releases/download/v${GECKODRIVER_VERSION}/geckodriver-v${GECKODRIVER_VERSION}-${GD_ARCH}.tar.gz"; do \
+      n=$((n+1)); [ "$n" -ge 5 ] && exit 1; sleep 5; \
+    done; \
+    tar -xzf /tmp/gd.tar.gz -C /usr/bin geckodriver; \
+    rm -f /tmp/gd.tar.gz; \
+    chmod +x /usr/bin/geckodriver; \
+    geckodriver --version | head -1
+
+# 385: the `webdrivers` gem does NOT fall back to a driver already on PATH. It
+# overrides Selenium's driver path with its own download directory and, when
+# that download has not happened, hands Selenium a path to a file that does not
+# exist:
+#
+#     webdrivers resolves driver to: /root/.webdrivers/chromedriver
+#     ls: cannot access '/root/.webdrivers/': No such file or directory
+#     WebDriverError: unable to connect to /root/.webdrivers/chromedriver
+#
+# ...while /usr/bin/chromedriver sits next to a matching Chromium, working. That
+# is why every Selenium feature spec failed in this image while the same commit
+# passed CI, where the gem can reach its download endpoint.
+#
+# Pointing the gem's install dir at the system one makes it adopt the drivers
+# installed above instead of downloading. Verified with --network none, which
+# matters: a fix that needs a download reintroduces the failure on a restricted
+# network. Harmless for suites that do not use the gem.
+#
+# The comment this replaces claimed chromedriver "is provided by chromium-driver
+# above" — true, and irrelevant while the gem overrode the path.
+ENV WD_INSTALL_DIR=/usr/bin
+
+# Headless is the caller's flag, not baked here.
