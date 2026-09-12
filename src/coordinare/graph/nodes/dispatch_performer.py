@@ -2151,6 +2151,13 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
     state["agent_dispatch_at"] = datetime.now(UTC)
     state["performer_events"] = []
     state["performer_metrics"] = None
+    # 380: the production clock summarises performer_events, so it is reset
+    # with them. A fingerprint left over from the previous run sits above a
+    # freshly empty stream and suppresses every reset until the new run
+    # exceeds the old run's command count; a leftover timestamp measures the
+    # new run from the old one's last command. Both kill healthy performers.
+    state["last_production_at"] = None
+    state["last_production_fingerprint"] = None
     # 072 FR-072-5(c): snapshot the pre-turn clarifications count so the
     # per-role zero-progress guardrail can tell whether new clarifications
     # arrived during this performer turn (via route_issue_comments or
