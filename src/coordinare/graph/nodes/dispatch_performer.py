@@ -2158,6 +2158,10 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
     # new run from the old one's last command. Both kill healthy performers.
     state["last_production_at"] = None
     state["last_production_fingerprint"] = None
+    # 380: the reprieve budget belongs to ONE performer run, exactly like the
+    # production clock above it. Left behind, a run that spent its reprieve in
+    # an earlier stage silently denies it to every stage after.
+    state["convergence_reprieves"] = 0
     # 072 FR-072-5(c): snapshot the pre-turn clarifications count so the
     # per-role zero-progress guardrail can tell whether new clarifications
     # arrived during this performer turn (via route_issue_comments or

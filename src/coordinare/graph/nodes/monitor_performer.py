@@ -61,12 +61,40 @@ MAX_PERFORMER_EVENTS = 100
 #: remains the one that normally acts.
 ABSOLUTE_CEILING_MULTIPLIER = 4
 
+from coordinare.services.convergence import (  # noqa: E402
+    MAX_REPRIEVES,
+    ConvergenceVerdict,
+    build_question,
+    parse_verdict,
+)
+
+# aliased: this module already binds `persona` as a loop variable elsewhere, and
+# a shadowed import is a silent wrong-value bug waiting to happen.
+from coordinare.services.convergence import persona as convergence_persona  # noqa: E402
 from coordinare.services.progress_evidence import (  # noqa: E402
     evaluate_stall,
     production_advanced,
     production_fingerprint,
     read_evidence,
 )
+
+
+def _recent_event_text(events: Any) -> list[str]:
+    """The last few things the performer said, for the convergence question.
+
+    Reads defensively: events arrive from a backend coordinare does not control,
+    and this runs on the path that decides whether to kill a run.
+    """
+    out: list[str] = []
+    for event in reversed(list(events or [])[-40:]):
+        if not isinstance(event, dict):
+            continue
+        text = event.get("text")
+        if isinstance(text, str) and text.strip():
+            out.append(text.strip())
+        if len(out) >= 6:
+            break
+    return out
 
 
 def merge_performer_events(
@@ -1229,6 +1257,7 @@ def _advance_stage(state: CoordinareState, status: dict[str, Any] | None = None)
             # commands of its own before its clock could reset at all.
             "last_production_at": None,
             "last_production_fingerprint": None,
+            "convergence_reprieves": 0,
         }
         artefact_updates = _record_pr_artefacts(state, status)
         if "current_card" in artefact_updates:
@@ -3411,6 +3440,46 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
         if _stall.expired:
             elapsed = _stall.elapsed_s
             _ev = read_evidence(state.get("performer_events"))
+            # 380: the floor decided WHEN to look; it cannot tell a genuinely
+            # stuck turn from one waiting on something slow. Ask, but only ever
+            # to GRANT more time -- never to take it away. When the gateway is
+            # unreachable the floor decides exactly as it did before this, which
+            # matters because a wedged gateway is itself a cause of stalled
+            # performers.
+            _reprieves = int(state.get("convergence_reprieves") or 0)
+            _backend = state.get("conducting_backend")
+            if _backend is not None and _reprieves < MAX_REPRIEVES:
+                _verdict = ConvergenceVerdict(converging=False, reason="not asked")
+                try:
+                    _answer = await _backend.prompt(
+                        convergence_persona() + "\n\n" + build_question(
+                            stage=stage,
+                            elapsed_s=elapsed,
+                            tool_uses=_ev.tool_uses,
+                            completions=_ev.completions,
+                            total_events=_ev.total_events,
+                            recent_text=_recent_event_text(state.get("performer_events")),
+                        ),
+                        response_format="json",
+                    )
+                    _verdict = parse_verdict(_answer)
+                except Exception as exc:
+                    logger.warning(
+                        "monitor_performer.convergence_unavailable",
+                        card_id=card_id, error=type(exc).__name__,
+                    )
+                if _verdict.converging:
+                    state["convergence_reprieves"] = _reprieves + 1
+                    state["last_production_at"] = datetime.now(UTC)
+                    logger.info(
+                        "monitor_performer.convergence_reprieve",
+                        card_id=card_id, performer_stage=stage,
+                        reprieve=_reprieves + 1, of=MAX_REPRIEVES,
+                        elapsed_seconds=round(elapsed), reason=_verdict.reason[:200],
+                    )
+                    return state
+                if _verdict.reason and _verdict.reason != "not asked":
+                    state["convergence_reason"] = _verdict.reason
             logger.warning(
                 "monitor_performer.session_timeout",
                 performer_stage=stage,
@@ -3436,6 +3505,8 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
                 f"(limit: {timeout_secs}s, measured from {_stall.anchor}). "
                 f"In that window it emitted {_ev.total_events} events, "
                 f"ran {_ev.tool_uses} commands and completed {_ev.completions} steps."
+                + (f" Judged not converging: {state['convergence_reason']}"
+                   if state.get("convergence_reason") else "")
             ]
             return state
 
