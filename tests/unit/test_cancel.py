@@ -358,3 +358,205 @@ async def test_cancel_retires_active_session() -> None:
     assert state["current_card"] is None
     assert state["active_card_id"] is None
     assert "ITEM_1" not in state["active_sessions"]
+
+
+# --- 377: the override levers must work on a restored multi-session state ----
+
+
+def _restored_multi_session_state() -> dict:
+    """State as it is after a daemon restart, while a performer is running.
+
+    The shape matters and is the whole of #377. Each session's ``current_card``
+    is NOT persisted -- it is "rebuilt from the live board by check_board's
+    re-adopt path" (daemon.py) -- so after a restart the derived top-level
+    mirror is None while `active_card_id` and `active_sessions` are populated
+    and a performer is genuinely running.
+
+    Every existing test in this file sets ``current_card`` directly, which is
+    the single-card model and why this defect passed CI while being inert in
+    production.
+    """
+    state = initial_state()
+    state["phase"] = "monitoring_performer"
+    state["active_card_id"] = "ITEM_1"
+    state["active_card_title"] = "Weekly timesheet"
+    state["active_sessions"] = {
+        "ITEM_1": {"card_id": "ITEM_1", "performer_stage": "implementing", "phase": "monitoring_performer"}
+    }
+    state["current_card"] = None  # the mirror, not yet re-derived
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["agent_service"] = MagicMock(relay_feedback=AsyncMock(return_value={}))
+    state["github_service"] = MagicMock(move_card=AsyncMock())
+    state["notification_service"] = MagicMock(dispatch=AsyncMock())
+    return state
+
+
+@pytest.mark.asyncio
+async def test_cancel_works_on_a_restored_session_without_the_mirror() -> None:
+    """The defect: observed live, with a performer running and being polled.
+
+        POST /api/cancel -> {"status": "no_active_card"}
+
+    while monitor_performer logged has_live_session=True every 37s. Cancel is
+    the operator's emergency stop, and it was inert in the one state where they
+    would reach for it. The workaround -- stopping the container by hand -- is
+    worse than nothing: coordinare reads the dead container as a system error and
+    spends one of the card's three retries.
+    """
+    state = _restored_multi_session_state()
+
+    result = await cancel_active_card(state)
+
+    assert result["status"] == "cancelled", "a live session must be cancellable"
+    assert result["card_id"] == "ITEM_1"
+    assert state["phase"] == "idle"
+    assert state["agent_dispatch"] == {}
+
+
+@pytest.mark.asyncio
+async def test_the_performer_is_actually_stopped_not_just_the_state_reset() -> None:
+    """Resolving the card is pointless if the performer keeps running."""
+    state = _restored_multi_session_state()
+    relay = state["agent_service"].relay_feedback
+
+    await cancel_active_card(state)
+
+    assert relay.await_count == 1, "the performer session was never told to stop"
+    sent = relay.await_args.args[0]
+    assert sent.get("action") == "cancel" and sent.get("session_id") == "s1"
+
+
+@pytest.mark.asyncio
+async def test_the_card_goes_back_to_the_board() -> None:
+    """Otherwise the card is stranded: not running, not queued."""
+    state = _restored_multi_session_state()
+
+    await cancel_active_card(state)
+
+    state["github_service"].move_card.assert_awaited()
+    assert "ITEM_1" in str(state["github_service"].move_card.await_args)
+
+
+@pytest.mark.asyncio
+async def test_genuinely_idle_still_reports_no_active_card() -> None:
+    """The guard must still refuse when there is really nothing to cancel.
+
+    A fix that resolves a card out of an empty state would make the endpoint
+    always claim success, which is a worse lie than the original refusal.
+    """
+    state = initial_state()
+    state["phase"] = "idle"
+    state["active_sessions"] = {}
+    state["active_card_id"] = None
+
+    assert (await cancel_active_card(state))["status"] == "no_active_card"
+
+
+@pytest.mark.asyncio
+async def test_a_stale_active_card_id_with_no_session_is_not_cancellable() -> None:
+    """active_card_id pointing at a session that no longer exists is not a card."""
+    state = initial_state()
+    state["phase"] = "monitoring_performer"
+    state["active_card_id"] = "GONE"
+    state["active_sessions"] = {}
+
+    assert (await cancel_active_card(state))["status"] == "no_active_card"
+
+
+@pytest.mark.asyncio
+async def test_idle_refuses_even_when_a_session_is_still_resolvable() -> None:
+    """The phase guard is load-bearing on its own, not just belt-and-braces.
+
+    A session entry can outlive the work it described -- retirement clears it,
+    but a snapshot restored while idle, or a session awaiting reconciliation,
+    leaves a resolvable card id with nothing actually running. Cancelling then
+    would stop a performer that does not exist, move a card nobody was working
+    on back to Todo, and reset counters for a run that already finished.
+
+    This survived a mutation run with the phase check removed: every other test
+    either has no resolvable card or an active phase, so nothing held it.
+    """
+    state = initial_state()
+    state["phase"] = "idle"
+    state["active_card_id"] = "ITEM_1"
+    state["active_sessions"] = {"ITEM_1": {"card_id": "ITEM_1", "performer_stage": "implementing"}}
+    state["github_service"] = MagicMock(move_card=AsyncMock())
+
+    result = await cancel_active_card(state)
+
+    assert result["status"] == "no_active_card", "idle must refuse, whatever state lingers"
+    state["github_service"].move_card.assert_not_awaited()
+
+
+# --- 377 review: resolving the card is not enough --------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_card_readopted_after_restart_reports_that_it_could_not_stop() -> None:
+    """The case this whole fix exists for, and where it nearly lied.
+
+    `agent_dispatch` is deliberately not persisted -- state_store calls it a
+    transient field "intentionally omitted" -- and check_board says a freshly
+    readopted session has no `agent_dispatch.session_id`. So exactly when a card
+    is readopted after a restart, there is no id to stop the performer with.
+
+    Before this, cancel returned a bare "cancelled": the card was reset and
+    moved to Todo while the performer kept running. That is worse than the
+    original `no_active_card`, because it is a confident lie.
+    """
+    state = _restored_multi_session_state()
+    state["agent_dispatch"] = {}  # not persisted, so empty after a restart
+
+    result = await cancel_active_card(state)
+
+    assert result["performer_stopped"] is False
+    assert "could not reach the performer" in result.get("warning", "")
+    state["agent_service"].relay_feedback.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_card_that_could_not_be_stopped_is_not_returned_to_todo() -> None:
+    """Returning it would hand a live branch a second performer.
+
+    A card in Todo is eligible for pickup. If the old performer is still alive,
+    two of them end up on one branch pushing over each other. Leaving the card
+    in place is recoverable; a double dispatch is not.
+    """
+    state = _restored_multi_session_state()
+    state["agent_dispatch"] = {}
+
+    result = await cancel_active_card(state)
+
+    assert result["returned_to_todo"] is False
+    state["github_service"].move_card.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_session_id_belonging_to_another_card_is_not_used() -> None:
+    """Stale dispatch: a retired session leaves the old card's id behind.
+
+    check_board can promote a new active_card_id without touching
+    agent_dispatch, so the id can name a different card than the one resolved.
+    Stopping that one would kill an unrelated performer and leave this card's
+    own performer running.
+    """
+    state = _restored_multi_session_state()
+    state["agent_dispatch"] = {"session_id": "s_other", "card_id": "SOME_OTHER_CARD"}
+
+    result = await cancel_active_card(state)
+
+    state["agent_service"].relay_feedback.assert_not_awaited()
+    assert result["performer_stopped"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_confirmed_stop_still_returns_the_card_to_todo() -> None:
+    """The happy path must keep working: stopped means returned."""
+    state = _restored_multi_session_state()  # carries a matching session id
+
+    result = await cancel_active_card(state)
+
+    assert result["performer_stopped"] is True
+    assert result["returned_to_todo"] is True
+    assert "warning" not in result
+    state["github_service"].move_card.assert_awaited()
