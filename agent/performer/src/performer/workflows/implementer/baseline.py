@@ -237,6 +237,62 @@ def regressions(baseline: Baseline, summary: TestSummary) -> list[str]:
     return regressed
 
 
+def new_failures(baseline: Baseline, summary: TestSummary) -> list[str]:
+    """Failures in *summary* that were not already failing at *baseline* (387).
+
+    The question a gate should ask is "did this card break anything", not "is
+    this repository perfect". Those differ whenever the suite was red before the
+    card began -- which on the measured website run was sixteen feature specs
+    failing for an environmental reason the card had nothing to do with.
+
+    ``regressions()`` answers a different question: which tests that PASSED at
+    baseline now fail. That needs baseline.test_names, which most runners never
+    print. This reads the other side of the record, the failures, and falls back
+    to counts when names are unavailable.
+
+    Fails closed. With nothing recorded at baseline, a failure cannot be shown
+    to pre-date the card, so it counts as new.
+    """
+    failing_now = list(summary.test_names_failed or [])
+    if failing_now:
+        already = set(baseline.test_names_failed or [])
+        return sorted(name for name in failing_now if name not in already)
+
+    # No names from this run, so only counts are available.
+    if not summary.failed:
+        return []
+
+    if baseline.fail_count is None:
+        # Nothing recorded at baseline. A failure cannot be shown to pre-date
+        # the card, so it is the card's. This is the fail-closed case, and an
+        # earlier cut returned [] here -- passing the gate on the strength of
+        # having no evidence at all.
+        return [f"{summary.failed} failure(s), and the baseline recorded no failure count"]
+
+    if summary.failed > baseline.fail_count:
+        return [f"failure count rose: {baseline.fail_count} -> {summary.failed}"]
+
+    # Equal or fewer. NOT provably clean: a card that fixed two tests and broke
+    # two different ones leaves the count unchanged, and counts cannot tell that
+    # from an untouched red suite. Treating equality as a regression is not the
+    # answer -- an unchanged red suite is the NORMAL state for the repositories
+    # this gate exists to unblock, so it would block every card on them.
+    #
+    # So this returns "nothing provably new" and callers must say so honestly
+    # rather than claim the run was verified. See name_based_comparison().
+    return []
+
+
+def name_based_comparison(baseline: Baseline, summary: TestSummary) -> bool:
+    """Whether new_failures() could compare by test NAME rather than by count.
+
+    Counts cannot distinguish "the same tests are still failing" from "different
+    tests are failing now". A caller that reports a pass should say which of the
+    two it actually established.
+    """
+    return bool(summary.test_names_failed) or not summary.failed
+
+
 async def detect_baseline(toolkit, score, *, timeout_s: int = 600) -> Baseline:
     """Detect and run the test command once to record baseline (FR-004).
 

@@ -357,7 +357,10 @@ async def _red_observed(ctx: RunContext, milestone: MilestonePlan, files: list[s
         # above.
         log.info("implementer.red_unjudgeable", milestone=milestone.index, exit_code=summary.exit_code)
         return False
-    judgement = await judge_red(ctx.toolkit, milestone.goal, observation, files)
+    judgement = await judge_red(
+        ctx.toolkit, milestone.goal, observation, files,
+        already_failing=list(ctx.baseline.test_names_failed or []),
+    )
     log.info(
         "implementer.red_judged",
         milestone=milestone.index,

@@ -20,6 +20,19 @@ from performer.workflows.implementer.observe import TestObservation
 from performer.workflows.implementer.scoping import ScopedRun, scope_persona, scoped_command
 
 
+def _real_baseline():
+    """The REAL Baseline type, not a SimpleNamespace.
+
+    387 caught this: a stand-in missing test_names_failed passed every test here
+    while the production type has always had it, so these tests were asserting
+    against a shape the lane never sees.
+    """
+    from performer.workflows.implementer.models import Baseline
+
+    return Baseline(test_names=None, test_names_failed=None, pass_count=0,
+                    fail_count=0, stack="", detected_from="test")
+
+
 def _toolkit(*, scoped: ScopedRun, exit_code: int = 1, output: str = "1 failure"):
     """A toolkit whose call_model answers the scoping question then observation."""
     calls: list[str] = []
@@ -120,7 +133,7 @@ async def test_tests_runs_the_scoped_command_not_the_suite(tmp_path):
     ctx = driver.RunContext(
         toolkit=toolkit, stand=SimpleNamespace(path=str(tmp_path)), score=SimpleNamespace(),
         budgets=SimpleNamespace(), runner_kind="", test_command="bundle exec rspec",
-        baseline=SimpleNamespace(test_names=None, pass_count=0, fail_count=0),
+        baseline=_real_baseline(),
     )
     await driver._tests(ctx, ["spec/a_spec.rb"], scope=True)
     assert "run:bundle exec rspec spec/a_spec.rb" in calls
@@ -137,7 +150,7 @@ async def test_scoping_is_asked_once_per_file_set_not_once_per_attempt(tmp_path)
     ctx = driver.RunContext(
         toolkit=toolkit, stand=SimpleNamespace(path=str(tmp_path)), score=SimpleNamespace(),
         budgets=SimpleNamespace(), runner_kind="", test_command="bundle exec rspec",
-        baseline=SimpleNamespace(test_names=None, pass_count=0, fail_count=0),
+        baseline=_real_baseline(),
     )
     for _ in range(3):
         await driver._tests(ctx, ["spec/a_spec.rb"], scope=True)
@@ -153,7 +166,7 @@ async def test_unscoped_call_never_asks_the_model_to_scope(tmp_path):
     ctx = driver.RunContext(
         toolkit=toolkit, stand=SimpleNamespace(path=str(tmp_path)), score=SimpleNamespace(),
         budgets=SimpleNamespace(), runner_kind="", test_command="bundle exec rspec",
-        baseline=SimpleNamespace(test_names=None, pass_count=0, fail_count=0),
+        baseline=_real_baseline(),
     )
     await driver._tests(ctx)
     assert calls.count("scope") == 0
@@ -303,7 +316,7 @@ async def test_the_local_gate_runs_the_whole_unscoped_suite(tmp_path):
         stand=SimpleNamespace(path=str(tmp_path)),
         score=SimpleNamespace(owner_repo=("org", "repo"), effective_github_token="t", branch_name="b"),
         budgets=SimpleNamespace(), runner_kind="", test_command="bundle exec rspec",
-        baseline=SimpleNamespace(test_names=None, pass_count=0, fail_count=0),
+        baseline=_real_baseline(),
     )
     ImplementerWorkflow._default_edges(ctx)
     assert ctx.local_gate is not None
@@ -331,7 +344,7 @@ async def test_a_failing_whole_suite_stops_the_local_gate(tmp_path):
         stand=SimpleNamespace(path=str(tmp_path)),
         score=SimpleNamespace(owner_repo=("org", "repo"), effective_github_token="t", branch_name="b"),
         budgets=SimpleNamespace(), runner_kind="", test_command="bundle exec rspec",
-        baseline=SimpleNamespace(test_names=None, pass_count=0, fail_count=0),
+        baseline=_real_baseline(),
     )
     ImplementerWorkflow._default_edges(ctx)
     verdict, detail = await ctx.local_gate()
