@@ -23,7 +23,9 @@ import structlog
 from performer.models import BackendEvent, BackendEventType
 from performer.test_results import _env_signature_reason, _match_env_signature
 from performer.workflows.base import WorkflowResult
-from performer.workflows.implementer.baseline import (
+from performer.workflows.implementer.baseline import (  # noqa: I001
+    name_based_comparison,
+    new_failures,
     NoTestRunner,
     capture_baseline,
     detect_lint_command,
@@ -129,7 +131,29 @@ class ImplementerWorkflow:
             signature = _match_env_signature(summary.raw_tail)
             if signature:
                 return "env", _env_signature_reason(signature, summary.raw_tail)
-            return "fail", summary.raw_tail[-1500:]
+            # 387: the gate asks whether THIS CARD broke anything, not whether
+            # the repository is perfect. Asserting absolute green meant a repo
+            # with one pre-existing failing test could never ship a card, on a
+            # condition no card caused and none can fix within its scope. A
+            # failure already present at baseline is the repository's, and is
+            # reported rather than charged to the card.
+            introduced = new_failures(ctx.baseline, summary)
+            if not introduced:
+                already = len(ctx.baseline.test_names_failed or []) or ctx.baseline.fail_count or 0
+                log.warning(
+                    "implementer.local_gate_red_baseline",
+                    already_failing=already,
+                    detail="shipping onto a suite that was already red",
+                )
+                verified = name_based_comparison(ctx.baseline, summary)
+                return "pass", (
+                    f"{already} test(s) were already failing before this card; "
+                    + ("none of the failures are new"
+                       if verified else
+                       "the runner printed no test names, so this was compared by "
+                       "COUNT only and an equal count cannot prove the same tests failed")
+                )
+            return "fail", "new failures: " + ", ".join(introduced[:20]) + "\n" + summary.raw_tail[-1200:]
 
         async def sleep(seconds: float) -> None:
             import asyncio

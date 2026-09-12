@@ -155,6 +155,10 @@ def judge_persona() -> str:
         "failing to load because the class or module it names does not exist -- "
         "the code has not been written, which is the whole point of running the "
         "test first.\n\n"
+        "Some tests may have been already failing before your partner started. "
+        "Those are the repository's problem, not evidence about this milestone: "
+        "do not let them decide your verdict, and do not send your partner to "
+        "fix them. Judge only what the new tests did.\n\n"
         "It is NOT the expected red when the new tests pass without any "
         "implementation (the test asserts nothing useful), when the failure is "
         "in unrelated pre-existing tests, when the test itself is broken in a "
@@ -191,12 +195,28 @@ async def observe_tests(
 
 
 async def judge_red(
-    toolkit: Any, milestone_goal: str, observation: TestObservation, changed_test_files: list[str]
+    toolkit: Any,
+    milestone_goal: str,
+    observation: TestObservation,
+    changed_test_files: list[str],
+    already_failing: list[str] | None = None,
 ) -> RedJudgement:
-    """Judge whether the observed failure is the expected red."""
+    """Judge whether the observed failure is the expected red.
+
+    387: ``already_failing`` is what the baseline recorded as failing BEFORE the
+    card began. Without it this asks a question with the answer withheld -- on
+    the measured website run the judge was shown sixteen failures, every one of
+    them pre-existing, and correctly concluded the failures were unrelated to
+    the milestone. It was reasoning properly from an incomplete picture.
+    """
     from performer.workflows.budget import Budget
 
     changed = "\n".join(f"- {p}" for p in changed_test_files[:100]) or "(no test file changed)"
+    prior = list(already_failing or [])
+    prior_block = (
+        "\n".join(f"- {p}" for p in prior[:60])
+        if prior else "(nothing was failing before your partner started)"
+    )
     content = [{
         "type": "text",
         "text": (
@@ -209,6 +229,8 @@ async def judge_red(
             f"  load errors: {observation.load_errors[:20]}\n"
             f"  environment problem: {observation.environment_problem or '(none)'}\n"
             f"  summary: {observation.summary}\n\n"
+            f"Tests that were ALREADY FAILING before your partner started "
+            f"({len(prior)} total):\n{prior_block}\n\n"
             "Return the judgement JSON."
         ),
     }]
