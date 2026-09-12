@@ -54,6 +54,21 @@ logger = structlog.get_logger(__name__)
 MAX_PERFORMER_EVENTS = 100
 
 
+#: 380: how much wider the dispatch-anchored backstop is than the stall
+#: ceiling. A performer looping on a failing command keeps producing, so the
+#: stall clock resets forever; this bounds the run regardless. Wide enough that
+#: it never fires on legitimate long work, which is why the stall ceiling
+#: remains the one that normally acts.
+ABSOLUTE_CEILING_MULTIPLIER = 4
+
+from coordinare.services.progress_evidence import (  # noqa: E402
+    evaluate_stall,
+    production_advanced,
+    production_fingerprint,
+    read_evidence,
+)
+
+
 def merge_performer_events(
     existing: list[Any], reported: list[Any], *, cap: int = MAX_PERFORMER_EVENTS
 ) -> list[Any]:
@@ -1205,6 +1220,15 @@ def _advance_stage(state: CoordinareState, status: dict[str, Any] | None = None)
             "phase": "dispatching",
             "agent_dispatch": {},
             "agent_dispatch_at": None,
+            # 380: the production clock belongs to ONE performer run and must
+            # die with it, exactly as agent_dispatch_at does. Left behind, the
+            # next stage is measured from the previous stage's last command and
+            # can be killed on its first poll. Worse, dispatch clears
+            # performer_events, so the inherited fingerprint (say 9 commands)
+            # sits above a freshly empty stream: the new stage would need ten
+            # commands of its own before its clock could reset at all.
+            "last_production_at": None,
+            "last_production_fingerprint": None,
         }
         artefact_updates = _record_pr_artefacts(state, status)
         if "current_card" in artefact_updates:
@@ -3368,28 +3392,52 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
                 actual_column = _find_card_column(card_id, board_snapshot)
                 if _reconcile_board_mismatch(state, card_id, expected_column, actual_column):
                     return state
-        # 027: Check session timeout before polling status
+        # 027: Check session timeout before polling status.
+        # 380: measured from the last thing the performer PRODUCED, not from
+        # dispatch. A blind stopwatch fails in both directions -- it kills work
+        # that is progressing slowly and grants a full budget to work that is
+        # going nowhere. `last_production_at` is set below, after each poll's
+        # events are merged, and stays None until the performer does something,
+        # so a run that has produced nothing is measured from dispatch exactly
+        # as it was before.
         dispatch_at = state.get("agent_dispatch_at")
-        if timeout_secs > 0 and dispatch_at is not None:
-            elapsed = (datetime.now(UTC) - dispatch_at).total_seconds()
-            if elapsed > timeout_secs:
-                logger.warning(
-                    "monitor_performer.session_timeout",
-                    performer_stage=stage,
-                    card_id=card_id,
-                    elapsed_seconds=round(elapsed),
-                    timeout_seconds=timeout_secs,
-                )
-                # 048: release slot on timeout
-                _sm = state.get("slot_manager")
-                if _sm is not None and hasattr(_sm, "release"):
-                    _sm.release(stage, card_id)
-                state["phase"] = "blocked"
-                state["open_questions"] = [
-                    f"Performer ({stage}) timed out after {round(elapsed)}s "
-                    f"(limit: {timeout_secs}s)"
-                ]
-                return state
+        _stall = evaluate_stall(
+            now=datetime.now(UTC),
+            dispatch_at=dispatch_at,
+            last_production_at=state.get("last_production_at"),
+            timeout_secs=timeout_secs,
+            absolute_timeout_secs=timeout_secs * ABSOLUTE_CEILING_MULTIPLIER,
+        )
+        if _stall.expired:
+            elapsed = _stall.elapsed_s
+            _ev = read_evidence(state.get("performer_events"))
+            logger.warning(
+                "monitor_performer.session_timeout",
+                performer_stage=stage,
+                card_id=card_id,
+                elapsed_seconds=round(elapsed),
+                timeout_seconds=timeout_secs,
+                anchor=_stall.anchor,
+                tool_uses=_ev.tool_uses,
+            )
+            # 048: release slot on timeout
+            _sm = state.get("slot_manager")
+            if _sm is not None and hasattr(_sm, "release"):
+                _sm.release(stage, card_id)
+            state["phase"] = "blocked"
+            state["open_questions"] = [
+                # 380: keeps the "timed out" wording operators and tests grep
+                # for, and adds what the clock alone could never say: whether
+                # anything was actually happening. A run that emitted hundreds
+                # of events while running no commands reads very differently
+                # from one that was quietly working, and the old message could
+                # not tell them apart.
+                f"Performer ({stage}) timed out after {round(elapsed)}s with nothing produced "
+                f"(limit: {timeout_secs}s, measured from {_stall.anchor}). "
+                f"In that window it emitted {_ev.total_events} events, "
+                f"ran {_ev.tool_uses} commands and completed {_ev.completions} steps."
+            ]
+            return state
 
         # Include a fresh GitHub token in the status check so the performer
         # can refresh its credentials mid-session (App tokens expire after 1 hour).
@@ -3548,6 +3596,13 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
             # cumulative, so appending it whole stored the same events again
             # on every poll until the buffer held nothing else.
             state["performer_events"] = merge_performer_events(existing, new_events)
+            # 380: the clock resets only when something was PRODUCED. Talking
+            # does not count: the turn this was filed for emitted 164 progress
+            # deltas while changing zero files and running zero commands.
+            _fingerprint = production_fingerprint(state["performer_events"])
+            if production_advanced(_fingerprint, state.get("last_production_fingerprint")):
+                state["last_production_fingerprint"] = _fingerprint
+                state["last_production_at"] = datetime.now(UTC)
             # 138 T023: record in the same invocation that observed the batch —
             # the earliest anything can, and what makes SC-004 measurable. Hand
             # over the WHOLE reported list without pre-diffing: backends

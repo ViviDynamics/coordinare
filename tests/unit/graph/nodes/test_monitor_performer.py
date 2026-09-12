@@ -3730,3 +3730,210 @@ async def test_multi_concern_stays_implementing_when_no_assessing_stage() -> Non
     state["config"] = SimpleNamespace(max_feedback_cycles=5)
     result = await monitor_performer(state)
     assert result["performer_stage"] == "implementing"
+
+
+# ---------------------------------------------------------------------------
+# 380 — the ceiling runs from what was produced, not from dispatch
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_performer_that_keeps_working_is_not_killed_by_the_dispatch_clock() -> None:
+    """Measured 2026-09-12: a healthy website run went 14 minutes without a
+    single event (a whole-suite run plus two model calls, CPU 0.67%) and had
+    produced 49 tool_use in its window. Anchored on dispatch, the ceiling ends
+    that run regardless of the work landing minutes earlier."""
+    from datetime import UTC, datetime, timedelta
+
+    state = initial_state()
+    state["performer_services"] = {"implementing": _Performer(response={"status": "working"})}
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing"]
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["agent_dispatch_at"] = datetime.now(UTC) - timedelta(seconds=600)
+    state["role_timeouts"] = {"implementing": 300}
+    # it ran a command a minute ago
+    state["last_production_at"] = datetime.now(UTC) - timedelta(seconds=60)
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] != "blocked", (
+        "a performer that acted a minute ago was killed by the dispatch clock: "
+        f"{result.get('open_questions')}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_performer_that_only_talks_still_hits_the_ceiling() -> None:
+    """The other direction, and the turn this was filed for: 164 progress
+    deltas, zero commands, zero files. Events arriving is not progress, so the
+    clock never resets and the ceiling still ends it."""
+    from datetime import UTC, datetime, timedelta
+
+    state = initial_state()
+    state["performer_services"] = {"implementing": _Performer(response={"status": "working"})}
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing"]
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["agent_dispatch_at"] = datetime.now(UTC) - timedelta(seconds=600)
+    state["role_timeouts"] = {"implementing": 300}
+    state["performer_events"] = [{"type": "progress", "text": "still thinking"}] * 164
+    # nothing was ever produced, so no production timestamp was ever set
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "blocked"
+    question = " ".join(result.get("open_questions", []))
+    assert "timed out" in question
+    assert "ran 0 commands" in question, f"the reason did not carry the evidence: {question!r}"
+
+
+@pytest.mark.asyncio
+async def test_running_a_command_resets_the_clock() -> None:
+    """The wiring: a poll that reports a new tool_use must stamp
+    last_production_at, or the reset above can never happen in a live run."""
+    from datetime import UTC, datetime, timedelta
+
+    state = initial_state()
+    svc = _Performer(response={
+        "status": "working",
+        "events": [{"type": "progress", "text": "thinking"}, {"type": "tool_use", "text": "ls"}],
+    })
+    state["performer_services"] = {"implementing": svc}
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing"]
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["agent_dispatch_at"] = datetime.now(UTC) - timedelta(seconds=10)
+    state["role_timeouts"] = {"implementing": 3000}
+
+    result = await monitor_performer(state)
+
+    assert result.get("last_production_at") is not None, "a command did not reset the clock"
+    assert result.get("last_production_fingerprint") == (1, 0)
+
+
+@pytest.mark.asyncio
+async def test_more_talking_does_not_reset_the_clock() -> None:
+    """The trap this whole issue is about, pinned at the wiring level."""
+    from datetime import UTC, datetime, timedelta
+
+    state = initial_state()
+    svc = _Performer(response={
+        "status": "working",
+        "events": [{"type": "progress", "text": f"delta {i}"} for i in range(50)],
+    })
+    state["performer_services"] = {"implementing": svc}
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing"]
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["agent_dispatch_at"] = datetime.now(UTC) - timedelta(seconds=10)
+    state["role_timeouts"] = {"implementing": 3000}
+
+    result = await monitor_performer(state)
+
+    assert result.get("last_production_at") is None, "talking reset the clock"
+
+
+@pytest.mark.asyncio
+async def test_a_new_stage_does_not_inherit_the_previous_stage_s_production_clock() -> None:
+    """Adversarial review, confirmed critical. _advance_stage cleared
+    agent_dispatch_at but not the production clock, so a freshly dispatched
+    stage was measured from the PREVIOUS stage's last command and could be
+    killed on its first poll while perfectly healthy."""
+    from datetime import UTC, datetime, timedelta
+
+    state = initial_state()
+    state["performer_services"] = {"documenting": _Performer(response={"status": "working"})}
+    state["performer_stage"] = "documenting"
+    state["lifecycle_sequence"] = ["implementing", "documenting"]
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s2"}
+    state["agent_dispatch_at"] = datetime.now(UTC) - timedelta(seconds=70)
+    state["role_timeouts"] = {"documenting": 100}
+    # the previous stage last produced 150s ago; this stage started 70s ago
+    state["last_production_at"] = datetime.now(UTC) - timedelta(seconds=150)
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] != "blocked", (
+        "a stage dispatched 70s ago under a 100s timeout was killed by the "
+        f"previous stage's clock: {result.get('open_questions')}"
+    )
+
+
+def test_advance_stage_clears_the_production_clock_with_the_dispatch_clock() -> None:
+    """The fix at its source: whatever else changes, these two die together."""
+    from coordinare.graph.nodes.monitor_performer import _advance_stage
+
+    state = initial_state()
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing", "documenting"]
+    state["current_card"] = {"id": "ITEM_1"}
+    state["last_production_at"] = datetime.now(UTC)
+    state["last_production_fingerprint"] = (9, 2)
+
+    updates = _advance_stage(state)
+
+    # `.get()` returns None for an ABSENT key too, so a missing clear would
+    # read as a successful one. Presence first, then the value.
+    for key in ("agent_dispatch_at", "last_production_at", "last_production_fingerprint"):
+        assert key in updates, f"{key} was not cleared on stage advance"
+        assert updates[key] is None, f"{key} was not reset to None"
+
+
+@pytest.mark.asyncio
+async def test_a_producing_but_looping_performer_hits_the_absolute_ceiling() -> None:
+    """Adversarial review, confirmed: every retry of a failing command is a
+    real tool_use, so a looping performer keeps resetting the stall clock. The
+    dispatch-anchored backstop is what still ends it."""
+    from datetime import UTC, datetime, timedelta
+
+    from coordinare.graph.nodes.monitor_performer import ABSOLUTE_CEILING_MULTIPLIER
+
+    # Deliberately NOT derived from the multiplier: a dispatch age computed
+    # from the constant scales with it, so widening the backstop to uselessness
+    # would still pass. A fixed age pins that the bound is actually bounded.
+    assert 1 < ABSOLUTE_CEILING_MULTIPLIER <= 10, (
+        "the backstop must stay a small multiple of the stall ceiling; a very "
+        "large one is indistinguishable from having no absolute bound at all"
+    )
+
+    state = initial_state()
+    state["performer_services"] = {"implementing": _Performer(response={"status": "working"})}
+    state["performer_stage"] = "implementing"
+    state["lifecycle_sequence"] = ["implementing"]
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    state["role_timeouts"] = {"implementing": 300}
+    # looping for 6 hours, "producing" seconds ago
+    state["agent_dispatch_at"] = datetime.now(UTC) - timedelta(seconds=21600)
+    state["last_production_at"] = datetime.now(UTC) - timedelta(seconds=5)
+
+    result = await monitor_performer(state)
+
+    assert result["phase"] == "blocked", "a looping performer ran past the absolute ceiling"
+    assert "timed out" in " ".join(result.get("open_questions", []))
+
+
+def test_dispatch_resets_the_production_clock_with_the_event_stream() -> None:
+    """380: the fingerprint summarises performer_events, so it must be reset
+    with them. Left behind, an inherited count of nine sits above a freshly
+    empty stream and suppresses every reset until the new run exceeds it."""
+    import inspect
+
+    from coordinare.graph.nodes import dispatch_performer as dp
+
+    source = inspect.getsource(dp)
+    marker = 'state["performer_events"] = []'
+    assert marker in source
+    # the three must be reset together; checking they are all present is weaker
+    # than checking they are adjacent, so assert on the block that follows.
+    tail = source.split(marker, 1)[1][:800]
+    assert 'state["last_production_at"] = None' in tail, \
+        "performer_events is cleared but the production timestamp is not"
+    assert 'state["last_production_fingerprint"] = None' in tail, \
+        "performer_events is cleared but the production fingerprint is not"
