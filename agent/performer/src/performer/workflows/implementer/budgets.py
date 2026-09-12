@@ -23,6 +23,7 @@ class ImplementerBudgets:
         quality_repairs: Repairs per quality failure (2 default).
         ci_repairs: Repairs per CI failure (3 default).
         ci_wait_s: Total CI polling wait budget (30 min default).
+        test_timeout_s: Wall clock for one test-command run (10 min default).
         quality_commands: Newline-separated quality commands after lint.
 
     Read beside these by plan.select_lane: IMPL_DEFAULT_KIND, the lane a card
@@ -35,6 +36,10 @@ class ImplementerBudgets:
     quality_repairs: int = 2
     ci_repairs: int = 3
     ci_wait_s: int = 1800
+    #: Wall clock for ONE test-command run. 379: a suite slower than this can
+    #: never complete, so the baseline and the local gate are killed every time
+    #: and the card blocks with 'no test results were produced'.
+    test_timeout_s: int = 600
     quality_commands: tuple[str, ...] = ()
 
     @classmethod
@@ -48,6 +53,7 @@ class ImplementerBudgets:
           IMPL_QUALITY_REPAIRS: quality_repairs
           IMPL_CI_REPAIRS: ci_repairs
           IMPL_CI_WAIT_S: ci_wait_s
+          IMPL_TEST_TIMEOUT_S: test_timeout_s
           QUALITY_COMMANDS: newline-separated commands
 
         Invalid values (non-numeric, non-positive) are logged and ignored,
@@ -92,5 +98,6 @@ class ImplementerBudgets:
             quality_repairs=_read_seconds("IMPL_QUALITY_REPAIRS", 2),
             ci_repairs=_read_seconds("IMPL_CI_REPAIRS", 3),
             ci_wait_s=_read_seconds("IMPL_CI_WAIT_S", 1800),
+            test_timeout_s=_read_seconds("IMPL_TEST_TIMEOUT_S", 600),
             quality_commands=quality_commands,
         )

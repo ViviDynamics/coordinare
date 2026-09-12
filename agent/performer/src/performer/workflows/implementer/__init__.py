@@ -252,7 +252,7 @@ class ImplementerWorkflow:
             workspace = Path(stand.path)
             try:
                 test_command, runner_kind, _detected_from = detect_test_command(score, workspace)
-                baseline = await capture_baseline(toolkit, score, workspace)
+                baseline = await capture_baseline(toolkit, score, workspace, timeout_s=budgets.test_timeout_s)
             except NoTestRunner as exc:
                 raise _EnvHold(f"no test runner detected: {exc}") from exc
             timed("baseline", t)
@@ -260,6 +260,7 @@ class ImplementerWorkflow:
                 toolkit=toolkit, stand=stand, score=score, budgets=budgets, runner_kind=runner_kind,
                 test_command=test_command, baseline=baseline, plans=plans, lane=lane, lane_source=lane_source,
                 issue_number=int(getattr(score, "issue_number", 0) or 0),
+                test_timeout_s=budgets.test_timeout_s,
             )
             for key, value in (ctx_overrides or {}).items():
                 setattr(ctx, key, value)

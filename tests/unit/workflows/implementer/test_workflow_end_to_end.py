@@ -218,7 +218,14 @@ async def test_two_milestones_build_test_first_one_at_a_time(tmp_path):
     # test run (read the output, then judge whether the red is the expected one),
     # so zero would mean the reading and the judgement had been bypassed.
     assert toolkit.metrics.agent_turns == 4
-    assert toolkit.metrics.model_calls == 8, "one observe + one judge per test run"
+    # 379: plus one scoping call per milestone. Red and green now run only the
+    # milestone's own test files, and the command that does so comes from the
+    # model (no per-runner table -- #364). It is asked once per test-file set,
+    # not once per test run: two milestones here, so two calls on top of the
+    # four runs' observe+judge pairs. A number that grew with the RUNS instead
+    # would mean the memo had stopped working.
+    scope_calls = 2
+    assert toolkit.metrics.model_calls == 8 + scope_calls, "observe + judge per test run, plus one scoping call per milestone"
 
 
 # --- US2: vacuous and stuck are bounded ----------------------------------------

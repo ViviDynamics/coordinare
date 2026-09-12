@@ -33,6 +33,7 @@ from performer.noise_paths import AGENT_CONFIG_DIRS
 from performer.test_results import TestSummary
 from performer.workflows.implementer import commits as git
 from performer.workflows.implementer.baseline import regressions, run_tests
+from performer.workflows.implementer.scoping import scoped_command
 from performer.workflows.implementer.budgets import ImplementerBudgets
 from performer.workflows.implementer.cycle import (
     changed_test_files,
@@ -113,6 +114,8 @@ class RunContext:
     # 171: the paths this card's own earlier runs committed on this branch. Empty
     # on a fresh branch, which leaves every resume rule inert.
     prior_paths: frozenset[str] = frozenset()
+    # 379: scoped test command per milestone test-file set, asked once each.
+    scoped_commands: dict[tuple[str, ...], str | None] = field(default_factory=dict)
     pr_node_id: str | None = None
     # injectable edges (the workflow fills the defaults; tests fake them)
     push: Callable[[], Awaitable[None]] = _noop_async
@@ -293,9 +296,30 @@ async def run_turn(
     return result, attempt, changed
 
 
-async def _tests(ctx: RunContext, files: list[str] | None = None) -> TestSummary:
+async def _scoped_command(ctx: RunContext, files: list[str]) -> str | None:
+    """The narrowed command for *files*, asked of the model once per file set.
+
+    379: the green loop runs up to ``impl_attempts`` times over the same files;
+    asking every attempt would trade suite minutes for gateway round trips.
+    """
+    key = tuple(sorted(files))
+    if key not in ctx.scoped_commands:
+        ctx.scoped_commands[key] = await scoped_command(ctx.toolkit, ctx.test_command, list(key))
+    return ctx.scoped_commands[key]
+
+
+async def _tests(ctx: RunContext, files: list[str] | None = None, *, scope: bool = False) -> TestSummary:
+    """Run the suite, or just *files* when the caller asked a scoped question.
+
+    379: red and green ask about one milestone's tests, so they scope. The
+    baseline, the chore lane and the quality phase ask a whole-suite question
+    and do not.
+    """
+    command = ctx.test_command
+    if scope and files:
+        command = await _scoped_command(ctx, files) or ctx.test_command
     return await run_tests(
-        ctx.toolkit, ctx.test_command, ctx.runner_kind, ctx.workspace, ctx.test_timeout_s, files=files
+        ctx.toolkit, command, ctx.runner_kind, ctx.workspace, ctx.test_timeout_s, files=files
     )
 
 
@@ -349,7 +373,11 @@ def _grow_baseline(ctx: RunContext, summary: TestSummary) -> None:
         merged = sorted(set(ctx.baseline.test_names) | set(summary.test_names_passed))
         ctx.baseline = ctx.baseline.model_copy(update={"test_names": merged})
     elif ctx.baseline.pass_count is not None and summary.test_names_passed is not None:
-        ctx.baseline = ctx.baseline.model_copy(update={"pass_count": len(summary.test_names_passed)})
+        # 379: only ever grows. A scoped run reports just this milestone's
+        # tests, so overwriting the count with it would shrink a whole-suite
+        # baseline to a handful and blind the quality phase's comparison.
+        grown = max(ctx.baseline.pass_count, len(summary.test_names_passed))
+        ctx.baseline = ctx.baseline.model_copy(update={"pass_count": grown})
 
 
 def _lane(ctx: RunContext, milestone: MilestonePlan) -> str:
@@ -422,7 +450,7 @@ async def _red_phase(
     result, attempt, changed = await run_turn(ctx, brief, attempt_number=1)
     record.tests_attempt = attempt
     files = changed_test_files(changed, ctx.runner_kind, brief.scope_paths or None)
-    summary = await _tests(ctx) if result.exit_state == "done" else TestSummary(passed=False, failed=None, exit_code=1, raw_tail="turn did not complete")
+    summary = await _tests(ctx, files, scope=True) if result.exit_state == "done" else TestSummary(passed=False, failed=None, exit_code=1, raw_tail="turn did not complete")
     if result.exit_state == "done" and await _red_observed(ctx, milestone, files, summary):
         return RedOutcome(files, summary, changed)
     # 171 FR-011: a tests turn that changed NO test file, over tests a previous
@@ -445,7 +473,7 @@ async def _red_phase(
         changed = {**changed, **changed2}
         files = changed_test_files(changed, ctx.runner_kind, brief.scope_paths or None)
         if result2.exit_state == "done":
-            summary = await _tests(ctx)
+            summary = await _tests(ctx, files, scope=True)
             if await _red_observed(ctx, milestone, files, summary):
                 return RedOutcome(files, summary, changed)
             # no second FR-011 check here: the reprompt only writes test files,
@@ -475,14 +503,22 @@ async def _green_phase(
             excerpt = f"the previous turn {result.exit_state}"
             persona_kind = "REPAIR_IMPLEMENT"
             continue
-        summary = await _tests(ctx)
-        regs = regressions(ctx.baseline, summary)
-        if not regs and green_check(summary, files or None, ctx.baseline):
+        # 379: scoped to this milestone's test files. regressions() is NOT
+        # consulted here: it compares against a whole-suite baseline, so a
+        # scoped run that is simply not green yet reads as a count regression
+        # ("0 -> 5") and the repair persona is sent hunting a regression that
+        # does not exist. The whole-suite question is asked once, by the
+        # spec-089 local gate, which runs the unscoped suite unconditionally
+        # before the PR opens and rejects anything short of a clean pass. NOT
+        # by the quality phase: that runs the lint set and only reaches
+        # run_tests inside repair_turn, when a quality command has failed.
+        summary = await _tests(ctx, files, scope=True)
+        if green_check(summary, files or None, ctx.baseline):
             return summary, changed_all
-        failing = list(summary.test_names_failed or []) or regs
-        excerpt = summary.raw_tail if not regs else "regressed baseline tests: " + ", ".join(regs) + "\n" + summary.raw_tail
+        failing = list(summary.test_names_failed or [])
+        excerpt = summary.raw_tail
         persona_kind = "REPAIR_IMPLEMENT"
-        log.info("implementer.green_retry", milestone=milestone.index, attempt=attempt_no, failing=len(failing), regressions=len(regs))
+        log.info("implementer.green_retry", milestone=milestone.index, attempt=attempt_no, failing=len(failing), scoped=True)
     raise MilestoneFailed(milestone.index, milestone.goal, f"green was not observed after {ctx.budgets.impl_attempts} implementation attempts; last failure: {excerpt[:500]}")
 
 

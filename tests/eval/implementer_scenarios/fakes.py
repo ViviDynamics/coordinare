@@ -189,6 +189,22 @@ def stub_model_call():
                 }),
                 finish_reason="stop",
             )
+        if "runs ONLY those files" in persona:
+            # 379: derived from what the fake was shown, never canned. It reads
+            # the whole-suite command and the file list out of the content and
+            # appends the paths, which is how most runners spell it.
+            base = next((ln.split(":", 1)[1].strip() for ln in text.splitlines()
+                         if ln.startswith("Whole-suite command:")), "")
+            paths = [ln[2:].strip() for ln in text.splitlines() if ln.startswith("- ")]
+            scoped = bool(base and paths)
+            return ModelReply(
+                content=json.dumps({
+                    "can_scope": scoped,
+                    "command": (base + " " + " ".join(paths)) if scoped else "",
+                    "reason": "the runner takes paths" if scoped else "nothing to scope to",
+                }),
+                finish_reason="stop",
+            )
         raise AssertionError(f"unexpected model call: {persona[:60]}")
 
     return model_call

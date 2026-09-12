@@ -64,6 +64,8 @@ _STEP_BUDGETS: dict[str, int] = {
     # 500-character reason and an enum.
     "implementer_observe": 8000,
     "implementer_judge_red": 3000,
+    # 379: one short command, asked once per milestone test-file set.
+    "implementer_scope_tests": 2000,
     # 165 architect workflow: the survey proposal is a short list; the
     # blueprint is plan-sized, so it takes the plan floor.
     "survey": 3000,

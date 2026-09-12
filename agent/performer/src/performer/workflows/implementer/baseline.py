@@ -141,7 +141,7 @@ async def run_tests(toolkit, command: str, runner_kind: str, cwd: Path, timeout_
     return observation.to_summary(exit_code, output[-2000:])
 
 
-async def capture_baseline(toolkit, score, workspace: Path) -> Baseline:
+async def capture_baseline(toolkit, score, workspace: Path, *, timeout_s: int = 600) -> Baseline:
     """Run the test command once and capture baseline results (FR-004).
 
     Args:
@@ -159,7 +159,7 @@ async def capture_baseline(toolkit, score, workspace: Path) -> Baseline:
 
     log.info("baseline.running", command=test_command, stack=stack)
 
-    parsed = await run_tests(toolkit, test_command, stack, workspace, timeout_s=600)
+    parsed = await run_tests(toolkit, test_command, stack, workspace, timeout_s=timeout_s)
 
     # 352: a detected command that cannot execute is an environment failure,
     # not a repository without tests. Exit 127 is the shell's unambiguous
@@ -190,9 +190,21 @@ async def capture_baseline(toolkit, score, workspace: Path) -> Baseline:
         detected_from=detected_from,
     )
 
+    # 379: test_count alone cannot be read. It is 0 for a repository with no
+    # tests, for a suite that ran but printed no passed names (the default for
+    # most runners, per the table in observe.py), AND for a suite that was
+    # killed at the timeout before producing anything. Those want different
+    # responses. The third is the one that bit the website card: its suite runs
+    # longer than the ceiling, so the run is killed every time -- and it only
+    # surfaces as an error when the model happens to read the truncated output
+    # as could_not_run. Any other reading flows through here as a silently
+    # empty baseline. The runner's own outcome is what tells them apart.
     log.info(
         "baseline.detected",
         test_count=len(test_names) if test_names else baseline.pass_count,
+        outcome=getattr(parsed.observation, "outcome", None),
+        named_tests=bool(test_names),
+        fail_count=fail_count,
         stack=stack,
     )
 
@@ -225,7 +237,7 @@ def regressions(baseline: Baseline, summary: TestSummary) -> list[str]:
     return regressed
 
 
-async def detect_baseline(toolkit, score) -> Baseline:
+async def detect_baseline(toolkit, score, *, timeout_s: int = 600) -> Baseline:
     """Detect and run the test command once to record baseline (FR-004).
 
     Wrapper around detect_test_command and capture_baseline.
@@ -241,4 +253,4 @@ async def detect_baseline(toolkit, score) -> Baseline:
         NoTestRunner: When no test command is detected (env_blocked).
     """
     workspace = Path(score.workspace_path) if hasattr(score, "workspace_path") else Path.cwd()
-    return await capture_baseline(toolkit, score, workspace)
+    return await capture_baseline(toolkit, score, workspace, timeout_s=timeout_s)
