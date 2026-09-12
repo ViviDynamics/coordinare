@@ -36,8 +36,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field, StringConstraints
-from typing_extensions import Annotated, Literal
+from pydantic import BaseModel, Field
+from typing_extensions import Literal
+
+from performer.workflows.prose import Prose
 
 from performer.test_results import TestSummary
 
@@ -72,8 +74,9 @@ class TestObservation(BaseModel):
     #: Files the runner could not load or collect, with the reason it gave.
     load_errors: list[str] = Field(default_factory=list)
     #: Set when ``outcome`` is ``could_not_run``: what is wrong with the box.
-    environment_problem: Annotated[str, StringConstraints(max_length=300)] = ""
-    summary: Annotated[str, StringConstraints(max_length=500)] = ""
+    # 383: clamped, not rejected. A card was blocked because this ran long.
+    environment_problem: Prose(300) = ""
+    summary: Prose(500) = ""
 
     def to_summary(self, exit_code: int, raw_tail: str) -> TestSummary:
         """The shape the rest of the lane already consumes.
@@ -106,7 +109,8 @@ class RedJudgement(BaseModel):
 
     is_expected_red: bool
     #: Why, in terms of what the runner actually reported.
-    reason: Annotated[str, StringConstraints(min_length=1, max_length=500)]
+    #: 383: clamped. The verdict is carried by is_expected_red, not by this.
+    reason: Prose(500)
     #: Only meaningful when ``is_expected_red`` is false: what should happen
     #: next. The old code had exactly one remedy and assumed the test was at
     #: fault, which on card #106 was the one thing that was not wrong.
@@ -135,7 +139,8 @@ def observe_persona() -> str:
         "- unreadable: you cannot tell what this output means. Use it rather "
         "than guessing; a wrong reading here is worse than an honest one.\n\n"
         "Report only what the output supports. Do not infer a passing test you "
-        "cannot see."
+        "cannot see.\n\n"
+        "Keep summary under 500 characters and environment_problem under 300."
     )
 
 
@@ -155,6 +160,7 @@ def judge_persona() -> str:
         "in unrelated pre-existing tests, when the test itself is broken in a "
         "way unrelated to the missing behaviour, or when the suite could not "
         "run at all.\n\n"
+        "Keep reason under 500 characters.\n\n"
         "If it is not the expected red, say what should happen next: rewrite "
         "the test, fix something else first, or stop because the environment is "
         "broken. Saying 'write the code' when red was not genuinely observed "
