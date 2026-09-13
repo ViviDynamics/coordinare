@@ -338,6 +338,10 @@ async def clone_repository(score: Score) -> Stand:
     log.info("cloned repository", repo_url=score.repo_url, branch=score.branch)
     stand = Stand(path=stand_path, branch=score.branch)
     stand.git_env = _git_credential_vars(score.effective_github_token)
+    # 397: extract first, to completion. The snapshot and the services start
+    # below both source the profile and both used to race the extraction it
+    # triggered; now they find the libs already published.
+    await _extract_env_cache_libs(score.env_cache_path)
     stand.cache_env = await _activate_env_cache(score.env_cache_path)
     await _start_env_cache_services(score.env_cache_path, stand.cache_env)
     return stand
@@ -377,6 +381,71 @@ def _unresolved_advertised_toolchain(
     if missing:
         return f"advertised_toolchain_unresolved: {', '.join(missing)}"
     return None
+
+
+async def _extract_env_cache_libs(env_cache_path: str) -> bool:
+    """Run the devenv profile once, to completion, so the cache's debs are
+    extracted before anything depends on them (#397).
+
+    The profile (BASH_ENV) extracts ``<cache>/debs/*.deb`` into a container-local
+    lib dir the first time any bash sources it, behind a per-slug ``mkdir`` lock.
+    Until this step existed, that first bash was ``_activate_env_cache``'s 30s
+    env snapshot: extraction outran the budget, the snapshot returned ``{}`` and
+    left the extractor alive holding the lock, and ``_start_env_cache_services``
+    then sourced the profile, found the lock, and launched postgres with no
+    ``LD_LIBRARY_PATH``. That postgres needs libicu from the extracted libs and
+    cannot start; 180s later services-start exited 75 and the card was held.
+    Measured on the website cache: 36s uncontended, 52-110s under load, against
+    a 30s snapshot.
+
+    This shell does nothing but source the profile: services are skipped (that
+    is a later, explicit step) and the re-entry guard is cleared (the performer
+    process itself sourced the profile at startup, and would otherwise make this
+    shell a no-op). Once it returns, the marker is published and every later
+    shell -- the snapshot, services-start, the agent's own -- finds the libs
+    already there. Best effort: a failure here is logged and the later steps run
+    as before; it is never a reason to abort workspace setup.
+
+    Returns True when the profile ran to completion.
+    """
+    if not env_cache_path:
+        return False
+    env = {k: v for k, v in os.environ.items() if k != "_DEVENV_SOURCED"}
+    env["_DEVENV_SKIP_SERVICES"] = "1"
+    proc = None
+    started = _time.monotonic()
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "bash", "-c", ":",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+            env=env,
+            start_new_session=True,
+        )
+        await asyncio.wait_for(proc.wait(), timeout=_EXTRACT_TIMEOUT_S)
+    except asyncio.CancelledError:
+        if proc is not None:
+            await _kill_cache_process_group(proc)
+        raise
+    except (OSError, asyncio.TimeoutError) as exc:
+        if proc is not None:
+            await _kill_cache_process_group(proc)
+        log.warning(
+            "env_cache.extract_failed",
+            env_cache_path=env_cache_path,
+            error_type=type(exc).__name__,
+            error=str(exc) or type(exc).__name__,
+            timeout_s=_EXTRACT_TIMEOUT_S,
+            elapsed_s=round(_time.monotonic() - started, 1),
+        )
+        return False
+    log.info(
+        "env_cache.libs_extracted",
+        env_cache_path=env_cache_path,
+        returncode=proc.returncode,
+        elapsed_s=round(_time.monotonic() - started, 1),
+    )
+    return proc.returncode == 0
 
 
 async def _activate_env_cache(env_cache_path: str) -> dict[str, str]:
@@ -429,19 +498,34 @@ async def _activate_env_cache(env_cache_path: str) -> dict[str, str]:
         f"source {shlex.quote(str(activate))} >/dev/null 2>&1 && "
         f"env -0"
     )
+    proc = None
     try:
         proc = await asyncio.create_subprocess_exec(
             "bash", "-c", script,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=source_env,
+            # 397: own session, so a timeout can reap the whole group. Without
+            # it the shell died and dpkg-deb kept running with the lock held.
+            start_new_session=True,
         )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30.0)
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=_ACTIVATE_TIMEOUT_S)
+    except asyncio.CancelledError:
+        if proc is not None:
+            await _kill_cache_process_group(proc)
+        raise
     except (OSError, asyncio.TimeoutError) as exc:
+        # 397: never leave the child behind, and never log ``error=`` with
+        # nothing after it -- str(TimeoutError()) is empty, and 45 such lines in
+        # the performer logs said nothing about what had happened.
+        if proc is not None:
+            await _kill_cache_process_group(proc)
         log.warning(
             "env_cache.activate_failed",
             env_cache_path=env_cache_path,
-            error=str(exc),
+            error_type=type(exc).__name__,
+            error=str(exc) or type(exc).__name__,
+            timeout_s=_ACTIVATE_TIMEOUT_S,
         )
         return {}
     if proc.returncode != 0:
@@ -610,6 +694,17 @@ _SERVICES_START_LOCK = threading.Lock()
 # timeout and the failure message can never drift apart — the message used to say
 # a stale "120s" while the real cap was 300s.)
 _SERVICES_START_TIMEOUT_S = 300.0
+
+# 397: the env snapshot's budget. It used to pay for the cache's first deb
+# extraction too (~36s uncontended on the website cache, 52-110s under load),
+# so it timed out on every fresh implementer container and left the extractor
+# running with the lock held. Extraction is now its own step, run to completion
+# before this snapshot, so 30s is once again plenty for what this shell does.
+_ACTIVATE_TIMEOUT_S = 30.0
+# 397: the extraction step's budget. Generous on purpose: this is the one place
+# the container pays for extraction, and a loaded host has been measured at 3x
+# the idle figure. When it IS exceeded the extractor is reaped, never orphaned.
+_EXTRACT_TIMEOUT_S = 600.0
 
 
 def consume_services_start_failure() -> str | None:

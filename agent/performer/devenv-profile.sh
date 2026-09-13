@@ -150,14 +150,36 @@ else
         rm -rf "$_devenv_tmp" 2>/dev/null
         rmdir "$_devenv_lock" 2>/dev/null
       elif [ ! -d "$_devenv_libdir" ]; then
-        # Another shell holds the (fresh) lock and we have no published lib dir
-        # yet. The lock holder owns extraction, so we don't touch it — but warn
-        # so a runtime that ends up without its libraries is diagnosable rather
-        # than silently broken.
-        echo "devenv: native-lib extraction for '$_devenv_slug' is locked" \
-          "(another shell holds it, or the lock could not be reclaimed) and no" \
-          "lib dir is published yet; libraries may be unavailable for this" \
-          "shell" >&2
+        # Another shell holds the (fresh) lock and no lib dir is published yet.
+        # The holder owns extraction, so we don't touch it. 397: we WAIT for it.
+        # Proceeding immediately meant this shell ran without LD_LIBRARY_PATH,
+        # and when this shell was services-start, postgres (which needs libicu
+        # from the extracted libs) could not load and never became ready.
+        # The wait ends when the sentinel appears (published), the lock is
+        # released (holder finished, publication or not), or the ceiling is
+        # reached. Bounded so a holder that never publishes cannot hang every
+        # shell in the container. The ceiling is sized so that a shell which
+        # gives up and then runs services-start still fails INSIDE the 300s
+        # outer cap (100s wait + 180s postgres readiness = 280s), so the failure
+        # reaches the operator as this lock warning and not as a bare outer
+        # timeout. With the extraction step now run to completion before any
+        # of this, a lock still held here means that step itself misbehaved;
+        # this wait is the guard, not the path. Overridable for tests.
+        _devenv_wait_max="${_DEVENV_LOCK_WAIT_S:-100}"
+        _devenv_waited=0
+        while [ "$_devenv_waited" -lt "$_devenv_wait_max" ] 2>/dev/null \
+              && [ ! -f "$_devenv_marker" ] && [ -d "$_devenv_lock" ]; do
+          sleep 1
+          _devenv_waited=$((_devenv_waited + 1))
+        done
+        if [ ! -d "$_devenv_libdir" ]; then
+          # Still nothing to use. Warn so a runtime without its libraries is
+          # diagnosable rather than silently broken; never abort the caller.
+          echo "devenv: native-lib extraction for '$_devenv_slug' is locked" \
+            "(another shell holds it, or the lock could not be reclaimed) and no" \
+            "lib dir is published yet after having waited ${_devenv_waited}s;" \
+            "libraries may be unavailable for this shell" >&2
+        fi
       fi
     fi
 
@@ -240,5 +262,6 @@ else
     _devenv_stagelib _devenv_marker _devenv_lock _devenv_socount _devenv_so \
     _devenv_member _devenv_root _devenv_sysroot _devenv_sub _devenv_entry \
     _devenv_name _devenv_target _devenv_services _devenv_svc_log \
+    _devenv_wait_max _devenv_waited \
     2>/dev/null || true
 fi
