@@ -688,6 +688,25 @@ def _mark_env_cache_health_failed() -> None:
 _SERVICES_START_FAILURE: str | None = None
 _SERVICES_START_LOCK = threading.Lock()
 
+# 402: whether this job's services-health check succeeded. NON-consuming, unlike
+# the two failure flags above: the local test gate reads it to tell "the suite
+# outlived its budget with healthy services" from "a service never came up",
+# and reading it must not change it. Scoped to the job by
+# reset_services_start_failure, like the start failure.
+_SERVICES_HEALTHY: bool = False
+
+
+def services_healthy_this_job() -> bool:
+    """True once this job's ``services-health.sh`` passed. Never clears on read."""
+    with _SERVICES_START_LOCK:
+        return _SERVICES_HEALTHY
+
+
+def _mark_services_healthy() -> None:
+    global _SERVICES_HEALTHY
+    with _SERVICES_START_LOCK:
+        _SERVICES_HEALTHY = True
+
 # Outer cap on the services-start.sh run. MUST exceed the script's own internal
 # readiness wait (spec-111 postgres pg_isready loop is 180s) plus initdb/createdb/
 # redis time. 300s = 180s readiness + margin. (Kept as a named constant so the
@@ -727,9 +746,10 @@ def reset_services_start_failure() -> None:
     as a false ``qa_env_blocked``. Resetting per setup keeps each job's QA
     verdict reflecting only its own services-start outcome.
     """
-    global _SERVICES_START_FAILURE
+    global _SERVICES_START_FAILURE, _SERVICES_HEALTHY
     with _SERVICES_START_LOCK:
         _SERVICES_START_FAILURE = None
+        _SERVICES_HEALTHY = False  # 402: healthy is per job too
 
 
 def _record_services_start_failure(
@@ -930,6 +950,7 @@ async def _run_env_cache_health_check(
         )
         _mark_env_cache_health_failed()
         return
+    _mark_services_healthy()  # 402: the gate reads this if the suite later times out
     log.info(
         "env_cache.services_healthy",
         env_cache_path=env_cache_path,

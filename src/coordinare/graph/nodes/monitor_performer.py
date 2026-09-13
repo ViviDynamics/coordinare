@@ -4299,7 +4299,17 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
             )
             _env_cache_svc = state.get("env_cache_service")
             _sym_name = state.get("current_symphony")
-            if _env_cache_svc is not None and _sym_name:
+            # 402: a suite that outlived its budget with HEALTHY services is a gate
+            # configuration finding the performer reports structurally. Hold the
+            # card (an operator has to raise the budget) but do not regenerate a
+            # cache that is fine; on 2026-09-13 that regen cost two bootstraps.
+            _gate_report = (status.get("report") or {}).get("local_test_gate") if isinstance(status.get("report"), dict) else None
+            _budget_exceeded = bool(isinstance(_gate_report, dict) and _gate_report.get("budget_exceeded"))
+            if _budget_exceeded:
+                logger.warning("monitor_performer.env_blocked_budget_exceeded", card_id=card_id,
+                               performer_stage=stage, timeout_seconds=_gate_report.get("timeout_seconds"),
+                               duration_seconds=_gate_report.get("duration_seconds"))
+            if _env_cache_svc is not None and _sym_name and not _budget_exceeded:
                 try:
                     _env_cache_svc.mark_runtime_health_failed(_sym_name, state)
                 except Exception as _exc:
@@ -4318,16 +4328,25 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
             # ``check_names`` is deliberately empty: recovery reads any names as
             # a CI hold that re-evaluates its own checks, and refuses to
             # env-recover it.
-            state["env_blocked"] = {  # type: ignore[typeddict-unknown-key]
-                "pattern_id": "local_test_gate",
-                "stage": stage,
-                "reason": _reason[:500],
-                "blocked_at": datetime.now(UTC).isoformat(),
-                "check_names": [],
-                "action": "Nothing to do by hand: the env cache regenerates and "
-                          "recovery lifts the card once it verifies healthy",
-            }
-            state["env_health_hold_reason"] = f"env_blocked: {_reason}"  # type: ignore[typeddict-unknown-key]
+            #
+            # 402: NOT for a budget finding. There the cache is healthy already, so
+            # a recovery marker would lift the card on the next cycle, re-run the
+            # same over-budget suite, block it again, and oscillate at a full run
+            # per cycle. Raising the budget is a human action; the hold waits for it.
+            if not _budget_exceeded:
+                state["env_blocked"] = {  # type: ignore[typeddict-unknown-key]
+                    "pattern_id": "local_test_gate",
+                    "stage": stage,
+                    "reason": _reason[:500],
+                    "blocked_at": datetime.now(UTC).isoformat(),
+                    "check_names": [],
+                    "action": "Nothing to do by hand: the env cache regenerates and "
+                              "recovery lifts the card once it verifies healthy",
+                }
+            state["env_health_hold_reason"] = (  # type: ignore[typeddict-unknown-key]
+                f"env_blocked (test budget exceeded, services healthy): {_reason}"
+                if _budget_exceeded else f"env_blocked: {_reason}"
+            )
             state["phase"] = "blocked"
             # 123 FR-006: env_blocked is an infrastructure/transient failure — count
             # it toward the per-card transient budget (accumulates across the card's

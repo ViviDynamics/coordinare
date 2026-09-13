@@ -174,6 +174,11 @@ class LocalTestResult:
     #: *differently*. A non-idempotent suite can fail two ways, and reporting
     #: only the second leaves the implementer with no sign the first differed.
     first_attempt_output: str | None = None
+    #: 402: the run timed out AFTER this job's services had started and passed
+    #: their health check. Still ``env_blocked`` (only an operator can raise the
+    #: budget), but a budget finding, not a hung service: coordinare must not
+    #: regenerate the env cache for it.
+    budget_exceeded: bool = False
 
 
 # Substrings (matched case-insensitively against the failure output) that
@@ -236,6 +241,30 @@ _RETRY_MAX_FAILING = 3
 #: way _TEST_FAILURE_MARKERS is, so prose cannot supply a count.
 
 
+def _env_blocked_gate_response(perf: Any, test_result: LocalTestResult, *, timeout_seconds: int) -> PerformerResponse:
+    """402: the env_blocked response for a failed local test gate.
+
+    A budget finding travels in the structured ``report`` so coordinare decides
+    whether to regenerate the env cache from a field, not by parsing prose. The
+    field is absent for a genuine environment problem, which keeps today's
+    behaviour (regen) for those.
+    """
+    perf.state = "env_blocked"
+    report = None
+    if test_result.budget_exceeded:
+        report = {"local_test_gate": {
+            "budget_exceeded": True,
+            "timeout_seconds": timeout_seconds,
+            "duration_seconds": test_result.duration_seconds,
+        }}
+    return PerformerResponse(
+        status="env_blocked",
+        session_id=perf.session_id,
+        reason=test_result.env_reason,
+        report=report,
+    )
+
+
 async def _run_test_check(
     stand_path: Path, *, timeout_seconds: int = 600, label: str = "performer"
 ) -> LocalTestResult:
@@ -287,6 +316,7 @@ async def _run_test_check(
     from performer.workspace import (
         consume_env_cache_health_failure,
         consume_services_start_failure,
+        services_healthy_this_job,
     )
 
     services_failure = consume_services_start_failure()
@@ -340,18 +370,36 @@ async def _run_test_check(
     # A human HOLD is also the outcome an operator wants for a hung suite: it is
     # actionable by a person and not by an implementer re-reading its own diff.
     if run_result.timed_out:
-        env_reason = (
-            f"the test command did not finish within {timeout_seconds}s and was killed. "
-            "A suite that hangs to its deadline is usually waiting on a service that "
-            "never came up; no test output survives a timeout, so this is a held "
-            "environment blocker rather than a reported defect."
-        )
+        # 402: the prior above is right when nothing is known about the
+        # services and wrong every time they are known to be up. website#107
+        # was held as a hung service fourteen minutes after its own log said
+        # "services-health: all ok"; its suite is ~18 minutes serial against a
+        # 600s budget. Healthy services + timeout is a budget finding: still a
+        # hold (an operator has to raise the budget), named honestly, and
+        # flagged so coordinare does not regenerate a cache that is fine.
+        healthy = services_healthy_this_job()
+        if healthy:
+            env_reason = (
+                f"the test command did not finish within {timeout_seconds}s and was killed. "
+                "This job's services were started and passed their health check, so "
+                "this is not a hung service: the suite's honest runtime exceeds the "
+                "local test gate's budget. Raise local_test_gate.timeout_seconds for "
+                "this symphony or scope the command; there is nothing to regenerate."
+            )
+        else:
+            env_reason = (
+                f"the test command did not finish within {timeout_seconds}s and was killed. "
+                "A suite that hangs to its deadline is usually waiting on a service that "
+                "never came up; no test output survives a timeout, so this is a held "
+                "environment blocker rather than a reported defect."
+            )
         log.warning(
             "test_check.timed_out",
             label=label,
             command=result.test_command,
             duration=run_result.duration_seconds,
             timeout_seconds=timeout_seconds,
+            services_healthy=healthy,
         )
         return LocalTestResult(
             passed=False,
@@ -361,6 +409,7 @@ async def _run_test_check(
             env_blocked=True,
             env_reason=env_reason,
             exit_code=run_result.exit_code,
+            budget_exceeded=healthy,
         )
 
     # No env signal and no env signature: this looks like a real code failure.
@@ -3088,12 +3137,11 @@ async def handle_status(
                     role=perf.role,
                     command=test_result.command,
                     env_reason=test_result.env_reason,
+                    budget_exceeded=test_result.budget_exceeded,
                 )
-                perf.state = "env_blocked"
-                return PerformerResponse(
-                    status="env_blocked",
-                    session_id=perf.session_id,
-                    reason=test_result.env_reason,
+                return _env_blocked_gate_response(
+                    perf, test_result,
+                    timeout_seconds=int(gate_cfg.get("timeout_seconds", 600)),
                 )
             if not test_result.passed:
                 log.warning(
