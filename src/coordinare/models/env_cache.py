@@ -19,6 +19,12 @@ class EnvCacheState(BaseModel):
     readme_sha: str | None = None
     bootstrap_in_flight: bool = False
     pending_sha: str | None = None
+    # 400: set while a FORCED regen is in flight, with the manifest SHA it was
+    # built against. Transient like bootstrap_in_flight (not persisted): a
+    # restart mid-run falls back to the old two-bootstrap behaviour, never to
+    # a stale cache.
+    bootstrap_forced: bool = False
+    forced_manifest_sha: str | None = None
     # 077: the most recent combined spec-file SHA observed by check_and_trigger
     # (refreshed every cycle, even when no bootstrap is needed). Consumer dispatch
     # gates on ``readme_sha == last_seen_spec_sha`` so a card never runs against a
