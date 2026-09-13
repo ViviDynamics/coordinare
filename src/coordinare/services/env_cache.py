@@ -624,39 +624,43 @@ class EnvCacheService:
                 agent_version=agent_version,
             )
             cache_state.runtime_health_failed = False
-            await self._do_dispatch(
-                symphony_name=symphony_name,
-                symphony_config=symphony_config,
-                github_service=github_service,
-                eff_config=eff_config,
-                current_sha=forced_sha,
-                cache_state=cache_state,
-                dispatch_fn=dispatch_fn,
-                container_devenv_root=container_devenv_root,
-                llm_chat=llm_chat,
+            # 400: a forced run is keyed on forced_sha, which can never equal
+            # the manifest SHA. Without remembering the manifest it was built
+            # against, the in-flight cycles queue that SHA as "changed" and
+            # completion re-bootstraps for nothing: every forced regen cost two
+            # bootstraps. Record it now; completion adopts it as readme_sha.
+            cache_state.forced_manifest_sha = await self._current_manifest_sha(
+                symphony_name, symphony_config, github_service, eff_config, cache_state
             )
+            cache_state.bootstrap_forced = True
+            try:
+                await self._do_dispatch(
+                    symphony_name=symphony_name,
+                    symphony_config=symphony_config,
+                    github_service=github_service,
+                    eff_config=eff_config,
+                    current_sha=forced_sha,
+                    cache_state=cache_state,
+                    dispatch_fn=dispatch_fn,
+                    container_devenv_root=container_devenv_root,
+                    llm_chat=llm_chat,
+                )
+            finally:
+                # _do_dispatch returns without dispatching when a spec file
+                # cannot be fetched or the test-env file is invalid, and a
+                # synchronous dispatch failure completes (and clears) inside
+                # it. In every case with no bootstrap in flight the forced
+                # markers must not survive, or the next ORDINARY completion
+                # is read as forced and adopts this stale manifest SHA.
+                if not cache_state.bootstrap_in_flight:
+                    cache_state.bootstrap_forced = False
+                    cache_state.forced_manifest_sha = None
             return
 
         # Fetch combined blob SHA for all watched files (metadata-only, cheap).
-        current_sha = await self._fetch_combined_sha(
-            symphony_name,
-            symphony_config.env_spec_files,
-            github_service,
-            eff_config.github_org,
-            eff_config.project_name or symphony_name,
+        current_sha = await self._current_manifest_sha(
+            symphony_name, symphony_config, github_service, eff_config, cache_state
         )
-        # 063 Phase 3: layer in inference cache_inputs once a manifest is sealed.
-        # Empty on first run, so existing readme_sha behaviour is unchanged.
-        if current_sha is not None:
-            suffix = await self._inference_cache_suffix(
-                symphony_name=symphony_name,
-                cache_dir=cache_state.cache_dir,
-                github_service=github_service,
-                github_org=eff_config.github_org,
-                github_repo=eff_config.project_name or symphony_name,
-            )
-            if suffix:
-                current_sha = f"{current_sha}:{suffix}"
         if current_sha is None:
             logger.warning(
                 "env_cache.sha_fetch_skipped",
@@ -971,6 +975,34 @@ class EnvCacheService:
             cache_state.bootstrap_in_flight = False
             cache_state.readme_sha = None
             return
+
+    async def _current_manifest_sha(
+        self, symphony_name: str, symphony_config: Any, github_service: Any,
+        eff_config: Any, cache_state: EnvCacheState,
+    ) -> str | None:
+        """The manifest SHA the cache is keyed on: combined spec-file SHA plus
+        the inference suffix. One helper so the normal path and the forced
+        regen (400) compute it identically."""
+        current_sha = await self._fetch_combined_sha(
+            symphony_name,
+            symphony_config.env_spec_files,
+            github_service,
+            eff_config.github_org,
+            eff_config.project_name or symphony_name,
+        )
+        # 063 Phase 3: layer in inference cache_inputs once a manifest is sealed.
+        # Empty on first run, so existing readme_sha behaviour is unchanged.
+        if current_sha is not None:
+            suffix = await self._inference_cache_suffix(
+                symphony_name=symphony_name,
+                cache_dir=cache_state.cache_dir,
+                github_service=github_service,
+                github_org=eff_config.github_org,
+                github_repo=eff_config.project_name or symphony_name,
+            )
+            if suffix:
+                current_sha = f"{current_sha}:{suffix}"
+        return current_sha
 
     async def _load_test_env_vars(
         self,
@@ -1371,6 +1403,17 @@ class EnvCacheService:
             symphony=symphony_name,
             success=success,
         )
+
+        # 400: a forced run was keyed on the forced key; the cache it built
+        # corresponds to the manifest recorded at dispatch. Adopt that SHA so
+        # the pending comparison below, and every later cycle, compares
+        # manifest with manifest. Without this the forced key never matched
+        # and the next cycle rebuilt an identical cache.
+        if cache_state.bootstrap_forced:
+            if cache_state.forced_manifest_sha:
+                cache_state.readme_sha = cache_state.forced_manifest_sha
+            cache_state.bootstrap_forced = False
+            cache_state.forced_manifest_sha = None
 
         # Fire queued bootstrap if a SHA change arrived while in-flight.
         if cache_state.pending_sha is not None:
