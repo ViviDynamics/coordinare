@@ -4309,6 +4309,24 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
                         symphony=_sym_name,
                         error=str(_exc),
                     )
+            # 399: leave the evidence recovery keys on. Spec-129a lifts an
+            # ENV_BLOCKED card once the env cache is healthy again, but it can
+            # only recognise the card via ``sess["env_blocked"]``. Only the
+            # CI-infrastructure branch above stamped it; this branch, the one
+            # every local-test-gate block takes, never did, so three cards sat
+            # in BLOCKED with blockers=[] while every oracle said "recovered".
+            # ``check_names`` is deliberately empty: recovery reads any names as
+            # a CI hold that re-evaluates its own checks, and refuses to
+            # env-recover it.
+            state["env_blocked"] = {  # type: ignore[typeddict-unknown-key]
+                "pattern_id": "local_test_gate",
+                "stage": stage,
+                "reason": _reason[:500],
+                "blocked_at": datetime.now(UTC).isoformat(),
+                "check_names": [],
+                "action": "Nothing to do by hand: the env cache regenerates and "
+                          "recovery lifts the card once it verifies healthy",
+            }
             state["env_health_hold_reason"] = f"env_blocked: {_reason}"  # type: ignore[typeddict-unknown-key]
             state["phase"] = "blocked"
             # 123 FR-006: env_blocked is an infrastructure/transient failure — count
