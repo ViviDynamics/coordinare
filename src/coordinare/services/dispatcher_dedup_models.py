@@ -25,6 +25,9 @@ class ReconciliationDecision(StrEnum):
     FRESH_DISPATCHED = "fresh_dispatched"
     SKIPPED_PERSISTENT = "skipped_persistent"
     ORPHAN_SWEPT = "orphan_swept"
+    # 401: Docker did not answer in time. Not evidence about the container;
+    # the session is left exactly as it was and re-checked next cycle.
+    DEFERRED = "deferred"
 
 
 class WedgeResolution(StrEnum):

@@ -218,6 +218,22 @@ async def run_startup_reconciliation(
     )
 
 
+#: 401: consecutive ``docker ps`` timeouts on one session before an unknown is
+#: read as "Docker is genuinely gone" and the old fresh-dispatch fallback runs.
+#: One slow answer under load restarted website#111 twice in 27 minutes while
+#: its performer was fine; the startup pass treats the same condition as a
+#: reason to dispatch NOTHING, and the per-cycle path must at least not
+#: dispatch more.
+DOCKER_UNREACHABLE_ESCALATION_STREAK = 3
+#: Per-SESSION streaks, keyed by the performer session id. Review caught two
+#: ways a single counter went wrong: when a card has no session dict the
+#: target is the state root, so every such card shared one counter; and a
+#: session dict outlives its performer, so a replacement performer inherited
+#: the old count. A session id is unique per performer instance and per card,
+#: on either storage target. Transient: not a session field, never persisted.
+_STREAKS_KEY = "_docker_unreachable_streaks"
+
+
 async def handle_potentially_stale_session(
     state: CoordinareState,
     card_id: str,
@@ -256,18 +272,42 @@ async def handle_potentially_stale_session(
             {"coordinare.session_id": session_id}, timeout=5.0
         )
     except DockerUnreachableError as exc:
+        # 401: a timeout is an unknown, not "the container is gone". Leave the
+        # session untouched and count the streak; escalate to the old
+        # fresh-dispatch fallback only once the unknown has persisted.
+        streaks = target.setdefault(_STREAKS_KEY, {})
+        if not isinstance(streaks, dict):
+            streaks = target[_STREAKS_KEY] = {}
+        streak = int(streaks.get(session_id) or 0) + 1
+        if streak < DOCKER_UNREACHABLE_ESCALATION_STREAK:
+            streaks[session_id] = streak
+            logger.warning(
+                "check_board.stale_session_deferred",
+                card_id=card_id,
+                session_id=session_id,
+                decision=str(ReconciliationDecision.DEFERRED),
+                reason="docker_unreachable",
+                streak=streak,
+                escalate_at=DOCKER_UNREACHABLE_ESCALATION_STREAK,
+                error=str(exc),
+            )
+            return ReconciliationDecision.DEFERRED
+        streaks.pop(session_id, None)
         logger.error(
             "check_board.stale_session_reconciled",
             card_id=card_id,
             session_id=session_id,
             decision="fresh_dispatched",
             reason="docker_unreachable",
+            streak=streak,
             error=str(exc),
         )
         return _clear_agent_dispatch_and_return(
             target, ReconciliationDecision.FRESH_DISPATCHED, card_id
         )
-
+    _streaks = target.get(_STREAKS_KEY)
+    if isinstance(_streaks, dict):
+        _streaks.pop(session_id, None)  # 401: Docker answered; this session's streak is over
     decision = await _classify_and_act(
         state, card_id, target, {session_id: containers[0]} if containers else {}, docker_executor
     )
