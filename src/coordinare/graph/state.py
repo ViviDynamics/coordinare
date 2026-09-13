@@ -320,6 +320,8 @@ class CoordinareState(TypedDict, total=False):
     # dicts [{issue_number, title, column, issue_url, source}].  Populated by
     # check_board's dependency filtering and consumed by dashboard + notifications.
     blocked_by_dependencies: list[dict[str, Any]]
+    # 390: consecutive relays per STAGE that produced no commit.
+    no_progress_relays: dict[str, int]
     # 047: Auto-rebase — track main HEAD SHA to detect external merges, and
     # store the last rebase round for dashboard display.
     last_known_main_sha: str | None
@@ -455,6 +457,7 @@ def initial_state() -> CoordinareState:
         "last_attempt_log_path": None,
         "last_attempt_failure_source": None,
         "blocked_by_dependencies": [],
+        "no_progress_relays": {},
         "last_known_main_sha": None,
         "last_rebase_round": None,
         "slot_manager": None,
