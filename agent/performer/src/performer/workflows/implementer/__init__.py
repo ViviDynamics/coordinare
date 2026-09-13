@@ -397,6 +397,10 @@ class ImplementerWorkflow:
             scope_reverts=list(ctx.scope_reverts) if ctx else [],
             phase_durations_ms=durations,
             total_duration_ms=total_ms,
+            # ctx is None when the run fails before a context exists (no test
+            # runner, a role that never reaches the implementer), and those
+            # paths salvage nothing by definition.
+            work_salvaged=bool(getattr(ctx, "work_salvaged", False)),
         )
         record = record.model_copy(update={
             "turn_count": len(ctx.turn_attempts) if ctx else 0,
