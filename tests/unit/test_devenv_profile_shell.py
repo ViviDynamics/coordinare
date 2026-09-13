@@ -780,9 +780,12 @@ def test_profile_warns_when_lock_held_and_no_libdir(
     assert not fake_cache.libdir.exists()
 
     profile = _patched_profile(tmp_path, fake_cache.devenv)
+    # 397: a lock loser now WAITS for the holder to publish (see the two tests
+    # below). This test is about the warning once waiting is exhausted, so
+    # give it no wait at all.
     result = _run(
         ["bash", "-c", f". {profile} && echo done"],
-        env=fake_cache.env,
+        env={**fake_cache.env, "_DEVENV_LOCK_WAIT_S": "0"},
     )
 
     assert result.returncode == 0, result.stderr
@@ -880,3 +883,185 @@ def test_profile_does_not_clobber_existing_sysroot_entry(
     assert "IMAGE_PROVIDED" in preexisting.read_text(), (
         "pre-existing image file content was overwritten"
     )
+
+
+@requires_deb_tools
+def test_profile_waits_for_a_held_lock_then_uses_the_published_libs(
+    tmp_path: Path, fake_cache: SimpleNamespace
+) -> None:
+    """397: a shell that loses the extraction lock must WAIT for the holder to
+    publish, not proceed without libraries.
+
+    Production sequence that motivated this: ``_activate_env_cache`` held the
+    lock while extracting (36-110s); ``_start_env_cache_services`` sourced the
+    profile 30s in, found the lock, printed a warning and launched postgres with
+    no ``LD_LIBRARY_PATH``. postgres needs libicu from the extracted libs and
+    cannot start; the card was held 180s later.
+
+    MUTATION: remove the wait loop in the profile's lock-loser branch. This test
+    then observes the warning and an empty LD_LIBRARY_PATH.
+    """
+    slugdir = fake_cache.lib_base / fake_cache.slug
+    slugdir.mkdir(parents=True)
+    lock = slugdir / ".lock"
+    lock.mkdir()  # fresh: presumed actively held
+    profile = _patched_profile(tmp_path, fake_cache.devenv)
+
+    env = {**fake_cache.env, "_DEVENV_LOCK_WAIT_S": "8"}
+    proc = subprocess.Popen(
+        ["bash", "-c", f". {profile} && echo LLP=$LD_LIBRARY_PATH"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
+    )
+    # Play the lock holder: publish the lib dir + sentinel, then release.
+    time.sleep(1.5)
+    fake_cache.libdir.mkdir(parents=True)
+    (fake_cache.libdir / fake_cache.soname).write_bytes(b"\x7fELF")
+    fake_cache.sentinel.touch()
+    lock.rmdir()
+    out, err = proc.communicate(timeout=15)
+
+    assert proc.returncode == 0, err
+    assert f"LLP={fake_cache.libdir}" in out or str(fake_cache.libdir) in out, (
+        f"the waiting shell did not pick up the published lib dir; stdout={out!r} stderr={err!r}"
+    )
+    assert "is locked" not in err, (
+        "the shell warned as if it had given up, but the holder published in time"
+    )
+
+
+@requires_deb_tools
+def test_profile_gives_up_waiting_at_the_ceiling_and_warns(
+    tmp_path: Path, fake_cache: SimpleNamespace
+) -> None:
+    """397: the wait is bounded. A holder that never publishes must not hang
+    every shell in the container; after the ceiling the existing warning fires
+    and the shell continues (the profile must never abort its caller)."""
+    slugdir = fake_cache.lib_base / fake_cache.slug
+    slugdir.mkdir(parents=True)
+    (slugdir / ".lock").mkdir()
+    profile = _patched_profile(tmp_path, fake_cache.devenv)
+
+    started = time.monotonic()
+    result = _run(
+        ["bash", "-c", f". {profile} && echo LLP=$LD_LIBRARY_PATH"],
+        env={**fake_cache.env, "_DEVENV_LOCK_WAIT_S": "2"},
+    )
+    elapsed = time.monotonic() - started
+
+    assert result.returncode == 0, result.stderr
+    assert 1.5 <= elapsed < 8, f"expected ~2s of waiting, took {elapsed:.1f}s"
+    assert "is locked" in result.stderr and "waited" in result.stderr, (
+        f"after the ceiling the warning must fire and say it waited; got {result.stderr!r}"
+    )
+    assert not fake_cache.libdir.exists()
+
+
+def test_lock_wait_ceiling_keeps_a_lock_loss_inside_the_services_outer_cap() -> None:
+    """397: the default wait ceiling is sized against two other numbers. A shell
+    that gives up waiting proceeds to run services-start, whose postgres
+    readiness loop is 180s (the services-start templater); the performer kills
+    the whole script at ``_SERVICES_START_TIMEOUT_S``. The wait plus the
+    readiness window must fit inside that cap, or a genuine lock loss stops
+    surfacing as this profile's diagnosable warning and becomes a bare
+    "services-start timed out after 300s". 150s was the first draft and did
+    not fit (330s)."""
+    import re
+
+    from performer.workspace import _SERVICES_START_TIMEOUT_S
+
+    m = re.search(r'_DEVENV_LOCK_WAIT_S:-(\d+)', PROFILE.read_text())
+    assert m, "the profile no longer declares a default lock-wait ceiling"
+    ceiling = int(m.group(1))
+    # 397 (review): the readiness window is a literal in the services-start
+    # template, not a constant. Read it from there, the way this test reads the
+    # ceiling from the profile, so a change to either side moves this check.
+    template = (
+        REPO_ROOT
+        / "packages" / "service_inference" / "src" / "coordinare_service_inference"
+        / "templates" / "services-start.sh.j2"
+    )
+    waits = re.findall(r'while \[ "\$_pg_wait" -lt (\d+) \]', template.read_text())
+    assert waits, f"no postgres readiness loop found in {template}"
+    postgres_readiness_s = max(int(w) for w in waits)
+    assert ceiling + postgres_readiness_s < _SERVICES_START_TIMEOUT_S, (
+        f"wait {ceiling}s + readiness {postgres_readiness_s}s must stay under the "
+        f"{_SERVICES_START_TIMEOUT_S:.0f}s outer cap"
+    )
+    assert ceiling >= 60, "the ceiling must still cover an uncontended extraction (~36s) with headroom"
+
+
+@requires_deb_tools
+def test_lock_wait_ends_when_the_sentinel_appears_even_if_the_lock_is_still_held(
+    tmp_path: Path, fake_cache: SimpleNamespace
+) -> None:
+    """397 (review): the wait loop has three exit conditions and the first
+    waiting test satisfied two of them at once, so removing either check still
+    passed. This pins the SENTINEL condition alone: the holder writes the
+    sentinel last and only then releases the lock, so there is a real window
+    where the libs are published but the lock dir still exists. A waiter must
+    proceed in that window, not sit until the lock goes away.
+
+    MUTATION: drop ``[ ! -f "$_devenv_marker" ]`` from the while condition.
+    The waiter then holds until the 8s ceiling and this test's 5s bound fails.
+    """
+    slugdir = fake_cache.lib_base / fake_cache.slug
+    slugdir.mkdir(parents=True)
+    lock = slugdir / ".lock"
+    lock.mkdir()
+    profile = _patched_profile(tmp_path, fake_cache.devenv)
+
+    started = time.monotonic()
+    proc = subprocess.Popen(
+        ["bash", "-c", f". {profile} && echo LLP=$LD_LIBRARY_PATH"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        env={**fake_cache.env, "_DEVENV_LOCK_WAIT_S": "8"},
+    )
+    time.sleep(1.5)
+    fake_cache.libdir.mkdir(parents=True)
+    (fake_cache.libdir / fake_cache.soname).write_bytes(b"\x7fELF")
+    fake_cache.sentinel.touch()          # published ...
+    # ... but the lock is deliberately NOT released.
+    out, err = proc.communicate(timeout=15)
+    elapsed = time.monotonic() - started
+
+    assert proc.returncode == 0, err
+    assert elapsed < 5, f"waiter ignored the sentinel and sat on the held lock ({elapsed:.1f}s)"
+    assert str(fake_cache.libdir) in out, out
+    assert "is locked" not in err
+    lock.rmdir()
+
+
+@requires_deb_tools
+def test_lock_wait_ends_when_the_lock_is_released_without_a_sentinel(
+    tmp_path: Path, fake_cache: SimpleNamespace
+) -> None:
+    """397 (review): the LOCK condition alone. A holder that releases the lock
+    without publishing (extraction produced nothing, or it was killed and the
+    lock reclaimed) has nothing more coming; the waiter must stop promptly and
+    fall through to the warning, not wait out the ceiling for a sentinel that
+    will never appear.
+
+    MUTATION: drop ``[ -d "$_devenv_lock" ]`` from the while condition. The
+    waiter then holds until the 8s ceiling and this test's 5s bound fails.
+    """
+    slugdir = fake_cache.lib_base / fake_cache.slug
+    slugdir.mkdir(parents=True)
+    lock = slugdir / ".lock"
+    lock.mkdir()
+    profile = _patched_profile(tmp_path, fake_cache.devenv)
+
+    started = time.monotonic()
+    proc = subprocess.Popen(
+        ["bash", "-c", f". {profile} && echo LLP=$LD_LIBRARY_PATH"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        env={**fake_cache.env, "_DEVENV_LOCK_WAIT_S": "8"},
+    )
+    time.sleep(1.5)
+    lock.rmdir()                          # released, nothing published
+    _out, err = proc.communicate(timeout=15)
+    elapsed = time.monotonic() - started
+
+    assert proc.returncode == 0, err
+    assert elapsed < 5, f"waiter ignored the released lock and waited out the ceiling ({elapsed:.1f}s)"
+    assert not fake_cache.libdir.exists()
+    assert "is locked" in err and "waited" in err, err
