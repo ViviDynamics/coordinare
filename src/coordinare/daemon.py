@@ -176,6 +176,21 @@ def _persist_active_sessions(active_sessions: dict[str, Any]) -> dict[str, Persi
         head_last = head_last_raw if isinstance(head_last_raw, str) and head_last_raw else None
         persona_scope_raw = sess.get("persona_scope")
         persona_scope = persona_scope_raw if isinstance(persona_scope_raw, dict) else None
+        no_progress_raw = sess.get("no_progress_relays")
+        no_progress_relays: dict[str, int] = {}
+        if isinstance(no_progress_raw, dict):
+            for k, v in no_progress_raw.items():
+                # 390: same defensive read as bounce_counter below — a corrupted
+                # snapshot must not crash startup, and an unreadable entry is
+                # treated as budget unspent (costs one dispatch, not the daemon).
+                if isinstance(v, bool) or not isinstance(v, (int, float)):
+                    continue
+                try:
+                    parsed = int(v)
+                except (ValueError, OverflowError):
+                    continue
+                if parsed >= 0:
+                    no_progress_relays[str(k)] = parsed
         bounce_counter_raw = sess.get("bounce_counter")
         bounce_counter: dict[str, int] = {}
         if isinstance(bounce_counter_raw, dict):
@@ -427,6 +442,7 @@ def _persist_active_sessions(active_sessions: dict[str, Any]) -> dict[str, Persi
             head_at_last_turn=head_last,
             persona_scope=persona_scope,
             bounce_counter=bounce_counter,
+            no_progress_relays=no_progress_relays,
             local_fix_counter=local_fix_counter,
             inheritance_repair_counter=inheritance_repair_counter,
             repair_audit=repair_audit,

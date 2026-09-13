@@ -288,6 +288,10 @@ class PersistedSession(BaseModel):
     # bounce count across daemon restarts.  Optional / default ``{}`` keeps
     # v1-v4 snapshots loading unchanged.
     bounce_counter: dict[str, int] = Field(default_factory=dict)
+    # 390: consecutive relays per stage that produced no commit. Keyed by
+    # STAGE, not by head SHA -- the loop this bounds is one where the head
+    # never moves, which is exactly why bounce_counter could not see it.
+    no_progress_relays: dict[str, int] = Field(default_factory=dict)
     # 089: per-HEAD implementer local-test self-fix counter (schema v8+).
     # Parallel to bounce_counter — keyed by head SHA, never reads/writes it
     # (SC-004).  Optional / default ``{}`` keeps v1-v7 snapshots loading.

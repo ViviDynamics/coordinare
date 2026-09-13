@@ -142,6 +142,11 @@ class CardSession(TypedDict, total=False):
     # MUST round-trip through session ↔ state or the gate forgets bounces
     # between cycles and never escalates to needs_human_review.
     bounce_counter: dict[str, int]
+    # 390: consecutive relays per STAGE that produced no commit. Keyed by
+    # stage rather than head SHA, because the loop it bounds is one where
+    # the head never moves. MUST round-trip or the budget resets every
+    # cycle and the relay is unbounded again.
+    no_progress_relays: dict[str, int]
     # 089: per-HEAD implementer local-test self-fix counter.  Parallel to
     # bounce_counter (keyed by head SHA, reset on new push); never reads/writes
     # bounce_counter (SC-004).  MUST round-trip or the gate forgets the budget.
@@ -302,6 +307,7 @@ _SESSION_FIELDS: tuple[str, ...] = (
     "surfaced_stale_reviews",
     "persona_scope",
     "bounce_counter",
+    "no_progress_relays",
     "local_fix_counter",
     "inheritance_repair_counter",
     "repair_audit",
@@ -413,6 +419,7 @@ def create_session_from_card(card: dict[str, Any]) -> CardSession:
         surfaced_stale_reviews={},
         persona_scope=None,
         bounce_counter={},
+        no_progress_relays={},
         local_fix_counter={},
         inheritance_repair_counter={},
         repair_audit=[],

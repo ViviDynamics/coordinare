@@ -71,6 +71,12 @@ from coordinare.services.convergence import (  # noqa: E402
 # aliased: this module already binds `persona` as a loop variable elsewhere, and
 # a shadowed import is a silent wrong-value bug waiting to happen.
 from coordinare.services.convergence import persona as convergence_persona  # noqa: E402
+from coordinare.services.no_progress import (  # noqa: E402
+    MAX_NO_PROGRESS_RELAYS,
+    note_no_progress,
+    note_progress,
+    should_block,
+)
 from coordinare.services.progress_evidence import (  # noqa: E402
     evaluate_stall,
     production_advanced,
@@ -5281,6 +5287,49 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
         # work but did not finish. Relay the next_focus hint and re-dispatch
         # the implementing stage for another turn.
         if marker == "partial_progress" and stage in SENTINEL_STAGES:
+            # 390: this relay is free only when the turn produced something.
+            # The comment above says "committed/pushed work but did not
+            # finish", and that premise is what makes the relay safe -- a run
+            # that pushes nothing leaves the head unmoved, so bounce_counter
+            # (keyed by head SHA) never counts it and the loop is unbounded.
+            # Measured on card #160: two identical empty relays, ~25 min and a
+            # 620s suite run each, with no ceiling.
+            _hb, _ha = status.get("head_before"), status.get("head_after")
+            # Produced only when BOTH heads are known AND they differ. Written
+            # the other way round -- "not (known and known and equal)" -- an
+            # absent head reads as produced and CLEARS the budget, which is the
+            # unbounded loop this change exists to prevent, reintroduced through
+            # a fail-open default. head_before/head_after are `str | None = None`
+            # in the protocol, so a performer may legitimately omit them.
+            # Not knowing whether work was produced is not evidence that it was.
+            _produced = (
+                isinstance(_hb, str) and isinstance(_ha, str)
+                and bool(_hb) and bool(_ha) and _hb != _ha
+            )
+            if _produced:
+                note_progress(state, stage)
+            else:
+                _spent = note_no_progress(state, stage)
+                if should_block(state, stage):
+                    logger.warning(
+                        "monitor_performer.no_progress_budget_exhausted",
+                        performer_stage=stage, card_id=card_id,
+                        relays=_spent, limit=MAX_NO_PROGRESS_RELAYS, marker=marker,
+                    )
+                    _sm_np = state.get("slot_manager")
+                    if _sm_np is not None and hasattr(_sm_np, "release"):
+                        _sm_np.release(stage, card_id)
+                    state["phase"] = "blocked"
+                    state["open_questions"] = [
+                        f"Performer ({stage}) relayed {_spent} times without "
+                        "committing anything. Each relay repeated the same "
+                        "outcome, so more attempts will not help. "
+                        + (str(status.get("reason") or "").strip()
+                           or "The last run reported no reason.")
+                    ]
+                    state["agent_dispatch"] = {}
+                    state["agent_dispatch_at"] = None
+                    return state
             next_focus = status.get("next_focus")
             focus_text = next_focus.strip() if isinstance(next_focus, str) else ""
             relay_body = (
@@ -5353,11 +5402,31 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
                 and head_before
                 and head_before == head_after
             ):
+                # 390: same budget. Relaying "you pushed nothing, try again"
+                # is worth doing once; doing it forever is the same unbounded
+                # loop in a second place.
+                _spent_nc = note_no_progress(state, stage)
+                if should_block(state, stage):
+                    logger.warning(
+                        "monitor_performer.no_progress_budget_exhausted",
+                        performer_stage=stage, card_id=card_id,
+                        relays=_spent_nc, limit=MAX_NO_PROGRESS_RELAYS, marker=marker,
+                    )
+                    state["phase"] = "blocked"
+                    state["open_questions"] = [
+                        f"Performer ({stage}) ended {_spent_nc} turns without "
+                        "pushing any commits, after being told each time to "
+                        "finish or checkpoint."
+                    ]
+                    state["agent_dispatch"] = {}
+                    state["agent_dispatch_at"] = None
+                    return state
                 logger.warning(
                     "monitor_performer.blocked_no_commits_retry",
                     performer_stage=stage,
                     card_id=card_id,
                     head=head_before,
+                    relays=_spent_nc,
                 )
                 state["relay_feedback"] = [  # type: ignore[typeddict-unknown-key]
                     {
@@ -5404,6 +5473,23 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
                 resume_directive = _ROLE_RESUME_DIRECTIVES.get(
                     stage, _DEFAULT_RESUME_DIRECTIVE,
                 )
+                # 390: third instance of the same unbounded relay.
+                _spent_zp = note_no_progress(state, stage)
+                if should_block(state, stage):
+                    logger.warning(
+                        "monitor_performer.no_progress_budget_exhausted",
+                        performer_stage=stage, card_id=card_id,
+                        relays=_spent_zp, limit=MAX_NO_PROGRESS_RELAYS, marker=marker,
+                    )
+                    state["phase"] = "blocked"
+                    state["open_questions"] = [
+                        f"Performer ({stage}) produced nothing on {_spent_zp} "
+                        "consecutive turns: no commits, no PR comments, no "
+                        "clarifications."
+                    ]
+                    state["agent_dispatch"] = {}
+                    state["agent_dispatch_at"] = None
+                    return state
                 logger.warning(
                     "monitor_performer.blocked_zero_progress_retry",
                     performer_stage=stage,
@@ -5411,6 +5497,7 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
                     head=head_before,
                     bot_comment_delta=bot_comment_delta,
                     clarifications_delta=_clar_now - _clar_at_dispatch,
+                    relays=_spent_zp,
                 )
                 state["relay_feedback"] = [  # type: ignore[typeddict-unknown-key]
                     {"body": resume_directive, "author_login": "coordinare"}
