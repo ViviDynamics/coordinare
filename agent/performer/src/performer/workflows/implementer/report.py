@@ -32,6 +32,7 @@ def assemble_run_record(
     turn_count: int = 0,
     model_calls: int = 0,
     github_api_calls: int = 0,
+    work_salvaged: bool = False,
 ) -> RunRecord:
     """Assemble a complete RunRecord for the workflow (FR-018).
 
@@ -72,6 +73,7 @@ def assemble_run_record(
         turn_count=turn_count,
         model_calls=model_calls,
         github_api_calls=github_api_calls,
+        work_salvaged=work_salvaged,
     )
 
     log.info(

@@ -128,11 +128,16 @@ VACUOUS = Fixture(
     env={},
     expect=Expectation(
         status="partial_progress",
-        commit_prefixes_in_order=[],
+        # 393: spec-167 FR-009 reset a failed milestone's work away, so these
+        # two scenarios expected no commit and no push. The attempt is now kept
+        # on the card's deterministic branch so the next container resumes from
+        # it instead of rewriting the same file -- which is what card #160 did
+        # twice, producing the identical verdict both times.
+        commit_prefixes_in_order=["wip"],
         persona_sequence=["TESTS", "REPAIR_TESTS"],
         min_turns=2,
         max_turns=2,
-        pushed=False,
+        pushed=True,
     ),
 )
 
@@ -151,11 +156,19 @@ STUCK = Fixture(
     env={},
     expect=Expectation(
         status="partial_progress",
-        commit_prefixes_in_order=[],
+        # 393: spec-167 FR-009 reset a failed milestone's work away, so these
+        # two scenarios expected no commit and no push. The attempt is now kept
+        # on the card's deterministic branch so the next container resumes from
+        # it instead of rewriting the same file -- which is what card #160 did
+        # twice, producing the identical verdict both times.
+        # The tests turn here DID achieve red and committed normally; the
+        # implement turns then failed and their work was salvaged on top. The
+        # log reads newest-first, so the salvage commit precedes the test one.
+        commit_prefixes_in_order=["wip", "test"],
         persona_sequence=["TESTS", "IMPLEMENT", "REPAIR_IMPLEMENT", "REPAIR_IMPLEMENT"],
         min_turns=4,
         max_turns=4,
-        pushed=False,
+        pushed=True,
     ),
 )
 

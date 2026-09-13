@@ -231,6 +231,77 @@ async def test_two_milestones_build_test_first_one_at_a_time(tmp_path):
 # --- US2: vacuous and stuck are bounded ----------------------------------------
 
 @pytest.mark.asyncio
+async def test_a_failure_that_produced_only_artifacts_still_leaves_a_clean_tree(tmp_path):
+    """393: salvage replaced the FR-009 reset on the path where there is work
+    worth keeping. The reset is still the fallback, and dropping it would leave
+    caches and junk in the tree of every failed milestone.
+
+    Mutation X3 (removing the fallback) passed the whole suite, because every
+    failure scenario here produces a real file. This is the one that does not.
+    """
+    repo, _ = _repo(tmp_path)
+    start = _head(repo)
+
+    def only_artifacts(repo, brief):
+        _write(repo, "__pycache__/stale.pyc", "junk\n")
+
+    harness = Harness(repo, {"TESTS": only_artifacts, "REPAIR_TESTS": only_artifacts,
+                             "IMPLEMENT": _impl_turn})
+    edges = Edges()
+    report, _ = await _run(repo, _score(milestones=_milestones(1)), harness, edges)
+    run = report["implementer_run"]
+
+    assert run["status"] == "partial_progress"
+    assert run["work_salvaged"] is False, "artifacts alone are not work worth keeping"
+    assert _head(repo) == start, "the head moved for a turn that produced nothing"
+    assert edges.pushes == 0, "an empty attempt was pushed"
+    assert not (repo / "__pycache__" / "stale.pyc").exists(), (
+        "the reset fallback was dropped: junk survived a failed milestone"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_salvage_that_raises_does_not_replace_the_honest_failure(tmp_path):
+    """395: best effort has to hold for the CALL, not just inside it.
+
+    ``salvage_failed_work`` guards its own git operations, but the driver
+    invoked it bare, from inside an ``except MilestoneFailed`` block. Anything
+    raised there -- an import error, a bad attribute, a future edit -- escaped
+    as a different exception type and replaced an honest ``partial_progress``
+    with a crash, losing the reason an operator needs.
+
+    MUTATION: drop the try/except around the salvage call in
+    ``driver.run_milestone``.
+    """
+    import performer.workflows.implementer.salvage as salvage_mod
+
+    repo, _ = _repo(tmp_path)
+    start = _head(repo)
+
+    async def boom(*a, **k):
+        raise RuntimeError("salvage blew up")
+
+    original = salvage_mod.salvage_failed_work
+    salvage_mod.salvage_failed_work = boom
+    try:
+        def writes_a_spec(repo, brief):
+            _write(repo, "tests/test_m0.py", "def test_x():\n    assert True\n")
+
+        harness = Harness(repo, {"TESTS": writes_a_spec, "REPAIR_TESTS": writes_a_spec,
+                                 "IMPLEMENT": _impl_turn})
+        edges = Edges()
+        report, _ = await _run(repo, _score(milestones=_milestones(1)), harness, edges)
+    finally:
+        salvage_mod.salvage_failed_work = original
+
+    run = report["implementer_run"]
+    assert run["status"] == "partial_progress", "a raising salvage crashed the run"
+    assert run["reason"], "the operator lost the reason the milestone failed"
+    assert run["work_salvaged"] is False
+    assert _head(repo) == start, "the reset fallback did not run after salvage raised"
+
+
+@pytest.mark.asyncio
 async def test_vacuous_tests_get_one_reprompt_then_fail_the_milestone(tmp_path):
     repo, _ = _repo(tmp_path)
     start = _head(repo)
@@ -245,8 +316,15 @@ async def test_vacuous_tests_get_one_reprompt_then_fail_the_milestone(tmp_path):
     assert run["status"] == "partial_progress" and "red was not observed" in run["reason"]
     assert run["next_focus_milestone"] == "milestone 0"
     assert [b["persona_kind"] for b in harness.briefs] == ["TESTS", "REPAIR_TESTS"]
-    assert _head(repo) == start and not (repo / "tests" / "test_m0.py").exists(), "the red tests commit is reverted"
-    assert edges.pushes == 0 and edges.pr_opened == 0
+    # 393: spec-167 FR-009 reset the tree to the milestone start on failure,
+    # which also discarded the attempt. Card #160 ran twice and produced the
+    # identical verdict because each run began from an empty branch. The work
+    # is now committed and pushed so the next container resumes from it.
+    assert _head(repo) != start, "the failed attempt was discarded instead of kept"
+    assert (repo / "tests" / "test_m0.py").exists(), "the spec the turn wrote was thrown away"
+    assert edges.pushes == 1, "the work was committed locally but never pushed, so the next container cannot see it"
+    assert run["work_salvaged"] is True
+    assert edges.pr_opened == 0, "a failed milestone must not open a PR"
 
 
 @pytest.mark.asyncio
@@ -264,7 +342,11 @@ async def test_a_stuck_implementation_stops_after_three_attempts(tmp_path):
     assert run["status"] == "partial_progress" and "3 implementation attempts" in run["reason"]
     assert [b["persona_kind"] for b in harness.briefs] == ["TESTS", "IMPLEMENT", "REPAIR_IMPLEMENT", "REPAIR_IMPLEMENT"]
     assert harness.briefs[2]["failing_tests"] == ["tests/test_m0.py::test_0"]
-    assert _head(repo) == start and edges.pushes == 0
+    # 393: spec-167 FR-009 reset the tree to the milestone start on failure,
+    # which also discarded the attempt. The work
+    # is now committed and pushed so the next container resumes from it.
+    assert _head(repo) != start, "the failed attempt was discarded instead of kept"
+    assert edges.pushes == 1, "the attempt was not pushed, so it cannot be resumed"
 
 
 # --- US3: quality, gate, CI with repairs, hand-off ------------------------------
@@ -441,7 +523,11 @@ async def test_tests_lane_treats_a_failing_new_test_as_a_finding(tmp_path):
     report, _ = await _run(repo, _score(milestones=_milestones(1), work_kind="tests"), harness, edges)
     run = report["implementer_run"]
     assert run["status"] == "partial_progress" and "finding" in run["reason"] and "tests/test_cover.py::test_0" in run["reason"]
-    assert _head(repo) == start and edges.pushes == 0
+    # 393: spec-167 FR-009 reset the tree to the milestone start on failure,
+    # which also discarded the attempt. The work
+    # is now committed and pushed so the next container resumes from it.
+    assert _head(repo) != start, "the failed attempt was discarded instead of kept"
+    assert edges.pushes == 1, "the attempt was not pushed, so it cannot be resumed"
 
 
 @pytest.mark.parametrize("kind", ["research", "docs"])
@@ -777,7 +863,11 @@ async def test_a_vacuous_tests_turn_still_fails_on_a_resumed_branch(tmp_path):
     assert run["status"] == "partial_progress" and "red was not observed" in run["reason"]
     assert run["resumed_from_milestone"] == 1, "milestone zero was still skipped as done"
     assert [b["persona_kind"] for b in harness.briefs] == ["TESTS", "REPAIR_TESTS"]
-    assert _head(repo) == start and edges.pushes == 0
+    # 393: spec-167 FR-009 reset the tree to the milestone start on failure,
+    # which also discarded the attempt. The work
+    # is now committed and pushed so the next container resumes from it.
+    assert _head(repo) != start, "the failed attempt was discarded instead of kept"
+    assert edges.pushes == 1, "the attempt was not pushed, so it cannot be resumed"
 
 
 @pytest.mark.asyncio

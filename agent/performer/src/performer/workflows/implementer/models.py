@@ -173,3 +173,9 @@ class RunRecord(_Bounded):
     turn_count: int = 0
     model_calls: int = 0
     github_api_calls: int = 0
+    #: 393: whether this run's work was committed and pushed despite the
+    #: failure. Lets coordinare say on the card that the branch carries a
+    #: partial attempt, so an operator knows why a card is stuck without
+    #: reading container logs -- the measured failure was invisible outside
+    #: the container.
+    work_salvaged: bool = False

@@ -116,6 +116,9 @@ class RunContext:
     prior_paths: frozenset[str] = frozenset()
     # 379: scoped test command per milestone test-file set, asked once each.
     scoped_commands: dict[tuple[str, ...], str | None] = field(default_factory=dict)
+    # 393: whether a failed milestone's work was committed and pushed
+    # instead of being reset away.
+    work_salvaged: bool = False
     pr_node_id: str | None = None
     # injectable edges (the workflow fills the defaults; tests fake them)
     push: Callable[[], Awaitable[None]] = _noop_async
@@ -661,7 +664,40 @@ async def run_milestone(ctx: RunContext, milestone: MilestonePlan) -> PerMilesto
     except MilestoneFailed as exc:
         record.failure_reason = record.failure_reason or exc.reason
         record.implementation_successful = False
-        await _reset_hard(ctx.workspace, start_sha)
+        # 393: spec-167 FR-009 returned the tree to the milestone's start
+        # commit here, which kept the branch free of broken intermediate
+        # states. It also threw the attempt away: card #160 ran twice, six
+        # minutes of writing each, and produced the IDENTICAL verdict, because
+        # both attempts started from an empty branch and rewrote the same file.
+        #
+        # The branch is already deterministic and already preserved across
+        # runs, so the next container edits the partial file instead of
+        # deriving it from nothing -- which only works if something is left
+        # behind. The salvage commit is deliberately NOT a spec-171 resume
+        # credit (see salvage.SALVAGE_PREFIX): unvalidated work must never let
+        # a milestone be skipped. The clean-PR concern FR-009
+        # protected is still served: these branches reach main only through a
+        # PR with reviewer, security and CI gates, and the commit says plainly
+        # that the milestone did not complete.
+        #
+        # The reset remains the fallback for when there is nothing worth
+        # keeping, so a failure that produced only artifacts still leaves a
+        # clean tree.
+        # Salvage is best effort, and "best effort" has to hold for the call
+        # itself, not just for the paths inside it. This block runs while a
+        # MilestoneFailed is in flight; anything raised here would replace that
+        # honest failure with a crash and lose the reason the operator needs.
+        from performer.workflows.implementer.salvage import salvage_failed_work
+
+        salvaged = False
+        try:
+            salvaged = await salvage_failed_work(ctx, since_sha=start_sha, reason=exc.reason)
+        except Exception as salvage_exc:  # noqa: BLE001 - never mask the real failure
+            log.warning("implementer.salvage_raised", error=str(salvage_exc)[:200])
+        if salvaged:
+            ctx.work_salvaged = True
+        else:
+            await _reset_hard(ctx.workspace, start_sha)
         ctx.milestone_records.append(record)
         log.warning("implementer.milestone_failed", index=milestone.index, reason=exc.reason, ms=int((time.monotonic() - started) * 1000))
         raise
