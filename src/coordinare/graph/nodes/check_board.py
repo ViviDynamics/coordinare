@@ -371,6 +371,64 @@ def _prior_stage_column(sess: dict) -> str:
     return prev if prev in ("IN_PROGRESS", "IN_REVIEW", "TODO") else "IN_PROGRESS"
 
 
+async def _fetch_pr_rollup(github: object, owner: str, repo: str, number: int):
+    """399: the PR's check rollup, via the same service the CI gate uses.
+    Module-level so tests can substitute a rollup without a GitHub."""
+    from coordinare.services.pr_checks_service import PrChecksService
+
+    return await PrChecksService(github, owner, repo).get_pr_check_rollup(number)  # type: ignore[arg-type]
+
+
+async def _reconcile_stage_with_pr(sess: dict, cid: str, github: object, pr: dict) -> None:
+    """399: a recovered card resumes at the stage its session recorded. For
+    website#160 that was ``implementing`` while its PR was already open and
+    green, so recovery would have re-run the implementer on finished work.
+
+    A PR whose required checks all pass means implementing is done. Advance the
+    session to the next stage in ITS OWN lifecycle sequence, through the same
+    ``_advance_stage`` the normal path uses, so the dispatch-reset fields match.
+    A red or pending rollup leaves the stage alone: the repair lane still owns
+    it. Any failure here is logged and the stage is kept; this is a refinement
+    of recovery, never a precondition for it.
+    """
+    if str(sess.get("performer_stage") or "") != "implementing":
+        return
+    url = str(pr.get("pr_url") or "")
+    parts = url.rstrip("/").split("/")
+    try:
+        owner, repo, number = parts[-4], parts[-3], int(parts[-1])
+    except (IndexError, ValueError):
+        logger.info("blocked_recovery.stage_kept", card_id=cid, why="unparseable_pr_url")
+        return
+    try:
+        from coordinare.services.pr_checks_policy import decide
+
+        rollup = await _fetch_pr_rollup(github, owner, repo, number)
+        decision = decide(rollup)
+    except Exception as exc:
+        logger.info("blocked_recovery.stage_kept", card_id=cid, why="rollup_unreadable", error=str(exc)[:200])
+        return
+    if decision.action != "FORWARD":
+        logger.info(
+            "blocked_recovery.stage_kept", card_id=cid, why=decision.reason,
+            action=decision.action, failed=decision.failed[:5], pending=decision.pending[:5],
+        )
+        return
+    from coordinare.graph.nodes.monitor_performer import _advance_stage
+
+    updates = _advance_stage(sess, None)  # type: ignore[arg-type]
+    if "performer_stage" not in updates:
+        logger.info("blocked_recovery.stage_kept", card_id=cid, why="no_next_stage")
+        return
+    for key, value in updates.items():
+        if key != "current_card":
+            sess[key] = value
+    logger.info(
+        "blocked_recovery.stage_advanced", card_id=cid, pr=number,
+        from_stage="implementing", to_stage=updates["performer_stage"],
+    )
+
+
 async def _attempt_blocked_card_recovery(
     state: CoordinareState, github: object, blocked: list, board: dict
 ) -> None:
@@ -421,6 +479,8 @@ async def _attempt_blocked_card_recovery(
         try:
             active_reasons: list[BlockReason] = []
             sig: dict = {}
+            pr: dict | None = None
+            pr_node_id = ""
             head_oid = ""
             # Human-gate safety (FR-004): the env path may recover a card WITHOUT a
             # blocking review, but only if we could POSITIVELY confirm no unaddressed
@@ -522,7 +582,18 @@ async def _attempt_blocked_card_recovery(
             decision = evaluate_recovery(active_reasons, RecoverySignals(**sig))
             if not decision.recover:
                 continue
+            if BlockReason.ENV_BLOCKED in active_reasons and pr_node_id and isinstance(pr, dict):
+                await _reconcile_stage_with_pr(sess, cid, github, pr)
             await move_card_or_warn(board_provider, cid, decision.target_stage)
+            # 399: the marker was consumed. Left in place it would make the
+            # card's NEXT block, whatever its cause, also demand env_recovered.
+            # Review noted the marker also survives when recovery is gated out
+            # above (review_gate_checked False) and a human then moves the card.
+            # Accepted: the card is still genuinely env-blocked at that point,
+            # and a lingering marker only adds an env_recovered condition to a
+            # later block, which is true whenever the environment is healthy.
+            if BlockReason.ENV_BLOCKED in active_reasons and sess:
+                sess["env_blocked"] = None
             # The card is no longer BLOCKED on GitHub — drop it from the in-memory
             # board snapshot AND the live blocked list so the downstream blocked-
             # handling branch (which re-reads state["board_snapshot"]["BLOCKED"])
