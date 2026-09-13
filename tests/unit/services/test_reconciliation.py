@@ -327,10 +327,12 @@ async def test_reconciliation_handles_legacy_flat_wedge_window() -> None:
 
 
 @pytest.mark.asyncio
-async def test_handle_stale_session_docker_unreachable_clears() -> None:
-    """When Docker is down during the per-card stale check, fall back
-    to fresh-dispatch (clear agent_dispatch) and emit the
-    reason=docker_unreachable log event."""
+async def test_handle_stale_session_docker_unreachable_defers_first() -> None:
+    """401: a single Docker timeout is an unknown, not a missing container.
+    The session is left alone and the decision is DEFERRED; only a streak of
+    them (see test_401_docker_ps_timeout_is_unknown) falls back to
+    fresh-dispatch. This test used to pin the opposite, and that behaviour
+    restarted a healthy performer twice in one night."""
     state = {
         "active_sessions": {},
         "performer_stage": "implementing",
@@ -341,9 +343,9 @@ async def test_handle_stale_session_docker_unreachable_clears() -> None:
     executor = _MockDockerExecutor()
     executor.unreachable = True
     decision = await handle_potentially_stale_session(state, "PVTI_X", docker_executor=executor)
-    assert decision == ReconciliationDecision.FRESH_DISPATCHED
-    assert state["agent_dispatch"] == {}
-    assert state["phase"] == "dispatching"
+    assert decision == ReconciliationDecision.DEFERRED
+    assert state["agent_dispatch"] == {"session_id": "stale-uuid"}
+    assert state["phase"] == "monitoring_performer"
 
 
 @pytest.mark.asyncio

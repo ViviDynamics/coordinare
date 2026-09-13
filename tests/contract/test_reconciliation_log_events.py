@@ -195,3 +195,43 @@ async def test_stale_session_reconciled_event_has_required_fields(monkeypatch) -
     assert fields["session_id"] == "legacy-uuid"
     assert "decision" in fields
     assert decision is not None
+
+
+@pytest.mark.asyncio
+async def test_stale_session_deferred_event_has_required_fields(monkeypatch) -> None:
+    """401: a docker ps timeout is an unknown. The per-card path emits
+    ``check_board.stale_session_deferred`` (WARNING) with the fields an operator
+    greps for, leaves the session untouched, and only after
+    DOCKER_UNREACHABLE_ESCALATION_STREAK consecutive timeouts falls back to the
+    ``stale_session_reconciled`` event with reason=docker_unreachable."""
+    cap = _Capture(monkeypatch)
+    state = {
+        "active_sessions": {},
+        "performer_stage": "implementing",
+        "agent_dispatch": {"session_id": "slow-uuid"},
+        "phase": "monitoring_performer",
+        "performer_services": {"implementing": _Svc()},
+    }
+    docker = _MockDocker(unreachable=True)
+
+    decision = await recon_mod.handle_potentially_stale_session(state, "PVTI_SLOW", docker_executor=docker)
+
+    deferred = cap.find("check_board.stale_session_deferred")
+    assert deferred, f"missing event; saw {cap.names()}"
+    fields = deferred[0]
+    assert fields["card_id"] == "PVTI_SLOW"
+    assert fields["session_id"] == "slow-uuid"
+    assert fields["decision"] == "deferred"
+    assert fields["reason"] == "docker_unreachable"
+    assert fields["streak"] == 1
+    assert fields["escalate_at"] == recon_mod.DOCKER_UNREACHABLE_ESCALATION_STREAK
+    assert str(decision) == "deferred"
+    assert not cap.find("check_board.stale_session_reconciled"), "a first timeout must not emit the reconciled event"
+    assert state["agent_dispatch"] == {"session_id": "slow-uuid"}
+
+    for _ in range(recon_mod.DOCKER_UNREACHABLE_ESCALATION_STREAK - 1):
+        await recon_mod.handle_potentially_stale_session(state, "PVTI_SLOW", docker_executor=docker)
+    reconciled = cap.find("check_board.stale_session_reconciled")
+    assert reconciled and reconciled[-1]["reason"] == "docker_unreachable"
+    assert reconciled[-1]["decision"] == "fresh_dispatched"
+    assert reconciled[-1]["streak"] == recon_mod.DOCKER_UNREACHABLE_ESCALATION_STREAK
