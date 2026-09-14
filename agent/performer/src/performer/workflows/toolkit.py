@@ -15,7 +15,7 @@ import asyncio
 import inspect
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, TypeVar
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal, TypeVar
 
 from pydantic import BaseModel
 
@@ -36,6 +36,22 @@ CommandRunner = Callable[[str, Any, int], Awaitable[tuple[int, str]]]
 ModelCall = Callable[[str, list[dict], int], Awaitable[ModelReply]]
 #: (brief: dict, *, timeout_s: float) -> TurnResult dict
 AgentTurnRunner = Callable[[dict], Awaitable[dict]]
+
+
+def command_kwargs(command: Callable[..., Any], wanted: dict[str, Any]) -> dict[str, Any]:
+    """Filter *wanted* to the keywords *command* actually accepts.
+
+    ``output_budget`` and ``capture`` (408) are new; injected runners and
+    duck-typed toolkits in tests and harnesses may predate them. By repo
+    convention, check the signature before passing across a protocol
+    boundary -- by name, or through a ``**kwargs`` catch-all.
+    """
+    try:
+        parameters = inspect.signature(command).parameters
+    except (TypeError, ValueError):
+        return {}
+    has_var_keyword = any(p.kind is p.VAR_KEYWORD for p in parameters.values())
+    return {key: value for key, value in wanted.items() if has_var_keyword or key in parameters}
 
 
 class Toolkit:
@@ -82,18 +98,42 @@ class Toolkit:
         cwd: Path | None = None,
         timeout_s: int = 300,
         plan_check_id: str = "",
+        output_budget: int | None = None,
+        capture: Literal["head", "tail", "both"] | None = None,
     ) -> ExecutedCheck:
         """Run *cmd* and return its real result.
 
         Success is derived from the exit code and nothing else.  Output that
         claims success while the process failed does not change the verdict.
+
+        ``output_budget`` widens the excerpt beyond the default 2000 chars for
+        a command whose real output is large (``git ls-files``, a test run);
+        ``capture`` selects which portion of an overflowing stream survives
+        (head, tail, or a slice of each).  Both are passed through to the
+        runner when it supports them.  ``capture`` requires an explicit
+        ``output_budget``: without one the excerpt stays a 2000-char head
+        slice and a requested tail would silently do nothing.  For a runner
+        that predates the keywords, the excerpt budget is still applied --
+        always as a head slice, because only the runner knows which end of the
+        stream it kept; a capture direction therefore requires a runner that
+        supports it.
         """
         if self._command_runner is None:  # pragma: no cover - wiring error
             raise RuntimeError("Toolkit has no command runner configured")
+        if capture is not None and output_budget is None:
+            raise ValueError("capture requires an explicit output_budget")
         self.metrics.commands_run += 1
-        exit_code, output = await self._command_runner(cmd, cwd, timeout_s)
+        runner_kwargs: dict[str, Any] = {}
+        if output_budget is not None:
+            runner_kwargs["output_budget"] = output_budget
+        if capture is not None:
+            runner_kwargs["capture"] = capture
+        if runner_kwargs:
+            runner_kwargs = command_kwargs(self._command_runner, runner_kwargs)
+        exit_code, output = await self._command_runner(cmd, cwd, timeout_s, **runner_kwargs)
         return ExecutedCheck.from_result(
-            command=cmd, exit_code=exit_code, output=output, plan_check_id=plan_check_id
+            command=cmd, exit_code=exit_code, output=output, plan_check_id=plan_check_id,
+            output_budget=output_budget if output_budget is not None else 2000,
         )
 
     # -- captures ---------------------------------------------------------

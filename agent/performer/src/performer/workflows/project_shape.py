@@ -33,6 +33,8 @@ from typing import Any
 from pydantic import BaseModel, Field, StringConstraints
 from typing_extensions import Annotated
 
+from performer.workflows.toolkit import command_kwargs
+
 __all__ = ["ProjectShape", "ProjectShapeUnknown", "shape_persona", "detect_shape", "repo_tree"]
 
 #: How much of the tree to show the model. A repository's own layout is legible
@@ -177,6 +179,21 @@ async def repo_tree(toolkit: Any, workspace: Path) -> set[str]:
 
     Shared by the two workflows that ask what this project is, so the reading is
     taken from the same view of the repository in both.
+
+    The output budget is a head read large enough for the real content: a
+    ``git ls-files`` listing of a few thousand paths is tens of KB, and the
+    default 2000-char cap once reduced the tree to the alphabetically last few
+    dozen paths -- root manifests (Cargo.toml, go.mod, package.json) sort near
+    the front and vanished with it. The path count shown to the model stays
+    bounded by MAX_TREE_PATHS; the tree itself is whole. A toolkit predating
+    the keywords gets the legacy single-budget behavior.
+
+    The budget is combined across stdout and stderr by the adapter, so the
+    request here is twice the intended stdout cap: 4,000,000 asks 2,000,000
+    for the ls-files stream, about 130k paths. A listing beyond that is
+    outside anything a card will plausibly see; the tree is then the
+    alphabetical front, and the count a lower bound.
     """
-    result = await toolkit.run_command("git ls-files", cwd=workspace, timeout_s=60)
+    wanted = command_kwargs(toolkit.run_command, {"output_budget": 4_000_000, "capture": "head"})
+    result = await toolkit.run_command("git ls-files", cwd=workspace, timeout_s=60, **wanted)
     return {line.strip() for line in (result.output_excerpt or "").splitlines() if line.strip()}

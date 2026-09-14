@@ -61,8 +61,16 @@ def _command_runner(workspace: "Path"):
     """Adapt the performer's run_command to the Toolkit's (exit_code, output)."""
     from performer.workspace import run_command
 
-    async def _run(cmd: str, cwd, timeout_s: int) -> tuple[int, str]:
-        result = await run_command(cmd, Path(cwd or workspace), timeout_s, truncate="tail")
+    async def _run(
+        cmd: str, cwd, timeout_s: int, *, output_budget: int = 4000, capture: str = "tail"
+    ) -> tuple[int, str]:
+        # Split the caller's budget across the two streams so the combined
+        # output never exceeds it. Concatenate-then-head-slice could otherwise
+        # bury stderr under a long stdout (408).
+        result = await run_command(
+            cmd, Path(cwd or workspace), timeout_s,
+            truncate=capture, max_output=max(output_budget // 2, 0),
+        )
         output = (result.stdout or "") + (result.stderr or "")
         return result.exit_code, output
 

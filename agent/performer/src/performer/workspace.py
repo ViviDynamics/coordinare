@@ -1663,14 +1663,14 @@ def _command_shell() -> str:
 
 
 def _fail_result(
-    cmd: str, start: float, stderr_msg: str, *, timed_out: bool = False
+    cmd: str, start: float, stderr_msg: str, *, timed_out: bool = False, max_output: int = _MAX_OUTPUT
 ) -> CIRunResult:
     """Build a failure CIRunResult — shared by timeout and exception paths."""
     return CIRunResult(
         success=False,
         exit_code=-1,
         stdout="",
-        stderr=stderr_msg[:_MAX_OUTPUT],
+        stderr=stderr_msg[: max(max_output, 0)],
         command=cmd,
         duration_seconds=_time.monotonic() - start,
         timed_out=timed_out,
@@ -1684,16 +1684,37 @@ async def _kill_proc(proc: asyncio.subprocess.Process | None) -> None:
         await proc.wait()
 
 
-def _truncate(text: str, *, mode: Literal["head", "tail"]) -> str:
-    """Clamp *text* to ``_MAX_OUTPUT`` chars, keeping the head or the tail.
+def _truncate(
+    text: str, *, mode: Literal["head", "tail", "both"], max_output: int
+) -> str:
+    """Clamp *text* to ``max_output`` chars.
 
     Test runners print the failure summary (assertion diffs, the failing test
     names, the traceback) at the *end* of the run, so ``mode="tail"`` preserves
-    the most diagnostic portion when output overflows.
+    the most diagnostic portion when output overflows. ``mode="both"`` keeps a
+    slice of each end -- some runners print their configuration at the start
+    and their verdict at the end, and one cap should not have to choose.
+
+    ``max_output`` is a per-call budget, not a law of the module: a caller who
+    knows the command under it produces more output asks for more. The default
+    stays ``_MAX_OUTPUT`` for every call site that does not.
     """
-    if len(text) <= _MAX_OUTPUT:
+    if len(text) <= max_output:
         return text
-    return text[-_MAX_OUTPUT:] if mode == "tail" else text[:_MAX_OUTPUT]
+    if max_output <= 0:
+        return ""
+    if mode == "tail":
+        return text[-max_output:]
+    if mode == "both":
+        marker = "\n...[output truncated]...\n"
+        head_len = max_output // 4
+        if max_output <= head_len + len(marker):
+            # Not enough room for both ends and the marker between them;
+            # degrade to a bounded tail rather than grow the text.
+            return text[-max_output:]
+        tail_len = max_output - head_len - len(marker)
+        return text[:head_len] + marker + text[-tail_len:]
+    return text[:max_output]
 
 
 async def run_command(
@@ -1701,15 +1722,18 @@ async def run_command(
     cwd: Path,
     timeout: int = 120,
     *,
-    truncate: Literal["head", "tail"] = "head",
+    truncate: Literal["head", "tail", "both"] = "head",
+    max_output: int = _MAX_OUTPUT,
 ) -> CIRunResult:
     """Run a shell command in *cwd* and return a structured result.
 
     Used by the performer to execute lint/test commands before committing.
-    Truncates stdout/stderr to ``_MAX_OUTPUT`` chars to prevent oversized
+    Truncates stdout/stderr to ``max_output`` chars to prevent oversized
     payloads in error reports.  ``truncate="tail"`` keeps the last
-    ``_MAX_OUTPUT`` chars instead of the first — use it for test runs, whose
-    failure summary lands at the end of the stream.
+    ``max_output`` chars instead of the first — use it for test runs, whose
+    failure summary lands at the end of the stream; ``truncate="both"`` keeps
+    a slice of each end.  ``max_output`` widens the cap for a command whose
+    real output is known to be large (``git ls-files``, a test run).
     """
     start = _time.monotonic()
     proc: asyncio.subprocess.Process | None = None
@@ -1734,16 +1758,17 @@ async def run_command(
     except asyncio.TimeoutError:
         await _kill_proc(proc)
         return _fail_result(
-            cmd, start, f"Command timed out after {timeout}s", timed_out=True
+            cmd, start, f"Command timed out after {timeout}s",
+            timed_out=True, max_output=max_output,
         )
     except Exception as exc:
         await _kill_proc(proc)
-        return _fail_result(cmd, start, str(exc))
+        return _fail_result(cmd, start, str(exc), max_output=max_output)
     return CIRunResult(
         success=proc.returncode == 0,
         exit_code=proc.returncode if proc.returncode is not None else -1,
-        stdout=_truncate(stdout_bytes.decode("utf-8", errors="replace"), mode=truncate),
-        stderr=_truncate(stderr_bytes.decode("utf-8", errors="replace"), mode=truncate),
+        stdout=_truncate(stdout_bytes.decode("utf-8", errors="replace"), mode=truncate, max_output=max_output),
+        stderr=_truncate(stderr_bytes.decode("utf-8", errors="replace"), mode=truncate, max_output=max_output),
         command=cmd,
         duration_seconds=_time.monotonic() - start,
     )
