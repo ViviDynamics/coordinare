@@ -12,6 +12,7 @@ import structlog
 
 from performer.test_results import TestSummary
 from performer.workflows.implementer.models import Baseline
+from performer.workflows.toolkit import command_kwargs
 
 log = structlog.get_logger(__name__)
 
@@ -120,7 +121,14 @@ async def run_tests(toolkit, command: str, runner_kind: str, cwd: Path, timeout_
     from performer.infrastructure import InfrastructureBlocked
     from performer.workflows.implementer.observe import observe_tests
 
-    run_result = await toolkit.run_command(command, cwd=cwd, timeout_s=timeout_s)
+    # 408: a 60k combined budget with head+tail capture, split across stdout
+    # and stderr by the runner. The default 2000-char cap once clipped a test
+    # run to 2000 chars of stdout alone: no stderr, no head, no verdict the
+    # observer could read -- which surfaced as InfrastructureBlocked or a
+    # false all_passed. The observer reads the last 40000 chars. A toolkit
+    # predating the keywords gets the legacy single-budget behavior.
+    wanted = command_kwargs(toolkit.run_command, {"output_budget": 60_000, "capture": "both"})
+    run_result = await toolkit.run_command(command, cwd=cwd, timeout_s=timeout_s, **wanted)
     output = run_result.output_excerpt or ""
     exit_code = run_result.exit_code
 

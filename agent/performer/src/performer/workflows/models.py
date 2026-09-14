@@ -35,12 +35,14 @@ class ExecutedCheck(BaseModel):
 
     @classmethod
     def from_result(cls, command: str, exit_code: int, output: str,
-                    *, plan_check_id: str = "") -> "ExecutedCheck":
+                    *, plan_check_id: str = "", output_budget: int = 2000) -> "ExecutedCheck":
         return cls(
             plan_check_id=plan_check_id,
             command=command,
             exit_code=exit_code,
-            output_excerpt=output[:2000],
+            # A budget below zero must not become a Python negative slice,
+            # which would return nearly the whole output.
+            output_excerpt=output[: max(output_budget, 0)],
             passed=exit_code == 0,
         )
 
