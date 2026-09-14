@@ -14,6 +14,8 @@ from __future__ import annotations
 import hashlib
 from typing import TYPE_CHECKING
 
+import structlog
+
 from performer.workflows.assessor.models import (
     ModelAssessment,
     Assessment,
@@ -21,6 +23,8 @@ from performer.workflows.assessor.models import (
     GateRecord,
 )
 from performer.workflows._text import matches_answered
+
+logger = structlog.get_logger(__name__)
 
 if TYPE_CHECKING:
     from performer.workflows.assessor.intake import Intake
@@ -93,19 +97,30 @@ def force_ready(
     questions: list[str],
     answered_rounds: int,
     limit: int = 2,
+    verdict: str = "work",
 ) -> tuple[bool, list[str], list[str]]:
     """Force ready after *limit* answered rounds (FR-008).
+
+    410: the force applies to a work verdict only. A not_work or needs_split
+    verdict is the model declining to build the card; answered rounds must not
+    override that into a built card with invented assumptions.
 
     Args:
         ready: Current ready status.
         questions: Questions from the model.
         answered_rounds: Count of answered clarification rounds.
         limit: Answered rounds after which to force ready. Default 2.
+        verdict: The assessment verdict ("work", "not_work", "needs_split").
 
     Returns:
         (ready, questions, assumptions_added) tuple.
     """
     assumptions = []
+
+    if verdict != "work":
+        # The card is not headed for the lifecycle; questions and readiness
+        # stand exactly as the model left them.
+        return ready, questions, assumptions
 
     if answered_rounds >= limit:
         # Two rounds of human answers are the budget: decide, do not ask again.
@@ -160,15 +175,20 @@ def criteria_source(
 
     Returns:
         (criteria, criteria_source) tuple.
-        Raises GateError when the assessment is ready, the card lists no
-        criteria, and the model drafted none: the architect would have
-        nothing to refine into the verification brief.
+        A ready assessment whose card lists no criteria and whose model
+        drafted none degrades to an empty list (410): the architect's
+        blueprint permits zero criteria, so refusing the whole assessment
+        with a GateError on exactly the docs, config, dep-bump and one-line
+        cards was a performer error in disguise.
     """
     if any(str(c).strip() for c in (card_criteria or [])):
         return [], "card"
 
     if ready and not drafted:
-        raise GateError("a ready assessment must draft at least one criterion when the card lists none")
+        logger.warning(
+            "assessor.criteria_degraded",
+            msg="ready assessment drafted no criteria and the card listed none; continuing with an empty set",
+        )
 
     return list(drafted), "assessor"
 
@@ -201,6 +221,7 @@ def run_gate(model_assessment: ModelAssessment, intake: "Intake") -> tuple[Asses
     questions = list(model_assessment.questions)
     assumptions = list(model_assessment.assumptions)
     ready = model_assessment.ready
+    verdict = model_assessment.verdict
 
     # 1. ready_wins: if already ready, move questions to assumptions
     questions_after_ready_wins, ready_wins_assumptions = ready_wins(ready, questions)
@@ -220,8 +241,9 @@ def run_gate(model_assessment: ModelAssessment, intake: "Intake") -> tuple[Asses
     questions_kept, questions_dropped_by_cap = cap_questions(questions)
     questions = questions_kept
 
-    # 4. force_ready: ready after 2 answered rounds, or when nothing usable is left to ask
-    ready, questions, force_ready_assumptions = force_ready(ready, questions, answered_rounds, limit=2)
+    # 4. force_ready: ready after 2 answered rounds, or when nothing usable is left to ask.
+    # 410: never applied to a not_work / needs_split verdict.
+    ready, questions, force_ready_assumptions = force_ready(ready, questions, answered_rounds, limit=2, verdict=verdict)
     assumptions.extend(force_ready_assumptions)
 
     # 5. criteria_source: determine if criteria come from card or assessor
@@ -243,6 +265,7 @@ def run_gate(model_assessment: ModelAssessment, intake: "Intake") -> tuple[Asses
         questions=questions,
         assumptions=assumptions,
         criteria=crit,
+        verdict=verdict,
     )
     hash_value = _compute_assessment_hash(temp_assessment)
 
@@ -254,6 +277,7 @@ def run_gate(model_assessment: ModelAssessment, intake: "Intake") -> tuple[Asses
         questions=questions,
         assumptions=assumptions,
         criteria=crit,
+        verdict=verdict,
         criteria_source=source,
         clarifications=intake.clarifications,
         assessment_hash=hash_value,

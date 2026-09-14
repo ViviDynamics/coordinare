@@ -61,6 +61,10 @@ class ModelAssessment(_Bounded):
     questions: Annotated[list[Annotated[str, StringConstraints(max_length=300)]], Field(max_length=6)]
     assumptions: Annotated[list[Annotated[str, StringConstraints(max_length=300)]], Field(max_length=10)]
     criteria: Annotated[list[Criterion], Field(max_length=8)]
+    # 410: what the card is. "work" (default) proceeds through the normal
+    # lifecycle; "not_work" says the card should not be built at all;
+    # "needs_split" says it is several cards wearing one issue's clothes.
+    verdict: Literal["work", "not_work", "needs_split"] = "work"
 
 
 class Assessment(_Bounded):
@@ -81,14 +85,20 @@ class Assessment(_Bounded):
     questions: Annotated[list[Annotated[str, StringConstraints(max_length=300)]], Field(max_length=2)]
     assumptions: Annotated[list[Annotated[str, StringConstraints(max_length=300)]], Field(max_length=10)]
     criteria: Annotated[list[Criterion], Field(max_length=8)]
+    verdict: Literal["work", "not_work", "needs_split"] = "work"
     criteria_source: Literal["card", "assessor"]
     clarifications: list[ClarificationRound]
     assessment_hash: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 
     @model_validator(mode="after")
     def _not_ready_needs_question(self) -> Assessment:
-        """A not-ready assessment must have at least one question."""
-        if not self.ready and not self.questions:
+        """A not-ready assessment must have at least one question.
+
+        410: only a "work" verdict clarifies. A not_work/needs_split verdict
+        carries its reasoning in the normal fields; demanding a question from
+        it would force the model to invent one.
+        """
+        if self.verdict == "work" and not self.ready and not self.questions:
             raise ValueError("not-ready assessment must have at least one question")
         return self
 

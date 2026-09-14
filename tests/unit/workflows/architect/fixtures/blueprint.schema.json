@@ -97,7 +97,9 @@
                   "model",
                   "column",
                   "index",
-                  "migration"
+                  "migration",
+                  "protobuf",
+                  "trait"
                 ]
               },
               "name": {
@@ -134,7 +136,10 @@
               "endpoint",
               "class",
               "event",
-              "cli"
+              "cli",
+              "graphql",
+              "component",
+              "terraform"
             ]
           },
           "contract": {
@@ -154,7 +159,6 @@
     },
     "criteria": {
       "type": "array",
-      "minItems": 1,
       "maxItems": 12,
       "items": {
         "type": "object",
@@ -182,7 +186,11 @@
             "enum": [
               "functional",
               "visual",
-              "command"
+              "command",
+              "file_exists",
+              "command_exits",
+              "docs_updated",
+              "dependency_version"
             ]
           }
         }

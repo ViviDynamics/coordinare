@@ -144,6 +144,19 @@ The baseline tests verify no regression occurred.
 Do not create or edit documentation.
 Do not commit."""
 
+DOCS = """Make this change once, in one turn.
+
+Goal: {milestone_goal}
+Scope: {scope_paths}
+Done when: {done_when}
+
+On this card the documentation IS the work: write and edit the
+documents, and keep them consistent with what the repository does.
+You write no code and no tests; the baseline tests verify no
+regression occurred.
+
+Do not commit."""
+
 
 REPAIR_REVIEW = """Address these review findings in {path} (spec 169 FR-013). Fix each one where it is anchored; do not restructure unrelated code and do not touch other files unless a finding requires it.
 
@@ -178,6 +191,7 @@ def render(kind: str, **values) -> str:
         "REPAIR_CI": REPAIR_CI,
         "INVESTIGATE": INVESTIGATE,
         "CHANGE": CHANGE,
+        "DOCS": DOCS,
         "REPAIR_REVIEW": REPAIR_REVIEW,
     }
 

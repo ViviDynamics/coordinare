@@ -43,6 +43,10 @@ PerformerStatusType = Literal[
     "assessment_complete",
     "diagnostic_complete",
     "partial_progress",
+    # 410: the assessor declined the card. Terminal non-success — the
+    # coordinare closes or backlogs the card with the reasoning attached.
+    "assessment_not_work",
+    "assessment_needs_split",
     # 173: the two card-less intake roles.  Both MUST be here: TERMINAL_STATUSES
     # is derived from this Literal, so a status missing from it never breaks the
     # job poll loop and the run hangs until coordinare reaps it.  Neither is a

@@ -31,7 +31,7 @@ class Module(_Bounded):
 
 
 class DataModelChange(_Bounded):
-    kind: Literal["table", "model", "column", "index", "migration"]
+    kind: Literal["table", "model", "column", "index", "migration", "protobuf", "trait"]
     name: str = Field(..., max_length=120)
     note: str = Field(..., max_length=200)
 
@@ -42,7 +42,10 @@ class DataModel(_Bounded):
 
 class Interface(_Bounded):
     name: str = Field(..., max_length=120)
-    kind: Literal["endpoint", "class", "event", "cli"]
+    # 410: graphql, component and terraform resource join the vocabulary so
+    # schema-first, frontend and infrastructure cards need not fabricate a
+    # class or an endpoint to pass schema validation.
+    kind: Literal["endpoint", "class", "event", "cli", "graphql", "component", "terraform"]
     contract: str = Field(..., max_length=300)
 
 
@@ -52,7 +55,11 @@ class Criterion(_Bounded):
     surface: str = Field(..., max_length=120)
     action: str = Field(..., max_length=200)
     expected: str = Field(..., max_length=300)
-    kind: Literal["functional", "visual", "command"]
+    # 410: chore, docs, config and dependency work has no functional surface
+    # to observe, so the vocabulary extends to the shapes those cards verify
+    # with: a file that exists, a command that exits zero, a docs page that
+    # says something, a dependency whose version moved.
+    kind: Literal["functional", "visual", "command", "file_exists", "command_exits", "docs_updated", "dependency_version"]
 
 
 class DocTopic(_Bounded):
@@ -72,7 +79,11 @@ class Blueprint(_Bounded):
     data_model: DataModel
     interfaces: list[Interface] = Field(..., max_length=12)
     risks: list[Risk] = Field(..., max_length=8)
-    criteria: list[Criterion] = Field(..., min_length=1, max_length=12)
+    # 410: min_length drops to 0. A chore, docs or config blueprint can carry
+    # zero functional criteria — the milestones' done_when text is the
+    # verification there — and the assessor already degrades to an empty set
+    # instead of refusing the card.
+    criteria: list[Criterion] = Field(..., max_length=12)
     docs: list[DocTopic] = Field(..., max_length=8)
 
 

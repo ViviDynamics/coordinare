@@ -1,16 +1,15 @@
-"""T023 - Gate rule: criteria_source (spec 166 FR-005).
+"""T023 - Gate rule: criteria_source (spec 166 FR-005, amended by 410).
 
 If card has criteria, return empty list with source "card".
 If card has no criteria, return drafted criteria with source "assessor".
-If card has no criteria and draft is empty, raise GateError.
-
-Mutation: remove the source decision or change it -> test fails.
+If card has no criteria and draft is empty, degrade to an empty assessor
+criteria set with a warning (410): a ready assessment must never crash the
+gate, it ships with no criteria and the run is still recordable.
 """
 from __future__ import annotations
 
-import pytest
 from performer.workflows.architect.models import Criterion
-from performer.workflows.assessor.gate import GateError, criteria_source
+from performer.workflows.assessor.gate import criteria_source
 
 
 def test_criteria_source_card_has_criteria():
@@ -31,12 +30,11 @@ def test_criteria_source_no_card_with_draft():
     assert source == "assessor"
 
 
-def test_criteria_source_no_card_no_draft():
-    """No card criteria and no draft raises GateError."""
-    card_crit = []
-    drafted = []
-    with pytest.raises(GateError):
-        criteria_source(card_crit, drafted)
+def test_criteria_source_no_card_no_draft_degrades():
+    """No card criteria and no draft: degrade instead of raising (410)."""
+    crit, source = criteria_source([], [])
+    assert crit == []
+    assert source == "assessor"
 
 
 def test_criteria_source_card_empty_list():
@@ -55,11 +53,12 @@ def test_not_ready_with_no_criteria_and_no_draft_is_fine():
     assert (criteria, source) == ([], "assessor")
 
 
-def test_ready_with_no_criteria_and_no_draft_still_raises():
-    with pytest.raises(GateError, match="ready assessment must draft"):
-        criteria_source([], [], ready=True)
+def test_ready_with_no_criteria_and_no_draft_degrades():
+    """410: a ready assessment with nothing measurable ships empty criteria."""
+    criteria, source = criteria_source([], [], ready=True)
+    assert (criteria, source) == ([], "assessor")
 
 
 def test_blank_card_criteria_count_as_none():
-    with pytest.raises(GateError):
-        criteria_source(["", "   "], [], ready=True)
+    criteria, source = criteria_source(["", "   "], [], ready=True)
+    assert (criteria, source) == ([], "assessor")

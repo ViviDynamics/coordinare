@@ -14,8 +14,14 @@ Size = Literal["small", "large"]
 
 
 def size_of(blueprint: Blueprint) -> Size:
+    # 410: module count and criteria count weigh in. Before this, a
+    # twelve-module refactor with no data-model or interface entries was
+    # "small" (one turn) on milestone count alone, and a one-column add was
+    # always "large" because the data-model change forced it.
     if (
         len(blueprint.milestones) <= 1
+        and len(blueprint.modules) <= 3
+        and len(blueprint.criteria) <= 3
         and not blueprint.data_model.changes
         and not blueprint.interfaces
     ):
