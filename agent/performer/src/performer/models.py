@@ -208,8 +208,14 @@ class Score(BaseModel):
     orchestration: dict | None = None  # 080: dual-model proxy block (None = single, no proxy)
     # 089: implementer local-test gate config delivered by dispatch_performer.
     # Must be declared here or extra="ignore" silently drops it (C1). Shape:
-    # {enabled: bool, timeout_seconds: int}. None/absent ⇒ gate dormant (SC-005).
+    # {enabled: bool, timeout_seconds: int} and, since 409, the optional
+    # operator overrides {command, lint_command, test_path_patterns, roots}.
+    # None/absent ⇒ gate dormant (SC-005).
     local_test_gate: dict | None = None
+    # 409: an operator-pinned test command, read by detect_test_command ahead
+    # of detection. Must be declared here or extra="ignore" silently drops it,
+    # which is exactly what made the override a dead field.
+    test_command: str | None = None
     # 116: whether coordinare manages stateful services for this env_bootstrap. False
     # (the coordinare default) restores performer-owned env setup — the performer skips
     # the 101 service-readiness gate (bootstrap success = the toolchain verify.sh).

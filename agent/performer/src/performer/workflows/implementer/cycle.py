@@ -40,21 +40,59 @@ __all__ = [
 # this list drifted apart in 167: ``changed_test_files`` knew about Go and Java
 # test files and ``scope_violations`` did not, so a foreign Go test survived an
 # implementation turn that a Python one would not have.
+#
+# 409: every pattern is anchored at a path boundary. Unanchored, "test_" and
+# "_test." matched anywhere in the path, so greatest_common.py and
+# latest_run.go were classed as tests: implementation turns had their real
+# source reverted, and tests turns lost their own files. The set covers the
+# conventions of the stacks the detectors can select; symphonies with their
+# own convention extend it via local_test_gate.test_path_patterns.
 _TEST_PATTERNS = (
-    re.compile(r"test_.*\.(py|rb|js|go|java)$"),
-    re.compile(r".*_test\.(py|rb|js|go)$"),
-    re.compile(r".*\.test\.(js|ts)$"),
-    re.compile(r"spec/.*_spec\.rb$"),
-    re.compile(r".*_spec\.(rb)$"),
+    re.compile(r"(^|/)test_[^/]*\.(py|rb|js|go|java)$"),  # test_foo.py (filename only)
+    re.compile(r"(^|/)[^/]*_test\.(py|rb|js|go)$"),  # foo_test.go
+    re.compile(r"(^|/)[^/]*\.test\.(js|jsx|ts|tsx)$"),  # foo.test.tsx
+    re.compile(r"(^|/)[^/]*\.spec\.(js|jsx|ts|tsx)$"),  # Button.spec.tsx
+    re.compile(r"(^|/)spec/[^/]*_spec\.rb$"),  # spec/models/user_spec.rb
+    re.compile(r"(^|/)[^/]*_spec\.rb$"),  # user_spec.rb
+    re.compile(r"(^|/)src/test/java/[^/]*\.java$"),  # maven/gradle test tree
+    re.compile(r"(^|/)[A-Z][^/]*Tests?\.java$"),  # ExampleTest.java, ExampleTests.java
+    re.compile(r"(^|/)[A-Z][^/]*Tests\.cs$"),  # ExampleTests.cs
+    re.compile(r"(^|/)tests/[^/]+\.rs$"),  # cargo integration tests
 )
 
 
-def is_test_path(path: str) -> bool:
-    """Whether a repository path is a test file by convention (spec 171 FR-003)."""
-    return any(pattern.search(path) for pattern in _TEST_PATTERNS)
+def is_test_path(path: str, extra_patterns: list[str] | tuple[str, ...] | None = None) -> bool:
+    """Whether a repository path is a test file by convention (spec 171 FR-003).
+
+    ``extra_patterns`` (409) are per-symphony regex sources compiled onto the
+    built-in conventions: a symphony whose tests follow a convention the
+    built-ins do not know declares them in
+    ``local_test_gate.test_path_patterns``.
+    """
+    patterns = _TEST_PATTERNS
+    if extra_patterns:
+        extra = []
+        for pattern in extra_patterns:
+            if not pattern:
+                continue
+            try:
+                extra.append(re.compile(pattern))
+            except re.error:
+                # Config validates these at load; a synthetic payload that
+                # carries a malformed pattern must not abort the turn, so the
+                # invalid extension is skipped and the built-ins still apply.
+                log.warning("cycle.invalid_test_path_pattern", pattern=pattern)
+        if extra:
+            patterns = (*_TEST_PATTERNS, *extra)
+    return any(pattern.search(path) for pattern in patterns)
 
 
-def changed_test_files(changed: dict[str, str], runner_kind: str, scope_paths: list[str] | None = None) -> list[str]:
+def changed_test_files(
+    changed: dict[str, str],
+    runner_kind: str,
+    scope_paths: list[str] | None = None,
+    extra_test_patterns: list[str] | tuple[str, ...] | None = None,
+) -> list[str]:
     """Identify changed test files (FR-008).
 
     Test files are identified by convention: **/test_*, **/*_test.*, etc.
@@ -64,11 +102,14 @@ def changed_test_files(changed: dict[str, str], runner_kind: str, scope_paths: l
         changed: Dict of {path -> 'added'|'modified'|'deleted'}.
         runner_kind: Stack kind (pytest, rspec, jest, etc.).
         scope_paths: Optional scope paths to filter by.
+        extra_test_patterns: Optional per-symphony regex sources (409).
 
     Returns:
         List of test file paths that changed.
     """
-    return sorted(path for path in changed if is_test_path(path))
+    return sorted(
+        path for path in changed if is_test_path(path, extra_test_patterns)
+    )
 
 
 
@@ -139,7 +180,10 @@ def vacuous_test_check(summary: TestSummary, baseline: Baseline) -> bool:
     return True
 
 
-def foreign_source_path(path: str, own_scopes: list[str], foreign_scopes: list[str]) -> bool:
+def foreign_source_path(
+    path: str, own_scopes: list[str], foreign_scopes: list[str],
+    extra_test_patterns: list[str] | tuple[str, ...] | None = None,
+) -> bool:
     """Only another milestone's exclusive declared source ownership is enforced."""
     if not own_scopes or any(scope.strip() in {"", ".", "./"} for scope in own_scopes):
         return False
@@ -151,10 +195,20 @@ def foreign_source_path(path: str, own_scopes: list[str], foreign_scopes: list[s
                 return True
         return False
 
-    return not is_test_path(path) and not claimed(own_scopes) and claimed(foreign_scopes)
+    return (
+        not is_test_path(path, extra_test_patterns)
+        and not claimed(own_scopes)
+        and claimed(foreign_scopes)
+    )
 
 
-def scope_violations(kind: str, changed_paths: dict[str, str], runner_kind: str, scope_paths: list[str] | None = None, docs_tree: str = "docs/", milestone_test_files: list[str] | None = None, foreign_scope_paths: list[str] | None = None) -> list[dict[str, str]]:
+def scope_violations(
+    kind: str, changed_paths: dict[str, str], runner_kind: str,
+    scope_paths: list[str] | None = None, docs_tree: str = "docs/",
+    milestone_test_files: list[str] | None = None,
+    foreign_scope_paths: list[str] | None = None,
+    extra_test_patterns: list[str] | tuple[str, ...] | None = None,
+) -> list[dict[str, str]]:
     """Detect out-of-scope edits (FR-008).
 
     Tests turns may only change test files. Implementation turns may not write
@@ -171,6 +225,8 @@ def scope_violations(kind: str, changed_paths: dict[str, str], runner_kind: str,
         docs_tree: Documentation tree prefix (default "docs/").
         milestone_test_files: Tests admitted for the current milestone.
         foreign_scope_paths: Explicit source ownership of other planned milestones.
+        extra_test_patterns: Optional per-symphony regex sources (409) extending
+            the built-in test-file conventions.
 
     Returns:
         List of dicts recording reverted paths and reasons.
@@ -200,7 +256,7 @@ def scope_violations(kind: str, changed_paths: dict[str, str], runner_kind: str,
             })
             continue
 
-        if kind == "implement" and is_test_path(path):
+        if kind == "implement" and is_test_path(path, extra_test_patterns):
             # #364: an implementation turn edits no tests at all, not even this
             # milestone's own. Writing tests for a LATER milestone pre-empts its
             # tests turn (a live round implemented and tested milestone two
@@ -223,14 +279,16 @@ def scope_violations(kind: str, changed_paths: dict[str, str], runner_kind: str,
                 ),
             })
             continue
-        if kind == "implement" and foreign_source_path(path, scope_paths or [], foreign_scope_paths or []):
+        if kind == "implement" and foreign_source_path(
+            path, scope_paths or [], foreign_scope_paths or [], extra_test_patterns,
+        ):
             violations.append({
                 "path": path, "kind": "reverted_foreign_source",
                 "reason": "source belongs exclusively to another planned milestone (#279)",
             })
             continue
         if kind == "tests":
-            if not is_test_path(path):
+            if not is_test_path(path, extra_test_patterns):
                 violations.append({
                     "path": path,
                     "kind": "reverted_source",

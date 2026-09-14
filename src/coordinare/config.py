@@ -1569,6 +1569,29 @@ class LocalTestGateConfig(BaseModel):
 
     enabled: bool = False
     timeout_seconds: int = Field(default=600, ge=60, le=7200)
+    # 409: operator overrides, all optional — absent means the performer keeps
+    # discovering. command/lint_command pin what the gates run; roots declares
+    # the monorepo sub-trees probed when the workspace root matches no
+    # convention; test_path_patterns extends the test-file conventions the
+    # implementer's scope guard enforces.
+    command: str | None = None
+    lint_command: str | None = None
+    test_path_patterns: list[str] = Field(default_factory=list)
+    roots: list[str] = Field(default_factory=list)
+
+    @field_validator("test_path_patterns")
+    @classmethod
+    def _patterns_are_valid_regexes(cls, patterns: list[str]) -> list[str]:
+        """A malformed pattern must fail config validate, not the implementer
+        mid-turn: the performer compiles these on every scope check."""
+        for pattern in patterns:
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                raise ValueError(
+                    f"test_path_patterns entry {pattern!r} is not a valid regex: {exc}"
+                ) from exc
+        return patterns
     max_fix_attempts: int = Field(default=2, ge=0, le=20)
 
 

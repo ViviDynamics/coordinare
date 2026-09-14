@@ -101,7 +101,16 @@ async def test_gate_injected_for_implementer_when_enabled() -> None:
 
     assert result["phase"] == "monitoring_performer"
     ctx = svc.dispatched[0]
-    assert ctx["local_test_gate"] == {"enabled": True, "timeout_seconds": 600}
+    # 409: the payload also carries the operator overrides; defaults are
+    # detection-only (None commands, empty pattern/root lists).
+    assert ctx["local_test_gate"] == {
+        "enabled": True,
+        "timeout_seconds": 600,
+        "command": None,
+        "lint_command": None,
+        "test_path_patterns": [],
+        "roots": [],
+    }
 
 
 @pytest.mark.asyncio

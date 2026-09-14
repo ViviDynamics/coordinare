@@ -161,6 +161,17 @@ def _scope_list(milestone: MilestonePlan) -> list[str]:
     return scope_segments(scope)
 
 
+def _extra_test_patterns(ctx: RunContext) -> tuple[str, ...]:
+    """Per-symphony test-path regex sources from local_test_gate (409)."""
+    gate = getattr(ctx.score, "local_test_gate", None)
+    if not isinstance(gate, dict):
+        return ()
+    patterns = gate.get("test_path_patterns")
+    if not patterns:
+        return ()
+    return tuple(patterns)
+
+
 def _build_brief(
     ctx: RunContext,
     milestone: MilestonePlan,
@@ -176,7 +187,7 @@ def _build_brief(
         "milestone_goal": milestone.goal,
         "scope_paths": ", ".join(scope_paths) or "the paths the plan names",
         "done_when": milestone.done_when,
-        "test_conventions": f"{ctx.runner_kind} conventions",
+        "test_conventions": ctx.test_command or f"{ctx.runner_kind} conventions",
         "failing_tests": "\n".join(failing_tests or []) or "(see excerpt)",
         "failure_excerpt": (failure_excerpt or "")[:8000],
         "passing_test_files": "",
@@ -267,7 +278,8 @@ async def run_turn(
             changed = {}
         else:
             violations = scope_violations(brief.kind, changed, ctx.runner_kind, brief.scope_paths or None, docs_tree=DOCS_TREE, milestone_test_files=milestone_test_files,
-                                          foreign_scope_paths=[scope for plan in ctx.plans if plan.index != brief.milestone_index for scope in _scope_list(plan)])
+                                          foreign_scope_paths=[scope for plan in ctx.plans if plan.index != brief.milestone_index for scope in _scope_list(plan)],
+                                          extra_test_patterns=_extra_test_patterns(ctx))
             if violations:
                 await git.revert_paths(ctx.workspace, [v["path"] for v in violations])
                 reverts = violations
@@ -444,7 +456,11 @@ def _already_covered(ctx: RunContext, milestone: MilestonePlan, summary: TestSum
     exists on the base branch never excuses a tests turn that did nothing.
     """
     present = present_paths(ctx.workspace, scope_segments(milestone.scope))
-    state = resume_state(milestone, ctx.prior_paths, present, summary.test_names_passed, summary.test_names_failed)
+    state = resume_state(
+        milestone, ctx.prior_paths, present,
+        summary.test_names_passed, summary.test_names_failed,
+        _extra_test_patterns(ctx) or None,
+    )
     return state == "done"
 
 
@@ -455,7 +471,7 @@ async def _red_phase(
     brief = _build_brief(ctx, milestone, kind="tests", persona_kind="TESTS")
     result, attempt, changed = await run_turn(ctx, brief, attempt_number=1)
     record.tests_attempt = attempt
-    files = changed_test_files(changed, ctx.runner_kind, brief.scope_paths or None)
+    files = changed_test_files(changed, ctx.runner_kind, brief.scope_paths or None, extra_test_patterns=_extra_test_patterns(ctx))
     summary = await _tests(ctx, files, scope=True) if result.exit_state == "done" else TestSummary(passed=False, failed=None, exit_code=1, raw_tail="turn did not complete")
     if result.exit_state == "done" and await _red_observed(ctx, milestone, files, summary):
         return RedOutcome(files, summary, changed)
@@ -477,7 +493,7 @@ async def _red_phase(
         result2, attempt2, changed2 = await run_turn(ctx, brief2, attempt_number=2)
         record.tests_reprompt = attempt2
         changed = {**changed, **changed2}
-        files = changed_test_files(changed, ctx.runner_kind, brief.scope_paths or None)
+        files = changed_test_files(changed, ctx.runner_kind, brief.scope_paths or None, extra_test_patterns=_extra_test_patterns(ctx))
         if result2.exit_state == "done":
             summary = await _tests(ctx, files, scope=True)
             if await _red_observed(ctx, milestone, files, summary):
@@ -620,7 +636,7 @@ async def _tests_lane(ctx: RunContext, milestone: MilestonePlan, record: PerMile
     record.tests_attempt = attempt
     if result.exit_state != "done":
         raise MilestoneFailed(milestone.index, milestone.goal, f"the tests turn {result.exit_state}")
-    files = changed_test_files(changed, ctx.runner_kind, brief.scope_paths or None)
+    files = changed_test_files(changed, ctx.runner_kind, brief.scope_paths or None, extra_test_patterns=_extra_test_patterns(ctx))
     if not files:
         raise MilestoneFailed(milestone.index, milestone.goal, "the tests turn changed no test file")
     summary = await _tests(ctx)

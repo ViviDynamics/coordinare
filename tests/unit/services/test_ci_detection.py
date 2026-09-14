@@ -26,10 +26,13 @@ class TestRubyDetection:
     def test_gemfile_with_rubocop(self, tmp_path: Path) -> None:
         (tmp_path / "Gemfile").write_text("gem 'rubocop'\n")
         (tmp_path / ".rubocop.yml").write_text("AllCops:\n  Enabled: true\n")
+        # 409: a bare .rubocop.yml no longer claims rspec -- with no spec/ or
+        # .rspec convention present the runner would not be installed and
+        # every gate run exited 127.
         result = detect(tmp_path)
         assert result.stack == "ruby"
         assert result.lint_command == "bundle exec rubocop"
-        assert result.test_command == "bundle exec rspec"
+        assert result.test_command is None
         assert result.detected_from == ".rubocop.yml"
 
     def test_gemfile_with_rakefile_no_rubocop(self, tmp_path: Path) -> None:

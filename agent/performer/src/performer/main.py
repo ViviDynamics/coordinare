@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json as _json_module
+import shlex
 from pathlib import Path
 import os
 import re
@@ -100,12 +101,19 @@ _JSON_ROLE_REQUIRED_KEYS: dict[str, tuple[str, ...]] = {
 # ---------------------------------------------------------------------------
 
 
-async def _run_ci_check(stand_path: Path, label: str = "performer") -> tuple[bool, str]:
+async def _run_ci_check(
+    stand_path: Path, label: str = "performer",
+    lint_override: str | None = None, sub_roots: tuple[str, ...] = (),
+) -> tuple[bool, str]:
     """Run the detected lint command in the workspace before committing.
 
     Returns ``(True, "")`` if lint passes or no linter detected, or
     ``(False, error_output)`` if lint fails.  The performer should either
     fix the issue or bail with an error.
+
+    ``lint_override`` (409) is the operator-pinned command from
+    LocalTestGateConfig.lint_command; ``sub_roots`` are the declared
+    monorepo roots probed when the workspace root matches no convention.
     """
     try:
         from coordinare_ci_detection import detect
@@ -116,15 +124,24 @@ async def _run_ci_check(stand_path: Path, label: str = "performer") -> tuple[boo
         log.info("ci_check.coordinare_not_available", label=label)
         return True, ""
 
-    result = detect(stand_path)
-    if result.lint_command is None:
-        log.info("ci_check.no_lint_detected", label=label, stack=result.stack)
+    lint_command = lint_override
+    if not lint_command:
+        result = detect(stand_path, sub_roots=sub_roots)
+        if not result.lint_command and result.per_root:
+            for root, root_result in result.per_root.items():
+                if root_result.lint_command:
+                    lint_command = f"cd {shlex.quote(root)} && {root_result.lint_command}"
+                    break
+        else:
+            lint_command = result.lint_command
+    if lint_command is None:
+        log.info("ci_check.no_lint_detected", label=label)
         return True, ""
 
-    log.info("ci_check.running", label=label, command=result.lint_command, stack=result.stack)
-    run_result = await run_command(result.lint_command, stand_path, timeout=120)
+    log.info("ci_check.running", label=label, command=lint_command, stack="lint")
+    run_result = await run_command(lint_command, stand_path, timeout=120)
     if run_result.success:
-        log.info("ci_check.passed", label=label, command=result.lint_command, duration=run_result.duration_seconds)
+        log.info("ci_check.passed", label=label, command=lint_command, duration=run_result.duration_seconds)
         return True, ""
 
     # Stripped once, here, so every reader below -- the signature matcher, the
@@ -134,7 +151,7 @@ async def _run_ci_check(stand_path: Path, label: str = "performer") -> tuple[boo
     log.warning(
         "ci_check.failed",
         label=label,
-        command=result.lint_command,
+        command=lint_command,
         exit_code=run_result.exit_code,
         output_preview=error_output[:200],
     )
@@ -266,39 +283,60 @@ def _env_blocked_gate_response(perf: Any, test_result: LocalTestResult, *, timeo
 
 
 async def _run_test_check(
-    stand_path: Path, *, timeout_seconds: int = 600, label: str = "performer"
+    stand_path: Path, *, timeout_seconds: int = 600, label: str = "performer",
+    command_override: str | None = None, sub_roots: tuple[str, ...] = (),
 ) -> LocalTestResult:
     """Run the detected test command in the workspace before pushing.
 
     Mirrors :func:`_run_ci_check`: gracefully passes through when the coordinare
     package is unavailable (standalone mode) or when no test command is detected,
     so the coordinare-side remote CI gate remains the authoritative backstop.
+
+    ``command_override`` (409) is the operator-pinned command from
+    LocalTestGateConfig.command; ``sub_roots`` are the declared monorepo roots
+    probed when the workspace root itself matches no convention.
     """
-    try:
-        from coordinare_ci_detection import detect
-    except ImportError:
-        log.info("test_check.coordinare_not_available", label=label)
-        return LocalTestResult(passed=True, command=None, output="", duration_seconds=0.0)
+    command = command_override
+    stack = ""
+    if not command:
+        try:
+            from coordinare_ci_detection import CIDetectionResult, detect
+        except ImportError:
+            log.info("test_check.coordinare_not_available", label=label)
+            return LocalTestResult(passed=True, command=None, output="", duration_seconds=0.0)
+        result = detect(stand_path, sub_roots=sub_roots)
+        # 409: a monorepo root with its own convention beats the workspace
+        # root, which matches no convention at all by construction here.
+        if result.per_root and not result.test_command:
+            for root, root_result in result.per_root.items():
+                if root_result.test_command:
+                    result = CIDetectionResult(
+                        lint_command=root_result.lint_command,
+                        test_command=f"cd {shlex.quote(root)} && {root_result.test_command}",
+                        stack=root_result.stack,
+                        detected_from=f"sub-root: {root}",
+                    )
+                    break
+        if result.test_command is None:
+            log.info("test_check.no_test_detected", label=label, stack=result.stack)
+            return LocalTestResult(passed=True, command=None, output="", duration_seconds=0.0)
+        command = result.test_command
+        stack = result.stack
 
-    result = detect(stand_path)
-    if result.test_command is None:
-        log.info("test_check.no_test_detected", label=label, stack=result.stack)
-        return LocalTestResult(passed=True, command=None, output="", duration_seconds=0.0)
-
-    log.info("test_check.running", label=label, command=result.test_command, stack=result.stack)
+    log.info("test_check.running", label=label, command=command, stack=stack)
     run_result = await run_command(
-        result.test_command, stand_path, timeout=timeout_seconds, truncate="tail"
+        command, stand_path, timeout=timeout_seconds, truncate="tail"
     )
     if run_result.success:
         log.info(
             "test_check.passed",
             label=label,
-            command=result.test_command,
+            command=command,
             duration=run_result.duration_seconds,
         )
         return LocalTestResult(
             passed=True,
-            command=result.test_command,
+            command=command,
             output="",
             duration_seconds=run_result.duration_seconds,
             exit_code=run_result.exit_code,
@@ -308,6 +346,36 @@ async def _run_test_check(
     # runner-summary precedence, the failure count, and the excerpt that reaches
     # the implementer -- sees the same plain text.
     error_output = _strip_ansi((run_result.stderr + "\n" + run_result.stdout).strip())
+
+    # 409: exit 127 is the shell saying the command name does not exist. In
+    # the 167 lane that is the unambiguous "the runner is not installed"
+    # environment hold (352), and this gate now agrees. The env-signature
+    # matcher deliberately excludes "command not found" as a code defect (an
+    # implementer that calls a script it did not commit produces the same
+    # string), so without this short-circuit a detected runner missing from
+    # the image was reported as a code defect and burned the self-fix budget
+    # on a problem no diff can fix. The gate is the local twin of the 167
+    # lane's capture_baseline and holds the same way.
+    if run_result.exit_code == 127:
+        log.warning(
+            "test_check.command_not_found",
+            label=label,
+            command=command,
+            output=_format_failure_excerpt(error_output),
+        )
+        return LocalTestResult(
+            passed=False,
+            command=command,
+            output=error_output,
+            duration_seconds=run_result.duration_seconds,
+            env_blocked=True,
+            env_reason=(
+                f"the test command {command!r} exited 127 (command not found): the "
+                "runner is not installed in this environment. No code change can "
+                "fix this inside the card."
+            ),
+            exit_code=run_result.exit_code,
+        )
 
     # 089 US2: a failure coinciding with a spec-088 env signal is an environment
     # block, not a code defect — consult both single-shot consumers (drain both,
@@ -337,14 +405,14 @@ async def _run_test_check(
         log.warning(
             "test_check.env_blocked",
             label=label,
-            command=result.test_command,
+            command=command,
             duration=run_result.duration_seconds,
             env_reason=env_reason,
             matched_signature=signature,
         )
         return LocalTestResult(
             passed=False,
-            command=result.test_command,
+            command=command,
             output=error_output,
             duration_seconds=run_result.duration_seconds,
             env_blocked=True,
@@ -396,14 +464,14 @@ async def _run_test_check(
         log.warning(
             "test_check.timed_out",
             label=label,
-            command=result.test_command,
+            command=command,
             duration=run_result.duration_seconds,
             timeout_seconds=timeout_seconds,
             services_healthy=healthy,
         )
         return LocalTestResult(
             passed=False,
-            command=result.test_command,
+            command=command,
             output=error_output,
             duration_seconds=run_result.duration_seconds,
             env_blocked=True,
@@ -432,21 +500,21 @@ async def _run_test_check(
         log.info(
             "test_check.retry_skipped_broad_failure",
             label=label,
-            command=result.test_command,
+            command=command,
             failing=failing,
             threshold=_RETRY_MAX_FAILING,
         )
         log.warning(
             "test_check.failed",
             label=label,
-            command=result.test_command,
+            command=command,
             duration=run_result.duration_seconds,
             exit_code=run_result.exit_code,
             output_preview=error_output[:200],
         )
         return LocalTestResult(
             passed=False,
-            command=result.test_command,
+            command=command,
             output=error_output,
             duration_seconds=run_result.duration_seconds,
             env_blocked=False,
@@ -456,23 +524,23 @@ async def _run_test_check(
     log.info(
         "test_check.retrying",
         label=label,
-        command=result.test_command,
+        command=command,
         first_exit_code=run_result.exit_code,
         first_output_preview=error_output[:200],
     )
     retry_result = await run_command(
-        result.test_command, stand_path, timeout=timeout_seconds, truncate="tail"
+        command, stand_path, timeout=timeout_seconds, truncate="tail"
     )
     if retry_result.success:
         log.info(
             "test_check.flake_recovered",
             label=label,
-            command=result.test_command,
+            command=command,
             duration=retry_result.duration_seconds,
         )
         return LocalTestResult(
             passed=True,
-            command=result.test_command,
+            command=command,
             output="",
             duration_seconds=run_result.duration_seconds + retry_result.duration_seconds,
             exit_code=retry_result.exit_code,
@@ -488,7 +556,7 @@ async def _run_test_check(
         log.warning(
             "test_check.env_blocked",
             label=label,
-            command=result.test_command,
+            command=command,
             duration=total_duration,
             env_reason=env_reason,
             matched_signature=retry_signature,
@@ -496,7 +564,7 @@ async def _run_test_check(
         )
         return LocalTestResult(
             passed=False,
-            command=result.test_command,
+            command=command,
             output=retry_output,
             duration_seconds=total_duration,
             env_blocked=True,
@@ -507,7 +575,7 @@ async def _run_test_check(
     log.warning(
         "test_check.failed",
         label=label,
-        command=result.test_command,
+        command=command,
         duration=total_duration,
         exit_code=retry_result.exit_code,
         output_preview=retry_output[:200],
@@ -519,13 +587,13 @@ async def _run_test_check(
         log.info(
             "test_check.attempts_differed",
             label=label,
-            command=result.test_command,
+            command=command,
             first_preview=error_output[:200],
             second_preview=retry_output[:200],
         )
     return LocalTestResult(
         passed=False,
-        command=result.test_command,
+        command=command,
         output=retry_output,
         duration_seconds=total_duration,
         env_blocked=False,
@@ -3100,7 +3168,15 @@ async def handle_status(
 
         # 043: Run lint before pushing — catch CI violations at the source
         # rather than discovering them post-push when the PR is already in review.
-        ci_ok, ci_error = await _run_ci_check(perf.stand.path, label=perf.role)
+        # 409: the operator's lint override and monorepo roots ride the same
+        # gate config as the test command; detection-only when absent.
+        lint_gate_cfg = perf.score.local_test_gate or {}
+        ci_ok, ci_error = await _run_ci_check(
+            perf.stand.path,
+            label=perf.role,
+            lint_override=str(lint_gate_cfg["lint_command"]) if lint_gate_cfg.get("lint_command") else None,
+            sub_roots=tuple(lint_gate_cfg.get("roots") or ()),
+        )
         if not ci_ok:
             log.warning("pre_push_ci_failed", role=perf.role, error_preview=ci_error[:200])
             perf.state = "changes_requested"
@@ -3123,10 +3199,14 @@ async def handle_status(
         # sufficient and robust gate without a brittle role-string comparison.
         gate_cfg = perf.score.local_test_gate
         if gate_cfg and gate_cfg.get("enabled"):
+            # 409: the operator's pinned command and monorepo roots ride the
+            # same gate config; both default to detection-only behaviour.
             test_result = await _run_test_check(
                 perf.stand.path,
                 timeout_seconds=int(gate_cfg.get("timeout_seconds", 600)),
                 label=perf.role,
+                command_override=str(gate_cfg["command"]) if gate_cfg.get("command") else None,
+                sub_roots=tuple(gate_cfg.get("roots") or ()),
             )
             if test_result.env_blocked:
                 # 089 US2: an env-cache signal coincided with the failure — hold
