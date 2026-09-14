@@ -750,6 +750,9 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
     state["_board_issue_numbers"] = board.get("issue_numbers", {})
     state["_board_issue_urls"] = board.get("issue_urls", {})
     state["_board_pr_urls"] = board.get("pr_urls", {})
+    # 410: card labels ride the dispatch payload so a no-brief implementer run
+    # can infer its lane from them (docs, config, dependency, chore).
+    state["_board_item_labels"] = board.get("item_labels", {})
 
     # 047: Detect external merges (non-coordinare PRs merged by humans) by
     # comparing last_known_main_sha against the current main HEAD.  If

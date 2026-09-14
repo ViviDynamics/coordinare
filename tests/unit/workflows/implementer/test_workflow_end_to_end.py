@@ -515,24 +515,38 @@ async def test_tests_lane_adds_passing_coverage_without_an_implementation_turn(t
 
 
 @pytest.mark.asyncio
-async def test_tests_lane_treats_a_failing_new_test_as_a_finding(tmp_path):
+async def test_tests_lane_bounces_a_failing_new_test_at_the_gate(tmp_path):
+    """410: the lane's verdict is the baseline comparison, not absolute green.
+    A brand-new test that fails is the card's own failure -- it was not
+    already failing at baseline -- so the milestone gate rejects the turn and
+    the reviewer never sees it. The baseline comparison, not the reviewer,
+    owns this verdict."""
     repo, _ = _repo(tmp_path)
     start = _head(repo)
     harness = Harness(repo, {"TESTS": lambda r, b: _write(r, "tests/test_cover.py", "EXPECTS src/missing.py\n")})
     edges = Edges()
     report, _ = await _run(repo, _score(milestones=_milestones(1), work_kind="tests"), harness, edges)
     run = report["implementer_run"]
-    assert run["status"] == "partial_progress" and "finding" in run["reason"] and "tests/test_cover.py::test_0" in run["reason"]
-    # 393: spec-167 FR-009 reset the tree to the milestone start on failure,
-    # which also discarded the attempt. The work
-    # is now committed and pushed so the next container resumes from it.
-    assert _head(repo) != start, "the failed attempt was discarded instead of kept"
-    assert edges.pushes == 1, "the attempt was not pushed, so it cannot be resumed"
+    assert run["status"] == "partial_progress", run["reason"]
+    assert "new tests fail against the existing code" in run["reason"]
+    assert _head(repo) != start, "the attempt was kept for diagnosis"
+    assert edges.pushes == 1, "a bounced milestone's work is salvaged (393), not reset away"
 
 
-@pytest.mark.parametrize("kind", ["research", "docs"])
+@pytest.mark.asyncio
+async def test_docs_card_runs_to_terminal_success(tmp_path):
+    """410: a docs-only card is implementer work now, without a red/green cycle."""
+    repo, _ = _repo(tmp_path)
+    harness = Harness(repo, {"DOCS": lambda r, b: _write(r, "docs/SETUP.md", "# Setup\n")})
+    report, _ = await _run(repo, _score(milestones=_milestones(1), work_kind="docs"), harness, Edges())
+    run = report["implementer_run"]
+    assert run["status"] == "pr_opened", run["reason"]
+
+
+@pytest.mark.parametrize("kind", ["research"])
 @pytest.mark.asyncio
 async def test_research_and_docs_never_reach_the_implementer(tmp_path, kind):
+    """410: docs is implementer work now; research still is not."""
     repo, _ = _repo(tmp_path)
     harness = Harness(repo, {"TESTS": _tests_turn, "IMPLEMENT": _impl_turn})
     report, _ = await _run(repo, _score(milestones=_milestones(1), work_kind=kind), harness, Edges())

@@ -34,6 +34,8 @@ class TestSchemaContractValidation:
             "qa_passed", "qa_failed", "qa_env_blocked",
             "env_blocked",
             "docs_committed", "env_bootstrap_complete", "assessment_complete",
+            # 410: the assessor can decline the card; terminal non-success.
+            "assessment_not_work", "assessment_needs_split",
             "partial_progress",
             "blocked", "error", "unknown", "busy", "acknowledged",
             "session_expired", "token_limit", "healthy", "unhealthy",

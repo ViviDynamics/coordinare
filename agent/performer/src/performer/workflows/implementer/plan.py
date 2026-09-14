@@ -16,11 +16,11 @@ log = structlog.get_logger(__name__)
 __all__ = ["build_plan", "select_lane"]
 
 
-_LANES = ("feature", "bug", "chore", "refactor", "tests")
+_LANES = ("feature", "bug", "chore", "refactor", "tests", "docs", "config", "dependency")
 
 
 def select_lane(work_kind: str | None, workflow_env: dict | None = None) -> tuple[Lane, LaneSource]:
-    """Select lane from work_kind (spec 167 FR-020).
+    """Select lane from work_kind (spec 167 FR-020, 410).
 
     Maps:
     - feature -> feature
@@ -28,7 +28,9 @@ def select_lane(work_kind: str | None, workflow_env: dict | None = None) -> tupl
     - chore -> chore
     - refactor -> refactor (run like a chore, labelled refactor)
     - tests -> tests
-    - research/docs -> raise LaneNotForImplementer
+    - docs -> docs (writes the documentation itself)
+    - config/dependency -> chore-shaped: one change turn, no red/green
+    - research -> raise LaneNotForImplementer
 
     Args:
         work_kind: From brief's work_kind, or None.
@@ -38,9 +40,9 @@ def select_lane(work_kind: str | None, workflow_env: dict | None = None) -> tupl
         Tuple of (lane, source) where source is "brief", "default", or "unknown".
 
     Raises:
-        LaneNotForImplementer: If work_kind is research or docs.
+        LaneNotForImplementer: If work_kind is research.
     """
-    if work_kind in ("research", "docs"):
+    if work_kind == "research":
         raise LaneNotForImplementer(f"work kind '{work_kind}' ends at the architect (spec 168)")
 
     if work_kind in _LANES:
@@ -57,6 +59,30 @@ def select_lane(work_kind: str | None, workflow_env: dict | None = None) -> tupl
 class LaneNotForImplementer(Exception):
     """Raised when a work_kind should not reach the implementer stage."""
     pass
+
+
+_LABEL_LANES: tuple[tuple[str, Lane], ...] = (
+    ("docs", "docs"),
+    ("documentation", "docs"),
+    ("dependency", "dependency"),
+    ("dependencies", "dependency"),
+    ("config", "config"),
+    ("ci", "config"),
+    ("infrastructure", "config"),
+    ("chore", "chore"),
+)
+
+
+def _lane_from_labels(labels: list[str]) -> tuple[Lane, LaneSource] | None:
+    """Infer the lane from card labels when no brief names a work_kind (410).
+
+    First matching label wins; unknown labels say nothing.
+    """
+    for label in labels:
+        for prefix, lane in _LABEL_LANES:
+            if label == prefix:
+                return lane, "labels"
+    return None
 
 
 def _criteria_text(score) -> str:
@@ -128,6 +154,9 @@ def build_plan(score, brief: dict | None) -> list[MilestonePlan]:
           collapse multiple milestones into one.
         - If no brief, return one milestone with card acceptance criteria.
         - Lane is selected from brief's work_kind (feature, bug, chore, refactor, tests).
+          When the brief names no work_kind -- the Blueprint schema has no
+          work_kind field, so a structured architect brief cannot carry one --
+          the card's labels are consulted next, then the role default.
     """
     workflow_env = score.workflow_env if hasattr(score, "workflow_env") else None
 
@@ -138,7 +167,12 @@ def build_plan(score, brief: dict | None) -> list[MilestonePlan]:
 
     if not brief:
         log.info("plan.no_brief", card=score.issue_number if hasattr(score, "issue_number") else "unknown")
-        lane, lane_source = select_lane(None, workflow_env)
+        labels = [str(label).strip().lower() for label in (getattr(score, "labels", None) or [])]
+        inferred = _lane_from_labels(labels)
+        if inferred:
+            lane, lane_source = inferred
+        else:
+            lane, lane_source = select_lane(None, workflow_env)
         acceptance_criteria = _criteria_text(score)
 
         return [
@@ -158,6 +192,13 @@ def build_plan(score, brief: dict | None) -> list[MilestonePlan]:
     except LaneNotForImplementer as e:
         log.error("plan.lane_not_for_implementer", reason=str(e))
         raise
+    if lane_source != "brief":
+        # The brief is silent on the kind of work (the usual case: the
+        # Blueprint schema carries no work_kind). Card labels are the next
+        # witness, and only then the role default.
+        inferred = _lane_from_labels([str(label).strip().lower() for label in (getattr(score, "labels", None) or [])])
+        if inferred:
+            lane, lane_source = inferred
 
     milestones_raw = brief.get("milestones", [])
     if not milestones_raw:

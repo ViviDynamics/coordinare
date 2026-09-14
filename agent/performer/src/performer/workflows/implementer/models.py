@@ -28,11 +28,11 @@ class _Bounded(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-PersonaKind = Literal["TESTS", "IMPLEMENT", "REPAIR_TESTS", "REPAIR_IMPLEMENT", "REPAIR_QUALITY", "REPAIR_CI", "INVESTIGATE", "CHANGE", "REPAIR_REVIEW"]
+PersonaKind = Literal["TESTS", "IMPLEMENT", "REPAIR_TESTS", "REPAIR_IMPLEMENT", "REPAIR_QUALITY", "REPAIR_CI", "INVESTIGATE", "CHANGE", "DOCS", "REPAIR_REVIEW"]
 TurnKind = Literal["tests", "implement", "repair"]
 ExitState = Literal["done", "timeout", "error"]
-Lane = Literal["feature", "bug", "chore", "refactor", "tests", "repair"]
-LaneSource = Literal["brief", "default", "unknown", "review", "resume"]
+Lane = Literal["feature", "bug", "chore", "refactor", "tests", "repair", "docs", "config", "dependency"]
+LaneSource = Literal["brief", "default", "unknown", "review", "resume", "labels"]
 # 171: how a milestone came to be complete. ``this_run`` is the default (the
 # milestone actually ran); ``prior_run`` was skipped at plan time because this
 # card's own earlier commits already satisfied it; ``existing_tests`` had a

@@ -163,15 +163,33 @@ def brief_prompt_sections(score: Score) -> list[str]:
 def _implementation_brief_lines(brief: dict, single_turn: bool) -> list[str]:
     if not brief or not brief.get("milestones"):
         return []
-    lines: list[str] = [
-        "",
-        "## Implementation Brief (from the architect's blueprint; authoritative)",
-        "",
-        "This brief REPLACES any plan.md or tasks.md under docs/cards/: milestones "
-        "come from here. You write code and tests only. Do not create or edit "
-        "documentation of any kind (docs/, wiki, README); the documenter owns it.",
-        "",
-    ]
+    # 410: a docs card's lanes write the documentation instead of code; the
+    # blanket "no documentation" prohibition would make the brief contradict
+    # the milestone goals on exactly those cards.
+    is_docs = str(brief.get("work_kind", "")).strip().lower() == "docs"
+    if is_docs:
+        lines: list[str] = [
+            "",
+            "## Implementation Brief (from the architect's blueprint; authoritative)",
+            "",
+            "This brief REPLACES any plan.md or tasks.md under docs/cards/: milestones "
+            "come from here. This is a documentation change: writing and updating the "
+            "project's documentation IS the work of this card, per the milestone goals. "
+            "You write documentation, not application code or tests; planning documents "
+            "under docs/cards/ remain out of scope, and the documenter still owns the "
+            "summary documentation of what changed.",
+            "",
+        ]
+    else:
+        lines = [
+            "",
+            "## Implementation Brief (from the architect's blueprint; authoritative)",
+            "",
+            "This brief REPLACES any plan.md or tasks.md under docs/cards/: milestones "
+            "come from here. You write code and tests only. Do not create or edit "
+            "documentation of any kind (docs/, wiki, README); the documenter owns it.",
+            "",
+        ]
     if brief.get("summary"):
         lines += [f"**Summary:** {brief['summary']}", ""]
     lines.append("### Milestones (in order)")
@@ -195,7 +213,10 @@ def _implementation_brief_lines(brief: dict, single_turn: bool) -> list[str]:
             "",
             "### SINGLE TURN",
             "This card is small: implement the whole brief in this turn, with tests, "
-            "and finish with DONE. Do not emit PARTIAL_PROGRESS.",
+            "and finish with DONE. Do not emit PARTIAL_PROGRESS."
+            if not is_docs else
+            "This card is small: write the whole brief in this turn, and finish with "
+            "DONE. Do not emit PARTIAL_PROGRESS.",
         ]
     return lines
 

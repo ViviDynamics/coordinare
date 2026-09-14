@@ -61,6 +61,21 @@ _PR_REQUIRED_STAGES: set[str] = {
 }
 
 
+def _card_labels(state: CoordinareState, card_id: str) -> list[str]:
+    """Card labels for *card_id*, stashed by check_board from the poll's
+    ``item_labels`` (410).
+
+    A no-brief implementer run infers its lane from these; absent or malformed
+    entries return an empty list and the performer keeps its pre-410 inference.
+    """
+    snapshot_labels = (state.get("_board_item_labels") or {}).get(card_id, [])
+    if isinstance(snapshot_labels, list):
+        return [
+            label for label in (str(item).strip() for item in snapshot_labels if isinstance(item, str)) if label
+        ]
+    return []
+
+
 def _persona_role_for_stage(stage: str) -> str | None:
     """Return the persona role name for a pipeline stage, or None if unmapped."""
     return _STAGE_TO_ROLE.get(stage)
@@ -1611,6 +1626,14 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
     if plan_path and performer_stage != "architecting":
         # Include plan path reference; downstream performers read from branch.
         card_context["architecture_plan_path"] = plan_path
+
+    # 410: card labels ride the payload so a no-brief implementer run can infer
+    # the lane from them. The board snapshot carries item_labels keyed by item
+    # id; absent there (or for a non-GitHub board), no labels ride and the
+    # performer keeps its pre-410 inference.
+    labels = _card_labels(state, card_id)
+    if labels:
+        card_context["labels"] = labels
 
     # Pass the performer role so the performer can gate behavior on it.
     card_context["role"] = performer_stage

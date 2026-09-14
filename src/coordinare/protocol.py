@@ -26,6 +26,8 @@ StatusType = Literal[
     "docs_committed",
     "env_bootstrap_complete",
     "assessment_complete",
+    "assessment_not_work",
+    "assessment_needs_split",
     "partial_progress",
     "blocked",
     "error",

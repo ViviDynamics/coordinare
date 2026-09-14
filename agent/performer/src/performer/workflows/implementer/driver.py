@@ -32,7 +32,7 @@ from performer.backends._card_docs import completed_documentation_prompt_section
 from performer.noise_paths import AGENT_CONFIG_DIRS
 from performer.test_results import TestSummary
 from performer.workflows.implementer import commits as git
-from performer.workflows.implementer.baseline import regressions, run_tests
+from performer.workflows.implementer.baseline import new_failures, run_tests
 from performer.workflows.implementer.scoping import scoped_command
 from performer.workflows.implementer.budgets import ImplementerBudgets
 from performer.workflows.implementer.cycle import (
@@ -243,6 +243,7 @@ async def run_turn(
     attempt_number: int,
     revert_everything: bool = False,
     milestone_test_files: list[str] | None = None,
+    allow_docs: bool = False,
 ) -> tuple[TurnResult, PerTurnAttempt, dict[str, str]]:
     """Run one harness turn and do the housekeeping every turn needs.
 
@@ -279,7 +280,7 @@ async def run_turn(
         else:
             violations = scope_violations(brief.kind, changed, ctx.runner_kind, brief.scope_paths or None, docs_tree=DOCS_TREE, milestone_test_files=milestone_test_files,
                                           foreign_scope_paths=[scope for plan in ctx.plans if plan.index != brief.milestone_index for scope in _scope_list(plan)],
-                                          extra_test_patterns=_extra_test_patterns(ctx))
+                                          extra_test_patterns=_extra_test_patterns(ctx), allow_docs=allow_docs)
             if violations:
                 await git.revert_paths(ctx.workspace, [v["path"] for v in violations])
                 reverts = violations
@@ -559,29 +560,33 @@ async def _feature(ctx: RunContext, milestone: MilestonePlan, record: PerMilesto
     _grow_baseline(ctx, green_summary)
 
 
-async def _change(ctx: RunContext, milestone: MilestonePlan, record: PerMilestoneRecord) -> None:
-    """Chore and refactor lanes (FR-022): one change turn, verified by the baseline."""
-    persona_kind = "CHANGE"
+async def _change(ctx: RunContext, milestone: MilestonePlan, record: PerMilestoneRecord, *, allow_docs: bool = False) -> None:
+    """Chore and refactor lanes (FR-022): one change turn, verified by the baseline.
+
+    The docs lane (410) runs the same shape with documentation paths in scope:
+    a docs-only card has no failing call site, so red/green cannot start.
+    """
+    persona_kind = "DOCS" if allow_docs else "CHANGE"
     failing: list[str] = []
     excerpt: str | None = None
     changed_all: dict[str, str] = {}
     for attempt_no in range(1, ctx.budgets.impl_attempts + 1):
         brief = _build_brief(ctx, milestone, kind="implement", persona_kind=persona_kind, failing_tests=failing, failure_excerpt=excerpt)
-        result, attempt, changed = await run_turn(ctx, brief, attempt_number=attempt_no)
+        result, attempt, changed = await run_turn(ctx, brief, attempt_number=attempt_no, allow_docs=allow_docs)
         record.implement_attempts.append(attempt)
         changed_all.update(changed)
         if result.exit_state != "done":
-            excerpt, persona_kind = f"the previous turn {result.exit_state}", "REPAIR_IMPLEMENT"
+            excerpt, persona_kind = f"the previous turn {result.exit_state}", ("DOCS" if allow_docs else "REPAIR_IMPLEMENT")
             continue
         summary = await _tests(ctx)
-        regs = regressions(ctx.baseline, summary)
-        if not regs and summary.passed:
+        regs = new_failures(ctx.baseline, summary)
+        if not regs:
             await _commit(ctx, changed_all, f"{_prefix(_lane(ctx, milestone))}{_issue(ctx)}: {milestone.goal}")
             _grow_baseline(ctx, summary)
             return
         failing = list(summary.test_names_failed or []) or regs
         excerpt = "regressed: " + ", ".join(regs) + "\n" + summary.raw_tail if regs else summary.raw_tail
-        persona_kind = "REPAIR_IMPLEMENT"
+        persona_kind = "DOCS" if allow_docs else "REPAIR_IMPLEMENT"
     raise MilestoneFailed(milestone.index, milestone.goal, f"the change regressed the baseline after {ctx.budgets.impl_attempts} attempts; last failure: {(excerpt or '')[:500]}")
 
 
@@ -618,8 +623,8 @@ async def _repair(ctx: RunContext, milestone: MilestonePlan, record: PerMileston
             excerpt, persona_kind = f"the previous turn {result.exit_state}", "REPAIR_IMPLEMENT"
             continue
         summary = await _tests(ctx)
-        regs = regressions(ctx.baseline, summary)
-        if not regs and summary.passed:
+        regs = new_failures(ctx.baseline, summary)
+        if not regs:
             await _commit(ctx, changed_all, f"{_prefix(_lane(ctx, milestone))}{_issue(ctx)}: {milestone.goal}")
             _grow_baseline(ctx, summary)
             return
@@ -640,8 +645,12 @@ async def _tests_lane(ctx: RunContext, milestone: MilestonePlan, record: PerMile
     if not files:
         raise MilestoneFailed(milestone.index, milestone.goal, "the tests turn changed no test file")
     summary = await _tests(ctx)
-    regs = regressions(ctx.baseline, summary)
-    if regs or not summary.passed:
+    # 410: the verdict is the baseline comparison, not an absolutely green
+    # suite. A test that already failed before the card started (pre-existing
+    # red) says nothing about the new tests, and failing every card for it
+    # starves refactor, chore and dependency lanes on real repositories.
+    regs = new_failures(ctx.baseline, summary)
+    if regs:
         failing = list(summary.test_names_failed or []) or regs
         record.failure_reason = "finding: new tests fail against the existing code: " + ", ".join(failing)
         raise MilestoneFailed(milestone.index, milestone.goal, record.failure_reason)
@@ -669,8 +678,10 @@ async def run_milestone(ctx: RunContext, milestone: MilestonePlan) -> PerMilesto
                 ctx.investigated = True
                 await _investigate(ctx, milestone)
             await _feature(ctx, milestone, record)
-        elif lane in ("chore", "refactor"):
+        elif lane in ("chore", "refactor", "config", "dependency"):
             await _change(ctx, milestone, record)
+        elif lane == "docs":
+            await _change(ctx, milestone, record, allow_docs=True)
         elif lane == "tests":
             await _tests_lane(ctx, milestone, record)
         elif lane == "repair":

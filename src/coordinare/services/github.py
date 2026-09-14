@@ -280,6 +280,17 @@ mutation SquashMerge($pullRequestId: ID!) {
 }
 """
 
+CLOSE_ISSUE_MUTATION = """
+mutation CloseIssue($issueId: ID!) {
+  closeIssue(input: { issueId: $issueId }) {
+    issue {
+      id
+      state
+    }
+  }
+}
+"""
+
 # 128: re-request review from a human whose stale change-request has been
 # addressed. union:true ADDS to any existing requested reviewers (never clobbers).
 # There is deliberately NO dismiss/approve mutation — coordinare never clears a
@@ -1789,6 +1800,18 @@ class GitHubService(CardIdentityMap):
             "id": str(node.get("id", "")),
             "merge_commit": node.get("mergeCommit"),
         }
+
+    async def close_issue(self, issue_id: str) -> dict[str, Any]:
+        """Close a GitHub issue by node id (410: the not_work board outcome).
+
+        Returns {"closed": bool, "id": str} — closed is False on any shape
+        surprise so the caller can warn without raising.
+        """
+        result = await self._guarded_execute(CLOSE_ISSUE_MUTATION, {"issueId": issue_id})
+        node = result.get("closeIssue", {}).get("issue", {})
+        if not isinstance(node, dict):
+            return {"closed": False, "id": issue_id}
+        return {"closed": node.get("state") == "CLOSED", "id": str(node.get("id", ""))}
 
     async def link_to_project(self, content_id: str, status: str = "IN_REVIEW") -> str | None:
         """Add an item (PR or issue) to the project board and set its status.

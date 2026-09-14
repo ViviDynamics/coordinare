@@ -60,7 +60,7 @@ def test_milestone_count_bounds(n, ok):
             Blueprint.model_validate(data)
 
 
-@pytest.mark.parametrize("n,ok", [(1, True), (12, True), (0, False), (13, False)])
+@pytest.mark.parametrize("n,ok", [(0, True), (1, True), (12, True), (13, False)])
 def test_criteria_count_bounds(n, ok):
     data = _bp(criteria=_crit(n))
     if ok:

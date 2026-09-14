@@ -208,6 +208,7 @@ def scope_violations(
     milestone_test_files: list[str] | None = None,
     foreign_scope_paths: list[str] | None = None,
     extra_test_patterns: list[str] | tuple[str, ...] | None = None,
+    allow_docs: bool = False,
 ) -> list[dict[str, str]]:
     """Detect out-of-scope edits (FR-008).
 
@@ -227,6 +228,9 @@ def scope_violations(
         foreign_scope_paths: Explicit source ownership of other planned milestones.
         extra_test_patterns: Optional per-symphony regex sources (409) extending
             the built-in test-file conventions.
+        allow_docs: When True (the 410 docs lane), documentation paths are in
+            scope for this turn; the doc-revert rule is suspended. The tests-turn
+            rule is NOT suspended: a docs card still writes no tests.
 
     Returns:
         List of dicts recording reverted paths and reasons.
@@ -248,7 +252,7 @@ def scope_violations(
         # live round implemented the function during the tests turn through an
         # in-scope source file, and red was never observed
         is_doc = path.startswith(docs_tree) or path.startswith("doc/") or path.startswith("README") or path.startswith("CONTRIBUTING") or path.startswith("CHANGELOG")
-        if is_doc and not in_scope(path):
+        if is_doc and not allow_docs and not in_scope(path):
             violations.append({
                 "path": path,
                 "kind": "reverted_doc",

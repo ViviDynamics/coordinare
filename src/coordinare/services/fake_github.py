@@ -444,6 +444,18 @@ class FakeGitHubService(CardIdentityMap):
         self._record("add_comment", subject_id=subject_id, body=body[:200])
         return {"id": f"IC_{len(self.events)}"}
 
+    async def close_issue(self, issue_id: str) -> dict[str, Any]:
+        # 410: mirrors the real closeIssue mutation against the fake board —
+        # the card's status becomes DONE, which check_issue_state reports as
+        # "closed". Recorded so tests can assert the outcome.
+        for card in self._cards.values():
+            if card["content_node_id"] == issue_id or card["issue_node_id"] == issue_id:
+                card["status"] = "DONE"
+                self._record("close_issue", issue_id=issue_id, issue_number=card["issue_number"])
+                return {"closed": True, "id": issue_id}
+        self._record("close_issue", issue_id=issue_id, issue_number=None)
+        return {"closed": False, "id": issue_id}
+
     async def post_comment(
         self, issue_number: int, body: str, *, author: str = "coordinare-bot"
     ) -> dict[str, Any]:

@@ -3230,6 +3230,93 @@ async def _refresh_backend_ui(
         logger.debug("monitor_performer.backend_ui_refresh_failed", card_id=card_id, error=str(exc))
 
 
+async def _apply_assessor_decline(
+    state: CoordinareState,
+    card: dict[str, Any],
+    card_id: str,
+    marker: str,
+    status: dict[str, Any],
+    board_provider: Any,
+    github: Any,
+) -> CoordinareState:
+    """Board outcome for an assessor verdict that declines the card (410).
+
+    not_work: comment the reasoning, close the issue AND move the project item
+    to DONE (closing the issue alone leaves the project column in TODO, where
+    the next poll would admit the card again), then retire the run.
+    needs_split: comment the proposed split, move the card back to BACKLOG,
+    retire the run. The board comment is the durable record of the decision;
+    the in-state assessment rides only the current daemon run. Both outcomes
+    are best-effort on the board side: a missing GitHub service or node id
+    logs and continues, because the run's retirement must not depend on a
+    mutation succeeding.
+    """
+    report = status.get("report") if isinstance(status.get("report"), dict) else {}
+    assessment = report.get("assessment") if isinstance(report.get("assessment"), dict) else {}
+    reason = str(assessment.get("expected_behavior") or assessment.get("goal") or "the assessor declined this card").strip()
+    verdict = "not_work" if marker == "assessment_not_work" else "needs_split"
+
+    state["assessment"] = dict(assessment)
+    if assessment:
+        state["assessment"]["recorded_at"] = datetime.now(UTC).isoformat()
+    logger.info(
+        "monitor_performer.assessment_declined",
+        card_id=card_id,
+        verdict=verdict,
+        reason_length=len(reason),
+    )
+
+    issue_id = str(card.get("issue_id") or "")
+    if github is not None and hasattr(github, "add_comment") and issue_id:
+        try:
+            header = coordinare_attribution(state.get("config"), None)
+            if verdict == "not_work":
+                body = (
+                    f"{header}\n\n**Assessor verdict: not work**\n\n{reason}\n\n"
+                    "Closing this issue without building it. Correct the premise and reopen, or split the work."
+                )
+            else:
+                body = (
+                    f"{header}\n\n**Assessor verdict: needs split**\n\n{reason}\n\n"
+                    "The card moved back to the backlog. Split it into independent issues and bring them back one at a time."
+                )
+            await github.add_comment(issue_id, body)
+        except Exception as exc:
+            logger.warning("monitor_performer.assessment_decline_comment_failed", card_id=card_id, error=str(exc))
+
+    if verdict == "not_work" and github is not None and hasattr(github, "close_issue") and issue_id:
+        try:
+            await github.close_issue(issue_id)
+        except Exception as exc:
+            logger.warning("monitor_performer.assessment_close_failed", card_id=card_id, error=str(exc))
+        # Closing the issue does not move the project item: without this the
+        # next poll still sees the card in TODO and admits it again.
+        if board_provider is not None:
+            try:
+                await move_card_or_warn(board_provider, card_id, "DONE")
+            except Exception as exc:
+                logger.warning("monitor_performer.assessment_done_move_failed", card_id=card_id, error=str(exc))
+
+    if board_provider is not None and verdict == "needs_split":
+        try:
+            await move_card_or_warn(board_provider, card_id, "BACKLOG")
+        except Exception as exc:
+            logger.warning("monitor_performer.assessment_backlog_move_failed", card_id=card_id, error=str(exc))
+
+    lifecycle_seq = state.get("lifecycle_sequence") or ["implementing"]
+    state["phase"] = "idle"
+    _retire_active_session(state, trigger="assessment_declined")
+    state["agent_dispatch"] = {}
+    state["agent_dispatch_at"] = None
+    state["relay_feedback"] = []
+    state["pending_reviews"] = []
+    state["open_questions"] = []
+    state["performer_stage"] = lifecycle_seq[0] if lifecycle_seq else "implementing"
+    state["system_error_count"] = 0
+    state["system_error_reason"] = None
+    return state
+
+
 async def monitor_performer(state: CoordinareState) -> CoordinareState:
     """Poll the active performer, then surface any terminal outcome in the feed.
 
@@ -4224,6 +4311,9 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
             "env_blocked",
             "error", "blocked", "session_expired", "token_limit",
             "partial_progress",
+            # 410: the decline intercept below returns early, so the slot
+            # must release here like every other terminal marker.
+            "assessment_not_work", "assessment_needs_split",
         }
         if marker in _terminal_markers:
             _slot_mgr = state.get("slot_manager")
@@ -4413,6 +4503,11 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
             collect as collect_documentation_findings,
         )
         collect_documentation_findings(state, stage, marker, status)
+
+        # 410: an assessor verdict that declines the card ends the run here,
+        # before any lifecycle advancement can read it as a terminal success.
+        if stage == "assessing" and marker in ("assessment_not_work", "assessment_needs_split"):
+            return await _apply_assessor_decline(state, card, card_id, marker, status, board_provider, github)
 
         # --- Terminal success states ---
         if marker in TERMINAL_SUCCESS_STATES:

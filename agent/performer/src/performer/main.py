@@ -2093,13 +2093,27 @@ async def handle_status(
                 _assessment = _ar["assessment"]
                 _ready = bool(_assessment.get("ready"))
                 _questions = [str(q) for q in (_assessment.get("questions") or [])]
+                _verdict = str(_assessment.get("verdict") or "work")
                 log.info(
                     "assessor.assessment_reported",
                     ready=_ready,
                     questions=len(_questions),
                     criteria_source=_assessment.get("criteria_source"),
+                    verdict=_verdict,
                     session_id=perf.session_id,
                 )
+                # 410: a verdict that declines the card never advances the
+                # lifecycle — coordinare turns it into the defined board outcome
+                # (comment + close for not_work, comment + back to backlog for
+                # needs_split) instead of dispatching the architect.
+                if _verdict in ("not_work", "needs_split"):
+                    perf.state = "assessment_complete"
+                    return PerformerResponse(
+                        status="assessment_not_work" if _verdict == "not_work" else "assessment_needs_split",
+                        session_id=perf.session_id,
+                        report=_ar,
+                        progress=f"assessment ({_verdict})",
+                    )
                 if _ready:
                     perf.state = "assessment_complete"
                     return PerformerResponse(

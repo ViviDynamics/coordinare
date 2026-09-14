@@ -151,6 +151,9 @@ class Score(BaseModel):
     verify_provided: bool = False  # 174: protected bootstrap artifact
     activate_provided: bool = False
     workflow: str = ""
+    # 410: card labels ride the dispatch payload so a no-brief implementer run
+    # can infer the lane (docs, dependency, config, chore) without a work_kind.
+    labels: list[str] = Field(default_factory=list)
     # 173: the project board's node id, for the curator's add-to-board call.
     # Nothing conveyed it before, and the add-to-board mutation silently no-ops
     # without it, so the curator must report an empty value rather than appear
