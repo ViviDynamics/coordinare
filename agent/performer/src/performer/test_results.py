@@ -58,7 +58,11 @@ _TEST_FAILURE_MARKERS = re.compile(
     r"|failures:\s*[1-9]"  # maven/gradle "Failures: 1"
     r"|^\s*\d+\)\s+Failure:"  # minitest per-failure header
     r"|^\s*Failure/Error:"  # rspec per-failure detail
-    r"|^FAILED\s+\S+::",  # pytest per-test failure line
+    r"|^FAILED\s+\S+::"  # pytest per-test failure line
+    r"|^--- FAIL: "  # go test per-test failure line
+    r"|test result: FAILED"  # cargo test summary
+    r"|^\s*Failed!"  # xUnit summary header
+    r"|[1-9]\d*\s+failed\s*\|",  # "1 failed | 6 passed" (cargo, rspec-ish)
     re.IGNORECASE | re.MULTILINE,
 )
 
@@ -69,10 +73,12 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b
 
 #: Failure count patterns. Anchored the same way _TEST_FAILURE_MARKERS is.
 _FAILURE_COUNT_PATTERNS = (
-    re.compile(r"([1-9]\d*)\s+failed(?:,|\s+in\s)", re.IGNORECASE),
+    re.compile(r"([1-9]\d*)\s+failed(?:,|;|\s+in\s)", re.IGNORECASE),
     re.compile(r"^\s*([1-9]\d*)\s+failing\s*$", re.IGNORECASE | re.MULTILINE),
     re.compile(r",\s*([1-9]\d*)\s+failures?\b", re.IGNORECASE),
     re.compile(r"failures:\s*([1-9]\d*)", re.IGNORECASE),
+    re.compile(r"-\s*Failed:\s*([1-9]\d*)", re.IGNORECASE),  # xUnit "- Failed: 3"
+    re.compile(r"([1-9]\d*)\s+failed\s*\|", re.IGNORECASE),  # "1 failed | 6 passed"
 )
 
 

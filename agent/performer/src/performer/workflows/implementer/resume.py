@@ -95,14 +95,14 @@ def prior_run_paths(entries: list[tuple[str, list[str]]], issue_number: int | No
     return frozenset(paths)
 
 
-def declared_test_paths(scope: str | None) -> list[str]:
+def declared_test_paths(scope: str | None, extra_test_patterns: tuple[str, ...] | None = None) -> list[str]:
     """The test files a milestone's scope names (FR-003)."""
-    return [p for p in scope_segments(scope) if is_test_path(p)]
+    return [p for p in scope_segments(scope) if is_test_path(p, extra_test_patterns)]
 
 
-def declared_source_paths(scope: str | None) -> list[str]:
+def declared_source_paths(scope: str | None, extra_test_patterns: tuple[str, ...] | None = None) -> list[str]:
     """The non-test files a milestone's scope names (FR-003)."""
-    return [p for p in scope_segments(scope) if not is_test_path(p)]
+    return [p for p in scope_segments(scope) if not is_test_path(p, extra_test_patterns)]
 
 
 def _anchored(name: str, path: str) -> bool:
@@ -143,6 +143,7 @@ def resume_state(
     present: frozenset[str] | set[str],
     passed: list[str] | None,
     failed: list[str] | None,
+    extra_test_patterns: tuple[str, ...] | None = None,
 ) -> ResumeState:
     """What a previous run of this card already did for one milestone.
 
@@ -160,14 +161,14 @@ def resume_state(
     milestone whose tests or source merely happen to exist on the base branch is
     always open and FR-005 applies to it in full.
     """
-    test_paths = declared_test_paths(milestone.scope)
+    test_paths = declared_test_paths(milestone.scope, extra_test_patterns)
     if not test_paths:
         return "open"
 
     if all(p in prior_paths for p in test_paths) and tests_cover(test_paths, present, passed, failed):
         return "done"
 
-    source_paths = declared_source_paths(milestone.scope)
+    source_paths = declared_source_paths(milestone.scope, extra_test_patterns)
     if (
         source_paths
         and all(p in prior_paths and p in present for p in source_paths)

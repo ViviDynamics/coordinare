@@ -1787,9 +1787,17 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
     if role == "implementer":
         gate_cfg = _get_local_test_gate_config(state)
         if gate_cfg is not None:
+            # 409: the operator overrides (command/lint_command/
+            # test_path_patterns/roots) ride the same payload. Omitted keys
+            # keep the performer's detection-only behaviour, so the payload
+            # shape stays additive for pre-409 configurations.
             card_context["local_test_gate"] = {
                 "enabled": bool(getattr(gate_cfg, "enabled", False)),
                 "timeout_seconds": int(getattr(gate_cfg, "timeout_seconds", 600)),
+                "command": getattr(gate_cfg, "command", None),
+                "lint_command": getattr(gate_cfg, "lint_command", None),
+                "test_path_patterns": list(getattr(gate_cfg, "test_path_patterns", []) or []),
+                "roots": list(getattr(gate_cfg, "roots", []) or []),
             }
         # 090-L3: when the CI gate built an autonomous baseline-repair mandate
         # (INHERITED failures, gate enabled, budget not exhausted), ride it into

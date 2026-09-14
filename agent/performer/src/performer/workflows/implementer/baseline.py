@@ -6,6 +6,7 @@ counts otherwise.
 """
 from __future__ import annotations
 
+import shlex
 from pathlib import Path
 
 import structlog
@@ -42,7 +43,15 @@ def detect_lint_command(score, workspace: Path) -> str | None:
     except ImportError:
         return None
     try:
-        result = detect(workspace)
+        # 409: the declared monorepo roots ride here too — the same precedence
+        # detect_test_command applies, root convention first, sub-root only
+        # when the root is silent — composed to run from the workspace.
+        roots = tuple(gate.get("roots") or ()) if isinstance(gate, dict) else ()
+        result = detect(workspace, sub_roots=roots)
+        if not getattr(result, "lint_command", None) and result.per_root:
+            for root, root_result in result.per_root.items():
+                if root_result.lint_command:
+                    return f"cd {shlex.quote(root)} && {root_result.lint_command}"
     except Exception:  # noqa: BLE001 - detection is best effort
         return None
     return getattr(result, "lint_command", None) or None
@@ -59,8 +68,10 @@ def detect_lint_command(score, workspace: Path) -> str | None:
 def detect_test_command(score, workspace: Path) -> tuple[str, str, str]:
     """Detect the test command and stack (FR-004).
 
-    Tries in order: score.local_test_gate_config, score.test_command,
-    coordinare ci_detection.detect(workspace).
+    Tries in order: score.local_test_gate["command"] (409: the operator
+    override coordinare delivers), score.local_test_gate_config,
+    score.test_command, monorepo sub-roots, coordinare
+    ci_detection.detect(workspace).
 
     Args:
         score: The dispatch payload.
@@ -74,6 +85,14 @@ def detect_test_command(score, workspace: Path) -> tuple[str, str, str]:
         NoTestRunner: When no test command is detected.
     """
     test_command = None
+
+    # 409: the operator override rides score.local_test_gate (a declared
+    # Score field, dispatch-fed from LocalTestGateConfig.command). It used to
+    # live only on local_test_gate_config, which Score never declared, so
+    # extra="ignore" dropped it and the override was dead.
+    gate = getattr(score, "local_test_gate", None)
+    if isinstance(gate, dict) and gate.get("command"):
+        return (str(gate["command"]), "", "score.local_test_gate.command")
 
     if hasattr(score, "local_test_gate_config") and score.local_test_gate_config:
         test_command = score.local_test_gate_config.get("command")
@@ -94,10 +113,22 @@ def detect_test_command(score, workspace: Path) -> tuple[str, str, str]:
             f"is not installed): {exc}"
         ) from exc
 
-    result = detect(workspace)
-    if not result or not result.test_command:
+    # 409: declared monorepo roots. The workspace root's own convention wins;
+    # a sub-root is consulted only when the root matches no convention — the
+    # same precedence _run_test_check applies — and its command is composed to
+    # run from the workspace: the performer session's cwd never moves.
+    roots = tuple(gate.get("roots") or ()) if isinstance(gate, dict) else ()
+    result = detect(workspace, sub_roots=roots)
+    if result.test_command:
+        command = result.test_command
+    elif result.per_root:
+        for root, root_result in result.per_root.items():
+            if root_result.test_command:
+                command = f"cd {shlex.quote(root)} && {root_result.test_command}"
+                return (command, "", f"sub-root: {root}")
         raise NoTestRunner("no test command detected")
-    command = result.test_command
+    else:
+        raise NoTestRunner("no test command detected")
 
     # ci_detection's stack is a language ("python", "ruby"); the parsers need the
     # RUNNER. A live round parsed no names because "python" matched no parser.

@@ -178,7 +178,7 @@ def test_implementer_workflow_turn_receives_completed_documentation():
     from performer.workflows.implementer.driver import _build_brief
     from performer.workflows.implementer.models import MilestonePlan
     ctx = SimpleNamespace(score=SimpleNamespace(completed_documentation={"head_sha": "dochead", "paths": ["docs/wiki/behavior.md"]}),
-                          runner_kind="pytest", investigation_note=None)
+                          runner_kind="pytest", test_command="", investigation_note=None)
     plan = MilestonePlan(index=0, goal="Build feature", scope="src/app.py", done_when="Tests pass", lane="feature", lane_source="brief")
     brief = _build_brief(ctx, plan, kind="implement", persona_kind="IMPLEMENT")
     assert "dochead" in brief.persona

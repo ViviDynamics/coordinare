@@ -54,6 +54,17 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
+
+def _resume_test_patterns(ctx: Any) -> tuple[str, ...] | None:
+    """Per-symphony test-path regex sources for resume classification (409)."""
+    gate = getattr(ctx.score, "local_test_gate", None)
+    if not isinstance(gate, dict):
+        return None
+    patterns = gate.get("test_path_patterns")
+    if not patterns:
+        return None
+    return tuple(patterns)
+
 __all__ = ["ImplementerWorkflow", "STATES"]
 
 STATES: tuple[str, ...] = (
@@ -187,8 +198,19 @@ class ImplementerWorkflow:
         pre-171 behaviour.
         """
         base = str(getattr(ctx.score, "base_branch", "") or "").strip() or "main"
+        # 409: the default branch is not always main. Try the card's declared
+        # base first, then the conventional names, so a resume against a
+        # master- or develop-defaulted repository still finds the prior run's
+        # commits instead of missing them and re-running finished milestones.
+        candidates: list[str] = []
+        for name in (
+            f"origin/{base}", base, "origin/main", "main",
+            "origin/master", "master", "origin/develop", "develop",
+        ):
+            if name not in candidates:
+                candidates.append(name)
         try:
-            entries = await git.branch_commit_entries(workspace, [f"origin/{base}", base, "origin/main", "main"])
+            entries = await git.branch_commit_entries(workspace, candidates)
         except Exception as exc:  # noqa: BLE001 - run() has no generic handler, and resume is
             # only an optimisation: a history we cannot read must cost us the skip, never the run.
             log.warning("implementer.resume_history_unreadable", error=str(exc))
@@ -205,6 +227,7 @@ class ImplementerWorkflow:
                 present_paths(workspace, scope_segments(plan.scope)),
                 ctx.baseline.test_names,
                 ctx.baseline.test_names_failed,
+                _resume_test_patterns(ctx),
             )
             for plan in plans
         ]
