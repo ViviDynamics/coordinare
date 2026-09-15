@@ -23,6 +23,7 @@ def build_report(
     visual_evidence: list[dict] | None = None,
     environment_error: str | None = None,
     boot_check: ExecutedCheck | None = None,
+    app_start_command: str | None = None,
 ) -> dict:
     """Produce the QA report dict."""
     report: dict = {
@@ -68,6 +69,12 @@ def build_report(
             "command": boot_check.command,
             "exit_code": boot_check.exit_code,
         }
+
+    # The fallback capture (post-processing) boots the app with the same
+    # command the shape reading produced — override → shape → inference —
+    # instead of guessing from the framework heuristics again (411 review).
+    if app_start_command:
+        report["app_start_command"] = app_start_command
 
     if environment_error:
         # The honest "could not verify". Distinct from a failure, and the

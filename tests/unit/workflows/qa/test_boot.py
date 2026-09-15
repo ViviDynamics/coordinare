@@ -726,3 +726,64 @@ def test_the_baseline_gets_the_same_reading_as_the_head_app(tmp_path):
     base = _default_base_boot(tmp_path, {"PORT": "9999"}, shape)
     assert base.shape is shape
     assert start_command_for(base.env, base.shape) == "mix phx.server"
+
+
+@pytest.mark.asyncio
+async def test_a_command_port_prefix_decides_the_polled_port():
+    """411 round-eight review: `PORT=9000 python app.py` boots the child on
+    9000, but ensure_serving derived the polled port from the outer env
+    (8000) before spawning — a healthy app reported unavailable. The
+    effective env, outer env overlaid with the command's own prefix,
+    decides the port."""
+    seen_ports: list[str] = []
+
+    class _TK:
+        async def run_command(self, cmd, **kw):
+            class R:
+                passed = True
+                exit_code = 0
+                output_excerpt = ""
+
+            return R()
+
+    boot = AppBoot(
+        env={"PORT": "8000", "QA_APP_START_COMMAND": "PORT=9000 python app.py"},
+        workspace=Path("/w"),
+        port_check=lambda h, p: seen_ports.append(p) or False,
+        spawn=lambda cmd, cwd, env: _FakeProc(),
+        sleep=lambda _s: None,
+        boot_timeout=0.0,
+    )
+    assert await boot.ensure_serving(_TK()) is None
+    assert seen_ports and all(p == "9000" for p in seen_ports), (
+        "the polled port must come from the command's own prefix"
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_already_serving_app_on_the_command_port_is_adopted():
+    """Round-eight review (companion): the adopt path builds its URL from
+    the effective env too, so an existing server on the command's port is
+    adopted at that address, not at the outer env's."""
+    seen_ports: list[str] = []
+
+    class _TK:
+        async def run_command(self, cmd, **kw):
+            class R:
+                passed = True
+                exit_code = 0
+                output_excerpt = ""
+
+            return R()
+
+    boot = AppBoot(
+        env={"PORT": "8000", "QA_APP_START_COMMAND": "PORT=9000 python app.py"},
+        workspace=Path("/w"),
+        port_check=lambda h, p: seen_ports.append(p) or True,
+        spawn=lambda cmd, cwd, env: _FakeProc(),
+        sleep=lambda _s: None,
+        boot_timeout=0.0,
+    )
+    base = await boot.ensure_serving(_TK())
+    assert seen_ports == ["9000"]
+    assert base == "http://127.0.0.1:9000/"

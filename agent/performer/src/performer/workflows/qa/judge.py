@@ -25,16 +25,18 @@ from performer.workflows.qa.models import (
     JudgeOutput,
     TestPlan,
     VisualDelta,
+    normalise_criterion,
 )
 
 
 def _norm(text: str) -> str:
     """Criterion identity for matching model output back to the plan."""
-    return " ".join((text or "").split()).casefold()
+    return normalise_criterion(text)
 
 
 def _checks_for(criterion: str, plan: TestPlan, executed: list[ExecutedCheck]) -> list[ExecutedCheck]:
-    ids = {c.id for c in plan.checks if c.criterion == criterion}
+    target = normalise_criterion(criterion)
+    ids = {c.id for c in plan.checks if normalise_criterion(c.criterion) == target}
     return [e for e in executed if e.plan_check_id in ids]
 
 
@@ -141,12 +143,23 @@ def build_findings(
     return findings
 
 
-def overall_passed(verdicts: list[CriterionVerdict], delta: VisualDelta) -> bool:
+def overall_passed(
+    verdicts: list[CriterionVerdict],
+    delta: VisualDelta,
+    model_output: JudgeOutput | None = None,
+) -> bool:
     """A run passes when every criterion is demonstrated and nothing regressed.
 
     Layout defects are deliberately absent from this decision: advisory means
-    advisory.
+    advisory. A judge-reported change beyond the claimed one is NOT advisory
+    and is not absent from this decision: build_findings turns it into a hard
+    unexpected_regression finding, so the passed flag must latch too — a
+    report that says PASSED with a hard finding attached is exactly the
+    false-reassurance this module exists to prevent (411 round-eight review).
     """
     if not verdicts:
         return False
-    return all(v.passed for v in verdicts) and not delta.removed
+    passed = all(v.passed for v in verdicts) and not delta.removed
+    if passed and model_output is not None and model_output.unexpected_changes:
+        return False
+    return passed

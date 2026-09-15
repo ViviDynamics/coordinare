@@ -31,7 +31,13 @@ from performer.workflows.qa.models import CriterionVerdict, Finding, JudgeOutput
 from performer.workflows.qa.observe import diff_observations
 from performer.workflows.qa.baseline import cleanup_worktree, run_baseline_step
 from performer.qa_capture import app_base_url
-from performer.workflows.qa.boot import AppBoot
+from performer.workflows.qa.execute import (
+    collect_visual_evidence,
+    prepare_visual_capture,
+    rewrite_command_placeholders,
+    run_execute_step,
+)
+from performer.workflows.qa.boot import AppBoot, plan_needs_server
 from performer.workflows.project_shape import ProjectShape, ProjectShapeUnknown, detect_shape, repo_tree
 from performer.workflows.qa.plan import effective_criteria, EmptyPlan, run_plan_step
 
@@ -137,6 +143,12 @@ class QAWorkflow:
         """
         self._boot = None
         self._worktree = None
+        # The visual evidence tree (a mkdtemp OUTSIDE the scratch — see the
+        # execute step). Owned by the report when one is returned: post-
+        # processing deletes it after uploading. If the run dies before a
+        # report exists, _cleanup removes it instead (411 round-three review).
+        self._capture_dir: Path | None = None
+        self._capture_dir_reported = False
         self._workspace = Path(getattr(stand, "path", ".") or ".")
         # Run artifacts live OUTSIDE the cloned repository. Round-two review
         # found .qa_flow_driver.py written into the workspace root and never
@@ -183,6 +195,10 @@ class QAWorkflow:
             import shutil
 
             shutil.rmtree(scratch, ignore_errors=True)
+        capture_dir = getattr(self, "_capture_dir", None)
+        if capture_dir is not None and not getattr(self, "_capture_dir_reported", False):
+            # Aborted before a report: nothing downstream owns the tree.
+            shutil.rmtree(capture_dir, ignore_errors=True)
 
     async def _run(self, stand: "Stand", score: "Score", toolkit: Any) -> WorkflowResult:
         metrics = toolkit.metrics
@@ -215,11 +231,11 @@ class QAWorkflow:
         except EmptyPlan as exc:
             # Criteria present but nothing derivable to check them is "not
             # demonstrated": a FAIL with one unmet finding per criterion, not an
-            # environmental problem. Only with no criteria at all is there
-            # genuinely no verdict to give (R7 fail-closed).
+            # environmental problem. With no criteria at all the verdict is
+            # still defined — a refused run, never a vacuous pass (411 AC7).
             if exc.criteria:
                 return self._undemonstrated(exc.criteria, str(exc), metrics)
-            return self._environment_error(str(exc), metrics)
+            return self._no_criteria(metrics)
         finally:
             metrics.step_durations_ms["plan"] = int((time.monotonic() - started) * 1000)
         log.info("qa.plan", checks=len(plan.checks), surfaces=len(plan.surfaces))
@@ -229,16 +245,19 @@ class QAWorkflow:
         # (`goto /signin`), and Playwright rejects those outright. Resolving
         # them needs a base URL, and a base URL needs a serving app.
         base_url: str | None = None
-        if plan.needs_baseline():
+        if plan_needs_server(plan, planned_base_url):
             # 367: how this project starts, and how long that takes, are the
             # model's to say. This replaced a Rails/Django/Node branch that
             # named its own three frameworks in the failure message, and a flat
             # 60s default chosen by reasoning about Rails migrations.
             #
-            # Asked here rather than at intake, for two reasons: a command-only
-            # plan never boots and so never needs it, and an operator who set
-            # QA_APP_START_COMMAND has already answered the question. Both skip
-            # the call entirely, so nothing pays for a reading it will not use.
+            # Asked here rather than at intake, for two reasons: a plan that
+            # never contacts the app never boots and so never needs it, and an
+            # operator who set QA_APP_START_COMMAND has already answered the
+            # question. Both skip the call entirely, so nothing pays for a
+            # reading it will not use. A command-only plan whose checks curl
+            # the app's health endpoint DOES need the boot — that is what
+            # plan_needs_server asks (411).
             #
             # A repository the model cannot characterise is an environment
             # error. QA has always stopped rather than guessed, which is the
@@ -251,6 +270,18 @@ class QAWorkflow:
                     return self._environment_error(
                         "could not work out how to start this project: " + exc.reason[:300], metrics
                     )
+            shape = getattr(boot, "shape", None)
+            if shape is not None and not shape.start_command.strip():
+                # The reading is an answer: this is a library or CLI, not a
+                # bootable application. Running the checks anyway produces
+                # either a fake pass or a 'connection refused' defect; the
+                # honest verdict names the absence of a server (411 AC4).
+                self._step(toolkit, "boot", detail="no server")
+                return self._environment_error(
+                    "the project shape has no server: not a bootable application "
+                    "(library, CLI), so there is no server to exercise the app",
+                    metrics,
+                )
             self._step(toolkit, "boot", detail=planned_base_url or "")
             base_url = await boot.ensure_serving(toolkit)
             if base_url is None:
@@ -262,6 +293,11 @@ class QAWorkflow:
                     metrics,
                 )
             AppBoot.rewrite_targets(plan, base_url)
+            # The command checks see the booted origin too: plan_needs_server
+            # treats $BASE_URL/$PORT as app references, but without this
+            # rewrite `curl $BASE_URL/api/status` ran with an empty URL and
+            # failed for reasons the boot never caused (411 round-six review).
+            rewrite_command_placeholders(plan, base_url)
 
         # --- 2. baseline -------------------------------------------------
         metrics.baseline_skipped = not plan.needs_baseline()
@@ -295,13 +331,36 @@ class QAWorkflow:
         metrics.step_durations_ms["baseline"] = int((time.monotonic() - started) * 1000)
 
         # --- 3. execute --------------------------------------------------
-        from performer.workflows.qa.execute import run_execute_step
-
         self._step(toolkit, "execute", detail=f"{len(plan.checks)} checks")
         started = time.monotonic()
+        # 411 review: needs_baseline() is true for flow checks too, but only
+        # visual checks produce screenshots. Driving the visual-artifact floor
+        # off needs_baseline() marked a flow-only plan as visual-validation
+        # run and bounced it for evidence it never promised.
+        visual_required = any(c.kind == "visual" for c in plan.checks)
         driver_path = str(self._scratch / "qa_flow_driver.py")
+        # Visual checks capture their own screenshots: declaring
+        # visual_validation_required without capturing anything failed
+        # coordinare's evidence floor on every visual run (411 AC5). The
+        # evidence dir deliberately sits OUTSIDE the scratch dir: run()'s
+        # finally rmtree's the scratch before post-processing ever sees the
+        # report, and the paths must still exist when it validates them.
+        # It is created only when a visual check exists and the consumer
+        # deletes the whole tree after uploading, so a long-lived performer
+        # does not accumulate qa-visual-* trees in /tmp (411 review).
+        capture_dir = (
+            Path(tempfile.mkdtemp(prefix="qa-visual-")) if visual_required else None
+        )
+        self._capture_dir = capture_dir
+        if capture_dir is not None:
+            prepare_visual_capture(plan, capture_dir, base_url=base_url)
         executed = await run_execute_step(
             toolkit, plan, cwd=workspace, driver_path=driver_path
+        )
+        visual_evidence = (
+            collect_visual_evidence(plan, capture_dir)
+            if capture_dir is not None
+            else []
         )
         metrics.step_durations_ms["execute"] = int((time.monotonic() - started) * 1000)
 
@@ -309,16 +368,31 @@ class QAWorkflow:
         self._step(toolkit, "observe")
         started = time.monotonic()
         delta = VisualDelta()
+        observe_failed = False
         if before:
             added_all, removed_all = [], []
             unobservable: list[str] = []
             for surface, before_obs in before.items():
-                after_obs = await self._observe_surface(toolkit, surface)
+                try:
+                    after_obs = await self._observe_surface(toolkit, surface)
+                except Exception as exc:  # noqa: BLE001
+                    # The baseline observe is fail-closed; the post-change
+                    # observe must be the same (411 AC6). A surface whose
+                    # after-state cannot be read leaves regressions on it
+                    # unknowable, so the run is not a pass either way.
+                    log.warning(
+                        "qa.observe.post_change_failed", surface=surface, error=str(exc)[:200]
+                    )
+                    unobservable.append(surface)
+                    observe_failed = True
+                    continue
                 if not before_obs and not after_obs:
                     # Nothing observed is not nothing changed. A 404 rendering
                     # an empty shell compared [] to [] and read as "no
-                    # regressions" (round-two review).
+                    # regressions" (round-two review). Fail closed exactly
+                    # like the exception path: the comparison is unknowable.
                     unobservable.append(surface)
+                    observe_failed = True
                     continue
                 added, removed = diff_observations(before_obs, after_obs)
                 added_all.extend(added)
@@ -345,11 +419,15 @@ class QAWorkflow:
             ))
         if getattr(boot, "adopted_existing_server", False):
             metrics.adopted_existing_server = True
-        passed = overall_passed(verdicts, delta)
+        passed = overall_passed(verdicts, delta, model_verdict)
         if baseline_error and plan.needs_baseline():
             # With no baseline the delta is unknown, so nothing is known about
             # regressions. The criteria may be demonstrated; the RUN is not a
             # pass. Reporting one would let a consumer advance unverified work.
+            passed = False
+        if observe_failed:
+            # Same fail-closed posture, one step later: the after-state of a
+            # surface could not be read, so its regressions are unknowable.
             passed = False
 
         # --- 6. report ---------------------------------------------------
@@ -368,16 +446,29 @@ class QAWorkflow:
         metrics.reached_green = passed
         metrics.round_number = max(1, int(getattr(score, "attempt", 1) or 1))
 
+        # 411 review: (moved to the execute step) only visual checks produce
+        # screenshots; a flow-only plan never claims visual evidence.
         payload = report_step.build_report(
             verdicts,
             executed,
             delta,
             findings,
             passed=passed,
-            visual_required=plan.needs_baseline(),
+            visual_required=visual_required,
+            visual_evidence=visual_evidence,
             environment_error=baseline_error,
             boot_check=boot_check,
+            app_start_command=getattr(boot.shape, "start_command", None)
+            if getattr(boot, "shape", None) is not None
+            else None,
         )
+        if capture_dir is not None:
+            # Managed lifecycle for the evidence dir (411 review): the
+            # consumer deletes it once it has uploaded the artifacts, so a
+            # long-lived performer does not accumulate qa-visual-* trees in
+            # /tmp.
+            payload["visual_capture_dir"] = str(capture_dir)
+            self._capture_dir_reported = True
         return WorkflowResult(
             report=payload,
             findings=report_step.findings_payload(findings),
@@ -460,6 +551,29 @@ class QAWorkflow:
                 verdicts, [], VisualDelta(), findings, passed=False, visual_required=False,
             ),
             findings=report_step.findings_payload(findings),
+            metrics=metrics,
+        )
+
+    def _no_criteria(self, metrics) -> WorkflowResult:
+        """Zero acceptance criteria is not a vacuous pass (411 AC7).
+
+        A run with nothing to verify cannot demonstrate anything, and it is
+        not an environment problem either — the app may be perfectly healthy.
+        The verdict is defined and it is a refusal, naming the absence.
+        """
+        finding = Finding(
+            category="unmet_criterion",
+            severity="high",
+            criterion="(no acceptance criteria stated)",
+            expected="at least one acceptance criterion to verify",
+            observed="the card states no acceptance criteria, so nothing can be demonstrated",
+        )
+        metrics.reached_green = False
+        return WorkflowResult(
+            report=report_step.build_report(
+                [], [], VisualDelta(), [finding], passed=False, visual_required=False,
+            ),
+            findings=report_step.findings_payload([finding]),
             metrics=metrics,
         )
 

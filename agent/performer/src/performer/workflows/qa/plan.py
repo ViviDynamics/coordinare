@@ -17,7 +17,7 @@ from performer.workflows.base import WorkflowError
 import structlog
 
 from performer.workflows.budget import Budget
-from performer.workflows.qa.models import TestPlan
+from performer.workflows.qa.models import TestPlan, normalise_criterion
 from performer.workflows.qa.personas import PLAN
 
 
@@ -101,6 +101,17 @@ async def run_plan_step(toolkit, score, *, base_url: str | None = None) -> TestP
     """Produce the test plan, or fail closed."""
     criteria, source = effective_criteria(score)
     log.info("qa.plan.criteria_source", source=source, count=len(criteria))
+    if not criteria:
+        # 411 round-eight review: with no criteria stated on the card, ANY
+        # check the planner emits is unbound noise. Accepting it would
+        # execute arbitrary checks and report only a generic failed verdict
+        # instead of the explicit AC7 zero-criteria refusal. Fail closed
+        # before the model answers.
+        raise EmptyPlan(
+            "planning ran with no acceptance criteria stated on the card; "
+            "failing closed rather than executing unbound checks",
+            criteria,
+        )
     plan = await toolkit.call_model(
         persona=PLAN,
         schema=TestPlan,
@@ -122,16 +133,18 @@ async def run_plan_step(toolkit, score, *, base_url: str | None = None) -> TestP
         )
 
     # Drop checks that serve no stated criterion: they are noise, and counting
-    # them later would let unbound work look like evidence.
-    if criteria:
-        stated = set(criteria)
-        plan = TestPlan(
-            checks=[c for c in plan.checks if c.criterion in stated],
-            surfaces=plan.surfaces,
+    # them later would let unbound work look like evidence. Binding uses the
+    # judge's normalisation, not exact equality — the judge compares
+    # normalised text, so the binder must too, or a plan that quotes a
+    # criterion with different spacing loses every check as 'unbound'.
+    stated = {normalise_criterion(c) for c in criteria}
+    plan = TestPlan(
+        checks=[c for c in plan.checks if normalise_criterion(c.criterion) in stated],
+        surfaces=plan.surfaces,
+    )
+    if not plan.checks:
+        raise EmptyPlan(
+            "planning produced no checks bound to a stated acceptance criterion",
+            criteria,
         )
-        if not plan.checks:
-            raise EmptyPlan(
-                "planning produced no checks bound to a stated acceptance criterion",
-                criteria,
-            )
     return plan
