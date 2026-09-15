@@ -29,6 +29,8 @@ Rules:
 - Prefer a command (a test, a lint, a script) when one can demonstrate the
   criterion. Use a flow only for behaviour that requires driving the UI.
 - For a flow, give ordered steps. You decide WHAT to do; the harness owns HOW.
+  An API behaviour needs no UI drive: a flow step may `http_assert` a JSON
+  endpoint (expected status, body contains, JSON path equals).
 - List, in `surfaces`, the URLs or routes that must be captured for comparison.
 
 You are planning, not judging. Do not predict outcomes."""

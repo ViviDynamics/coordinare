@@ -415,3 +415,64 @@ async def test_a_base_app_boot_failure_says_why():
             base_url="http://127.0.0.1:8000/", boot_base=lambda _wt: _DeadBase(),
         )
     assert "exited with code 2" in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_an_unobservable_visual_check_fails_closed():
+    """411 round-eight review: the driver on an empty step list exits 0, so a
+    visual check left with no steps by the capture prep — no navigation and
+    no declared surface — would satisfy its criterion while observing
+    nothing. The harness refuses to run it at all."""
+    plan = TestPlan(checks=[PlanCheck(id="c1", criterion=CRIT, kind="visual")])
+    tk = _Toolkit()
+    results = await run_execute_step(
+        tk, plan, cwd=Path("/w"), driver_path="/tmp/qa_flow_driver.py"
+    )
+
+    assert len(results) == 1
+    assert results[0].passed is False
+    assert results[0].exit_code != 0
+    assert tk.ran == [], "an unobservable check must never reach the driver"
+
+
+@pytest.mark.asyncio
+async def test_the_baseline_observes_a_visual_checks_own_goto_target():
+    """411 round-eight review: a visual check may navigate a target the
+    planner never declared as a surface. With declared surfaces empty, the
+    before map came back empty, the post-change observe was skipped
+    entirely, and the screenshot/exit code supported a visual pass with no
+    before/after comparison. The derived target must be observed."""
+    snapshotted: list[str] = []
+
+    class _TK(_Toolkit):
+        async def dom_snapshot(self, url):
+            snapshotted.append(url)
+            return [{"kind": "heading", "label": "Dashboard"}]
+
+    plan = TestPlan(
+        checks=[PlanCheck(
+            id="c1", criterion=CRIT, kind="visual",
+            steps=[FlowStep(action="goto", target="/dashboard")],
+        )],
+        surfaces=[],
+    )
+
+    class _BaseBoot:
+        env: ClassVar[dict[str, str]] = {"PORT": "9999"}
+
+        async def ensure_serving(self, _toolkit):
+            return "http://127.0.0.1:9999/"
+
+        def shutdown(self):
+            pass
+
+    before = await run_baseline_step(
+        _TK(), plan,
+        workspace=Path("/w"), merge_base="abc", worktree_dir=Path("/tmp/base"),
+        base_url="http://127.0.0.1:8000/", boot_base=lambda _wt: _BaseBoot(),
+    )
+
+    assert snapshotted == ["http://127.0.0.1:9999/dashboard"], (
+        "the visual check's own goto target must be observed, not just surfaces"
+    )
+    assert before["/dashboard"][0].kind == "heading"

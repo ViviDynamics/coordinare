@@ -21,7 +21,10 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import shutil
+import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import structlog
@@ -93,6 +96,10 @@ async def finalize_qa(perf, backend_status, settings) -> PerformerResponse:
                     perf.qa_new_tests.append(tf["path"])
                 except Exception as exc:
                     log.error("qa_test_commit_failed", path=tf.get("path"), error=str(exc))
+                    # This exit happens before resolve ran, so it must make
+                    # the same evidence-tree cleanup promise (411 round-four
+                    # review).
+                    _delete_qa_capture_dir(qa_output)
                     perf.state = "error"
                     perf.error_reason = f"Failed to commit new test file {tf.get('path')}: {exc}"
                     return PerformerResponse(
@@ -130,9 +137,24 @@ async def finalize_qa(perf, backend_status, settings) -> PerformerResponse:
     # and boot it in the activated env-cache (cwd=workspace), then tear it
     # back down. Never fabricates (returns a verified on-disk file only).
     if visual_validation_required and not _has_local_visual_artifact(visual_evidence):
-        _cap_env = {**os.environ, **getattr(perf.stand, "cache_env", {})}
+        # Same layering the workflow boots with (os env, env cache, then the
+        # operator's workflow_env last and highest — qa/__init__ builds
+        # boot_env identically). Without the workflow_env layer a capture
+        # after a workflow_env override cannot boot the same app (411 review).
+        _cap_env = {
+            **os.environ,
+            **(getattr(perf.stand, "cache_env", None) or {}),
+            **(getattr(perf.score, "workflow_env", None) or {}),
+        }
+        # The workflow's shape reading rides in the report: the capture boots
+        # with the same command the workflow would have used (override wins
+        # inside resolve_start_command), falling back to the framework
+        # heuristics only when there is no reading (411 review).
+        _shape_cmd = str(qa_output.get("app_start_command") or "").strip()
         _auto_shot = boot_and_capture_app_screenshot(
-            env=_cap_env, workspace=perf.stand.path,
+            env=_cap_env,
+            workspace=perf.stand.path,
+            shape=SimpleNamespace(start_command=_shape_cmd) if _shape_cmd else None,
         )
         if _auto_shot:
             visual_evidence.append({
@@ -346,6 +368,146 @@ async def finalize_qa(perf, backend_status, settings) -> PerformerResponse:
             env_error=(env_error or "")[:200],
         )
 
+    # 411 (AC1): the workflow's own verdict is evidence, not a suggestion.
+    # report["passed"] False means the model executed its checks and found the
+    # change wanting; the environmental classifier above cannot reclassify a
+    # checked-and-broken verdict into an advisory pass. Only a MISSING
+    # environment (no baseline to compare, no server to exercise) routes the
+    # refusal to qa_env_blocked instead.
+    workflow_passed = qa_output.get("passed")
+    wf_raw = qa_output.get("qa_findings")
+    wf_findings = (
+        [f for f in wf_raw if isinstance(f, dict)]
+        if isinstance(wf_raw, list) else []
+    )
+    wf_defect = any(
+        not _qa_failure_is_environmental(f) for f in wf_findings
+    )
+    if workflow_passed is False:
+        # Round-eight review: the workflow's own non-environmental findings
+        # belong in the payload whenever the workflow failed, even when the
+        # postprocessor already carries a defect — the verdict is failed
+        # either way, and dropping the findings would throw away the
+        # implementer's actionable evidence. Deduplicated against the
+        # payload so a workflow echo of an already-recorded failure does
+        # not double-report it.
+        seen = {
+            (str(f.get("type", "")), str(f.get("criterion", "")),
+             str(f.get("expected", "")), str(f.get("actual", "")))
+            for f in defect_failures
+        }
+        for f in wf_findings:
+            if _qa_failure_is_environmental(f):
+                continue
+            defect = {
+                "type": str(f.get("category", "workflow_finding")),
+                "criterion": str(f.get("criterion") or "QA workflow finding"),
+                "expected": str(f.get("expected", "")),
+                "actual": str(f.get("observed") or f.get("actual", "")),
+            }
+            key = (defect["type"], defect["criterion"],
+                   defect["expected"], defect["actual"])
+            if key in seen:
+                continue
+            seen.add(key)
+            failures.append(defect)
+            defect_failures.append(defect)
+    if workflow_passed is False and qa_passed_flag:
+        # Round-five review: env_limited rides the postprocessor's failures
+        # list, which also holds synthetic capture failures. The workflow's
+        # OWN findings are the verdict's evidence — a hard finding there
+        # (an unexpected regression, an unobservable step) is
+        # checked-and-broken, not "couldn't verify", so it must reach
+        # qa_failed even when capture is also unavailable.
+        if env_limited and not wf_defect:
+            qa_env_blocked = True
+            log.warning(
+                "qa.env_blocked_workflow_failed",
+                session_id=perf.session_id,
+                env_error=(env_error or "")[:200],
+            )
+        else:
+            # This branch runs only when the report's failures payload is
+            # defect-free, so the workflow's own non-environmental findings
+            # are detail the payload lacks — surface them so the implementer
+            # gets the actionable regression, not just the generic verdict
+            # refusal (round-seven review).
+            categories = [
+                str(f.get("category", "")) for f in wf_findings if f.get("category")
+            ]
+            workflow_failure = {
+                "type": "workflow_verdict",
+                "criterion": "QA workflow verdict",
+                "expected": "the QA workflow's own verdict is passed",
+                "actual": "the QA workflow reported the run as FAILED (findings: "
+                          + (", ".join(categories) or "none recorded") + ")",
+            }
+            failures.append(workflow_failure)
+            defect_failures.append(workflow_failure)
+            qa_passed_flag = False
+            log.warning(
+                "qa.workflow_verdict_refused",
+                session_id=perf.session_id,
+                findings=", ".join(categories) or "none",
+            )
+
+    # 411 (AC7): a pass with zero criteria checked demonstrates nothing.
+    # Defence in depth — the workflow refuses an empty plan itself; this gate
+    # catches any build that still reports passed=True with nothing checked.
+    # criteria_checked arrives from unvalidated model JSON: coerce safely the
+    # way the response path does, or a value like "unknown" would raise and
+    # take the whole QA response with it (411 round-three review). Non-finite
+    # floats are valid JSON numbers (NaN/Infinity) that int() also rejects —
+    # they coerce to 0, refusing the pass rather than crashing the response
+    # (411 round-six review).
+    _checked = _qa_safe_int(criteria_checked)
+    if (
+        workflow_passed is True
+        and not qa_env_blocked
+        and qa_passed_flag
+        and _checked == 0
+    ):
+        zero_criteria = {
+            "type": "zero_criteria",
+            "criterion": "Zero acceptance criteria checked",
+            "expected": "at least one acceptance criterion checked and passed",
+            "actual": "The QA run passed with zero acceptance criteria checked: "
+                      "no acceptance criteria were stated, so nothing was "
+                      "demonstrated. Zero-criteria passes are refused.",
+        }
+        failures.append(zero_criteria)
+        defect_failures.append(zero_criteria)
+        qa_passed_flag = False
+        log.warning("qa.zero_criteria_pass_refused", session_id=perf.session_id)
+
+    # Bug 16.2: upload any container-local screenshots to GitHub's
+    # user-attachments CDN so the PR/issue comment renders embeddable
+    # images instead of container-local /tmp/... paths. This runs BEFORE the
+    # committed qa.md is built: the report records the published URLs, not
+    # container-local paths the cleanup below then deletes (411 round-seven
+    # review).
+    try:
+        owner_for_upload, repo_for_upload = perf.score.owner_repo
+        upload_issue_no = perf.score.issue_number or _extract_pr_number(perf.pr_url)
+        visual_evidence = await resolve_visual_evidence_urls(
+            visual_evidence,
+            workspace_root=perf.stand.path,
+            github_token=perf.score.effective_github_token,
+            org=owner_for_upload,
+            repo=repo_for_upload,
+            issue_number=upload_issue_no,
+        )
+    except Exception as exc:
+        log.warning("qa.visual_evidence_upload_failed", error=str(exc))
+
+    # Managed lifecycle for the evidence dir (411 review): resolve is the last
+    # consumer — it has replaced the container-local paths with CDN URLs (or
+    # recorded why it could not) — so the workflow's qa-visual-* tree is
+    # deleted here instead of accumulating in /tmp for the life of the
+    # performer. The helper validates the path is workflow-owned before
+    # removing anything; failure to clean is never a verdict issue.
+    _delete_qa_capture_dir(qa_output)
+
     # Commit QA report to the architecture folder
     folder = _doc_folder(perf.score)
     qa_report_content = f"# QA Report: {perf.score.title}\n\n"
@@ -383,8 +545,15 @@ async def finalize_qa(perf, backend_status, settings) -> PerformerResponse:
             loc = ev.get("path_or_url", "")
             note = ev.get("note", "")
             qa_report_content += f"- **{label}** ({kind})"
-            if loc:
+            if loc and _looks_like_url(loc):
                 qa_report_content += f": `{loc}`"
+            elif loc:
+                # The entry failed to publish — resolve left the
+                # container-local qa-visual-* path, and the evidence tree is
+                # deleted immediately after — so the committed report names
+                # the failure rather than a dead local path (411 round-eight
+                # review).
+                qa_report_content += " (upload failed; local capture not retained)"
             if note:
                 qa_report_content += f" — {note}"
             qa_report_content += "\n"
@@ -410,28 +579,11 @@ async def finalize_qa(perf, backend_status, settings) -> PerformerResponse:
     except Exception as exc:
         log.warning("qa.commit_report_failed", error=str(exc))
 
-    # Bug 16.2: upload any container-local screenshots to GitHub's
-    # user-attachments CDN so the PR/issue comment renders embeddable
-    # images instead of container-local /tmp/... paths.
-    try:
-        owner_for_upload, repo_for_upload = perf.score.owner_repo
-        upload_issue_no = perf.score.issue_number or _extract_pr_number(perf.pr_url)
-        visual_evidence = await resolve_visual_evidence_urls(
-            visual_evidence,
-            workspace_root=perf.stand.path,
-            github_token=perf.score.effective_github_token,
-            org=owner_for_upload,
-            repo=repo_for_upload,
-            issue_number=upload_issue_no,
-        )
-    except Exception as exc:
-        log.warning("qa.visual_evidence_upload_failed", error=str(exc))
-
     qa_comment = _build_qa_pr_comment(
         score=perf.score,
         passed=qa_passed_flag,
-        criteria_checked=int(criteria_checked) if isinstance(criteria_checked, int | float) else 0,
-        criteria_passed=int(criteria_passed) if isinstance(criteria_passed, int | float) else 0,
+        criteria_checked=_qa_safe_int(criteria_checked),
+        criteria_passed=_qa_safe_int(criteria_passed),
         failures=failures,
         verification_steps=verification_steps,
         pre_fix_repro_steps=pre_fix_repro_steps,
@@ -698,6 +850,41 @@ def _qa_visual_validation_required(
     )
     return _VISUAL_TASK_PATTERN.search(content) is not None
 
+
+def _delete_qa_capture_dir(qa_output: dict) -> None:
+    """Delete the workflow's qa-visual-* evidence tree, once and safely.
+
+    Managed lifecycle (411 round-two review): finalize_qa is the last reader
+    of the container-local capture paths, so it removes the tree instead of
+    leaving one per run in /tmp. Round-four review added two constraints:
+
+    - The path arrives from unvalidated model JSON. Only a directory the
+      workflow could have created qualifies: named qa-visual-* (mkdtemp's
+      prefix) and resolving strictly inside the system temp dir. Anything
+      else — a workspace path, /tmp itself, a symlinked escape — is left
+      untouched and never touched.
+    - Every exit path must call this: the test-commit failure return returns
+      before resolve runs, and its leak would never see the main cleanup.
+    """
+    raw = str(qa_output.get("visual_capture_dir") or "")
+    if not raw:
+        return
+    candidate = Path(raw)
+    if not candidate.name.startswith("qa-visual-"):
+        return
+    tmp_root = Path(tempfile.gettempdir()).resolve()
+    try:
+        resolved = candidate.resolve()
+    except (OSError, RuntimeError):
+        # A symlink loop (RuntimeError) or an unreadable path (OSError)
+        # cannot be validated as workflow-owned; leave it untouched rather
+        # than raising through the whole QA response (411 round-eight
+        # review).
+        return
+    if not resolved.is_relative_to(tmp_root):
+        return
+    shutil.rmtree(candidate, ignore_errors=True)
+
 def _qa_visual_evidence_failures(
     *,
     required: bool,
@@ -811,6 +998,22 @@ def _env_blocked_qa_response(perf: Any, env_error: str) -> "PerformerResponse":
         report=perf.qa_report,
     )
 
+def _qa_safe_int(value: object) -> int:
+    """Coerce an unvalidated JSON count safely, refusing instead of raising.
+
+    Counts ride unvalidated model JSON, and counts are counts: a non-negative
+    integer or nothing. A "unknown" string is not a number at all, NaN/Infinity
+    are floats int() rejects, and a bool is not a count just because it
+    subclasses int — nor are negatives or fractional values a checked-criteria
+    count. Every malformed value coerces to 0: a refused pass, never a crashed
+    response and never a bypass of the zero-criteria gate (411 round-seven
+    review).
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return value if value >= 0 else 0
+
+
 def _qa_failure_is_environmental(f: dict) -> bool:
     """077: True if a QA failure reflects the container's inability to VERIFY
     (no DB/browser/binary on PATH, read-only fs, capture blocked) rather than a
@@ -825,8 +1028,15 @@ def _qa_failure_is_environmental(f: dict) -> bool:
     # "couldn't check" patterns can't accidentally wave a stale branch through.
     if ftype == "freshness_indeterminate":
         return False
+    # 411 (AC8): criterion/expected quote the CARD — what to verify — not what
+    # went wrong. A criterion may legitimately mention infrastructure
+    # ("database is down") while the failure is a code defect; classifying on
+    # the quote inverted the verdict. Only what the run OBSERVED classifies.
+    # Workflow Finding dicts store their run evidence in `observed` (the
+    # adapter forwards the model dump), so it must join the blob or an
+    # environment-only workflow finding reads as a hard defect (round-eight).
     blob = " ".join(
-        str(f.get(k, "")) for k in ("message", "actual", "expected", "criterion", "test")
+        str(f.get(k, "")) for k in ("message", "actual", "observed", "test")
     )
     return bool(_QA_ENV_FAILURE_PATTERNS.search(blob))
 

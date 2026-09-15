@@ -20,6 +20,7 @@ never be booted for QA at all. ``QA_APP_START_COMMAND`` closes that, with
 from __future__ import annotations
 
 import asyncio
+import re
 import shlex
 import subprocess
 import time
@@ -29,14 +30,14 @@ from urllib.parse import urljoin, urlsplit
 
 import structlog
 
-from performer.qa_capture import _port_serving, _terminate, app_base_url
+from performer.qa_capture import _port_serving, _split_env_prefix, _terminate, app_base_url
 from performer.workflows.project_shape import ProjectShape  # noqa: F401  (annotation)
 from performer.workflows.qa.models import TestPlan
 
 log = structlog.get_logger(__name__)
 
 #: Flow actions whose ``target`` is a URL rather than a selector.
-_URL_ACTIONS = {"goto"}
+_URL_ACTIONS = {"goto", "http_assert"}
 
 
 def resolve_target(target: str | None, base_url: str | None) -> str | None:
@@ -101,6 +102,51 @@ def boot_timeout_from(env: dict[str, str], shape: "ProjectShape | None" = None) 
         log.warning("qa.boot.bad_timeout", value=raw, using=fallback)
         return fallback
     return value
+
+
+def plan_needs_server(plan: TestPlan, base_url: str | None) -> bool:
+    """Whether anything in the plan will contact the app under test.
+
+    The boot gate was `needs_baseline()` — a visual plan booted the app, but a
+    command-only plan that curls the app's health endpoint ran against
+    nothing, failed, and the verdict blamed the code (411). Boot when any
+    check references the app structurally: a host:port token, a
+    scheme-qualified localhost/127.0.0.1 URL, or a placeholder the model was
+    told to use instead of a port it does not know. A bare path component
+    that merely CONTAINS the host (`pytest tests/localhost/fixtures.py`) or
+    a bare address (`echo 127.0.0.1`) is not a server reference and must not
+    boot the app.
+    """
+    if plan.needs_baseline():
+        return True
+
+    placeholders = re.compile(r"\$\{?BASE_URL\}?|\$\{?PORT\}?")
+    url_token = re.compile(
+        r"(?:localhost|127\.0\.0\.1)(?::\d|:\$)|https?://(?:localhost|127\.0\.0\.1)"
+    )
+    if base_url:
+        origin = base_url.rstrip("/")
+        port = origin.rsplit(":", 1)[-1]
+    else:
+        port = ""
+    for check in plan.checks:
+        if check.kind == "flow":
+            # An http_assert contacts the app by construction: its target is
+            # an endpoint on the app under test, relative or not (411
+            # round-seven review — an API-only flow booted nothing and its
+            # rewritten absolute URL never materialised).
+            if any(s.action == "http_assert" for s in check.steps):
+                return True
+            continue
+        if check.kind != "command" or not check.command:
+            continue
+        if placeholders.search(check.command):
+            return True
+        if url_token.search(check.command):
+            return True
+        if base_url and port.isdigit() and origin and origin in check.command:
+            return True
+    return False
 
 
 def start_command_for(env: dict[str, str], shape: "ProjectShape | None" = None) -> str | None:
@@ -191,9 +237,15 @@ class AppBoot:
                 cmd, shell=True, cwd=str(cwd), env=env,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
-        argv = shlex.split(cmd)
+        # A shape command may carry VAR=val assignments the same way the
+        # override can (`RAILS_ENV=test bin/rails server`); split naively,
+        # `RAILS_ENV=test` runs as argv[0]. Keep the parsing identical to
+        # resolve_start_command's so both boot paths agree (411 round-six).
+        argv, extra = _split_env_prefix(cmd)
         if not argv:
             raise ValueError(f"start command is not runnable: {cmd!r}")
+        if extra:
+            env = {**env, **extra}
         return subprocess.Popen(
             argv, cwd=str(cwd), env=env,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -206,7 +258,28 @@ class AppBoot:
         serving -- a URL for a server that never answered would make every flow
         check fail for the wrong reason.
         """
-        port = str(self.env.get("PORT") or "").strip()
+        # The command may carry its own env assignments (a shape reading like
+        # `PORT=9000 python app.py`): the child receives the prefix, so the
+        # port polled here must come from the effective env — the outer env
+        # overlaid with the command's own prefix — or a healthy app on 9000
+        # is reported unavailable because nothing answered on 8000 (411
+        # round-eight review). Failure precedence is unchanged: no_port and
+        # no_start_command still fire in that order.
+        cmd = start_command_for(self.env, self.shape)
+        extra_env: dict[str, str] = {}
+        if cmd:
+            try:
+                _argv, extra_env = _split_env_prefix(cmd)
+            except (ValueError, OSError) as exc:
+                # The same failure the spawn path reports: an unbalanced quote
+                # is a boot that did not happen, not a poll that timed out.
+                self.failure_reason = (
+                    f"the start command could not be run ({cmd!r}): {exc}"
+                )
+                log.warning("qa.boot.spawn_failed", command=cmd[:200], error=str(exc)[:200])
+                return None
+        effective_env = {**self.env, **extra_env}
+        port = str(effective_env.get("PORT") or "").strip()
         if not port:
             self.failure_reason = (
                 "PORT is not set, so the app under test has no address to boot on. "
@@ -216,7 +289,7 @@ class AppBoot:
             log.warning("qa.boot.no_port", hint="set PORT in workflow_env")
             return None
 
-        base = app_base_url(self.env)
+        base = app_base_url(effective_env)
         if self._port_check("127.0.0.1", port):
             if not await self._record_health_check(toolkit, base):
                 # An open port is not a serving app. Proceeding here would run
@@ -247,7 +320,6 @@ class AppBoot:
                 )
                 return None
 
-        cmd = start_command_for(self.env, self.shape)
         if not cmd:
             # 367: this used to name the three frameworks it knew, which is how
             # the limitation became an issue. The model reads the repository
@@ -336,14 +408,24 @@ class AppBoot:
         Recorded as an ExecutedCheck with its true exit code, and included in
         the report's executed_checks, because the 088 floor requires the boot
         command to be one that actually ran.
+
+        The path comes from QA_APP_HEALTH_PATH (default /) and the check
+        accepts ANY HTTP response: curl without -f exits 0 when the app
+        answers at all. A 404 on a wrong health path is not 'not serving' --
+        `-fsS` used to demand a 2xx and rejected boots that were, in fact, up
+        (411).
         """
         if not base_url:
             return True  # nothing to check; the caller has no URL either way
         try:
+            health_path = str(self.env.get("QA_APP_HEALTH_PATH") or "/").strip() or "/"
+            if not health_path.startswith("/"):
+                health_path = f"/{health_path}"
+            url = f"{base_url.rstrip('/')}{health_path}"
             check = await toolkit.run_command(
                 # Quoted: base_url is built from the PROTOCOL env var, which is
                 # operator- or env-cache-supplied, not ours.
-                f"curl -fsS -o /dev/null {shlex.quote(base_url)}",
+                f"curl -sS -o /dev/null {shlex.quote(url)}",
                 cwd=self.workspace,
                 timeout_s=30,
                 plan_check_id="app-boot",
@@ -367,8 +449,8 @@ class AppBoot:
     def rewrite_targets(plan: TestPlan, base_url: str | None) -> None:
         """Resolve every URL-valued flow target in *plan* against *base_url*.
 
-        Only ``goto`` targets are URLs. A ``click`` or ``fill`` target is a
-        selector, and rewriting it would corrupt the step.
+        Only ``goto`` and ``http_assert`` targets are URLs. A ``click`` or
+        ``fill`` target is a selector, and rewriting it would corrupt the step.
         """
         if not base_url:
             return

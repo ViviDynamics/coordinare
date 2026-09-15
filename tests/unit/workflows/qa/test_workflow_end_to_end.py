@@ -546,15 +546,19 @@ async def test_an_empty_plan_on_a_card_with_criteria_is_a_fail_not_an_environmen
 
 
 @pytest.mark.asyncio
-async def test_an_empty_plan_with_no_criteria_at_all_is_still_could_not_verify():
-    """With nothing to check against there is no verdict to give."""
+async def test_an_empty_plan_with_no_criteria_at_all_is_a_refusal_not_an_env_error():
+    """411 AC7: zero criteria is a defined verdict — a refused run, never a
+    vacuous pass and never an environment problem (the app may be healthy)."""
     class _NoCriteria(_Score):
         acceptance_criteria: ClassVar[list[str]] = []
 
     tk = _Toolkit(plan=TestPlan(checks=[]), judge=JudgeOutput())
     result = await QAWorkflow().run(_Stand(), _NoCriteria(), tk)
     assert result.report["passed"] is False
-    assert "environment_error" in result.report
+    assert not result.report.get("environment_error"), (
+        "zero criteria is not an environment failure"
+    )
+    assert "unmet_criterion" in [f["category"] for f in result.findings]
 
 
 @pytest.mark.asyncio

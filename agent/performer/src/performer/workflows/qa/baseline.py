@@ -78,7 +78,23 @@ async def run_baseline_step(
 
     baseline: dict[str, list[Observation]] = {}
     try:
-        for surface in plan.surfaces:
+        # The observation targets are the declared surfaces PLUS every visual
+        # check's own navigation. A visual check may goto a target the
+        # planner never declared as a surface; with declared surfaces empty
+        # that left the before map empty, skipped the post-change observe
+        # entirely, and let the screenshot/exit code support a visual pass
+        # with no before/after comparison at all (411 round-eight review).
+        # The post-change observe iterates the before map, so a derived
+        # target is compared on both sides for free.
+        surfaces = list(plan.surfaces)
+        for check in plan.checks:
+            if check.kind != "visual":
+                continue
+            for step in check.steps:
+                if step.action == "goto" and step.target:
+                    if step.target not in surfaces:
+                        surfaces.append(step.target)
+        for surface in surfaces:
             # Read from the BASE app's origin, falling back to the planned base
             # URL only when no separate base app was booted.
             # Resolve a relative surface against the planned URL, then move it

@@ -15,6 +15,8 @@ disk.
 from __future__ import annotations
 
 import json
+import re
+import shlex
 import socket
 import subprocess
 import time
@@ -24,6 +26,9 @@ from typing import Callable
 import structlog
 
 log = structlog.get_logger(__name__)
+
+# Shell metacharacters that mean "this is a script, not a single command".
+_SHELL_OPS = re.compile(r"&&|\|\||[|;&`><(){}$\n]")
 
 # The env-cache prepends its own playwright-less python3 onto PATH, so the
 # capture MUST use the image's system interpreter explicitly.
@@ -137,6 +142,55 @@ def infer_app_start_command(workspace: Path, env: dict[str, str]) -> list[str] |
     return None
 
 
+def _split_env_prefix(command: str) -> tuple[list[str], dict[str, str]]:
+    """Split `VAR=val prog --flag` into (argv, extra_env).
+
+    The spawner takes an argv list; `RAILS_ENV=test bin/rails server` split
+    naively runs 'RAILS_ENV=test' as argv[0]. The assignment is a child
+    process env var, not a program name.
+    """
+    parts = shlex.split(command)
+    extra: dict[str, str] = {}
+    while parts and "=" in parts[0]:
+        key, _, value = parts[0].partition("=")
+        if not key:
+            break
+        extra[key] = value
+        parts = parts[1:]
+    return parts, extra
+
+
+def resolve_start_command(
+    workspace: Path,
+    env: dict[str, str],
+    shape: object | None = None,
+) -> tuple[list[str], dict[str, str]] | None:
+    """The command to boot the app with, as (argv, extra_env) — or None.
+
+    Order: the operator's QA_APP_START_COMMAND override, then the project
+    shape's reading, then the framework inference — the shape layer sits in
+    front of the inference, not instead of it (411 AC5).
+    """
+    raw = str(env.get("QA_APP_START_COMMAND") or "").strip()
+    if not raw and shape is not None:
+        raw = (getattr(shape, "start_command", "") or "").strip()
+    if raw:
+        try:
+            argv, extra_env = _split_env_prefix(raw)
+        except ValueError:
+            # An unparseable command (unmatched quote) must not abort the
+            # whole capture: fall through to framework inference the way a
+            # missing command would (411 round-six review).
+            log.warning("qa_capture.start_command_unparseable")
+            argv, extra_env = [], {}
+        if argv:
+            return argv, extra_env
+    inferred = infer_app_start_command(Path(workspace), env)
+    if inferred:
+        return inferred, {}
+    return None
+
+
 def _terminate(proc: object) -> None:
     """Stop a launched app server, escalating to SIGKILL if it ignores SIGTERM.
 
@@ -174,37 +228,69 @@ def boot_and_capture_app_screenshot(
     runner: Callable[..., object] = subprocess.run,
     spawner: Callable[..., object] = subprocess.Popen,
     sleep: Callable[[float], None] = time.sleep,
+    shape: object | None = None,
 ) -> str | None:
     """Ensure the app is serving (booting it if needed), then capture — or None.
 
-    If the app is already up on PORT, captures directly. Otherwise infers the
-    project's start command, launches it in the activated env (cwd=workspace),
+    If the app is already up on PORT, captures directly. Otherwise resolves the
+    start command (operator override → shape → inference, via
+    ``resolve_start_command``), launches it in the activated env (cwd=workspace),
     polls until it serves (bounded by ``boot_timeout``), captures, and always
     tears the launched server back down. Returns None — never a fabricated path —
-    when PORT is unset, no command can be inferred, the server never comes up, or
+    when PORT is unset, no command can be resolved, the server never comes up, or
     the capture produces no file.
     """
     port = str(env.get("PORT") or "").strip()
     if not port:
         return None
 
-    if port_check("127.0.0.1", port):
+    resolved = resolve_start_command(Path(workspace), env, shape)
+    # The command may override PORT itself (`PORT=9000 ...`): the effective
+    # spawn env, not the outer env, decides which port to probe and capture
+    # against (411 round-six review).
+    spawn_env = {**env, **resolved[1]} if resolved else env
+    effective_port = str(spawn_env.get("PORT") or "").strip() or port
+
+    if port_check("127.0.0.1", effective_port):
         return capture_app_screenshot(
-            env=env, out_path=out_path, python_bin=python_bin, timeout=timeout,
+            env=spawn_env, out_path=out_path, python_bin=python_bin, timeout=timeout,
             port_check=port_check, runner=runner,
         )
-
-    cmd = infer_app_start_command(Path(workspace), env)
-    if not cmd:
+    if not resolved:
         log.info("qa_capture.no_start_command_inferred", workspace=str(workspace))
         return None
+    cmd, extra_env = resolved
 
-    log.info("qa_capture.booting_app", cmd=cmd, port=port)
+    # The operator override is a trusted human command and may legitimately
+    # use shell semantics (`cd web && npm start`); AppBoot._default_spawn
+    # grants it a shell at boot, so the fallback capture must not lose those
+    # semantics here (411 round-six review). But the shell branch spawns the
+    # override STRING itself, so use_shell is only correct when the override
+    # actually parsed: an unparseable override falls back to framework
+    # inference, and recomputing use_shell from the raw override would spawn
+    # the broken string instead of the inferred command (411 round-eight
+    # review).
+    override = str(env.get("QA_APP_START_COMMAND") or "").strip()
+    from_override: list[str] | None = None
+    if override:
+        try:
+            from_override, _extra = _split_env_prefix(override)
+        except ValueError:
+            pass
+    use_shell = cmd == from_override and bool(_SHELL_OPS.search(override))
+    log.info("qa_capture.booting_app", cmd=cmd, port=effective_port, shell=use_shell)
     try:
-        proc = spawner(
-            cmd, cwd=str(workspace), env=env,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
+        if use_shell:
+            proc = spawner(
+                override,
+                shell=True, cwd=str(workspace), env=spawn_env,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        else:
+            proc = spawner(
+                cmd, cwd=str(workspace), env=spawn_env,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
     except Exception as exc:
         log.warning("qa_capture.boot_spawn_failed", error_type=type(exc).__name__)
         return None
@@ -212,16 +298,16 @@ def boot_and_capture_app_screenshot(
     try:
         waited = 0.0
         while waited < boot_timeout:
-            if port_check("127.0.0.1", port):
+            if port_check("127.0.0.1", effective_port):
                 break
             sleep(poll_interval)
             waited += poll_interval
-        if not port_check("127.0.0.1", port):
-            log.warning("qa_capture.app_boot_timeout", port=port, waited=waited)
+        if not port_check("127.0.0.1", effective_port):
+            log.warning("qa_capture.app_boot_timeout", port=effective_port, waited=waited)
             return None
-        log.info("qa_capture.app_booted", port=port, waited=waited)
+        log.info("qa_capture.app_booted", port=effective_port, waited=waited)
         return capture_app_screenshot(
-            env=env, out_path=out_path, python_bin=python_bin, timeout=timeout,
+            env=spawn_env, out_path=out_path, python_bin=python_bin, timeout=timeout,
             port_check=port_check, runner=runner,
         )
     finally:
