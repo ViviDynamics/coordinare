@@ -210,7 +210,7 @@ def detect_stale_branches(
 
 
 def should_attempt_rebase(
-    session: dict[str, Any], current_main_sha: str, head_sha: str
+    session: dict[str, Any], current_main_sha: str, head_sha: str,
 ) -> bool:
     """096 (FR-007): anti-thrash guard for the proactive conflicting-branch rebase.
 

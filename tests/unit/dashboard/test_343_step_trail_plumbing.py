@@ -22,7 +22,7 @@ def _make_metrics() -> MagicMock:
     metrics = MagicMock()
     metrics.cycles_completed_total._value.get.return_value = 0
     metrics.build_info.labels.return_value._value.get.return_value = {
-        "started_at": "2026-03-15T10:00:00+00:00"
+        "started_at": "2026-03-15T10:00:00+00:00",
     }
     return metrics
 
@@ -89,7 +89,7 @@ class TestTheStepReachesTheSnapshot:
                     workflow_step="architect.blueprint",
                     workflow_step_trail=[{"step": "architect.blueprint", "entered_at": "x"}],
                 ),
-            }
+            },
         })
         by_id = {s["card_id"]: s for s in _summaries(daemon)}
         assert by_id["c1"]["workflow_step"] == "implementer.baseline"
@@ -100,9 +100,9 @@ class TestTheStepReachesTheSnapshot:
         daemon = _make_daemon({
             "active_sessions": {
                 "c1": _session(
-                    workflow_step=None, workflow_step_entered_at=None, workflow_step_trail=None
-                )
-            }
+                    workflow_step=None, workflow_step_entered_at=None, workflow_step_trail=None,
+                ),
+            },
         })
         summary = _summaries(daemon)[0]
         assert summary["workflow_step"] is None
@@ -115,11 +115,11 @@ class TestLiveUpdates:
         """Without this the trail would only refresh on a stage/phase change."""
         before = _make_daemon({"active_sessions": {"c1": _session()}})
         after = _make_daemon({
-            "active_sessions": {"c1": _session(workflow_step="implementer.quality")}
+            "active_sessions": {"c1": _session(workflow_step="implementer.quality")},
         })
         store = DashboardStore()
         assert store._active_sessions_fingerprint(before) != store._active_sessions_fingerprint(
-            after
+            after,
         )
 
     def test_an_unchanged_step_does_not_trip_it(self) -> None:
@@ -179,6 +179,6 @@ class TestRoundTripAndPersistence:
         """v23 and earlier snapshots must not fail to parse."""
         from coordinare.state_store import PersistedSession
 
-        restored = PersistedSession(**{"card_id": "c1", "performer_stage": "implementing"})
+        restored = PersistedSession(card_id="c1", performer_stage="implementing")
         assert restored.workflow_step is None
         assert restored.workflow_step_trail == []

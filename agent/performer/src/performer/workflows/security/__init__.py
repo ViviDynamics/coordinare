@@ -77,7 +77,7 @@ class SecurityWorkflow:
             emit(BackendEvent(type=BackendEventType.progress, text=f"security.{name}", detail=detail))
 
     async def _determine_tools(
-        self, toolkit: Any, intake: Any, workspace: Path, budgets: SecurityBudgets
+        self, toolkit: Any, intake: Any, workspace: Path, budgets: SecurityBudgets,
     ) -> list[Any]:
         """Ask the model what security scanning applies to this repository (#366).
 
@@ -460,10 +460,10 @@ class SecurityWorkflow:
         # command that names the path without printing content does not
         # anchor a finding.
         surveyed = sorted(
-            opened_paths(outcome.records(), [f.path for f in files]) | set(_opened_unchanged(outcome, files))
+            opened_paths(outcome.records(), [f.path for f in files]) | set(_opened_unchanged(outcome, files)),
         )
-        gate_kwargs = dict(changed_files=files, diff_lines=diff_lines, survey_lines=survey_lines, surveyed_files=surveyed,
-                           truncated=intake.diff_truncated, coverage_pass_ran=outcome.coverage_pass_ran)
+        gate_kwargs = {"changed_files": files, "diff_lines": diff_lines, "survey_lines": survey_lines, "surveyed_files": surveyed,
+                           "truncated": intake.diff_truncated, "coverage_pass_ran": outcome.coverage_pass_ran}
         result = run_gate(before, scanner_raw, **gate_kwargs)
         reanchored = []
         if result.dropped:
@@ -591,7 +591,7 @@ def _opened_unchanged(outcome, changed_files) -> list[str]:
                 flag_wants_value = token == "-c"
                 continue
             since_sep += 1
-            candidate = token[2:] if token.startswith("./") else token
+            candidate = token.removeprefix("./")
             if in_git_show:
                 # ``git show REV:path`` reads the object at *path* -- the
                 # revision prefix must not ride along, or the anchor check

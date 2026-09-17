@@ -522,7 +522,7 @@ async def fetch_review_threads(
                     # A thread with more than 100 comments: page the rest, so the
                     # closer's classification sees the real last comment (FR-002).
                     comments_list.extend(
-                        await _fetch_thread_comments(client, graphql_url, headers, node.get("id", ""), comment_pages.get("endCursor"), max_pages)
+                        await _fetch_thread_comments(client, graphql_url, headers, node.get("id", ""), comment_pages.get("endCursor"), max_pages),
                     )
                 threads.append({
                     "id": node.get("id", ""),

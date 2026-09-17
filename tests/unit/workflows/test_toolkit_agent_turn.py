@@ -68,7 +68,7 @@ class TestRunAgentTurn:
         assert result["harness_commits"] == []
 
     async def test_run_agent_turn_increments_metrics(
-        self, toolkit, fake_runner, metrics, event_log
+        self, toolkit, fake_runner, metrics, event_log,
     ):
         """T006: metrics.agent_turns incremented."""
         toolkit._agent_turn_runner = fake_runner
@@ -80,7 +80,7 @@ class TestRunAgentTurn:
         assert metrics.agent_turns == 1
 
     async def test_run_agent_turn_appends_duration(
-        self, toolkit, fake_runner, metrics, event_log
+        self, toolkit, fake_runner, metrics, event_log,
     ):
         """T006: metrics.turn_durations_ms appended with wall_ms."""
         toolkit._agent_turn_runner = fake_runner
@@ -93,7 +93,7 @@ class TestRunAgentTurn:
         assert metrics.turn_durations_ms[0] == 10
 
     async def test_run_agent_turn_emits_start_end_events(
-        self, toolkit, fake_runner, metrics, event_log
+        self, toolkit, fake_runner, metrics, event_log,
     ):
         """T007: emits turn.start and turn.end events."""
         toolkit._agent_turn_runner = fake_runner
@@ -114,7 +114,7 @@ class TestRunAgentTurn:
         assert any("turn.end" in t for t in event_texts)
 
     async def test_run_agent_turn_timeout_cancels_runner(
-        self, toolkit, metrics, event_log
+        self, toolkit, metrics, event_log,
     ):
         """T006(f): timeout enforcement via asyncio.wait_for cancels the turn."""
         call_was_cancelled = False
@@ -139,7 +139,7 @@ class TestRunAgentTurn:
         assert call_was_cancelled
 
     async def test_run_agent_turn_timeout_still_increments_metrics(
-        self, toolkit, metrics
+        self, toolkit, metrics,
     ):
         """T006(f): timeout still increments agent_turns and turn_durations_ms."""
         async def _slow_runner(brief: dict, *, timeout_s: float) -> dict:

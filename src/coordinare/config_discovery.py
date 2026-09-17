@@ -34,7 +34,7 @@ def discover_config_path(explicit: Path | None) -> Path | None:
             raise ConfigDiscoveryError(f"Config file not found: {p}")
         if p.is_dir():
             raise ConfigDiscoveryError(
-                f"Config path must point to a file, not a directory: {p}"
+                f"Config path must point to a file, not a directory: {p}",
             )
         return p.resolve()
 
@@ -46,7 +46,7 @@ def discover_config_path(explicit: Path | None) -> Path | None:
             raise ConfigDiscoveryError(f"Config file not found: {env_path}")
         if env_path.is_dir():
             raise ConfigDiscoveryError(
-                f"Config path must point to a file, not a directory: {env_path}"
+                f"Config path must point to a file, not a directory: {env_path}",
             )
         return env_path.resolve()
 

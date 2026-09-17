@@ -438,7 +438,7 @@ def _names_changed_set_element(element: str, files: list[str]) -> bool:
     deliberately excluded that path; the operand is replaced by the changed
     set like any other scan target.
     """
-    normalized = element[2:] if element.startswith("./") else element
+    normalized = element.removeprefix("./")
     return normalized.rstrip("/") in {f.rstrip("/") for f in files}
 
 

@@ -56,14 +56,14 @@ def _stub_toolkit(model_response: dict):
 
 
 def _score(**over):
-    base = dict(
-        title="Timesheet workflows",
-        description="Add timesheet submission with lifecycle and approval",
-        acceptance_criteria=["Users submit", "Admins approve"],
-        clarifications=[],
-        issue_number=42,
-        workflow_env={},
-    )
+    base = {
+        "title": "Timesheet workflows",
+        "description": "Add timesheet submission with lifecycle and approval",
+        "acceptance_criteria": ["Users submit", "Admins approve"],
+        "clarifications": [],
+        "issue_number": 42,
+        "workflow_env": {},
+    }
     base.update(over)
     return SimpleNamespace(**base)
 
@@ -243,7 +243,7 @@ async def test_three_round_clarification_loop(tmp_path):
     result = await AssessorWorkflow().run(
         SimpleNamespace(path=tmp_path),
         _score(clarifications=[]),
-        tk
+        tk,
     )
     assert result.report["assessment"]["ready"] is False
     assert len(result.report["assessment"]["questions"]) == 1
@@ -254,9 +254,9 @@ async def test_three_round_clarification_loop(tmp_path):
     result = await AssessorWorkflow().run(
         SimpleNamespace(path=tmp_path),
         _score(clarifications=[
-            {"question": "Will this require database schema changes?", "answer": "Yes, a new table for settings"}
+            {"question": "Will this require database schema changes?", "answer": "Yes, a new table for settings"},
         ]),
-        tk
+        tk,
     )
     assert result.report["assessment"]["ready"] is False
     assert len(result.report["assessment"]["questions"]) == 1
@@ -270,7 +270,7 @@ async def test_three_round_clarification_loop(tmp_path):
             {"question": "Will this require database schema changes?", "answer": "Yes, a new table for settings"},
             {"question": "Which design system should we follow?", "answer": "Use Material Design"},
         ]),
-        tk
+        tk,
     )
     # After 2 answered rounds, gate forces ready
     assert result.report["assessment"]["ready"] is True

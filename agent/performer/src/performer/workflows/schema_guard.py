@@ -125,7 +125,7 @@ async def validate_with_reprompt(
         log.debug("schema_guard.no_json_after_reprompt", first=_excerpt(raw), retried=_excerpt(retried_raw))
         raise SchemaViolation(
             f"no JSON object after reprompt (first problem: {first_problem}); "
-            f"first response {_excerpt(raw)}; retried response {_excerpt(retried_raw)}"
+            f"first response {_excerpt(raw)}; retried response {_excerpt(retried_raw)}",
         )
     try:
         return schema.model_validate(json.loads(retried_payload))
@@ -134,5 +134,5 @@ async def validate_with_reprompt(
         raise SchemaViolation(
             f"schema still unmet after one reprompt: {exc} "
             f"(first problem: {first_problem}); first response {_excerpt(raw)}; "
-            f"retried response {_excerpt(retried_raw)}"
+            f"retried response {_excerpt(retried_raw)}",
         ) from exc

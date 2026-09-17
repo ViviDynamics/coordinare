@@ -71,7 +71,7 @@ class TestSelectPages:
                 citations=["src/payments/", "src/api/"],
                 links=[],
                 size=1000,
-            )
+            ),
         ]
 
         plans, _deferred, _refused = select_pages(brief_docs, changed_files, inventory, 8)
@@ -142,7 +142,7 @@ class TestInitSkeleton:
             'project_name': 'test',
             'packages': [],
             'has_ci': False,
-            'test_command_hint': 'pytest'
+            'test_command_hint': 'pytest',
         })()
 
         plans, _deferred = init_skeleton(layout_obj, [], 8)
@@ -160,7 +160,7 @@ class TestInitSkeleton:
                 {'path': 'src/large', 'size': 5000, 'has_tests': True},
             ],
             'has_ci': False,
-            'test_command_hint': ''
+            'test_command_hint': '',
         })()
 
         _plans, _deferred = init_skeleton(layout_obj, [], 8)
@@ -179,7 +179,7 @@ class TestBuildPlan:
         layout_obj = None
 
         plans, _deferred, _refused = build_plan(
-            "update", brief_docs, changed_files, inventory, layout_obj, 8
+            "update", brief_docs, changed_files, inventory, layout_obj, 8,
         )
 
         assert len(plans) > 0
@@ -193,11 +193,11 @@ class TestBuildPlan:
             'project_name': 'test',
             'packages': [],
             'has_ci': False,
-            'test_command_hint': ''
+            'test_command_hint': '',
         })()
 
         plans, _deferred, _refused = build_plan(
-            "init", brief_docs, changed_files, inventory, layout_obj, 8
+            "init", brief_docs, changed_files, inventory, layout_obj, 8,
         )
 
         # Should include some skeleton pages

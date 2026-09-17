@@ -93,7 +93,7 @@ class TargetDescriptor(BaseModel):
             if self.normalizers:
                 raise ValueError(
                     "reroute strategy must declare no normalizers "
-                    f"(got {self.normalizers!r}); reroute is not a shim"
+                    f"(got {self.normalizers!r}); reroute is not a shim",
                 )
             return self
 
@@ -108,7 +108,7 @@ class TargetDescriptor(BaseModel):
                 raise ValueError(
                     "observe strategy must declare no normalizers "
                     f"(got {self.normalizers!r}); observe only forwards + logs. "
-                    "Use 'normalize' to apply a transform"
+                    "Use 'normalize' to apply a transform",
                 )
             return self
 
@@ -121,7 +121,7 @@ class TargetDescriptor(BaseModel):
                     "translate strategy requires wire_format == 'openai' "
                     f"(got {self.wire_format!r}); the translator converts the "
                     "Anthropic request to OpenAI wire, so an anthropic-wire "
-                    "upstream is contradictory"
+                    "upstream is contradictory",
                 )
             # Rule T2: normalizers are OPTIONAL for translate (translation alone
             # is a valid target), but any declared key must be registered.
@@ -130,7 +130,7 @@ class TargetDescriptor(BaseModel):
                 known = sorted(NORMALIZER_REGISTRY)
                 raise ValueError(
                     f"unknown normalizer key(s) {unknown!r}; "
-                    f"registered normalizers are {known!r}"
+                    f"registered normalizers are {known!r}",
                 )
             # Rule T3: base_url is already enforced non-empty via Field(min_length=1).
             return self
@@ -138,14 +138,14 @@ class TargetDescriptor(BaseModel):
         # strategy == "normalize"
         if not self.normalizers:
             raise ValueError(
-                "normalize strategy requires at least one normalizer key"
+                "normalize strategy requires at least one normalizer key",
             )
         unknown = [k for k in self.normalizers if k not in NORMALIZER_REGISTRY]
         if unknown:
             known = sorted(NORMALIZER_REGISTRY)
             raise ValueError(
                 f"unknown normalizer key(s) {unknown!r}; "
-                f"registered normalizers are {known!r}"
+                f"registered normalizers are {known!r}",
             )
         return self
 
@@ -211,7 +211,7 @@ class RoutingTable(BaseModel):
                 f"routing table {p} (from SELFHOSTED_ROUTING_CONFIG) could not "
                 f"be read: {type(exc).__name__}: {exc}. Mount the routing-table "
                 f"YAML into the performer container, or unset "
-                f"SELFHOSTED_ROUTING_CONFIG to disable self-hosted routing."
+                f"SELFHOSTED_ROUTING_CONFIG to disable self-hosted routing.",
             ) from exc
         try:
             data = yaml.safe_load(text)
@@ -225,7 +225,7 @@ class RoutingTable(BaseModel):
         if not isinstance(data, dict):
             raise ValueError(
                 f"routing table {p} must be a mapping or a list of entries, "
-                f"got {type(data).__name__}"
+                f"got {type(data).__name__}",
             )
         # The contract and config.example.yaml key the table under
         # ``selfhosted_routing``; the model field is ``entries``. Accept the
@@ -235,7 +235,7 @@ class RoutingTable(BaseModel):
             if "entries" in data:
                 raise ValueError(
                     f"routing table {p} declares both 'selfhosted_routing' and "
-                    f"'entries'; use exactly one (prefer 'selfhosted_routing')"
+                    f"'entries'; use exactly one (prefer 'selfhosted_routing')",
                 )
             data = {
                 **{k: v for k, v in data.items() if k != "selfhosted_routing"},

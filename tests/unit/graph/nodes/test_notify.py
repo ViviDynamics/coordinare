@@ -368,7 +368,7 @@ async def test_suppresses_card_blocked_within_reminder_cooldown() -> None:
     state["active_sessions"] = {
         "card-70": {
             "last_blocked_slack_delivered_at": datetime.now(UTC) - timedelta(minutes=5),
-        }
+        },
     }
 
     await notify(state)
@@ -396,7 +396,7 @@ async def test_card_blocked_dispatches_after_reminder_cooldown_elapsed() -> None
     state["open_questions"] = ["Clarify scope"]
     old_watermark = datetime.now(UTC) - timedelta(hours=2)
     state["active_sessions"] = {
-        "card-70": {"last_blocked_slack_delivered_at": old_watermark}
+        "card-70": {"last_blocked_slack_delivered_at": old_watermark},
     }
 
     await notify(state)
@@ -426,7 +426,7 @@ async def test_card_blocked_cooldown_disabled_emits_every_pass() -> None:
     state["active_sessions"] = {
         "card-70": {
             "last_blocked_slack_delivered_at": datetime.now(UTC) - timedelta(seconds=10),
-        }
+        },
     }
 
     await notify(state)
@@ -457,7 +457,7 @@ async def test_card_blocked_does_not_suppress_when_only_notified_watermark_prese
             "phase": "blocked",
             # Set ONLY the handle_blocked watermark; Slack-delivery field absent.
             "last_blocked_notified_at": datetime.now(UTC) - timedelta(hours=1),
-        }
+        },
     }
 
     await notify(state)
@@ -589,7 +589,7 @@ async def test_replay_card70_restart_does_not_emit_card_blocked() -> None:
         "PVT_70": {
             "phase": "monitoring_performer",
             "performer_stage": "implementing",
-        }
+        },
     }
 
     await notify(state)
@@ -702,13 +702,13 @@ def test_persona_scope_signature_invariant_to_focus() -> None:
         {
             "implementer": {"depth": "normal", "focus": "look at auth", "overrides": []},
             "reviewer": {"depth": "skim", "focus": "skim tests", "overrides": ["api"]},
-        }
+        },
     )
     b = _scope(
         {
             "implementer": {"depth": "normal", "focus": "TOTALLY different prose", "overrides": []},
             "reviewer": {"depth": "skim", "focus": "and here too", "overrides": ["api"]},
-        }
+        },
     )
     assert _persona_scope_signature(a) == _persona_scope_signature(b)
 
@@ -718,7 +718,7 @@ def test_persona_scope_signature_changes_on_structural_change() -> None:
     diff_depth = _scope({"implementer": {"depth": "full", "focus": "x", "overrides": []}})
     diff_name = _scope({"reviewer": {"depth": "normal", "focus": "x", "overrides": []}})
     diff_overrides = _scope(
-        {"implementer": {"depth": "normal", "focus": "x", "overrides": ["api"]}}
+        {"implementer": {"depth": "normal", "focus": "x", "overrides": ["api"]}},
     )
     sig = _persona_scope_signature(base)
     assert sig != _persona_scope_signature(diff_depth)

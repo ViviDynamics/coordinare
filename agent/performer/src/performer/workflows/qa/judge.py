@@ -68,7 +68,7 @@ def reconcile(
                     criterion=criterion,
                     passed=False,
                     note="no executed check demonstrates this criterion",
-                )
+                ),
             )
             continue
 
@@ -82,7 +82,7 @@ def reconcile(
                 plan_check_ids=[c.plan_check_id for c in bound if c.plan_check_id],
                 note=(claimed.note if claimed is not None else "")
                 or ("" if evidence_passed else "an executed check failed"),
-            )
+            ),
         )
     return verdicts
 
@@ -114,7 +114,7 @@ def build_findings(
                 observed=verdict.note or "criterion not demonstrated",
                 evidence=evidence_check.model_dump() if evidence_check else None,
                 repro_command=evidence_check.command if evidence_check else None,
-            )
+            ),
         )
 
     # Regressions are reported even when every criterion passed: collateral
@@ -127,7 +127,7 @@ def build_findings(
                 criterion="",
                 expected=f"{removed.kind} present (label={removed.label!r})",
                 observed=f"{removed.kind} absent after the change",
-            )
+            ),
         )
 
     for change in model_output.unexpected_changes:
@@ -137,7 +137,7 @@ def build_findings(
                 severity="medium",
                 expected="no change beyond the claimed one",
                 observed=change,
-            )
+            ),
         )
 
     return findings

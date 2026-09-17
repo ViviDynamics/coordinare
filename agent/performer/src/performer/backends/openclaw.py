@@ -166,7 +166,7 @@ class OpenClawBackend:
             )
             home = Path(env.get("HOME", "/root"))
             self._write_provider_config(
-                home, provider_name, provider_base_url, provider_env_key, self._model
+                home, provider_name, provider_base_url, provider_env_key, self._model,
             )
             if self._model and not self._model.startswith(f"{provider_name}/"):
                 effective_model = f"{provider_name}/{self._model}"
@@ -279,7 +279,7 @@ class OpenClawBackend:
 
         self._status = BackendStatus(state="working")
         self._reader_task = asyncio.create_task(
-            self._wait_and_parse(), name="openclaw-reader"
+            self._wait_and_parse(), name="openclaw-reader",
         )
         log.info("openclaw started", pid=self._proc.pid, model=effective_model)
 
@@ -446,7 +446,7 @@ class OpenClawBackend:
                     "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
                     "contextWindow": context_window,
                     "maxTokens": max_tokens,
-                }
+                },
             ]
             allowlist[f"{name}/{model}"] = {"alias": model}
         config = {
@@ -465,7 +465,7 @@ class OpenClawBackend:
 
     def _emit(self, type: BackendEventType, text: str, detail: str = "") -> None:
         self._event_buffer.append(
-            BackendEvent(type=type, text=text[:_MAX_TEXT], detail=detail)
+            BackendEvent(type=type, text=text[:_MAX_TEXT], detail=detail),
         )
 
     async def _wait_and_parse(self) -> None:
@@ -482,7 +482,7 @@ class OpenClawBackend:
 
             if rc != 0:
                 self._status = BackendStatus(
-                    state="error", error_reason=f"subprocess_exit:{rc}"
+                    state="error", error_reason=f"subprocess_exit:{rc}",
                 )
                 snippet = (stderr_text.strip() or stdout_text.strip())[-_MAX_TEXT:]
                 log.warning("openclaw failed", rc=rc, stderr=stderr_text[-1000:])
@@ -498,7 +498,7 @@ class OpenClawBackend:
 
             if not isinstance(parsed, dict):
                 self._status = BackendStatus(
-                    state="error", error_reason="malformed_output"
+                    state="error", error_reason="malformed_output",
                 )
                 self._emit(BackendEventType.error, "malformed_output")
                 self._terminal = True

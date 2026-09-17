@@ -131,7 +131,7 @@ async def _identity(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def _config_fingerprint(
-    config_path: str | Path | None, config: CoordinareConfiguration | None = None
+    config_path: str | Path | None, config: CoordinareConfiguration | None = None,
 ) -> ConfigFingerprint:
     if config is not None:
         # Spec 136: an injected (materialized) config is fingerprinted by its own

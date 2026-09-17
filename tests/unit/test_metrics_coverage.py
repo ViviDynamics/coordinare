@@ -38,7 +38,7 @@ def test_card_state_transitions_total_uses_correct_labels(fresh_metrics: Coordin
     ):
         fresh_metrics.card_state_transitions_total.labels(symphony="__default__", transition_type=transition).inc()
         val = fresh_metrics.card_state_transitions_total.labels(
-            symphony="__default__", transition_type=transition
+            symphony="__default__", transition_type=transition,
         )._value.get()
         assert val >= 1, f"Expected count ≥1 for transition_type={transition}"
 
@@ -109,7 +109,7 @@ def test_channel_name_label_on_notification_metrics(fresh_metrics: CoordinareMet
     """Notification metrics use channel_name label (not channel)."""
     # Should not raise — label key is channel_name
     fresh_metrics.notifications_dispatched_total.labels(
-        event_type="card_blocked", channel_name="slack"
+        event_type="card_blocked", channel_name="slack",
     ).inc()
     fresh_metrics.notifications_failed_total.labels(channel_name="email").inc()
 

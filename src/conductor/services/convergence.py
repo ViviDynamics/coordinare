@@ -113,5 +113,5 @@ def parse_verdict(answer: Any) -> ConvergenceVerdict:
         )
     reason = data.get("reason")
     return ConvergenceVerdict(
-        converging=True, reason=str(reason)[:300] if isinstance(reason, str) else ""
+        converging=True, reason=str(reason)[:300] if isinstance(reason, str) else "",
     )

@@ -142,7 +142,7 @@ async def test_auto_merge_rejects_unstable_ci() -> None:
         squash={"merged": True},
     )
     merged, reason = await WikiInitService(enabled=True).try_auto_merge(
-        gh, "PR1", [_BOT], ec_state=_ec(wiki_in_flight=True)
+        gh, "PR1", [_BOT], ec_state=_ec(wiki_in_flight=True),
     )
     assert merged is False
     assert "CI-green" in reason
@@ -159,7 +159,7 @@ async def test_auto_merge_refused_when_no_wiki_init_in_flight() -> None:
         squash={"merged": True},
     )
     merged, reason = await WikiInitService(enabled=True).try_auto_merge(
-        gh, "PR1", [_BOT], ec_state=_ec(wiki_in_flight=False)
+        gh, "PR1", [_BOT], ec_state=_ec(wiki_in_flight=False),
     )
     assert merged is False
     assert "in flight" in reason
@@ -256,7 +256,7 @@ async def test_check_and_trigger_adopts_existing_wiki_without_dispatch() -> None
         calls.append(sym)
 
     await WikiInitService(enabled=True).check_and_trigger(
-        "s", ec, _GhFile('{"gitHead":"abc"}'), "o", "r", dispatch_fn
+        "s", ec, _GhFile('{"gitHead":"abc"}'), "o", "r", dispatch_fn,
     )
     assert calls == []
     assert ec.wiki_initialized is True
@@ -277,7 +277,7 @@ async def test_check_and_trigger_adopts_empty_marker_without_reinit() -> None:
         calls.append(sym)
 
     await WikiInitService(enabled=True).check_and_trigger(
-        "s", ec, _GhFile(""), "o", "r", dispatch_fn
+        "s", ec, _GhFile(""), "o", "r", dispatch_fn,
     )
     assert calls == []
     assert ec.wiki_initialized is True
@@ -320,7 +320,7 @@ async def test_handle_init_result_success_merges_and_marks() -> None:
         squash={"merged": True},
     )
     await WikiInitService(enabled=True).handle_init_result(
-        "s", ec, gh, "PR1", [_BOT], _Collector(), job_succeeded=True
+        "s", ec, gh, "PR1", [_BOT], _Collector(), job_succeeded=True,
     )
     assert ec.wiki_initialized is True
 
@@ -330,7 +330,7 @@ async def test_handle_init_result_job_failed_notifies_on_exhaustion() -> None:
     ec = _ec(wiki_in_flight=True)
     notify = _Collector()
     await WikiInitService(enabled=True, max_attempts=1).handle_init_result(
-        "s", ec, _Github({}, [], {}), "", [_BOT], notify, job_succeeded=False, error="boom"
+        "s", ec, _Github({}, [], {}), "", [_BOT], notify, job_succeeded=False, error="boom",
     )
     assert ec.wiki_exhausted is True
     assert len(notify.events) == 1
@@ -346,7 +346,7 @@ async def test_handle_init_result_automerge_blocked_notifies_before_exhaustion()
         squash={"merged": False},  # branch protection blocks the merge
     )
     await WikiInitService(enabled=True, max_attempts=5).handle_init_result(
-        "s", ec, gh, "PR1", [_BOT], notify, job_succeeded=True
+        "s", ec, gh, "PR1", [_BOT], notify, job_succeeded=True,
     )
     assert ec.wiki_initialized is False
     assert len(notify.events) == 1  # surfaced hold, even before the budget is spent

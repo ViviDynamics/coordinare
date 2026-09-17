@@ -1011,7 +1011,7 @@ def _qa_safe_int(value: object) -> int:
     """
     if isinstance(value, bool) or not isinstance(value, int):
         return 0
-    return value if value >= 0 else 0
+    return max(value, 0)
 
 
 def _qa_failure_is_environmental(f: dict) -> bool:
@@ -1063,7 +1063,7 @@ def _qa_execution_evidence(qa_output: dict) -> list[dict]:
                     "command": command,
                     "exit_code": exit_code,
                     "output": str(entry.get("output", "")).strip(),
-                }
+                },
             )
     return cleaned
 
@@ -1251,7 +1251,7 @@ def _build_qa_pr_comment(
                 "artifact not published (upload failed or container-local path)"
             )
             capture_blockers.append(
-                f"`{loc}` ({ev.get('label', 'Evidence')}) — {reason}"
+                f"`{loc}` ({ev.get('label', 'Evidence')}) — {reason}",
             )
 
     lines += ["", "### Visual Evidence"]

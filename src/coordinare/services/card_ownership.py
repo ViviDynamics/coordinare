@@ -85,7 +85,7 @@ def ownership_policy(config: Any) -> OwnershipPolicy:
 
 
 def owns_card(
-    policy: OwnershipPolicy, card_id: str, item_assignees: dict[str, list[str]]
+    policy: OwnershipPolicy, card_id: str, item_assignees: dict[str, list[str]],
 ) -> bool:
     """Whether coordinare may adopt *card_id*.
 

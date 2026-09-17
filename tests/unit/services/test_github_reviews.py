@@ -36,7 +36,7 @@ def _reviews_response(review_nodes, thread_nodes, head="HEAD", decision="CHANGES
             "reviewThreads": {"nodes": thread_nodes},
             "headRefOid": head,
             "reviewDecision": decision,
-        }
+        },
     }
 
 
@@ -59,7 +59,7 @@ async def test_context_parses_commit_oid_threads_head_decision() -> None:
                  "comments": {"nodes": [{"pullRequestReview": {"id": "RVW_1"}}]}},
             ],
             head="newsha",
-        )
+        ),
     ])
     ctx = await svc.get_pr_review_context("PR_1")
     assert ctx["head_oid"] == "newsha"
@@ -77,7 +77,7 @@ async def test_context_safe_on_missing_fields() -> None:
         {"node": {"reviews": {"nodes": [{
             "id": "RVW_1", "author": {"login": "jason"}, "state": "CHANGES_REQUESTED",
             "body": "", "submittedAt": "2026-05-18T14:08:38Z",
-        }]}}}
+        }]}}},
     ])
     ctx = await svc.get_pr_review_context("PR_1")
     assert ctx["reviews"][0]["commit_oid"] == ""
@@ -104,7 +104,7 @@ async def test_get_pr_reviews_still_returns_list_with_commit_oid() -> None:
         _reviews_response([{
             "id": "RVW_1", "author": {"login": "jason"}, "state": "APPROVED",
             "body": "ok", "submittedAt": "2026-02-25T12:00:00Z", "commit": {"oid": "c1"},
-        }], [])
+        }], []),
     ])
     reviews = await svc.get_pr_reviews("PR_1")
     assert reviews[0]["author_login"] == "jason" and reviews[0]["commit_oid"] == "c1"

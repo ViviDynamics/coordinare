@@ -112,7 +112,7 @@ def _make_dashboard_client(daemon: MagicMock | None = None) -> TestClient:
     metrics = MagicMock()
     metrics.cycles_completed_total._value.get.return_value = 0
     metrics.build_info.labels.return_value._value.get.return_value = {
-        "started_at": "2026-01-01T00:00:00+00:00"
+        "started_at": "2026-01-01T00:00:00+00:00",
     }
     health = MagicMock()
     health.snapshot.return_value.probes = []
@@ -289,7 +289,7 @@ class TestHandleConfigReload:
     async def test_adds_new_symphony_to_state(self) -> None:
         """Newly added symphony gets a SymphonyRuntimeState."""
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".yaml", delete=False
+            mode="w", suffix=".yaml", delete=False,
         ) as f:
             f.write(
                 "github_org: acme\n"
@@ -301,7 +301,7 @@ class TestHandleConfigReload:
                 "  - name: sym-new\n"
                 "    github_project_number: 200\n"
                 "orchestra:\n"
-                "  mode: shared_pool\n"
+                "  mode: shared_pool\n",
             )
             config_file = Path(f.name)
 
@@ -310,10 +310,10 @@ class TestHandleConfigReload:
             # Pre-existing: only sym-0
             daemon._state["config_path"] = config_file
             daemon._state["symphony_configs"] = {
-                "sym-0": SymphonyConfig(name="sym-0", github_project_number=100)
+                "sym-0": SymphonyConfig(name="sym-0", github_project_number=100),
             }
             daemon._state["symphony_states"] = {
-                "sym-0": SymphonyRuntimeState(name="sym-0")
+                "sym-0": SymphonyRuntimeState(name="sym-0"),
             }
 
             await daemon._handle_config_reload()
@@ -328,7 +328,7 @@ class TestHandleConfigReload:
     async def test_removes_deleted_symphony_from_state(self) -> None:
         """Symphonies no longer in config are removed from state."""
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".yaml", delete=False
+            mode="w", suffix=".yaml", delete=False,
         ) as f:
             f.write(
                 "github_org: acme\n"
@@ -338,7 +338,7 @@ class TestHandleConfigReload:
                 "  - name: sym-0\n"
                 "    github_project_number: 100\n"
                 "orchestra:\n"
-                "  mode: shared_pool\n"
+                "  mode: shared_pool\n",
             )
             config_file = Path(f.name)
 
@@ -366,7 +366,7 @@ class TestHandleConfigReload:
     async def test_increments_config_version(self) -> None:
         """config_version increments on each successful reload."""
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".yaml", delete=False
+            mode="w", suffix=".yaml", delete=False,
         ) as f:
             f.write(
                 "github_org: acme\n"
@@ -376,7 +376,7 @@ class TestHandleConfigReload:
                 "  - name: sym-0\n"
                 "    github_project_number: 100\n"
                 "orchestra:\n"
-                "  mode: shared_pool\n"
+                "  mode: shared_pool\n",
             )
             config_file = Path(f.name)
 
@@ -408,7 +408,7 @@ class TestHandleConfigReload:
     async def test_handles_legacy_config_format(self) -> None:
         """Legacy flat config is auto-wrapped as single 'default' symphony."""
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".yaml", delete=False
+            mode="w", suffix=".yaml", delete=False,
         ) as f:
             # Legacy format: flat keys, no 'symphonies' key
             f.write(
@@ -416,7 +416,7 @@ class TestHandleConfigReload:
                 "github_org: acme\n"
                 "github_project_number: 99\n"
                 "github_token: token\n"
-                "human_reviewers: [alice]\n"
+                "human_reviewers: [alice]\n",
             )
             config_file = Path(f.name)
 
@@ -487,7 +487,7 @@ class TestGetSymphoniesApiEndpoint:
         daemon = MagicMock()
         ts = datetime(2026, 4, 30, 12, 0, 0, tzinfo=UTC)
         sym_state = SymphonyRuntimeState(
-            name="sym-0", cycle_count=1, last_poll_at=ts
+            name="sym-0", cycle_count=1, last_poll_at=ts,
         )
         daemon.state = {
             "symphony_configs": {"sym-0": cfg.symphonies[0]},

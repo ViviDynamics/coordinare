@@ -215,7 +215,7 @@ def config_fingerprint(config: CoordinareConfiguration) -> str:
     The hash input is the python-mode dump serialized with secrets revealed;
     only the digest ever leaves this function."""
     canonical = json.dumps(
-        config.model_dump(mode="python"), sort_keys=True, default=_fingerprint_fallback
+        config.model_dump(mode="python"), sort_keys=True, default=_fingerprint_fallback,
     )
     return hashlib.sha256(canonical.encode()).hexdigest()[:16]
 

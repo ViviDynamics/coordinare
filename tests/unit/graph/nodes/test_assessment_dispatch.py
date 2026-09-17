@@ -128,4 +128,3 @@ def test_clarifications_not_injected_for_other_stages():
     # The clarifications injection happens in _dispatch_performer_body
     # inside the `if performer_stage == "assessing":` block, so it's
     # inherently only for assessing.
-    pass

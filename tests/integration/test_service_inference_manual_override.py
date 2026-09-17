@@ -92,8 +92,8 @@ def _write_fake_service(bin_dir: Path) -> Path:
             while True:
                 time.sleep(60)
             "
-            """
-        )
+            """,
+        ),
     )
     fake.chmod(0o755)
     return fake
@@ -127,7 +127,7 @@ async def test_manual_override_end_to_end_starts_and_stops_service(
                 "port": port,
                 "why_needed": "integration test for spec 063 Phase 1",
                 "sources": [".coordinare/score.json"],
-            }
+            },
         ],
         "cache_inputs": [".coordinare/score.json"],
     }
@@ -157,7 +157,7 @@ async def test_manual_override_end_to_end_starts_and_stops_service(
 
         # ---- Step 4: real TCP connect proves the service is live ------------
         assert _wait_until(
-            lambda: _port_open(port), timeout=5.0
+            lambda: _port_open(port), timeout=5.0,
         ), f"fakesvc did not bind 127.0.0.1:{port} after services-start.sh ran"
 
         # Idempotency: a second start must not relaunch (PID file + kill -0 check).
@@ -170,7 +170,7 @@ async def test_manual_override_end_to_end_starts_and_stops_service(
         # ---- Step 5: stop_all releases the port -----------------------------
         stop_all_env_cache_services()
         assert _wait_until(
-            lambda: not _port_open(port), timeout=5.0
+            lambda: not _port_open(port), timeout=5.0,
         ), f"fakesvc still listening on 127.0.0.1:{port} after services-stop.sh ran"
     finally:
         # Defence in depth: never leak a python listener if assertions fail mid-run.
@@ -207,7 +207,7 @@ def test_manual_override_postgres_declaration_renders_init_block(tmp_path: Path)
                     "databases": ["app_dev", "app_test"],
                     "password_env_var": "POSTGRES_PASSWORD",
                 },
-            }
+            },
         ],
         "cache_inputs": [".coordinare/score.json"],
     }
@@ -215,7 +215,7 @@ def test_manual_override_postgres_declaration_renders_init_block(tmp_path: Path)
 
     env_cache = tmp_path / "env-cache"
     result = apply_manual_override(
-        project_root=project, output_root=env_cache, run_validation=False
+        project_root=project, output_root=env_cache, run_validation=False,
     )
 
     assert result.applied is True, result.reason
@@ -270,7 +270,7 @@ async def test_postgres_start_failure_is_environment_attributed(tmp_path: Path) 
     start.write_text(
         "#!/usr/bin/env bash\n"
         'echo "ERROR: env: postgres did not become ready within 60s" >&2\n'
-        "exit 75\n"
+        "exit 75\n",
     )
     start.chmod(0o755)
 

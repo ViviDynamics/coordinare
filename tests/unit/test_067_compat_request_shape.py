@@ -60,7 +60,7 @@ def test_response_format_text_accepted():
             "model": "qwen3-coder-30b",
             "messages": [{"role": "user", "content": "Hi"}],
             "response_format": {"type": "text"},
-        }
+        },
     )
 
 
@@ -70,5 +70,5 @@ def test_unknown_role_rejected():
             {
                 "model": "x",
                 "messages": [{"role": "function", "content": "Hi"}],
-            }
+            },
         )

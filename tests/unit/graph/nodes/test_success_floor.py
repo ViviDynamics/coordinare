@@ -87,7 +87,7 @@ async def test_moved_head_accepts_and_applies_dispositions() -> None:
         _success(
             "newhead1",
             [{"id": "fb-1", "disposition": "addressed", "reason": "done"}],
-        )
+        ),
     )
 
     result = await monitor_performer(state)
@@ -147,7 +147,7 @@ async def test_cross_raiser_bounce_at_same_head_does_not_reset_retry_budget() ->
     state = _impl_state(_success("origin000"), retries=1)
     # A second raiser (qa) bounces at the same head between completions.
     _stamp_feedback_bounce(
-        state, [{"body": "qa also unhappy"}], raiser="qa", origin_sha="origin000"
+        state, [{"body": "qa also unhappy"}], raiser="qa", origin_sha="origin000",
     )
     assert state["noop_success_retries"] == 1  # budget preserved
 
@@ -161,7 +161,7 @@ async def test_new_origin_head_resets_retry_budget() -> None:
     """Control: a bounce at a genuinely NEW head re-arms the retry budget."""
     state = _impl_state(_success("newhead1"), retries=1)
     _stamp_feedback_bounce(
-        state, [{"body": "new round"}], raiser="qa", origin_sha="newhead1"
+        state, [{"body": "new round"}], raiser="qa", origin_sha="newhead1",
     )
     assert state["noop_success_retries"] == 0
 
@@ -180,7 +180,7 @@ async def test_unmoved_head_with_dispute_accepts_and_queues() -> None:
                 {"id": "fb-1", "disposition": "disputed", "reason": "already correct"},
                 {"id": "fb-2", "disposition": "addressed", "reason": "claim"},
             ],
-        )
+        ),
     )
 
     result = await monitor_performer(state)
@@ -221,7 +221,7 @@ async def test_dispute_of_re_raised_round_holds() -> None:
         _resolve_dispute_round,
     )
     _apply_feedback_dispositions(
-        state, [{"id": "fb-1", "disposition": "disputed", "reason": "no"}]
+        state, [{"id": "fb-1", "disposition": "disputed", "reason": "no"}],
     )
     _resolve_dispute_round(state, raiser_stage="reviewing", passed=False)
     _stamp_feedback_bounce(state, [{"body": "a again"}], raiser="reviewing", origin_sha="origin000")
@@ -230,7 +230,7 @@ async def test_dispute_of_re_raised_round_holds() -> None:
         _success(
             "origin000",
             [{"id": "fb-2", "disposition": "disputed", "reason": "still no"}],
-        )
+        ),
     )
 
     with capture_logs() as logs:

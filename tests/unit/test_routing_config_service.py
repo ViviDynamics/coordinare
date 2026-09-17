@@ -35,7 +35,7 @@ from coordinare.services.config_write_service import compute_content_hash
 def _endpoints_from_config(config_path: Path):
     raw = yaml.safe_load(config_path.read_text())
     cfg = CoordinareConfiguration(
-        **coerce_multi_symphony_raw({**raw, "github_token": "ghp_fixturetoken"})
+        **coerce_multi_symphony_raw({**raw, "github_token": "ghp_fixturetoken"}),
     )
     return cfg.global_config.performer_endpoints
 
@@ -65,7 +65,7 @@ def test_routing_available_false_when_host_path_missing(temp_config_path):
 
 
 def test_routing_available_false_when_present_file_unreadable(
-    temp_config_with_routing, monkeypatch
+    temp_config_with_routing, monkeypatch,
 ):
     """``routing_available()`` must agree with ``read_routing()`` on a present-
     but-unreadable mounted file: both report unavailable. Otherwise
@@ -143,14 +143,14 @@ def test_validate_routing_entry_accepts_valid_normalize():
 
 def test_validate_routing_entry_accepts_valid_reroute():
     rcs.validate_routing_entry(
-        _entry(strategy="reroute", normalizers=[], reroute_upstream="http://up")
+        _entry(strategy="reroute", normalizers=[], reroute_upstream="http://up"),
     )
 
 
 def test_validate_routing_entry_reroute_with_normalizers_rejected():
     with pytest.raises(ValueError):
         rcs.validate_routing_entry(
-            _entry(strategy="reroute", normalizers=["harmony_tool_calls"])
+            _entry(strategy="reroute", normalizers=["harmony_tool_calls"]),
         )
 
 
@@ -209,7 +209,7 @@ def test_validate_table_missing_performer_module_raises_valueerror(monkeypatch):
 
 
 def test_create_routing_entry_missing_performer_module_is_structured_not_500(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch,
 ):
     """End-to-end: with the performer package absent, a routing write returns a
     structured ``validation`` ``SaveResult`` (no crash) rather than 500ing the
@@ -217,7 +217,7 @@ def test_create_routing_entry_missing_performer_module_is_structured_not_500(
     f = tmp_path / "routing.yaml"
     f.write_text("entries: []\n", encoding="utf-8")
     location = rcs.RoutingLocation(
-        endpoint_id="x", host_path=f, container_path="/devenv/routing.yaml"
+        endpoint_id="x", host_path=f, container_path="/devenv/routing.yaml",
     )
     _block_performer_routing_import(monkeypatch)
     result = rcs.create_routing_entry(location, _entry(), compute_content_hash(f))
@@ -246,7 +246,7 @@ def test_create_routing_entry_appends_and_stages_next_job(temp_config_with_routi
 
 
 def test_create_routing_entry_oserror_is_forbidden_not_500(
-    temp_config_with_routing, monkeypatch
+    temp_config_with_routing, monkeypatch,
 ):
     config_path, routing_path = temp_config_with_routing
     location = rcs.locate_routing_file(_endpoints_from_config(config_path))
@@ -284,7 +284,7 @@ def test_create_routing_entry_conflict(temp_config_with_routing):
 
 
 def test_create_routing_entry_rechecks_conflict_just_before_write(
-    temp_config_with_routing, monkeypatch
+    temp_config_with_routing, monkeypatch,
 ):
     """FR-016: an out-of-band edit landing after the initial conflict check but
     before the atomic swap must be caught (re-check immediately before write)."""
@@ -296,7 +296,7 @@ def test_create_routing_entry_rechecks_conflict_just_before_write(
     def mutate_then_validate(entries):
         # Simulate a concurrent operator edit landing after the initial baseline.
         routing_path.write_text(
-            routing_path.read_text() + "\n# concurrent out-of-band edit\n"
+            routing_path.read_text() + "\n# concurrent out-of-band edit\n",
         )
         return real_validate(entries)
 
@@ -310,7 +310,7 @@ def test_update_routing_entry_applies_changes(temp_config_with_routing):
     config_path, routing_path = temp_config_with_routing
     location = rcs.locate_routing_file(_endpoints_from_config(config_path))
     result = rcs.update_routing_entry(
-        location, 0, {"model": "qwen2.5-coder-32b"}, _base_hash(routing_path)
+        location, 0, {"model": "qwen2.5-coder-32b"}, _base_hash(routing_path),
     )
     assert result.ok is True
     assert result.applied == "staged_next_job"
@@ -331,7 +331,7 @@ def test_update_routing_entry_non_mapping_target_returns_structured_error(
     location = rcs.locate_routing_file(_endpoints_from_config(config_path))
     # Apply a dict target change → previously hit `{**"not-a-mapping"}` → TypeError.
     result = rcs.update_routing_entry(
-        location, 0, {"target": {"base_url": "http://x/v1"}}, _base_hash(routing_path)
+        location, 0, {"target": {"base_url": "http://x/v1"}}, _base_hash(routing_path),
     )
     assert result.ok is False
     assert result.errors[0].code == "validation"
@@ -346,7 +346,7 @@ def test_update_routing_entry_non_mapping_changes_returns_structured_error(
     config_path, routing_path = temp_config_with_routing
     location = rcs.locate_routing_file(_endpoints_from_config(config_path))
     result = rcs.update_routing_entry(
-        location, 0, ["not", "a", "mapping"], _base_hash(routing_path)
+        location, 0, ["not", "a", "mapping"], _base_hash(routing_path),
     )
     assert result.ok is False
     assert result.errors[0].code == "validation"
@@ -356,7 +356,7 @@ def test_update_routing_entry_out_of_range(temp_config_with_routing):
     config_path, routing_path = temp_config_with_routing
     location = rcs.locate_routing_file(_endpoints_from_config(config_path))
     result = rcs.update_routing_entry(
-        location, 9, {"model": "x"}, _base_hash(routing_path)
+        location, 9, {"model": "x"}, _base_hash(routing_path),
     )
     assert result.ok is False
     assert result.errors[0].code == "validation"
@@ -367,7 +367,7 @@ def test_update_routing_entry_invalid_change_rejected(temp_config_with_routing):
     location = rcs.locate_routing_file(_endpoints_from_config(config_path))
     # Empty the model field → invalid (min_length=1).
     result = rcs.update_routing_entry(
-        location, 0, {"model": ""}, _base_hash(routing_path)
+        location, 0, {"model": ""}, _base_hash(routing_path),
     )
     assert result.ok is False
     assert result.errors[0].code == "validation"
@@ -399,7 +399,7 @@ def test_read_routing_tolerates_malformed_yaml(tmp_path):
     bad = tmp_path / "routing.yaml"
     bad.write_text("entries: [unterminated\n  - : :\n", encoding="utf-8")
     location = rcs.RoutingLocation(
-        endpoint_id="x", host_path=bad, container_path="/devenv/routing.yaml"
+        endpoint_id="x", host_path=bad, container_path="/devenv/routing.yaml",
     )
     view = rcs.read_routing(location)
     # File exists, so routing is available, but the unparseable body yields no entries.
@@ -414,7 +414,7 @@ def test_read_routing_tolerates_invalid_utf8(tmp_path):
     bad = tmp_path / "routing.yaml"
     bad.write_bytes(b"entries:\n  - model: \xff\xfe\n")
     location = rcs.RoutingLocation(
-        endpoint_id="x", host_path=bad, container_path="/devenv/routing.yaml"
+        endpoint_id="x", host_path=bad, container_path="/devenv/routing.yaml",
     )
     view = rcs.read_routing(location)
     assert view.routing_available is True
@@ -434,7 +434,7 @@ def test_read_routing_unreadable_present_file_is_unavailable(tmp_path, monkeypat
     f = tmp_path / "routing.yaml"
     f.write_text("entries: []\n", encoding="utf-8")
     location = rcs.RoutingLocation(
-        endpoint_id="x", host_path=f, container_path="/devenv/routing.yaml"
+        endpoint_id="x", host_path=f, container_path="/devenv/routing.yaml",
     )
 
     real_read_bytes = Path.read_bytes
@@ -459,7 +459,7 @@ def test_read_routing_empty_file_remains_available(tmp_path):
     f = tmp_path / "routing.yaml"
     f.write_text("", encoding="utf-8")
     location = rcs.RoutingLocation(
-        endpoint_id="x", host_path=f, container_path="/devenv/routing.yaml"
+        endpoint_id="x", host_path=f, container_path="/devenv/routing.yaml",
     )
     view = rcs.read_routing(location)
     assert view.routing_available is True
@@ -474,7 +474,7 @@ def test_routing_available_false_when_host_path_is_directory(temp_config_path, t
     a_dir = tmp_path / "routing.yaml"
     a_dir.mkdir()
     location = rcs.RoutingLocation(
-        endpoint_id="x", host_path=a_dir, container_path="/devenv/routing.yaml"
+        endpoint_id="x", host_path=a_dir, container_path="/devenv/routing.yaml",
     )
     # read_routing must report the read-only empty state, not "available".
     view = rcs.read_routing(location)
@@ -489,7 +489,7 @@ def test_create_routing_entry_directory_host_path_is_readonly(tmp_path):
     a_dir = tmp_path / "routing.yaml"
     a_dir.mkdir()
     location = rcs.RoutingLocation(
-        endpoint_id="x", host_path=a_dir, container_path="/devenv/routing.yaml"
+        endpoint_id="x", host_path=a_dir, container_path="/devenv/routing.yaml",
     )
     result = rcs.create_routing_entry(location, _entry(), "sha256:whatever")
     assert result.ok is False
@@ -514,7 +514,7 @@ def test_delete_routing_entry_directory_host_path_is_readonly(tmp_path):
     a_dir = tmp_path / "routing.yaml"
     a_dir.mkdir()
     location = rcs.RoutingLocation(
-        endpoint_id="x", host_path=a_dir, container_path="/devenv/routing.yaml"
+        endpoint_id="x", host_path=a_dir, container_path="/devenv/routing.yaml",
     )
     result = rcs.delete_routing_entry(location, 0, "sha256:whatever")
     assert result.ok is False
@@ -529,7 +529,7 @@ def test_readonly_guard_message_covers_non_file_host_path(tmp_path):
     a_dir = tmp_path / "routing.yaml"
     a_dir.mkdir()
     location = rcs.RoutingLocation(
-        endpoint_id="x", host_path=a_dir, container_path="/devenv/routing.yaml"
+        endpoint_id="x", host_path=a_dir, container_path="/devenv/routing.yaml",
     )
     mounted = rcs._readonly_guard(location)
     unmounted = rcs._readonly_guard(None)

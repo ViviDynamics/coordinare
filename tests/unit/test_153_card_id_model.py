@@ -72,7 +72,7 @@ class RecordingGitHub(CardIdentityMap):
         return self._details.get(card_id, {})
 
     async def get_issue_comments(
-        self, issue_number: int, since_id: int | None = None
+        self, issue_number: int, since_id: int | None = None,
     ) -> list[dict]:
         self.calls.append("get_issue_comments")
         self.last_issue_number = issue_number
@@ -295,15 +295,15 @@ class TestTheRealPollBoardWiresTheRemembering:
                             "id": "PVTI_abc",
                             "fieldValues": {"nodes": [{"name": "Todo"}]},
                             "content": {"id": "I_1", "number": 42, "title": "t", "body": "b"},
-                        }
+                        },
                     ],
                     "pageInfo": {"hasNextPage": False, "endCursor": None},
-                }
-            }
+                },
+            },
         }
         monkeypatch.setattr(GitHubService, "_ensure_initialized", lambda self: None)
         monkeypatch.setattr(
-            GitHubService, "_guarded_execute", lambda self, q, v=None: _immediately(page)
+            GitHubService, "_guarded_execute", lambda self, q, v=None: _immediately(page),
         )
 
         await service.poll_board()

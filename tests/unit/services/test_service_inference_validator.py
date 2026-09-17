@@ -153,7 +153,7 @@ def test_validate_cleans_up_temp_dir(tmp_path, monkeypatch):
         return path
 
     monkeypatch.setattr(
-        "coordinare_service_inference.validator.tempfile.mkdtemp", _wrapper
+        "coordinare_service_inference.validator.tempfile.mkdtemp", _wrapper,
     )
 
     validate(_scripts(), health_delay_seconds=0.0)

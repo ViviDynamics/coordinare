@@ -70,8 +70,8 @@ def _write_rails_skeleton(project: Path) -> None:
             source 'https://rubygems.org'
             gem 'rails', '~> 7.1'
             gem 'pg', '~> 1.5'
-            """
-        )
+            """,
+        ),
     )
     (project / "config" / "database.yml").write_text(
         dedent(
@@ -84,13 +84,13 @@ def _write_rails_skeleton(project: Path) -> None:
             development:
               <<: *default
               database: app_development
-            """
-        )
+            """,
+        ),
     )
 
 
 def _score_json_for_real_postgres(
-    *, data_dir: Path, port: int
+    *, data_dir: Path, port: int,
 ) -> dict[str, object]:
     """Hand-authored manifest that boots real Postgres on the given port.
 
@@ -115,7 +115,7 @@ def _score_json_for_real_postgres(
           -p {port} \\
           -c unix_socket_directories='' \\
           -h 127.0.0.1
-        """
+        """,
     ).strip()
     return {
         "services": [
@@ -130,7 +130,7 @@ def _score_json_for_real_postgres(
                 "external_required": False,
                 "required_env_vars": [],
                 "start_args": ["bash", "-c", init_then_run],
-            }
+            },
         ],
         "cache_inputs": ["Gemfile", "config/database.yml", ".coordinare/score.json"],
         "agent_version": "manual-override",
@@ -178,7 +178,7 @@ def test_rails_skeleton_real_postgres_end_to_end(tmp_path: Path) -> None:
         json.dumps(
             _score_json_for_real_postgres(data_dir=data_dir, port=pg_port),
             indent=2,
-        )
+        ),
     )
 
     env_cache = tmp_path / "env-cache"
@@ -251,5 +251,5 @@ def test_rails_skeleton_real_postgres_end_to_end(tmp_path: Path) -> None:
             if stop.returncode != 0:
                 print(
                     f"WARNING: services-stop.sh rc={stop.returncode}\n"
-                    f"stdout:\n{stop.stdout}\nstderr:\n{stop.stderr}"
+                    f"stdout:\n{stop.stdout}\nstderr:\n{stop.stderr}",
                 )

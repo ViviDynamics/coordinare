@@ -33,7 +33,7 @@ def _valid_redis_payload() -> dict:
                 "port": 6379,
                 "why_needed": "Manual override for redis",
                 "sources": [".coordinare/score.json"],
-            }
+            },
         ],
         "cache_inputs": [".coordinare/score.json"],
         # agent_version intentionally omitted to test default
@@ -42,7 +42,7 @@ def _valid_redis_payload() -> dict:
 
 def test_no_override_file_returns_not_applied(tmp_path):
     result = apply_manual_override(
-        project_root=tmp_path, output_root=tmp_path / "out"
+        project_root=tmp_path, output_root=tmp_path / "out",
     )
 
     assert result.applied is False
@@ -57,7 +57,7 @@ def test_invalid_json_returns_not_applied(tmp_path):
     _write_override(tmp_path, "{ not json")
 
     result = apply_manual_override(
-        project_root=tmp_path, output_root=tmp_path / "out"
+        project_root=tmp_path, output_root=tmp_path / "out",
     )
 
     assert result.applied is False
@@ -70,14 +70,14 @@ def test_schema_violation_returns_not_applied(tmp_path):
             {
                 # missing required fields like binary, port, etc.
                 "name": "redis",
-            }
+            },
         ],
         "cache_inputs": [],
     }
     _write_override(tmp_path, bad)
 
     result = apply_manual_override(
-        project_root=tmp_path, output_root=tmp_path / "out"
+        project_root=tmp_path, output_root=tmp_path / "out",
     )
 
     assert result.applied is False
@@ -102,7 +102,7 @@ def test_happy_path_drops_artifacts_into_services_subdir(tmp_path):
         assert path.read_text().startswith("#!/usr/bin/env bash")
 
     manifest_on_disk = ServicesManifest.model_validate_json(
-        (out / "services" / "services.json").read_text()
+        (out / "services" / "services.json").read_text(),
     )
     assert [s.name for s in manifest_on_disk.services] == ["redis"]
     # Default agent_version "manual-override" must be applied when omitted.
@@ -118,7 +118,7 @@ def test_explicit_agent_version_in_override_is_overwritten(tmp_path):
     _write_override(tmp_path, payload)
 
     result = apply_manual_override(
-        project_root=tmp_path, output_root=tmp_path / "out"
+        project_root=tmp_path, output_root=tmp_path / "out",
     )
 
     assert result.applied is True
@@ -133,13 +133,13 @@ def test_validation_failure_aborts_artifact_drop(tmp_path, monkeypatch):
     from coordinare_service_inference.validator import ValidationResult
 
     fake_result = ValidationResult(
-        phase="health", stdout="", stderr="port not bound", ok=False, returncode=1
+        phase="health", stdout="", stderr="port not bound", ok=False, returncode=1,
     )
     monkeypatch.setattr(mod, "validate", lambda scripts: fake_result)
 
     out = tmp_path / "out"
     result = apply_manual_override(
-        project_root=tmp_path, output_root=out, run_validation=True
+        project_root=tmp_path, output_root=out, run_validation=True,
     )
 
     assert result.applied is False
@@ -159,13 +159,13 @@ def test_validation_success_writes_artifacts(tmp_path, monkeypatch):
         mod,
         "validate",
         lambda scripts: ValidationResult(
-            phase=None, stdout="all good", stderr="", ok=True, returncode=0
+            phase=None, stdout="all good", stderr="", ok=True, returncode=0,
         ),
     )
 
     out = tmp_path / "out"
     result = apply_manual_override(
-        project_root=tmp_path, output_root=out, run_validation=True
+        project_root=tmp_path, output_root=out, run_validation=True,
     )
 
     assert result.applied is True
@@ -180,7 +180,7 @@ def test_explicit_override_path_argument(tmp_path):
     out = tmp_path / "out"
 
     result = apply_manual_override(
-        project_root=tmp_path, output_root=out, override_path=custom
+        project_root=tmp_path, output_root=out, override_path=custom,
     )
 
     assert result.applied is True
@@ -207,7 +207,7 @@ def test_explicit_arg_beats_env_var(tmp_path, monkeypatch):
     out = tmp_path / "out"
 
     result = apply_manual_override(
-        project_root=tmp_path, output_root=out, override_path=explicit
+        project_root=tmp_path, output_root=out, override_path=explicit,
     )
 
     assert result.applied is True

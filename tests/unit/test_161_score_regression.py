@@ -78,7 +78,7 @@ def test_compute_scalar_formula_is_unchanged() -> None:
       = 0.8 - 0.05 - 0.05 = 0.70
     """
     components = ComponentVector(
-        correctness_rate=0.8, cost_usd=0.5, wall_clock_seconds=300.0
+        correctness_rate=0.8, cost_usd=0.5, wall_clock_seconds=300.0,
     )
     scalar, cost_missing = compute_scalar(components, Weights())
 
@@ -89,7 +89,7 @@ def test_compute_scalar_formula_is_unchanged() -> None:
 def test_unknown_cost_still_omits_the_cost_term() -> None:
     """spec-135 behaviour: unknown cost is never treated as free."""
     components = ComponentVector(
-        correctness_rate=1.0, cost_usd=None, wall_clock_seconds=600.0
+        correctness_rate=1.0, cost_usd=None, wall_clock_seconds=600.0,
     )
     scalar, cost_missing = compute_scalar(components, Weights())
 

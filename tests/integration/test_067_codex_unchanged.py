@@ -29,7 +29,7 @@ def test_codex_outbound_payload_byte_identical():
         pytest.skip(
             "Codex baseline fixture not captured; run "
             "scripts/capture_codex_baseline.py with OPENAI_API_KEY set "
-            "(see fixtures/067_codex_baseline_request.json.README)."
+            "(see fixtures/067_codex_baseline_request.json.README).",
         )
 
     baseline_bytes = BASELINE.read_bytes()
@@ -45,5 +45,5 @@ def test_codex_outbound_payload_byte_identical():
     # caught early.
     pytest.skip(
         "Live codex replay requires OPENAI_API_KEY and a fresh capture path; "
-        "fixture validated as well-formed."
+        "fixture validated as well-formed.",
     )

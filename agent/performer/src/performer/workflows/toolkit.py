@@ -229,7 +229,7 @@ class Toolkit:
     # -- agent turns (spec 167) -----------------------------------------------
 
     async def run_agent_turn(
-        self, brief: dict, *, timeout_s: float
+        self, brief: dict, *, timeout_s: float,
     ) -> dict:
         """Run one bounded harness turn via the injected agent_turn_runner.
 
@@ -267,7 +267,7 @@ class Toolkit:
         from performer.models import BackendEvent, BackendEventType
         self.emit(BackendEvent(
             type=BackendEventType.progress,
-            text=f"turn.start kind={brief.get('kind')} milestone_index={brief.get('milestone_index')}"
+            text=f"turn.start kind={brief.get('kind')} milestone_index={brief.get('milestone_index')}",
         ))
 
         started = time.monotonic()
@@ -275,7 +275,7 @@ class Toolkit:
             # Run the turn with timeout enforcement
             result = await asyncio.wait_for(
                 self._agent_turn_runner(brief, timeout_s=timeout_s),
-                timeout=timeout_s
+                timeout=timeout_s,
             )
         except asyncio.TimeoutError:
             wall_ms = int((time.monotonic() - started) * 1000)
@@ -283,7 +283,7 @@ class Toolkit:
             self.metrics.turn_durations_ms.append(wall_ms)
             self.emit(BackendEvent(
                 type=BackendEventType.progress,
-                text=f"turn.end kind={brief.get('kind')} exit_state=timeout wall_ms={wall_ms}"
+                text=f"turn.end kind={brief.get('kind')} exit_state=timeout wall_ms={wall_ms}",
             ))
             return {
                 "exit_state": "timeout",
@@ -298,7 +298,7 @@ class Toolkit:
             self.metrics.turn_durations_ms.append(wall_ms)
             self.emit(BackendEvent(
                 type=BackendEventType.progress,
-                text=f"turn.end kind={brief.get('kind')} exit_state=cancelled wall_ms={wall_ms}"
+                text=f"turn.end kind={brief.get('kind')} exit_state=cancelled wall_ms={wall_ms}",
             ))
             raise
         except BaseException as exc:
@@ -307,7 +307,7 @@ class Toolkit:
             self.metrics.turn_durations_ms.append(wall_ms)
             self.emit(BackendEvent(
                 type=BackendEventType.progress,
-                text=f"turn.end kind={brief.get('kind')} exit_state=error wall_ms={wall_ms}"
+                text=f"turn.end kind={brief.get('kind')} exit_state=error wall_ms={wall_ms}",
             ))
             return {
                 "exit_state": "error",
@@ -325,7 +325,7 @@ class Toolkit:
         # Emit end event
         self.emit(BackendEvent(
             type=BackendEventType.progress,
-            text=f"turn.end kind={brief.get('kind')} exit_state={result.get('exit_state')} wall_ms={wall_ms}"
+            text=f"turn.end kind={brief.get('kind')} exit_state={result.get('exit_state')} wall_ms={wall_ms}",
         ))
 
         return result

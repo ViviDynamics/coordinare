@@ -77,7 +77,7 @@ WINDOWS_ENV_ALLOWLIST: tuple[str, ...] = (
 #: name while all of them are credential-bearing in effect. Named here so the
 #: test can assert on the reasoning rather than on the spelling.
 CREDENTIAL_BEARING_NAMES: frozenset[str] = frozenset(
-    {"USERPROFILE", "APPDATA", "LOCALAPPDATA", "HOMEDRIVE", "HOMEPATH", "USERNAME"}
+    {"USERPROFILE", "APPDATA", "LOCALAPPDATA", "HOMEDRIVE", "HOMEPATH", "USERNAME"},
 )
 
 

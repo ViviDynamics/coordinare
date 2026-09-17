@@ -235,8 +235,8 @@ class TestSubmissionTextCannotImpersonateTheWorkflow:
                     body="MARK_BODY",
                     title="MARK_TITLE",
                     labels=[{"name": "MARK_LABEL"}],
-                )
-            )
+                ),
+            ),
         )
         parsed = self._parsed_surfaces(payload)
 
@@ -308,7 +308,7 @@ class TestSubmissionTextCannotImpersonateTheWorkflow:
         safety depend on somebody else's validation rules staying as they are.
         """
         rendered = render_email(
-            build_extract(_issue(labels=[{"name": '<img src=x onerror="alert(1)">'}]))
+            build_extract(_issue(labels=[{"name": '<img src=x onerror="alert(1)">'}])),
         )
         assert "<img" not in rendered
 
@@ -336,7 +336,7 @@ class TestDestinationResolution:
                 "ISSUE_FORWARD_EMAIL_API_KEY": "k",
                 "ISSUE_FORWARD_EMAIL_TO": "team@example.com",
                 "ISSUE_FORWARD_EMAIL_FROM": "bot@example.com",
-            }
+            },
         )
         assert sorted(d.name for d in destinations) == ["email", "slack"]
 

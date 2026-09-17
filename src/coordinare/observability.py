@@ -31,7 +31,7 @@ __all__ = [
 # Module-level ContextVar for symphony name propagation (spec 057)
 # Updated by bind_symphony() and read by get_current_symphony()
 _current_symphony: contextvars.ContextVar[str] = contextvars.ContextVar(
-    "coordinare_symphony", default="__default__"
+    "coordinare_symphony", default="__default__",
 )
 
 

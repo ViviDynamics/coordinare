@@ -237,7 +237,7 @@ class HTTPPerformerService:
             status = await client.get_status()
         except PerformerAuthError as exc:
             logger.warning(
-                "http_performer.auth_failed", performer_id=self._config.id, error=str(exc)
+                "http_performer.auth_failed", performer_id=self._config.id, error=str(exc),
             )
             return {"status": "error", "reason": str(exc)}
         except PerformerUnreachableError as exc:
@@ -296,7 +296,7 @@ class HTTPPerformerService:
         effective_config = self._config
         if extra_volumes and self._config.mode != "subprocess":
             effective_config = self._config.model_copy(
-                update={"volumes": list(self._config.volumes) + list(extra_volumes)}
+                update={"volumes": list(self._config.volumes) + list(extra_volumes)},
             )
 
         # Ephemeral mode: spin up a fresh container before dispatching.
@@ -327,7 +327,7 @@ class HTTPPerformerService:
 
             try:
                 started = await self._runtime.start_ephemeral(
-                    effective_config, extra_labels=extra_labels
+                    effective_config, extra_labels=extra_labels,
                 )
             except performer_lifecycle.LifecycleError as exc:
                 logger.warning(
@@ -475,7 +475,7 @@ class HTTPPerformerService:
                 for attempt in (1, 2):
                     try:
                         await client.update_job_secrets(
-                            url_job_id, {"github_token": refreshed_token}
+                            url_job_id, {"github_token": refreshed_token},
                         )
                         self._secret_refresh_failed.pop(session_id, None)
                         break
@@ -551,7 +551,7 @@ class HTTPPerformerService:
                         # token (and finally the raw summary) so a terminal failure
                         # never logs error_reason=None and discards every signal.
                         error_reason = parsed_summary.get("reason") or parsed_summary.get(
-                            "inference_skipped_reason"
+                            "inference_skipped_reason",
                         )
                         if not error_reason:
                             status_token = parsed_summary.get("status")
@@ -853,7 +853,7 @@ class HTTPPerformerService:
                 secrets["OPENAI_BASE_URL"] = str(role_base_url)
         elif backend == "claude_code":
             _inject_claude_code_secrets(
-                secrets, role_base_url, role_api_key_env, role_auth_token_env
+                secrets, role_base_url, role_api_key_env, role_auth_token_env,
             )
         elif backend in {"opencode", "junie"}:
             # These backends can use either Anthropic or OpenAI providers;
@@ -904,8 +904,8 @@ class HTTPPerformerService:
                 "branch": branch,
                 "secrets": secrets,
                 "metadata": metadata,
-                "env_cache_path": env_cache_path if env_cache_path else None,
-            }
+                "env_cache_path": env_cache_path or None,
+            },
         )
 
     @staticmethod
@@ -1033,7 +1033,7 @@ class HTTPPerformerService:
         # configured PAT, sourced via WorkspaceManager.get_fresh_github_token);
         # fall back to the coordinare process env only when not provided.
         gh_token = str(card_context.get("_github_token") or "") or os.environ.get(
-            "GITHUB_TOKEN", ""
+            "GITHUB_TOKEN", "",
         )
         if gh_token:
             secrets["GITHUB_TOKEN"] = gh_token
@@ -1046,7 +1046,7 @@ class HTTPPerformerService:
         role_auth_token_env = card_context.get("auth_token_env")
         if bootstrap_backend == "claude_code":
             _inject_claude_code_secrets(
-                secrets, role_base_url, role_api_key_env, role_auth_token_env
+                secrets, role_base_url, role_api_key_env, role_auth_token_env,
             )
             openai_key = os.environ.get("OPENAI_API_KEY", "")
             if openai_key:
@@ -1086,7 +1086,7 @@ class HTTPPerformerService:
         # path as any other system package — the base image gains nothing. Empty
         # declared_services ⇒ no extra block (behavior unchanged).
         service_install_block = HTTPPerformerService._render_service_install_block(
-            card_context.get("declared_services") or [], cache_mount_path
+            card_context.get("declared_services") or [], cache_mount_path,
         )
         # 077: when coordinare has written an authoritative verify.sh from the
         # manifest, the agent must RUN it (not author it) — coordinare owns the
@@ -1383,7 +1383,7 @@ class HTTPPerformerService:
         # backend agent has user-facing context if it inspects the Score.
         symphony_name = str(card_context.get("symphony_name") or "")
         meta_src.setdefault(
-            "title", f"env_bootstrap: {symphony_name}" if symphony_name else "env_bootstrap"
+            "title", f"env_bootstrap: {symphony_name}" if symphony_name else "env_bootstrap",
         )
         meta_src.setdefault(
             "description",
@@ -1407,7 +1407,7 @@ class HTTPPerformerService:
                 # performer will populate. Without this, service inference
                 # short-circuits with skipped_reason=no_env_cache_path.
                 "env_cache_path": cache_mount_path or None,
-            }
+            },
         )
 
 

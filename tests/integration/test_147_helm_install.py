@@ -147,19 +147,19 @@ def _require_pod_is_starting_cleanly() -> None:
             raise AssertionError(
                 f"the cluster does not have {IMAGE} ({reason}). Load it:\n"
                 f"  docker build -t {IMAGE} -f Dockerfile.daemon .\n"
-                f"  kind load docker-image {IMAGE} --name <your-cluster>"
+                f"  kind load docker-image {IMAGE} --name <your-cluster>",
             )
         if reason and reason not in still_settling:
             raise AssertionError(
                 f"the controller container will not start: {reason}. "
-                f"{(state.get('waiting') or {}).get('message', '')}".strip()
+                f"{(state.get('waiting') or {}).get('message', '')}".strip(),
             )
         last = f"the container is still {reason or 'waiting'}"
         time.sleep(2)
 
     raise AssertionError(
         f"the release never started within 120s: {last}. The tests below would "
-        "otherwise report failures that have nothing to do with what is wrong."
+        "otherwise report failures that have nothing to do with what is wrong.",
     )
 
 
@@ -184,7 +184,7 @@ config:
   project_name: smoke
   github_project_number: 1
   poll_interval_seconds: 3600
-"""
+""",
     )
     _run("kubectl", "create", "namespace", NAMESPACE, check=False)
     _run("helm", "uninstall", RELEASE, "-n", NAMESPACE, check=False)
@@ -275,7 +275,7 @@ class TestTheDaemonActuallyReadsWhatTheChartGivesIt:
         ns, rel = release["namespace"], release["release"]
         for _ in range(30):
             result = _run(
-                "kubectl", "-n", ns, "logs", f"{rel}-coordinare-0", "--tail=100", check=False
+                "kubectl", "-n", ns, "logs", f"{rel}-coordinare-0", "--tail=100", check=False,
             )
             if "config_loaded" in result.stdout or "config_validation_error" in result.stdout:
                 return result.stdout
@@ -424,7 +424,7 @@ config:
       image: coordinare-performer:base
   github_api_url: http://127.0.0.1:{STUB_PORT}
   github_graphql_url: http://127.0.0.1:{STUB_PORT}/graphql
-"""
+""",
     )
     _run("helm", "uninstall", release, "-n", NAMESPACE, check=False)
     _run("helm", "install", release, CHART, "-n", NAMESPACE, "-f", str(values), timeout=180)

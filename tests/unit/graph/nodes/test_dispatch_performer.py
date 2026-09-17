@@ -61,7 +61,7 @@ class _Service:
         return {"status": self._health_status}
 
     async def dispatch_card(
-        self, card_context: dict[str, Any], workspace_info: WorkspaceInfo | None = None
+        self, card_context: dict[str, Any], workspace_info: WorkspaceInfo | None = None,
     ) -> dict[str, Any]:
         self.dispatched.append(card_context)
         self.last_workspace_info = workspace_info
@@ -544,7 +544,7 @@ async def test_persona_instructions_for_closing_review_stage() -> None:
     assert card_ctx["role"] == "closing_review"
     assert (
         card_ctx["persona_instructions"].startswith(
-            "Verify prior threads were addressed; resolve and approve."
+            "Verify prior threads were addressed; resolve and approve.",
         )
     )
 
@@ -1159,16 +1159,9 @@ async def test_dispatch_includes_backend_from_role_config() -> None:
     """dispatch_performer includes backend from PerformerRoleConfig in payload."""
     from coordinare.config import PerformerRoleConfig, PerformersConfig, ProjectConfiguration
 
-    config = ProjectConfiguration(**{
-        "project_name": "test",
-        "github_org": "org",
-        "github_project_number": 1,
-        "github_token": "tok",
-        "human_reviewers": ["alice"],
-        "performers": PerformersConfig(
+    config = ProjectConfiguration(project_name="test", github_org="org", github_project_number=1, github_token="tok", human_reviewers=["alice"], performers=PerformersConfig(
             implementer=PerformerRoleConfig(backend="claude_code"),
-        ),
-    })
+        ))
 
     svc = _Service()
     github = _GitHub()
@@ -1193,26 +1186,16 @@ async def test_dispatch_includes_model_from_self_hosted_mode() -> None:
     """080: dispatch resolves model + base_url + bearer auth from a self-hosted mode."""
     from coordinare.config import PerformerRoleConfig, PerformersConfig, ProjectConfiguration
 
-    config = ProjectConfiguration(**{
-        "project_name": "test",
-        "github_org": "org",
-        "github_project_number": 1,
-        "github_token": "tok",
-        "human_reviewers": ["alice"],
-        "endpoints": [
+    config = ProjectConfiguration(project_name="test", github_org="org", github_project_number=1, github_token="tok", human_reviewers=["alice"], endpoints=[
             {"name": "local-ollama", "kind": "litellm", "base_url": "https://proxy.internal/v1",
              "auth_env": "LITELLM_PROXY_KEY"},
-        ],
-        "model_endpoints": [
+        ], model_endpoints=[
             {"name": "sonnet-local-ollama", "endpoint": "local-ollama", "model": "claude-sonnet-4-20250514"},
-        ],
-        "modes": [
+        ], modes=[
             {"name": "single-sonnet", "strategy": "single", "tool": "sonnet-local-ollama"},
-        ],
-        "performers": PerformersConfig(
+        ], performers=PerformersConfig(
             implementer=PerformerRoleConfig(backend="claude_code", mode="single-sonnet"),
-        ),
-    })
+        ))
 
     svc = _Service()
     github = _GitHub()
@@ -1241,24 +1224,17 @@ async def test_dispatch_includes_orchestration_block_for_multi_model_mode() -> N
     """080: a non-single mode plumbs the orchestration block into card_context."""
     from coordinare.config import PerformerRoleConfig, PerformersConfig, ProjectConfiguration
 
-    config = ProjectConfiguration(**{
-        "project_name": "test", "github_org": "org", "github_project_number": 1,
-        "github_token": "tok", "human_reviewers": ["alice"],
-        "endpoints": [
+    config = ProjectConfiguration(project_name="test", github_org="org", github_project_number=1, github_token="tok", human_reviewers=["alice"], endpoints=[
             {"name": "local-ollama", "kind": "litellm", "base_url": "http://localhost:4000",
              "auth_env": "LITELLM_PROXY_AUTH_TOKEN"},
-        ],
-        "model_endpoints": [
+        ], model_endpoints=[
             {"name": "gptoss", "endpoint": "local-ollama", "model": "local/gpt-oss:120b"},
             {"name": "qwen", "endpoint": "local-ollama", "model": "local/qwen3.6:35b"},
-        ],
-        "modes": [
+        ], modes=[
             {"name": "always-x", "strategy": "always", "thinking": "gptoss", "tool": "qwen"},
-        ],
-        "performers": PerformersConfig(
+        ], performers=PerformersConfig(
             implementer=PerformerRoleConfig(backend="codex", mode="always-x"),
-        ),
-    })
+        ))
 
     svc = _Service()
     state = initial_state()
@@ -1283,16 +1259,9 @@ async def test_dispatch_single_mode_has_no_orchestration_block() -> None:
     """080: single-strategy modes carry NO orchestration block (no proxy)."""
     from coordinare.config import PerformerRoleConfig, PerformersConfig, ProjectConfiguration
 
-    config = ProjectConfiguration(**{
-        "project_name": "test", "github_org": "org", "github_project_number": 1,
-        "github_token": "tok", "human_reviewers": ["alice"],
-        "endpoints": [{"name": "anthropic-cloud", "kind": "anthropic", "auth_env": "ANTHROPIC_API_KEY"}],
-        "model_endpoints": [{"name": "sonnet", "endpoint": "anthropic-cloud", "model": "claude-sonnet-4-5"}],
-        "modes": [{"name": "single-sonnet", "strategy": "single", "tool": "sonnet"}],
-        "performers": PerformersConfig(
+    config = ProjectConfiguration(project_name="test", github_org="org", github_project_number=1, github_token="tok", human_reviewers=["alice"], endpoints=[{"name": "anthropic-cloud", "kind": "anthropic", "auth_env": "ANTHROPIC_API_KEY"}], model_endpoints=[{"name": "sonnet", "endpoint": "anthropic-cloud", "model": "claude-sonnet-4-5"}], modes=[{"name": "single-sonnet", "strategy": "single", "tool": "sonnet"}], performers=PerformersConfig(
             implementer=PerformerRoleConfig(backend="claude_code", mode="single-sonnet"),
-        ),
-    })
+        ))
 
     svc = _Service()
     state = initial_state()
@@ -1313,25 +1282,15 @@ async def test_dispatch_native_mode_sets_api_key_env_and_no_base_url() -> None:
     """080: a native (frontier) mode yields model + api_key_env and NO base_url override."""
     from coordinare.config import PerformerRoleConfig, PerformersConfig, ProjectConfiguration
 
-    config = ProjectConfiguration(**{
-        "project_name": "test",
-        "github_org": "org",
-        "github_project_number": 1,
-        "github_token": "tok",
-        "human_reviewers": ["alice"],
-        "endpoints": [
+    config = ProjectConfiguration(project_name="test", github_org="org", github_project_number=1, github_token="tok", human_reviewers=["alice"], endpoints=[
             {"name": "anthropic-cloud", "kind": "anthropic", "auth_env": "ANTHROPIC_API_KEY"},
-        ],
-        "model_endpoints": [
+        ], model_endpoints=[
             {"name": "sonnet-native", "endpoint": "anthropic-cloud", "model": "claude-sonnet-4-5"},
-        ],
-        "modes": [
+        ], modes=[
             {"name": "native-sonnet", "strategy": "single", "tool": "sonnet-native"},
-        ],
-        "performers": PerformersConfig(
+        ], performers=PerformersConfig(
             implementer=PerformerRoleConfig(backend="claude_code", mode="native-sonnet"),
-        ),
-    })
+        ))
 
     svc = _Service()
     github = _GitHub()
@@ -1358,16 +1317,9 @@ async def test_dispatch_omits_base_url_and_api_key_env_when_unset() -> None:
     """dispatch_performer omits base_url/api_key_env when not configured."""
     from coordinare.config import PerformerRoleConfig, PerformersConfig, ProjectConfiguration
 
-    config = ProjectConfiguration(**{
-        "project_name": "test",
-        "github_org": "org",
-        "github_project_number": 1,
-        "github_token": "tok",
-        "human_reviewers": ["alice"],
-        "performers": PerformersConfig(
+    config = ProjectConfiguration(project_name="test", github_org="org", github_project_number=1, github_token="tok", human_reviewers=["alice"], performers=PerformersConfig(
             implementer=PerformerRoleConfig(backend="claude_code"),
-        ),
-    })
+        ))
 
     svc = _Service()
     github = _GitHub()
@@ -1392,16 +1344,9 @@ async def test_dispatch_omits_model_when_not_set() -> None:
     """dispatch_performer omits model from payload when not configured."""
     from coordinare.config import PerformerRoleConfig, PerformersConfig, ProjectConfiguration
 
-    config = ProjectConfiguration(**{
-        "project_name": "test",
-        "github_org": "org",
-        "github_project_number": 1,
-        "github_token": "tok",
-        "human_reviewers": ["alice"],
-        "performers": PerformersConfig(
+    config = ProjectConfiguration(project_name="test", github_org="org", github_project_number=1, github_token="tok", human_reviewers=["alice"], performers=PerformersConfig(
             implementer=PerformerRoleConfig(backend="opencode"),
-        ),
-    })
+        ))
 
     svc = _Service()
     github = _GitHub()
@@ -2127,7 +2072,7 @@ class _GitHubWithFileContent(_GitHub):
 
 
 def _ready_env_cache_with_test_env_source(
-    tmp_path: Path, symphony_name: str, source: str
+    tmp_path: Path, symphony_name: str, source: str,
 ) -> dict:
     """A ready env_cache whose state carries a persisted agent-discovered test_env_source."""
     env_cache = _ready_env_cache(tmp_path, symphony_name)
@@ -2150,7 +2095,7 @@ async def test_dispatch_resolves_test_env_via_effective_config(tmp_path: Path) -
     symphony_name = "my-project"
     github = _GitHubWithFileContent(file_content="POSTGRESQL_PASSWORD=\nFOO=bar\n")
     env_cache = _ready_env_cache_with_test_env_source(
-        tmp_path, symphony_name, source=".env.test"
+        tmp_path, symphony_name, source=".env.test",
     )
     global_cfg = ProjectConfiguration(
         github_org="acme-org",

@@ -16,10 +16,10 @@ class TestReviewFindingsLift:
                     {
                         "path": "src/main.py",
                         "hunks": [
-                            {"header": "@@ -1,1 +1,1 @@", "start_line": 1, "end_line": 1}
+                            {"header": "@@ -1,1 +1,1 @@", "start_line": 1, "end_line": 1},
                         ],
                         "fully_in_diff": True,
-                    }
+                    },
                 ],
                 "diff_truncated": False,
                 "verdict": "changes_requested",
@@ -33,9 +33,9 @@ class TestReviewFindingsLift:
                         "why_blocking": "Documentation required",
                         "evidence": "def foo():",
                         "origin": "model",
-                    }
+                    },
                 ],
-            }
+            },
         }
 
         _lift_review_findings(state, report, "reviewing")
@@ -54,7 +54,7 @@ class TestReviewFindingsLift:
                 "verdict": "approved",
                 "covered_files": [],
                 "findings": [],
-            }
+            },
         }
 
         _lift_review_findings(state, report, "reviewing")
@@ -72,7 +72,7 @@ class TestReviewFindingsLift:
                 "changed_files": [],
                 "diff_truncated": False,
                 "covered_files": [],
-            }
+            },
         }
 
         _lift_review_findings(state, report, "implementing")
@@ -102,7 +102,7 @@ class TestReviewFindingsLift:
                 "why_blocking": "Because",
                 "evidence": "code",
                 "origin": "model",
-            }
+            },
         ]
         report = {
             "review": {
@@ -111,7 +111,7 @@ class TestReviewFindingsLift:
                 "verdict": "changes_requested",
                 "covered_files": [],
                 "findings": original_findings,
-            }
+            },
         }
 
         _lift_review_findings(state, report, "reviewing")
@@ -154,7 +154,7 @@ class TestReviewFindingsLift:
                         "origin": "model",
                     },
                 ],
-            }
+            },
         }
 
         _lift_review_findings(state, report, "reviewing")
@@ -173,7 +173,7 @@ class TestReviewFindingsLift:
                 "verdict": "changes_requested",
                 "covered_files": [],
                 "findings": [],
-            }
+            },
         }
 
         _lift_review_findings(state, report, "reviewing")

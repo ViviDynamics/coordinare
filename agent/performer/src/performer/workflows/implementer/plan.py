@@ -58,7 +58,6 @@ def select_lane(work_kind: str | None, workflow_env: dict | None = None) -> tupl
 
 class LaneNotForImplementer(Exception):
     """Raised when a work_kind should not reach the implementer stage."""
-    pass
 
 
 _LABEL_LANES: tuple[tuple[str, Lane], ...] = (
@@ -183,7 +182,7 @@ def build_plan(score, brief: dict | None) -> list[MilestonePlan]:
                 done_when=acceptance_criteria or "Acceptance criteria met",
                 lane=lane,
                 lane_source=lane_source,
-            )
+            ),
         ]
 
     work_kind = brief.get("work_kind")
@@ -212,7 +211,7 @@ def build_plan(score, brief: dict | None) -> list[MilestonePlan]:
                 done_when=acceptance_criteria or "Acceptance criteria met",
                 lane=lane,
                 lane_source=lane_source,
-            )
+            ),
         ]
 
     collapse = brief.get("implementer_single_turn", False)
@@ -227,7 +226,7 @@ def build_plan(score, brief: dict | None) -> list[MilestonePlan]:
                 done_when=str(m.get("done_when", ""))[:256],
                 lane=lane,
                 lane_source=lane_source,
-            )
+            ),
         )
 
     if collapse and len(milestones) > 1:
@@ -242,7 +241,7 @@ def build_plan(score, brief: dict | None) -> list[MilestonePlan]:
                 done_when=combined_done[:256],
                 lane=lane,
                 lane_source=lane_source,
-            )
+            ),
         ]
 
     log.info("plan.built", count=len(milestones), lane=lane, lane_source=lane_source)

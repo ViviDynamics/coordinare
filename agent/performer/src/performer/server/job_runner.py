@@ -54,7 +54,7 @@ _progress_cb_var: ContextVar[Callable[[list[Any], dict[str, Any] | None], None] 
 # into a ContextVar at _run() entry so the in-job loop can find it without a
 # back-reference to the runner. Contents must never be logged.
 _refreshed_secrets_var: ContextVar[dict[str, str] | None] = ContextVar(
-    "_refreshed_secrets", default=None
+    "_refreshed_secrets", default=None,
 )
 
 
@@ -95,7 +95,7 @@ class JobRunner:
         return self._status.job_id
 
     async def submit(
-        self, payload: JobInitPayload
+        self, payload: JobInitPayload,
     ) -> JobAcceptResponse | JobBusyResponse:
         async with self._lock:
             if self.current_job_id is not None:
@@ -162,7 +162,7 @@ class JobRunner:
             return JobAcceptResponse(job_id=payload.job_id, started_at=started)
 
     async def refresh_secrets(
-        self, job_id: str, secrets: dict[str, str]
+        self, job_id: str, secrets: dict[str, str],
     ) -> None:
         """Merge PATCH-delivered secrets into the running job's holder.
 
@@ -213,7 +213,7 @@ class JobRunner:
                     "finished_at": _utcnow(),
                     "result": result,
                     "progress_pct": 100,
-                }
+                },
             )
         except asyncio.CancelledError:
             self._status = self._status.model_copy(
@@ -225,7 +225,7 @@ class JobRunner:
                         summary="job cancelled",
                         error_code="cancelled",
                     ),
-                }
+                },
             )
             self._signal_update()
             raise
@@ -240,7 +240,7 @@ class JobRunner:
                         summary=_redact_secrets(f"{type(exc).__name__}: {str(exc)[:500]}"),
                         error_code="executor_error",
                     ),
-                }
+                },
             )
         finally:
             self._signal_update()
@@ -254,7 +254,7 @@ class JobRunner:
             raise JobNotFoundError(job_id)
         if self._live_events or self._live_metrics is not None:
             return self._status.model_copy(
-                update={"events": list(self._live_events), "metrics": self._live_metrics}
+                update={"events": list(self._live_events), "metrics": self._live_metrics},
             )
         return self._status
 

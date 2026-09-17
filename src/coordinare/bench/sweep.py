@@ -138,12 +138,12 @@ class SweepArtifact(BaseModel):
             lines.append(
                 "  - *fidelity caveat: the stub bypasses dispatch, so gate dimensions are "
                 "exercised structurally (materialize → inject → run → score) but most gate "
-                "deltas are expected ~0 until real-performer runs land (spec-134 follow-up).*"
+                "deltas are expected ~0 until real-performer runs land (spec-134 follow-up).*",
             )
         lines.append(
             f"- repeats per point: {self.repeats} (source: {self.repeats_source}"
             + (f", {self.noise_report_ref}" if self.noise_report_ref else "")
-            + ")"
+            + ")",
         )
         lines += ["", "## Points", "", "| point | kind | mean scalar | correctness | wall clock (s) | fingerprint |",
                   "|---|---|---|---|---|---|"]
@@ -156,7 +156,7 @@ class SweepArtifact(BaseModel):
             lines.append(
                 f"| {p.point_id}{dup} | {p.kind} | {scalar} | "
                 f"{'' if corr is None else f'{corr:.3f}'} | "
-                f"{'' if wall is None else f'{wall:.2f}'} | `{p.fingerprint}` |"
+                f"{'' if wall is None else f'{wall:.2f}'} | `{p.fingerprint}` |",
             )
         if self.deltas:
             lines += ["", "## Ablation — marginal effect vs baseline", "",
@@ -167,7 +167,7 @@ class SweepArtifact(BaseModel):
                     f"| {dl.dimension} | {dl.value!r} | "
                     f"{'' if dl.scalar_delta is None else f'{dl.scalar_delta:+.6g}'} | "
                     f"{dl.component_deltas.get('correctness_rate', 0.0):+.3f} | "
-                    f"{dl.component_deltas.get('wall_clock_seconds', 0.0):+.2f} |"
+                    f"{dl.component_deltas.get('wall_clock_seconds', 0.0):+.2f} |",
                 )
         if self.ranking:
             lines += ["", "## Ranking", ""]
@@ -317,7 +317,7 @@ def _real_point_config(config: Any) -> Any:
         if ep.mode != "ephemeral":
             if any(backend != ep.env.get("BACKEND") for backend in groups):
                 raise ValueError(
-                    f"real sweep endpoint {ep.id!r} must be ephemeral to select a harness"
+                    f"real sweep endpoint {ep.id!r} must be ephemeral to select a harness",
                 )
             endpoints.append(ep)
             continue
@@ -418,12 +418,12 @@ async def run_sweep(
         specs = enumerate_candidates(loaded)
     logger.info("bench.sweep_start", mode=mode, declared_points=len(specs), repeats=repeats)
 
-    run_kwargs: dict[str, Any] = dict(
-        repeats=repeats, weights=weights, judge=judge, judge_model=judge_model,
-        stub=stub, human_login=human_login, max_cycles=max_cycles,
-        cost_per_million_tokens=cost_per_million_tokens,
-        wall_clock_budget_seconds=wall_clock_budget_seconds,
-    )
+    run_kwargs: dict[str, Any] = {
+        "repeats": repeats, "weights": weights, "judge": judge, "judge_model": judge_model,
+        "stub": stub, "human_login": human_login, "max_cycles": max_cycles,
+        "cost_per_million_tokens": cost_per_million_tokens,
+        "wall_clock_budget_seconds": wall_clock_budget_seconds,
+    }
     results = [await _run_point(spec, loaded, fixtures, session, **run_kwargs) for spec in specs]
 
     baseline = next((r for r in results if r.kind == "baseline"), None)
@@ -438,7 +438,7 @@ async def run_sweep(
     if stub:
         notes.append(
             "substrate=stub: gate dimensions exercised structurally; most gate deltas "
-            "expected ~0 until real-performer runs land (spec-134 follow-up)"
+            "expected ~0 until real-performer runs land (spec-134 follow-up)",
         )
 
     artifact = SweepArtifact(
@@ -471,6 +471,6 @@ def _baseline_coinciding_notes(loaded: LoadedSpace) -> list[str]:
         if baseline_value in dim.choices:
             notes.append(
                 f"dimension {dim.name!r}: choice {baseline_value!r} coincides with the "
-                "baseline and was not re-run"
+                "baseline and was not re-run",
             )
     return notes

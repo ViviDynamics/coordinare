@@ -16,23 +16,23 @@ SHA40_OTHER = "b" * 40
 
 
 def _bounce_decision(**overrides: object) -> CIGateDecision:
-    base: dict[str, object] = dict(
-        verdict="bounce",
-        head_sha=SHA40,
-        required_checks=["integration-tests", "lint", "unit-tests"],
-        failed_checks=[
+    base: dict[str, object] = {
+        "verdict": "bounce",
+        "head_sha": SHA40,
+        "required_checks": ["integration-tests", "lint", "unit-tests"],
+        "failed_checks": [
             FailedCheck(
                 name="unit-tests",
                 conclusion="failure",
                 html_url="https://github.com/org/repo/actions/runs/12345",
                 last_log_line="FAILED tests/unit/test_foo.py::test_bar - AssertionError",
-            )
+            ),
         ],
-        pending_checks=[],
-        resolver_source="persona_check_map",
-        bounce_count_after=1,
-        decided_at="2026-05-28T14:23:11.482Z",
-    )
+        "pending_checks": [],
+        "resolver_source": "persona_check_map",
+        "bounce_count_after": 1,
+        "decided_at": "2026-05-28T14:23:11.482Z",
+    }
     base.update(overrides)
     return CIGateDecision(**base)  # type: ignore[arg-type]
 
@@ -144,7 +144,7 @@ def test_signature_stable_across_decided_at_changes() -> None:
 def test_signature_changes_when_failed_set_changes() -> None:
     d1 = _bounce_decision()
     d2 = _bounce_decision(
-        failed_checks=[FailedCheck(name="lint", conclusion="failure")]
+        failed_checks=[FailedCheck(name="lint", conclusion="failure")],
     )
     assert d1.signature() != d2.signature()
 

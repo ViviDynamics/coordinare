@@ -581,7 +581,7 @@ async def test_reconcile_resets_to_idle_when_card_in_done_column() -> None:
 async def test_reconcile_updates_phase_when_board_differs() -> None:
     github = MagicMock()
     github.poll_board = AsyncMock(
-        return_value={"snapshot": {"In Review": ["card-1"]}}
+        return_value={"snapshot": {"In Review": ["card-1"]}},
     )
     daemon = _make_daemon()
     daemon._state["github_service"] = github
@@ -597,7 +597,7 @@ async def test_reconcile_updates_phase_when_board_differs() -> None:
 async def test_reconcile_confirms_phase_when_board_matches() -> None:
     github = MagicMock()
     github.poll_board = AsyncMock(
-        return_value={"snapshot": {"In Progress": ["card-1"]}}
+        return_value={"snapshot": {"In Progress": ["card-1"]}},
     )
     daemon = _make_daemon()
     daemon._state["github_service"] = github
@@ -932,13 +932,13 @@ async def test_known_phase_transition_increments_metric() -> None:
     )
 
     before = METRICS.card_state_transitions_total.labels(
-        symphony="__default__", transition_type="idle_to_dispatch"
+        symphony="__default__", transition_type="idle_to_dispatch",
     )._value.get()
 
     await daemon.start()
 
     after = METRICS.card_state_transitions_total.labels(
-        symphony="__default__", transition_type="idle_to_dispatch"
+        symphony="__default__", transition_type="idle_to_dispatch",
     )._value.get()
     assert after == before + 1.0
 
@@ -1624,7 +1624,7 @@ def test_persist_active_sessions_round_trips_head_audit_fields() -> None:
             "phase": "monitoring_performer",
             "head_at_dispatch": "aaa111",
             "head_at_last_turn": "bbb222",
-        }
+        },
     }
     persisted = _persist_active_sessions(daemon._state["active_sessions"])
 
@@ -1678,7 +1678,7 @@ def test_persist_active_sessions_drops_malformed_repair_audit_entries() -> None:
                 {**good, "bogus_field": True},  # extra="forbid" → drop
                 "not-even-a-dict",  # wrong type → drop
             ],
-        }
+        },
     }
 
     persisted = _persist_active_sessions(live)
@@ -1837,7 +1837,7 @@ def _elig(card_id: str, reason: str):
     from coordinare.daemon import ELIGIBLE, SessionEligibility
 
     return SessionEligibility(
-        card_id=card_id, eligible=(reason == ELIGIBLE), reason=reason  # type: ignore[arg-type]
+        card_id=card_id, eligible=(reason == ELIGIBLE), reason=reason,  # type: ignore[arg-type]
     )
 
 
@@ -1912,7 +1912,7 @@ def test_the_rotation_does_not_stall_when_the_backlog_shrinks() -> None:
         # Two cards get un-blocked each round; whoever remains must still rotate.
         remaining = ids[: max(4, len(ids) - round_index)]
         seen |= daemon._blocked_sessions_to_poll(
-            {cid: _elig(cid, BLOCKED_COLUMN) for cid in remaining}
+            {cid: _elig(cid, BLOCKED_COLUMN) for cid in remaining},
         )
 
     assert len(seen) > 3, f"the window stalled on {sorted(seen)}"
@@ -1925,7 +1925,7 @@ def test_an_ineligible_non_blocked_session_is_never_polled() -> None:
     daemon = _daemon_for_poll()
 
     polled = daemon._blocked_sessions_to_poll(
-        {"dep": _elig("dep", DEPENDENCY_BLOCKED), "gone": _elig("gone", MISSING_CARD)}
+        {"dep": _elig("dep", DEPENDENCY_BLOCKED), "gone": _elig("gone", MISSING_CARD)},
     )
 
     assert polled == set()

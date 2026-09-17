@@ -29,7 +29,7 @@ _CHAT_COMPLETION_ID = "chatcmpl-dualproxy"
 
 
 def assemble_json(
-    response: LLMResponse, *, expose_plan_as: ExposePlanAs, wire_format: WireFormat
+    response: LLMResponse, *, expose_plan_as: ExposePlanAs, wire_format: WireFormat,
 ) -> dict[str, Any]:
     """Render a merged ``LLMResponse`` to the CLI's wire JSON body."""
     plan = response.reasoning
@@ -130,7 +130,7 @@ def _assemble_responses(resp: LLMResponse, plan: str | None, expose: ExposePlanA
 
 
 def assemble_sse(
-    response: LLMResponse, *, expose_plan_as: ExposePlanAs, wire_format: WireFormat
+    response: LLMResponse, *, expose_plan_as: ExposePlanAs, wire_format: WireFormat,
 ) -> list[str]:
     """Render a merged ``LLMResponse`` to an ordered list of SSE event blocks."""
     if wire_format == "anthropic":

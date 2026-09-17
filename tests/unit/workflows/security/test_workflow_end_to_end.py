@@ -156,8 +156,8 @@ def _toolkit(replies):
 
 
 def _score(**over):
-    base = dict(pr_diff=DIFF, implementation_brief={"work_kind": "feature"}, title="Add lookup", description="Look a user up by id",
-                pr_url="https://github.com/o/r/pull/7", owner_repo=("o", "r"), effective_github_token="tok", backend="codex", model="m", workflow_env={})
+    base = {"pr_diff": DIFF, "implementation_brief": {"work_kind": "feature"}, "title": "Add lookup", "description": "Look a user up by id",
+                "pr_url": "https://github.com/o/r/pull/7", "owner_repo": ("o", "r"), "effective_github_token": "tok", "backend": "codex", "model": "m", "workflow_env": {}}
     base.update(over)
     return SimpleNamespace(**base)
 

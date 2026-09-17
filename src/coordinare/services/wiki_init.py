@@ -170,17 +170,17 @@ class WikiInitService:
         if not job_succeeded:
             if self.register_failure(ec_state, error or "wiki-init job failed"):
                 await self.notify_blocked(
-                    notification_service, symphony_name, "wiki-init attempts exhausted", ec_state
+                    notification_service, symphony_name, "wiki-init attempts exhausted", ec_state,
                 )
             return
         if not pr_node_id:
             if self.register_failure(ec_state, "wiki-init produced no pull request"):
                 await self.notify_blocked(
-                    notification_service, symphony_name, "wiki-init produced no PR", ec_state
+                    notification_service, symphony_name, "wiki-init produced no PR", ec_state,
                 )
             return
         merged, reason = await self.try_auto_merge(
-            github, pr_node_id, trusted_bot_reviewers, ec_state=ec_state
+            github, pr_node_id, trusted_bot_reviewers, ec_state=ec_state,
         )
         if merged:
             self.mark_initialized(ec_state)
@@ -189,7 +189,7 @@ class WikiInitService:
         # even before the budget is exhausted (SC-007: never a silent deadlock).
         self.register_failure(ec_state, f"seed-wiki PR not auto-merged: {reason}")
         await self.notify_blocked(
-            notification_service, symphony_name, f"seed-wiki auto-merge blocked: {reason}", ec_state
+            notification_service, symphony_name, f"seed-wiki auto-merge blocked: {reason}", ec_state,
         )
 
     # ------------------------------------------------------------------
@@ -272,7 +272,7 @@ class WikiInitService:
                         "last_error": str(ec_state.last_wiki_init_error or ""),
                     },
                     dedup_key=f"wiki_init_exhausted:{symphony_name}",
-                )
+                ),
             )
         except Exception as exc:  # pragma: no cover — notification must never crash the gate
             logger.warning("wiki_init.notify_failed", symphony=symphony_name, error=str(exc))

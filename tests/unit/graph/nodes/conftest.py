@@ -49,7 +49,7 @@ def assert_current_card_invariant():
 
 @pytest.fixture(autouse=True)
 def _i3_invariant_guard(
-    monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+    monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest,
 ) -> None:
     """Auto-enforce I3 after every ``check_board`` invocation in this folder.
 

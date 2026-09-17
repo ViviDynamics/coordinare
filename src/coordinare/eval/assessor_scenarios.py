@@ -94,7 +94,7 @@ async def run_all(*, live: bool, only: str | None) -> list[Score]:
             f"ready={assessment.get('ready')}  "
             f"questions={len(assessment.get('questions', []))}  "
             f"criteria_source={assessment.get('criteria_source')}  "
-            f"steps_ms={json.dumps(durations)}"
+            f"steps_ms={json.dumps(durations)}",
         )
         for note in score.notes:
             print(f"         - {note}")

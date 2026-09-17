@@ -169,7 +169,7 @@ async def test_bootstrap_completion_flushes_snapshot_to_disk(tmp_path) -> None:
 
     store = StateStore(tmp_path / "state.json", MagicMock())
     daemon = CoordinareDaemon(
-        AsyncMock(), max_cycles=1, sleep_func=AsyncMock(), state_store=store
+        AsyncMock(), max_cycles=1, sleep_func=AsyncMock(), state_store=store,
     )
     cache = tmp_path / "sym"
     cache.mkdir()
@@ -179,7 +179,7 @@ async def test_bootstrap_completion_flushes_snapshot_to_disk(tmp_path) -> None:
     daemon._state["env_cache"] = {"sym": _ec_state(cache)}
 
     svc = EnvCacheService(
-        SimpleNamespace(global_config=SimpleNamespace(env_bootstrap_max_attempts=3))
+        SimpleNamespace(global_config=SimpleNamespace(env_bootstrap_max_attempts=3)),
     )
     svc.on_bootstrap_complete("sym", success=True, state=daemon._state)
     # Drain the flush task scheduled by the completion handler.

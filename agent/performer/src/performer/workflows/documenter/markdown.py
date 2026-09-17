@@ -100,7 +100,7 @@ def headings(text: str) -> list[Heading]:
         stripped = line.lstrip()
 
         # Toggle fence state
-        if stripped.startswith("```") or stripped.startswith("~~~"):
+        if stripped.startswith(("```", "~~~")):
             in_fence = not in_fence
             continue
 
@@ -133,7 +133,7 @@ def headings(text: str) -> list[Heading]:
                         line_no=line_no,
                         has_link=has_link,
                         has_code=has_code,
-                    )
+                    ),
                 )
 
     return result
@@ -216,7 +216,7 @@ def _outside_fences(text: str) -> list[tuple[int, str]]:
     fence_char = ""
     for line_no, line in enumerate(text.replace("\r\n", "\n").split("\n")):
         stripped = line.lstrip()
-        if stripped.startswith("```") or stripped.startswith("~~~"):
+        if stripped.startswith(("```", "~~~")):
             marker = stripped[:3]
             if not in_fence:
                 in_fence, fence_char = True, marker

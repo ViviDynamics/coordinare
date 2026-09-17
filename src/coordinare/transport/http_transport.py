@@ -82,13 +82,13 @@ class PerformerHTTPClient:
         url = f"{self._base_url}{path}"
         try:
             response = await self._client.request(
-                method, url, headers=self._headers(), json=json
+                method, url, headers=self._headers(), json=json,
             )
         except httpx.TimeoutException as exc:
             raise TransportTimeoutError(self._timeout) from exc
         except httpx.HTTPError as exc:
             raise PerformerUnreachableError(
-                f"performer at {self._base_url} unreachable: {exc}"
+                f"performer at {self._base_url} unreachable: {exc}",
             ) from exc
         if response.status_code in {401, 403}:
             raise PerformerAuthError(f"{response.status_code} from {self._base_url}{path}")
@@ -100,7 +100,7 @@ class PerformerHTTPClient:
         return PerformerStatus.model_validate(r.json())
 
     async def post_job(
-        self, payload: JobInitPayload
+        self, payload: JobInitPayload,
     ) -> JobAcceptResponse | JobBusyResponse:
         body = payload.model_dump(mode="json", exclude_none=True)
         # SecretStr serializes as "**********" in JSON mode; unwrap to real values.
@@ -136,7 +136,7 @@ class PerformerHTTPClient:
         request body is never logged.
         """
         r = await self._request(
-            "PATCH", f"/jobs/{job_id}/secrets", json={"secrets": secrets}
+            "PATCH", f"/jobs/{job_id}/secrets", json={"secrets": secrets},
         )
         r.raise_for_status()
 
@@ -154,7 +154,7 @@ class PerformerHTTPClient:
         url = f"{self._base_url}/jobs/{job_id}/stream"
         try:
             async with self._client.stream(
-                "GET", url, headers=self._headers()
+                "GET", url, headers=self._headers(),
             ) as response:
                 if response.status_code in {401, 403}:
                     raise PerformerAuthError(f"{response.status_code} from {url}")
@@ -168,7 +168,7 @@ class PerformerHTTPClient:
             raise TransportTimeoutError(self._timeout) from exc
         except httpx.HTTPError as exc:
             raise PerformerUnreachableError(
-                f"performer at {self._base_url} unreachable: {exc}"
+                f"performer at {self._base_url} unreachable: {exc}",
             ) from exc
 
     async def __aenter__(self) -> PerformerHTTPClient:

@@ -30,8 +30,7 @@ def _make_config(max_concurrent_cards: int = 1, **overrides: Any) -> MagicMock:
 def _make_board(todo_ids: list[str], **extra_columns: list[str]) -> dict:
     """Return a fake board dict suitable for github_service.poll_board()."""
     snapshot: dict[str, list[str]] = {"TODO": todo_ids}
-    for col, ids in extra_columns.items():
-        snapshot[col] = ids
+    snapshot.update(extra_columns)
     titles = {cid: f"Card {cid}" for cid in todo_ids}
     descriptions = {cid: f"Desc for {cid}" for cid in todo_ids}
     issue_numbers = {cid: i + 1 for i, cid in enumerate(todo_ids)}
@@ -69,7 +68,7 @@ def test_config_max_concurrent_cards_default(tmp_path: Any) -> None:
         'github_org: "acme"\n'
         "github_project_number: 12\n"
         'github_token: "ghp_test"\n'
-        'human_reviewers: ["alice"]\n'
+        'human_reviewers: ["alice"]\n',
     )
     config = ProjectConfiguration.from_yaml(path)
     assert config.max_concurrent_cards == 1
@@ -85,7 +84,7 @@ def test_config_max_concurrent_cards_custom(tmp_path: Any) -> None:
         "github_project_number: 12\n"
         'github_token: "ghp_test"\n'
         'human_reviewers: ["alice"]\n'
-        "max_concurrent_cards: 5\n"
+        "max_concurrent_cards: 5\n",
     )
     config = ProjectConfiguration.from_yaml(path)
     assert config.max_concurrent_cards == 5
@@ -103,7 +102,7 @@ def test_config_max_concurrent_cards_min_boundary(tmp_path: Any) -> None:
         "github_project_number: 12\n"
         'github_token: "ghp_test"\n'
         'human_reviewers: ["alice"]\n'
-        "max_concurrent_cards: 0\n"
+        "max_concurrent_cards: 0\n",
     )
     with pytest.raises(ValidationError):
         ProjectConfiguration.from_yaml(path)
@@ -121,7 +120,7 @@ def test_config_max_concurrent_cards_max_boundary(tmp_path: Any) -> None:
         "github_project_number: 12\n"
         'github_token: "ghp_test"\n'
         'human_reviewers: ["alice"]\n'
-        "max_concurrent_cards: 21\n"
+        "max_concurrent_cards: 21\n",
     )
     with pytest.raises(ValidationError):
         ProjectConfiguration.from_yaml(path)
@@ -137,7 +136,7 @@ def test_config_max_concurrent_cards_20_allowed(tmp_path: Any) -> None:
         "github_project_number: 12\n"
         'github_token: "ghp_test"\n'
         'human_reviewers: ["alice"]\n'
-        "max_concurrent_cards: 20\n"
+        "max_concurrent_cards: 20\n",
     )
     config = ProjectConfiguration.from_yaml(path)
     assert config.max_concurrent_cards == 20

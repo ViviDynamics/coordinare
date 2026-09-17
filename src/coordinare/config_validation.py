@@ -159,7 +159,7 @@ def _load_raw_yaml(path: Path) -> dict:
     if not isinstance(loaded, dict):
         raise OSError(
             f"Config file {path} must contain a YAML mapping at the top level, "
-            f"got {type(loaded).__name__}"
+            f"got {type(loaded).__name__}",
         )
     return loaded
 
@@ -237,7 +237,7 @@ def wrap_legacy_config(raw: dict) -> dict:
                 # passes schema construction. validate_config() reports the missing field
                 # as a ConfigFieldError separately.
                 "github_project_number": project_number or 1,
-            }
+            },
         ],
         "orchestra": {"mode": "shared_pool", "performers": []},
     }
@@ -300,7 +300,7 @@ def pre_validate_raw(
                     removed_in=entry.removed_in,
                     replacement_path=entry.replacement_path,
                     migration_hint=entry.migration_hint,
-                )
+                ),
             )
         elif key not in all_known:
             matches = difflib.get_close_matches(key, known_fields, n=1, cutoff=0.6)
@@ -320,7 +320,7 @@ def pre_validate_raw(
                     error_type=ErrorType.unknown_field,
                     fix_hint=hint,
                     source="file",
-                )
+                ),
             )
 
     # Fail validation when 'orchestra' is present without 'symphonies': the orchestra block
@@ -339,7 +339,7 @@ def pre_validate_raw(
                     "Add a 'symphonies' section or remove 'orchestra'."
                 ),
                 source="file",
-            )
+            ),
         )
 
     return errors, warnings
@@ -358,7 +358,7 @@ def pre_validate_raw(
 # this pre-dispatch turns a late in-container failure into an actionable config
 # error. (Add ``pi`` here when the Pi backend lands — 077 T015.)
 SUPPORTED_PERFORMER_BACKENDS: frozenset[str] = frozenset(
-    {"opencode", "opencode_compat", "junie", "claude_code", "codex", "hermes", "pi", "openclaw"}
+    {"opencode", "opencode_compat", "junie", "claude_code", "codex", "hermes", "pi", "openclaw"},
 )
 
 
@@ -392,7 +392,7 @@ def _validate_performer_backends(raw: dict) -> list[ConfigFieldError]:
                         f"(Note: the claude_code backend's canonical name is 'claude_code', not 'claude'.)"
                     ),
                     source="file",
-                )
+                ),
             )
     return errors
 
@@ -419,7 +419,7 @@ def validate_config(
                     error_type=ErrorType.missing,
                     fix_hint=str(exc),
                     source=None,
-                )
+                ),
             ],
             passed=False,
         )
@@ -437,7 +437,7 @@ def validate_config(
                         error_type=ErrorType.missing,
                         fix_hint=str(exc),
                         source=None,
-                    )
+                    ),
                 ],
                 passed=False,
             )
@@ -449,7 +449,7 @@ def validate_config(
                         error_type=ErrorType.invalid_value,
                         fix_hint=str(exc),
                         source=None,
-                    )
+                    ),
                 ],
                 passed=False,
             )
@@ -487,7 +487,7 @@ def validate_config(
                             error_type=ErrorType.invalid_value,
                             fix_hint=str(_eff_exc),
                             source="file",
-                        )
+                        ),
                     )
                 except ValidationError as _val_exc:
                     for _verr in _val_exc.errors():
@@ -499,7 +499,7 @@ def validate_config(
                                 error_type=_map_pydantic_error_type(str(_verr.get("type", ""))),
                                 fix_hint=str(_verr.get("msg", "")),
                                 source="file",
-                            )
+                            ),
                         )
         else:
             # Legacy format: auto-wrap and parse.
@@ -525,7 +525,7 @@ def validate_config(
                             f"Got: {_env_lpn!r}"
                         ),
                         source="env_var:COORDINARE_GITHUB_PROJECT_NUMBER",
-                    )
+                    ),
                 )
             if not _legacy_project_number:
                 if not _project_number_parse_failed:
@@ -538,7 +538,7 @@ def validate_config(
                                 "Set it in your config file or via COORDINARE_GITHUB_PROJECT_NUMBER."
                             ),
                             source=None,
-                        )
+                        ),
                     )
                 # Inject placeholder so wrap_legacy_config produces a valid symphony dict
                 # (ge=1 must pass for CoordinareConfiguration construction to succeed).
@@ -561,7 +561,7 @@ def validate_config(
                             "Set it in your config file or via COORDINARE_PROJECT_NAME."
                         ),
                         source=None,
-                    )
+                    ),
                 )
     except ValidationError as exc:
         for err in exc.errors():
@@ -592,7 +592,7 @@ def validate_config(
                     error_type=error_type,
                     fix_hint=str(err.get("msg", "")),
                     source=source,
-                )
+                ),
             )
 
     # 077 FR-007: reject unknown performer-backend names pre-dispatch.

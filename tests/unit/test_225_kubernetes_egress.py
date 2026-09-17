@@ -127,7 +127,7 @@ class TestTheProbeNeverClaimsProtectionItCannotShow:
 
     def test_an_unreachable_baseline_is_inconclusive_not_enforced(self) -> None:
         verdict = EnforcementVerdict(
-            enforced=False, baseline_reachable=False, detail="target never started"
+            enforced=False, baseline_reachable=False, detail="target never started",
         )
         assert not verdict.conclusive
         assert not verdict.enforced
@@ -230,11 +230,11 @@ class TestTheProbeCannotReportEnforcementItDidNotObserve:
             def read_namespaced_pod(self, *, name, namespace):
                 if "target" in name:
                     return SimpleNamespace(
-                        status=SimpleNamespace(phase="Running", pod_ip="10.0.0.9")
+                        status=SimpleNamespace(phase="Running", pod_ip="10.0.0.9"),
                     )
                 if "control" in name:
                     return SimpleNamespace(
-                        status=SimpleNamespace(phase="Succeeded", pod_ip="10.0.0.8")
+                        status=SimpleNamespace(phase="Succeeded", pod_ip="10.0.0.8"),
                     )
                 return SimpleNamespace(status=SimpleNamespace(phase=denied_phase, pod_ip=None))
 
@@ -258,7 +258,7 @@ class TestTheProbeCannotReportEnforcementItDidNotObserve:
                 namespace="ns",
                 image="img",
                 timeout_s=4,
-            )
+            ),
         )
 
     def test_a_restricted_pod_that_never_ran_is_inconclusive(self) -> None:
@@ -328,7 +328,7 @@ class TestCleanupIsExhaustiveAndLoud:
             def read_namespaced_pod(self, *, name, namespace):
                 if "target" in name:
                     return SimpleNamespace(
-                        status=SimpleNamespace(phase="Running", pod_ip="10.0.0.9")
+                        status=SimpleNamespace(phase="Running", pod_ip="10.0.0.9"),
                     )
                 return SimpleNamespace(status=SimpleNamespace(phase="Succeeded", pod_ip=None))
 
@@ -356,7 +356,7 @@ class TestCleanupIsExhaustiveAndLoud:
                 namespace="ns",
                 image="img",
                 timeout_s=4,
-            )
+            ),
         )
 
         assert any("control" in d for d in deleted), (
@@ -415,11 +415,11 @@ class TestTheProbeDoesNotConcludeFromASingleReach:
             def read_namespaced_pod(self, *, name, namespace):
                 if "target" in name:
                     return SimpleNamespace(
-                        status=SimpleNamespace(phase="Running", pod_ip="10.0.0.9")
+                        status=SimpleNamespace(phase="Running", pod_ip="10.0.0.9"),
                     )
                 if "control" in name:
                     return SimpleNamespace(
-                        status=SimpleNamespace(phase="Succeeded", pod_ip="10.0.0.8")
+                        status=SimpleNamespace(phase="Succeeded", pod_ip="10.0.0.8"),
                     )
                 phase, _ = self._denied_script(name)
                 return SimpleNamespace(status=SimpleNamespace(phase=phase, pod_ip=None))
@@ -431,7 +431,7 @@ class TestTheProbeDoesNotConcludeFromASingleReach:
 
             def delete_namespaced_pod(self, *, name, **kwargs):
                 deleted.append(name)
-                return None
+                return
 
         class FakeNet:
             def create_namespaced_network_policy(self, **kwargs):
@@ -447,7 +447,7 @@ class TestTheProbeDoesNotConcludeFromASingleReach:
                 namespace="ns",
                 image="img",
                 timeout_s=4,
-            )
+            ),
         )
         return verdict, created_denied, deleted
 

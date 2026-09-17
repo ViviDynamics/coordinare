@@ -107,7 +107,7 @@ class PiBackend:
             home = env.get("HOME") or os.path.expanduser("~")
             agent_dir = pathlib.Path(home) / ".pi" / "agent"
             self._write_provider_config(
-                agent_dir, provider_name, provider_base_url, provider_env_key, model
+                agent_dir, provider_name, provider_base_url, provider_env_key, model,
             )
             self._provider = provider_name
             cmd += ["--provider", provider_name]
@@ -226,8 +226,8 @@ class PiBackend:
                         if model
                         else []
                     ),
-                }
-            }
+                },
+            },
         }
         path = agent_dir / "models.json"
         path.write_text(json.dumps(config, indent=2))
@@ -388,7 +388,7 @@ def _build_task_prompt(score: Score, *, stand_path: pathlib.Path | None = None) 
             if isinstance(_d, dict) and _d.get("id"):
                 parts.append(
                     f"- {_d['id']}: {_d.get('body', '')} — implementer says: "
-                    f"{_d.get('reason', '')}"
+                    f"{_d.get('reason', '')}",
                 )
     if score.relay_feedback:
         parts += ["", "## Human Feedback (address ALL of these)", ""]

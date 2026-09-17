@@ -274,7 +274,7 @@ class HermesBackend:
 
         self._status = BackendStatus(state="working")
         self._reader_task = asyncio.create_task(
-            self._wait_and_parse(), name="hermes-reader"
+            self._wait_and_parse(), name="hermes-reader",
         )
         log.info("hermes started", pid=self._proc.pid, model=resolved_model)
 
@@ -342,7 +342,7 @@ class HermesBackend:
 
         if not self._terminal:
             self._status = BackendStatus(
-                state="error", error_reason="stopped"
+                state="error", error_reason="stopped",
             )
         self._finalize()
         log.info("hermes stopped")
@@ -395,7 +395,7 @@ class HermesBackend:
             return None
 
     def _build_subprocess_env(
-        self, *, profile_dir: Path, api_key: str, base_url: str
+        self, *, profile_dir: Path, api_key: str, base_url: str,
     ) -> dict[str, str]:
         base = {
             k: v for k, v in os.environ.items()
@@ -511,7 +511,7 @@ class HermesBackend:
 
     def _emit(self, type: BackendEventType, text: str, detail: str = "") -> None:
         self._event_buffer.append(
-            BackendEvent(type=type, text=text[:_MAX_TEXT], detail=detail)
+            BackendEvent(type=type, text=text[:_MAX_TEXT], detail=detail),
         )
 
     def _finalize(self) -> None:
@@ -610,7 +610,7 @@ class HermesBackend:
                 tokens_processed=tokens,
                 output=output_text,
             )
-            event_text = summary if summary else (output_text or "")
+            event_text = summary or (output_text or "")
             if event_text:
                 self._emit(BackendEventType.progress, event_text[:_MAX_TEXT])
             self._finalize()
@@ -813,7 +813,7 @@ def _build_task_prompt(
             if isinstance(_d, dict) and _d.get("id"):
                 parts.append(
                     f"- {_d['id']}: {_d.get('body', '')} — implementer says: "
-                    f"{_d.get('reason', '')}"
+                    f"{_d.get('reason', '')}",
                 )
 
     if queued_feedback or score.relay_feedback:

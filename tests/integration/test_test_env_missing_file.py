@@ -40,7 +40,7 @@ class _FakeGitHub:
 
 class TestConfiguredMissingFileErrors:
     def test_host_path_missing_raises_naming_path_and_field(
-        self, tmp_path: Path
+        self, tmp_path: Path,
     ) -> None:
         absent = tmp_path / "does-not-exist.env"
 
@@ -52,7 +52,7 @@ class TestConfiguredMissingFileErrors:
         assert "host_path" in msg  # the originating field is named.
 
     def test_repo_path_missing_on_disk_raises_naming_path_and_field(
-        self, tmp_path: Path
+        self, tmp_path: Path,
     ) -> None:
         repo_root = tmp_path / "symphony_repo"
         repo_root.mkdir()

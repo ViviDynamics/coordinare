@@ -50,7 +50,7 @@ WRITERS = frozenset(
         "create_routing_entry",
         "update_routing_entry",
         "delete_routing_entry",
-    }
+    },
 )
 
 
@@ -182,7 +182,7 @@ def _client(config_path: Path) -> TestClient:
     daemon.running = True
     daemon._cycle_active = False
     app = create_dashboard_app(
-        DashboardStore(), daemon, MagicMock(), MagicMock(), config_path=config_path
+        DashboardStore(), daemon, MagicMock(), MagicMock(), config_path=config_path,
     )
     client = TestClient(app, base_url="http://127.0.0.1:8090")
     # The daemon the app closed over, so a test can assert on the in-memory state a
@@ -265,7 +265,7 @@ class TestTheFiveRoutesRefuseAndPreserve:
 
     @pytest.mark.parametrize(("method", "url", "payload"), CASES)
     def test_no_version_is_refused_and_nothing_is_written(
-        self, temp_config_path, method, url, payload
+        self, temp_config_path, method, url, payload,
     ) -> None:
         client = _client(temp_config_path)
         before = temp_config_path.read_bytes()
@@ -277,7 +277,7 @@ class TestTheFiveRoutesRefuseAndPreserve:
 
     @pytest.mark.parametrize(("method", "url", "payload"), CASES)
     def test_a_stale_version_is_refused_and_nothing_is_written(
-        self, temp_config_path, method, url, payload
+        self, temp_config_path, method, url, payload,
     ) -> None:
         client = _client(temp_config_path)
         stale = compute_content_hash(temp_config_path)
@@ -291,7 +291,7 @@ class TestTheFiveRoutesRefuseAndPreserve:
         assert "# meanwhile" in temp_config_path.read_text()
 
     def test_a_refused_delete_leaves_the_symphony_in_memory_too(
-        self, temp_config_path
+        self, temp_config_path,
     ) -> None:
         """SC-003 — the file is not the only state this handler mutates.
 
@@ -462,7 +462,7 @@ def _fetch_calls(text: str) -> list[tuple[str, str, str]]:
                             match.group(1),
                             text[start + 1 : index],
                             text[max(0, start - _LOOKBACK) : start],
-                        )
+                        ),
                     )
                     break
     return out
@@ -741,13 +741,13 @@ class TestTheTwoKindsOf409AreDistinguishable:
         daemon._cycle_active = False
         client = TestClient(
             create_dashboard_app(
-                DashboardStore(), daemon, MagicMock(), MagicMock(), config_path=temp_config_path
+                DashboardStore(), daemon, MagicMock(), MagicMock(), config_path=temp_config_path,
             ),
             base_url="http://127.0.0.1:8090",
         )
 
         res = client.delete(
-            "/api/symphonies/demo", headers={"If-Match": compute_content_hash(temp_config_path)}
+            "/api/symphonies/demo", headers={"If-Match": compute_content_hash(temp_config_path)},
         )
 
         assert res.status_code == 409
@@ -798,7 +798,7 @@ class TestARefusalTouchesNoStateAtAll:
 
     @pytest.mark.parametrize(("method", "url", "payload"), CASES)
     def test_no_version_leaves_memory_untouched(
-        self, temp_config_path, method, url, payload
+        self, temp_config_path, method, url, payload,
     ) -> None:
         client = _client(temp_config_path)
         before = self._snapshot(client.daemon)
@@ -813,7 +813,7 @@ class TestARefusalTouchesNoStateAtAll:
 
     @pytest.mark.parametrize(("method", "url", "payload"), CASES)
     def test_a_stale_version_leaves_memory_untouched(
-        self, temp_config_path, method, url, payload
+        self, temp_config_path, method, url, payload,
     ) -> None:
         client = _client(temp_config_path)
         stale = compute_content_hash(temp_config_path)
@@ -821,7 +821,7 @@ class TestARefusalTouchesNoStateAtAll:
         before = self._snapshot(client.daemon)
 
         resp = TestTheFiveRoutesRefuseAndPreserve._send(
-            client, method, url, payload, headers={"If-Match": stale}
+            client, method, url, payload, headers={"If-Match": stale},
         )
 
         assert resp.status_code == 409, f"{method.upper()} {url}: {resp.text}"
@@ -958,7 +958,7 @@ class TestAConflictIsReportedUsefully:
                 # A wrapper call's response handling lives inside the wrapper, not
                 # after the call, so that is where to look for it.
                 wrapper = re.search(
-                    rf"function\s+{re.escape(callee)}\s*\(.*?\n\}}", source, re.S
+                    rf"function\s+{re.escape(callee)}\s*\(.*?\n\}}", source, re.DOTALL,
                 )
                 following += wrapper.group(0) if wrapper else ""
             sites.append((key, following))
@@ -1023,10 +1023,10 @@ class TestAnUnreadableConfigIsNotACrash:
         return False
 
     @pytest.mark.parametrize(
-        ("method", "url", "payload"), TestTheFiveRoutesRefuseAndPreserve.CASES
+        ("method", "url", "payload"), TestTheFiveRoutesRefuseAndPreserve.CASES,
     )
     def test_a_present_but_unreadable_config_is_403(
-        self, temp_config_path, method, url, payload
+        self, temp_config_path, method, url, payload,
     ) -> None:
         client = _client(temp_config_path)
         version = compute_content_hash(temp_config_path)
@@ -1035,7 +1035,7 @@ class TestAnUnreadableConfigIsNotACrash:
             pytest.skip("cannot make a file unreadable as this user")
         try:
             resp = TestTheFiveRoutesRefuseAndPreserve._send(
-                client, method, url, payload, headers={"If-Match": version}
+                client, method, url, payload, headers={"If-Match": version},
             )
         finally:
             temp_config_path.chmod(0o644)
@@ -1385,7 +1385,7 @@ class TestThePersonaValueErrorCarriesNoPath:
         ),
     )
     def test_losing_the_race_does_not_leak_it_either(
-        self, temp_config_path, monkeypatch, method, url, payload
+        self, temp_config_path, monkeypatch, method, url, payload,
     ) -> None:
         """The file vanishing between the handler's is_file() and the write.
 
@@ -1407,7 +1407,7 @@ class TestThePersonaValueErrorCarriesNoPath:
         monkeypatch.setattr("coordinare.dashboard.save_persona", vanish, raising=False)
 
         resp = TestTheFiveRoutesRefuseAndPreserve._send(
-            client, method, url, payload, headers={"If-Match": version}
+            client, method, url, payload, headers={"If-Match": version},
         )
 
         body = resp.text
@@ -1474,7 +1474,7 @@ class TestThe204CarriesItsVersion:
         version = client.get("/api/personas").headers["ETag"]
 
         reset = client.delete(
-            "/api/personas/implementer", headers={"If-Match": version}
+            "/api/personas/implementer", headers={"If-Match": version},
         )
 
         assert reset.status_code == 204
@@ -1529,7 +1529,7 @@ class TestAMalformedConfigIsARefusalNotACrash:
     )
     @pytest.mark.parametrize("method", ("put", "delete"))
     def test_it_answers_rather_than_raising(
-        self, temp_config_path, label, payload, expected_reason, method
+        self, temp_config_path, label, payload, expected_reason, method,
     ) -> None:
         client = _client(temp_config_path)
         version = self._corrupt(temp_config_path, payload)
@@ -1638,7 +1638,7 @@ class TestTheIfMatchHeaderIsParsedAsAHeaderNotAString:
 
     @pytest.mark.parametrize("header", (",,", '""', "  ", "W/"))
     def test_a_header_that_names_no_version_is_not_a_pass(
-        self, temp_config_path, header
+        self, temp_config_path, header,
     ) -> None:
         """Any-match must not degrade to no-match-required on an empty list.
 
@@ -1745,7 +1745,7 @@ class TestTheDerivationsNoticeTheSourceChanging:
         before = _reaching_a_writer()
 
         mutated = source.replace(
-            "def _version_headers(", "def _brand_new_writer_helper(x):\n    save_section(x)\n\n\ndef _version_headers(", 1
+            "def _version_headers(", "def _brand_new_writer_helper(x):\n    save_section(x)\n\n\ndef _version_headers(", 1,
         )
         after = _reaching_a_writer_for(mutated)
 

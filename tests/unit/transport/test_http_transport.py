@@ -44,7 +44,7 @@ def _payload(job_id: str = "job-1") -> JobInitPayload:
 
 
 def _client_with(
-    handler: httpx.MockTransport, *, auth_token: str | None = None
+    handler: httpx.MockTransport, *, auth_token: str | None = None,
 ) -> PerformerHTTPClient:
     return PerformerHTTPClient(
         "http://performer.test",
@@ -81,7 +81,7 @@ async def test_post_job_202_returns_accept() -> None:
         assert request.method == "POST"
         assert request.url.path == "/jobs"
         return httpx.Response(
-            202, json={"accepted": True, "job_id": "job-1", "started_at": _started_at()}
+            202, json={"accepted": True, "job_id": "job-1", "started_at": _started_at()},
         )
 
     client = _client_with(httpx.MockTransport(handler))
@@ -95,7 +95,7 @@ async def test_post_job_202_returns_accept() -> None:
 async def test_post_job_409_returns_busy() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
-            409, json={"accepted": False, "reason": "busy", "retry_after_s": 5}
+            409, json={"accepted": False, "reason": "busy", "retry_after_s": 5},
         )
 
     client = _client_with(httpx.MockTransport(handler))

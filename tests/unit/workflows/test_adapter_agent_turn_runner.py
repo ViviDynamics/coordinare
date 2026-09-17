@@ -23,11 +23,11 @@ def temp_git_repo():
     subprocess.run(["git", "init"], cwd=repo_path, check=True, capture_output=True)
     subprocess.run(
         ["git", "config", "user.email", "test@example.com"],
-        cwd=repo_path, check=True, capture_output=True
+        cwd=repo_path, check=True, capture_output=True,
     )
     subprocess.run(
         ["git", "config", "user.name", "Test User"],
-        cwd=repo_path, check=True, capture_output=True
+        cwd=repo_path, check=True, capture_output=True,
     )
 
     (repo_path / "README.md").write_text("# Test")
@@ -83,11 +83,11 @@ class FakeBackend:
             if self.poll_count < self.polls_until_done:
                 return BackendStatus(state="working", progress=f"poll {self.poll_count}")
             return BackendStatus(state="done", output="backend completed successfully")
-        elif self.behavior == "error":
+        if self.behavior == "error":
             if self.poll_count < self.polls_until_done:
                 return BackendStatus(state="working")
             return BackendStatus(state="error", error_reason="backend failed")
-        elif self.behavior == "timeout":
+        if self.behavior == "timeout":
             return BackendStatus(state="working")
         return BackendStatus(state="working")
 
@@ -245,7 +245,7 @@ async def test_build_agent_turn_runner_git_tracking(stand, temp_git_repo):
             subprocess.run(["git", "add", "test_file.py"], cwd=stand.path, check=True, capture_output=True)
             subprocess.run(
                 ["git", "commit", "-m", "Add tests"],
-                cwd=stand.path, check=True, capture_output=True
+                cwd=stand.path, check=True, capture_output=True,
             )
 
     def committing_factory(backend_name):

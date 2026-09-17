@@ -58,8 +58,8 @@ def _toolkit(replies: list[dict]):
 
 
 def _score(**over):
-    base = dict(pr_diff=DIFF, relay_feedback=[], implementation_brief={}, title="Add div", description="Divide numbers",
-                pr_url="https://github.com/o/r/pull/7", owner_repo=("o", "r"), effective_github_token="tok", backend="codex", model="m", workflow_env={})
+    base = {"pr_diff": DIFF, "relay_feedback": [], "implementation_brief": {}, "title": "Add div", "description": "Divide numbers",
+                "pr_url": "https://github.com/o/r/pull/7", "owner_repo": ("o", "r"), "effective_github_token": "tok", "backend": "codex", "model": "m", "workflow_env": {}}
     base.update(over)
     return SimpleNamespace(**base)
 
@@ -84,7 +84,7 @@ async def test_clean_diff_is_approved_with_one_comment_review():
     assert steps == ["reviewer.intake", "reviewer.survey", "reviewer.findings", "reviewer.gate", "reviewer.post", "reviewer.report"]
     assert set(result.metrics.step_durations_ms) >= {"intake", "survey", "findings", "gate", "post", "report"}
     assert result.report["workflow_metrics"]["model_calls"] == 2
-    assert set(STATES) >= set(s.split(".", 1)[1] for s in steps)
+    assert {s.split(".", 1)[1] for s in steps} <= set(STATES)
 
 
 @pytest.mark.asyncio

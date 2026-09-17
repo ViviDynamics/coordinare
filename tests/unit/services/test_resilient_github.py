@@ -38,7 +38,7 @@ class _FakeClient:
         self.calls: list[tuple[object, dict[str, Any]]] = []
 
     async def _execute_async(
-        self, query: object, variable_values: dict[str, Any]
+        self, query: object, variable_values: dict[str, Any],
     ) -> Any:
         self.calls.append((query, variable_values))
         resp = self._responses.pop(0)

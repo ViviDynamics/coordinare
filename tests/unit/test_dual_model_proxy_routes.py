@@ -30,8 +30,8 @@ def _mock_client() -> httpx.AsyncClient:
             200,
             json={
                 "choices": [
-                    {"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}
-                ]
+                    {"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"},
+                ],
             },
         )
 

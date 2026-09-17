@@ -173,8 +173,7 @@ def parse_unified_diff(text: str) -> list[ChangedFile]:
                     src = current_source.split("\t")[0].strip()
                     if src.startswith('"') and src.endswith('"'):
                         src = _decode_git_quoted_path(src[1:-1])
-                    if src.startswith("a/"):
-                        src = src[2:]
+                    src = src.removeprefix("a/")
                     # 412 round 45: no trim after the decode -- the payload
                     # is byte-exact, and git quotes filenames with leading
                     # or trailing spaces precisely so they survive the
@@ -191,19 +190,18 @@ def parse_unified_diff(text: str) -> list[ChangedFile]:
                     # 412 round 17: git escapes the quoted payload -- decode
                     # it rather than keeping the raw escape spelling.
                     rest = _decode_git_quoted_path(rest[1:-1])
-                if rest.startswith("b/"):
-                    rest = rest[2:]
+                rest = rest.removeprefix("b/")
                 if rest:
                     current_file = rest
             continue
 
         # Detect rename or copy: "rename from/to" / "copy from/to" metadata
-        if line.startswith("rename from ") or line.startswith("rename to ") or line.startswith("copy from ") or line.startswith("copy to "):
+        if line.startswith(("rename from ", "rename to ", "copy from ", "copy to ")):
             # 412 round 5: the exact rename target. A rename-only section has
             # no "+++ b/" line to refine the header's greedy split, which
             # mis-splits a path containing " b/" into "bar.md".
             # 412 round 14: copy-only sections carry "copy to" instead.
-            if (line.startswith("rename to ") or line.startswith("copy to ")) and current_file is not None and not current_hunks:
+            if line.startswith(("rename to ", "copy to ")) and current_file is not None and not current_hunks:
                 # 412 round 17: a quoted metadata target is git-escaped;
                 # decode it rather than stripping the quotes around the raw
                 # escapes.
@@ -245,12 +243,12 @@ def parse_unified_diff(text: str) -> list[ChangedFile]:
                     start_line=start_line,
                     end_line=end_line,
                     lines=hunk_lines,
-                )
+                ),
             )
             continue
 
         # Collect lines in the current hunk (context or added/removed)
-        if current_hunks and (line.startswith("+") or line.startswith("-") or line.startswith(" ")):
+        if current_hunks and line.startswith(("+", "-", " ")):
             if current_hunks:
                 current_hunks[-1].lines.append(line)
 
@@ -387,14 +385,14 @@ def unread_beyond_truncation(files: list[ChangedFile], diff_text: str) -> list[C
         # truth -- the argv filter needs it (a cut-through deletion is not
         # on disk) even though ``deleted`` itself is cleared for coverage.
         out[-1] = out[-1].model_copy(
-            update={"fully_in_diff": False, "deleted": False, "deleted_before_cut": out[-1].deleted}
+            update={"fully_in_diff": False, "deleted": False, "deleted_before_cut": out[-1].deleted},
         )
         # 412 round 12: a bare note gives no trustworthy account of the hidden
         # tail -- append an unopenable phantom so the coverage gates hold on
         # the unnamed remainder instead of passing on the visible subset once
         # the cut-through file itself is opened.
         out.append(
-            ChangedFile(path=_UNNAMED_TAIL_PATH, hunks=[], fully_in_diff=False, opened_by_survey=False)
+            ChangedFile(path=_UNNAMED_TAIL_PATH, hunks=[], fully_in_diff=False, opened_by_survey=False),
         )
         return out
     parsed = {f.path for f in files}

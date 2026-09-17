@@ -217,6 +217,6 @@ async def fetch_new_issue_comments(
                 body=str(c.get("body", "")),
                 created_at=str(c.get("created_at", "")),
                 card_id=card_id,
-            )
+            ),
         )
     return events

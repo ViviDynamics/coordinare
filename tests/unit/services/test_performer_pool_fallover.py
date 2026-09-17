@@ -56,13 +56,13 @@ def test_select_skips_first_busy_tries_second(
     state1 = pool._registrations["perf-1"]
     state1.availability = "busy"
     state1.capabilities = PerformerCapabilities(
-        backends=["claude_code"], tool_flags=["git"]
+        backends=["claude_code"], tool_flags=["git"],
     )
 
     state2 = pool._registrations["perf-2"]
     state2.availability = "idle"
     state2.capabilities = PerformerCapabilities(
-        backends=["claude_code"], tool_flags=["git"]
+        backends=["claude_code"], tool_flags=["git"],
     )
 
     candidates = pool.select_for(role="implementing", backend="claude_code", required_flags=set())
@@ -83,13 +83,13 @@ def test_select_returns_none_when_all_busy(
     state1 = pool._registrations["perf-1"]
     state1.availability = "busy"
     state1.capabilities = PerformerCapabilities(
-        backends=["claude_code"], tool_flags=["git"]
+        backends=["claude_code"], tool_flags=["git"],
     )
 
     state2 = pool._registrations["perf-2"]
     state2.availability = "busy"
     state2.capabilities = PerformerCapabilities(
-        backends=["claude_code"], tool_flags=["git"]
+        backends=["claude_code"], tool_flags=["git"],
     )
 
     candidates = pool.select_for(role="implementing", backend="claude_code", required_flags=set())

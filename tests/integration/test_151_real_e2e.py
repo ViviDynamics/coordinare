@@ -23,7 +23,7 @@ _CONFIG = Path(__file__).resolve().parents[2] / "specs" / "151-real-performers" 
 
 
 async def test_real_run_reaches_terminal_with_multiple_dispatches(
-    tmp_path: Path, require_docker: None
+    tmp_path: Path, require_docker: None,
 ) -> None:
     run_dir = tmp_path / "run"
     await run_board([tiny_fixture()], run_dir, stub=False, config_path=str(_CONFIG))

@@ -115,7 +115,7 @@ class AppAuth:
         try:
             data = response.json()
             token: str = data["token"]
-            expires_dt = datetime.fromisoformat(data["expires_at"].replace("Z", "+00:00"))
+            expires_dt = datetime.fromisoformat(data["expires_at"])
         except (KeyError, ValueError) as exc:
             msg = f"installation token response malformed: {exc}"
             raise TransientGitHubError(msg) from exc

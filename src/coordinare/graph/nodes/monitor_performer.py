@@ -104,7 +104,7 @@ def _recent_event_text(events: Any) -> list[str]:
 
 
 def merge_performer_events(
-    existing: list[Any], reported: list[Any], *, cap: int = MAX_PERFORMER_EVENTS
+    existing: list[Any], reported: list[Any], *, cap: int = MAX_PERFORMER_EVENTS,
 ) -> list[Any]:
     """Merge a backend's re-reported event list into what we already hold (358).
 
@@ -168,7 +168,7 @@ TERMINAL_SUCCESS_STATES: frozenset[str] = frozenset({
 # ``nothing_to_scan`` skips re-scanning the same head instead of re-running
 # the whole stage it just completed.
 VERDICT_STAGES: frozenset[str] = frozenset(
-    {"reviewing", "security", "qa", "documenting", "closing_review"}
+    {"reviewing", "security", "qa", "documenting", "closing_review"},
 )
 EXPECTED_STAGE_MARKER: dict[str, frozenset[str]] = {
     "reviewing": frozenset({"approved", "nothing_to_review"}),
@@ -190,7 +190,7 @@ EXPECTED_STAGE_MARKER: dict[str, frozenset[str]] = {
 # the two processes (coordinare + performer container) because there is no
 # shared library between them; if you add a role here, add it there too.
 SENTINEL_STAGES: frozenset[str] = frozenset(
-    {"implementing", "reviewing", "security", "qa", "documenting"}
+    {"implementing", "reviewing", "security", "qa", "documenting"},
 )
 
 # 072: per-role zero-progress guardrail applies to non-implementer
@@ -198,7 +198,7 @@ SENTINEL_STAGES: frozenset[str] = frozenset(
 # single-signal (head-delta only) guardrail from 070 — commits ARE the
 # progress signal there.
 ZERO_PROGRESS_REVIEW_STAGES: frozenset[str] = frozenset(
-    {"reviewing", "security", "qa", "documenting"}
+    {"reviewing", "security", "qa", "documenting"},
 )
 
 # 072 FR-072-10: terminal markers that may carry a settled head_after worth
@@ -526,7 +526,7 @@ def _apply_feedback_dispositions(
 
 
 def _evaluate_success_floor(
-    state: CoordinareState, status: dict[str, Any]
+    state: CoordinareState, status: dict[str, Any],
 ) -> tuple[dict[str, Any], bool]:
     """126 (contract F1-F6, D4/D5): the implementer terminal-success floor.
 
@@ -583,7 +583,7 @@ def _evaluate_success_floor(
                         f"The implementer completed without moving the head "
                         f"({origin}) and {reason}: "
                         f"{', '.join(str(d.get('id')) for d in disputed)} — "
-                        f"operator adjudication required."
+                        f"operator adjudication required.",
                     ],
                     "agent_dispatch": {},
                     "agent_dispatch_at": None,
@@ -646,7 +646,7 @@ def _evaluate_success_floor(
             "open_questions": [
                 f"The implementer reported done twice without moving the head "
                 f"({origin}) and without disputing the outstanding feedback:\n"
-                f"{item_lines}\nOperator triage required."
+                f"{item_lines}\nOperator triage required.",
             ],
             "agent_dispatch": {},
             "agent_dispatch_at": None,
@@ -656,7 +656,7 @@ def _evaluate_success_floor(
 
 
 def _resolve_dispute_round(
-    state: CoordinareState, raiser_stage: str, *, passed: bool
+    state: CoordinareState, raiser_stage: str, *, passed: bool,
 ) -> None:
     """126 (contract D2/D3): the raiser's next verdict adjudicates its disputes.
 
@@ -687,7 +687,7 @@ def _resolve_dispute_round(
 
 
 def _record_stage_verdict(
-    state: CoordinareState, marker: str, status: dict[str, Any]
+    state: CoordinareState, marker: str, status: dict[str, Any],
 ) -> None:
     """125 (contract R1-R4): record a passing verdict slot for the stage.
 
@@ -897,7 +897,7 @@ def _feedback_cycle_exhausted(
     if mentions:
         header_bits.append(mentions)
     header_bits.append(
-        f"**Triage needed — feedback loop hit {max_cycles}-cycle limit.**"
+        f"**Triage needed — feedback loop hit {max_cycles}-cycle limit.**",
     )
     lines: list[str] = [" ".join(header_bits), ""]
 
@@ -1465,7 +1465,7 @@ async def _evaluate_pr_checks_gate(
             age = (datetime.now(UTC) - last_polled).total_seconds()
             if age < poll_interval:
                 logger.debug(
-                    "pr_checks_gate.fast_path_reuse", pr=pr_num, age=round(age, 1)
+                    "pr_checks_gate.fast_path_reuse", pr=pr_num, age=round(age, 1),
                 )
                 return {"phase": "monitoring_performer"}, True
         except (KeyError, ValueError, TypeError):
@@ -1480,7 +1480,7 @@ async def _evaluate_pr_checks_gate(
     except Exception as exc:
         if getattr(cfg, "fail_open_on_error", True):
             logger.warning(
-                "pr_checks_gate.fail_open_on_error", pr=pr_num, error=str(exc)
+                "pr_checks_gate.fail_open_on_error", pr=pr_num, error=str(exc),
             )
             return {}, False
         logger.warning("pr_checks_gate.error_blocking", pr=pr_num, error=str(exc))
@@ -1494,7 +1494,7 @@ async def _evaluate_pr_checks_gate(
                     {
                         "body": f"PR checks gate failed to query GitHub: {exc}",
                         "author_login": "coordinare",
-                    }
+                    },
                 ],
             },
             True,
@@ -1599,7 +1599,7 @@ async def _evaluate_pr_checks_gate(
                 slice_size = max(800, remaining // slots_left)
                 try:
                     tail = await github.fetch_failed_job_log(
-                        owner, repo, job_id, max_chars=slice_size
+                        owner, repo, job_id, max_chars=slice_size,
                     )
                 except Exception as exc:
                     logger.warning(
@@ -1612,7 +1612,7 @@ async def _evaluate_pr_checks_gate(
                 if not tail:
                     continue
                 log_blocks.append(
-                    f"**Log tail (job {job_id}, check {name})**:\n```\n{tail}\n```"
+                    f"**Log tail (job {job_id}, check {name})**:\n```\n{tail}\n```",
                 )
                 remaining = max(0, remaining - len(tail))
                 if remaining <= 0:
@@ -1819,7 +1819,7 @@ def _build_repair_mandate(
                 "conclusion": fc.conclusion,
                 "normalized_reason": normalize_reason(title, summary),
                 "html_url": fc.html_url,
-            }
+            },
         )
     return {
         "type": "baseline_repair",
@@ -2023,13 +2023,13 @@ async def _evaluate_repair_guard(
                 kind="rejection",
                 now_iso=now_iso,
                 detail=detail,
-            )
+            ),
         )
         open_qs = list(state.get("open_questions") or [])
         open_qs.append(
             f"Autonomous baseline repair (attempt {attempt}) on head {head_sha[:12]} "
             f"was rejected by the test-integrity guard and NOT landed: {detail} "
-            "A human must review and resolve the inherited base-branch failure."
+            "A human must review and resolve the inherited base-branch failure.",
         )
         await _post_repair_comment(
             state,
@@ -2091,7 +2091,7 @@ async def _evaluate_repair_guard(
     # (3) Independent adversarial reviewer — only when the static half cleared.
     try:
         reviewer_safe, reviewer_detail = await _dispatch_repair_reviewer(
-            state=state, card_id=card_id, diff=diff or "", pending=pending
+            state=state, card_id=card_id, diff=diff or "", pending=pending,
         )
     except Exception as exc:
         logger.warning(
@@ -2135,7 +2135,7 @@ async def _evaluate_repair_guard(
         head_sha=head_sha,
     )
     return {
-        "repair_audit": [*audit, static_record, reviewer_record, acceptance_record]
+        "repair_audit": [*audit, static_record, reviewer_record, acceptance_record],
     }, False
 
 
@@ -2158,7 +2158,7 @@ def _build_baseline_index(
             continue
         conclusion = entry.conclusion or "failure"
         signature, normalized = make_failure_signature(
-            entry.name, conclusion, entry.title, entry.summary
+            entry.name, conclusion, entry.title, entry.summary,
         )
         index[entry.name] = BaselineFailure(
             name=entry.name,
@@ -2242,7 +2242,7 @@ async def _classify_head_failures(
                 title = None
                 summary = None
             head_sig, head_reason = make_failure_signature(
-                name, conclusion, title, summary
+                name, conclusion, title, summary,
             )
             base_failure = baseline_index.get(name) if baseline_index else None
             fc = FailedCheckWithSignature(
@@ -2253,7 +2253,7 @@ async def _classify_head_failures(
                 baseline_signature=base_failure.signature if base_failure else None,
             )
             origin = classify_failure_origin(
-                fc, head_reason, baseline_index, env_patterns=env_patterns
+                fc, head_reason, baseline_index, env_patterns=env_patterns,
             )
             if env_on:
                 from coordinare.services.env_signature import EnvCause
@@ -2306,7 +2306,7 @@ async def _classify_head_failures(
         return result
     except Exception as exc:
         logger.warning(
-            "ci_gate.classification_failed", card_id=card_id, error=str(exc)
+            "ci_gate.classification_failed", card_id=card_id, error=str(exc),
         )
         return {}
 
@@ -2651,7 +2651,7 @@ async def _evaluate_ci_gate(
         # causing a repeated FORBIDDEN → fallback → WARNING on every poll for
         # tokens that lack admin:read on branchProtectionRules.
         _svc_cache: dict[tuple[str, str], PrChecksService] = getattr(
-            github, "_pr_checks_service_cache", None
+            github, "_pr_checks_service_cache", None,
         ) or {}
         if not hasattr(github, "_pr_checks_service_cache"):
             github._pr_checks_service_cache = _svc_cache
@@ -2976,12 +2976,12 @@ async def _evaluate_ci_gate(
                     kind="escalation",
                     now_iso=now_iso,
                     detail=reason,
-                )
+                ),
             )
             open_questions = list(state.get("open_questions") or [])
             open_questions.append(reason)
             await _post_repair_comment(
-                state, f"🤖 **Baseline repair budget exhausted.** {reason}"
+                state, f"🤖 **Baseline repair budget exhausted.** {reason}",
             )
             logger.warning(
                 "ci_gate.repair_budget_exhausted",
@@ -3089,7 +3089,7 @@ async def _evaluate_ci_gate(
                         f"for {len(repair_mandate['inherited_checks'])} inherited "
                         f"failure(s)."
                     ),
-                )
+                ),
             )
             bounce_updates["repair_audit"] = repair_audit
         return (bounce_updates, True)
@@ -3146,7 +3146,7 @@ async def _evaluate_baseline_prevention_gate(
         # _evaluate_ci_gate) so the branch-protection FORBIDDEN flag survives
         # between poll cycles instead of resetting on every evaluation.
         _svc_cache: dict[tuple[str, str], PrChecksService] = getattr(
-            github, "_pr_checks_service_cache", None
+            github, "_pr_checks_service_cache", None,
         ) or {}
         if not hasattr(github, "_pr_checks_service_cache"):
             github._pr_checks_service_cache = _svc_cache
@@ -3164,7 +3164,7 @@ async def _evaluate_baseline_prevention_gate(
         scope = _get_session_persona_scope(state, card_id)
         persona_check_map = _get_persona_check_map(state)
         decision = evaluate_base_gate(
-            base_rollup, scope, persona_check_map=persona_check_map
+            base_rollup, scope, persona_check_map=persona_check_map,
         )
 
         if decision.decision == "BLOCK":
@@ -3614,7 +3614,7 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
                 f"In that window it emitted {_ev.total_events} events, "
                 f"ran {_ev.tool_uses} commands and completed {_ev.completions} steps."
                 + (f" Judged not converging: {state['convergence_reason']}"
-                   if state.get("convergence_reason") else "")
+                   if state.get("convergence_reason") else ""),
             ]
             return state
 
@@ -3691,7 +3691,7 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
                             await move_card_or_warn(board_provider, card_id, "BLOCKED")
                         except Exception:
                             logger.warning(
-                                "move_card_to_blocked_failed", card_id=card_id
+                                "move_card_to_blocked_failed", card_id=card_id,
                             )
                     state["phase"] = "blocked"
                     state["open_questions"] = [reason]
@@ -3933,7 +3933,7 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
                             model_marker=marker,
                             gating_count=len(gating),
                             severities=sorted(
-                                {str(f.get("severity")) for f in gating}
+                                {str(f.get("severity")) for f in gating},
                             ),
                         )
                         marker = "security_failed"
@@ -4313,7 +4313,7 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
                         f"The `{stage}` performer made no forward progress for "
                         f"{round(_stalled_for)}s (stall watchdog) and exhausted the "
                         f"{_budget}-retry budget in {_window_h}h — likely a wedged "
-                        f"upstream model. Operator intervention required."
+                        f"upstream model. Operator intervention required.",
                     ]
                     state["agent_dispatch"] = {}
                     state["agent_dispatch_at"] = None
@@ -4461,7 +4461,7 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
             # lifetime; reset only on un-block) so it stays off the content budget
             # and the accounting is consistent with the system_error/unknown path.
             state["transient_error_cycles"] = int(  # type: ignore[typeddict-unknown-key]
-                state.get("transient_error_cycles") or 0
+                state.get("transient_error_cycles") or 0,
             ) + 1
             if stage in ("reviewing", "closing_review"):
                 # 169: the reviewer workflow holds when it could not post its one
@@ -4471,7 +4471,7 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
                 state["open_questions"] = [
                     f"The reviewer hit an environment blocker ({_reason}). The card is parked in the "
                     "blocked column: check GitHub API access from the performer and the size of the "
-                    "injected diff, then re-run the review stage."
+                    "injected diff, then re-run the review stage.",
                 ]
             elif stage == "documenting":
                 # 171: the documenter workflow holds when the tree was dirty at
@@ -4480,7 +4480,7 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
                 state["open_questions"] = [
                     f"The documenter hit an environment blocker ({_reason}). The card is parked in the "
                     "blocked column: check the workspace for leftover changes and the push path for the "
-                    "branch, then re-run the documenting stage."
+                    "branch, then re-run the documenting stage.",
                 ]
             elif stage == "closing_review":
                 # 172: the closer workflow holds when it could not read the review
@@ -4489,7 +4489,7 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
                 state["system_error_reason"] = f"the closing review could not complete (no code defect):\n{_reason}"
                 state["open_questions"] = [
                     f"The closer hit an environment blocker ({_reason}). The card is parked in the blocked "
-                    "column: check GitHub API access from the performer, then re-run the closing review."
+                    "column: check GitHub API access from the performer, then re-run the closing review.",
                 ]
             elif stage == "security":
                 # 170: the security workflow holds when a scanner is missing or broken,
@@ -4500,7 +4500,7 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
                     f"The security stage hit an environment blocker ({_reason}). The card is parked in the "
                     "blocked column: the hold names the tools the model chose and what went wrong with each, "
                     "so check those run in the performer image, then GitHub API access from the performer and "
-                    "the size of the injected diff, then re-run the security stage."
+                    "the size of the injected diff, then re-run the security stage.",
                 ]
             else:
                 state["system_error_reason"] = (
@@ -4511,7 +4511,7 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
                     "The implementer's local test gate hit an environment blocker "
                     f"(env-cache reason: {_reason}). The card is parked in the blocked "
                     "column — no code change will fix this; an operator must repair the "
-                    "performer environment / env cache before the stage can re-run."
+                    "performer environment / env cache before the stage can re-run.",
                 ]
             state["agent_dispatch"] = {}
             state["agent_dispatch_at"] = None
@@ -4577,7 +4577,7 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
                 # the CI gate (no point CI-gating a no-op); never touches the
                 # content/transient budgets.
                 floor_updates, floor_stop = _evaluate_success_floor(
-                    state, status if isinstance(status, dict) else {}
+                    state, status if isinstance(status, dict) else {},
                 )
                 for key, value in floor_updates.items():
                     state[key] = value  # type: ignore[literal-required]
@@ -4593,14 +4593,14 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
                 # forward it. No-op at all flag defaults (SC-006).
                 if _pending_repair_dispatch(state) is not None:
                     guard_updates, guard_stop = await _evaluate_repair_guard(
-                        state, card_id, pr_url_for_gate
+                        state, card_id, pr_url_for_gate,
                     )
                     for key, value in guard_updates.items():
                         state[key] = value  # type: ignore[literal-required]
                     if guard_stop:
                         return state
                 ci_updates, ci_stop = await _evaluate_ci_gate(
-                    state, card_id, pr_url_for_gate
+                    state, card_id, pr_url_for_gate,
                 )
                 for key, value in ci_updates.items():
                     state[key] = value  # type: ignore[literal-required]
@@ -4675,7 +4675,7 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
                 # 064: Closer PR-checks gate — block handoff until required
                 # GitHub checks pass on the PR's HEAD commit.
                 gate_updates, gate_stop = await _evaluate_pr_checks_gate(
-                    state, card_id, pr_url
+                    state, card_id, pr_url,
                 )
                 for key, value in gate_updates.items():
                     state[key] = value  # type: ignore[literal-required]
@@ -4731,7 +4731,7 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
                                 },
                                 source="lifecycle",
                                 dedup_key=f"ready_for_review:{card_id}",
-                            )
+                            ),
                         )
                     except Exception as exc:
                         logger.warning("ready_for_review_notification_failed", error=str(exc))
@@ -4821,7 +4821,7 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
                     f"The implementer's local test gate failed "
                     f"{_count - 1} consecutive self-fix attempt(s) (budget "
                     f"{_max_attempts}) without converging. Failing output:\n"
-                    f"{_fail_blob}"
+                    f"{_fail_blob}",
                 ]
                 state["agent_dispatch"] = {}
                 state["agent_dispatch_at"] = None
@@ -4869,7 +4869,7 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
                     f"The `{stage}` performer rejected this card "
                     f"(`status=changes_requested`) but returned no structured "
                     f"comments and no prose body, even after a re-review. "
-                    f"Nothing to relay to the implementer. Operator triage required."
+                    f"Nothing to relay to the implementer. Operator triage required.",
                 ]
                 state["agent_dispatch"] = {}
                 state["agent_dispatch_at"] = None
@@ -4890,7 +4890,7 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
             # implementer success floor and the disposition contract can hold
             # this completion to account.
             comments = _stamp_feedback_bounce(
-                state, comments, raiser=stage, origin_sha=_settled_head(status)
+                state, comments, raiser=stage, origin_sha=_settled_head(status),
             )
             state["relay_feedback"] = comments  # type: ignore[typeddict-unknown-key]
             # 123 US5 (FR-012/FR-013/FR-014): when REVIEWER feedback spans 2+
@@ -4909,7 +4909,7 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
                         classify_feedback_concerns,
                     )
                     categories = classify_feedback_concerns(
-                        [{"body": body, "comments": comments}]
+                        [{"body": body, "comments": comments}],
                     )
                     if len(set(categories)) >= 2:
                         next_stage = "assessing"
@@ -5025,7 +5025,7 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
             _resolve_dispute_round(state, "qa", passed=False)
             # 126 (L1): stamp the QA round for the implementer floor.
             failures = _stamp_feedback_bounce(
-                state, failures, raiser="qa", origin_sha=_settled_head(status)
+                state, failures, raiser="qa", origin_sha=_settled_head(status),
             )
             state["relay_feedback"] = failures  # type: ignore[typeddict-unknown-key]
             state["performer_stage"] = "implementing"
@@ -5168,7 +5168,7 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
             state["open_questions"] = [
                 f"Performer stage '{stage}' idle-timed-out the configured "
                 f"max ({_budget}) retries in {_window_h}h for card {card_id}. "
-                "Operator intervention required."
+                "Operator intervention required.",
             ]
             return state
 
@@ -5215,7 +5215,7 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
                 f"{_eo_budget + 1} attempt(s) for card {card_id}. This is "
                 "typically a model-capability limit on a card too large for "
                 "the configured model — consider a stronger model for this "
-                "role or splitting the card. Operator intervention required."
+                "role or splitting the card. Operator intervention required.",
             ]
             return state
 
@@ -5329,7 +5329,7 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
             state["phase"] = "blocked"
             state["open_questions"] = [
                 f"Performer ({stage}) encountered an error: {reason}" if reason
-                else f"Performer ({stage}) encountered an error."
+                else f"Performer ({stage}) encountered an error.",
             ]
             return state
 
@@ -5410,7 +5410,7 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
                         state["open_questions"] = [
                             f"Failed to move card {card_id!r} to IN_REVIEW after session "
                             f"expiry for stage {stage!r}: {exc}. Blocking to avoid an "
-                            "infinite monitoring loop on stale board state."
+                            "infinite monitoring loop on stale board state.",
                         ]
             else:
                 # Transient failure with no open PR — auto-requeue to TODO.
@@ -5475,7 +5475,7 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
                         "committing anything. Each relay repeated the same "
                         "outcome, so more attempts will not help. "
                         + (str(status.get("reason") or "").strip()
-                           or "The last run reported no reason.")
+                           or "The last run reported no reason."),
                     ]
                     state["agent_dispatch"] = {}
                     state["agent_dispatch_at"] = None
@@ -5526,7 +5526,7 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
                     error=str(_exc),
                 )
             state["relay_feedback"] = [  # type: ignore[typeddict-unknown-key]
-                {"body": relay_body, "author_login": "coordinare"}
+                {"body": relay_body, "author_login": "coordinare"},
             ]
             # 072: preserve the originating stage rather than coercing to
             # "implementing" — a reviewer that checkpointed should resume
@@ -5566,7 +5566,7 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
                     state["open_questions"] = [
                         f"Performer ({stage}) ended {_spent_nc} turns without "
                         "pushing any commits, after being told each time to "
-                        "finish or checkpoint."
+                        "finish or checkpoint.",
                     ]
                     state["agent_dispatch"] = {}
                     state["agent_dispatch_at"] = None
@@ -5588,7 +5588,7 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
                             "checkpoint mid-task."
                         ),
                         "author_login": "coordinare",
-                    }
+                    },
                 ]
                 state["performer_stage"] = "implementing"
                 state["phase"] = "dispatching"
@@ -5635,7 +5635,7 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
                     state["open_questions"] = [
                         f"Performer ({stage}) produced nothing on {_spent_zp} "
                         "consecutive turns: no commits, no PR comments, no "
-                        "clarifications."
+                        "clarifications.",
                     ]
                     state["agent_dispatch"] = {}
                     state["agent_dispatch_at"] = None
@@ -5650,7 +5650,7 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
                     relays=_spent_zp,
                 )
                 state["relay_feedback"] = [  # type: ignore[typeddict-unknown-key]
-                    {"body": resume_directive, "author_login": "coordinare"}
+                    {"body": resume_directive, "author_login": "coordinare"},
                 ]
                 state["performer_stage"] = stage
                 state["phase"] = "dispatching"

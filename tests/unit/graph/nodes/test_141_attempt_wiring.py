@@ -94,7 +94,7 @@ async def test_infrastructure_retry_retains_attempt(tmp_path):
 async def test_failed_dispatch_emits_nothing(tmp_path):
     state = _state(tmp_path)
     state["performer_services"]["implementing"].dispatch_card = AsyncMock(
-        return_value={"status": "error", "reason": "unavailable"}
+        return_value={"status": "error", "reason": "unavailable"},
     )
     result = await dispatch_performer(state)
     assert result["phase"] == "system_error"

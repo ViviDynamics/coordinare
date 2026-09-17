@@ -88,13 +88,13 @@ def _rollup(head_sha: str, contexts: list[dict[str, Any]], *, state: str = "PEND
                                     "state": state,
                                     "contexts": {"nodes": contexts},
                                 },
-                            }
-                        }
-                    ]
+                            },
+                        },
+                    ],
                 },
             },
             "branchProtectionRules": {"nodes": []},
-        }
+        },
     }
 
 

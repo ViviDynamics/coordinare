@@ -43,15 +43,15 @@ def _consumed_keys() -> set[str]:
 
 
 def _report(**over):
-    base = dict(
-        verdicts=[CriterionVerdict(criterion="c", passed=True)],
-        executed=[ExecutedCheck(plan_check_id="c1", command="pytest -q", exit_code=0, passed=True)],
-        delta=VisualDelta(),
-        findings=[],
-        passed=True,
-        visual_required=False,
-        visual_evidence=[],
-    )
+    base = {
+        "verdicts": [CriterionVerdict(criterion="c", passed=True)],
+        "executed": [ExecutedCheck(plan_check_id="c1", command="pytest -q", exit_code=0, passed=True)],
+        "delta": VisualDelta(),
+        "findings": [],
+        "passed": True,
+        "visual_required": False,
+        "visual_evidence": [],
+    }
     base.update(over)
     return report_step.build_report(**base)
 

@@ -36,7 +36,7 @@ def test_loads_subprocess_entry_with_default_mode(tmp_path: Path) -> None:
         _write(
             tmp_path,
             {"performer_endpoints": [{"id": "p1", "roles": ["implementer"]}]},
-        )
+        ),
     )
     assert len(cfg.performer_endpoints) == 1
     assert cfg.performer_endpoints[0].mode == "subprocess"
@@ -54,10 +54,10 @@ def test_loads_persistent_entry(tmp_path: Path) -> None:
                         "roles": ["implementer"],
                         "image": "performer:full",
                         "endpoint": "http://localhost:8081",
-                    }
-                ]
+                    },
+                ],
             },
-        )
+        ),
     )
     assert cfg.performer_endpoints[0].mode == "persistent"
     assert cfg.performer_endpoints[0].image == "performer:full"
@@ -70,10 +70,10 @@ def test_unknown_field_in_endpoint_rejected(tmp_path: Path) -> None:
                 tmp_path,
                 {
                     "performer_endpoints": [
-                        {"id": "p1", "roles": ["impl"], "garbage": True}
-                    ]
+                        {"id": "p1", "roles": ["impl"], "garbage": True},
+                    ],
                 },
-            )
+            ),
         )
 
 
@@ -86,9 +86,9 @@ def test_duplicate_id_rejected(tmp_path: Path) -> None:
                     "performer_endpoints": [
                         {"id": "p1", "roles": ["a"]},
                         {"id": "p1", "roles": ["b"]},
-                    ]
+                    ],
                 },
-            )
+            ),
         )
 
 
@@ -113,7 +113,7 @@ def test_duplicate_endpoint_url_rejected(tmp_path: Path) -> None:
                             "image": "i",
                             "endpoint": "http://localhost:9000",
                         },
-                    ]
+                    ],
                 },
-            )
+            ),
         )

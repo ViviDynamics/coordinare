@@ -21,7 +21,7 @@ BY_ID = {"t1": T1}
 
 
 def _j(**over) -> Judgement:
-    base = dict(thread_id="t1", addressed=True, quote="Added the guard in commit abc123", reason="", accepted=False)
+    base = {"thread_id": "t1", "addressed": True, "quote": "Added the guard in commit abc123", "reason": "", "accepted": False}
     base.update(over)
     return Judgement(**base)
 

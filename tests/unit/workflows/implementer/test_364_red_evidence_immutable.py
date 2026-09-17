@@ -33,7 +33,7 @@ class TestImplementTurnCannotEditTests:
     def test_its_own_milestone_test_is_reverted(self) -> None:
         """The hole this closes."""
         v = scope_violations(
-            "implement", {OWN: "modified"}, "rspec", milestone_test_files=[OWN]
+            "implement", {OWN: "modified"}, "rspec", milestone_test_files=[OWN],
         )
         assert OWN in _reverted(v)
         assert _kind_for(v, OWN) == "reverted_own_test"
@@ -41,7 +41,7 @@ class TestImplementTurnCannotEditTests:
     def test_another_milestones_test_is_still_reverted(self) -> None:
         """The original rule, preserved."""
         v = scope_violations(
-            "implement", {OTHER: "modified"}, "rspec", milestone_test_files=[OWN]
+            "implement", {OTHER: "modified"}, "rspec", milestone_test_files=[OWN],
         )
         assert OTHER in _reverted(v)
         assert _kind_for(v, OTHER) == "reverted_foreign_test"
@@ -49,7 +49,7 @@ class TestImplementTurnCannotEditTests:
     def test_a_test_is_reverted_even_with_no_milestone_list(self) -> None:
         """`milestone_test_files=None` previously allowed editing any test file."""
         v = scope_violations(
-            "implement", {OWN: "modified"}, "rspec", milestone_test_files=None
+            "implement", {OWN: "modified"}, "rspec", milestone_test_files=None,
         )
         assert OWN in _reverted(v)
 
@@ -63,7 +63,7 @@ class TestImplementTurnCannotEditTests:
 
     def test_the_reason_names_the_rule(self) -> None:
         v = scope_violations(
-            "implement", {OWN: "modified"}, "rspec", milestone_test_files=[OWN]
+            "implement", {OWN: "modified"}, "rspec", milestone_test_files=[OWN],
         )
         reason = next(x["reason"] for x in v if x["path"] == OWN)
         assert "364" in reason, "an operator seeing this revert needs to find the rule"
@@ -72,7 +72,7 @@ class TestImplementTurnCannotEditTests:
 class TestEverythingElseIsUnchanged:
     def test_implement_turn_may_still_write_source(self) -> None:
         v = scope_violations(
-            "implement", {SOURCE: "modified"}, "rspec", milestone_test_files=[OWN]
+            "implement", {SOURCE: "modified"}, "rspec", milestone_test_files=[OWN],
         )
         assert SOURCE not in _reverted(v)
 

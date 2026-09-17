@@ -59,7 +59,7 @@ def test_compute_content_hash_non_file_is_missing_sentinel(tmp_path: Path):
 
 
 def test_compute_content_hash_unreadable_file_is_missing_sentinel(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch,
 ):
     """compute_content_hash promises totality: if the path is_file() but
     read_bytes raises OSError (permission/mount issue), it returns the same
@@ -126,7 +126,7 @@ def test_guard_concurrency_rejects_on_mismatch(tmp_path: Path):
 
 
 def test_guard_concurrency_raises_oserror_for_unreadable_present_file(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch,
 ):
     """An unreadable-but-present regular file must NOT be silently treated as
     "empty" by the guard: compute_content_hash() returns the empty sentinel on
@@ -172,7 +172,7 @@ def test_atomic_write_yaml_preserves_mode(tmp_path: Path):
 
 
 def test_atomic_write_yaml_chmods_permission_bits_only(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ):
     """The mode handed to ``os.chmod`` carries only permission bits.
 
@@ -222,7 +222,7 @@ def test_atomic_write_yaml_leaves_no_temp_files(tmp_path: Path):
 
 
 def test_atomic_write_yaml_crash_before_replace_leaves_original_intact(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ):
     """Simulate a crash between the tempfile write and ``os.replace``.
 
@@ -264,7 +264,7 @@ def test_classify_applied_staged_restart_for_process_binding():
 
 def test_classify_applied_staged_restart_when_any_field_requires_restart():
     applied = cws.classify_section_applied(
-        "global", ["poll_interval_seconds", "dashboard_host"]
+        "global", ["poll_interval_seconds", "dashboard_host"],
     )
     assert applied == "staged_restart"
 
@@ -358,7 +358,7 @@ def test_save_section_missing_base_hash_is_validation_not_conflict(
 
 
 def test_save_section_rechecks_conflict_just_before_write(
-    temp_config_path: Path, monkeypatch
+    temp_config_path: Path, monkeypatch,
 ):
     """FR-016: the optimistic-concurrency guard runs immediately before the swap.
 
@@ -373,7 +373,7 @@ def test_save_section_rechecks_conflict_just_before_write(
 
     def mutate_then_validate(candidate):
         temp_config_path.write_text(
-            temp_config_path.read_text() + "\n# concurrent out-of-band edit\n"
+            temp_config_path.read_text() + "\n# concurrent out-of-band edit\n",
         )
         return real_validate(candidate)
 
@@ -390,7 +390,7 @@ def test_save_section_rechecks_conflict_just_before_write(
 
 
 def test_create_catalog_item_rechecks_conflict_just_before_write(
-    temp_config_path: Path, monkeypatch
+    temp_config_path: Path, monkeypatch,
 ):
     """FR-016 for the catalog CRUD path: the guard runs just before the swap.
 
@@ -403,7 +403,7 @@ def test_create_catalog_item_rechecks_conflict_just_before_write(
 
     def mutate_then_validate(candidate):
         temp_config_path.write_text(
-            temp_config_path.read_text() + "\n# concurrent out-of-band edit\n"
+            temp_config_path.read_text() + "\n# concurrent out-of-band edit\n",
         )
         return real_validate(candidate)
 
@@ -623,7 +623,7 @@ def test_update_catalog_item_non_mapping_changes_returns_structured_error(
 def test_delete_referenced_catalog_item_blocked(temp_config_path: Path):
     base_hash = cws.compute_content_hash(temp_config_path)
     result = cws.delete_catalog_item(
-        "endpoints", "local-vllm", base_hash, temp_config_path
+        "endpoints", "local-vllm", base_hash, temp_config_path,
     )
     assert result.ok is False
     assert result.errors[0].code == "referenced"
@@ -635,7 +635,7 @@ def test_delete_referenced_catalog_item_blocked(temp_config_path: Path):
 
 
 def test_delete_catalog_item_fails_closed_when_refs_uncomputable(
-    temp_config_path: Path, monkeypatch
+    temp_config_path: Path, monkeypatch,
 ):
     """If the reference graph can't be computed (``_referrers`` raises), the delete
     must FAIL CLOSED: return a structured error and write nothing, rather than
@@ -648,7 +648,7 @@ def test_delete_catalog_item_fails_closed_when_refs_uncomputable(
     monkeypatch.setattr(cws, "_referrers", _boom)
     base_hash = cws.compute_content_hash(temp_config_path)
     result = cws.delete_catalog_item(
-        "endpoints", "openai-native", base_hash, temp_config_path
+        "endpoints", "openai-native", base_hash, temp_config_path,
     )
     assert result.ok is False
     assert result.errors[0].code in ("forbidden", "validation")
@@ -660,7 +660,7 @@ def test_delete_catalog_item_fails_closed_when_refs_uncomputable(
 def test_delete_unreferenced_catalog_item_succeeds(temp_config_path: Path):
     base_hash = cws.compute_content_hash(temp_config_path)
     result = cws.delete_catalog_item(
-        "endpoints", "openai-native", base_hash, temp_config_path
+        "endpoints", "openai-native", base_hash, temp_config_path,
     )
     assert result.ok is True
     assert result.applied == "hot_reloaded"
@@ -678,7 +678,7 @@ def test_delete_catalog_item_missing_item_is_validation(temp_config_path: Path):
     before = temp_config_path.read_text()
     base_hash = cws.compute_content_hash(temp_config_path)
     result = cws.delete_catalog_item(
-        "endpoints", "no-such-endpoint", base_hash, temp_config_path
+        "endpoints", "no-such-endpoint", base_hash, temp_config_path,
     )
     assert result.ok is False
     assert result.errors[0].code == "validation"
@@ -736,7 +736,7 @@ def test_delete_catalog_item_corrupt_section_is_forbidden_not_misleading(
 ):
     base_hash = _corrupt_catalog_to_dict(temp_config_path, "endpoints")
     result = cws.delete_catalog_item(
-        "endpoints", "openai-native", base_hash, temp_config_path
+        "endpoints", "openai-native", base_hash, temp_config_path,
     )
     assert result.ok is False
     assert result.errors[0].code == "forbidden"
@@ -852,7 +852,7 @@ def test_safe_read_config_dict_non_mapping_root_is_forbidden(tmp_path: Path):
 
 
 def test_create_catalog_item_oserror_is_forbidden_not_500(
-    temp_config_path: Path, monkeypatch
+    temp_config_path: Path, monkeypatch,
 ):
     base_hash = cws.compute_content_hash(temp_config_path)
 
@@ -871,7 +871,7 @@ def test_create_catalog_item_oserror_is_forbidden_not_500(
 
 
 def test_update_catalog_item_oserror_is_forbidden_not_500(
-    temp_config_path: Path, monkeypatch
+    temp_config_path: Path, monkeypatch,
 ):
     base_hash = cws.compute_content_hash(temp_config_path)
 
@@ -891,7 +891,7 @@ def test_update_catalog_item_oserror_is_forbidden_not_500(
 
 
 def test_delete_catalog_item_oserror_is_forbidden_not_500(
-    temp_config_path: Path, monkeypatch
+    temp_config_path: Path, monkeypatch,
 ):
     base_hash = cws.compute_content_hash(temp_config_path)
 
@@ -900,7 +900,7 @@ def test_delete_catalog_item_oserror_is_forbidden_not_500(
 
     monkeypatch.setattr(cws, "atomic_write_yaml", _boom)
     result = cws.delete_catalog_item(
-        "endpoints", "openai-native", base_hash, temp_config_path
+        "endpoints", "openai-native", base_hash, temp_config_path,
     )
     assert result.ok is False
     assert result.errors[0].code == "forbidden"
@@ -941,7 +941,7 @@ def test_create_catalog_item_malformed_config_is_forbidden_not_500(
 
 
 def test_save_section_unreadable_config_is_forbidden_not_500(
-    temp_config_path: Path, monkeypatch
+    temp_config_path: Path, monkeypatch,
 ):
     base_hash = cws.compute_content_hash(temp_config_path)
 
@@ -960,7 +960,7 @@ def test_save_section_unreadable_config_is_forbidden_not_500(
 
 
 def test_save_section_concurrency_guard_oserror_is_forbidden_not_500(
-    temp_config_path: Path, monkeypatch
+    temp_config_path: Path, monkeypatch,
 ):
     # guard_concurrency() can raise OSError (unreadable path / directory due to a
     # mount glitch). _conflict_result must convert it to a structured forbidden
@@ -1024,7 +1024,7 @@ def test_delete_catalog_item_unknown_catalog_rejected(temp_config_path: Path):
     before = temp_config_path.read_text()
     base_hash = cws.compute_content_hash(temp_config_path)
     result = cws.delete_catalog_item(
-        "not_a_catalog", "whatever", base_hash, temp_config_path
+        "not_a_catalog", "whatever", base_hash, temp_config_path,
     )
     assert result.ok is False
     assert result.errors[0].code == "validation"

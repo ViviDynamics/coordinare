@@ -10,7 +10,7 @@ def test_notifications_dispatched_counter() -> None:
     metrics = CoordinareMetrics()
     metrics.notifications_dispatched_total.labels(event_type="card_transition", channel_name="slack-ops").inc()
     assert metrics.notifications_dispatched_total.labels(
-        event_type="card_transition", channel_name="slack-ops"
+        event_type="card_transition", channel_name="slack-ops",
     )._value.get() == 1.0
 
 

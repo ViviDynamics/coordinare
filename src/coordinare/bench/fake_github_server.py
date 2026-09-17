@@ -193,16 +193,16 @@ class FakeGitHubServer:
         app.router.add_get("/repos/{owner}/{repo}/pulls/{number}", self._h_get_pull)
         app.router.add_patch("/repos/{owner}/{repo}/pulls/{number}", self._h_patch_pull)
         app.router.add_post(
-            "/repos/{owner}/{repo}/pulls/{number}/reviews", self._h_create_review
+            "/repos/{owner}/{repo}/pulls/{number}/reviews", self._h_create_review,
         )
         app.router.add_get(
-            "/repos/{owner}/{repo}/issues/{number}/comments", self._h_issue_comments
+            "/repos/{owner}/{repo}/issues/{number}/comments", self._h_issue_comments,
         )
         app.router.add_post(
-            "/repos/{owner}/{repo}/issues/{number}/comments", self._h_post_issue_comment
+            "/repos/{owner}/{repo}/issues/{number}/comments", self._h_post_issue_comment,
         )
         app.router.add_get(
-            "/repos/{owner}/{repo}/commits/{ref}/check-runs", self._h_check_runs
+            "/repos/{owner}/{repo}/commits/{ref}/check-runs", self._h_check_runs,
         )
         app.router.add_post("/graphql", self._h_graphql)
         return app
@@ -231,7 +231,7 @@ class FakeGitHubServer:
             else:
                 raise RuntimeError(
                     f"fake GitHub {label} server never bound {self._host}:{port} "
-                    "— cannot dispatch performers (check the port is free / git installed)"
+                    "— cannot dispatch performers (check the port is free / git installed)",
                 )
 
     async def stop(self) -> None:
@@ -311,7 +311,7 @@ class FakeGitHubServer:
             if pr["merged"]:
                 continue
             out.append(
-                {"html_url": pr["url"], "node_id": pr["pr_id"], "number": pr["pr_number"]}
+                {"html_url": pr["url"], "node_id": pr["pr_id"], "number": pr["pr_number"]},
             )
         return web.json_response(out)
 
@@ -349,7 +349,7 @@ class FakeGitHubServer:
             body = {}
         event = str(body.get("event") or "COMMENT").upper()
         state = {"APPROVE": "APPROVED", "REQUEST_CHANGES": "CHANGES_REQUESTED"}.get(
-            event, "COMMENTED"
+            event, "COMMENTED",
         )
         sha = await self._fake._rev(pr["head_ref"])
         review = {
@@ -363,7 +363,7 @@ class FakeGitHubServer:
         }
         pr["reviews"].append(review)
         return web.json_response(
-            {"id": review["id"], "state": state, "body": review["body"]}, status=201
+            {"id": review["id"], "state": state, "body": review["body"]}, status=201,
         )
 
     async def _h_issue_comments(self, request: web.Request) -> web.Response:
@@ -386,7 +386,7 @@ class FakeGitHubServer:
         except Exception:
             body = {}
         created = await self._fake.post_comment(
-            number, str(body.get("body") or ""), author="coordinare-performer"
+            number, str(body.get("body") or ""), author="coordinare-performer",
         )
         return web.json_response(created, status=201)
 
@@ -405,7 +405,7 @@ class FakeGitHubServer:
             # instead of either merging on a green that never ran or crashing on a
             # GitHubAPIError from a non-2xx.
             return web.json_response(
-                {"check_runs": [{"name": "pytest", "status": "queued", "conclusion": None, "id": 1}]}
+                {"check_runs": [{"name": "pytest", "status": "queued", "conclusion": None, "id": 1}]},
             )
         rollup = await self._fake._ci_rollup(pr)
         runs = [
@@ -424,7 +424,7 @@ class FakeGitHubServer:
         # Best-effort: report no review threads (resolve_pr_review_threads → 0).
         # The only hard requirement is this call never reaches api.github.com.
         return web.json_response(
-            {"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": []}}}}}
+            {"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": []}}}}},
         )
 
     # ---- resolution helpers ----------------------------------------------

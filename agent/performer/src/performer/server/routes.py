@@ -108,7 +108,7 @@ def register_routes(app: FastAPI) -> None:
 
     @app.patch("/jobs/{job_id}/secrets", status_code=204)
     async def refresh_job_secrets(
-        job_id: str, payload: _RefreshSecretsPayload, request: Request
+        job_id: str, payload: _RefreshSecretsPayload, request: Request,
     ) -> Response:
         runner = _runner(request)
         try:

@@ -77,7 +77,7 @@ _TRANSIENT_CONCLUSIONS: frozenset[str] = frozenset(
         "action_required",
         "stale",
         "startup_failure",
-    }
+    },
 )
 
 

@@ -162,7 +162,7 @@ async def test_session_adopted_event_has_required_fields(monkeypatch) -> None:
     cap = _Capture(monkeypatch)
     matching = _container("uuid-x", container_id="ctr-keep")
     await recon_mod.run_startup_reconciliation(
-        _state(), _MockDocker(containers=[matching], healthy=True)
+        _state(), _MockDocker(containers=[matching], healthy=True),
     )
     adopted = cap.find("daemon.session_adopted")
     assert adopted, f"missing event; saw {cap.names()}"
@@ -186,7 +186,7 @@ async def test_stale_session_reconciled_event_has_required_fields(monkeypatch) -
         "performer_services": {"implementing": _Svc()},
     }
     decision = await recon_mod.handle_potentially_stale_session(
-        state, "PVTI_LEGACY", docker_executor=_MockDocker()
+        state, "PVTI_LEGACY", docker_executor=_MockDocker(),
     )
     reconciled = cap.find("check_board.stale_session_reconciled")
     assert reconciled, f"missing event; saw {cap.names()}"

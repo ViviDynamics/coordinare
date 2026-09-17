@@ -82,6 +82,11 @@ select = [
     "SIM",   # flake8-simplify
     "TCH",   # flake8-type-checking
     "RUF",   # ruff-specific rules
+    "C4",    # flake8-comprehensions (432: zero-debt after autofix sweep)
+    "RET",   # flake8-return (432)
+    "PIE",   # flake8-pie (432)
+    "FURB",  # refurb (432)
+    "COM",   # flake8-commas (432: trailing commas enforced by the autofix sweep)
 ]
 ignore = [
     "E501",  # line length handled by formatter

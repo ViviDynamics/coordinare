@@ -309,7 +309,7 @@ async def test_dispatch_card_forwards_workspace_info_to_inner() -> None:
     await svc.dispatch_card({"card": "data"}, workspace_info=ws_info)
 
     inner.dispatch_card.assert_awaited_once_with(
-        {"card": "data"}, workspace_info=ws_info
+        {"card": "data"}, workspace_info=ws_info,
     )
 
 
@@ -377,14 +377,14 @@ async def test_relay_feedback_reraises_and_increments_failure_metric() -> None:
     svc = ResilientAgentService(inner, retry_cfg, cb)
 
     before = METRICS.service_calls_total.labels(
-        symphony="__default__", service="agent", action="relay_feedback", outcome="failure"
+        symphony="__default__", service="agent", action="relay_feedback", outcome="failure",
     )._value.get()
 
     with pytest.raises(RuntimeError, match="relay exploded"):
         await svc.relay_feedback({"review": "data"})
 
     after = METRICS.service_calls_total.labels(
-        symphony="__default__", service="agent", action="relay_feedback", outcome="failure"
+        symphony="__default__", service="agent", action="relay_feedback", outcome="failure",
     )._value.get()
     assert after == before + 1.0
 
@@ -408,14 +408,14 @@ async def test_check_status_reraises_and_increments_failure_metric() -> None:
     svc = ResilientAgentService(inner, retry_cfg, cb)
 
     before = METRICS.service_calls_total.labels(
-        symphony="__default__", service="agent", action="check_status", outcome="failure"
+        symphony="__default__", service="agent", action="check_status", outcome="failure",
     )._value.get()
 
     with pytest.raises(RuntimeError, match="status exploded"):
         await svc.check_status("sess-x")
 
     after = METRICS.service_calls_total.labels(
-        symphony="__default__", service="agent", action="check_status", outcome="failure"
+        symphony="__default__", service="agent", action="check_status", outcome="failure",
     )._value.get()
     assert after == before + 1.0
 

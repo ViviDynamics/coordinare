@@ -202,7 +202,7 @@ def should_block(
 ) -> bool:
     """True iff a subsequent idle-timeout would exceed the budget."""
     return attempts_in_window(
-        state, card_id, performer_stage, window_hours=window_hours
+        state, card_id, performer_stage, window_hours=window_hours,
     ) >= budget
 
 

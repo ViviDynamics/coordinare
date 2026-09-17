@@ -54,7 +54,7 @@ async def test_disabled_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:
 
     async def _fake_classify(**kwargs: Any) -> None:
         called["n"] += 1
-        return None
+        return
 
     monkeypatch.setattr(
         "coordinare.graph.nodes.classify_scope.persona_classifier.classify",
@@ -123,7 +123,7 @@ async def test_no_pr_does_not_classify(monkeypatch: pytest.MonkeyPatch) -> None:
 
     async def _fake_classify(**kwargs: Any) -> None:
         called["n"] += 1
-        return None
+        return
 
     monkeypatch.setattr(
         "coordinare.graph.nodes.classify_scope.persona_classifier.classify",

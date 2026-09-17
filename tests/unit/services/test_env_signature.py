@@ -99,7 +99,7 @@ def test_operator_pattern_extends_builtins() -> None:
             regex=r"registry.*unavailable|pull access denied",
             cause="Container registry unavailable",
             action="Check registry status / credentials",
-        )
+        ),
     ]
     cause = match_env_signature("docker pull failed: registry is unavailable", custom)
     assert cause is not None and cause.pattern_id == "registry_outage"
@@ -204,7 +204,7 @@ async def test_model_judgment_mutation_must_call_backend() -> None:
     """
     backend = AsyncMock()
     backend.prompt.return_value = {
-        "data": {"is_environmental": True, "pattern_id": "test"}
+        "data": {"is_environmental": True, "pattern_id": "test"},
     }
     reason = "completely unknown failure type"
     result = await match_env_signature_with_model(reason, [], backend)

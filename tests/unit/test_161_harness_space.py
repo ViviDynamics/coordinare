@@ -41,7 +41,7 @@ def _space_file(tmp_path, dimensions: list[dict]) -> str:
             "name": "harness-test",
             "baseline_config": "baseline.yaml",
             "dimensions": dimensions,
-        })
+        }),
     )
     return str(path)
 
@@ -144,7 +144,7 @@ def test_harness_dimension_loads_and_expands(tmp_path) -> None:
         _space_file(tmp_path, [
             {"name": "reviewer-harness", "role": "reviewer",
              "choices": ["openclaw", "claude_code", "codex"]},
-        ])
+        ]),
     )
     dim = space.definition.dimensions[0]
 
@@ -171,7 +171,7 @@ def test_each_choice_materializes_and_sets_only_that_role(baseline_dump) -> None
 def test_every_supported_harness_materializes(baseline_dump, harness: str) -> None:
     """FR-016: no supported harness is rejected by the config schema."""
     cfg = materialize(
-        baseline_dump, {"global_config.performers.reviewer.backend": harness}
+        baseline_dump, {"global_config.performers.reviewer.backend": harness},
     )
     assert cfg.global_config.performers.reviewer.backend == harness
 
@@ -187,7 +187,7 @@ def test_unknown_harness_name_is_rejected_at_load_time(tmp_path) -> None:
             _space_file(tmp_path, [
                 {"name": "reviewer-harness", "role": "reviewer",
                  "choices": ["openclaw", "openclw"]},
-            ])
+            ]),
         )
 
 
@@ -196,7 +196,7 @@ def test_unknown_harness_error_names_the_offending_value(tmp_path) -> None:
         load_space(
             _space_file(tmp_path, [
                 {"name": "d", "role": "reviewer", "choices": ["openclw"]},
-            ])
+            ]),
         )
     assert "openclw" in str(exc.value)
 
@@ -206,7 +206,7 @@ def test_the_bare_schema_still_accepts_an_unknown_harness(baseline_dump) -> None
     own constraint and the space-level check becomes belt-and-braces rather than the only
     guard. Asserting the current reality keeps the rationale honest."""
     cfg = materialize(
-        baseline_dump, {"global_config.performers.reviewer.backend": "not_a_harness"}
+        baseline_dump, {"global_config.performers.reviewer.backend": "not_a_harness"},
     )
     assert cfg.global_config.performers.reviewer.backend == "not_a_harness"
 
@@ -217,7 +217,7 @@ def test_unknown_role_is_rejected_by_the_existing_path_walk(tmp_path) -> None:
         load_space(
             _space_file(tmp_path, [
                 {"name": "d", "role": "nosuchrole", "choices": ["openclaw"]},
-            ])
+            ]),
         )
 
 
@@ -227,6 +227,6 @@ def test_a_non_harness_dimension_is_not_harness_validated(tmp_path) -> None:
         _space_file(tmp_path, [
             {"name": "concurrency", "path": "global_config.max_concurrent_cards",
              "choices": [1, 2]},
-        ])
+        ]),
     )
     assert space.definition.dimensions[0].choices == [1, 2]

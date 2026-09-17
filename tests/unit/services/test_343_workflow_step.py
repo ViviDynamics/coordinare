@@ -85,7 +85,7 @@ class TestLatching:
 
         later = OBSERVED + timedelta(minutes=30)
         moved = latch_workflow_step(
-            state, [_step("implementer.baseline", ts=None)], observed_at=later
+            state, [_step("implementer.baseline", ts=None)], observed_at=later,
         )
 
         assert moved is False
@@ -110,7 +110,7 @@ class TestEntryTime:
     def test_performer_timestamp_is_preferred(self) -> None:
         state: dict = {}
         latch_workflow_step(
-            state, [_step("architect.survey", ts="2026-09-11T00:00:00Z")], observed_at=OBSERVED
+            state, [_step("architect.survey", ts="2026-09-11T00:00:00Z")], observed_at=OBSERVED,
         )
         assert state["workflow_step_entered_at"] == datetime(2026, 9, 11, 0, 0, 0, tzinfo=UTC)
 
@@ -128,7 +128,7 @@ class TestEntryTime:
         """A naive stamp compared against an aware now() raises at render time."""
         state: dict = {}
         latch_workflow_step(
-            state, [_step("architect.survey", ts="2026-09-11T00:00:00")], observed_at=OBSERVED
+            state, [_step("architect.survey", ts="2026-09-11T00:00:00")], observed_at=OBSERVED,
         )
         entered = state["workflow_step_entered_at"]
         assert entered.tzinfo is not None

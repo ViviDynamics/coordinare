@@ -71,8 +71,7 @@ def generate_readme(project_name: str, summary: str, pages: list[WikiPage]) -> s
             for page in section_list:
                 # Page name is relative path from project root
                 relative_path = page.path
-                if relative_path.startswith("docs/wiki/"):
-                    relative_path = relative_path[10:]  # Strip docs/wiki/
+                relative_path = relative_path.removeprefix("docs/wiki/")  # Strip docs/wiki/
                 # Get one-line description (first paragraph)
                 one_line = (page.summary or "No summary yet.").rstrip(".") + "."
                 # Could extract first line from page content, but we don't have it here

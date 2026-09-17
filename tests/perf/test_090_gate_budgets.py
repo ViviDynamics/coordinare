@@ -111,7 +111,7 @@ def test_classification_per_rollup_under_50ms_p95() -> None:
         baseline_index = _build_baseline_index(base)
         for entry in head.checks:
             head_sig, head_reason = make_failure_signature(
-                entry.name, entry.conclusion or "failure", entry.title, entry.summary
+                entry.name, entry.conclusion or "failure", entry.title, entry.summary,
             )
             base_failure = baseline_index.get(entry.name) if baseline_index else None
             fc = FailedCheckWithSignature(
@@ -140,7 +140,7 @@ def test_make_failure_signature_under_50us_per_check_and_5ms_per_rollup() -> Non
     for _ in range(iterations):
         started = time.perf_counter()
         make_failure_signature(
-            sample.name, sample.conclusion or "failure", sample.title, sample.summary
+            sample.name, sample.conclusion or "failure", sample.title, sample.summary,
         )
         per_check_us.append((time.perf_counter() - started) * 1_000_000.0)  # µs
 
@@ -155,7 +155,7 @@ def test_make_failure_signature_under_50us_per_check_and_5ms_per_rollup() -> Non
         started = time.perf_counter()
         for entry in head.checks:
             make_failure_signature(
-                entry.name, entry.conclusion or "failure", entry.title, entry.summary
+                entry.name, entry.conclusion or "failure", entry.title, entry.summary,
             )
         per_rollup_ms.append((time.perf_counter() - started) * 1000.0)  # ms
 

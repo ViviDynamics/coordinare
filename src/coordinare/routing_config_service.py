@@ -184,7 +184,7 @@ def validate_routing_entry(entry: dict[str, Any]) -> None:
         # of 500ing the routing endpoint (Copilot round 28).
         raise ValueError(
             "Routing validation is unavailable: the performer routing models "
-            "(performer.proxy.routing) are not installed in this environment."
+            "(performer.proxy.routing) are not installed in this environment.",
         ) from exc
     from pydantic import ValidationError
 
@@ -206,7 +206,7 @@ def _validate_table(entries: list[dict[str, Any]]) -> None:
         # structured ``validation`` error rather than a 500 (Copilot round 28).
         raise ValueError(
             "Routing validation is unavailable: the performer routing models "
-            "(performer.proxy.routing) are not installed in this environment."
+            "(performer.proxy.routing) are not installed in this environment.",
         ) from exc
     from pydantic import ValidationError
 
@@ -242,7 +242,7 @@ def _routing_conflict(host_path: Path, base_hash: str) -> Any:
                     key=None,
                     code="validation",
                     message="base_hash is required; reload the config and retry",
-                )
+                ),
             ],
         )
     try:
@@ -268,7 +268,7 @@ def _routing_conflict(host_path: Path, base_hash: str) -> Any:
                         "Routing table is currently unreadable on this host; "
                         "routing is read-only."
                     ),
-                )
+                ),
             ],
         )
     return None
@@ -305,7 +305,7 @@ def _readonly_guard(location: RoutingLocation | None) -> Any:
 
 
 def _write_entries(
-    host_path: Path, entries: list[dict[str, Any]], base_hash: str
+    host_path: Path, entries: list[dict[str, Any]], base_hash: str,
 ) -> Any:
     """Atomically write the routing table and return a ``staged_next_job`` result.
 
@@ -344,14 +344,14 @@ def _write_entries(
                     key=None,
                     code="forbidden",
                     message=f"Could not write routing table: {exc}",
-                )
+                ),
             ],
         )
     return SaveResult(ok=True, applied="staged_next_job", new_hash=new_hash)
 
 
 def create_routing_entry(
-    location: RoutingLocation | None, entry: dict[str, Any], base_hash: str
+    location: RoutingLocation | None, entry: dict[str, Any], base_hash: str,
 ) -> Any:
     """Append a new routing entry and stage it for the next performer job (T036)."""
     readonly = _readonly_guard(location)
@@ -401,7 +401,7 @@ def update_routing_entry(
                     key=str(index),
                     code="validation",
                     message="Routing entry changes must be a mapping of fields.",
-                )
+                ),
             ],
         )
 
@@ -414,7 +414,7 @@ def update_routing_entry(
                     key=str(index),
                     code="validation",
                     message=f"No routing entry at index {index}.",
-                )
+                ),
             ],
         )
 
@@ -436,7 +436,7 @@ def update_routing_entry(
 
 
 def delete_routing_entry(
-    location: RoutingLocation | None, index: int, base_hash: str
+    location: RoutingLocation | None, index: int, base_hash: str,
 ) -> Any:
     """Delete the routing entry at ``index`` and re-stage the table (T036)."""
     from coordinare.services.config_write_service import FieldError, SaveResult
@@ -459,7 +459,7 @@ def delete_routing_entry(
                     key=str(index),
                     code="validation",
                     message=f"No routing entry at index {index}.",
-                )
+                ),
             ],
         )
 

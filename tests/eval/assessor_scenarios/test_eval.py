@@ -112,7 +112,7 @@ def test_scoring_flags_reask():
             "expected_behavior": "Services page is updated",
             "out_of_scope": [],
             "questions": [
-                "Who is the primary audience for the services page?"
+                "Who is the primary audience for the services page?",
             ],  # This re-asks an answered clarification
             "assumptions": [],
             "criteria": [],

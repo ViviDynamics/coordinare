@@ -163,7 +163,7 @@ async def run_command_check(toolkit, check: PlanCheck, *, cwd) -> ExecutedCheck:
     model wrote that reaches a shell *incidentally* (flow payloads, URLs).
     """
     return await toolkit.run_command(
-        check.command, cwd=cwd, plan_check_id=check.id
+        check.command, cwd=cwd, plan_check_id=check.id,
     )
 
 
@@ -204,7 +204,7 @@ def flow_driver_source() -> str:
 
 
 def prepare_visual_capture(
-    plan: TestPlan, out_dir: Path, base_url: str | None = None
+    plan: TestPlan, out_dir: Path, base_url: str | None = None,
 ) -> None:
     """Give every visual check a navigation and a screenshot, in out_dir.
 
@@ -376,7 +376,7 @@ async def run_execute_step(toolkit, plan: TestPlan, *, cwd, driver_path: str) ->
                 results.append(await run_command_check(toolkit, check, cwd=cwd))
             elif check.kind in ("flow", "visual"):
                 results.append(
-                    await run_flow_check(toolkit, check, cwd=cwd, driver_path=driver_path)
+                    await run_flow_check(toolkit, check, cwd=cwd, driver_path=driver_path),
                 )
         except Exception as exc:  # noqa: BLE001
             log.warning("qa.execute.check_raised", check_id=check.id, error=str(exc))
@@ -387,6 +387,6 @@ async def run_execute_step(toolkit, plan: TestPlan, *, cwd, driver_path: str) ->
                     exit_code=-1,
                     output_excerpt=f"{type(exc).__name__}: {exc}",
                     passed=False,
-                )
+                ),
             )
     return results

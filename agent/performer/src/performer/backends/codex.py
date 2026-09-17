@@ -112,13 +112,13 @@ def _build_provider_config_toml(env: Mapping[str, str]) -> str | None:
     # idle timeout to a custom provider unless told to. These live inside the
     # provider table (codex ignores them at top level).
     lines.append(
-        f"stream_idle_timeout_ms = {_positive_int_env(env, 'CODEX_STREAM_IDLE_TIMEOUT_MS', 300_000)}"
+        f"stream_idle_timeout_ms = {_positive_int_env(env, 'CODEX_STREAM_IDLE_TIMEOUT_MS', 300_000)}",
     )
     lines.append(
-        f"request_max_retries = {_positive_int_env(env, 'CODEX_REQUEST_MAX_RETRIES', 4, minimum=0)}"
+        f"request_max_retries = {_positive_int_env(env, 'CODEX_REQUEST_MAX_RETRIES', 4, minimum=0)}",
     )
     lines.append(
-        f"stream_max_retries = {_positive_int_env(env, 'CODEX_STREAM_MAX_RETRIES', 5, minimum=0)}"
+        f"stream_max_retries = {_positive_int_env(env, 'CODEX_STREAM_MAX_RETRIES', 5, minimum=0)}",
     )
     return "\n".join(lines) + "\n"
 
@@ -285,7 +285,7 @@ class CodexBackend:
         # Read stdout until the server announces it's ready, then drain the rest.
         await self._wait_for_ready()
         self._log_drain_task = asyncio.create_task(
-            self._drain_logs(), name="codex-log-drain"
+            self._drain_logs(), name="codex-log-drain",
         )
 
         # Open WebSocket connection via aiohttp (compatible with codex app-server)
@@ -294,7 +294,7 @@ class CodexBackend:
 
         # Start background message router before any RPC calls
         self._recv_task = asyncio.create_task(
-            self._recv_loop(), name="codex-recv"
+            self._recv_loop(), name="codex-recv",
         )
 
         # JSON-RPC handshake
@@ -424,7 +424,7 @@ class CodexBackend:
                 tail = " | ".join(list(self._log_buffer)[-20:])
                 log.error("codex.app_server_exited", returncode=rc, tail=tail)
                 raise RuntimeError(
-                    f"codex app-server exited before becoming ready (rc={rc}): {tail}"
+                    f"codex app-server exited before becoming ready (rc={rc}): {tail}",
                 )
             line = raw.decode(errors="replace").strip()
             self._log_buffer.append(line)
@@ -434,7 +434,7 @@ class CodexBackend:
         tail = " | ".join(list(self._log_buffer)[-20:])
         log.error("codex.app_server_timeout", tail=tail)
         raise RuntimeError(
-            f"codex app-server not ready within {_READY_TIMEOUT}s: {tail}"
+            f"codex app-server not ready within {_READY_TIMEOUT}s: {tail}",
         )
 
     async def _drain_logs(self) -> None:
@@ -488,7 +488,7 @@ class CodexBackend:
                     if not fut.done():
                         if "error" in msg:
                             fut.set_exception(
-                                RuntimeError(msg["error"].get("message", "RPC error"))
+                                RuntimeError(msg["error"].get("message", "RPC error")),
                             )
                         else:
                             fut.set_result(msg.get("result") or {})
@@ -661,7 +661,7 @@ class CodexBackend:
 
 
 def _build_task_prompt(
-    score: Score, *, stand_path: pathlib.Path | None = None
+    score: Score, *, stand_path: pathlib.Path | None = None,
 ) -> str:
     """Construct the task description for the initial Codex turn."""
     # FR-017: persona_instructions is delivered via `developerInstructions` on
@@ -716,7 +716,7 @@ def _build_task_prompt(
             if isinstance(_d, dict) and _d.get("id"):
                 parts.append(
                     f"- {_d['id']}: {_d.get('body', '')} — implementer says: "
-                    f"{_d.get('reason', '')}"
+                    f"{_d.get('reason', '')}",
                 )
 
     if score.relay_feedback:

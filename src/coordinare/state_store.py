@@ -512,7 +512,7 @@ class PersistedSession(BaseModel):
         if not isinstance(v, dict):
             return None
         if not isinstance(v.get("changed_files"), list) or not isinstance(
-            v.get("verdict"), str
+            v.get("verdict"), str,
         ):
             return None
         return v
@@ -755,7 +755,7 @@ class StateStore:
         try:
             data = snapshot.model_dump_json(indent=2).encode("utf-8")
             fd = tempfile.NamedTemporaryFile(  # noqa: SIM115
-                dir=self._path.parent, delete=False, suffix=".tmp"
+                dir=self._path.parent, delete=False, suffix=".tmp",
             )
             tmp_path = fd.name
             try:
@@ -770,7 +770,7 @@ class StateStore:
             elapsed = time.monotonic() - start
             self._metrics.state_write_duration_seconds.observe(elapsed)
             self._metrics.state_last_written_timestamp.set(
-                snapshot.snapshot_at.timestamp()
+                snapshot.snapshot_at.timestamp(),
             )
             self.last_snapshot = snapshot
         except OSError as exc:
@@ -803,7 +803,7 @@ class StateStore:
             snapshot = WorkflowSnapshot.model_validate_json(raw)
         except Exception as exc:
             raise StateLoadError(
-                reason="corrupt", detail=str(exc)
+                reason="corrupt", detail=str(exc),
             ) from exc
 
         if (

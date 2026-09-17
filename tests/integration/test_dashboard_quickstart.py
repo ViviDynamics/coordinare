@@ -51,7 +51,7 @@ def _make_mock_metrics(cycles: int = 0, started_at: str | None = None) -> MagicM
     metrics = MagicMock()
     metrics.cycles_completed_total._value.get.return_value = cycles
     metrics.build_info.labels.return_value._value.get.return_value = {
-        "started_at": started_at or "2026-03-02T09:30:00+00:00"
+        "started_at": started_at or "2026-03-02T09:30:00+00:00",
     }
     return metrics
 
@@ -66,7 +66,7 @@ def _make_mock_health(probes: list[dict] | None = None) -> MagicMock:
                 "required": True,
                 "checked_at": "2026-03-02T10:00:00+00:00",
                 "details": None,
-            }
+            },
         ]
     mock_probe_objects = []
     for p in probes:
@@ -165,7 +165,7 @@ def test_s1_idle_all_subsystems_healthy() -> None:
                 "checked_at": "2026-03-02T10:00:00+00:00",
                 "details": None,
             },
-        ]
+        ],
     )
 
     snap = store.build_snapshot(daemon, metrics, health)
@@ -316,7 +316,7 @@ def test_s4_degraded_subsystem_distinct_from_healthy() -> None:
                 "checked_at": "2026-03-02T10:00:00+00:00",
                 "details": None,
             },
-        ]
+        ],
     )
 
     snap = store.build_snapshot(daemon, metrics, health)
@@ -341,8 +341,8 @@ def test_s4_unavailable_optional_subsystem() -> None:
                 "required": False,
                 "checked_at": "2026-03-02T10:00:00+00:00",
                 "details": "not configured",
-            }
-        ]
+            },
+        ],
     )
 
     snap = store.build_snapshot(daemon, metrics, health)
@@ -435,7 +435,7 @@ async def test_s5_history_capped_at_20() -> None:
 
     store = DashboardStore()
     daemon = CoordinareDaemon(
-        _FastGraph(), max_cycles=25, sleep_func=_no_sleep, dashboard_store=store
+        _FastGraph(), max_cycles=25, sleep_func=_no_sleep, dashboard_store=store,
     )
     await daemon.start()
 

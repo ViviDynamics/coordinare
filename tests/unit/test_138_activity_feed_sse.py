@@ -30,7 +30,7 @@ def _make_mock_metrics() -> MagicMock:
     metrics = MagicMock()
     metrics.cycles_completed_total._value.get.return_value = 0
     metrics.build_info.labels.return_value._value.get.return_value = {
-        "started_at": "2026-07-30T09:30:00+00:00"
+        "started_at": "2026-07-30T09:30:00+00:00",
     }
     return metrics
 
@@ -123,7 +123,7 @@ _PRE_138_KEYS: dict[str, Any] = {
 def test_state_update_shape_additive_only() -> None:
     """Every pre-138 key survives unchanged; exactly one key is added (T016)."""
     snapshot = DashboardStore().build_snapshot(
-        _make_mock_daemon(), _make_mock_metrics(), _make_mock_health()
+        _make_mock_daemon(), _make_mock_metrics(), _make_mock_health(),
     )
     missing = set(_PRE_138_KEYS) - set(snapshot)
     assert not missing, f"pre-138 keys removed: {sorted(missing)}"
@@ -162,7 +162,7 @@ def test_ownership_hint_is_computed_from_the_daemon_config() -> None:
 def test_state_update_has_no_underscore_event_key() -> None:
     """The _event discriminator can never collide with a snapshot key."""
     snapshot = DashboardStore().build_snapshot(
-        _make_mock_daemon(), _make_mock_metrics(), _make_mock_health()
+        _make_mock_daemon(), _make_mock_metrics(), _make_mock_health(),
     )
     assert "_event" not in snapshot
 
@@ -178,7 +178,7 @@ def test_activity_event_emitted_with_entries() -> None:
     async def _run() -> list[str]:
         def _push() -> None:
             store.activity_log.record(
-                activity_type="tool_use", card_id="C1", stage="implementing", text="Edit x.py"
+                activity_type="tool_use", card_id="C1", stage="implementing", text="Edit x.py",
             )
 
         return await _drain(store, 2, before_read=(1, _push))

@@ -72,5 +72,5 @@ def test_live_swap_against_openai_endpoint():
     """
     pytest.skip(
         "Live dry-run is operator-gated to avoid unsolicited API spend; "
-        "run quickstart.md SC-003 manually."
+        "run quickstart.md SC-003 manually.",
     )

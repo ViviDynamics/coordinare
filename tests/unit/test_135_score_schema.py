@@ -21,11 +21,11 @@ from coordinare.bench.score import (
 
 
 def _score(**kw) -> ScoreObject:
-    base = dict(
-        run_id="20260823-000000",
-        artifact_schema_version=1,
-        scored_at=datetime(2026, 8, 23, tzinfo=UTC),
-    )
+    base = {
+        "run_id": "20260823-000000",
+        "artifact_schema_version": 1,
+        "scored_at": datetime(2026, 8, 23, tzinfo=UTC),
+    }
     base.update(kw)
     return ScoreObject(**base)
 
@@ -50,7 +50,7 @@ class TestScoreSchema:
     def test_weights_are_embedded_with_defaults(self) -> None:
         s = _score()
         assert s.weights == Weights(
-            w_correctness=1.0, w_cost=0.1, w_time=0.1, cost_budget_usd=1.0, time_budget_seconds=600.0
+            w_correctness=1.0, w_cost=0.1, w_time=0.1, cost_budget_usd=1.0, time_budget_seconds=600.0,
         )
         assert '"w_correctness"' in s.to_validated_json()
 

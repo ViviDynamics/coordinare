@@ -91,7 +91,7 @@ class TestModelJudgementsSchema:
             "judgements": [
                 {"thread_id": "T1", "addressed": True, "quote": "test"},
                 {"thread_id": "T2", "addressed": False, "reason": "unclear"},
-            ]
+            ],
         }
         result = schema(**data)
         assert len(result.judgements) == 2
@@ -100,8 +100,8 @@ class TestModelJudgementsSchema:
         schema = model_judgements_schema(max_threads=20)
         data = {
             "judgements": [
-                {"thread_id": "T1", "addressed": True, "quote": "test", "verdict": "approved"}
-            ]
+                {"thread_id": "T1", "addressed": True, "quote": "test", "verdict": "approved"},
+            ],
         }
         with pytest.raises(ValueError):
             schema(**data)
@@ -113,7 +113,7 @@ class TestModelJudgementsSchema:
                 {"thread_id": "T1", "addressed": True},
                 {"thread_id": "T2", "addressed": False},
                 {"thread_id": "T3", "addressed": True},
-            ]
+            ],
         }
         with pytest.raises(ValueError):
             schema(**data)
@@ -122,8 +122,8 @@ class TestModelJudgementsSchema:
         schema = model_judgements_schema(max_threads=1)
         data = {
             "judgements": [
-                {"thread_id": "T1", "addressed": True, "quote": "x" * 301}
-            ]
+                {"thread_id": "T1", "addressed": True, "quote": "x" * 301},
+            ],
         }
         with pytest.raises(ValueError):
             schema(**data)
@@ -132,8 +132,8 @@ class TestModelJudgementsSchema:
         schema = model_judgements_schema(max_threads=1)
         data = {
             "judgements": [
-                {"thread_id": "T1", "addressed": False, "reason": "x" * 301}
-            ]
+                {"thread_id": "T1", "addressed": False, "reason": "x" * 301},
+            ],
         }
         with pytest.raises(ValueError):
             schema(**data)

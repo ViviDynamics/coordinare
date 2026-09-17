@@ -25,7 +25,7 @@ def test_strip_base_url_credentials_preserves_port_and_path() -> None:
 
 def test_strip_base_url_credentials_drops_api_key_query() -> None:
     out = strip_base_url_credentials(
-        "https://h.example/v1?api_key=secret&foo=bar&API_KEY=other"
+        "https://h.example/v1?api_key=secret&foo=bar&API_KEY=other",
     )
     assert "secret" not in out
     assert "other" not in out

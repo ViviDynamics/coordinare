@@ -106,7 +106,7 @@ class TestDryRunAgentService:
     def test_dispatch_card_returns_accepted(self) -> None:
         svc = DryRunAgentService()
         result = asyncio.run(
-            svc.dispatch_card({"card_id": "C1"})
+            svc.dispatch_card({"card_id": "C1"}),
         )
         assert result["status"] == "accepted"
         assert result["session_id"] == "dry-run-session"
@@ -115,7 +115,7 @@ class TestDryRunAgentService:
     def test_check_status_returns_pr_opened(self) -> None:
         svc = DryRunAgentService()
         result = asyncio.run(
-            svc.check_status("dry-run-session")
+            svc.check_status("dry-run-session"),
         )
         assert result["status"] == "pr_opened"
         assert "pr_url" in result
@@ -129,7 +129,7 @@ class TestDryRunAgentService:
         svc = DryRunAgentService()
         payload = {"github_token": "refreshed-token-abc"}
         result = asyncio.run(
-            svc.check_status("dry-run-session", payload=payload)
+            svc.check_status("dry-run-session", payload=payload),
         )
         assert result["status"] == "pr_opened"
         # Payload must be captured in recorded_actions for auditability
@@ -152,7 +152,7 @@ class TestDryRunAgentService:
     def test_relay_feedback_records_action(self) -> None:
         svc = DryRunAgentService()
         result = asyncio.run(
-            svc.relay_feedback({"comment": "fix this"})
+            svc.relay_feedback({"comment": "fix this"}),
         )
         assert result["status"] == "accepted"
         assert svc.recorded_actions[0]["method"] == "relay_feedback"
@@ -197,7 +197,7 @@ class TestExecuteDryRun:
     def test_default_config_produces_implementing_stage(self) -> None:
         config = _make_minimal_config()
         result = asyncio.run(
-            execute_dry_run("CARD-1", config)
+            execute_dry_run("CARD-1", config),
         )
         assert isinstance(result, DryRunResult)
         assert "implementing" in result.lifecycle_stages
@@ -215,7 +215,7 @@ class TestExecuteDryRun:
         )
         config = _make_minimal_config(performers=performers)
         result = asyncio.run(
-            execute_dry_run("CARD-2", config)
+            execute_dry_run("CARD-2", config),
         )
         assert "implementing" in result.lifecycle_stages
         assert "reviewing" in result.lifecycle_stages
@@ -224,7 +224,7 @@ class TestExecuteDryRun:
     def test_board_transitions_end_with_done(self) -> None:
         config = _make_minimal_config()
         result = asyncio.run(
-            execute_dry_run("CARD-3", config)
+            execute_dry_run("CARD-3", config),
         )
         last = result.board_transitions[-1]
         assert last["stage"] == "complete"
@@ -254,12 +254,12 @@ class TestDryRunEndpoint:
         metrics = MagicMock()
         metrics.cycles_completed_total._value.get.return_value = 0
         metrics.build_info.labels.return_value._value.get.return_value = {
-            "started_at": "2026-03-28T00:00:00+00:00"
+            "started_at": "2026-03-28T00:00:00+00:00",
         }
 
         health = MagicMock()
         health.snapshot.return_value = MagicMock(
-            probes=[], overall_status=MagicMock(value="healthy")
+            probes=[], overall_status=MagicMock(value="healthy"),
         )
 
         app = create_dashboard_app(store, daemon, metrics, health)

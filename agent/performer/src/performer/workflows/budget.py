@@ -139,7 +139,7 @@ class CallCeiling:
     def consume(self) -> None:
         if self.used >= self.limit:
             raise ModelCallCeilingExceeded(
-                f"workflow exceeded its model-call ceiling of {self.limit}"
+                f"workflow exceeded its model-call ceiling of {self.limit}",
             )
         self.used += 1
 
@@ -204,5 +204,5 @@ async def call_with_budget(
         "model response unusable after retry: "
         f"finish_reason={retried.finish_reason!r} at max_tokens="
         f"{retry_budget.max_tokens} (first attempt: "
-        f"finish_reason={reply.finish_reason!r} at {budget.max_tokens})"
+        f"finish_reason={reply.finish_reason!r} at {budget.max_tokens})",
     )

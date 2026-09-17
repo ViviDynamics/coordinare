@@ -73,7 +73,7 @@ def test_port_bound_matches_only_listen_state():
     on the TIME_WAIT sockets a just-killed/restarted server leaves behind, so a
     re-run wrongly 'assumes external instance' and skips starting the service."""
     scripts = render(
-        ServicesManifest(services=[_redis()], cache_inputs=[], agent_version="t")
+        ServicesManifest(services=[_redis()], cache_inputs=[], agent_version="t"),
     )
     start = scripts.start
     assert "_port_bound()" in start
@@ -163,7 +163,7 @@ def test_render_start_args_are_shell_quoted():
         start_args=["postgres", "-D", "/tmp/pg; rm -rf /", "-c", "shared_buffers=128MB"],
     )
     manifest = ServicesManifest(
-        services=[entry], cache_inputs=[], agent_version="test-quote"
+        services=[entry], cache_inputs=[], agent_version="test-quote",
     )
 
     scripts = render(manifest)
@@ -186,7 +186,7 @@ def test_render_synthesises_default_when_start_args_none():
         start_args=None,
     )
     manifest = ServicesManifest(
-        services=[entry], cache_inputs=[], agent_version="test-default"
+        services=[entry], cache_inputs=[], agent_version="test-default",
     )
 
     scripts = render(manifest)
@@ -200,17 +200,17 @@ def test_render_synthesises_default_when_start_args_none():
 
 def _manifest(services, agent_version="test-091"):
     return ServicesManifest(
-        services=services, cache_inputs=[], agent_version=agent_version
+        services=services, cache_inputs=[], agent_version=agent_version,
     )
 
 
 def _postgres_init(**init_overrides) -> ServiceEntry:
     """A postgres entry carrying a full init block — the US1 headline case."""
-    init_fields = dict(
-        superuser="root",
-        databases=["app_dev", "app_test"],
-        password_env_var="POSTGRES_PASSWORD",
-    )
+    init_fields = {
+        "superuser": "root",
+        "databases": ["app_dev", "app_test"],
+        "password_env_var": "POSTGRES_PASSWORD",
+    }
     init_fields.update(init_overrides)
     return ServiceEntry(
         name="postgres",
@@ -478,7 +478,7 @@ def test_render_uses_strict_undefined(monkeypatch, tmp_path):
     bad_template_dir = tmp_path / "templates"
     bad_template_dir.mkdir()
     (bad_template_dir / "services-start.sh.j2").write_text(
-        "#!/usr/bin/env bash\necho {{ nonexistent_field }}\n"
+        "#!/usr/bin/env bash\necho {{ nonexistent_field }}\n",
     )
     (bad_template_dir / "services-stop.sh.j2").write_text("#!/usr/bin/env bash\n")
     (bad_template_dir / "services-health.sh.j2").write_text("#!/usr/bin/env bash\n")

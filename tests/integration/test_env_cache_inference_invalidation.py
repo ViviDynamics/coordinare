@@ -35,7 +35,7 @@ def _good_manifest(cache_inputs: list[str]) -> dict:
                 "port": 5432,
                 "why_needed": "test",
                 "sources": cache_inputs[:1] or ["Gemfile"],
-            }
+            },
         ],
         "cache_inputs": cache_inputs,
         "agent_version": "test-v1",
@@ -118,7 +118,7 @@ def _spec_files_prefix() -> str:
 
 
 async def _compute_current_inference_suffix(
-    manifest: dict, file_contents: dict[str, str]
+    manifest: dict, file_contents: dict[str, str],
 ) -> str:
     from coordinare_service_inference.cache_key import (
         compute_inference_cache_key,
@@ -153,7 +153,7 @@ async def test_edit_listed_cache_input_dispatches_bootstrap(tmp_path: Path) -> N
     file_contents = {"Gemfile": "gem 'rails'\n"}
     initial_suffix = await _compute_current_inference_suffix(manifest, file_contents)
     _seal_to_match_current(
-        state["env_cache"][sym_name], _spec_files_prefix(), initial_suffix
+        state["env_cache"][sym_name], _spec_files_prefix(), initial_suffix,
     )
 
     dispatched: list = []
@@ -190,7 +190,7 @@ async def test_edit_unlisted_path_reuses_cache(tmp_path: Path) -> None:
     file_contents = {"Gemfile": "gem 'rails'\n", "README.md": "first"}
     initial_suffix = await _compute_current_inference_suffix(manifest, file_contents)
     _seal_to_match_current(
-        state["env_cache"][sym_name], _spec_files_prefix(), initial_suffix
+        state["env_cache"][sym_name], _spec_files_prefix(), initial_suffix,
     )
 
     dispatched: list = []
@@ -275,7 +275,7 @@ async def test_runtime_health_failure_self_heals(tmp_path: Path) -> None:
     initial_suffix = await _compute_current_inference_suffix(manifest, file_contents)
     sealed_key = f"{_spec_files_prefix()}:{initial_suffix}"
     _seal_to_match_current(
-        state["env_cache"][sym_name], _spec_files_prefix(), initial_suffix
+        state["env_cache"][sym_name], _spec_files_prefix(), initial_suffix,
     )
 
     dispatched: list = []

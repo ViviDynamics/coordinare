@@ -85,7 +85,7 @@ async def strip_agent_artifacts(stand: Stand, env: dict[str, str]) -> list[str]:
     )
     if rc != 0:
         raise WorkspaceSetupError(
-            f"commit guard: failed to unstage agent artifacts (exit {rc}): {stderr}"
+            f"commit guard: failed to unstage agent artifacts (exit {rc}): {stderr}",
         )
     rc, stderr = await _run_git(
         ["git", "commit", "-m", "chore: remove performer agent tool-config artifacts (spec 131)"],
@@ -93,7 +93,7 @@ async def strip_agent_artifacts(stand: Stand, env: dict[str, str]) -> list[str]:
     )
     if rc != 0:
         raise WorkspaceSetupError(
-            f"commit guard: failed to commit artifact removal (exit {rc}): {stderr}"
+            f"commit guard: failed to commit artifact removal (exit {rc}): {stderr}",
         )
     log.warning("commit_guard.agent_artifact_stripped", paths=offending, count=len(offending))
     return offending
@@ -214,7 +214,7 @@ async def _run_git(
         # Credentials are in env vars, not args, so joining is safe
         cmd_str = " ".join(args)
         raise WorkspaceSetupError(
-            f"git command timed out after {timeout}s: {cmd_str}"
+            f"git command timed out after {timeout}s: {cmd_str}",
         ) from None
     return proc.returncode, _redact_auth_headers(stderr_bytes.decode(errors="replace"))
 
@@ -244,7 +244,7 @@ async def _run_git_stdout(
         proc.kill()
         await proc.wait()
         raise WorkspaceSetupError(
-            f"git command timed out after {timeout}s: {' '.join(args)}"
+            f"git command timed out after {timeout}s: {' '.join(args)}",
         ) from None
     return proc.returncode, stdout_bytes.decode(errors="replace")
 
@@ -310,7 +310,7 @@ async def clone_repository(score: Score) -> Stand:
         # Unexpected fetch error (auth, DNS, etc.) — don't silently create a new branch
         shutil.rmtree(stand_path, ignore_errors=True)
         raise WorkspaceSetupError(
-            f"git fetch failed unexpectedly (exit {fetch_rc}): {fetch_stderr}"
+            f"git fetch failed unexpectedly (exit {fetch_rc}): {fetch_stderr}",
         )
 
     try:
@@ -360,7 +360,7 @@ _TOOLCHAIN_ADVERTISEMENTS: tuple[tuple[str, str], ...] = (
 
 
 def _unresolved_advertised_toolchain(
-    activate_text: str, sourced_path: str
+    activate_text: str, sourced_path: str,
 ) -> str | None:
     """Return a names-only reason if activate.sh advertises a toolchain whose
     binary does not resolve on the post-activation PATH, else None.
@@ -753,7 +753,7 @@ def reset_services_start_failure() -> None:
 
 
 def _record_services_start_failure(
-    script: str, returncode: int | str, output_tail: str
+    script: str, returncode: int | str, output_tail: str,
 ) -> None:
     """Emit the error-level event and store the failure for the QA channel."""
     log.error(
@@ -795,7 +795,7 @@ async def _kill_cache_process_group(proc: asyncio.subprocess.Process) -> None:
 
 
 async def _start_env_cache_services(
-    env_cache_path: str, cache_env: dict[str, str]
+    env_cache_path: str, cache_env: dict[str, str],
 ) -> None:
     """Invoke ``<env_cache_path>/services/services-start.sh`` when present.
 
@@ -911,7 +911,7 @@ async def _start_env_cache_services(
 
 
 async def _run_env_cache_health_check(
-    env_cache_path: str, env: dict[str, str]
+    env_cache_path: str, env: dict[str, str],
 ) -> None:
     """Run ``services-health.sh`` post-start; flag failures for the coordinare."""
     health = Path(env_cache_path) / "services" / "services-health.sh"
@@ -1048,7 +1048,7 @@ async def run_service_readiness(
 
 
 async def run_env_cache_verify(
-    env_cache_path: str, cache_env: dict[str, str] | None = None
+    env_cache_path: str, cache_env: dict[str, str] | None = None,
 ) -> tuple[bool | None, str]:
     """Run ``<env_cache_path>/verify.sh`` to confirm the bootstrap installed
     what the spec files require, BEFORE the bootstrap reports success.
@@ -1085,7 +1085,7 @@ async def run_env_cache_verify(
         out_b, _ = await asyncio.wait_for(proc.communicate(), timeout=180.0)
     except (OSError, asyncio.TimeoutError) as exc:
         log.warning(
-            "env_cache.verify_errored", env_cache_path=env_cache_path, error=str(exc)
+            "env_cache.verify_errored", env_cache_path=env_cache_path, error=str(exc),
         )
         return False, f"verify.sh did not run cleanly: {exc}"
     finally:
@@ -1111,7 +1111,7 @@ async def run_env_cache_verify(
 
 
 def stop_env_cache_services(
-    env_cache_path: str, cache_env: dict[str, str] | None = None
+    env_cache_path: str, cache_env: dict[str, str] | None = None,
 ) -> None:
     """Synchronously run ``<env_cache_path>/services/services-stop.sh`` if present.
 
@@ -1190,7 +1190,7 @@ def paths_outside_tree(changed: list[str], tree: str) -> list[str]:
 
 
 async def _enforce_documenter_tree(
-    git_out, upstream: str, tree: str, branch: str
+    git_out, upstream: str, tree: str, branch: str,
 ) -> None:
     """Refuse to push a documenter side run whose commits touch anything
     outside the documentation tree. The implementer owns code and tests; two
@@ -1212,7 +1212,7 @@ async def _enforce_documenter_tree(
         log.warning("documenter.tree_violation", branch=branch, tree=tree, paths=outside[:10])
         raise WorkspaceSetupError(
             "documenter.tree_violation: the documenter may only commit under "
-            f"{tree}; refused paths: {', '.join(outside[:10])}"
+            f"{tree}; refused paths: {', '.join(outside[:10])}",
         )
 
 
@@ -1263,12 +1263,12 @@ async def push_branch(stand: Stand, score: Score) -> None:
             raise WorkspaceSetupError(f"git {what} failed: {exc}") from exc
 
     await _push_head_without_clobbering(
-        _git, _git_out, remote=remote_url, branch=stand.branch, score=score
+        _git, _git_out, remote=remote_url, branch=stand.branch, score=score,
     )
 
 
 async def _push_head_without_clobbering(
-    git_run, git_out, *, remote: str, branch: str, score: Score | None
+    git_run, git_out, *, remote: str, branch: str, score: Score | None,
 ) -> None:
     """The one push path every performer write goes through (165 FR-013, FR-015).
 
@@ -1288,7 +1288,7 @@ async def _push_head_without_clobbering(
         fetch_rc, fetch_err = await git_run(["fetch", remote, branch], "fetch")
         if fetch_rc != 0:
             raise WorkspaceSetupError(
-                f"git fetch before push failed: {_summarise_git_push_error(fetch_err)}"
+                f"git fetch before push failed: {_summarise_git_push_error(fetch_err)}",
             )
         if tree is not None:
             await _enforce_documenter_tree(git_out, "FETCH_HEAD", tree, branch)
@@ -1298,7 +1298,7 @@ async def _push_head_without_clobbering(
             log.warning("push_branch.rebase_conflict", branch=branch, error=rebase_err[:300])
             raise WorkspaceSetupError(
                 "push_branch.rebase_conflict: the remote branch has commits this "
-                f"performer's work conflicts with; nothing was pushed. {rebase_err[:300]}"
+                f"performer's work conflicts with; nothing was pushed. {rebase_err[:300]}",
             )
         log.info("push_branch.rebased", branch=branch)
         push_rc, push_err = await git_run(["push", remote, f"HEAD:{branch}"], "push")
@@ -1320,7 +1320,7 @@ async def _push_head_without_clobbering(
     force_rc, force_err = await git_run(["push", "--force", remote, f"HEAD:{branch}"], "force-push")
     if force_rc != 0:
         raise WorkspaceSetupError(
-            f"git push failed: {_summarise_git_push_error(force_err or push_err)}"
+            f"git push failed: {_summarise_git_push_error(force_err or push_err)}",
         )
 
 
@@ -1344,7 +1344,7 @@ async def get_head_sha(stand: Stand) -> str:
         raise WorkspaceSetupError("git rev-parse HEAD timed out") from None
     if proc.returncode != 0:
         raise WorkspaceSetupError(
-            f"git rev-parse HEAD failed (exit {proc.returncode}) in {stand.path}"
+            f"git rev-parse HEAD failed (exit {proc.returncode}) in {stand.path}",
         )
     return stdout.decode().strip()
 
@@ -1367,7 +1367,7 @@ def _stand_git_runners(stand: Stand, env: dict[str, str]):
 
 
 async def commit_file(
-    stand: Stand, path: str, content: str, message: str, *, score: Score | None = None
+    stand: Stand, path: str, content: str, message: str, *, score: Score | None = None,
 ) -> None:
     """Write *content* to *path* in the stand's repo, commit, and push.
 
@@ -1421,7 +1421,7 @@ async def commit_file(
     # Push through the shared path: rebase onto the remote, never force over
     # another performer's commits, and hold a documenter side run to its tree.
     await _push_head_without_clobbering(
-        *_stand_git_runners(stand, env), remote="origin", branch=stand.branch, score=score
+        *_stand_git_runners(stand, env), remote="origin", branch=stand.branch, score=score,
     )
 
     log.info("commit_file.committed", path=path, branch=stand.branch)
@@ -1582,7 +1582,7 @@ async def commit_files(
 
     # Single push through the shared path (rebase, no force, documenter tree guard)
     await _push_head_without_clobbering(
-        *_stand_git_runners(stand, env), remote="origin", branch=stand.branch, score=score
+        *_stand_git_runners(stand, env), remote="origin", branch=stand.branch, score=score,
     )
 
     log.info(
@@ -1663,7 +1663,7 @@ def _command_shell() -> str:
 
 
 def _fail_result(
-    cmd: str, start: float, stderr_msg: str, *, timed_out: bool = False, max_output: int = _MAX_OUTPUT
+    cmd: str, start: float, stderr_msg: str, *, timed_out: bool = False, max_output: int = _MAX_OUTPUT,
 ) -> CIRunResult:
     """Build a failure CIRunResult — shared by timeout and exception paths."""
     return CIRunResult(
@@ -1685,7 +1685,7 @@ async def _kill_proc(proc: asyncio.subprocess.Process | None) -> None:
 
 
 def _truncate(
-    text: str, *, mode: Literal["head", "tail", "both"], max_output: int
+    text: str, *, mode: Literal["head", "tail", "both"], max_output: int,
 ) -> str:
     """Clamp *text* to ``max_output`` chars.
 

@@ -84,7 +84,7 @@ def test_a_dispatch_under_several_stages_is_counted_once() -> None:
         card("c1", [
             dispatch("reviewer", "openclaw", "approved", stage="reviewing", session_id="s1"),
             dispatch("reviewer", "openclaw", "approved", stage="monitoring", session_id="s1"),
-        ])
+        ]),
     ])
     assert _row(roll_up([art]), "reviewer", "openclaw").dispatches == 1
 
@@ -131,7 +131,7 @@ def test_no_conclusive_dispatches_yields_none_rates_not_zero() -> None:
 def test_tokens_absent_is_none_not_zero() -> None:
     """FR-008: summing must treat missing tokens as absent, never as zero."""
     art = artifact([
-        card("c1", [dispatch("qa", "claude_code", "qa_passed", tokens=None)])
+        card("c1", [dispatch("qa", "claude_code", "qa_passed", tokens=None)]),
     ])
     assert _row(roll_up([art]), "qa", "claude_code").tokens_total is None
 
@@ -148,7 +148,7 @@ def test_a_partial_token_sum_is_flagged_not_presented_as_complete() -> None:
         card("c1", [
             dispatch("reviewer", "openclaw", "approved", tokens=1000, session_id="s1"),
             dispatch("reviewer", "openclaw", "approved", tokens=None, session_id="s2"),
-        ])
+        ]),
     ])
     row = _row(roll_up([art]), "reviewer", "openclaw")
 
@@ -161,7 +161,7 @@ def test_a_complete_token_sum_is_not_flagged_partial() -> None:
         card("c1", [
             dispatch("reviewer", "openclaw", "approved", tokens=100, session_id="s1"),
             dispatch("reviewer", "openclaw", "approved", tokens=50, session_id="s2"),
-        ])
+        ]),
     ])
     row = _row(roll_up([art]), "reviewer", "openclaw")
 
@@ -172,7 +172,7 @@ def test_a_complete_token_sum_is_not_flagged_partial() -> None:
 def test_no_tokens_at_all_is_absent_not_partial() -> None:
     """Nothing reported is `None` (absent), which is distinct from a partial sum."""
     art = artifact([
-        card("c1", [dispatch("qa", "claude_code", "qa_passed", tokens=None)])
+        card("c1", [dispatch("qa", "claude_code", "qa_passed", tokens=None)]),
     ])
     row = _row(roll_up([art]), "qa", "claude_code")
 
@@ -185,7 +185,7 @@ def test_tokens_sum_when_present() -> None:
         card("c1", [
             dispatch("qa", "claude_code", "qa_passed", tokens=100),
             dispatch("qa", "claude_code", "qa_passed", tokens=50),
-        ])
+        ]),
     ])
     assert _row(roll_up([art]), "qa", "claude_code").tokens_total == 150
 
@@ -208,7 +208,7 @@ def test_a_retry_that_later_succeeds_still_records_the_defect() -> None:
         card("c1", [
             dispatch("qa", "claude_code", "malformed_output", session_id="s1"),
             dispatch("qa", "claude_code", "qa_passed", session_id="s2"),
-        ], final_state="merged")
+        ], final_state="merged"),
     ])
     row = _row(roll_up([art]), "qa", "claude_code")
 

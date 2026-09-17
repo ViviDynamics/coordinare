@@ -100,7 +100,7 @@ class TestSourceResolution:
         sub.mkdir()
         _write(sub / ".env.test", "REPO_KEY=rv\n")
         out = load_test_env(
-            TestEnvConfig(repo_path="config/.env.test"), repo_root=tmp_path
+            TestEnvConfig(repo_path="config/.env.test"), repo_root=tmp_path,
         )
         assert out == {"REPO_KEY": "rv"}
 

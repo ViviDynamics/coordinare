@@ -35,7 +35,7 @@ def test_pr_artefacts_recorded_survive_session_round_trip() -> None:
             "current_card": dict(initial_card),
             "phase": "monitoring_performer",
             "performer_stage": "implementing",
-        }
+        },
     }
 
     # Implementer opens PR #148 and reports the new artefacts

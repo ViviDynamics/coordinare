@@ -35,7 +35,7 @@ def _client(config_path: Path) -> TestClient:
     daemon.state = {"coordinare_config": cfg, "config_version": 7}
     daemon.running = True
     app = create_dashboard_app(
-        DashboardStore(), daemon, MagicMock(), MagicMock(), config_path=config_path
+        DashboardStore(), daemon, MagicMock(), MagicMock(), config_path=config_path,
     )
     return TestClient(app, base_url="http://127.0.0.1:8090")
 
@@ -52,7 +52,7 @@ class TestThePageCanObtainAHashCheaply:
         assert resp.headers.get("etag"), "the page has no way to save safely without this"
 
     def test_the_etag_is_the_files_content_hash_and_is_a_valid_etag(
-        self, temp_config_path
+        self, temp_config_path,
     ) -> None:
         """Review finding: the first version of this test stripped quotes.
 
@@ -149,7 +149,7 @@ class TestAConcurrentEditIsRefusedRatherThanLost:
             "the page captures a hash and then does not send it"
         )
 
-    def test_the_page_explains_a_refusal(self, ) -> None:
+    def test_the_page_explains_a_refusal(self ) -> None:
         """FR-005 — a raw 409 is not an explanation."""
         from coordinare.dashboard import _DASHBOARD_HTML
 
@@ -208,7 +208,7 @@ def test_the_endpoint_still_works_without_a_config_file(tmp_path, missing) -> No
         daemon = MagicMock()
         daemon.state = {"coordinare_config": None, "config": None}
         app = create_dashboard_app(
-            DashboardStore(), daemon, MagicMock(), MagicMock(), config_path=config_path
+            DashboardStore(), daemon, MagicMock(), MagicMock(), config_path=config_path,
         )
         client = TestClient(app, base_url="http://127.0.0.1:8090")
         resp = client.get("/api/config/global")

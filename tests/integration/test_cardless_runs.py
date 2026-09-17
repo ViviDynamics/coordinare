@@ -71,13 +71,13 @@ async def test_a_restart_between_a_run_and_the_next_cycle_adds_no_duplicate() ->
         "url": "u", "labels": ["advocate-handled"],
     }
     before_restart = select_candidates(
-        [answered], handled_label="advocate-handled", escalation_label="needs-human"
+        [answered], handled_label="advocate-handled", escalation_label="needs-human",
     )
     assert before_restart == []
 
     # A restart: brand new state, nothing remembered.
     after_restart = select_candidates(
-        [answered], handled_label="advocate-handled", escalation_label="needs-human"
+        [answered], handled_label="advocate-handled", escalation_label="needs-human",
     )
     assert after_restart == [], "the label carries the decision, so memory is not needed"
 
@@ -91,7 +91,7 @@ async def test_an_interrupted_run_does_not_block_the_role_after_a_restart() -> N
     crashed = _state(advocate_in_flight=True, last_advocate_run_at=datetime.now(UTC) - timedelta(days=1))
     snapshot = EnvCacheStateSnapshot.model_validate(
         {k: v for k, v in crashed.model_dump(mode="json").items()
-         if k in EnvCacheStateSnapshot.model_fields}
+         if k in EnvCacheStateSnapshot.model_fields},
     )
     restored = _state(**{
         k: getattr(snapshot, k) for k in ("advocate_attempts", "advocate_exhausted",

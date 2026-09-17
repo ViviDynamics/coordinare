@@ -41,7 +41,7 @@ def resolve(
     Otherwise, if branch_protection_set is non-None, US3 falls through to
     layer 2.  All-head-checks is the terminal fallback.
     """
-    head_names = sorted({c for c in all_head_checks})
+    head_names = sorted(set(all_head_checks))
 
     # Layer 1: persona_check_map narrows the required set. Two modes (077
     # decoupling): with 074 scope tiering ON, the runtime scope supplies the
@@ -61,7 +61,7 @@ def resolve(
             patterns = per_persona.get("any") or []
         if patterns:
             matched = sorted(
-                {n for n in head_names if any(fnmatch.fnmatchcase(n, p) for p in patterns)}
+                {n for n in head_names if any(fnmatch.fnmatchcase(n, p) for p in patterns)},
             )
             # T041: empty intersection falls through to layer 2 so a narrow
             # pattern doesn't silently zero out the required-checks set when no

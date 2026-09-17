@@ -137,10 +137,10 @@ def merge_duplicate_sections(
                 canonical_text = modified_texts.get(canonical_path, file_sections.get(canonical_path, ""))
                 dup_text = modified_texts.get(dup_path, file_sections.get(dup_path, ""))
                 canon_renamed = _rename_heading(
-                    canonical_text, heading, f"{heading} ({canonical_path})"
+                    canonical_text, heading, f"{heading} ({canonical_path})",
                 )
                 dup_renamed = _rename_heading(
-                    dup_text, heading, f"{heading} ({dup_path})"
+                    dup_text, heading, f"{heading} ({dup_path})",
                 )
                 if canon_renamed == canonical_text and dup_renamed == dup_text:
                     # Neither rename matched — leave as-is rather than count a no-op.

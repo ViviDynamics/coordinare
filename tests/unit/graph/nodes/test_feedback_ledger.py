@@ -51,7 +51,7 @@ def test_stamp_assigns_monotonic_ids_and_enriches_items() -> None:
 def test_stamp_digests_bodies_to_200_chars() -> None:
     state = _state()
     _stamp_feedback_bounce(
-        state, [{"body": "x" * 500}], raiser="qa", origin_sha="abc"
+        state, [{"body": "x" * 500}], raiser="qa", origin_sha="abc",
     )
     assert len(state["feedback_ledger"][0]["body_digest"]) == 200
 
@@ -60,7 +60,7 @@ def test_ids_continue_across_rounds() -> None:
     state = _state()
     _stamp_feedback_bounce(state, [{"body": "a"}], raiser="reviewing", origin_sha="s1")
     enriched = _stamp_feedback_bounce(
-        state, [{"body": "b"}], raiser="qa", origin_sha="s2"
+        state, [{"body": "b"}], raiser="qa", origin_sha="s2",
     )
     assert enriched[0]["id"] == "fb-2"
 
@@ -107,7 +107,7 @@ def test_empty_origin_sha_stamped_as_empty() -> None:
 def test_apply_dispositions_updates_open_items() -> None:
     state = _state()
     _stamp_feedback_bounce(
-        state, [{"body": "a"}, {"body": "b"}], raiser="reviewing", origin_sha="s1"
+        state, [{"body": "a"}, {"body": "b"}], raiser="reviewing", origin_sha="s1",
     )
 
     disputed = _apply_feedback_dispositions(
@@ -136,7 +136,7 @@ def test_raiser_pass_accepts_pending_disputes() -> None:
     state = _state()
     _stamp_feedback_bounce(state, [{"body": "a"}], raiser="reviewing", origin_sha="s1")
     _apply_feedback_dispositions(
-        state, [{"id": "fb-1", "disposition": "disputed", "reason": "wrong"}]
+        state, [{"id": "fb-1", "disposition": "disputed", "reason": "wrong"}],
     )
 
     _resolve_dispute_round(state, raiser_stage="reviewing", passed=True)
@@ -148,7 +148,7 @@ def test_raiser_bounce_rejects_disputes_and_marks_new_round_re_raised() -> None:
     state = _state()
     _stamp_feedback_bounce(state, [{"body": "a"}], raiser="reviewing", origin_sha="s1")
     _apply_feedback_dispositions(
-        state, [{"id": "fb-1", "disposition": "disputed", "reason": "wrong"}]
+        state, [{"id": "fb-1", "disposition": "disputed", "reason": "wrong"}],
     )
 
     _resolve_dispute_round(state, raiser_stage="reviewing", passed=False)
@@ -156,7 +156,7 @@ def test_raiser_bounce_rejects_disputes_and_marks_new_round_re_raised() -> None:
     assert by_id["fb-1"]["disposition"] == "dispute_rejected"
 
     enriched = _stamp_feedback_bounce(
-        state, [{"body": "a again"}], raiser="reviewing", origin_sha="s1"
+        state, [{"body": "a again"}], raiser="reviewing", origin_sha="s1",
     )
     assert enriched[0]["re_raised"] is True
 
@@ -165,7 +165,7 @@ def test_other_raisers_disputes_untouched_by_resolution() -> None:
     state = _state()
     _stamp_feedback_bounce(state, [{"body": "a"}], raiser="qa", origin_sha="s1")
     _apply_feedback_dispositions(
-        state, [{"id": "fb-1", "disposition": "disputed", "reason": "flaky"}]
+        state, [{"id": "fb-1", "disposition": "disputed", "reason": "flaky"}],
     )
 
     _resolve_dispute_round(state, raiser_stage="reviewing", passed=True)
@@ -240,7 +240,7 @@ def test_resolve_dispute_round_ignores_previous_round() -> None:
     # Round 1 (will roll to previous), disputed.
     _stamp_feedback_bounce(state, [{"body": "a"}], raiser="reviewing", origin_sha="s1")
     _apply_feedback_dispositions(
-        state, [{"id": "fb-1", "disposition": "disputed", "reason": "x"}]
+        state, [{"id": "fb-1", "disposition": "disputed", "reason": "x"}],
     )
     # A NEW round rolls fb-1 to previous (superseded), so it's no longer current.
     _stamp_feedback_bounce(state, [{"body": "b"}], raiser="reviewing", origin_sha="s2")

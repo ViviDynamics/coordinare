@@ -64,10 +64,10 @@ async def test_assess_with_clarification_history_uses_history_prompt() -> None:
 
     svc = _service()
     create_mock = AsyncMock(return_value=SimpleNamespace(
-        content=[SimpleNamespace(text='{"sufficient": true, "questions": [], "rationale": "enough info"}')]
+        content=[SimpleNamespace(text='{"sufficient": true, "questions": [], "rationale": "enough info"}')],
     ))
     svc._client = SimpleNamespace(
-        messages=type("M", (), {"create": create_mock})()
+        messages=type("M", (), {"create": create_mock})(),
     )
 
     result = await svc.assess_card_sufficiency({
@@ -91,10 +91,10 @@ async def test_assess_clarification_entry_with_no_questions_no_answer() -> None:
 
     svc = _service()
     response = SimpleNamespace(
-        content=[SimpleNamespace(text='{"sufficient": true, "questions": [], "rationale": "ok"}')]
+        content=[SimpleNamespace(text='{"sufficient": true, "questions": [], "rationale": "ok"}')],
     )
     svc._client = SimpleNamespace(
-        messages=type("M", (), {"create": AsyncMock(return_value=response)})()
+        messages=type("M", (), {"create": AsyncMock(return_value=response)})(),
     )
 
     result = await svc.assess_card_sufficiency({
@@ -121,7 +121,7 @@ async def test_block_without_text_attr_returns_empty_fallback() -> None:
             "M",
             (),
             {"create": AsyncMock(return_value=SimpleNamespace(content=[_NoTextBlock()]))},
-        )()
+        )(),
     )
 
     result = await svc.assess_card_sufficiency({"title": "T"})
@@ -144,7 +144,7 @@ async def test_prompt_text_returns_first_block_text() -> None:
             "M",
             (),
             {"create": AsyncMock(return_value=SimpleNamespace(content=[SimpleNamespace(text="hello world")]))},
-        )()
+        )(),
     )
     result = await svc.prompt_text("What is Python?")
     assert result == "hello world"
@@ -169,7 +169,7 @@ async def test_prompt_text_empty_response_returns_empty_string() -> None:
     """Empty content list from model returns empty string."""
     svc = _service()
     svc._client = SimpleNamespace(
-        messages=type("M", (), {"create": AsyncMock(return_value=SimpleNamespace(content=[]))})()
+        messages=type("M", (), {"create": AsyncMock(return_value=SimpleNamespace(content=[]))})(),
     )
     result = await svc.prompt_text("hello")
     assert result == ""
@@ -184,7 +184,7 @@ async def test_prompt_text_connection_error_raises_transient() -> None:
     req = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
     svc._client = MagicMock()
     svc._client.messages.create = AsyncMock(
-        side_effect=APIConnectionError(request=req)
+        side_effect=APIConnectionError(request=req),
     )
 
     with pytest.raises(TransientAnthropicError):
@@ -238,7 +238,7 @@ async def test_prompt_text_circuit_breaker_path() -> None:
             "M",
             (),
             {"create": _AsyncMock(return_value=SimpleNamespace(content=[SimpleNamespace(text="cb result")]))},
-        )()
+        )(),
     )
 
     mock_cb = _MagicMock()
@@ -264,7 +264,7 @@ async def test_prompt_text_authentication_error_raises_permanent() -> None:
     response = httpx.Response(401, request=req)
     svc._client = MagicMock()
     svc._client.messages.create = AsyncMock(
-        side_effect=AuthenticationError("invalid api key", response=response, body={})
+        side_effect=AuthenticationError("invalid api key", response=response, body={}),
     )
 
     with pytest.raises(PermanentAnthropicError):

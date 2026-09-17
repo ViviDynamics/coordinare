@@ -88,7 +88,7 @@ def _base_boot(worktree):
     from performer.workflows.qa.boot import AppBoot
 
     return AppBoot(
-        env={"PORT": "9999"}, workspace=worktree, port_check=lambda _h, _p: True
+        env={"PORT": "9999"}, workspace=worktree, port_check=lambda _h, _p: True,
     )
 
 
@@ -97,7 +97,7 @@ def _serving_boot(workspace):
     from performer.workflows.qa.boot import AppBoot
 
     return AppBoot(
-        env={"PORT": "8000"}, workspace=workspace, port_check=lambda _h, _p: True
+        env={"PORT": "8000"}, workspace=workspace, port_check=lambda _h, _p: True,
     )
 
 
@@ -150,7 +150,7 @@ async def test_a_silent_regression_is_caught_even_when_the_criterion_passed():
                    {"kind": "button", "label": "Continue"}],
     )
     result = await QAWorkflow(
-        boot_factory=_serving_boot, base_boot_factory=_base_boot
+        boot_factory=_serving_boot, base_boot_factory=_base_boot,
     ).run(_Stand(), _Score(), tk)
 
     assert result.report["passed"] is False, "a regression must fail the run"
@@ -235,7 +235,7 @@ async def test_a_required_baseline_that_is_unavailable_cannot_report_a_pass():
         return AppBoot(env={}, workspace=worktree)
 
     result = await QAWorkflow(
-        boot_factory=_serving_boot, base_boot_factory=_dead_base
+        boot_factory=_serving_boot, base_boot_factory=_dead_base,
     ).run(_Stand(), _Score(), tk)
 
     assert result.report["passed"] is False, (
@@ -275,7 +275,7 @@ async def test_a_visual_run_carries_boot_proof_through_to_the_report():
     )
 
     result = await QAWorkflow(
-        boot_factory=_serving_boot, base_boot_factory=_base_boot
+        boot_factory=_serving_boot, base_boot_factory=_base_boot,
     ).run(_Stand(), _Score(), tk)
 
     boot = result.report.get("app_boot_check")
@@ -304,7 +304,7 @@ async def test_the_app_and_worktree_are_released_even_when_a_step_raises():
             if "worktree remove" in cmd:
                 released["worktree"] = True
             return await super().run_command(
-                cmd, cwd=cwd, timeout_s=timeout_s, plan_check_id=plan_check_id
+                cmd, cwd=cwd, timeout_s=timeout_s, plan_check_id=plan_check_id,
             )
 
     def _tracked_boot(workspace):
@@ -330,7 +330,7 @@ async def test_the_app_and_worktree_are_released_even_when_a_step_raises():
     # The raise is the point; the cleanup is what is asserted.
     with contextlib.suppress(Exception):
         await QAWorkflow(
-            boot_factory=_tracked_boot, base_boot_factory=_base_boot
+            boot_factory=_tracked_boot, base_boot_factory=_base_boot,
         ).run(_Stand(), _Score(), tk)
 
     assert released["boot"], "a launched app server must not leak its PORT"
@@ -467,11 +467,11 @@ async def test_every_step_emits_a_durable_event_in_order():
         dom_after=[{"kind": "button", "label": "Continue"}],
     )
     await QAWorkflow(boot_factory=_serving_boot, base_boot_factory=_base_boot).run(
-        _Stand(), _Score(), tk
+        _Stand(), _Score(), tk,
     )
     steps = [e.text for e in tk.events if e.text.startswith("qa.")]
     assert steps == [
-        "qa.plan", "qa.boot", "qa.baseline", "qa.execute", "qa.observe", "qa.judge", "qa.report"
+        "qa.plan", "qa.boot", "qa.baseline", "qa.execute", "qa.observe", "qa.judge", "qa.report",
     ], steps
 
 
@@ -502,7 +502,7 @@ async def test_run_artifacts_never_land_inside_the_cloned_repository():
             if "qa_flow_driver.py" in cmd:
                 seen["driver"] = next(p for p in cmd.split() if p.endswith("qa_flow_driver.py"))
             return await super().run_command(
-                cmd, cwd=cwd, timeout_s=timeout_s, plan_check_id=plan_check_id
+                cmd, cwd=cwd, timeout_s=timeout_s, plan_check_id=plan_check_id,
             )
 
     tk = _Spy(
@@ -574,7 +574,7 @@ async def test_a_surface_that_renders_nothing_on_both_sides_is_reported_not_comp
         dom_before=[], dom_after=[],
     )
     result = await QAWorkflow(boot_factory=_serving_boot, base_boot_factory=_base_boot).run(
-        _Stand(), _Score(), tk
+        _Stand(), _Score(), tk,
     )
     cats = [f["category"] for f in result.findings]
     assert "step_unavailable" in cats, "an unobservable surface must be surfaced, not silently passed"

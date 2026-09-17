@@ -58,7 +58,7 @@ class TestReviewFindingsInScore:
                     "path": "src/main.py",
                     "hunks": [{"header": "@@ -1,1 +1,1 @@", "start_line": 1, "end_line": 1}],
                     "fully_in_diff": True,
-                }
+                },
             ],
             "diff_truncated": False,
             "verdict": "changes_requested",
@@ -72,7 +72,7 @@ class TestReviewFindingsInScore:
                     "why_blocking": "Documentation required",
                     "evidence": "def foo():",
                     "origin": "model",
-                }
+                },
             ],
         }
         score = Score(
@@ -123,13 +123,13 @@ class TestReviewFindingsRecordSchema:
                             "start_line": 1,
                             "end_line": 7,
                             "lines": ["def foo():", "    pass"],
-                        }
+                        },
                     ],
                     "fully_in_diff": True,
                     "deleted": False,
                     "deleted_before_cut": False,
                     "opened_by_survey": False,
-                }
+                },
             ],
             "diff_truncated": False,
             "verdict": "changes_requested",
@@ -143,7 +143,7 @@ class TestReviewFindingsRecordSchema:
                     "why_blocking": "Documentation required",
                     "evidence": "def foo():",
                     "origin": "model",
-                }
+                },
             ],
         }
 

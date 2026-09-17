@@ -109,7 +109,7 @@ def materialize_repo(fixtures: list[Fixture], dest_dir: str | Path) -> Path:
 
 
 def apply_solution_branch(
-    bare_repo: str | Path, branch: str, files: dict[str, str], work_dir: str | Path, base: str = "main"
+    bare_repo: str | Path, branch: str, files: dict[str, str], work_dir: str | Path, base: str = "main",
 ) -> None:
     """Create ``branch`` off ``base`` in the bare repo with ``files`` applied and push.
 

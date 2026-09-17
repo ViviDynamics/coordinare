@@ -64,13 +64,13 @@ def _rollup_payload(
                                     "state": "PENDING",
                                     "contexts": {"nodes": contexts or []},
                                 },
-                            }
-                        }
-                    ]
+                            },
+                        },
+                    ],
                 },
             },
             "branchProtectionRules": {"nodes": []},
-        }
+        },
     }
 
 
@@ -918,7 +918,7 @@ class _EphemeralPerformer:
             from coordinare.transport.base import TransportError
 
             raise TransportError(
-                "performer codex-ephemeral has no endpoint resolved yet"
+                "performer codex-ephemeral has no endpoint resolved yet",
             )
         if self._die_after_poll:
             self._live = False  # terminal cleanup tore the one-shot container down
@@ -1146,10 +1146,10 @@ def _base_rollup_payload(
                         "state": "FAILURE",
                         "contexts": {"nodes": contexts or []},
                     },
-                }
+                },
             },
             "branchProtectionRules": {"nodes": []},
-        }
+        },
     }
 
 
@@ -1379,7 +1379,7 @@ def _inherited_repair_gate_state(
             ci_gate=CIGateConfig(enabled=True, max_bounces_per_head=3),
             baseline_classification_gate=BaselineClassificationGateConfig(enabled=True),
             inherited_repair_gate=InheritedRepairGateConfig(
-                enabled=enabled, max_repair_attempts_per_head=max_attempts
+                enabled=enabled, max_repair_attempts_per_head=max_attempts,
             ),
         )
 
@@ -1438,7 +1438,7 @@ async def test_repair_mandate_built_for_inherited_on_bounce() -> None:
     # Reason-fidelity: byte-equal to the canonical string the classifier hashed
     # (recomputed on the head CheckEntry title/summary, NOT the raw title).
     assert lint["normalized_reason"] == failure_signature.normalize_reason(
-        "ruff E501", "line too long"
+        "ruff E501", "line too long",
     )
 
     # html_url origin = head CheckEntry.details_url.
@@ -1639,7 +1639,7 @@ def _repair_guard_state(
             "flagged_patterns": [],
             "detail": None,
             "decided_at": "2026-06-14T00:00:00Z",
-        }
+        },
     ]
 
     class _Sym:
@@ -1647,7 +1647,7 @@ def _repair_guard_state(
             ci_gate=CIGateConfig(enabled=ci_enabled, max_bounces_per_head=3),
             baseline_classification_gate=BaselineClassificationGateConfig(enabled=True),
             inherited_repair_gate=InheritedRepairGateConfig(
-                enabled=True, max_repair_attempts_per_head=max_attempts
+                enabled=True, max_repair_attempts_per_head=max_attempts,
             ),
         )
 
@@ -1855,7 +1855,7 @@ async def test_repair_budget_exhausted_escalates_instead_of_dispatching() -> Non
     head_sha = "a" * 40
     # Budget already fully consumed for this head (one prior attempt, ceiling 1).
     state = _inherited_repair_gate_state(
-        gh, max_attempts=1, inheritance_repair_counter={head_sha: 1}
+        gh, max_attempts=1, inheritance_repair_counter={head_sha: 1},
     )
 
     result = await monitor_performer(state)
@@ -1895,7 +1895,7 @@ async def test_repair_budget_exhausted_appends_to_existing_audit() -> None:
     gh = _GitHubBaseRollupWithComments(head_payload=head, base_payload=base)
     head_sha = "a" * 40
     state = _inherited_repair_gate_state(
-        gh, max_attempts=1, inheritance_repair_counter={head_sha: 1}
+        gh, max_attempts=1, inheritance_repair_counter={head_sha: 1},
     )
     # A prior, already-adjudicated attempt on the trail (dispatch then rejection).
     state["repair_audit"] = [
@@ -1954,7 +1954,7 @@ async def test_repair_budget_fresh_for_new_head() -> None:
     gh = _GitHubWithBaseRollup(head_payload=head, base_payload=base)
     # A stale entry for a *different* head; the live head ("a"*40) is untouched.
     state = _inherited_repair_gate_state(
-        gh, max_attempts=1, inheritance_repair_counter={"b" * 40: 1}
+        gh, max_attempts=1, inheritance_repair_counter={"b" * 40: 1},
     )
 
     result = await monitor_performer(state)
@@ -1978,7 +1978,7 @@ async def test_l3_disabled_leaves_repair_audit_empty() -> None:
     gh = _GitHubBaseRollupWithComments(head_payload=head, base_payload=base)
     # Even with a "consumed" budget seeded, L3-off must not escalate.
     state = _inherited_repair_gate_state(
-        gh, enabled=False, max_attempts=1, inheritance_repair_counter={"a" * 40: 1}
+        gh, enabled=False, max_attempts=1, inheritance_repair_counter={"a" * 40: 1},
     )
 
     result = await monitor_performer(state)

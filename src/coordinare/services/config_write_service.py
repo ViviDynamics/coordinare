@@ -150,7 +150,7 @@ def guard_concurrency(path: Path, base_hash: str) -> None:
         path.read_bytes()
     if current != base_hash:
         raise ConcurrencyConflictError(
-            "config changed on disk since it was read; reload and retry"
+            "config changed on disk since it was read; reload and retry",
         )
 
 
@@ -204,7 +204,7 @@ def atomic_write_yaml(path: Path, data: dict[str, Any]) -> str:
 
 
 def _safe_atomic_write(
-    path: Path, data: dict[str, Any], *, key: str
+    path: Path, data: dict[str, Any], *, key: str,
 ) -> tuple[str | None, SaveResult | None]:
     """Atomically write ``data``, converting :class:`OSError` to a ``forbidden`` result.
 
@@ -227,7 +227,7 @@ def _safe_atomic_write(
                         f"Could not write the configuration file: "
                         f"{safe_failure_reason(exc)}"
                     ),
-                )
+                ),
             ],
         )
 
@@ -345,7 +345,7 @@ def _conflict_result(path: Path, base_hash: str) -> SaveResult | None:
                     key=None,
                     code="validation",
                     message="base_hash is required; reload the config and retry",
-                )
+                ),
             ],
         )
     try:
@@ -373,7 +373,7 @@ def _conflict_result(path: Path, base_hash: str) -> SaveResult | None:
                         f"Could not read the configuration file: "
                         f"{safe_failure_reason(exc)}"
                     ),
-                )
+                ),
             ],
         )
     return None
@@ -408,7 +408,7 @@ def save_section(request: SaveRequest, config_path: Path) -> SaveResult:
                         f"save_section only writes config.yaml, not store "
                         f"'{request.store}'"
                     ),
-                )
+                ),
             ],
         )
     if request.section not in SCALAR_SECTIONS:
@@ -422,7 +422,7 @@ def save_section(request: SaveRequest, config_path: Path) -> SaveResult:
                         f"section '{request.section}' is not an editable scalar "
                         f"group; supported: {', '.join(SCALAR_SECTIONS)}"
                     ),
-                )
+                ),
             ],
         )
 
@@ -492,7 +492,7 @@ def save_section(request: SaveRequest, config_path: Path) -> SaveResult:
         return conflict
 
     new_hash, write_error = _safe_atomic_write(
-        config_path, candidate, key=request.section
+        config_path, candidate, key=request.section,
     )
     if write_error is not None:
         return write_error
@@ -504,7 +504,7 @@ def save_section(request: SaveRequest, config_path: Path) -> SaveResult:
 
 
 def _safe_read_config_dict(
-    config_path: Path, *, key: str | None = None
+    config_path: Path, *, key: str | None = None,
 ) -> tuple[dict[str, Any], SaveResult | None]:
     """Parse ``config.yaml`` for a write path; tolerate absence, surface corruption.
 
@@ -538,7 +538,7 @@ def _safe_read_config_dict(
                             "Configuration path exists but is not a regular file; "
                             "it is read-only."
                         ),
-                    )
+                    ),
                 ],
             )
         return {}, None
@@ -555,7 +555,7 @@ def _safe_read_config_dict(
                         f"Could not read the configuration file: "
                         f"{safe_failure_reason(exc)}"
                     ),
-                )
+                ),
             ],
         )
     if loaded is None:
@@ -577,7 +577,7 @@ def _safe_read_config_dict(
                         "Configuration file root is not a mapping; the file is "
                         "structurally corrupted and is read-only."
                     ),
-                )
+                ),
             ],
         )
     return loaded, None
@@ -600,13 +600,13 @@ def _reject_unknown_catalog(catalog: str) -> SaveResult | None:
                 key=catalog,
                 code="validation",
                 message=f"Unknown catalog: {catalog}",
-            )
+            ),
         ],
     )
 
 
 def _read_catalog_items(
-    loaded: dict[str, Any], catalog: str
+    loaded: dict[str, Any], catalog: str,
 ) -> tuple[list[Any], SaveResult | None]:
     """Return the on-disk catalog section as a list, or a ``forbidden`` result.
 
@@ -633,14 +633,14 @@ def _read_catalog_items(
                         f"{type(section).__name__}, not a list; the file is "
                         "structurally corrupted and is read-only."
                     ),
-                )
+                ),
             ],
         )
     return list(section), None
 
 
 def create_catalog_item(
-    catalog: str, item: dict[str, Any], base_hash: str, config_path: Path
+    catalog: str, item: dict[str, Any], base_hash: str, config_path: Path,
 ) -> SaveResult:
     """Append a new item to a spec-080 catalog (Phase 4, T025).
 
@@ -704,7 +704,7 @@ def update_catalog_item(
                     key=item_id,
                     code="validation",
                     message=f"{catalog} item changes must be a mapping of fields.",
-                )
+                ),
             ],
         )
 
@@ -733,7 +733,7 @@ def update_catalog_item(
                     key=item_id,
                     code="validation",
                     message=f"No {catalog} item named '{item_id}'.",
-                )
+                ),
             ],
         )
 
@@ -755,7 +755,7 @@ def update_catalog_item(
 
 
 def delete_catalog_item(
-    catalog: str, item_id: str, base_hash: str, config_path: Path
+    catalog: str, item_id: str, base_hash: str, config_path: Path,
 ) -> SaveResult:
     """Delete a catalog item unless something references it (Phase 4, T025).
 
@@ -792,7 +792,7 @@ def delete_catalog_item(
                     key=item_id,
                     code="validation",
                     message=f"No {catalog} item named '{item_id}'.",
-                )
+                ),
             ],
         )
 
@@ -814,7 +814,7 @@ def delete_catalog_item(
                         "be computed, so delete-protection cannot be verified. "
                         "Fix the configuration and retry."
                     ),
-                )
+                ),
             ],
         )
     if referrers:
@@ -828,7 +828,7 @@ def delete_catalog_item(
                         f"Cannot delete '{item_id}' — it is referenced by "
                         f"{', '.join(referrers)}. Remove those references first."
                     ),
-                )
+                ),
             ],
         )
 

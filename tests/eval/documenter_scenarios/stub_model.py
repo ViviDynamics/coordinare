@@ -52,7 +52,7 @@ def answer_project_shape(persona: str, content: list[dict]) -> ModelReply | None
         if top and not top.startswith(".") and top not in tops and top not in ("tests", "test", "docs", "node_modules"):
             tops.append(top)
     name = ""
-    m = re.search(r'^\s*name\s*=\s*["\']([^"\']+)["\']', text, re.M) or re.search(r'"name"\s*:\s*"([^"]+)"', text)
+    m = re.search(r'^\s*name\s*=\s*["\']([^"\']+)["\']', text, re.MULTILINE) or re.search(r'"name"\s*:\s*"([^"]+)"', text)
     if m:
         name = m.group(1)
     return ModelReply(

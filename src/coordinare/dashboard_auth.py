@@ -23,7 +23,7 @@ def validate_dashboard_bind(host: str, token: SecretStr | None) -> None:
     if not is_loopback_bind(host) and token is None:
         raise ValueError(
             "Non-loopback dashboard_host requires dashboard_auth_token. "
-            "Configure a token or bind the dashboard to 127.0.0.1."
+            "Configure a token or bind the dashboard to 127.0.0.1.",
         )
 
 
@@ -48,7 +48,7 @@ class DashboardAuthentication:
             user, separator, password = decoded.partition(b":")
             return bool(separator) and user == b"operator" and hmac.compare_digest(password, self._token)
         return scheme.lower() == "bearer" and hmac.compare_digest(
-            credential.encode("utf-8"), self._token
+            credential.encode("utf-8"), self._token,
         )
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:

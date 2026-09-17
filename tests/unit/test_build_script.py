@@ -29,7 +29,7 @@ def build_sandbox(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         "        'inference': os.environ.get('COORDINARE_INFERENCE_MAX_TOKENS'),\n"
         "        'hermes': os.environ.get('HERMES_CONTEXT_WINDOW')}) + '\\n')\n"
         "if Path(sys.argv[0]).name == 'docker' and sys.argv[1] == 'inspect':\n"
-        "    print('100000000')\n"
+        "    print('100000000')\n",
     )
     tool.chmod(0o755)
     shutil.copy2(tool, scripts / "docker")

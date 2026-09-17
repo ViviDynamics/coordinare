@@ -1578,7 +1578,7 @@ def test_build_env_bootstrap_payload_synthesizes_workspace(monkeypatch) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
     svc = HTTPPerformerService(
-        _persistent_config(), client=_client(lambda r: httpx.Response(204))
+        _persistent_config(), client=_client(lambda r: httpx.Response(204)),
     )
     card_context = {
         "job_type": "env_bootstrap",
@@ -1613,7 +1613,7 @@ def test_build_env_bootstrap_payload_instructs_bundle_install(monkeypatch) -> No
     monkeypatch.setenv("GITHUB_TOKEN", "ghs_test")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
     svc = HTTPPerformerService(
-        _persistent_config(), client=_client(lambda r: httpx.Response(204))
+        _persistent_config(), client=_client(lambda r: httpx.Response(204)),
     )
     persona = svc._build_job_payload(_bootstrap_card_context(), None).persona
     assert "PROJECT DEPENDENCIES" in persona
@@ -1635,7 +1635,7 @@ def test_build_env_bootstrap_payload_front_loads_required_sequence(monkeypatch) 
     monkeypatch.setenv("GITHUB_TOKEN", "ghs_test")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
     svc = HTTPPerformerService(
-        _persistent_config(), client=_client(lambda r: httpx.Response(204))
+        _persistent_config(), client=_client(lambda r: httpx.Response(204)),
     )
     persona = svc._build_job_payload(_bootstrap_card_context(), None).persona
     assert "REQUIRED EXECUTION SEQUENCE" in persona
@@ -1647,7 +1647,7 @@ def test_build_env_bootstrap_payload_front_loads_required_sequence(monkeypatch) 
     # Must lead the persona, ahead of the detailed prose wall, so a forgetful model
     # sees the imperative sequence first.
     assert persona.index("REQUIRED EXECUTION SEQUENCE") < persona.index(
-        "You are an environment bootstrap agent"
+        "You are an environment bootstrap agent",
     )
 
 
@@ -1674,7 +1674,7 @@ def test_build_env_bootstrap_payload_emits_service_install_for_declared_postgres
     monkeypatch.setenv("GITHUB_TOKEN", "ghs_test")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
     svc = HTTPPerformerService(
-        _persistent_config(), client=_client(lambda r: httpx.Response(204))
+        _persistent_config(), client=_client(lambda r: httpx.Response(204)),
     )
     declared = [
         {
@@ -1687,7 +1687,7 @@ def test_build_env_bootstrap_payload_emits_service_install_for_declared_postgres
             "sources": ["config/database.yml"],
             "kind": "postgres",
             "init": {"superuser": "root", "databases": ["app_dev"]},
-        }
+        },
     ]
     payload = svc._build_job_payload(_bootstrap_card_context(declared), None)
     persona = payload.persona
@@ -1707,7 +1707,7 @@ def test_service_install_uses_closure_resolving_download(monkeypatch) -> None:
     monkeypatch.setenv("GITHUB_TOKEN", "ghs_test")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
     svc = HTTPPerformerService(
-        _persistent_config(), client=_client(lambda r: httpx.Response(204))
+        _persistent_config(), client=_client(lambda r: httpx.Response(204)),
     )
     declared = [{"name": "postgres", "kind": "postgres", "binary": "postgres",
                  "data_dir": "/tmp/pg", "port": 5432, "why_needed": "db",
@@ -1742,7 +1742,7 @@ def test_service_install_resolves_against_base_state_snapshot(monkeypatch) -> No
     monkeypatch.setenv("GITHUB_TOKEN", "ghs_test")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
     svc = HTTPPerformerService(
-        _persistent_config(), client=_client(lambda r: httpx.Response(204))
+        _persistent_config(), client=_client(lambda r: httpx.Response(204)),
     )
     declared = [{"name": "postgres", "kind": "postgres", "binary": "postgres",
                  "data_dir": "/tmp/pg", "port": 5432, "why_needed": "db",
@@ -1764,7 +1764,7 @@ def test_service_install_no_hardcoded_server_version(monkeypatch) -> None:
     monkeypatch.setenv("GITHUB_TOKEN", "ghs_test")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
     svc = HTTPPerformerService(
-        _persistent_config(), client=_client(lambda r: httpx.Response(204))
+        _persistent_config(), client=_client(lambda r: httpx.Response(204)),
     )
     declared = [{"name": "postgres", "kind": "postgres", "binary": "postgres",
                  "data_dir": "/tmp/pg", "port": 5432, "why_needed": "db", "sources": ["x"]}]
@@ -1778,7 +1778,7 @@ def test_service_install_renders_for_redis(monkeypatch) -> None:
     monkeypatch.setenv("GITHUB_TOKEN", "ghs_test")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
     svc = HTTPPerformerService(
-        _persistent_config(), client=_client(lambda r: httpx.Response(204))
+        _persistent_config(), client=_client(lambda r: httpx.Response(204)),
     )
     declared = [{"name": "cache", "kind": "redis", "binary": "redis-server",
                  "data_dir": "/tmp/redis", "port": 6379, "why_needed": "cache", "sources": ["x"]}]
@@ -1796,7 +1796,7 @@ def test_build_env_bootstrap_payload_no_service_block_when_none_declared(
     monkeypatch.setenv("GITHUB_TOKEN", "ghs_test")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
     svc = HTTPPerformerService(
-        _persistent_config(), client=_client(lambda r: httpx.Response(204))
+        _persistent_config(), client=_client(lambda r: httpx.Response(204)),
     )
     # Both an absent key and an empty list must leave the persona unchanged.
     persona_absent = svc._build_job_payload(_bootstrap_card_context(), None).persona
@@ -1812,7 +1812,7 @@ def test_build_env_bootstrap_payload_generic_service_emits_no_block(monkeypatch)
     monkeypatch.setenv("GITHUB_TOKEN", "ghs_test")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
     svc = HTTPPerformerService(
-        _persistent_config(), client=_client(lambda r: httpx.Response(204))
+        _persistent_config(), client=_client(lambda r: httpx.Response(204)),
     )
     declared = [
         {
@@ -1823,7 +1823,7 @@ def test_build_env_bootstrap_payload_generic_service_emits_no_block(monkeypatch)
             "port": 9000,
             "why_needed": "bespoke daemon",
             "sources": ["docker-compose.yml"],
-        }
+        },
     ]
     persona = svc._build_job_payload(_bootstrap_card_context(declared), None).persona
     assert "SYSTEM SERVICES" not in persona
@@ -1835,7 +1835,7 @@ def test_build_job_payload_forwards_env_cache_path(monkeypatch) -> None:
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
     svc = HTTPPerformerService(
-        _persistent_config(), client=_client(lambda r: httpx.Response(204))
+        _persistent_config(), client=_client(lambda r: httpx.Response(204)),
     )
     card_context = {
         "id": "card-1",
@@ -1859,7 +1859,7 @@ def test_build_job_payload_omits_empty_env_cache_path(monkeypatch) -> None:
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
     svc = HTTPPerformerService(
-        _persistent_config(), client=_client(lambda r: httpx.Response(204))
+        _persistent_config(), client=_client(lambda r: httpx.Response(204)),
     )
     workspace_info = WorkspaceInfo(
         path=None,
@@ -1868,18 +1868,18 @@ def test_build_job_payload_omits_empty_env_cache_path(monkeypatch) -> None:
         github_token="ghs_test",
     )
     payload = svc._build_job_payload(
-        {"id": "c", "role": "r", "backend": "claude_code"}, workspace_info
+        {"id": "c", "role": "r", "backend": "claude_code"}, workspace_info,
     )
     assert payload.env_cache_path is None
 
 
 def test_build_env_bootstrap_payload_missing_org_raises() -> None:
     svc = HTTPPerformerService(
-        _persistent_config(), client=_client(lambda r: httpx.Response(204))
+        _persistent_config(), client=_client(lambda r: httpx.Response(204)),
     )
     with pytest.raises(ValueError, match="symphony_org"):
         svc._build_job_payload(
-            {"job_type": "env_bootstrap", "symphony_repo": "x"}, None
+            {"job_type": "env_bootstrap", "symphony_repo": "x"}, None,
         )
 
 
@@ -1893,7 +1893,7 @@ def test_bootstrap_payload_injects_test_env_vars_into_secrets(monkeypatch) -> No
     monkeypatch.setenv("GITHUB_TOKEN", "ghs_test")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
     svc = HTTPPerformerService(
-        _persistent_config(), client=_client(lambda r: httpx.Response(204))
+        _persistent_config(), client=_client(lambda r: httpx.Response(204)),
     )
     ctx = _bootstrap_card_context()
     ctx["test_env_vars"] = {"POSTGRESQL_PASSWORD": "test-pw-123"}
@@ -1911,7 +1911,7 @@ def test_bootstrap_operational_secret_wins_over_same_named_test_env_var(
     monkeypatch.setenv("GITHUB_TOKEN", "ghs_operational")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
     svc = HTTPPerformerService(
-        _persistent_config(), client=_client(lambda r: httpx.Response(204))
+        _persistent_config(), client=_client(lambda r: httpx.Response(204)),
     )
     ctx = _bootstrap_card_context()
     # A malicious/careless test file tries to shadow the operational token.
@@ -1928,7 +1928,7 @@ def test_bootstrap_payload_excludes_test_env_vars_from_metadata(monkeypatch) -> 
     monkeypatch.setenv("GITHUB_TOKEN", "ghs_test")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
     svc = HTTPPerformerService(
-        _persistent_config(), client=_client(lambda r: httpx.Response(204))
+        _persistent_config(), client=_client(lambda r: httpx.Response(204)),
     )
     ctx = _bootstrap_card_context()
     ctx["test_env_vars"] = {"POSTGRESQL_PASSWORD": "test-pw-123"}
@@ -1946,7 +1946,7 @@ def test_job_payload_injects_test_env_and_operational_secret_wins(monkeypatch) -
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
     svc = HTTPPerformerService(
-        _persistent_config(), client=_client(lambda r: httpx.Response(204))
+        _persistent_config(), client=_client(lambda r: httpx.Response(204)),
     )
     card_context = {
         "id": "card-1",
@@ -2011,6 +2011,6 @@ def test_has_live_session_persistent_without_endpoint_returns_false() -> None:
 def test_has_live_session_injected_client_returns_true() -> None:
     """When tests inject a client, treat it as always-live regardless of mode."""
     svc = HTTPPerformerService(
-        _ephemeral_config(), client=_client(lambda r: httpx.Response(204))
+        _ephemeral_config(), client=_client(lambda r: httpx.Response(204)),
     )
     assert svc.has_live_session("anything") is True

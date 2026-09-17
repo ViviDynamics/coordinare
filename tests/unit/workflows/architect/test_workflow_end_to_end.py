@@ -68,8 +68,8 @@ def _stub_toolkit(blueprint: dict, proposed: list[str], tree_status: str = ""):
 
 
 def _score(**over):
-    base = dict(title="Schema S4", description="timesheet submissions", acceptance_criteria=["submit", "approve"],
-                clarifications=[], issue_number=163, workflow_env={})
+    base = {"title": "Schema S4", "description": "timesheet submissions", "acceptance_criteria": ["submit", "approve"],
+                "clarifications": [], "issue_number": 163, "workflow_env": {}}
     base.update(over)
     return SimpleNamespace(**base)
 

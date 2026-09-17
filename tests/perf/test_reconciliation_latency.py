@@ -154,7 +154,7 @@ async def test_docker_unreachable_completes_quickly() -> None:
                 "phase": "monitoring_performer",
                 "performer_stage": "implementing",
                 "agent_dispatch": {"session_id": "uuid-x"},
-            }
+            },
         },
         "performer_services": {"implementing": _Svc()},
     }

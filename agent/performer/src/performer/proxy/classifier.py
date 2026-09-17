@@ -44,10 +44,10 @@ class ModelClassifier:
                 Message.system(
                     "Rate how much deliberate planning the next assistant turn needs, "
                     "from 0.0 (trivial/mechanical) to 1.0 (hard, multi-step reasoning). "
-                    "Reply with ONLY the number."
+                    "Reply with ONLY the number.",
                 ),
                 *request.messages,
-            )
+            ),
         )
         try:
             resp = await self.upstream.complete(probe, tools_enabled=False)

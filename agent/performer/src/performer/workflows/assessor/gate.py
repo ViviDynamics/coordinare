@@ -32,7 +32,6 @@ if TYPE_CHECKING:
 
 class GateError(Exception):
     """Error applying a gate rule."""
-    pass
 
 
 def cap_questions(questions: list[str], limit: int = 2) -> tuple[list[str], list[str]]:
@@ -232,7 +231,7 @@ def run_gate(model_assessment: ModelAssessment, intake: "Intake") -> tuple[Asses
     answered_rounds = intake.answered_rounds
     answered_clarifications = intake.clarifications
     questions_after_drop, questions_dropped_as_answered, drop_answered_assumptions = drop_answered(
-        questions, answered_clarifications
+        questions, answered_clarifications,
     )
     questions = questions_after_drop
     assumptions.extend(drop_answered_assumptions)

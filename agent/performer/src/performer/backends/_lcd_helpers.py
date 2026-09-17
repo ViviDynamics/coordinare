@@ -94,6 +94,6 @@ def strip_base_url_credentials(url: str) -> str:
         netloc = f"{netloc}:{parts.port}"
     query = urlencode(
         [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
-         if k.lower() != "api_key"]
+         if k.lower() != "api_key"],
     )
     return urlunsplit((parts.scheme, netloc, parts.path, query, parts.fragment))

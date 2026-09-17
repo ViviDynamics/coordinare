@@ -53,7 +53,7 @@ def test_valid_config_exits_zero(tmp_path: Path, capsys: pytest.CaptureFixture) 
 
 
 def test_missing_field_exits_one(
-    tmp_path: Path, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Config missing github_token → exit 1 and 'github_token' in stdout."""
     monkeypatch.delenv("COORDINARE_GITHUB_TOKEN", raising=False)
@@ -83,7 +83,7 @@ def test_unknown_field_exits_one(tmp_path: Path, capsys: pytest.CaptureFixture) 
 
 
 def test_all_errors_reported_in_single_pass(
-    tmp_path: Path, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Config with multiple errors → all errors appear in one stdout pass."""
     for var in ("COORDINARE_GITHUB_TOKEN", "COORDINARE_GITHUB_ORG", "COORDINARE_HUMAN_REVIEWERS"):
@@ -114,7 +114,7 @@ def test_validate_completes_under_500ms(tmp_path: Path) -> None:
 
 
 def test_env_var_overrides_yaml_field(
-    tmp_path: Path, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """COORDINARE_GITHUB_TOKEN env var overrides file value → no missing-field error."""
     monkeypatch.setenv("COORDINARE_GITHUB_TOKEN", "env-token")
@@ -135,7 +135,7 @@ def test_env_var_overrides_yaml_field(
 
 
 def test_no_config_file_all_env_vars_exits_zero(
-    tmp_path: Path, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """No config file at any search location, all required COORDINARE_* vars set → exit 0."""
     monkeypatch.setenv("COORDINARE_PROJECT_NAME", "EnvDemo")
@@ -163,7 +163,7 @@ def test_no_config_file_all_env_vars_exits_zero(
 
 
 def test_env_var_type_error_reported_identifies_env_var_name(
-    tmp_path: Path, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Type error originating from env var → env var name identified in output."""
     monkeypatch.setenv("COORDINARE_POLL_INTERVAL_SECONDS", "not_an_int")
@@ -182,7 +182,7 @@ def test_env_var_type_error_reported_identifies_env_var_name(
 
 
 def test_no_config_file_missing_fields_exits_one_with_searched_paths(
-    tmp_path: Path, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """No config file + missing required fields → exit 1 with all 4 search paths listed."""
     for var in ("COORDINARE_GITHUB_TOKEN", "COORDINARE_GITHUB_ORG", "COORDINARE_PROJECT_NAME",
@@ -224,7 +224,7 @@ def test_explicit_path_not_found_exits_one(
 
 
 def test_deprecated_field_exits_zero_without_strict(
-    tmp_path: Path, capsys: pytest.CaptureFixture
+    tmp_path: Path, capsys: pytest.CaptureFixture,
 ) -> None:
     """Deprecated field present, no --strict → exit 0 and deprecation warning in output."""
     config_file = _write_valid_config(tmp_path, extra="slack_webhook_url: https://hooks.slack.com/x")
@@ -237,7 +237,7 @@ def test_deprecated_field_exits_zero_without_strict(
 
 
 def test_deprecated_field_exits_one_with_strict(
-    tmp_path: Path, capsys: pytest.CaptureFixture
+    tmp_path: Path, capsys: pytest.CaptureFixture,
 ) -> None:
     """Deprecated field present with --strict → exit 1."""
     config_file = _write_valid_config(tmp_path, extra="slack_webhook_url: https://hooks.slack.com/x")
@@ -247,7 +247,7 @@ def test_deprecated_field_exits_one_with_strict(
 
 
 def test_strict_output_shows_deprecation_errors_header(
-    tmp_path: Path, capsys: pytest.CaptureFixture
+    tmp_path: Path, capsys: pytest.CaptureFixture,
 ) -> None:
     """--strict with deprecated field → 'DEPRECATION ERRORS' in output (not 'WARNINGS')."""
     config_file = _write_valid_config(tmp_path, extra="slack_webhook_url: https://hooks.slack.com/x")

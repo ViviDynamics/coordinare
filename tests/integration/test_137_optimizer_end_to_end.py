@@ -67,7 +67,7 @@ class TestOptimizerEndToEnd:
         )
         assert artifact.budget.charged_evaluations <= 6
         assert artifact.distinct_evaluated == len(
-            {r.fingerprint for r in artifact.trace if not r.cache_hit}
+            {r.fingerprint for r in artifact.trace if not r.cache_hit},
         )
         # baseline + candidate in the head-to-head; stub caveat recorded
         labels = [row.label for row in artifact.recommendation.comparison]

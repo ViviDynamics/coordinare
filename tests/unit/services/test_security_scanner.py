@@ -33,7 +33,7 @@ def _bandit_payload(results: list[dict]) -> str:
 
 def _completed(stdout: str, returncode: int = 0) -> subprocess.CompletedProcess:
     return subprocess.CompletedProcess(
-        args=["tool"], returncode=returncode, stdout=stdout, stderr=""
+        args=["tool"], returncode=returncode, stdout=stdout, stderr="",
     )
 
 

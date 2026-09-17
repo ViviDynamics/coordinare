@@ -222,7 +222,7 @@ def test_no_per_file_copyright_headers_were_introduced() -> None:
         path.relative_to(REPO_ROOT).as_posix()
         for path in sorted((REPO_ROOT / "src" / "coordinare").rglob("*.py"))
         if re.search(
-            r"^\s*#.*copyright", path.read_text(encoding="utf-8"), re.IGNORECASE | re.MULTILINE
+            r"^\s*#.*copyright", path.read_text(encoding="utf-8"), re.IGNORECASE | re.MULTILINE,
         )
     ]
     assert not offenders, f"per-file copyright headers found (FR-002 forbids them): {offenders}"
@@ -453,10 +453,10 @@ def test_security_md_promises_no_response_timeframe() -> None:
     text = _read("SECURITY.md")
     lowered = text.lower()
 
-    assert not re.search(r"\b\d+\s*(?:business\s*)?(?:hour|day|week|month)s?\b", text, re.I), (
+    assert not re.search(r"\b\d+\s*(?:business\s*)?(?:hour|day|week|month)s?\b", text, re.IGNORECASE), (
         "SECURITY.md must commit to no timeframe"
     )
-    assert not re.search(r"\bwithin\s+\d+", text, re.I)
+    assert not re.search(r"\bwithin\s+\d+", text, re.IGNORECASE)
     assert "capacity" in lowered or "as we can" in lowered, (
         "SECURITY.md must say reports are read and answered as capacity allows"
     )
@@ -787,7 +787,7 @@ TIER1_PERMITTED = frozenset(
         "PSF-2.0",
         "Unlicense",
         "Zlib",
-    }
+    },
 )
 
 #: Tier 2 — permitted only with a written rationale in the audit.
@@ -797,7 +797,7 @@ TIER2_EXCEPTION = frozenset(
         "LGPL-2.0",
         "LGPL-2.1",
         "LGPL-3.0",
-    }
+    },
 )
 
 #: Tier 3 — rejected outright. GPL-family terms forbid adding restrictions, and
@@ -812,7 +812,7 @@ TIER3_REJECTED = frozenset(
         "AGPL-3.0",
         "SSPL-1.0",
         "UNKNOWN",
-    }
+    },
 )
 
 #: Real packaging metadata is inconsistent, so historical spellings normalize
@@ -883,7 +883,7 @@ FIRST_PARTY = frozenset(
     # NOTICE, which is why each declares LicenseRef-Elastic-License-2.0
     # rather than an OSI identifier. 339 added coordinare-ci-detection, the shared
     # CI/test-command detection the performer image installs.
-    {"coordinare", "performer", "coordinare-service-inference", "coordinare-ci-detection"}
+    {"coordinare", "performer", "coordinare-service-inference", "coordinare-ci-detection"},
 )
 
 #: ``(lock file, root package)`` for each project coordinare distributes.
@@ -1297,7 +1297,7 @@ def test_audit_gives_every_exception_a_rationale_and_a_consumption_mode() -> Non
             if _tier_of(license_id) != "exception":
                 continue
             section = re.search(
-                rf"^### `{re.escape(name)}`.*?(?=^### |\Z)", text, re.MULTILINE | re.DOTALL
+                rf"^### `{re.escape(name)}`.*?(?=^### |\Z)", text, re.MULTILINE | re.DOTALL,
             )
             assert section, f"Tier 2 package {name!r} has no section in the audit"
             body = section.group(0)
@@ -1347,7 +1347,7 @@ def test_scrub_checklist_items_are_concrete_and_recorded() -> None:
     assert "`" in text, "scrub items must name concrete commands, not intentions"
 
     unrecorded = re.findall(
-        r"^\|\s*`[^`]+`\s*\|[^|]*\|[^|]*\|\s*(?:TODO|TBD|\s*)\|", text, re.MULTILINE
+        r"^\|\s*`[^`]+`\s*\|[^|]*\|[^|]*\|\s*(?:TODO|TBD|\s*)\|", text, re.MULTILINE,
     )
     assert not unrecorded, f"scrub items with no recorded outcome: {unrecorded}"
 

@@ -373,7 +373,7 @@ async def notify(state: CoordinareState) -> CoordinareState:
     # GitHub 24h dedup) so it does not prove Slack actually went out.
     if event_type == EventType.card_blocked:
         cooldown_seconds = getattr(
-            notification_service, "card_blocked_reminder_cooldown_seconds", 3600
+            notification_service, "card_blocked_reminder_cooldown_seconds", 3600,
         )
         sess_watermark = sess.get("last_blocked_slack_delivered_at") if isinstance(sess, dict) else None
         if cooldown_seconds > 0 and sess_watermark is not None:

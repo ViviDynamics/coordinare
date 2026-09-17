@@ -173,7 +173,7 @@ def judge_persona() -> str:
 
 
 async def observe_tests(
-    toolkit: Any, command: str, output: str, exit_code: int | None, files: list[str]
+    toolkit: Any, command: str, output: str, exit_code: int | None, files: list[str],
 ) -> TestObservation:
     """Read one test run with the model."""
     from performer.workflows.budget import Budget

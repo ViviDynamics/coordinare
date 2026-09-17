@@ -95,7 +95,7 @@ def _assert_lcd_payload(body: dict) -> None:
     for key in _FORBIDDEN_TOP_LEVEL:
         if key in body:
             raise LcdPayloadError(
-                f"forbidden top-level field {key!r}: not portable across LCD endpoints"
+                f"forbidden top-level field {key!r}: not portable across LCD endpoints",
             )
 
     response_format = body.get("response_format")
@@ -105,11 +105,11 @@ def _assert_lcd_payload(body: dict) -> None:
         if response_format.get("type") not in (None, "json_object", "text"):
             raise LcdPayloadError(
                 f"response_format.type={response_format.get('type')!r} not portable; "
-                "only 'json_object' / 'text' are LCD-safe"
+                "only 'json_object' / 'text' are LCD-safe",
             )
         if "json_schema" in response_format:
             raise LcdPayloadError(
-                "response_format.json_schema is an OpenAI-only extension"
+                "response_format.json_schema is an OpenAI-only extension",
             )
 
     messages = body.get("messages")
@@ -127,11 +127,11 @@ def _assert_lcd_payload(body: dict) -> None:
                     f"messages[{idx}].role='developer' is not portable; "
                     "use _remap_developer_role() before validation, or re-enable "
                     "the automatic remap (OPENCODE_COMPAT_REMAP_DEVELOPER_ROLE=1 / "
-                    "compat_remap_developer_role=True)"
+                    "compat_remap_developer_role=True)",
                 )
             if role not in _ALLOWED_ROLES:
                 raise LcdPayloadError(
-                    f"messages[{idx}].role={role!r} not in LCD allowed roles {sorted(_ALLOWED_ROLES)}"
+                    f"messages[{idx}].role={role!r} not in LCD allowed roles {sorted(_ALLOWED_ROLES)}",
                 )
 
     tools = body.get("tools")
@@ -145,7 +145,7 @@ def _assert_lcd_payload(body: dict) -> None:
             if tool_type != "function":
                 raise LcdPayloadError(
                     f"tools[{idx}].type={tool_type!r} is a hosted-tool descriptor; "
-                    "only type='function' is LCD-portable"
+                    "only type='function' is LCD-portable",
                 )
 
 
@@ -314,7 +314,7 @@ class OpenCodeCompatAdapter:
             env=env,
         )
         self._log_drain_task = asyncio.create_task(
-            self._drain_logs(), name=f"{self._adapter_name}-log-drain"
+            self._drain_logs(), name=f"{self._adapter_name}-log-drain",
         )
         await self._wait_for_ready(port)
 
@@ -329,7 +329,7 @@ class OpenCodeCompatAdapter:
             session_body["modelID"] = model
         if max_tokens is not None:
             session_body["maxTokens"] = max_tokens
-        resp = await self._client.post("/session", json=session_body if session_body else None)
+        resp = await self._client.post("/session", json=session_body or None)
         resp.raise_for_status()
         self._session_id = resp.json()["id"]
         log.info(
@@ -351,7 +351,7 @@ class OpenCodeCompatAdapter:
         )
 
         self._reader_task = asyncio.create_task(
-            self._event_reader_loop(), name=f"{self._adapter_name}-event-reader"
+            self._event_reader_loop(), name=f"{self._adapter_name}-event-reader",
         )
 
     def get_status(self) -> BackendStatus:
@@ -373,7 +373,7 @@ class OpenCodeCompatAdapter:
         self._status = BackendStatus(state="working")
         if self._reader_task is None or self._reader_task.done():
             self._reader_task = asyncio.create_task(
-                self._event_reader_loop(), name=f"{self._adapter_name}-event-reader"
+                self._event_reader_loop(), name=f"{self._adapter_name}-event-reader",
             )
 
     async def stop(self) -> None:
@@ -439,7 +439,7 @@ class OpenCodeCompatAdapter:
             body = {
                 **body,
                 "messages": _remap_developer_role(
-                    body["messages"], warned_flag=self._warned_developer, logger=log
+                    body["messages"], warned_flag=self._warned_developer, logger=log,
                 ),
             }
         # Raises BEFORE any network call — surfaced as LcdPayloadError to the
@@ -472,7 +472,7 @@ class OpenCodeCompatAdapter:
             route_parts = route.split(" ", 1)
             if len(route_parts) != 2 or not route_parts[1].startswith("/"):
                 raise ValueError(
-                    f"route must be 'METHOD /path' when base_url is unset, got {route!r}"
+                    f"route must be 'METHOD /path' when base_url is unset, got {route!r}",
                 )
             request_url = route_parts[1]
 
@@ -534,7 +534,7 @@ class OpenCodeCompatAdapter:
                     pass
                 await asyncio.sleep(_READY_POLL_INTERVAL)
         raise RuntimeError(
-            f"{self._adapter_name} serve did not become ready within {_READY_TIMEOUT}s"
+            f"{self._adapter_name} serve did not become ready within {_READY_TIMEOUT}s",
         )
 
     async def _drain_logs(self) -> None:
@@ -642,7 +642,7 @@ class OpenCodeCompatAdapter:
 
 
 def _build_task_prompt(
-    score: Score, *, stand_path: Path | None = None
+    score: Score, *, stand_path: Path | None = None,
 ) -> str:
     """Build the initial task prompt — identical surface to opencode._build_task_prompt."""
     parts: list[str] = []
@@ -692,7 +692,7 @@ def _build_task_prompt(
             if isinstance(_d, dict) and _d.get("id"):
                 parts.append(
                     f"- {_d['id']}: {_d.get('body', '')} — implementer says: "
-                    f"{_d.get('reason', '')}"
+                    f"{_d.get('reason', '')}",
                 )
 
     if score.relay_feedback:

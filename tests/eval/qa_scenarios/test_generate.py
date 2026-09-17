@@ -61,7 +61,7 @@ def test_the_env_broken_scenario_does_not_import(tmp_path):
     repo, _, _ = build(fixture, tmp_path)
 
     result = subprocess.run(
-        ["python3", "-c", "import app"], cwd=repo, capture_output=True, text=True
+        ["python3", "-c", "import app"], cwd=repo, capture_output=True, text=True,
     )
     assert result.returncode != 0, "the app must genuinely fail to boot"
 

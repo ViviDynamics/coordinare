@@ -186,7 +186,7 @@ class QAWorkflow:
         if worktree is not None:
             try:
                 await cleanup_worktree(
-                    toolkit, workspace=self._workspace, worktree_dir=worktree
+                    toolkit, workspace=self._workspace, worktree_dir=worktree,
                 )
             except Exception as exc:  # noqa: BLE001
                 log.warning("qa.cleanup.worktree_failed", error=str(exc))
@@ -268,7 +268,7 @@ class QAWorkflow:
                 except ProjectShapeUnknown as exc:
                     log.warning("qa.project_shape_unknown", reason=exc.reason[:200])
                     return self._environment_error(
-                        "could not work out how to start this project: " + exc.reason[:300], metrics
+                        "could not work out how to start this project: " + exc.reason[:300], metrics,
                     )
             shape = getattr(boot, "shape", None)
             if shape is not None and not shape.start_command.strip():
@@ -355,7 +355,7 @@ class QAWorkflow:
         if capture_dir is not None:
             prepare_visual_capture(plan, capture_dir, base_url=base_url)
         executed = await run_execute_step(
-            toolkit, plan, cwd=workspace, driver_path=driver_path
+            toolkit, plan, cwd=workspace, driver_path=driver_path,
         )
         visual_evidence = (
             collect_visual_evidence(plan, capture_dir)
@@ -381,7 +381,7 @@ class QAWorkflow:
                     # after-state cannot be read leaves regressions on it
                     # unknowable, so the run is not a pass either way.
                     log.warning(
-                        "qa.observe.post_change_failed", surface=surface, error=str(exc)[:200]
+                        "qa.observe.post_change_failed", surface=surface, error=str(exc)[:200],
                     )
                     unobservable.append(surface)
                     observe_failed = True
@@ -490,14 +490,14 @@ class QAWorkflow:
         attempts: list[str] = []
         for ref in (f"origin/{base}", base):
             result = await toolkit.run_command(
-                f"git merge-base HEAD {ref}", cwd=workspace
+                f"git merge-base HEAD {ref}", cwd=workspace,
             )
             attempts.append(f"{ref} (exit {result.exit_code})")
             if result.passed and (result.output_excerpt or "").strip():
                 return result.output_excerpt.strip().splitlines()[0]
         raise RuntimeError(
             "could not resolve a base ref to compare against; tried "
-            + ", ".join(attempts)
+            + ", ".join(attempts),
         )
 
     async def _observe_surface(self, toolkit, surface: str) -> list:
@@ -529,7 +529,7 @@ class QAWorkflow:
             ),
         }]
         return await toolkit.call_model(
-            persona=JUDGE, schema=JudgeOutput, content=content, budget=Budget.for_step("judge")
+            persona=JUDGE, schema=JudgeOutput, content=content, budget=Budget.for_step("judge"),
         )
 
     def _undemonstrated(self, criteria: list[str], reason: str, metrics) -> WorkflowResult:

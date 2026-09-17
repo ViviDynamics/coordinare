@@ -109,7 +109,7 @@ def score_run(fixture: Fixture, report: dict, *, live: bool = False) -> Score:
     if not s.checks["write_free"]:
         s.notes.append(
             f"write_free: passed={write_free_passed}, commands_run={wf.get('commands_run', 0)}, "
-            f"has_screenshot_capture={has_screenshot}, has_dom_reader={has_dom}"
+            f"has_screenshot_capture={has_screenshot}, has_dom_reader={has_dom}",
         )
 
     # Check assumptions_carry_forced_question (answered fixture only): every

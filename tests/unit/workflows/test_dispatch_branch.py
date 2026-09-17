@@ -119,7 +119,7 @@ async def test_workflow_run_makes_no_coordinare_bound_network_call(monkeypatch):
     def _boom(*args, **kwargs):
         raise AssertionError(
             "workflow made an outbound HTTP call; FR-001 requires it to run "
-            "entirely inside the performer with no mid-run coordinare contact"
+            "entirely inside the performer with no mid-run coordinare contact",
         )
 
     monkeypatch.setattr(httpx.AsyncClient, "request", _boom, raising=False)

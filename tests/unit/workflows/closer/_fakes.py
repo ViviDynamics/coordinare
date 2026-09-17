@@ -44,7 +44,7 @@ class FakeGitHub:
 
 
 def score(**over):
-    base = dict(pr_url="https://github.com/o/r/pull/7", owner_repo=("o", "r"), effective_github_token="tok",
-                backend="codex", model="m", workflow_env={}, head_sha="abc1234")
+    base = {"pr_url": "https://github.com/o/r/pull/7", "owner_repo": ("o", "r"), "effective_github_token": "tok",
+                "backend": "codex", "model": "m", "workflow_env": {}, "head_sha": "abc1234"}
     base.update(over)
     return SimpleNamespace(**base)

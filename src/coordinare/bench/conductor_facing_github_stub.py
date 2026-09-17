@@ -48,8 +48,8 @@ def _find_project_response(title: str) -> dict[str, Any]:
         "data": {
             "repositoryOwner": {
                 "projectV2": {"id": PROJECT_ID, "title": title},
-            }
-        }
+            },
+        },
     }
 
 
@@ -66,11 +66,11 @@ def _project_fields_response() -> dict[str, Any]:
                                 {"id": f"opt_{name.lower().replace(' ', '_')}", "name": name}
                                 for name in STATUS_OPTIONS
                             ],
-                        }
-                    ]
-                }
-            }
-        }
+                        },
+                    ],
+                },
+            },
+        },
     }
 
 
@@ -88,9 +88,9 @@ def _empty_board_response() -> dict[str, Any]:
                 "items": {
                     "nodes": [],
                     "pageInfo": {"hasNextPage": False, "endCursor": None},
-                }
-            }
-        }
+                },
+            },
+        },
     }
 
 

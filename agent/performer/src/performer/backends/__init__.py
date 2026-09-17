@@ -50,7 +50,7 @@ def get_backend(name: str) -> "BackendAdapter":
     if target is None:
         supported = ", ".join(sorted(supported_backends))
         raise UnsupportedBackendError(
-            f"unsupported backend {name!r}; supported: {supported}"
+            f"unsupported backend {name!r}; supported: {supported}",
         )
     supported = ", ".join(sorted(supported_backends))
     module_name, class_name = target
@@ -60,11 +60,11 @@ def get_backend(name: str) -> "BackendAdapter":
     except ImportError as exc:
         raise UnsupportedBackendError(
             f"backend {name!r} could not be loaded from module {module_name!r}; "
-            f"supported: {supported}"
+            f"supported: {supported}",
         ) from exc
     if cls is None:
         raise UnsupportedBackendError(
             f"backend {name!r} is misconfigured: class {class_name!r} "
-            f"not found in module {module_name!r}; supported: {supported}"
+            f"not found in module {module_name!r}; supported: {supported}",
         )
     return cls()

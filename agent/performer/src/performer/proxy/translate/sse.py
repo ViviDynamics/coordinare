@@ -110,7 +110,7 @@ class TranslatingSSEFilter(StatefulSSEFilter):
         out.append(self._content_block_start_text_frame(index))
 
     def _process_tool_call_delta(
-        self, tool_call: dict, out: list[bytes]
+        self, tool_call: dict, out: list[bytes],
     ) -> None:
         call_index = tool_call.get("index", 0)
         function = tool_call.get("function") or {}
@@ -125,8 +125,8 @@ class TranslatingSSEFilter(StatefulSSEFilter):
             self._open_block_kind = "tool"
             out.append(
                 self._content_block_start_tool_frame(
-                    index, tool_call.get("id"), function.get("name")
-                )
+                    index, tool_call.get("id"), function.get("name"),
+                ),
             )
 
         index = self._tool_block_for[call_index]
@@ -198,7 +198,7 @@ class TranslatingSSEFilter(StatefulSSEFilter):
         )
 
     def _content_block_start_tool_frame(
-        self, index: int, tool_id: str | None, name: str | None
+        self, index: int, tool_id: str | None, name: str | None,
     ) -> bytes:
         return self.encode_frame(
             "content_block_start",

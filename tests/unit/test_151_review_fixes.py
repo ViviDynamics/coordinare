@@ -24,7 +24,7 @@ async def _fake_with_pr(tmp_path: Path):
     fx = tiny_fixture()
     bare = materialize_repo([fx], tmp_path / "repos")
     fake = FakeGitHubService(
-        bare_repo_path=bare, human_reviewers=["reviewer1"], work_dir=tmp_path / "ci"
+        bare_repo_path=bare, human_reviewers=["reviewer1"], work_dir=tmp_path / "ci",
     )
     seed_board(fake, [fx])
     pr_id = fake.open_pr(issue_item_id="PVTI_1", head_ref="main")
@@ -128,7 +128,7 @@ def test_recorder_is_transparent_to_isinstance() -> None:
     from coordinare.services.http_performer_service import HTTPPerformerService
 
     delegate = HTTPPerformerService(
-        PerformerEndpointConfig(id="p1", mode="ephemeral", roles=["performer"], image="img")
+        PerformerEndpointConfig(id="p1", mode="ephemeral", roles=["performer"], image="img"),
     )
     svc = RecordingPerformer(delegate)
 
@@ -187,7 +187,7 @@ def _config() -> ProjectConfiguration:
         agent_transport="kubernetes",
         # An ephemeral endpoint so teardown exercises the label sweep scope.
         performer_endpoints=[
-            {"id": "bench-real", "mode": "ephemeral", "roles": ["performer"], "image": "img"}
+            {"id": "bench-real", "mode": "ephemeral", "roles": ["performer"], "image": "img"},
         ],
     )
 
@@ -221,7 +221,7 @@ async def test_real_mode_acloses_the_services_it_built(tmp_path: Path, monkeypat
         return 0
 
     monkeypatch.setattr(
-        "coordinare.services.performer_lifecycle.cleanup_orphaned_containers", fake_sweep
+        "coordinare.services.performer_lifecycle.cleanup_orphaned_containers", fake_sweep,
     )
 
     await run_board(

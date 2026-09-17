@@ -61,7 +61,7 @@ def _manifest_dict() -> dict[str, Any]:
                 "port": 6379,
                 "why_needed": "rails session store",
                 "sources": ["Gemfile"],
-            }
+            },
         ],
         "cache_inputs": ["Gemfile", "config/database.yml"],
         "agent_version": "test-0",
@@ -83,7 +83,7 @@ async def test_dispatches_tool_calls_then_terminates(sandbox: ToolSandbox) -> No
         [
             LLMStep(tool_calls=[ToolCall(id="t1", name="read_file", arguments={"path": "Gemfile"})]),
             LLMStep(manifest=_manifest_dict()),
-        ]
+        ],
     )
     agent = ServiceInferenceAgent(sandbox=sandbox, client=client)
     manifest = await agent.run("infer services")
@@ -121,9 +121,9 @@ async def test_tool_call_budget_enforced(sandbox: ToolSandbox) -> None:
                 tool_calls=[
                     ToolCall(id=f"t{i}", name="list_dir", arguments={"path": "."})
                     for i in range(3)
-                ]
-            )
-        ]
+                ],
+            ),
+        ],
     )
     agent = ServiceInferenceAgent(sandbox=sandbox, client=client, max_tool_calls=2)
     with pytest.raises(ToolCallBudgetExceeded):
@@ -139,10 +139,10 @@ async def test_tool_call_budget_cumulative_across_steps(sandbox: ToolSandbox) ->
                 tool_calls=[
                     ToolCall(id="a", name="list_dir", arguments={"path": "."}),
                     ToolCall(id="b", name="list_dir", arguments={"path": "config"}),
-                ]
+                ],
             ),
             LLMStep(tool_calls=[ToolCall(id="c", name="list_dir", arguments={"path": "."})]),
-        ]
+        ],
     )
     agent = ServiceInferenceAgent(sandbox=sandbox, client=client, max_tool_calls=2)
     with pytest.raises(ToolCallBudgetExceeded):
@@ -158,11 +158,11 @@ async def test_sandbox_traversal_is_surfaced_not_crashed(
         [
             LLMStep(
                 tool_calls=[
-                    ToolCall(id="t1", name="read_file", arguments={"path": "../etc/passwd"})
-                ]
+                    ToolCall(id="t1", name="read_file", arguments={"path": "../etc/passwd"}),
+                ],
             ),
             LLMStep(manifest=_manifest_dict()),
-        ]
+        ],
     )
     agent = ServiceInferenceAgent(sandbox=sandbox, client=client)
     await agent.run("infer")
@@ -186,10 +186,10 @@ async def test_symlink_escape_surfaced(tmp_path: Path) -> None:
     client = _StubClient(
         [
             LLMStep(
-                tool_calls=[ToolCall(id="t1", name="read_file", arguments={"path": "leak.txt"})]
+                tool_calls=[ToolCall(id="t1", name="read_file", arguments={"path": "leak.txt"})],
             ),
             LLMStep(manifest=_manifest_dict()),
-        ]
+        ],
     )
     agent = ServiceInferenceAgent(sandbox=sb, client=client)
     await agent.run("infer")
@@ -202,7 +202,7 @@ async def test_symlink_escape_surfaced(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_unknown_tool_raises(sandbox: ToolSandbox) -> None:
     client = _StubClient(
-        [LLMStep(tool_calls=[ToolCall(id="t1", name="exec_shell", arguments={})])]
+        [LLMStep(tool_calls=[ToolCall(id="t1", name="exec_shell", arguments={})])],
     )
     agent = ServiceInferenceAgent(sandbox=sandbox, client=client)
     with pytest.raises(UnknownToolError):
@@ -227,7 +227,7 @@ async def test_iteration_budget_exceeded(sandbox: ToolSandbox) -> None:
     ]
     client = _StubClient(script)
     agent = ServiceInferenceAgent(
-        sandbox=sandbox, client=client, max_iterations=3, max_tool_calls=100
+        sandbox=sandbox, client=client, max_iterations=3, max_tool_calls=100,
     )
     with pytest.raises(IterationBudgetExceeded):
         await agent.run("infer")
@@ -244,7 +244,7 @@ async def test_unresolvable_binary_rejected(sandbox: ToolSandbox) -> None:
                 "data_dir": "/tmp/wat",
                 "port": 4242,
                 "why_needed": "test",
-            }
+            },
         ],
         "cache_inputs": ["Gemfile"],
         "agent_version": "test-0",
@@ -268,7 +268,7 @@ async def test_unresolvable_binary_allowed_for_external(sandbox: ToolSandbox) ->
                 "why_needed": "test",
                 "external_required": True,
                 "required_env_vars": ["DATABASE_URL"],
-            }
+            },
         ],
         "cache_inputs": ["Gemfile"],
         "agent_version": "test-0",
@@ -336,7 +336,7 @@ async def test_unresolvable_binary_still_rejected_for_generic_kind(
                 "port": 9999,
                 "why_needed": "test",
                 "kind": "generic",
-            }
+            },
         ],
         "cache_inputs": ["Gemfile"],
         "agent_version": "test-0",

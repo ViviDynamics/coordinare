@@ -6,12 +6,12 @@ from pydantic import ValidationError
 
 from coordinare.config import ProjectConfiguration
 
-_BASE = dict(
-    project_name="Demo",
-    github_org="acme",
-    github_project_number=1,
-    human_reviewers=["alice"],
-)
+_BASE = {
+    "project_name": "Demo",
+    "github_org": "acme",
+    "github_project_number": 1,
+    "human_reviewers": ["alice"],
+}
 
 
 # ---------------------------------------------------------------------------

@@ -121,7 +121,7 @@ class BoardProvider(Protocol):
         ...
 
     async def get_card_comments(
-        self, card_id: str, since_id: int | None = None
+        self, card_id: str, since_id: int | None = None,
     ) -> list[dict[str, Any]]:
         """Comments on the card, oldest first, optionally only those after *since_id*.
 
@@ -189,7 +189,7 @@ class GitHubProjectsBoardProvider:
         return posted
 
     async def get_card_comments(
-        self, card_id: str, since_id: int | None = None
+        self, card_id: str, since_id: int | None = None,
     ) -> list[dict[str, Any]]:
         # The one place that knows GitHub calls a card two things. Callers pass the
         # same card id they use for every other operation; the translation happens
@@ -199,7 +199,7 @@ class GitHubProjectsBoardProvider:
             logger.warning("board.card_not_resolvable", card_id=card_id)
             return []
         comments: list[dict[str, Any]] = await self._github.get_issue_comments(
-            number, since_id=since_id
+            number, since_id=since_id,
         )
         return comments
 
@@ -237,7 +237,7 @@ def board_of(state: Any, service: Any = None) -> BoardProvider | None:
 
 
 async def move_card_or_warn(
-    provider: BoardProvider | None, card_id: str, status: str
+    provider: BoardProvider | None, card_id: str, status: str,
 ) -> bool:
     """Move the card, and say something when the board declines.
 

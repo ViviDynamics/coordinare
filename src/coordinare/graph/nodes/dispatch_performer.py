@@ -176,7 +176,7 @@ def _scanner_unavailable_finding(reason: str) -> dict[str, Any]:
 
 
 async def _run_security_floor(
-    state: CoordinareState, card: dict[str, Any]
+    state: CoordinareState, card: dict[str, Any],
 ) -> list[dict[str, Any]]:
     """083 US1 — Fetch the PR diff and run the scanner once (Contract 3).
 
@@ -237,7 +237,7 @@ async def _run_security_floor(
 
 
 def inject_qa_findings(
-    card_context: dict[str, Any], state: Any, *, role: str | None
+    card_context: dict[str, Any], state: Any, *, role: str | None,
 ) -> None:
     """164 (FR-012): carry the previous QA round's repair brief to the implementer.
 
@@ -468,7 +468,7 @@ def documenter_side_run_wanted(blueprint: dict[str, Any] | None) -> bool:
 # PR with "no code changes were supplied for review") still sees the changes.
 # ``security`` is excluded: its workflow intake parses the injected diff itself.
 _DIFF_REVIEW_ROLES: frozenset[str] = frozenset(
-    {"reviewer", "closer", "qa", "tech_writer"}
+    {"reviewer", "closer", "qa", "tech_writer"},
 )
 
 # Cap on the inline PR diff injected into review prompts. A diff bloated by
@@ -565,8 +565,7 @@ def _diff_section_path(section: str) -> str:
                     source = source.split("\t")[0].strip()
                     if source.startswith('"') and source.endswith('"'):
                         source = _decode_git_quoted_path(source[1:-1])
-                    if source.startswith("a/"):
-                        source = source[2:]
+                    source = source.removeprefix("a/")
                     # 412 round 45: no trim after the decode -- the quoted
                     # payload is byte-exact and metadata whitespace was
                     # trimmed pre-decode, matching the performer parser.
@@ -577,11 +576,10 @@ def _diff_section_path(section: str) -> str:
                 # 412 round 17: git escapes the quoted payload -- decode it,
                 # matching the performer parser's spelling.
                 rest = _decode_git_quoted_path(rest[1:-1])
-            if rest.startswith("b/"):
-                rest = rest[2:]
+            rest = rest.removeprefix("b/")
             if rest:
                 return rest
-        if line.startswith("rename to ") or line.startswith("copy to "):
+        if line.startswith(("rename to ", "copy to ")):
             # 412 round 14: copy-only sections carry "copy to" instead of a
             # "+++" line -- the metadata is the authoritative post-image.
             # 412 round 17: a quoted metadata target is git-escaped; decode
@@ -643,12 +641,12 @@ def _sanitize_pr_diff(raw_diff: str, *, max_chars: int = _DIFF_INJECT_MAX_CHARS)
     if dropped_noise or dropped_binary:
         notes.append(
             f"omitted {dropped_noise} tooling/vendor and {dropped_binary} "
-            f"binary file section(s)"
+            f"binary file section(s)",
         )
     if truncated:
         notes.append(
             f"diff truncated to {max_chars} chars — run `gh pr diff <pr_url>` "
-            f"for the full changes"
+            f"for the full changes",
         )
         if unread:
             notes.append(f"unread beyond this point: {len(unread)} file(s)")
@@ -683,7 +681,7 @@ def _sanitize_pr_diff(raw_diff: str, *, max_chars: int = _DIFF_INJECT_MAX_CHARS)
 
 
 async def _fetch_pr_data(
-    state: CoordinareState, card: dict[str, Any]
+    state: CoordinareState, card: dict[str, Any],
 ) -> tuple[str | None, list[str] | None, str]:
     """125 US3 (F1/F2): the single PR-diff fetch per dispatch evaluation.
 
@@ -755,7 +753,7 @@ def _pending_disputes(state: CoordinareState, stage: str) -> list[dict[str, Any]
 
 
 async def _verdict_cache_check(
-    state: CoordinareState, card: dict[str, Any], stage: str
+    state: CoordinareState, card: dict[str, Any], stage: str,
 ) -> tuple[bool, str | None]:
     """125 (contract V1-V7): decide whether a verdict stage can be skipped.
 
@@ -1312,7 +1310,7 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
     scope_role = _persona_role_for_stage(performer_stage)
     if scope_role is not None and card_id:
         slice_dict, scope_behavior = _resolve_persona_slice_and_behavior(
-            state, card_id, scope_role
+            state, card_id, scope_role,
         )
         if (
             slice_dict is not None
@@ -1364,7 +1362,7 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
     live_head: str | None = None
     if isinstance(card, dict) and card_id:
         cache_skip, live_head = await _verdict_cache_check(
-            state, card, performer_stage
+            state, card, performer_stage,
         )
         if cache_skip:
             updates = _advance_stage(state)
@@ -1656,7 +1654,7 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
             f"Performer health check failed for stage {performer_stage!r} "
             f"(status: {health_status}). "
             + (f"Reason: {health_reason}" if health_reason else
-               "Check performer logs for details.")
+               "Check performer logs for details."),
         ]
         _release_slot_on_error()
         return state
@@ -1942,7 +1940,7 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
     # and only consumes `focus` as advisory context.
     if role is not None and card_id:
         slice_dict, scope_behavior = _resolve_persona_slice_and_behavior(
-            state, card_id, role
+            state, card_id, role,
         )
         if slice_dict is not None:
             focus = slice_dict.get("focus")
@@ -2076,7 +2074,7 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
             #   None  (verify.sh absent / docker error) ⇒ degraded: MUST NOT block,
             #     fall through on the legacy last_bootstrap_succeeded path.
             _readiness_passed, _readiness_detail = await verify_env_cache_clean(
-                state, _symphony_name_for_ec, service
+                state, _symphony_name_for_ec, service,
             )
             if _readiness_passed is False:
                 logger.info(
@@ -2107,7 +2105,7 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
                 if _env_cache_svc is not None:
                     try:
                         _env_cache_svc.mark_runtime_health_failed(
-                            _symphony_name_for_ec, state
+                            _symphony_name_for_ec, state,
                         )
                     except Exception as _exc:  # pragma: no cover - defensive
                         logger.warning(
@@ -2159,7 +2157,7 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
         # receives test-env vars through the BootstrapJobPayload secrets seam.
         if not _is_bootstrap_dispatch:
             _sym_cfg_for_te = (state.get("symphony_configs") or {}).get(
-                _symphony_name_for_ec
+                _symphony_name_for_ec,
             )
             _config_for_te = state.get("config")
             _github_for_te = state.get("github_service")

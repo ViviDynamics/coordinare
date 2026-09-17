@@ -31,7 +31,7 @@ def _base_url() -> str:
         raise RuntimeError(
             "LITELLM_BASE_URL is unset. Run `set -a && source .env && set +a` "
             "first: config placeholders expand at load time and silently become "
-            "empty strings otherwise."
+            "empty strings otherwise.",
         )
     return url.rstrip("/")
 
@@ -49,7 +49,7 @@ def _model() -> str:
         raise RuntimeError(
             "COORDINARE_INFERENCE_MODEL is unset. Run "
             "`set -a && source .env && set +a` before the eval: config "
-            "placeholders expand at load time and silently become empty strings."
+            "placeholders expand at load time and silently become empty strings.",
         )
     return model
 

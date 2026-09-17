@@ -100,9 +100,9 @@ def test_nested_structures_walked():
                             "name": "fetch",
                             "arguments": '{"authorization": "Bearer abcdef.gh.ij"}',
                         },
-                    }
+                    },
                 ],
-            }
+            },
         ],
     }
     out = _redact_request_body(body)

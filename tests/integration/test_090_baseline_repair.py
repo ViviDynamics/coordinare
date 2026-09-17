@@ -120,13 +120,13 @@ def _head_rollup(*, contexts: list[dict], state: str) -> dict:
                                     "state": state,
                                     "contexts": {"nodes": contexts},
                                 },
-                            }
-                        }
-                    ]
+                            },
+                        },
+                    ],
                 },
             },
             "branchProtectionRules": {"nodes": []},
-        }
+        },
     }
 
 
@@ -140,10 +140,10 @@ def _base_rollup(*, contexts: list[dict]) -> dict:
                         "state": "FAILURE",
                         "contexts": {"nodes": contexts},
                     },
-                }
+                },
             },
             "branchProtectionRules": {"nodes": []},
-        }
+        },
     }
 
 
@@ -239,7 +239,7 @@ def _repair_flow_state(
             ci_gate=CIGateConfig(enabled=True, max_bounces_per_head=3),
             baseline_classification_gate=BaselineClassificationGateConfig(enabled=True),
             inherited_repair_gate=InheritedRepairGateConfig(
-                enabled=enabled, max_repair_attempts_per_head=max_attempts
+                enabled=enabled, max_repair_attempts_per_head=max_attempts,
             ),
         )
 
@@ -302,7 +302,7 @@ async def test_sc008_inherited_failure_autonomously_repaired_up_to_review(monkey
         _reviewer_clears,
     )
     gh.head_payload = _head_rollup(
-        contexts=[_check_run("lint", "SUCCESS")], state="SUCCESS"
+        contexts=[_check_run("lint", "SUCCESS")], state="SUCCESS",
     )
 
     tick2 = await monitor_performer(
@@ -310,7 +310,7 @@ async def test_sc008_inherited_failure_autonomously_repaired_up_to_review(monkey
             gh,
             inheritance_repair_counter=tick1["inheritance_repair_counter"],
             repair_audit=tick1["repair_audit"],
-        )
+        ),
     )
 
     # Both guard halves cleared → the repair lands as a candidate and the flow
@@ -405,7 +405,7 @@ async def test_sc005_accepted_repair_lands_as_candidate_never_auto_merged(monkey
             "flagged_patterns": [],
             "detail": "Dispatched autonomous baseline-repair attempt 1/1.",
             "decided_at": "2026-06-14T00:00:00Z",
-        }
+        },
     ]
 
     result = await monitor_performer(
@@ -413,7 +413,7 @@ async def test_sc005_accepted_repair_lands_as_candidate_never_auto_merged(monkey
             gh,
             inheritance_repair_counter={_HEAD_SHA: 1},
             repair_audit=pending_dispatch,
-        )
+        ),
     )
 
     # Landed as a candidate: advanced past implementing, never blocked.

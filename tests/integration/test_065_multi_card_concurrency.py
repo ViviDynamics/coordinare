@@ -151,7 +151,7 @@ def _stub_config(role_max: dict[str, int]) -> SimpleNamespace:
         role: SimpleNamespace(max_concurrency=mx) for role, mx in role_max.items()
     }
     return SimpleNamespace(
-        performers=SimpleNamespace(resolved_role=lambda r: roles.get(r))
+        performers=SimpleNamespace(resolved_role=lambda r: roles.get(r)),
     )
 
 

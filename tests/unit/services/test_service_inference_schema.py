@@ -19,14 +19,14 @@ from coordinare_service_inference.schema import (
 
 
 def _base_entry(**overrides):
-    fields = dict(
-        name="redis",
-        binary="redis-server",
-        version="7.2",
-        data_dir="/tmp/redis",
-        port=6379,
-        why_needed="Sidekiq queue backend",
-    )
+    fields = {
+        "name": "redis",
+        "binary": "redis-server",
+        "version": "7.2",
+        "data_dir": "/tmp/redis",
+        "port": 6379,
+        "why_needed": "Sidekiq queue backend",
+    }
     fields.update(overrides)
     return fields
 
@@ -55,7 +55,7 @@ def test_required_env_vars_rejects_non_posix(bad_var: str) -> None:
             **_base_entry(
                 external_required=True,
                 required_env_vars=[bad_var],
-            )
+            ),
         )
 
 
@@ -110,7 +110,7 @@ def test_start_args_accepts_argv_with_shell_metachars() -> None:
     # render time. The schema's job is to reject only what can break the
     # quoter (NUL bytes, wrong types).
     entry = ServiceEntry(
-        **_base_entry(start_args=["postgres", "-D", "/tmp/pg; rm -rf /"])
+        **_base_entry(start_args=["postgres", "-D", "/tmp/pg; rm -rf /"]),
     )
     assert entry.start_args == ["postgres", "-D", "/tmp/pg; rm -rf /"]
 
@@ -134,13 +134,13 @@ def test_start_args_none_is_allowed() -> None:
 def test_agent_version_rejects_unsafe_charset(bad_version: str) -> None:
     with pytest.raises(ValidationError):
         ServicesManifest(
-            services=[], cache_inputs=[], agent_version=bad_version
+            services=[], cache_inputs=[], agent_version=bad_version,
         )
 
 
 def test_agent_version_accepts_full_safe_charset() -> None:
     manifest = ServicesManifest(
-        services=[], cache_inputs=[], agent_version="Claude-Services_v1.2:3"
+        services=[], cache_inputs=[], agent_version="Claude-Services_v1.2:3",
     )
     assert manifest.agent_version == "Claude-Services_v1.2:3"
 
@@ -150,20 +150,20 @@ def test_agent_version_accepts_full_safe_charset() -> None:
 
 def _postgres_entry(**overrides):
     """A valid postgres entry with an init block, for the 091 cases."""
-    fields = dict(
-        name="postgres",
-        binary="postgres",
-        version="16",
-        data_dir="/tmp/pg-data",
-        port=5432,
-        why_needed="Primary application database",
-        kind="postgres",
-        init=ServiceInit(
+    fields = {
+        "name": "postgres",
+        "binary": "postgres",
+        "version": "16",
+        "data_dir": "/tmp/pg-data",
+        "port": 5432,
+        "why_needed": "Primary application database",
+        "kind": "postgres",
+        "init": ServiceInit(
             superuser="root",
             databases=["app_dev", "app_test"],
             password_env_var="POSTGRES_PASSWORD",
         ),
-    )
+    }
     fields.update(overrides)
     return fields
 
@@ -181,7 +181,7 @@ def test_postgres_entry_with_init_loads() -> None:
 def test_postgres_init_without_password_env_var_loads() -> None:
     # password_env_var is optional — trust-auth local socket init is valid.
     entry = ServiceEntry(
-        **_postgres_entry(init=ServiceInit(superuser="root", databases=["app_dev"]))
+        **_postgres_entry(init=ServiceInit(superuser="root", databases=["app_dev"])),
     )
     assert entry.init is not None
     assert entry.init.password_env_var is None
@@ -192,7 +192,7 @@ def test_init_on_non_initializing_kind_raises(bad_kind: str) -> None:
     # VR-2: an init block is only valid for an initializing kind (postgres).
     with pytest.raises(ValidationError, match="init"):
         ServiceEntry(
-            **_postgres_entry(kind=bad_kind, init=ServiceInit(superuser="root"))
+            **_postgres_entry(kind=bad_kind, init=ServiceInit(superuser="root")),
         )
 
 
@@ -272,7 +272,7 @@ def test_test_env_source_defaults_to_none() -> None:
     # Fallback discovery is opt-in: a manifest that does not name a test-env
     # file leaves the field None (no path discovered).
     manifest = ServicesManifest(
-        services=[], cache_inputs=[], agent_version="manual-override"
+        services=[], cache_inputs=[], agent_version="manual-override",
     )
     assert manifest.test_env_source is None
 
@@ -293,7 +293,7 @@ def test_test_env_source_omitted_from_dump_when_none() -> None:
     # FR-016/FR-017: a manifest without a discovered source carries no
     # test_env_source key at all, so persisted state stays minimal.
     manifest = ServicesManifest(
-        services=[], cache_inputs=[], agent_version="manual-override"
+        services=[], cache_inputs=[], agent_version="manual-override",
     )
     dumped = manifest.model_dump(exclude_none=True)
     assert "test_env_source" not in dumped
@@ -334,9 +334,9 @@ def test_manifest_carries_only_names_and_paths_never_literal_values() -> None:
                         superuser="root",
                         databases=["app_test"],
                         password_env_var="POSTGRESQL_PASSWORD",
-                    )
-                )
-            )
+                    ),
+                ),
+            ),
         ],
         cache_inputs=[],
         agent_version="Claude-Services_v1",
@@ -372,24 +372,24 @@ def test_services_requiring_inference_validation_excludes_only_managed_kinds() -
             version=None,
             external_required=True,
             required_env_vars=["MAILHOG_HOST"],
-        )
+        ),
     )
     generic = ServiceEntry(**_base_entry(name="worker", binary="/bin/sh", version=None, kind="generic"))
 
     # Only coordinare-managed kinds → nothing left to validate.
     managed_only = ServicesManifest(
-        services=[pg, redis], cache_inputs=["Gemfile"], agent_version="t"
+        services=[pg, redis], cache_inputs=["Gemfile"], agent_version="t",
     )
     assert services_requiring_inference_validation(managed_only) == []
 
     # Managed + external → the external service is still validated.
     managed_plus_external = ServicesManifest(
-        services=[pg, redis, external], cache_inputs=["Gemfile"], agent_version="t"
+        services=[pg, redis, external], cache_inputs=["Gemfile"], agent_version="t",
     )
     assert [s.name for s in services_requiring_inference_validation(managed_plus_external)] == ["mailer"]
 
     # Mixed → generic + external validated, postgres excluded.
     mixed = ServicesManifest(
-        services=[pg, generic, external], cache_inputs=["Gemfile"], agent_version="t"
+        services=[pg, generic, external], cache_inputs=["Gemfile"], agent_version="t",
     )
     assert [s.name for s in services_requiring_inference_validation(mixed)] == ["worker", "mailer"]

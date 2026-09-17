@@ -180,14 +180,14 @@ class TestFingerprints:
         assert len(a) == 16
 
     def test_configs_differing_only_in_a_secret_get_distinct_fingerprints(
-        self, tmp_path: Path
+        self, tmp_path: Path,
     ) -> None:
         loaded = load_space(_write(tmp_path))
         a = config_fingerprint(
-            materialize(loaded.baseline_dump, {"global_config.github_token": "secret-one"})
+            materialize(loaded.baseline_dump, {"global_config.github_token": "secret-one"}),
         )
         b = config_fingerprint(
-            materialize(loaded.baseline_dump, {"global_config.github_token": "secret-two"})
+            materialize(loaded.baseline_dump, {"global_config.github_token": "secret-two"}),
         )
         assert a != b  # SecretStr masking must not collapse distinct points (FR-004)
 

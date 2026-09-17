@@ -69,7 +69,7 @@ async def test_drain_succeeds_within_budget_returns_drained() -> None:
     svc = _DrainSucceedingService()
     executor = _MockExecutor()
     outcome, elapsed_ms = await drain_or_reap(
-        "sess-x", service=svc, docker_executor=executor, drain_budget=5.0
+        "sess-x", service=svc, docker_executor=executor, drain_budget=5.0,
     )
     assert outcome == "drained"
     assert "sess-x" in svc.drained_sessions
@@ -104,7 +104,7 @@ async def test_drain_error_falls_back_to_reap() -> None:
     svc = _DrainErrorService()
     executor = _MockExecutor()
     outcome, _ = await drain_or_reap(
-        "sess-x", service=svc, docker_executor=executor
+        "sess-x", service=svc, docker_executor=executor,
     )
     assert outcome == "reaped"
     assert "ctr-1" in executor.stopped
@@ -149,7 +149,7 @@ async def test_total_budget_hard_cap_10_seconds() -> None:
     from time import perf_counter
     started = perf_counter()
     await drain_or_reap(
-        "sess-x", service=svc, docker_executor=executor, drain_budget=1.0, reap_budget=1.0
+        "sess-x", service=svc, docker_executor=executor, drain_budget=1.0, reap_budget=1.0,
     )
     elapsed = perf_counter() - started
     assert elapsed < 3.0  # 1s drain + 1s reap + slack

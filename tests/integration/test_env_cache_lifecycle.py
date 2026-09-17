@@ -305,7 +305,7 @@ async def test_multi_file_combined_sha(tmp_path: Path) -> None:
 
     github = AsyncMock()
     github.get_file_blob_sha = AsyncMock(side_effect=lambda org, repo, f: {
-        "README.md": "readme-sha-1", "pyproject.toml": "toml-sha-1"
+        "README.md": "readme-sha-1", "pyproject.toml": "toml-sha-1",
     }[f])
     github.get_file_content = AsyncMock(return_value="content")
 
@@ -327,7 +327,7 @@ async def test_multi_file_combined_sha(tmp_path: Path) -> None:
 
     # Only pyproject.toml changes — combined SHA must differ → dispatch.
     github.get_file_blob_sha = AsyncMock(side_effect=lambda org, repo, f: {
-        "README.md": "readme-sha-1", "pyproject.toml": "toml-sha-2"
+        "README.md": "readme-sha-1", "pyproject.toml": "toml-sha-2",
     }[f])
     dispatch_fn.reset_mock()
     await svc.check_and_trigger(sym_name, sym_cfg, github, full_state, dispatch_fn)

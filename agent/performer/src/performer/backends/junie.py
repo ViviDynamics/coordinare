@@ -87,7 +87,7 @@ def _maybe_write_custom_profile() -> str | None:
     profile_id = os.environ.get("JUNIE_PROVIDER_MODEL_ID", "vivi").strip() or "vivi"
     if not _PROFILE_ID_RE.match(profile_id):
         raise ValueError(
-            f"unsafe JUNIE_PROVIDER_MODEL_ID (must match [A-Za-z0-9_-]+): {profile_id!r}"
+            f"unsafe JUNIE_PROVIDER_MODEL_ID (must match [A-Za-z0-9_-]+): {profile_id!r}",
         )
     api_type = os.environ.get("JUNIE_PROVIDER_API_TYPE", "OpenAICompletion").strip()
     # Per Junie's custom-LLM schema, the profile's `id` FIELD is "the model
@@ -325,7 +325,7 @@ class JunieBackend:
             self._cleanup_json_output()
             raise
         self._reader_task = asyncio.create_task(
-            self._wait_and_parse(), name="junie-reader"
+            self._wait_and_parse(), name="junie-reader",
         )
         log.info("junie started", pid=self._proc.pid, model=effective_model)
 
@@ -420,7 +420,7 @@ class JunieBackend:
 
 
 def _build_task_prompt(
-    score: Score, *, stand_path: Path | None = None
+    score: Score, *, stand_path: Path | None = None,
 ) -> str:
     """Construct the task description sent to Junie as the initial prompt."""
     parts = []
@@ -474,7 +474,7 @@ def _build_task_prompt(
             if isinstance(_d, dict) and _d.get("id"):
                 parts.append(
                     f"- {_d['id']}: {_d.get('body', '')} — implementer says: "
-                    f"{_d.get('reason', '')}"
+                    f"{_d.get('reason', '')}",
                 )
 
     if score.relay_feedback:

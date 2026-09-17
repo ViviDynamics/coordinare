@@ -121,7 +121,7 @@ def test_truly_unknown_field_no_suggestion(tmp_path: Path) -> None:
 
 
 def test_empty_string_env_var_treated_as_absent(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """COORDINARE_GITHUB_TOKEN='' with no github_token in file → field treated as absent (error)."""
     monkeypatch.setenv("COORDINARE_GITHUB_TOKEN", "")
@@ -143,7 +143,7 @@ def test_empty_string_env_var_treated_as_absent(
 
 
 def test_env_var_fields_count_computed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Fields supplied via env var (absent from file) → env_var_fields_count >= 1."""
     monkeypatch.setenv("COORDINARE_GITHUB_TOKEN", "env-token-value")

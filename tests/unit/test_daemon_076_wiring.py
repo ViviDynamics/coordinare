@@ -83,7 +83,7 @@ async def test_reconciliation_with_full_config_object() -> None:
                 "phase": "monitoring_performer",
                 "performer_stage": "implementing",
                 "agent_dispatch": {"session_id": "u"},
-            }
+            },
         },
         "performer_services": {},
     }

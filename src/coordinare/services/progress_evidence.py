@@ -103,7 +103,7 @@ def read_evidence(events: Iterable[Any] | None) -> ProductionEvidence:
             # which is the exact failure this module exists to prevent.
             talk += 1
     return ProductionEvidence(
-        tool_uses=tool_uses, completions=completions, talk_events=talk, total_events=total
+        tool_uses=tool_uses, completions=completions, talk_events=talk, total_events=total,
     )
 
 
@@ -188,7 +188,7 @@ def evaluate_stall(
 
 
 def production_advanced(
-    new: tuple[int, int], old: tuple[int, int] | None
+    new: tuple[int, int], old: tuple[int, int] | None,
 ) -> bool:
     """Whether *new* shows strictly more produced than *old*.
 

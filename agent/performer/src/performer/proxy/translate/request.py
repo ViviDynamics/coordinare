@@ -137,7 +137,7 @@ def _translate_turn(turn: dict[str, Any]) -> list[dict[str, Any]]:
         text = _content_to_text(content)
         message: dict[str, Any] = {
             "role": "assistant",
-            "content": text if text else None,
+            "content": text or None,
             "tool_calls": [_tool_call_entry(b) for b in tool_use],
         }
         return [message]

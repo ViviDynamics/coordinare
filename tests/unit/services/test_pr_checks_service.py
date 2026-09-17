@@ -42,13 +42,13 @@ def _payload(
                                     "state": "PENDING",
                                     "contexts": {"nodes": contexts or []},
                                 },
-                            }
-                        }
-                    ]
+                            },
+                        },
+                    ],
                 },
             },
             "branchProtectionRules": {"nodes": bpr_nodes} if bpr_nodes is not None else {"nodes": []},
-        }
+        },
     }
 
 
@@ -61,7 +61,7 @@ def test_parses_check_run_node() -> None:
                 "status": "COMPLETED",
                 "conclusion": "SUCCESS",
                 "detailsUrl": "https://example/check/1",
-            }
+            },
         ],
     )
     rollup = parse_rollup(payload, pr_number=1)
@@ -102,7 +102,7 @@ def test_parse_rollup_populates_title_summary_from_check_run_output() -> None:
                 # NOT nested under output{} (which doesn't exist on the type).
                 "title": "3 tests failed",
                 "summary": "test_foo AssertionError: expected 1 got 2",
-            }
+            },
         ],
     )
     rollup = parse_rollup(payload, pr_number=1)
@@ -179,7 +179,7 @@ def test_parse_rollup_status_context_has_no_title_summary() -> None:
                 "context": "buildkite/build",
                 "state": "FAILURE",
                 "targetUrl": "https://example/build/2",
-            }
+            },
         ],
     )
     rollup = parse_rollup(payload, pr_number=1)
@@ -220,7 +220,7 @@ def _base_payload(
         "repository": {
             "ref": {"target": target},
             "branchProtectionRules": {"nodes": bpr_nodes} if bpr_nodes is not None else {"nodes": []},
-        }
+        },
     }
 
 
@@ -252,7 +252,7 @@ def test_parse_base_rollup_stamps_base_origin() -> None:
                 "detailsUrl": "https://example/check/9",
                 "title": "boom",
                 "summary": "test_x failed",
-            }
+            },
         ],
         bpr_nodes=[{"pattern": "main", "requiredStatusChecks": [{"context": "ci/test"}]}],
     )
@@ -311,9 +311,9 @@ async def test_get_base_branch_check_rollup_parses_on_success() -> None:
                     "name": "ci/test",
                     "status": "COMPLETED",
                     "conclusion": "FAILURE",
-                }
+                },
             ],
-        )
+        ),
     )
     svc = PrChecksService(gh, "o", "r")
     rollup = await svc.get_base_branch_check_rollup("main")
@@ -383,7 +383,7 @@ def test_parses_status_context_success() -> None:
                 "context": "buildkite/build",
                 "state": "SUCCESS",
                 "targetUrl": "https://example/build/2",
-            }
+            },
         ],
     )
     rollup = parse_rollup(payload, pr_number=1)

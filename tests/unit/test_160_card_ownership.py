@@ -366,7 +366,7 @@ async def test_card_in_flight_survives_losing_its_assignee() -> None:
             "phase": "monitoring_performer",
             "current_card": {"id": "MINE", "title": "Card MINE", "status": "IN_PROGRESS"},
             "performer_stage": "implementing",
-        }
+        },
     }
     result = await check_board(state)
     assert "MINE" in (result.get("active_sessions") or {})
@@ -385,7 +385,7 @@ async def test_in_flight_card_does_not_read_as_disappeared() -> None:
             "phase": "monitoring_performer",
             "current_card": {"id": "MINE", "title": "Card MINE", "status": "IN_PROGRESS"},
             "performer_stage": "implementing",
-        }
+        },
     }
     state["current_card"] = {"id": "MINE", "title": "Card MINE", "status": "IN_PROGRESS"}
     state["phase"] = "monitoring_performer"

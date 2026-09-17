@@ -116,7 +116,7 @@ class BootstrapJobPayload(BaseModel):
     job_type: Literal["env_bootstrap"] = "env_bootstrap"
 
     symphony_name: str = Field(
-        description="Human-readable symphony name (for logging/labelling inside the container)."
+        description="Human-readable symphony name (for logging/labelling inside the container).",
     )
     symphony_org: str = Field(description="GitHub organisation owning the symphony's repo.")
     symphony_repo: str = Field(description="GitHub repository name for the symphony.")

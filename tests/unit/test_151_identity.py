@@ -30,7 +30,7 @@ async def test_opened_pr_is_the_merged_pr(tmp_path: Path) -> None:
     )
     seed_board(fake, [fx])
     server = FakeGitHubServer(
-        fake, bare_repo=bare, head_ref_index={branch: "PVTI_1"}, scratch=tmp_path
+        fake, bare_repo=bare, head_ref_index={branch: "PVTI_1"}, scratch=tmp_path,
     )
 
     # Performer mints the PR through the REST boundary.

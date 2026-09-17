@@ -54,10 +54,10 @@ REPRESENTATIVE_CONFIG: dict = {
                     "host_path": "/host/routing.yaml",
                     "container_path": "/devenv/routing.yaml",
                     "mode": "ro",
-                }
+                },
             ],
             "env": {"SELFHOSTED_ROUTING_CONFIG": "/devenv/routing.yaml"},
-        }
+        },
     ],
 }
 
@@ -72,8 +72,8 @@ REPRESENTATIVE_ROUTING: dict = {
                 "strategy": "normalize",
                 "normalizers": ["harmony_tool_calls"],
             },
-        }
-    ]
+        },
+    ],
 }
 
 
@@ -116,10 +116,10 @@ def temp_config_with_routing(tmp_path: Path) -> tuple[Path, Path]:
                     "host_path": str(routing_path),
                     "container_path": "/devenv/routing.yaml",
                     "mode": "ro",
-                }
+                },
             ],
             "env": {"SELFHOSTED_ROUTING_CONFIG": "/devenv/routing.yaml"},
-        }
+        },
     ]
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml.safe_dump(cfg, sort_keys=False))
@@ -159,7 +159,7 @@ def invalid_config_path(tmp_path: Path) -> Path:
             github_project_number: 100
         orchestra:
           mode: shared_pool
-        """
+        """,
     )
     p = tmp_path / "config.yaml"
     p.write_text(text)

@@ -116,7 +116,7 @@ async def _derive_resume_stage(github: object, card: dict, lifecycle_seq: list[s
                 return stage
             for fname in artifacts:
                 sha = await github.get_file_blob_sha(  # type: ignore[attr-defined]
-                    owner, repo, f"{docs_dir}/{fname}", ref=branch
+                    owner, repo, f"{docs_dir}/{fname}", ref=branch,
                 )
                 if not sha:
                     return stage  # this stage's output is missing — resume here
@@ -154,7 +154,7 @@ def _count_slot_consuming_sessions(state: dict) -> int:
 # handle_blocked based on this phase — clobbering it to "idle" terminates
 # monitoring entirely.
 _IN_FLIGHT_WORKING_PHASES: frozenset[str] = frozenset(
-    {"monitoring_performer", "dispatching", "blocked"}
+    {"monitoring_performer", "dispatching", "blocked"},
 )
 
 
@@ -357,7 +357,7 @@ def _env_cache_recovered(state: CoordinareState, symphony: str) -> bool:
         cs is not None
         and getattr(cs, "cache_dir_ready", False)
         and not getattr(cs, "runtime_health_failed", True)
-        and getattr(cs, "last_bootstrap_succeeded", None) is True
+        and getattr(cs, "last_bootstrap_succeeded", None) is True,
     )
 
 
@@ -420,9 +420,7 @@ async def _reconcile_stage_with_pr(sess: dict, cid: str, github: object, pr: dic
     if "performer_stage" not in updates:
         logger.info("blocked_recovery.stage_kept", card_id=cid, why="no_next_stage")
         return
-    for key, value in updates.items():
-        if key != "current_card":
-            sess[key] = value
+    sess.update((key, value) for key, value in updates.items() if key != "current_card")
     logger.info(
         "blocked_recovery.stage_advanced", card_id=cid, pr=number,
         from_stage="implementing", to_stage=updates["performer_stage"],
@@ -430,7 +428,7 @@ async def _reconcile_stage_with_pr(sess: dict, cid: str, github: object, pr: dic
 
 
 async def _attempt_blocked_card_recovery(
-    state: CoordinareState, github: object, blocked: list, board: dict
+    state: CoordinareState, github: object, blocked: list, board: dict,
 ) -> None:
     """129 (US1): before BLOCKED cards are skipped, re-evaluate whether their
     block has cleared and auto-recover them. Handles the stale-review case
@@ -529,7 +527,7 @@ async def _attempt_blocked_card_recovery(
                         gating = None
                         for r in reviews:
                             if str(r.get("state", "")) == "CHANGES_REQUESTED" and classify_reviewer(
-                                str(r.get("author_login", "")), human_reviewers, []
+                                str(r.get("author_login", "")), human_reviewers, [],
                             ) == ReviewerType.HUMAN:
                                 gating = r  # last wins → latest human CR
                         if gating is not None:
@@ -553,7 +551,7 @@ async def _attempt_blocked_card_recovery(
                                 1 if (commit_oid and head_oid and commit_oid != head_oid) else 0
                             )
                             staleness = classify_review_staleness(
-                                review, head_oid, commits_behind, threads
+                                review, head_oid, commits_behind, threads,
                             )
                             active_reasons.append(BlockReason.STALE_REVIEW)
                             sig["review_decision"] = review_decision
@@ -635,7 +633,7 @@ async def _attempt_blocked_card_recovery(
                                 "reason": decision.reason,
                             },
                             dedup_key=f"auto_recovered:{cid}:{dedup_suffix}",
-                        )
+                        ),
                     )
         except Exception as exc:  # fail-safe: a card's recovery never breaks the cycle
             logger.warning("blocked_recovery.failsafe_skip", card_id=cid, error=str(exc))
@@ -1101,7 +1099,7 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
     # 026: Detect active card removed from all known columns (cancellation)
     active_card = state.get("current_card")
     active_phase = state.get("phase", "idle")
-    if active_card and isinstance(active_card, dict) and active_phase not in ("idle",):
+    if active_card and isinstance(active_card, dict) and active_phase != "idle":
         active_id = str(active_card.get("id", ""))
         all_known_ids = {
             str(item_id) for col in (
@@ -1429,9 +1427,7 @@ async def _check_board_impl(state: CoordinareState) -> CoordinareState:
                     if not isinstance(created_raw, str) or not created_raw:
                         continue
                     try:
-                        created_at = datetime.fromisoformat(
-                            created_raw.replace("Z", "+00:00")
-                        )
+                        created_at = datetime.fromisoformat(created_raw)
                         if created_at > last_notified:
                             # Record the user's answer alongside the questions that
                             # were asked, so assess_card can pass the full Q&A history

@@ -41,7 +41,7 @@ def test_build_intake_minimal():
 def test_build_intake_with_acceptance_criteria():
     """Acceptance criteria are included."""
     score = FakeScore(
-        acceptance_criteria=["Must work", "Must be fast"]
+        acceptance_criteria=["Must work", "Must be fast"],
     )
     intake = build_intake(score)
     text = intake.as_text()
@@ -56,7 +56,7 @@ def test_build_intake_counts_answered_rounds():
             {"question": "What's the goal?", "answer": "Make it work"},
             {"question": "Why?", "answer": ""},  # Blank answer, not counted
             {"question": "How?", "answer": "By coding"},
-        ]
+        ],
     )
     intake = build_intake(score)
     assert intake.answered_rounds == 2
@@ -70,7 +70,7 @@ def test_build_intake_merges_clarifications():
         ],
         prior_clarifications=[
             {"question": "Second?", "answer": "Also yes"},
-        ]
+        ],
     )
     intake = build_intake(score)
     text = intake.as_text()
@@ -86,7 +86,7 @@ def test_build_intake_deduplicates_questions():
         clarifications=[
             {"question": "What's the goal?", "answer": "Make it work"},
             {"question": "What's the goal?", "answer": "Make it work"},
-        ]
+        ],
     )
     intake = build_intake(score)
     text = intake.as_text()
@@ -101,7 +101,7 @@ def test_build_intake_blank_answers_not_counted():
             {"question": "Q1?", "answer": "A1"},
             {"question": "Q2?", "answer": ""},
             {"question": "Q3?", "answer": "   "},  # Whitespace only
-        ]
+        ],
     )
     intake = build_intake(score)
     assert intake.answered_rounds == 1
@@ -113,7 +113,7 @@ def test_build_intake_as_text_format():
         title="Fix bug",
         description="A serious bug",
         acceptance_criteria=["Pass tests"],
-        clarifications=[{"question": "Which bug?", "answer": "The one in login"}]
+        clarifications=[{"question": "Which bug?", "answer": "The one in login"}],
     )
     intake = build_intake(score)
     text = intake.as_text()
@@ -132,7 +132,7 @@ def test_build_intake_latest_answer_wins():
         clarifications=[
             {"question": "What's the goal?", "answer": "First answer"},
             {"question": "What's the goal?", "answer": "Second answer"},  # Latest, should win
-        ]
+        ],
     )
     intake = build_intake(score)
     text = intake.as_text()
@@ -147,7 +147,7 @@ def test_build_intake_latest_answer_wins_with_blanks():
             {"question": "What's the goal?", "answer": "First answer"},
             {"question": "What's the goal?", "answer": ""},  # Blank
             {"question": "What's the goal?", "answer": "Second answer"},  # Latest, should win
-        ]
+        ],
     )
     intake = build_intake(score)
     text = intake.as_text()
@@ -161,7 +161,7 @@ def test_build_intake_expands_plural_questions_entry():
         clarifications=[
             {"question": "What's the goal?", "answer": "Make it work"},
             {"questions": ["Who is the user?", "What is the scope?"], "answer": ""},
-        ]
+        ],
     )
     intake = build_intake(score)
     text = intake.as_text()
@@ -182,7 +182,7 @@ def test_build_intake_plural_questions_mixed_list():
             {"question": "First?", "answer": "Answered"},
             {"questions": ["Second?", "Third?"], "answer": ""},
             {"question": "Fourth?", "answer": "Answered"},
-        ]
+        ],
     )
     intake = build_intake(score)
     text = intake.as_text()

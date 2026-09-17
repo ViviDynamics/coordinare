@@ -39,7 +39,7 @@ def test_parse_input_string_becomes_user_message() -> None:
 
 def test_parse_instructions_becomes_system_message() -> None:
     req = to_llm_request_responses(
-        {"instructions": "You are a reviewer.", "input": "review this"}
+        {"instructions": "You are a reviewer.", "input": "review this"},
     )
     assert req.messages[0].role == "system"
     assert req.messages[0].content == "You are a reviewer."
@@ -57,8 +57,8 @@ def test_parse_input_array_of_message_items() -> None:
                     "role": "assistant",
                     "content": [{"type": "output_text", "text": "second"}],
                 },
-            ]
-        }
+            ],
+        },
     )
     assert [m.role for m in req.messages] == ["user", "assistant"]
     assert req.messages[0].content == "first"
@@ -77,9 +77,9 @@ def test_parse_input_text_content_blocks() -> None:
                         {"type": "input_text", "text": "part-a "},
                         {"type": "input_text", "text": "part-b"},
                     ],
-                }
-            ]
-        }
+                },
+            ],
+        },
     )
     assert req.messages[0].content == "part-a part-b"
 
@@ -100,8 +100,8 @@ def test_parse_function_call_and_output_items() -> None:
                     "call_id": "call_1",
                     "output": "file.txt",
                 },
-            ]
-        }
+            ],
+        },
     )
     # user, assistant(tool_call), tool(result)
     assistant = req.messages[1]
@@ -128,9 +128,9 @@ def test_parse_flattened_function_tools() -> None:
                     "name": "shell",
                     "description": "run a shell command",
                     "parameters": {"type": "object", "properties": {}},
-                }
+                },
             ],
-        }
+        },
     )
     assert len(req.tools) == 1
     assert req.tools[0].name == "shell"

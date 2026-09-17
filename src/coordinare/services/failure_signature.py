@@ -33,11 +33,11 @@ import re
 
 # 8-4-4-4-12 canonical UUID.
 _UUID_RE = re.compile(
-    r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b"
+    r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
 )
 # ISO-8601: date required, time/zone optional.
 _ISO_TS_RE = re.compile(
-    r"\d{4}-\d{2}-\d{2}(?:[t ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:z|[+-]\d{2}:?\d{2})?)?"
+    r"\d{4}-\d{2}-\d{2}(?:[t ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:z|[+-]\d{2}:?\d{2})?)?",
 )
 # A path token whose body embeds a long hex run (cache keys, content-addressed
 # artifacts).  Collapsed whole so we never leave dangling slashes behind a bare

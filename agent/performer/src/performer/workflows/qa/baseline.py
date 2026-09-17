@@ -56,7 +56,7 @@ async def run_baseline_step(
         log.warning("qa.baseline.worktree_failed", exit_code=add.exit_code)
         raise RuntimeError(
             f"could not create baseline worktree at {merge_base}: "
-            f"exit {add.exit_code}"
+            f"exit {add.exit_code}",
         )
 
     # Boot the BASE app from the worktree. Without this, dom_snapshot hits
@@ -73,7 +73,7 @@ async def run_baseline_step(
         why = getattr(base_boot, "failure_reason", None) or "it never came up"
         raise RuntimeError(
             f"the base-commit application could not be compared against: {why}. "
-            "No before/after comparison is possible."
+            "No before/after comparison is possible.",
         )
 
     baseline: dict[str, list[Observation]] = {}
@@ -122,7 +122,7 @@ async def cleanup_worktree(toolkit, *, workspace: Path, worktree_dir: Path) -> N
     """Best-effort removal. A leftover worktree is untidy, not dangerous."""
     try:
         await toolkit.run_command(
-            f"git worktree remove --force {worktree_dir}", cwd=workspace
+            f"git worktree remove --force {worktree_dir}", cwd=workspace,
         )
     except Exception as exc:  # noqa: BLE001
         log.warning("qa.baseline.cleanup_failed", error=str(exc))

@@ -158,57 +158,57 @@ MESSAGE_SCHEMA_PATCH = {
                         "title",
                         "description",
                         "acceptance_criteria",
-                        "status"
+                        "status",
                     ],
                     "properties": {
                         "id": {
                             "type": "string",
-                            "description": "Board item node ID (e.g. PVT_kwDOABCDEF)"
+                            "description": "Board item node ID (e.g. PVT_kwDOABCDEF)",
                         },
                         "title": {
                             "type": "string",
-                            "minLength": 1
+                            "minLength": 1,
                         },
                         "description": {
-                            "type": "string"
+                            "type": "string",
                         },
                         "acceptance_criteria": {
                             "type": "array",
                             "items": {
-                                "type": "string"
-                            }
+                                "type": "string",
+                            },
                         },
                         "status": {
                             "type": "string",
-                            "description": "Board column name at time of dispatch (e.g. 'In Progress')"
+                            "description": "Board column name at time of dispatch (e.g. 'In Progress')",
                         },
                         "previous_status": {
-                            "type": "string"
+                            "type": "string",
                         },
                         "issue_id": {
-                            "type": "string"
+                            "type": "string",
                         },
                         "issue_number": {
-                            "type": "integer"
+                            "type": "integer",
                         },
                         "issue_url": {
-                            "type": "string"
+                            "type": "string",
                         },
                         "github_token": {
                             "type": [
                                 "string",
-                                "null"
+                                "null",
                             ],
-                            "description": "GitHub token for the performer to act with."
+                            "description": "GitHub token for the performer to act with.",
                         },
                         "assigned_agent": {
                             "type": [
                                 "string",
-                                "null"
+                                "null",
                             ],
-                            "default": None
-                        }
-                    }
+                            "default": None,
+                        },
+                    },
                 },
                 {
                     "title": "BootstrapDispatchPayload",
@@ -218,44 +218,44 @@ MESSAGE_SCHEMA_PATCH = {
                         "job_type",
                         "symphony_name",
                         "symphony_org",
-                        "symphony_repo"
+                        "symphony_repo",
                     ],
                     "properties": {
                         "job_type": {
                             "type": "string",
-                            "const": "env_bootstrap"
+                            "const": "env_bootstrap",
                         },
                         "symphony_name": {
-                            "type": "string"
+                            "type": "string",
                         },
                         "symphony_org": {
-                            "type": "string"
+                            "type": "string",
                         },
                         "symphony_repo": {
-                            "type": "string"
+                            "type": "string",
                         },
                         "env_spec_files": {
                             "type": "array",
                             "items": {
-                                "type": "string"
-                            }
+                                "type": "string",
+                            },
                         },
                         "env_spec_contents": {
                             "type": "object",
                             "additionalProperties": {
-                                "type": "string"
-                            }
+                                "type": "string",
+                            },
                         },
                         "cache_mount_path": {
-                            "type": "string"
+                            "type": "string",
                         },
                         "last_failure": {
                             "type": [
                                 "string",
-                                "null"
-                            ]
-                        }
-                    }
+                                "null",
+                            ],
+                        },
+                    },
                 },
                 {
                     "title": "WikiInitDispatchPayload",
@@ -264,48 +264,48 @@ MESSAGE_SCHEMA_PATCH = {
                     "required": [
                         "card_id",
                         "title",
-                        "description"
+                        "description",
                     ],
                     "properties": {
                         "card_id": {
-                            "type": "string"
+                            "type": "string",
                         },
                         "title": {
-                            "type": "string"
+                            "type": "string",
                         },
                         "description": {
-                            "type": "string"
+                            "type": "string",
                         },
                         "role": {
-                            "type": "string"
+                            "type": "string",
                         },
                         "doc_mode": {
-                            "type": "string"
+                            "type": "string",
                         },
                         "repo_url": {
-                            "type": "string"
+                            "type": "string",
                         },
                         "branch": {
-                            "type": "string"
+                            "type": "string",
                         },
                         "base_branch": {
-                            "type": "string"
-                        }
-                    }
-                }
-            ]
+                            "type": "string",
+                        },
+                    },
+                },
+            ],
         },
         "relay_feedback_payload": {
             "title": "RelayFeedbackPayload",
             "description": "Payload for action=relay_feedback. The session ID rides the outer message (412 round 17: aligned with the transport caller). The cancellation path sends no PR context, so only ``comments`` is required and ``pr_url`` accepts the empty string the serializer produces (412 round 32).",
             "type": "object",
             "required": [
-                "comments"
+                "comments",
             ],
             "properties": {
                 "pr_url": {
                     "type": "string",
-                    "description": "URL of the pull request under review; empty for the cancellation relay."
+                    "description": "URL of the pull request under review; empty for the cancellation relay.",
                 },
                 "comments": {
                     "type": "array",
@@ -313,37 +313,37 @@ MESSAGE_SCHEMA_PATCH = {
                         "type": "object",
                         "required": [
                             "author_login",
-                            "body"
+                            "body",
                         ],
                         "properties": {
                             "author_login": {
                                 "type": "string",
-                                "description": "Identity of the reviewer (e.g. 'copilot', 'human:jdoe')"
+                                "description": "Identity of the reviewer (e.g. 'copilot', 'human:jdoe')",
                             },
                             "body": {
                                 "type": "string",
-                                "description": "Comment text."
+                                "description": "Comment text.",
                             },
                             "file": {
                                 "type": [
                                     "string",
-                                    "null"
+                                    "null",
                                 ],
                                 "default": None,
-                                "description": "File path the comment applies to, if applicable."
+                                "description": "File path the comment applies to, if applicable.",
                             },
                             "line": {
                                 "type": [
                                     "integer",
-                                    "null"
+                                    "null",
                                 ],
                                 "default": None,
-                                "description": "Line number the comment applies to, if applicable."
-                            }
-                        }
-                    }
-                }
-            }
+                                "description": "Line number the comment applies to, if applicable.",
+                            },
+                        },
+                    },
+                },
+            },
         },
         "status_payload": {
             "title": "StatusPayload",
@@ -352,11 +352,11 @@ MESSAGE_SCHEMA_PATCH = {
             "properties": {
                 "github_token": {
                     "type": "string",
-                    "description": "Optional fresh GitHub token for the performer to re-authenticate with (App tokens expire)."
-                }
+                    "description": "Optional fresh GitHub token for the performer to re-authenticate with (App tokens expire).",
+                },
             },
             "additionalProperties": False,
-        }
+        },
     },
 }
 
@@ -410,7 +410,7 @@ def generate_contracts(output_dir: Path) -> None:
             if isinstance(branch, dict) and branch.get("type") == "string":
                 branch["format"] = "uri"
     (output_dir / "protocol-response.schema.json").write_text(
-        json.dumps(response_doc, indent=2) + "\n"
+        json.dumps(response_doc, indent=2) + "\n",
     )
     message_schema = ProtocolMessage.model_json_schema()
     # 412 round 15: the message contract's action-specific payload $defs are
@@ -451,5 +451,5 @@ def generate_contracts(output_dir: Path) -> None:
         )
     ]
     (output_dir / "protocol-message.schema.json").write_text(
-        json.dumps(message_schema, indent=2) + "\n"
+        json.dumps(message_schema, indent=2) + "\n",
     )

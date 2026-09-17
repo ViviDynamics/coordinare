@@ -88,7 +88,7 @@ def evaluate_recovery(
         cleared, target = _reason_cleared(r, signals)
         if not cleared:
             return RecoveryDecision(
-                False, "", f"block reason still holds: {r.value}", list(reasons)
+                False, "", f"block reason still holds: {r.value}", list(reasons),
             )
         targets.append(target)
 

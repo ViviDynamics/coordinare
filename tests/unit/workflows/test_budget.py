@@ -71,7 +71,7 @@ async def test_empty_content_with_reasoning_is_promoted_not_called_malformed():
     """Measured: the shim promotes reasoning_content, the direct LiteLLM path
     does not.  The toolkit calls LiteLLM directly, so it must promote."""
     caller, _ = _replies(
-        ModelReply(content="", finish_reason="stop", reasoning_content='{"ok": 1}')
+        ModelReply(content="", finish_reason="stop", reasoning_content='{"ok": 1}'),
     )
     reply = await call_with_budget(caller, Budget(max_tokens=3000), WorkflowMetrics())
     assert reply.content == '{"ok": 1}'

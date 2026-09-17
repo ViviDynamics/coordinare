@@ -32,7 +32,7 @@ class TestDispatchCard:
     @pytest.mark.asyncio
     async def test_dispatch_card_happy_path(self) -> None:
         transport = _MockTransport(
-            response=ProtocolResponse(status="accepted", session_id="s1")
+            response=ProtocolResponse(status="accepted", session_id="s1"),
         )
         service = AgentService(transport)
 
@@ -50,7 +50,7 @@ class TestDispatchCard:
     @pytest.mark.asyncio
     async def test_dispatch_card_sends_fr010_required_fields(self) -> None:
         transport = _MockTransport(
-            response=ProtocolResponse(status="accepted", session_id="s1")
+            response=ProtocolResponse(status="accepted", session_id="s1"),
         )
         service = AgentService(transport)
 
@@ -85,7 +85,7 @@ class TestDispatchCard:
     @pytest.mark.asyncio
     async def test_dispatch_card_with_missing_fields(self) -> None:
         transport = _MockTransport(
-            response=ProtocolResponse(status="accepted", session_id="s1")
+            response=ProtocolResponse(status="accepted", session_id="s1"),
         )
         service = AgentService(transport)
 
@@ -101,7 +101,7 @@ class TestCheckHealth:
     @pytest.mark.asyncio
     async def test_check_health_happy_path(self) -> None:
         transport = _MockTransport(
-            response=ProtocolResponse(status="accepted")
+            response=ProtocolResponse(status="accepted"),
         )
         service = AgentService(transport)
 
@@ -126,7 +126,7 @@ class TestCheckStatus:
     @pytest.mark.asyncio
     async def test_check_status_happy_path(self) -> None:
         transport = _MockTransport(
-            response=ProtocolResponse(status="working", session_id="s1", progress="Building")
+            response=ProtocolResponse(status="working", session_id="s1", progress="Building"),
         )
         service = AgentService(transport)
 
@@ -154,7 +154,7 @@ class TestRelayFeedback:
     @pytest.mark.asyncio
     async def test_relay_feedback_happy_path(self) -> None:
         transport = _MockTransport(
-            response=ProtocolResponse(status="acknowledged", session_id="s1")
+            response=ProtocolResponse(status="acknowledged", session_id="s1"),
         )
         service = AgentService(transport)
 

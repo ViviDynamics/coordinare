@@ -211,7 +211,7 @@ class TestPageEvidence:
                     "chars": 500,
                     "refused": False,
                     "reason": "",
-                }
+                },
             ],
             chars=500,
         )
@@ -287,7 +287,7 @@ class TestDocsRecord:
                     source="brief",
                     justification="Named in brief",
                     exists=False,
-                )
+                ),
             ],
             results=[
                 PageResult(
@@ -302,7 +302,7 @@ class TestDocsRecord:
                     size=1000,
                     dropped=False,
                     drop_reason=None,
-                )
+                ),
             ],
             files_written=["docs/wiki/lib.md"],
             verdict="docs_committed",

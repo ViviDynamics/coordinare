@@ -96,7 +96,7 @@ def _full_snapshot(**overrides: Any) -> dict:
             SimpleNamespace(
                 assignee_filter=base["assignee_filter"],
                 include_unassigned=base["include_unassigned"],
-            )
+            ),
         ),
     )
     return base
@@ -238,7 +238,7 @@ def test_subsystem_health_table_renders(page: Page, live_server_url: str) -> Non
 
 @pytest.mark.e2e
 def test_phase_updates_on_broadcast(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """Scenario 2/7: A broadcast must update the phase label within 5 s."""
     page.goto(live_server_url)
@@ -251,7 +251,7 @@ def test_phase_updates_on_broadcast(
 
 @pytest.mark.e2e
 def test_active_card_details_render(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """Scenario 2: Card title and issue link must appear in active-work panel after broadcast."""
     page.goto(live_server_url)
@@ -263,18 +263,18 @@ def test_active_card_details_render(
             phase="monitoring_agent",
             phase_label="Monitoring Agent",
             active_sessions=[session],
-        )
+        ),
     )
 
     expect(page.locator("#swimlane-section")).to_contain_text("Fix timeout bug", timeout=_WAIT_LIVE)
     expect(page.locator("#swimlane-section a")).to_have_attribute(
-        "href", "https://github.com/org/repo/issues/42", timeout=_WAIT_LIVE
+        "href", "https://github.com/org/repo/issues/42", timeout=_WAIT_LIVE,
     )
 
 
 @pytest.mark.e2e
 def test_open_questions_visible_when_blocked(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """Scenario 3: Questions card must become visible and list questions when blocked."""
     page.goto(live_server_url)
@@ -287,7 +287,7 @@ def test_open_questions_visible_when_blocked(
             active_card_title="Refactor auth",
             active_card_column="Blocked",
             open_questions=["Should we use OAuth2 or API keys?"],
-        )
+        ),
     )
 
     expect(page.locator("#questions-card")).to_be_visible(timeout=_WAIT_LIVE)
@@ -296,7 +296,7 @@ def test_open_questions_visible_when_blocked(
 
 @pytest.mark.e2e
 def test_open_questions_hidden_when_not_blocked(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """Questions card must be hidden when there are no open questions."""
     page.goto(live_server_url)
@@ -310,7 +310,7 @@ def test_open_questions_hidden_when_not_blocked(
 
 @pytest.mark.e2e
 def test_cycle_history_table_renders(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """Scenario 5: History table must show success and error entries after broadcast."""
     page.goto(live_server_url)
@@ -324,7 +324,7 @@ def test_cycle_history_table_renders(
                 {"timestamp": "2026-03-02T10:05:00+00:00", "phase": "idle", "duration_seconds": 0.45, "outcome": "success"},
                 {"timestamp": "2026-03-02T10:04:30+00:00", "phase": "idle", "duration_seconds": 0.0, "outcome": "error"},
             ],
-        )
+        ),
     )
 
     expect(page.locator("#history-section table")).to_be_visible(timeout=_WAIT_LIVE)
@@ -334,14 +334,14 @@ def test_cycle_history_table_renders(
 
 @pytest.mark.e2e
 def test_metrics_bar_updates(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """Metrics bar values must update when a broadcast arrives."""
     page.goto(live_server_url)
     expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
 
     store.broadcaster.broadcast(
-        _full_snapshot(cycles_completed=42, last_cycle_duration_seconds=1.23, consecutive_error_count=2)
+        _full_snapshot(cycles_completed=42, last_cycle_duration_seconds=1.23, consecutive_error_count=2),
     )
 
     expect(page.locator("#cycles-completed")).to_have_text("42", timeout=_WAIT_LIVE)
@@ -363,7 +363,7 @@ def test_force_poll_button_present(page: Page, live_server_url: str) -> None:
 
 @pytest.mark.e2e
 def test_force_poll_button_enabled_when_idle(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """Button must be enabled after SSE delivers cycle_active=False, daemon_running=True."""
     page.goto(live_server_url)
@@ -374,7 +374,7 @@ def test_force_poll_button_enabled_when_idle(
 
 @pytest.mark.e2e
 def test_force_poll_button_disabled_when_cycle_active(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """Button must be disabled after SSE delivers cycle_active=True."""
     page.goto(live_server_url)
@@ -385,7 +385,7 @@ def test_force_poll_button_disabled_when_cycle_active(
 
 @pytest.mark.e2e
 def test_force_poll_button_disabled_when_daemon_stopped(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """Button must be disabled when daemon_running=False even if cycle is not active."""
     page.goto(live_server_url)
@@ -396,7 +396,7 @@ def test_force_poll_button_disabled_when_daemon_stopped(
 
 @pytest.mark.e2e
 def test_force_poll_button_re_enables_after_cycle(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """Button must re-enable once cycle_active returns to False."""
     page.goto(live_server_url)
@@ -496,7 +496,7 @@ def test_navigate_to_history_shows_live_empty_state(page: Page, live_server_url:
 
 @pytest.mark.e2e
 def test_history_page_renders_cycle_rows_from_sse(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """053: /history must render cycle rows and live-update from SSE."""
     page.goto(f"{live_server_url}/history")
@@ -508,8 +508,8 @@ def test_history_page_renders_cycle_rows_from_sse(
             cycle_history=[
                 {"timestamp": "2026-03-02T10:05:00+00:00", "phase": "monitoring_pr", "duration_seconds": 0.45, "outcome": "success"},
                 {"timestamp": "2026-03-02T10:04:30+00:00", "phase": "recovery", "duration_seconds": 0.0, "outcome": "error"},
-            ]
-        )
+            ],
+        ),
     )
 
     expect(page.locator("#history-page-section table")).to_be_visible(timeout=_WAIT_LIVE)
@@ -552,7 +552,7 @@ def test_direct_navigate_to_personas_route(page: Page, live_server_url: str) -> 
 
 @pytest.mark.e2e
 def test_sse_stays_connected_across_navigation(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """SSE EventSource must stay connected when navigating between pages."""
     page.goto(live_server_url)
@@ -578,7 +578,7 @@ def test_sse_stays_connected_across_navigation(
 
 @pytest.mark.e2e
 def test_active_performer_tiles_show_on_home(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """Active performer tiles must appear on the main dashboard when sessions are active."""
     page.goto(live_server_url)
@@ -592,7 +592,7 @@ def test_active_performer_tiles_show_on_home(
             active_sessions=[
                 _active_session("PVTI_1", "Fix the auth bug", "implementing"),
             ],
-        )
+        ),
     )
 
     expect(page.locator("#active-performers")).to_be_visible(timeout=_WAIT_LIVE)
@@ -602,7 +602,7 @@ def test_active_performer_tiles_show_on_home(
 
 @pytest.mark.e2e
 def test_idle_state_shows_no_active_performers_message(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """When no sessions are active, the active-performers section shows an idle message."""
     page.goto(live_server_url)
@@ -614,11 +614,11 @@ def test_idle_state_shows_no_active_performers_message(
             cycles_completed=5,
             board_summary={"TODO": 3, "IN_PROGRESS": 1, "IN_REVIEW": 2, "DONE": 4, "BLOCKED": 0, "BACKLOG": 0},
             last_poll_at="2026-04-22T22:40:00+00:00",
-        )
+        ),
     )
 
     expect(page.locator("#active-performer-tiles")).to_contain_text(
-        "No active performers", timeout=_WAIT_LIVE
+        "No active performers", timeout=_WAIT_LIVE,
     )
     expect(page.locator("#active-performer-tiles")).to_contain_text("TODO 3", timeout=_WAIT_LIVE)
     expect(page.locator("#active-performer-tiles")).to_contain_text("IN_PROGRESS 1", timeout=_WAIT_LIVE)
@@ -627,31 +627,31 @@ def test_idle_state_shows_no_active_performers_message(
 
 @pytest.mark.e2e
 def test_idle_state_shows_assignee_filter_hint(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """050: when assignee_filter is set, idle tile shows 'Filter: <login>'."""
     page.goto(live_server_url)
     expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
 
     store.broadcaster.broadcast(
-        _full_snapshot(active_sessions=[], assignee_filter="coordinare-bot")
+        _full_snapshot(active_sessions=[], assignee_filter="coordinare-bot"),
     )
 
     expect(page.locator("#active-performer-tiles")).to_contain_text(
-        "Filter: coordinare-bot", timeout=_WAIT_LIVE
+        "Filter: coordinare-bot", timeout=_WAIT_LIVE,
     )
 
 
 @pytest.mark.e2e
 def test_idle_state_no_filter_hint_when_unset(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """050: when assignee_filter is None, idle tile does not show a filter hint."""
     page.goto(live_server_url)
     expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
 
     store.broadcaster.broadcast(
-        _full_snapshot(active_sessions=[], assignee_filter=None)
+        _full_snapshot(active_sessions=[], assignee_filter=None),
     )
 
     tiles = page.locator("#active-performer-tiles")
@@ -661,7 +661,7 @@ def test_idle_state_no_filter_hint_when_unset(
 
 @pytest.mark.e2e
 def test_active_work_row_click_opens_detail_and_back_returns_list(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """059: clicking an Active Work table row opens the card detail view; back button restores the list."""
     page.goto(live_server_url)
@@ -673,7 +673,7 @@ def test_active_work_row_click_opens_detail_and_back_returns_list(
             phase_label="Monitoring Performer",
             agent_dispatch_at="2026-04-20T10:00:00+00:00",
             active_sessions=[_active_session("PVTI_1", "Fix the auth bug", "implementing")],
-        )
+        ),
     )
 
     row = page.locator("#swimlane-section .swimlane-card[data-card-id='PVTI_1']")
@@ -691,7 +691,7 @@ def test_active_work_row_click_opens_detail_and_back_returns_list(
 
 @pytest.mark.e2e
 def test_active_work_row_keyboard_opens_detail(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """059: Enter key on a focused Active Work row must open the card detail view."""
     page.goto(live_server_url)
@@ -703,7 +703,7 @@ def test_active_work_row_keyboard_opens_detail(
             phase_label="Monitoring Performer",
             agent_dispatch_at="2026-04-20T10:00:00+00:00",
             active_sessions=[_active_session("PVTI_2", "Add keyboard nav", "implementing")],
-        )
+        ),
     )
 
     row = page.locator("#swimlane-section .swimlane-card[data-card-id='PVTI_2']")
@@ -727,7 +727,7 @@ def test_workflow_diagram_visible_without_expand_toggle(page: Page, live_server_
 
 @pytest.mark.e2e
 def test_desktop_layout_active_performers_is_single_column(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """053: Active Performers card should be a single-column grid item (not full-width)."""
     page.set_viewport_size({"width": 1200, "height": 900})
@@ -739,7 +739,7 @@ def test_desktop_layout_active_performers_is_single_column(
             phase="monitoring_performer",
             phase_label="Monitoring Performer",
             active_sessions=[_active_session("PVTI_1", "Fix layout", "implementing")],
-        )
+        ),
     )
 
     expect(page.locator("#active-performers")).to_be_visible(timeout=_WAIT_LIVE)
@@ -750,7 +750,7 @@ def test_desktop_layout_active_performers_is_single_column(
           const ap = apCard.getBoundingClientRect();
           const ph = phaseCard.getBoundingClientRect();
           return {apWidth: ap.width, phWidth: ph.width, viewportWidth: window.innerWidth};
-        }"""
+        }""",
     )
     assert layout["apWidth"] < layout["viewportWidth"] * 0.75
     assert abs(layout["apWidth"] - layout["phWidth"]) < 120
@@ -758,7 +758,7 @@ def test_desktop_layout_active_performers_is_single_column(
 
 @pytest.mark.e2e
 def test_desktop_layout_clarifications_and_recent_cycles_are_single_column(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """053: Clarification History and Recent Cycles should be single-column grid cards."""
     page.set_viewport_size({"width": 1200, "height": 900})
@@ -774,9 +774,9 @@ def test_desktop_layout_clarifications_and_recent_cycles_are_single_column(
                     "phase": "monitoring_performer",
                     "duration_seconds": 12.3,
                     "outcome": "success",
-                }
+                },
             ],
-        )
+        ),
     )
 
     expect(page.locator("#clarifications-card")).to_be_visible(timeout=_WAIT_LIVE)
@@ -795,7 +795,7 @@ def test_desktop_layout_clarifications_and_recent_cycles_are_single_column(
             mtWidth: mt.width,
             viewportWidth: window.innerWidth,
           };
-        }"""
+        }""",
     )
     assert layout["clWidth"] < layout["viewportWidth"] * 0.75
     assert layout["hsWidth"] < layout["viewportWidth"] * 0.75
@@ -810,7 +810,7 @@ def test_desktop_layout_clarifications_and_recent_cycles_are_single_column(
 
 @pytest.mark.e2e
 def test_performers_page_shows_role_table(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """The /performers page must show a table with role utilization data."""
     page.goto(live_server_url)
@@ -823,7 +823,7 @@ def test_performers_page_shows_role_table(
                 {"role": "reviewing", "active": 0, "max": 1, "queued": 0},
             ],
             active_sessions=[_active_session("PVTI_1", "Fix bug", "implementing")],
-        )
+        ),
     )
 
     page.locator("#navbar a[href='/performers']").click()
@@ -834,7 +834,7 @@ def test_performers_page_shows_role_table(
 
 @pytest.mark.e2e
 def test_performers_page_shows_active_badge(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """An active role must show the 'active' badge on the performers page."""
     page.goto(live_server_url)
@@ -844,7 +844,7 @@ def test_performers_page_shows_active_badge(
         _full_snapshot(
             role_utilization=[{"role": "implementing", "active": 1, "max": 1, "queued": 0}],
             active_sessions=[_active_session("PVTI_1", "Big feature", "implementing")],
-        )
+        ),
     )
 
     page.locator("#navbar a[href='/performers']").click()
@@ -853,7 +853,7 @@ def test_performers_page_shows_active_badge(
 
 @pytest.mark.e2e
 def test_performers_page_row_click_opens_detail_and_back_restores_list(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """053: clicking a performers row opens detail view; back returns to list."""
     page.goto(f"{live_server_url}/performers")
@@ -874,7 +874,7 @@ def test_performers_page_row_click_opens_detail_and_back_restores_list(
             agent_session_id="sess-xyz",
             agent_dispatch_at="2026-04-22T22:40:00+00:00",
             session_stats={"title": "Big feature", "files_changed": 2, "lines_added": 20, "lines_removed": 5},
-        )
+        ),
     )
 
     row = page.locator("#performers-page-tbody tr[data-role='implementing']")
@@ -890,7 +890,7 @@ def test_performers_page_row_click_opens_detail_and_back_restores_list(
 
 @pytest.mark.e2e
 def test_performers_page_keyboard_drilldown_stays_open_during_sse_updates(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """053: Enter/Space should open detail, and SSE updates should not collapse it."""
     page.goto(f"{live_server_url}/performers")
@@ -903,9 +903,9 @@ def test_performers_page_keyboard_drilldown_stays_open_during_sse_updates(
                 _active_session(
                     "PVTI_1", "Keyboard flow", "implementing",
                     performer_events=[{"type": "progress", "text": "Initial"}],
-                )
+                ),
             ],
-        )
+        ),
     )
     row = page.locator("#performers-page-tbody tr[data-role='implementing']")
     expect(row).to_be_visible(timeout=_WAIT_LIVE)
@@ -920,9 +920,9 @@ def test_performers_page_keyboard_drilldown_stays_open_during_sse_updates(
                 _active_session(
                     "PVTI_1", "Keyboard flow", "implementing",
                     performer_events=[{"type": "progress", "text": "Updated"}],
-                )
+                ),
             ],
-        )
+        ),
     )
     expect(page.locator("#performers-page-detail-view")).to_be_visible(timeout=_WAIT_LIVE)
     expect(page.locator("#performers-page-detail")).to_contain_text("Updated", timeout=_WAIT_LIVE)
@@ -935,7 +935,7 @@ def test_performers_page_keyboard_drilldown_stays_open_during_sse_updates(
 
 @pytest.mark.e2e
 def test_performer_detail_shows_only_the_selected_roles_telemetry(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """348: two live roles must not show each other's events.
 
@@ -961,7 +961,7 @@ def test_performer_detail_shows_only_the_selected_roles_telemetry(
                     performer_events=[{"type": "text", "text": "ARCHITECT-EVENT"}],
                 ),
             ],
-        )
+        ),
     )
 
     impl_row = page.locator("#performers-page-tbody tr[data-role='implementing']")
@@ -979,7 +979,7 @@ def test_performer_detail_shows_only_the_selected_roles_telemetry(
 
 @pytest.mark.e2e
 def test_performer_detail_shows_the_workflow_step_trail(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """343: completed steps, the current one marked, and an elapsed timer."""
     page.goto(f"{live_server_url}/performers")
@@ -998,9 +998,9 @@ def test_performer_detail_shows_the_workflow_step_trail(
                         {"step": "implementer.plan", "entered_at": "2026-09-11T01:12:00+00:00"},
                         {"step": "implementer.baseline", "entered_at": "2026-09-11T01:16:39+00:00"},
                     ],
-                )
+                ),
             ],
-        )
+        ),
     )
     row = page.locator("#performers-page-tbody tr[data-role='implementing']")
     expect(row).to_be_visible(timeout=_WAIT_LIVE)
@@ -1018,7 +1018,7 @@ def test_performer_detail_shows_the_workflow_step_trail(
 
 @pytest.mark.e2e
 def test_a_performer_with_no_workflow_step_renders_no_trail(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """The pre-164 freeform path emits no step markers; absence is the signal."""
     page.goto(f"{live_server_url}/performers")
@@ -1028,7 +1028,7 @@ def test_a_performer_with_no_workflow_step_renders_no_trail(
         _full_snapshot(
             role_utilization=[{"role": "implementing", "active": 1, "max": 1, "queued": 0}],
             active_sessions=[_active_session("PVTI_1", "Freeform card", "implementing")],
-        )
+        ),
     )
     row = page.locator("#performers-page-tbody tr[data-role='implementing']")
     expect(row).to_be_visible(timeout=_WAIT_LIVE)
@@ -1067,7 +1067,7 @@ def test_personas_page_loads_editor(page: Page, live_server_url: str) -> None:
     expect(page.locator("#personas-page")).to_be_visible(timeout=_WAIT_NAV)
     expect(page.locator("#personas-page-section")).to_contain_text("implementer", timeout=2000)
     expect(page.locator("#personas-page-section textarea")).to_contain_text(
-        "Write tests first.", timeout=2000
+        "Write tests first.", timeout=2000,
     )
 
 
@@ -1092,7 +1092,7 @@ def test_symphonies_page_empty_state(page: Page, live_server_url: str, store: Da
     page.goto(f"{live_server_url}/symphonies")
     expect(page.locator("#symphonies-page")).to_be_visible(timeout=_WAIT_NAV)
     expect(page.locator("#symphonies-page-section")).to_contain_text(
-        "No symphonies configured", timeout=_WAIT_LIVE
+        "No symphonies configured", timeout=_WAIT_LIVE,
     )
 
 
@@ -1108,8 +1108,8 @@ def test_symphonies_page_shows_list(page: Page, live_server_url: str, store: Das
             symphonies=[
                 {"name": "frontend", "source_project": 42, "enabled": True},
                 {"name": "backend", "source_project": 43, "enabled": False},
-            ]
-        )
+            ],
+        ),
     )
     expect(page.locator("#symphonies-page-section")).to_contain_text("frontend", timeout=_WAIT_LIVE)
     expect(page.locator("#symphonies-page-section")).to_contain_text("backend", timeout=_WAIT_LIVE)
@@ -1128,15 +1128,15 @@ def test_symphonies_page_add_form_toggle(page: Page, live_server_url: str, store
 
 @pytest.mark.e2e
 def test_symphonies_page_click_symphony_opens_detail(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """Clicking a symphony in the list opens its detail page."""
     page.goto(f"{live_server_url}/symphonies")
     expect(page.locator("#symphonies-page")).to_be_visible(timeout=_WAIT_NAV)
     store.broadcaster.broadcast(
         _full_snapshot(
-            symphonies=[{"name": "test-symphony", "source_project": 42, "enabled": True}]
-        )
+            symphonies=[{"name": "test-symphony", "source_project": 42, "enabled": True}],
+        ),
     )
     expect(page.locator("#symphonies-page-section")).to_contain_text("test-symphony", timeout=_WAIT_LIVE)
     # Click symphony name link
@@ -1146,7 +1146,7 @@ def test_symphonies_page_click_symphony_opens_detail(
 
 @pytest.mark.e2e
 def test_symphonies_page_shows_env_bootstrap_button(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """060: a symphony with env_bootstrap_performer_id renders a per-row Bootstrap
     button on the list page; one without renders an em-dash placeholder."""
@@ -1167,8 +1167,8 @@ def test_symphonies_page_shows_env_bootstrap_button(
                     "enabled": True,
                     "env_bootstrap_performer_id": None,
                 },
-            ]
-        )
+            ],
+        ),
     )
     expect(page.locator("#symphonies-page-section")).to_contain_text("with-bootstrap", timeout=_WAIT_LIVE)
     expect(page.locator('button.sym-row-bootstrap[data-sym="with-bootstrap"]')).to_be_visible()
@@ -1177,7 +1177,7 @@ def test_symphonies_page_shows_env_bootstrap_button(
 
 @pytest.mark.e2e
 def test_symphonies_page_bootstrap_503_shows_performer_id_error(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """062 Fix 1: when the bootstrap performer isn't registered, the dashboard
     must surface the daemon's 503 error string (which names the missing
@@ -1206,11 +1206,11 @@ def test_symphonies_page_bootstrap_503_shows_performer_id_error(
                     "enabled": True,
                     "env_bootstrap_performer_id": "codex-ephemeral",
                 },
-            ]
-        )
+            ],
+        ),
     )
     expect(page.locator("#symphonies-page-section")).to_contain_text(
-        "with-bootstrap", timeout=_WAIT_LIVE
+        "with-bootstrap", timeout=_WAIT_LIVE,
     )
     page.locator('button.sym-row-bootstrap[data-sym="with-bootstrap"]').click()
     msg = page.locator("#sym-list-msg")
@@ -1287,7 +1287,7 @@ def test_personas_page_reset_button_exists(page: Page, live_server_url: str) -> 
 
 @pytest.mark.e2e
 def test_awaiting_review_card_hidden_when_phase_is_idle(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """Awaiting review card is hidden when phase is idle."""
     store.broadcaster.broadcast(_full_snapshot(phase="idle", phase_label="Idle"))
@@ -1298,7 +1298,7 @@ def test_awaiting_review_card_hidden_when_phase_is_idle(
 
 @pytest.mark.e2e
 def test_awaiting_review_card_appears_when_in_review_phase(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """Awaiting review card appears when cycle is in review phase."""
     page.goto(live_server_url)
@@ -1309,7 +1309,7 @@ def test_awaiting_review_card_appears_when_in_review_phase(
             phase_label="Awaiting Review",
             active_card_title="Fix the bug",
             active_card_column="IN_REVIEW",
-        )
+        ),
     )
     expect(page.locator("#phase")).to_have_text("Awaiting Review", timeout=_WAIT_LIVE)
 
@@ -1371,17 +1371,17 @@ def test_idle_panel_shows_when_idle(page: Page, live_server_url: str, store: Das
 
 @pytest.mark.e2e
 def test_assignee_filter_hint_shows_when_set(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """Idle panel displays assignee filter hint when filter is set."""
     page.goto(live_server_url)
     expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
     store.broadcaster.broadcast(
-        _full_snapshot(phase="idle", phase_label="Idle", assignee_filter="@alice")
+        _full_snapshot(phase="idle", phase_label="Idle", assignee_filter="@alice"),
     )
     expect(page.locator("#idle-panel")).to_be_visible()
     expect(page.locator("#idle-panel-content")).to_contain_text(
-        "filter", timeout=_WAIT_LIVE
+        "filter", timeout=_WAIT_LIVE,
     )
 
 
@@ -1392,7 +1392,7 @@ def test_assignee_filter_hint_shows_when_set(
 
 @pytest.mark.e2e
 def test_cycle_history_shows_cycles(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """Cycle history section displays completed cycles with durations."""
     page.goto(live_server_url)
@@ -1415,7 +1415,7 @@ def test_cycle_history_shows_cycles(
                     "completed_at": "2026-03-02T10:29:00+00:00",
                 },
             ],
-        )
+        ),
     )
     expect(page.locator("#cycles-completed")).to_contain_text("2", timeout=_WAIT_LIVE)
     expect(page.locator("#history-section")).to_contain_text("Merging", timeout=_WAIT_LIVE)
@@ -1424,7 +1424,7 @@ def test_cycle_history_shows_cycles(
 
 @pytest.mark.e2e
 def test_history_page_shows_cycle_list(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """History page displays full list of cycles."""
     page.goto(f"{live_server_url}/history")
@@ -1441,7 +1441,7 @@ def test_history_page_shows_cycle_list(
                     "completed_at": "2026-03-02T10:31:00+00:00",
                 },
             ],
-        )
+        ),
     )
     expect(page.locator("#history-page-section")).to_be_visible(timeout=_WAIT_LIVE)
     expect(page.locator("#history-page-section")).to_contain_text("Idle", timeout=_WAIT_LIVE)
@@ -1455,7 +1455,7 @@ def test_history_page_shows_cycle_list(
 
 @pytest.mark.e2e
 def test_clarifications_card_appears_with_data(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """Clarifications card appears when clarifications exist."""
     page.goto(live_server_url)
@@ -1468,18 +1468,18 @@ def test_clarifications_card_appears_with_data(
             card_clarifications=[
                 {"questions": ["What is the expected behavior?"], "answer": "Expected: returns list"},
                 {"questions": ["Should we handle edge cases?"], "answer": "Yes, all cases"},
-            ]
-        )
+            ],
+        ),
     )
     expect(page.locator("#clarifications-card")).to_be_visible(timeout=_WAIT_LIVE)
     expect(page.locator("#clarifications-list")).to_contain_text(
-        "What is the expected behavior?", timeout=_WAIT_LIVE
+        "What is the expected behavior?", timeout=_WAIT_LIVE,
     )
 
 
 @pytest.mark.e2e
 def test_clarifications_card_hidden_when_empty(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """Clarifications card is hidden when list is empty."""
     page.goto(live_server_url)
@@ -1494,7 +1494,7 @@ def test_clarifications_card_hidden_when_empty(
 
 @pytest.mark.e2e
 def test_questions_card_shows_questions(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """Questions card displays open questions when phase is blocked."""
     page.goto(live_server_url)
@@ -1505,17 +1505,17 @@ def test_questions_card_shows_questions(
             phase="blocked",
             phase_label="Blocked",
             open_questions=["How should we handle this edge case?", "Do we need migration?"],
-        )
+        ),
     )
     expect(page.locator("#questions-card")).to_be_visible(timeout=_WAIT_LIVE)
     expect(page.locator("#questions-list")).to_contain_text(
-        "How should we handle", timeout=_WAIT_LIVE
+        "How should we handle", timeout=_WAIT_LIVE,
     )
 
 
 @pytest.mark.e2e
 def test_questions_card_hidden_when_not_blocked(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """Questions card is hidden when phase is not blocked."""
     page.goto(live_server_url)
@@ -1530,7 +1530,7 @@ def test_questions_card_hidden_when_not_blocked(
 
 @pytest.mark.e2e
 def test_workflow_diagram_renders_mermaid_graph(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """Workflow diagram section renders when performer stage is set."""
     page.goto(live_server_url)
@@ -1545,7 +1545,7 @@ def test_workflow_diagram_renders_mermaid_graph(
 
 @pytest.mark.e2e
 def test_subsystems_table_shows_health_status(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """Subsystems table displays health status badges."""
     page.goto(live_server_url)
@@ -1555,8 +1555,8 @@ def test_subsystems_table_shows_health_status(
             subsystems=[
                 {"name": "github", "status": "healthy", "required": True, "checked_at": "2026-03-02T10:00:00+00:00"},
                 {"name": "slack", "status": "degraded", "required": False, "checked_at": "2026-03-02T10:00:00+00:00"},
-            ]
-        )
+            ],
+        ),
     )
     expect(page.locator("#subsystems-section")).to_be_visible(timeout=_WAIT_LIVE)
     # Check for health badges via section text (badges may be in collapsed rows)
@@ -1566,7 +1566,7 @@ def test_subsystems_table_shows_health_status(
 
 @pytest.mark.e2e
 def test_subsystem_unavailable_status_renders(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """Unavailable subsystem status displays correctly."""
     page.goto(live_server_url)
@@ -1575,8 +1575,8 @@ def test_subsystem_unavailable_status_renders(
         _full_snapshot(
             subsystems=[
                 {"name": "database", "status": "unavailable", "required": True, "checked_at": "2026-03-02T10:00:00+00:00"},
-            ]
-        )
+            ],
+        ),
     )
     expect(page.locator("#subsystems-section")).to_be_visible(timeout=_WAIT_LIVE)
     expect(page.locator("#subsystems-section")).to_contain_text("unavailable", timeout=_WAIT_LIVE)
@@ -1589,7 +1589,7 @@ def test_subsystem_unavailable_status_renders(
 
 @pytest.mark.e2e
 def test_active_card_title_and_link_visible(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """Active card section shows title and PR link."""
     page.goto(live_server_url)
@@ -1601,7 +1601,7 @@ def test_active_card_title_and_link_visible(
             active_sessions=[
                 _active_session("PVTI_99", "Implement dark mode", "implementing"),
             ],
-        )
+        ),
     )
     expect(page.locator("#active-work-card")).to_be_visible(timeout=_WAIT_LIVE)
     expect(page.locator("#active-work-card")).to_contain_text("Implement dark mode", timeout=_WAIT_LIVE)
@@ -1609,7 +1609,7 @@ def test_active_card_title_and_link_visible(
 
 @pytest.mark.e2e
 def test_card_tokens_and_cost_display(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """Card token count and cost estimate display correctly."""
     page.goto(live_server_url)
@@ -1618,7 +1618,7 @@ def test_card_tokens_and_cost_display(
         _full_snapshot(
             card_tokens_total=42,
             card_cost_estimate=0.15,
-        )
+        ),
     )
     expect(page.locator("#card-tokens-total")).to_contain_text("42", timeout=_WAIT_LIVE)
     expect(page.locator("#card-cost-estimate")).to_contain_text("0.15", timeout=_WAIT_LIVE)
@@ -1631,7 +1631,7 @@ def test_card_tokens_and_cost_display(
 
 @pytest.mark.e2e
 def test_error_count_displays(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """Consecutive error count displays in metrics."""
     page.goto(live_server_url)
@@ -1642,7 +1642,7 @@ def test_error_count_displays(
 
 @pytest.mark.e2e
 def test_last_cycle_duration_displays(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """Last cycle duration displays in metrics."""
     page.goto(live_server_url)
@@ -1658,7 +1658,7 @@ def test_last_cycle_duration_displays(
 
 @pytest.mark.e2e
 def test_phase_label_color_idle(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """Idle phase has muted color."""
     page.goto(live_server_url)
@@ -1669,13 +1669,13 @@ def test_phase_label_color_idle(
 
 @pytest.mark.e2e
 def test_phase_label_color_dispatching(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """Dispatching phase has blue color."""
     page.goto(live_server_url)
     expect(page.locator("#phase")).to_have_text("Idle", timeout=_WAIT_SSE)
     store.broadcaster.broadcast(
-        _full_snapshot(phase="dispatching_agent", phase_label="Dispatching Agent")
+        _full_snapshot(phase="dispatching_agent", phase_label="Dispatching Agent"),
     )
     expect(page.locator("#phase")).to_have_text("Dispatching Agent", timeout=_WAIT_LIVE)
     expect(page.locator("#phase")).to_have_class(re.compile(r"phase-monitoring"))
@@ -1688,11 +1688,11 @@ def test_phase_label_color_dispatching(
 
 @pytest.mark.e2e
 def test_daemon_start_time_displays(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """Daemon start time displays in footer."""
     store.broadcaster.broadcast(
-        _full_snapshot(daemon_start_time="2026-03-02T09:30:00+00:00")
+        _full_snapshot(daemon_start_time="2026-03-02T09:30:00+00:00"),
     )
     page.goto(live_server_url)
     start_time = page.locator("#daemon-start-time")
@@ -1701,14 +1701,14 @@ def test_daemon_start_time_displays(
 
 @pytest.mark.e2e
 def test_project_name_and_url_display(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """Project name and board URL display in header."""
     store.broadcaster.broadcast(
         _full_snapshot(
             project_name="coordinare",
             project_board_url="https://github.com/orgs/test/projects/1",
-        )
+        ),
     )
     page.goto(live_server_url)
     # Project info should be visible
@@ -1722,7 +1722,7 @@ def test_project_name_and_url_display(
 
 @pytest.mark.e2e
 def test_board_summary_displays_column_counts(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """Board summary section shows column counts in the idle panel."""
     page.goto(live_server_url)
@@ -1738,7 +1738,7 @@ def test_board_summary_displays_column_counts(
                 "BLOCKED": 1,
                 "BACKLOG": 8,
             },
-        )
+        ),
     )
     # Idle panel shows board total (5+3+2+10=20), in-progress (3), and cycles today (7)
     expect(page.locator("#idle-panel-content")).to_contain_text("20", timeout=_WAIT_LIVE)
@@ -1753,7 +1753,7 @@ def test_board_summary_displays_column_counts(
 
 @pytest.mark.e2e
 def test_agent_session_info_hidden_when_none(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """Agent session info is hidden when session is idle."""
     store.broadcaster.broadcast(_full_snapshot(agent_session_id=None))
@@ -1763,7 +1763,7 @@ def test_agent_session_info_hidden_when_none(
 
 @pytest.mark.e2e
 def test_agent_session_info_visible_when_active(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """Agent session info displays when agent is running."""
     page.goto(live_server_url)
@@ -1773,7 +1773,7 @@ def test_agent_session_info_visible_when_active(
         _full_snapshot(
             agent_session_id="sess-abc123",
             agent_dispatch_at="2026-03-02T10:00:00+00:00",
-        )
+        ),
     )
     expect(page.locator("#agent-session")).to_be_visible(timeout=_WAIT_LIVE)
     expect(page.locator("#agent-session-id")).to_contain_text("sess-abc123", timeout=_WAIT_LIVE)
@@ -1786,7 +1786,7 @@ def test_agent_session_info_visible_when_active(
 
 @pytest.mark.e2e
 def test_active_work_row_shows_cost(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """059: Active Work row renders cost when agent_dispatch_at is set, '—' when null."""
     from datetime import UTC, datetime, timedelta
@@ -1805,7 +1805,7 @@ def test_active_work_row_shows_cost(
             phase="monitoring_performer",
             phase_label="Monitoring Performer",
             active_sessions=[session],
-        )
+        ),
     )
 
     row = page.locator("#swimlane-section .swimlane-card[data-card-id='PVTI_cost']")
@@ -1819,7 +1819,7 @@ def test_active_work_row_shows_cost(
             phase="monitoring_performer",
             phase_label="Monitoring Performer",
             active_sessions=[session_no_dispatch],
-        )
+        ),
     )
     row2 = page.locator("#swimlane-section .swimlane-card[data-card-id='PVTI_nodispatch']")
     expect(row2).to_be_visible(timeout=_WAIT_LIVE)
@@ -1828,7 +1828,7 @@ def test_active_work_row_shows_cost(
 
 @pytest.mark.e2e
 def test_active_work_row_stale_session_shows_warning(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """059: Active Work row shows ⚠ warning when session elapsed > 30 minutes."""
     from datetime import UTC, datetime, timedelta
@@ -1847,7 +1847,7 @@ def test_active_work_row_stale_session_shows_warning(
             phase="monitoring_performer",
             phase_label="Monitoring Performer",
             active_sessions=[session],
-        )
+        ),
     )
 
     row = page.locator("#swimlane-section .swimlane-card[data-card-id='PVTI_stale']")
@@ -1858,7 +1858,7 @@ def test_active_work_row_stale_session_shows_warning(
 
 @pytest.mark.e2e
 def test_card_detail_auto_closes_when_session_ends(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """059: Card detail view auto-closes if the selected session disappears from active_sessions."""
     from datetime import UTC, datetime, timedelta
@@ -1876,7 +1876,7 @@ def test_card_detail_auto_closes_when_session_ends(
             phase="monitoring_performer",
             phase_label="Monitoring Performer",
             active_sessions=[session],
-        )
+        ),
     )
 
     row = page.locator("#swimlane-section .swimlane-card[data-card-id='PVTI_ending']")
@@ -1893,7 +1893,7 @@ def test_card_detail_auto_closes_when_session_ends(
 
 @pytest.mark.e2e
 def test_idle_panel_shows_cycles_completed_label(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """Idle panel shows 'Cycles completed' (not 'Cycles today') and the correct count."""
     page.goto(live_server_url)
@@ -1906,7 +1906,7 @@ def test_idle_panel_shows_cycles_completed_label(
 
 @pytest.mark.e2e
 def test_idle_panel_hides_when_session_becomes_active(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """Idle panel disappears once a session becomes active."""
     page.goto(live_server_url)
@@ -1916,7 +1916,7 @@ def test_idle_panel_hides_when_session_becomes_active(
             phase="monitoring_performer",
             phase_label="Monitoring Performer",
             active_sessions=[_active_session("PVTI_1", "Fix the bug")],
-        )
+        ),
     )
     expect(page.locator("#idle-panel")).to_be_hidden(timeout=_WAIT_LIVE)
 
@@ -1928,7 +1928,7 @@ def test_idle_panel_hides_when_session_becomes_active(
 
 @pytest.mark.e2e
 def test_subsystem_details_closed_when_healthy(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """Healthy subsystem rows render as collapsed <details> (no open attribute)."""
     page.goto(live_server_url)
@@ -1937,8 +1937,8 @@ def test_subsystem_details_closed_when_healthy(
         _full_snapshot(
             subsystems=[
                 {"name": "github", "status": "healthy", "required": True, "checked_at": "2026-03-02T10:00:00+00:00"},
-            ]
-        )
+            ],
+        ),
     )
     expect(page.locator("#subsystems-section")).to_be_visible(timeout=_WAIT_LIVE)
     # Healthy subsystem: <details> must not have the open attribute
@@ -1948,7 +1948,7 @@ def test_subsystem_details_closed_when_healthy(
 
 @pytest.mark.e2e
 def test_subsystem_details_open_when_degraded(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """Degraded subsystem rows auto-expand (<details open>) so the error is visible."""
     page.goto(live_server_url)
@@ -1957,8 +1957,8 @@ def test_subsystem_details_open_when_degraded(
         _full_snapshot(
             subsystems=[
                 {"name": "github", "status": "degraded", "required": True, "checked_at": "2026-03-02T10:00:00+00:00"},
-            ]
-        )
+            ],
+        ),
     )
     expect(page.locator("#subsystems-section")).to_be_visible(timeout=_WAIT_LIVE)
     details = page.locator("#subsystems-section details").first
@@ -2033,7 +2033,7 @@ def test_no_horizontal_scrollbar_at_768px_history(page: Page, live_server_url: s
 
 @pytest.mark.e2e
 def test_active_performers_updates_when_one_card_kicked_back_to_todo(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """065 US1 repro: with two cards in flight, if one is kicked back to TODO
     (removed from active_sessions) and the other advances stage, the panel
@@ -2052,7 +2052,7 @@ def test_active_performers_updates_when_one_card_kicked_back_to_todo(
                 _active_session("PVTI_A", "Fix the auth bug", "implementing"),
                 _active_session("PVTI_B", "Add keyboard nav", "architecting"),
             ],
-        )
+        ),
     )
     tiles = page.locator("#active-performer-tiles")
     expect(tiles).to_contain_text("Fix the auth bug", timeout=_WAIT_LIVE)
@@ -2067,7 +2067,7 @@ def test_active_performers_updates_when_one_card_kicked_back_to_todo(
             active_sessions=[
                 _active_session("PVTI_B", "Add keyboard nav", "reviewing"),
             ],
-        )
+        ),
     )
 
     # Surviving session must render with its new stage.
@@ -2081,7 +2081,7 @@ def test_active_performers_updates_when_one_card_kicked_back_to_todo(
 
 @pytest.mark.e2e
 def test_active_performers_renders_two_concurrent_sessions(
-    page: Page, live_server_url: str, store: DashboardStore
+    page: Page, live_server_url: str, store: DashboardStore,
 ) -> None:
     """065 US2 surface: when the daemon reports two concurrent active sessions
     in a single snapshot, the panel must render two distinct tiles. This test
@@ -2101,7 +2101,7 @@ def test_active_performers_renders_two_concurrent_sessions(
                 _active_session("PVTI_A", "Fix the auth bug", "implementing"),
                 _active_session("PVTI_B", "Add keyboard nav", "implementing"),
             ],
-        )
+        ),
     )
 
     tiles = page.locator("#active-performer-tiles")

@@ -48,7 +48,7 @@ def test_env_bootstrap_reaches_in_review(lmstudio_reachable: bool):
     """
     pytest.skip(
         "Operator-driven; run quickstart.md Steps 4-5 against an LM Studio "
-        "instance serving qwen3-coder-30b at n_ctx >= 32768."
+        "instance serving qwen3-coder-30b at n_ctx >= 32768.",
     )
 
 

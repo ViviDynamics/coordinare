@@ -41,7 +41,7 @@ class TestTheBuildContextCarriesWhatTheDockerfileCopies:
         negated = {line[1:] for line in ignored if line.startswith("!")}
         offenders = []
         for dockerfile in (ROOT_DOCKERFILE, DAEMON_DOCKERFILE):
-            for match in re.finditer(r"^COPY\s+(?!--)(.+)$", dockerfile.read_text(), re.M):
+            for match in re.finditer(r"^COPY\s+(?!--)(.+)$", dockerfile.read_text(), re.MULTILINE):
                 sources = match.group(1).split()[:-1]
                 for source in sources:
                     # removeprefix, not lstrip: lstrip takes a character set, so

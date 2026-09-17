@@ -106,7 +106,7 @@ async def test_start_ephemeral_adds_extra_hosts(monkeypatch) -> None:
     monkeypatch.setattr(lifecycle, "_run_docker", fake_run_docker)
 
     started = await start_ephemeral(
-        _ephemeral_config(extra_hosts=["host.docker.internal:host-gateway"])
+        _ephemeral_config(extra_hosts=["host.docker.internal:host-gateway"]),
     )
 
     run_args = calls[0]
@@ -199,7 +199,7 @@ async def test_start_ephemeral_propagates_config_env(monkeypatch) -> None:
     monkeypatch.setattr(lifecycle, "_run_docker", fake_run_docker)
 
     await start_ephemeral(
-        _ephemeral_config(env={"BACKEND": "codex", "RTK_ENABLED": "1"})
+        _ephemeral_config(env={"BACKEND": "codex", "RTK_ENABLED": "1"}),
     )
 
     run_args = list(args_seen[0])
@@ -231,8 +231,8 @@ async def test_start_ephemeral_drops_unresolved_placeholders(monkeypatch) -> Non
             env={
                 "REAL": "value",
                 "UNRESOLVED": "${COORDINARE_INFERENCE_AGENT_VERSION}",
-            }
-        )
+            },
+        ),
     )
 
     run_args = list(args_seen[0])
@@ -257,8 +257,8 @@ async def test_start_ephemeral_applies_egress_allowlist(monkeypatch) -> None:
 
     await start_ephemeral(
         _ephemeral_config(
-            egress_allowlist=["api.github.com", "objects.githubusercontent.com"]
-        )
+            egress_allowlist=["api.github.com", "objects.githubusercontent.com"],
+        ),
     )
 
     run_args = list(args_seen[0])
@@ -286,7 +286,7 @@ async def test_start_ephemeral_with_volumes(monkeypatch) -> None:
     monkeypatch.setattr(lifecycle, "_run_docker", fake_run_docker)
 
     cfg = _ephemeral_config(
-        volumes=[{"host_path": "/tmp/src", "container_path": "/workspace", "mode": "ro"}]
+        volumes=[{"host_path": "/tmp/src", "container_path": "/workspace", "mode": "ro"}],
     )
     await start_ephemeral(cfg)
 
@@ -482,7 +482,7 @@ async def test_start_ephemeral_disables_secret_sources_when_disabled(
             "init_payload": False,
             "env": False,
             "creds_file": True,
-        }
+        },
     )
     await start_ephemeral(cfg)
 
@@ -514,7 +514,7 @@ async def test_start_ephemeral_with_creds_file_path(monkeypatch) -> None:
             "env": True,
             "creds_file": True,
             "creds_file_path": "/etc/credentials.json",
-        }
+        },
     )
     await start_ephemeral(cfg)
 
@@ -544,7 +544,7 @@ async def test_start_ephemeral_with_all_secret_sources_enabled(
             "init_payload": True,
             "env": True,
             "creds_file": True,
-        }
+        },
     )
     await start_ephemeral(cfg)
 
@@ -574,7 +574,7 @@ async def test_start_ephemeral_disables_creds_file_when_false(monkeypatch) -> No
             "init_payload": True,
             "env": True,
             "creds_file": False,
-        }
+        },
     )
     await start_ephemeral(cfg)
 
@@ -614,7 +614,7 @@ async def test_wait_ready_returns_first_non_starting_status() -> None:
     client = _client_with(handler)
     try:
         status = await wait_ready(
-            "http://127.0.0.1:49160", None, timeout=2.0, poll_interval=0.01, client=client
+            "http://127.0.0.1:49160", None, timeout=2.0, poll_interval=0.01, client=client,
         )
     finally:
         await client.aclose()

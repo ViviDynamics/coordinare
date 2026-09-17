@@ -180,7 +180,7 @@ async def test_correction_emits_secretfree_event() -> None:
 
     with structlog.testing.capture_logs() as logs:
         await daemon._reconcile_with_board(
-            _snapshot(active_card_id="CARD", phase="blocked", active_card_column="BLOCKED")
+            _snapshot(active_card_id="CARD", phase="blocked", active_card_column="BLOCKED"),
         )
 
     events = [e for e in logs if e.get("event") == "restart_reconcile.session_corrected"]

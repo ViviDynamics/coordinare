@@ -305,10 +305,10 @@ class TestSecurityRecord:
         from performer.workflows.reviewer.models import ChangedFile, Hunk
 
         cf = ChangedFile(
-            path="app.py", hunks=[Hunk(header="@@", start_line=1, end_line=5)], fully_in_diff=True
+            path="app.py", hunks=[Hunk(header="@@", start_line=1, end_line=5)], fully_in_diff=True,
         )
         sr = ScanResult(
-            tool="semgrep", command="semgrep --config auto --json app.py", exit_code=0, finding_count=0, duration_ms=100
+            tool="semgrep", command="semgrep --config auto --json app.py", exit_code=0, finding_count=0, duration_ms=100,
         )
         rec = SecurityRecord(
             changed_files=[cf],
@@ -459,9 +459,9 @@ class TestModelSecurityFindingsSchema:
                         "evidence": "query = ...",
                         "introduced_by": "app.py",
                         "downgrade_reason": "",
-                    }
-                ]
-            }
+                    },
+                ],
+            },
         )
         assert result.findings[0].introduced_by == "app.py"
         assert result.findings[0].downgrade_reason == ""
@@ -482,9 +482,9 @@ class TestModelSecurityFindingsSchema:
                             "evidence": "query = ...",
                             "introduced_by": "app.py",
                             "severity": "high",
-                        }
-                    ]
-                }
+                        },
+                    ],
+                },
             )
 
     def test_schema_rejects_routing_key(self):
@@ -503,9 +503,9 @@ class TestModelSecurityFindingsSchema:
                             "evidence": "query = ...",
                             "introduced_by": "app.py",
                             "routing": "implementer",
-                        }
-                    ]
-                }
+                        },
+                    ],
+                },
             )
 
     def test_schema_rejects_verdict_key(self):
@@ -524,9 +524,9 @@ class TestModelSecurityFindingsSchema:
                             "evidence": "query = ...",
                             "introduced_by": "app.py",
                             "verdict": "rejected",
-                        }
-                    ]
-                }
+                        },
+                    ],
+                },
             )
 
     def test_schema_rejects_unknown_category(self):
@@ -544,9 +544,9 @@ class TestModelSecurityFindingsSchema:
                             "why_blocking": "Fix it",
                             "evidence": "code",
                             "introduced_by": "app.py",
-                        }
-                    ]
-                }
+                        },
+                    ],
+                },
             )
 
     def test_schema_accepts_custom_categories(self):
@@ -564,9 +564,9 @@ class TestModelSecurityFindingsSchema:
                         "why_blocking": "Fix it",
                         "evidence": "code",
                         "introduced_by": "app.py",
-                    }
-                ]
-            }
+                    },
+                ],
+            },
         )
         assert result.findings[0].category == "custom_one"
 

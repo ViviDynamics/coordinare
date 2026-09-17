@@ -29,7 +29,7 @@ def _make_metrics() -> MagicMock:
     metrics = MagicMock()
     metrics.cycles_completed_total._value.get.return_value = 0
     metrics.build_info.labels.return_value._value.get.return_value = {
-        "started_at": "2026-03-15T10:00:00+00:00"
+        "started_at": "2026-03-15T10:00:00+00:00",
     }
     return metrics
 
@@ -66,7 +66,7 @@ def _session(**overrides):
         "performer_events": [{"type": "tool_use", "text": "Edit app.rb"}],
         "performer_metrics": {"pid": 42, "cpu_percent": 12.5, "memory_bytes": 1024},
         "session_stats": SessionStats(
-            title="Weekly timesheets", files_changed=3, lines_added=40, lines_removed=5
+            title="Weekly timesheets", files_changed=3, lines_added=40, lines_removed=5,
         ),
         "backend_ui_url": "http://127.0.0.1:7788/",
     }
@@ -124,7 +124,7 @@ class TestSessionTelemetryOnSummary:
                     session_stats=None,
                     backend_ui_url=None,
                 ),
-            }
+            },
         })
         by_id = {s["card_id"]: s for s in _snapshot(daemon)["active_sessions"]}
 
@@ -156,8 +156,8 @@ class TestSessionTelemetryOnSummary:
                     session_stats=None,
                     backend_ui_url=None,
                     agent_dispatch={},
-                )
-            }
+                ),
+            },
         })
         summary = _only_summary(daemon)
 
@@ -181,7 +181,7 @@ class TestSingleSymphonyFallbackRow:
             "performer_events": [{"type": "cost", "text": "5,000 tokens"}],
             "performer_metrics": {"pid": 7},
             "session_stats": SessionStats(
-                title="Legacy card", files_changed=1, lines_added=2, lines_removed=0
+                title="Legacy card", files_changed=1, lines_added=2, lines_removed=0,
             ),
             "backend_ui_url": "http://localhost:9999/",
             "agent_dispatch": {"session_id": "legacy-1", "backend": "claude_code"},
@@ -231,7 +231,7 @@ class TestPerCardLogResolution:
             "implementing": _Pool(
                 services=[_Service(["card-1 line"]), _Service(["card-2 line"])],
                 active_slots={"card-1": _Slot(0), "card-2": _Slot(1)},
-            )
+            ),
         })
         daemon = _make_daemon({
             "slot_manager": slot_mgr,
@@ -247,7 +247,7 @@ class TestPerCardLogResolution:
             "implementing": _Pool(
                 services=[_Service(["someone else's output"])],
                 active_slots={"card-other": _Slot(0)},
-            )
+            ),
         })
         daemon = _make_daemon({
             "slot_manager": slot_mgr,
@@ -287,7 +287,7 @@ class TestPerCardLogResolution:
                 raise RuntimeError("transport gone")
 
         slot_mgr = SimpleNamespace(pools={
-            "implementing": _Pool(services=[_Boom()], active_slots={"card-1": _Slot(0)})
+            "implementing": _Pool(services=[_Boom()], active_slots={"card-1": _Slot(0)}),
         })
         daemon = _make_daemon({
             "slot_manager": slot_mgr,

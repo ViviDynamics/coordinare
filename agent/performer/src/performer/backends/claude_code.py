@@ -418,13 +418,13 @@ class ClaudeCodeBackend:
         self._open_stdout_capture()
         self._last_event_at = time.monotonic()
         self._reader_task = asyncio.create_task(
-            self._event_reader_loop(), name="claude-code-reader"
+            self._event_reader_loop(), name="claude-code-reader",
         )
         # Drain stderr concurrently so the OS pipe buffer never fills (which
         # would block claude's writes) and so we have diagnostic context for
         # non-zero exits.  Auth tokens are redacted before storage (FR-011).
         self._stderr_task = asyncio.create_task(
-            self._stderr_reader_loop(), name="claude-code-stderr"
+            self._stderr_reader_loop(), name="claude-code-stderr",
         )
         log.info("claude code started", pid=self._proc.pid, resume=bool(resume_session_id))
 
@@ -487,7 +487,7 @@ class ClaudeCodeBackend:
                 pass
             ts = time.strftime("%Y%m%dT%H%M%S", time.gmtime())
             path = os.path.join(
-                capture_dir, f"cli-stdout-{ts}-{self._proc.pid}.log"
+                capture_dir, f"cli-stdout-{ts}-{self._proc.pid}.log",
             )
             self._stdout_capture = open(path, "wb")
         except OSError as exc:  # pragma: no cover — best-effort diagnostic
@@ -536,7 +536,7 @@ class ClaudeCodeBackend:
 
         try:
             async for raw in iter_lines_chunked(
-                stdout, timeout=_remaining, on_chunk=_capture
+                stdout, timeout=_remaining, on_chunk=_capture,
             ):
                 line = raw.decode(errors="replace").strip()
                 if not line:
@@ -780,7 +780,7 @@ def _result_tokens(event: dict) -> int | None:  # type: ignore[type-arg]
 
 
 def _build_task_prompt(
-    score: Score, *, stand_path: Path | None = None
+    score: Score, *, stand_path: Path | None = None,
 ) -> str:
     """Construct the task description sent to Claude Code as the initial prompt."""
     # FR-016: persona_instructions is routed via `--append-system-prompt` in
@@ -834,7 +834,7 @@ def _build_task_prompt(
             if isinstance(_d, dict) and _d.get("id"):
                 parts.append(
                     f"- {_d['id']}: {_d.get('body', '')} — implementer says: "
-                    f"{_d.get('reason', '')}"
+                    f"{_d.get('reason', '')}",
                 )
 
     if score.relay_feedback:

@@ -68,7 +68,7 @@ async def test_approval_with_change_request_defers_merge_and_relays() -> None:
         [
             _review("R_A", "alice", "APPROVED", "2026-07-04T10:00:00Z"),
             _review("R_B", "bob", "CHANGES_REQUESTED", "2026-07-04T10:01:00Z"),
-        ]
+        ],
     )
 
     result = await monitor_pr(state)
@@ -85,7 +85,7 @@ async def test_approval_with_trusted_bot_comment_defers_merge() -> None:
         [
             _review("R_A", "alice", "APPROVED", "2026-07-04T10:00:00Z"),
             _review("R_T", "trusty[bot]", "COMMENTED", "2026-07-04T10:01:00Z"),
-        ]
+        ],
     )
 
     result = await monitor_pr(state)
@@ -100,7 +100,7 @@ async def test_deferral_emits_merge_deferred_event() -> None:
         [
             _review("R_A", "alice", "APPROVED", "2026-07-04T10:00:00Z"),
             _review("R_B", "bob", "CHANGES_REQUESTED", "2026-07-04T10:01:00Z"),
-        ]
+        ],
     )
 
     with capture_logs() as logs:
@@ -202,7 +202,7 @@ async def test_same_reviewer_later_approval_supersedes_change_request() -> None:
         [
             _review("R_1", "alice", "CHANGES_REQUESTED", "2026-07-04T10:00:00Z"),
             _review("R_2", "alice", "APPROVED", "2026-07-04T10:05:00Z"),
-        ]
+        ],
     )
 
     result = await monitor_pr(state)
@@ -218,7 +218,7 @@ async def test_same_reviewer_later_change_request_supersedes_approval() -> None:
         [
             _review("R_1", "alice", "APPROVED", "2026-07-04T10:00:00Z"),
             _review("R_2", "alice", "CHANGES_REQUESTED", "2026-07-04T10:05:00Z"),
-        ]
+        ],
     )
 
     with capture_logs() as logs:
@@ -236,7 +236,7 @@ async def test_same_reviewer_timestamp_tie_resolves_to_actionable() -> None:
         [
             _review("R_1", "alice", "APPROVED", "2026-07-04T10:00:00Z"),
             _review("R_2", "alice", "CHANGES_REQUESTED", "2026-07-04T10:00:00Z"),
-        ]
+        ],
     )
 
     result = await monitor_pr(state)
@@ -250,7 +250,7 @@ async def test_same_reviewer_unparseable_timestamp_resolves_to_actionable() -> N
         [
             _review("R_1", "alice", "APPROVED", "not-a-timestamp"),
             _review("R_2", "alice", "CHANGES_REQUESTED", None),
-        ]
+        ],
     )
 
     result = await monitor_pr(state)
@@ -269,7 +269,7 @@ async def test_naive_and_aware_timestamps_compared_without_error() -> None:
             # both stay effective and the aware/naive max() also runs.
             _review("R_1", "alice", "APPROVED", "2026-07-04T10:00:00"),
             _review("R_2", "bob", "APPROVED", "2026-07-04T11:00:00Z"),
-        ]
+        ],
     )
 
     result = await monitor_pr(state)
@@ -286,7 +286,7 @@ async def test_same_reviewer_naive_then_aware_later_supersedes() -> None:
         [
             _review("R_1", "alice", "CHANGES_REQUESTED", "2026-07-04T10:00:00"),
             _review("R_2", "alice", "APPROVED", "2026-07-04T11:00:00Z"),
-        ]
+        ],
     )
 
     result = await monitor_pr(state)
@@ -305,7 +305,7 @@ async def test_same_reviewer_case_whitespace_variants_grouped() -> None:
         [
             _review("R_1", "Alice", "CHANGES_REQUESTED", "2026-07-04T10:00:00Z"),
             _review("R_2", "alice ", "APPROVED", "2026-07-04T11:00:00Z"),
-        ]
+        ],
     )
 
     result = await monitor_pr(state)
@@ -325,7 +325,7 @@ async def test_null_author_login_reviews_are_never_grouped() -> None:
             {"id": "B", "author_login": None, "state": "COMMENTED"},
             {"id": "C", "author_login": "", "state": "COMMENTED"},
             {"id": "D", "author_login": "alice", "state": "APPROVED"},
-        ]
+        ],
     )
 
     assert [r["id"] for r in effective] == ["A", "B", "C", "D"]
@@ -338,7 +338,7 @@ async def test_cross_reviewer_states_never_supersede() -> None:
         [
             _review("R_1", "alice", "APPROVED", "2026-07-04T10:05:00Z"),
             _review("R_2", "bob", "CHANGES_REQUESTED", "2026-07-04T10:00:00Z"),
-        ]
+        ],
     )
 
     with capture_logs() as logs:

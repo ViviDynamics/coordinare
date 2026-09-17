@@ -44,7 +44,7 @@ def test_explicit_path_error_when_directory(tmp_path: Path) -> None:
 
 
 def test_env_var_config_path_used(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """COORDINARE_CONFIG_PATH pointing to existing file → returns resolved path."""
     cfg = _write_yaml(tmp_path / "env.yaml")
@@ -61,7 +61,7 @@ def test_env_var_config_path_error_not_found(monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_env_var_config_path_error_directory(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """COORDINARE_CONFIG_PATH pointing to directory → raises ConfigDiscoveryError."""
     monkeypatch.setenv("COORDINARE_CONFIG_PATH", str(tmp_path))
@@ -75,7 +75,7 @@ def test_env_var_config_path_error_directory(
 
 
 def test_cwd_config_yaml_found(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """config.yaml in cwd → returned without requiring --config flag."""
     monkeypatch.delenv("COORDINARE_CONFIG_PATH", raising=False)
@@ -86,7 +86,7 @@ def test_cwd_config_yaml_found(
 
 
 def test_home_config_found_when_cwd_absent(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """No cwd config.yaml, but ~/.coordinare/config.yaml exists → returns home path."""
     monkeypatch.delenv("COORDINARE_CONFIG_PATH", raising=False)
@@ -107,7 +107,7 @@ def test_home_config_found_when_cwd_absent(
 
 
 def test_none_returned_when_no_file_found(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """No config file at any search location → returns None."""
     monkeypatch.delenv("COORDINARE_CONFIG_PATH", raising=False)

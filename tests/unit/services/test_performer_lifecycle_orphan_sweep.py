@@ -139,4 +139,3 @@ async def test_run_docker_strips_whitespace() -> None:
 @pytest.mark.skip(reason="T046a orphan sweep not yet implemented")
 def test_orphan_sweep_behavior_documented() -> None:
     """Placeholder for sweep_orphan_containers() once T046a is implemented."""
-    pass

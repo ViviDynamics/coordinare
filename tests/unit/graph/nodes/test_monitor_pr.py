@@ -569,13 +569,13 @@ def _fix8_rollup_payload(*, contexts: list[dict], bpr_nodes: list[dict]) -> dict
                                     "state": "PENDING",
                                     "contexts": {"nodes": contexts},
                                 },
-                            }
-                        }
-                    ]
+                            },
+                        },
+                    ],
                 },
             },
             "branchProtectionRules": {"nodes": bpr_nodes},
-        }
+        },
     }
 
 
@@ -749,10 +749,10 @@ def _l1_base_payload(*, contexts: list[dict], bpr_nodes: list[dict]) -> dict:
                 "target": {
                     "oid": "base0000",
                     "statusCheckRollup": {"contexts": {"nodes": contexts}},
-                }
+                },
             },
             "branchProtectionRules": {"nodes": bpr_nodes},
-        }
+        },
     }
 
 
@@ -795,7 +795,7 @@ def _l1_state_with_gate(github: object, *, enabled: bool = True) -> dict:
     class _Sym:
         closer_pr_checks = CloserPrChecksConfig()
         persona_scope = PersonaScopeConfig(
-            baseline_prevention_gate=BaselinePreventionGateConfig(enabled=enabled)
+            baseline_prevention_gate=BaselinePreventionGateConfig(enabled=enabled),
         )
 
     state["current_symphony"] = "default"
@@ -828,7 +828,7 @@ async def test_monitor_pr_l1_blocks_merge_when_base_required_check_red() -> None
                     {"context": "ci/test"},
                     {"context": "ci/integration"},
                 ],
-            }
+            },
         ],
     )
     gh = _FixGitHub(head_payload, reviews=reviews, base_payload=base_payload)
@@ -865,7 +865,7 @@ async def test_monitor_pr_l1_no_latch_proceeds_once_base_turns_green() -> None:
         head_payload,
         reviews=reviews,
         base_payload=_l1_base_payload(
-            contexts=[_l1_ctx("ci/test", "FAILURE")], bpr_nodes=bpr
+            contexts=[_l1_ctx("ci/test", "FAILURE")], bpr_nodes=bpr,
         ),
     )
 
@@ -875,7 +875,7 @@ async def test_monitor_pr_l1_no_latch_proceeds_once_base_turns_green() -> None:
 
     # Base turns green; the SAME github (cached service) is re-read next cycle.
     gh._base_payload = _l1_base_payload(
-        contexts=[_l1_ctx("ci/test", "SUCCESS")], bpr_nodes=bpr
+        contexts=[_l1_ctx("ci/test", "SUCCESS")], bpr_nodes=bpr,
     )
     result2 = await monitor_pr(_l1_state_with_gate(gh, enabled=True))
     assert result2["phase"] == "merging"

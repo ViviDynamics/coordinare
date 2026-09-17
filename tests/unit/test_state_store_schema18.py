@@ -22,7 +22,7 @@ _ASSESSMENT = {
             "action": "open",
             "expected": "category select visible",
             "kind": "functional",
-        }
+        },
     ],
     "criteria_source": "card",
     "clarifications": [],
@@ -46,7 +46,7 @@ def test_a_v17_snapshot_loads_with_assessment_none() -> None:
             "snapshot_at": "2026-09-06T12:00:00+00:00",
             "phase": "idle",
             "active_sessions": {"c1": {"card_id": "c1", "performer_stage": "assessing"}},
-        }
+        },
     )
     sess = snap.active_sessions["c1"]
     assert sess.assessment is None
@@ -56,7 +56,7 @@ def test_assessment_persists_from_the_live_session() -> None:
     live = {
         "c1": {
             "assessment": _ASSESSMENT,
-        }
+        },
     }
     out = _persist_active_sessions(live)
     assert out["c1"].assessment == _ASSESSMENT
@@ -82,7 +82,7 @@ def test_round_trip_through_a_snapshot_keeps_assessment() -> None:
         assessment=_ASSESSMENT,
     )
     snap = WorkflowSnapshot(
-        snapshot_at=datetime.now(UTC), phase="idle", active_sessions={"c1": sess}
+        snapshot_at=datetime.now(UTC), phase="idle", active_sessions={"c1": sess},
     )
     reloaded = WorkflowSnapshot.model_validate_json(snap.model_dump_json())
     got = reloaded.active_sessions["c1"]

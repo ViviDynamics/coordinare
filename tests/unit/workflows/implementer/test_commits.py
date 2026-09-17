@@ -48,7 +48,7 @@ def test_head_sha_returns_current_sha(tmp_path):
     # Verify it matches git rev-parse HEAD
     result = subprocess.run(
         ["git", "-C", str(local), "rev-parse", "HEAD"],
-        capture_output=True, text=True, check=True
+        capture_output=True, text=True, check=True,
     )
     assert sha == result.stdout.strip()
 
@@ -121,7 +121,7 @@ async def test_squash_turn_commits_soft_reset(tmp_path):
 
     result = subprocess.run(
         ["git", "-C", str(local), "status", "--porcelain"],
-        capture_output=True, text=True, check=True
+        capture_output=True, text=True, check=True,
     )
     assert "a.py" in result.stdout
     assert "b.py" in result.stdout
@@ -201,7 +201,7 @@ async def test_commit_paths_stages_and_commits(tmp_path):
     # Verify commit exists in log
     result = subprocess.run(
         ["git", "-C", str(local), "log", "--oneline"],
-        capture_output=True, text=True, check=True
+        capture_output=True, text=True, check=True,
     )
     assert "test commit" in result.stdout
 
@@ -226,7 +226,7 @@ async def test_commit_paths_leaves_unrelated_files_uncommitted(tmp_path):
 
     result = subprocess.run(
         ["git", "-C", str(local), "status", "--porcelain"],
-        capture_output=True, text=True, check=True
+        capture_output=True, text=True, check=True,
     )
     assert "zzz.py" in result.stdout
     # After commit, aaa.py should not be in status (it's committed)

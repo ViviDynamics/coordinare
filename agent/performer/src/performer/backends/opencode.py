@@ -130,7 +130,7 @@ class OpenCodeAdapter:
             provider_name = env.get(f"{prefix}_PROVIDER_NAME", "litellm")
             provider_env_key = env.get(f"{prefix}_PROVIDER_ENV_KEY", "OPENAI_API_KEY")
             self._write_provider_config(
-                Path(stand.path), provider_name, provider_base_url, provider_env_key, model
+                Path(stand.path), provider_name, provider_base_url, provider_env_key, model,
             )
             if model and not model.startswith(f"{provider_name}/"):
                 effective_model = f"{provider_name}/{model}"
@@ -148,7 +148,7 @@ class OpenCodeAdapter:
 
         # Drain server logs in background (prevents pipe buffer fill)
         self._log_drain_task = asyncio.create_task(
-            self._drain_logs(), name=f"{self._adapter_name}-log-drain"
+            self._drain_logs(), name=f"{self._adapter_name}-log-drain",
         )
 
         # Wait for HTTP server to be accepting requests
@@ -167,7 +167,7 @@ class OpenCodeAdapter:
             session_body["modelID"] = effective_model
         if max_tokens is not None:
             session_body["maxTokens"] = max_tokens
-        resp = await self._client.post("/session", json=session_body if session_body else None)
+        resp = await self._client.post("/session", json=session_body or None)
         resp.raise_for_status()
         self._session_id = resp.json()["id"]
         log.info(
@@ -191,7 +191,7 @@ class OpenCodeAdapter:
 
         # Start SSE event reader
         self._reader_task = asyncio.create_task(
-            self._event_reader_loop(), name=f"{self._adapter_name}-event-reader"
+            self._event_reader_loop(), name=f"{self._adapter_name}-event-reader",
         )
 
     def _write_provider_config(
@@ -273,7 +273,7 @@ class OpenCodeAdapter:
         # Restart the SSE reader if it exited after the previous turn completed
         if self._reader_task is None or self._reader_task.done():
             self._reader_task = asyncio.create_task(
-                self._event_reader_loop(), name=f"{self._adapter_name}-event-reader"
+                self._event_reader_loop(), name=f"{self._adapter_name}-event-reader",
             )
 
     async def stop(self) -> None:
@@ -329,7 +329,7 @@ class OpenCodeAdapter:
                     pass
                 await asyncio.sleep(_READY_POLL_INTERVAL)
         raise RuntimeError(
-            f"{self._adapter_name} serve did not become ready within {_READY_TIMEOUT}s"
+            f"{self._adapter_name} serve did not become ready within {_READY_TIMEOUT}s",
         )
 
     async def _drain_logs(self) -> None:
@@ -507,7 +507,7 @@ def _questions_from_tool_part(part: dict) -> list[str]:  # type: ignore[type-arg
 
 
 def _build_task_prompt(
-    score: Score, *, stand_path: Path | None = None
+    score: Score, *, stand_path: Path | None = None,
 ) -> str:
     """Construct the task description sent to opencode as the initial message."""
     parts = []
@@ -565,7 +565,7 @@ def _build_task_prompt(
             if isinstance(_d, dict) and _d.get("id"):
                 parts.append(
                     f"- {_d['id']}: {_d.get('body', '')} — implementer says: "
-                    f"{_d.get('reason', '')}"
+                    f"{_d.get('reason', '')}",
                 )
 
     # Relay feedback (human review comments from previous cycle)

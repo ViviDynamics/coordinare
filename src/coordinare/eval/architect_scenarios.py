@@ -41,7 +41,7 @@ def materialise_repo(fixture: Fixture, root: Path) -> Path:
 
 async def _local_runner(cmd: str, cwd, timeout_s: int) -> tuple[int, str]:
     proc = await asyncio.create_subprocess_shell(
-        cmd, cwd=str(cwd), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
+        cmd, cwd=str(cwd), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
     )
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)

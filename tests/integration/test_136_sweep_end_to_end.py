@@ -106,13 +106,13 @@ class TestInjectedConfigGovernsBehavior:
         loaded = _space(tmp_path)
         baseline_cfg = materialize(loaded.baseline_dump, {})
         filtered_cfg = materialize(
-            loaded.baseline_dump, {"global_config.assignee_filter": "ghost-login"}
+            loaded.baseline_dump, {"global_config.assignee_filter": "ghost-login"},
         )
         fixtures = [_green_fixture("a")]
 
         merged = await run_board(fixtures, tmp_path / "run-baseline", config=baseline_cfg)
         held = await run_board(
-            fixtures, tmp_path / "run-filtered", config=filtered_cfg, max_cycles=4
+            fixtures, tmp_path / "run-filtered", config=filtered_cfg, max_cycles=4,
         )
 
         assert merged.config_fingerprint.source_path == "<materialized>"

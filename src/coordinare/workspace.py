@@ -319,7 +319,7 @@ class WorkspaceManager:
                 tempfile.mkdtemp(
                     dir=self._workspace_root,
                     prefix="coordinare-ws-",
-                )
+                ),
             )
             clone_dir = container / "repo"
             env = self._make_git_env()

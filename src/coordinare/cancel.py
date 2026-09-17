@@ -214,7 +214,7 @@ async def cancel_active_card(
                     },
                     source="cancel",
                     dedup_key=f"card_cancelled:{card_id}",
-                )
+                ),
             )
         except Exception as exc:
             logger.warning("cancel_active_card.notification_failed", error=str(exc))
@@ -234,6 +234,6 @@ async def cancel_active_card(
                 "coordinare could not reach the performer to stop it (no session id for this "
                 "card); its container may still be running, and the card was left in place "
                 "rather than returned to Todo to avoid a second performer on the same branch"
-            )
+            ),
         }),
     }

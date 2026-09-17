@@ -51,7 +51,7 @@ def render_pointer_section(entrypoint: str, first_three: list[tuple[str, str]]) 
             "- Keep this pointer section short and current; it links, never duplicates.",
             "",
             POINTER_MARKERS[1],  # End marker
-        ]
+        ],
     )
 
     result = "\n".join(lines)

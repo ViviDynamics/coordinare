@@ -23,7 +23,6 @@ __all__ = ["NoTestRunner", "detect_baseline", "detect_test_command", "run_tests"
 class NoTestRunner(Exception):
     """Raised when no test command is detected, or the detected one cannot run."""
 
-    pass
 
 
 # POSIX: the shell exits 127 when the command name cannot be found. Distinct
@@ -110,7 +109,7 @@ def detect_test_command(score, workspace: Path) -> tuple[str, str, str]:
         # branch and reported a packaging bug as a repository problem.
         raise NoTestRunner(
             "CI detection package unavailable in this image (coordinare-ci-detection "
-            f"is not installed): {exc}"
+            f"is not installed): {exc}",
         ) from exc
 
     # 409: declared monorepo roots. The workspace root's own convention wins;
@@ -175,7 +174,7 @@ async def run_tests(toolkit, command: str, runner_kind: str, cwd: Path, timeout_
         raise InfrastructureBlocked(observation.environment_problem or "the test runner could not execute")
     if observation.outcome == "unreadable":
         raise InfrastructureBlocked(
-            "could not read the test runner's output: " + (observation.summary or "no interpretation possible")
+            "could not read the test runner's output: " + (observation.summary or "no interpretation possible"),
         )
     return observation.to_summary(exit_code, output[-2000:])
 
@@ -212,7 +211,7 @@ async def capture_baseline(toolkit, score, workspace: Path, *, timeout_s: int = 
     if parsed.exit_code == _COMMAND_NOT_FOUND:
         raise NoTestRunner(
             f"test command is not executable in this environment: {test_command!r} "
-            f"exited {_COMMAND_NOT_FOUND}: {' '.join(parsed.raw_tail.split())[:200]}"
+            f"exited {_COMMAND_NOT_FOUND}: {' '.join(parsed.raw_tail.split())[:200]}",
         )
 
     test_names = parsed.test_names_passed or []
@@ -220,9 +219,9 @@ async def capture_baseline(toolkit, score, workspace: Path, *, timeout_s: int = 
     fail_count = parsed.failed or 0
 
     baseline = Baseline(
-        test_names=test_names if test_names else None,
+        test_names=test_names or None,
         # 171: kept so the resume rule can place a baseline failure in a file
-        test_names_failed=failed_names if failed_names else None,
+        test_names_failed=failed_names or None,
         pass_count=len(test_names) if test_names else (1 if parsed.passed else 0),
         fail_count=fail_count,
         stack=stack,

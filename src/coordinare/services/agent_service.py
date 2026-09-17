@@ -53,7 +53,7 @@ class AgentService:
         message = ProtocolMessage(action="health")
         try:
             response: ProtocolResponse = await self._transport.send(
-                message, timeout_override=10
+                message, timeout_override=10,
             )
             return response.model_dump()
         except TransportError as exc:

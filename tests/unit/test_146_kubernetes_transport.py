@@ -225,7 +225,7 @@ class TestPodManifest:
         from coordinare.services.kubernetes_runtime import build_pod_manifest
 
         c = build_pod_manifest(
-            _config(image="myrepo/performer:1.2.3"), pod_name="p-1", performer_id="i"
+            _config(image="myrepo/performer:1.2.3"), pod_name="p-1", performer_id="i",
         )["spec"]["containers"][0]
         assert c["image"] == "myrepo/performer:1.2.3"
         assert c["imagePullPolicy"] == "IfNotPresent"
@@ -292,8 +292,8 @@ class TestPodManifest:
                         host_path="/var/lib/coordinare/devenv/website",
                         container_path="/devenv/website",
                         mode="ro",
-                    )
-                ]
+                    ),
+                ],
             ),
             pod_name="p-1",
             performer_id="i",
@@ -544,8 +544,8 @@ class TestRuntimeBehaviour:
                 # Pending forever: never gets an IP, never reaches a terminal phase.
                 return SimpleNamespace(
                     status=SimpleNamespace(
-                        phase="Pending", pod_ip=None, reason="", container_statuses=[]
-                    )
+                        phase="Pending", pod_ip=None, reason="", container_statuses=[],
+                    ),
                 )
 
             def delete_namespaced_pod(self, *, name, namespace, **kwargs):
@@ -890,7 +890,7 @@ class TestTheCacheMountMirrorsTheDockerPath:
 
     def test_several_symphonies_each_get_their_own_subpath(self) -> None:
         mounts = self._built(
-            [self._mount("website", "ro"), self._mount("inhouse", "ro")]
+            [self._mount("website", "ro"), self._mount("inhouse", "ro")],
         )["spec"]["containers"][0]["volumeMounts"]
 
         assert {m["subPath"] for m in mounts} == {"website", "inhouse"}
@@ -1002,7 +1002,7 @@ class TestTheCacheMountCannotBeTalkedIntoTheWrongPlace:
             [
                 self._vol("/var/lib/coordinare/devenv/website", "/devenv/website", "ro"),
                 self._vol("/mnt/other/website", "/devenv/website-2", "rw"),
-            ]
+            ],
         )["spec"]["containers"][0]["volumeMounts"]
 
         by_path = {m["mountPath"]: m for m in mounts}
@@ -1019,7 +1019,7 @@ class TestTheCacheMountCannotBeTalkedIntoTheWrongPlace:
     def test_the_subpath_matches_the_directory_the_mount_path_names(self) -> None:
         """Derived from one source, so the two cannot disagree."""
         mounts = self._built(
-            [self._vol("/anywhere/at/all", "/devenv/website")]
+            [self._vol("/anywhere/at/all", "/devenv/website")],
         )["spec"]["containers"][0]["volumeMounts"]
 
         assert mounts[0]["subPath"] == "website"
@@ -1028,7 +1028,7 @@ class TestTheCacheMountCannotBeTalkedIntoTheWrongPlace:
     def test_a_path_that_merely_starts_with_the_root_is_not_under_it(self) -> None:
         """`/devenvil/x`.startswith(`/devenv`) is True and means nothing."""
         mounts = self._built(
-            [self._vol("/x/y", "/devenvil/x"), self._vol("/a/b", "/devenv/website")]
+            [self._vol("/x/y", "/devenvil/x"), self._vol("/a/b", "/devenv/website")],
         )["spec"]["containers"][0]["volumeMounts"]
 
         assert [m["mountPath"] for m in mounts] == ["/devenv/website"]

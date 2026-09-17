@@ -137,7 +137,7 @@ def test_signature_collision_is_unknown() -> None:
     # INHERITED (data-model §1 collision handling).
     head = _head(conclusion="failure", head_signature=_SIG_A)
     index = {
-        "ci/test": _baseline(signature=_SIG_A, normalized_reason="different reason")
+        "ci/test": _baseline(signature=_SIG_A, normalized_reason="different reason"),
     }
     assert classify_failure_origin(head, "boom", index) == "unknown"
 
@@ -155,8 +155,8 @@ def test_flaky_baseline_makes_head_introduced(baseline_conclusion: str) -> None:
     head = _head(conclusion="failure", head_signature=_SIG_A)
     index = {
         "ci/test": _baseline(
-            conclusion=baseline_conclusion, signature=_SIG_B, normalized_reason="boom"
-        )
+            conclusion=baseline_conclusion, signature=_SIG_B, normalized_reason="boom",
+        ),
     }
     assert classify_failure_origin(head, "boom", index) == "introduced"
 
@@ -182,7 +182,7 @@ def test_no_same_name_baseline_failure_is_introduced() -> None:
     # Determinate baseline whose failures don't include this check → INTRODUCED.
     head = _head(name="ci/test", conclusion="failure")
     index = {
-        "ci/other": _baseline(name="ci/other", signature=_SIG_A, normalized_reason="x")
+        "ci/other": _baseline(name="ci/other", signature=_SIG_A, normalized_reason="x"),
     }
     assert classify_failure_origin(head, "boom", index) == "introduced"
 
@@ -221,30 +221,30 @@ def test_real_signatures_inherited_through_drift() -> None:
         None,
     )
     head = _head(
-        conclusion="failure", head_signature=head_sig, baseline_signature=base_sig
+        conclusion="failure", head_signature=head_sig, baseline_signature=base_sig,
     )
     index = {
         "ci/test": _baseline(
-            conclusion="failure", signature=base_sig, normalized_reason=base_reason
-        )
+            conclusion="failure", signature=base_sig, normalized_reason=base_reason,
+        ),
     }
     assert classify_failure_origin(head, head_reason, index) == "inherited"
 
 
 def test_real_signatures_introduced_on_different_root_cause() -> None:
     head_sig, head_reason = make_failure_signature(
-        "ci/test", "failure", "ConnectionError: refused", None
+        "ci/test", "failure", "ConnectionError: refused", None,
     )
     base_sig, base_reason = make_failure_signature(
-        "ci/test", "failure", "TimeoutError: deadline", None
+        "ci/test", "failure", "TimeoutError: deadline", None,
     )
     head = _head(
-        conclusion="failure", head_signature=head_sig, baseline_signature=base_sig
+        conclusion="failure", head_signature=head_sig, baseline_signature=base_sig,
     )
     index = {
         "ci/test": _baseline(
-            conclusion="failure", signature=base_sig, normalized_reason=base_reason
-        )
+            conclusion="failure", signature=base_sig, normalized_reason=base_reason,
+        ),
     }
     assert classify_failure_origin(head, head_reason, index) == "introduced"
 

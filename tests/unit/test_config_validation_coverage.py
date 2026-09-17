@@ -100,7 +100,7 @@ _MINIMAL_RAW = {
 
 
 def test_count_env_var_fields_counts_env_override_for_string_field(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """When COORDINARE_PROJECT_NAME env var differs from raw, it counts as env-overridden."""
     from coordinare.config import ProjectConfiguration
@@ -113,7 +113,7 @@ def test_count_env_var_fields_counts_env_override_for_string_field(
 
 
 def test_count_env_var_fields_counts_field_not_in_raw(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A COORDINARE_* env var for a field absent from raw is always counted."""
     from coordinare.config import ProjectConfiguration
@@ -185,7 +185,7 @@ def test_count_env_var_fields_no_increment_when_values_match(monkeypatch: pytest
         "github_project_number: 1\n"
         "github_token: tok\n"
         "human_reviewers:\n"
-        "  - alice\n"
+        "  - alice\n",
     )
     config = ProjectConfiguration.from_yaml(config_yaml)
 

@@ -64,7 +64,7 @@ def _postgres_manifest(data_dir: Path) -> ServicesManifest:
                     databases=["app_test"],
                     password_env_var=PW_VAR,
                 ),
-            )
+            ),
         ],
         cache_inputs=[],
         agent_version="test-092",
@@ -75,7 +75,7 @@ def _validate(scripts, env, *, timeout_seconds=15.0):
     # health_delay_seconds=0 keeps the run fast: the absent case returns in the start
     # phase before any readiness pause.
     return validate(
-        scripts, env=env, timeout_seconds=timeout_seconds, health_delay_seconds=0.0
+        scripts, env=env, timeout_seconds=timeout_seconds, health_delay_seconds=0.0,
     )
 
 
@@ -98,7 +98,7 @@ def _assert_gate_cleared(scripts, env) -> None:
 
 class TestConfiguredTestEnvInjection:
     def test_absent_var_trips_exit_75_with_actionable_message(
-        self, tmp_path: Path, monkeypatch
+        self, tmp_path: Path, monkeypatch,
     ) -> None:
         # Ensure the secret is genuinely absent from the inherited environment, since
         # validate() merges os.environ into the dry-run subprocess.
@@ -114,17 +114,17 @@ class TestConfiguredTestEnvInjection:
         assert "unset" in result.stderr
 
     def test_repo_path_source_clears_the_gate(
-        self, tmp_path: Path, monkeypatch
+        self, tmp_path: Path, monkeypatch,
     ) -> None:
         monkeypatch.delenv(PW_VAR, raising=False)
         repo_root = tmp_path / "symphony_repo"
         repo_root.mkdir()
         (repo_root / ".env.test").write_text(
-            f"{PW_VAR}=test-pw-123\n", encoding="utf-8"
+            f"{PW_VAR}=test-pw-123\n", encoding="utf-8",
         )
 
         test_env = load_test_env(
-            TestEnvConfig(repo_path=".env.test"), repo_root=repo_root
+            TestEnvConfig(repo_path=".env.test"), repo_root=repo_root,
         )
         assert test_env == {PW_VAR: "test-pw-123"}
 
@@ -132,7 +132,7 @@ class TestConfiguredTestEnvInjection:
         _assert_gate_cleared(scripts, test_env)
 
     def test_host_path_source_clears_the_gate_equivalently(
-        self, tmp_path: Path, monkeypatch
+        self, tmp_path: Path, monkeypatch,
     ) -> None:
         monkeypatch.delenv(PW_VAR, raising=False)
         host_file = tmp_path / "host-secrets.env"

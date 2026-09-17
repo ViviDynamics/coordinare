@@ -86,11 +86,11 @@ class PerformerPool:
         """
         if config.mode == "subprocess":
             raise ValueError(
-                "subprocess performers must not be registered with the pool (FR-024)"
+                "subprocess performers must not be registered with the pool (FR-024)",
             )
         if config.id in self._registrations:
             raise ValueError(
-                f"performer {config.id!r} is already registered; unregister first"
+                f"performer {config.id!r} is already registered; unregister first",
             )
 
         normalized_roles = [_ROLE_TO_STAGE.get(r, r) for r in config.roles]
@@ -278,7 +278,7 @@ class PerformerPool:
                 from coordinare.models.performer_endpoint import PerformerCapabilities
 
                 state.capabilities = PerformerCapabilities.model_validate(
-                    status["capabilities"]
+                    status["capabilities"],
                 )
 
         _performer_pool_status_polls_total.labels(result="ok").inc()

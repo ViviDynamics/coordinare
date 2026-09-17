@@ -325,7 +325,7 @@ def build_notification_service(
                 SlackChannelSender(
                     name=ch.name,
                     webhook_url=ch.webhook_url.get_secret_value() if ch.webhook_url else "",
-                )
+                ),
             )
         elif ch.type == ChannelType.email:
             senders.append(
@@ -337,6 +337,6 @@ def build_notification_service(
                     smtp_password=ch.smtp_password.get_secret_value() if ch.smtp_password else None,
                     sender=ch.smtp_sender,
                     recipient=ch.smtp_recipient or "",
-                )
+                ),
             )
     return NotificationService(config, senders, metrics)

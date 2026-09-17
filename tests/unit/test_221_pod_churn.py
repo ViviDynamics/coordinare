@@ -76,7 +76,7 @@ class FakeCluster:
         return SimpleNamespace(
             metadata=SimpleNamespace(name=name),
             status=SimpleNamespace(
-                phase=phase, pod_ip=self._pod_ip, reason="", container_statuses=[]
+                phase=phase, pod_ip=self._pod_ip, reason="", container_statuses=[],
             ),
         )
 
@@ -98,7 +98,7 @@ class FakeCluster:
                 raise ApiException(status=404, reason="NotFound")
             if pod["deleting_at"] is None:
                 pod["deleting_at"] = _now() + self._termination_seconds
-        return None
+        return
 
     def read_namespaced_pod_log(self, *, name, namespace, **kwargs):
         return "fake log"
@@ -232,7 +232,7 @@ class TestConcurrentDistinctPerformers:
                 "distinct performers must get distinct Pod names"
             )
             await asyncio.gather(
-                *(runtime.stop(s.handle, performer_id=i) for s, i in zip(started, ids, strict=True))
+                *(runtime.stop(s.handle, performer_id=i) for s, i in zip(started, ids, strict=True)),
             )
 
         asyncio.run(scenario())
@@ -246,7 +246,7 @@ class TestConcurrentDistinctPerformers:
 
         async def scenario():
             long_lived = await asyncio.gather(
-                *(runtime.start_ephemeral(_config(f"stable-{i}")) for i in range(4))
+                *(runtime.start_ephemeral(_config(f"stable-{i}")) for i in range(4)),
             )
             for _ in range(4):
                 churned = await runtime.start_ephemeral(_config("churner"))

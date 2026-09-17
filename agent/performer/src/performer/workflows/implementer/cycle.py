@@ -251,12 +251,12 @@ def scope_violations(
         # on README.md is its own scope) but never from the tests-turn rule: a
         # live round implemented the function during the tests turn through an
         # in-scope source file, and red was never observed
-        is_doc = path.startswith(docs_tree) or path.startswith("doc/") or path.startswith("README") or path.startswith("CONTRIBUTING") or path.startswith("CHANGELOG")
+        is_doc = path.startswith((docs_tree, "doc/", "README", "CONTRIBUTING", "CHANGELOG"))
         if is_doc and not allow_docs and not in_scope(path):
             violations.append({
                 "path": path,
                 "kind": "reverted_doc",
-                "reason": "implementation turn must not edit documentation (spec 167 FR-008)"
+                "reason": "implementation turn must not edit documentation (spec 167 FR-008)",
             })
             continue
 
@@ -296,7 +296,7 @@ def scope_violations(
                 violations.append({
                     "path": path,
                     "kind": "reverted_source",
-                    "reason": "tests turn must not edit source files (spec 167 FR-008)"
+                    "reason": "tests turn must not edit source files (spec 167 FR-008)",
                 })
 
     return violations
@@ -334,11 +334,11 @@ def next_attempt_allowed(kind: str, attempts_so_far: int, budgets) -> bool:
     """
     if kind == "implement":
         return attempts_so_far < budgets.impl_attempts
-    elif kind == "repair_quality":
+    if kind == "repair_quality":
         return attempts_so_far < budgets.quality_repairs
-    elif kind == "repair_ci":
+    if kind == "repair_ci":
         return attempts_so_far < budgets.ci_repairs
-    elif kind == "repair_tests":
+    if kind == "repair_tests":
         return attempts_so_far < budgets.tests_reprompts
 
     return True

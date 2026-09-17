@@ -41,10 +41,10 @@ async def test_poll_board_returns_grouped_snapshot() -> None:
                                     {"id": "todo-opt", "name": "ToDo / Backlog"},
                                     {"id": "prog-opt", "name": "In Progress"},
                                 ],
-                            }
-                        ]
-                    }
-                }
+                            },
+                        ],
+                    },
+                },
             },
             {
                 "node": {
@@ -59,12 +59,12 @@ async def test_poll_board_returns_grouped_snapshot() -> None:
                                     "title": "Work",
                                     "body": "Do work",
                                 },
-                            }
-                        ]
-                    }
-                }
+                            },
+                        ],
+                    },
+                },
             },
-        ]
+        ],
     )
     await service.initialize()
 
@@ -92,12 +92,12 @@ async def test_initialize_resolves_project_under_a_user_account() -> None:
                                 "id": "status-field",
                                 "name": "Status",
                                 "options": [{"id": "todo-opt", "name": "ToDo"}],
-                            }
-                        ]
-                    }
-                }
+                            },
+                        ],
+                    },
+                },
             },
-        ]
+        ],
     )
     await service.initialize()
 
@@ -131,12 +131,12 @@ async def test_move_card_rejects_unknown_status_option() -> None:
                                     {"id": "ready-opt", "name": "Ready"},
                                     {"id": "done-opt", "name": "Done"},
                                 ],
-                            }
-                        ]
-                    }
-                }
+                            },
+                        ],
+                    },
+                },
             },
-        ]
+        ],
     )
     await service.initialize()
 
@@ -153,9 +153,9 @@ async def test_mergeability_requires_mergeable_and_approved() -> None:
                     "mergeable": "MERGEABLE",
                     "mergeStateStatus": "CLEAN",
                     "reviewDecision": "APPROVED",
-                }
-            }
-        ]
+                },
+            },
+        ],
     )
 
     result = await service.check_mergeability("PR_1")
@@ -166,7 +166,7 @@ async def test_mergeability_requires_mergeable_and_approved() -> None:
 @pytest.mark.asyncio
 async def test_get_issue_details_returns_issue_node() -> None:
     service = _TestGitHubService(
-        [{"node": {"id": "ISSUE_1", "number": 42, "title": "Bug", "body": "Fix it"}}]
+        [{"node": {"id": "ISSUE_1", "number": 42, "title": "Bug", "body": "Fix it"}}],
     )
     service.project_id = "P1"
     service.field_cache = {"status_field_id": "F1", "status_option_ids": {}}
@@ -201,15 +201,15 @@ async def test_get_pr_reviews_parses_review_list() -> None:
                                 "state": "APPROVED",
                                 "body": "LGTM",
                                 "submittedAt": "2026-02-25T12:00:00Z",
-                            }
-                        ]
+                            },
+                        ],
                     },
                     "reviewDecision": "APPROVED",
                     "mergeable": "MERGEABLE",
                     "mergeStateStatus": "CLEAN",
-                }
-            }
-        ]
+                },
+            },
+        ],
     )
     service.project_id = "P1"
     service.field_cache = {"status_field_id": "F1", "status_option_ids": {}}
@@ -231,10 +231,10 @@ async def test_squash_merge_returns_merge_result() -> None:
                         "id": "PR_1",
                         "merged": True,
                         "mergeCommit": {"oid": "abc1234", "messageHeadline": "Fix bug"},
-                    }
-                }
-            }
-        ]
+                    },
+                },
+            },
+        ],
     )
     service.project_id = "P1"
     service.field_cache = {"status_field_id": "F1", "status_option_ids": {}}
@@ -252,11 +252,11 @@ async def test_add_comment_returns_comment_node() -> None:
             {
                 "addComment": {
                     "commentEdge": {
-                        "node": {"id": "C_1", "body": "hello", "createdAt": "2026-02-25T12:00:00Z"}
-                    }
-                }
-            }
-        ]
+                        "node": {"id": "C_1", "body": "hello", "createdAt": "2026-02-25T12:00:00Z"},
+                    },
+                },
+            },
+        ],
     )
     service.project_id = "P1"
     service.field_cache = {"status_field_id": "F1", "status_option_ids": {}}
@@ -283,13 +283,13 @@ async def test_move_card_succeeds_with_valid_status() -> None:
                                     {"id": "prog-opt", "name": "In Progress"},
                                     {"id": "done-opt", "name": "Done"},
                                 ],
-                            }
-                        ]
-                    }
-                }
+                            },
+                        ],
+                    },
+                },
             },
             {"updateProjectV2ItemFieldValue": {"projectV2Item": {"id": "ITEM_1"}}},
-        ]
+        ],
     )
     await service.initialize()
 
@@ -314,10 +314,10 @@ async def test_poll_board_handles_multiple_status_columns() -> None:
                                     {"id": "review-opt", "name": "In Review"},
                                     {"id": "done-opt", "name": "Done"},
                                 ],
-                            }
-                        ]
-                    }
-                }
+                            },
+                        ],
+                    },
+                },
             },
             {
                 "node": {
@@ -343,11 +343,11 @@ async def test_poll_board_handles_multiple_status_columns() -> None:
                                 "fieldValues": {"nodes": [{"name": "ToDo / Backlog"}]},
                                 "content": {"id": "I4", "number": 4, "title": "D", "body": ""},
                             },
-                        ]
-                    }
-                }
+                        ],
+                    },
+                },
             },
-        ]
+        ],
     )
     await service.initialize()
 
@@ -378,10 +378,10 @@ def _poll_board_response_with_assignees(assignee_logins: list[str]) -> list[dict
                             "id": "status-field",
                             "name": "Status",
                             "options": [{"id": "todo-opt", "name": "ToDo"}],
-                        }
-                    ]
-                }
-            }
+                        },
+                    ],
+                },
+            },
         },
         {
             "node": {
@@ -398,13 +398,13 @@ def _poll_board_response_with_assignees(assignee_logins: list[str]) -> list[dict
                                 "url": "https://github.com/acme/repo/issues/1",
                                 "labels": {"nodes": []},
                                 "assignees": {
-                                    "nodes": [{"login": login} for login in assignee_logins]
+                                    "nodes": [{"login": login} for login in assignee_logins],
                                 },
                             },
-                        }
-                    ]
-                }
-            }
+                        },
+                    ],
+                },
+            },
         },
     ]
 
@@ -445,10 +445,10 @@ async def test_poll_board_item_assignees_empty_for_draft_issue() -> None:
                             "id": "DRAFT_1",
                             "fieldValues": {"nodes": [{"name": "ToDo"}]},
                             "content": {"title": "Draft card", "body": ""},
-                        }
-                    ]
-                }
-            }
+                        },
+                    ],
+                },
+            },
         },
     ])
     await service.initialize()
@@ -479,10 +479,10 @@ def _poll_board_response_with_timeline(timeline_events: list[dict]) -> list[dict
                                 "assignees": {"nodes": []},
                                 "timelineItems": {"nodes": timeline_events},
                             },
-                        }
-                    ]
-                }
-            }
+                        },
+                    ],
+                },
+            },
         },
     ]
 
@@ -499,7 +499,7 @@ async def test_poll_board_pr_urls_prefers_open_over_merged_and_closed() -> None:
             _pr_event("https://github.com/acme/repo/pull/10", "CLOSED"),
             _pr_event("https://github.com/acme/repo/pull/11", "MERGED", merged=True),
             _pr_event("https://github.com/acme/repo/pull/12", "OPEN"),
-        ])
+        ]),
     )
     await service.initialize()
 
@@ -515,7 +515,7 @@ async def test_poll_board_pr_urls_falls_back_to_merged() -> None:
         _poll_board_response_with_timeline([
             _pr_event("https://github.com/acme/repo/pull/10", "CLOSED"),
             _pr_event("https://github.com/acme/repo/pull/11", "MERGED", merged=True),
-        ])
+        ]),
     )
     await service.initialize()
 
@@ -575,9 +575,9 @@ def _init_responses(columns: list[dict[str, str]]) -> list[dict[str, Any]]:
         {
             "node": {
                 "fields": {
-                    "nodes": [{"id": "status-field", "name": "Status", "options": columns}]
-                }
-            }
+                    "nodes": [{"id": "status-field", "name": "Status", "options": columns}],
+                },
+            },
         },
     ]
 
@@ -600,7 +600,7 @@ async def test_poll_board_maps_every_default_github_column() -> None:
         for i, label in enumerate(labels, start=1)
     ]
     service = _TestGitHubService(
-        [*_init_responses(_DEFAULT_BOARD_COLUMNS), {"node": {"items": {"nodes": items}}}]
+        [*_init_responses(_DEFAULT_BOARD_COLUMNS), {"node": {"items": {"nodes": items}}}],
     )
     await service.initialize()
 
@@ -621,7 +621,7 @@ async def test_move_card_to_todo_targets_ready_not_backlog() -> None:
         [
             *_init_responses(_DEFAULT_BOARD_COLUMNS),
             {"updateProjectV2ItemFieldValue": {"projectV2Item": {"id": "ITEM_1"}}},
-        ]
+        ],
     )
     await service.initialize()
 
@@ -637,7 +637,7 @@ async def test_move_card_to_todo_falls_back_to_legacy_column() -> None:
         [
             *_init_responses([{"id": "todo-opt", "name": "ToDo / Backlog"}]),
             {"updateProjectV2ItemFieldValue": {"projectV2Item": {"id": "ITEM_1"}}},
-        ]
+        ],
     )
     await service.initialize()
 

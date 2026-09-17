@@ -156,7 +156,7 @@ def _sanitize_block(block: dict[str, Any], *, label: str) -> list[SkippedChannel
 
 
 def describe_notification_posture(
-    *, active: list[str], skipped: list[SkippedChannel]
+    *, active: list[str], skipped: list[SkippedChannel],
 ) -> dict[str, Any]:
     """What will and will not be told to the operator, as structured log fields.
 

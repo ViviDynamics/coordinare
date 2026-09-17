@@ -55,7 +55,7 @@ async def _run_set(ctx: RunContext, commands: list[str], attempt_number: int, at
                 output_tail=(check.output_excerpt or "")[-2000:],
                 wall_time_ms=int((time.monotonic() - started) * 1000),
                 passed=check.exit_code == 0,
-            )
+            ),
         )
         if check.exit_code != 0:
             from performer.infrastructure import InfrastructureBlocked

@@ -335,7 +335,7 @@ async def _tests(ctx: RunContext, files: list[str] | None = None, *, scope: bool
     if scope and files:
         command = await _scoped_command(ctx, files) or ctx.test_command
     return await run_tests(
-        ctx.toolkit, command, ctx.runner_kind, ctx.workspace, ctx.test_timeout_s, files=files
+        ctx.toolkit, command, ctx.runner_kind, ctx.workspace, ctx.test_timeout_s, files=files,
     )
 
 
@@ -466,7 +466,7 @@ def _already_covered(ctx: RunContext, milestone: MilestonePlan, summary: TestSum
 
 
 async def _red_phase(
-    ctx: RunContext, milestone: MilestonePlan, record: PerMilestoneRecord
+    ctx: RunContext, milestone: MilestonePlan, record: PerMilestoneRecord,
 ) -> RedOutcome:
     """Tests turn plus the observed red, with one reprompt (FR-005)."""
     brief = _build_brief(ctx, milestone, kind="tests", persona_kind="TESTS")

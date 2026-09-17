@@ -65,7 +65,7 @@ def effective_criteria(score) -> tuple[list[str], str]:
 
 
 def _prompt(
-    criteria: list[str], diff: str, description: str, base_url: str | None, source: str = "card"
+    criteria: list[str], diff: str, description: str, base_url: str | None, source: str = "card",
 ) -> list[dict]:
     criteria_block = "\n".join(f"- {c}" for c in criteria) or "(none stated)"
     if source == "blueprint":
@@ -93,7 +93,7 @@ def _prompt(
                 f"Card description:\n{description or '(none)'}\n\n"
                 f"Pull request diff:\n{diff or '(diff unavailable)'}"
             ),
-        }
+        },
     ]
 
 

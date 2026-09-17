@@ -137,7 +137,7 @@ class TestTheGitHubProviderDelegatesRatherThanReimplements:
         ],
     )
     def test_each_operation_forwards_to_the_existing_method(
-        self, call: str, args: tuple, forwards_to: str
+        self, call: str, args: tuple, forwards_to: str,
     ) -> None:
         import asyncio
 
@@ -266,7 +266,7 @@ class TestAStubProviderCanDriveCoordinare:
             }
             if name in board_ops:
                 raise AssertionError(
-                    f"board operation {name!r} reached the GitHub service; the seam leaks"
+                    f"board operation {name!r} reached the GitHub service; the seam leaks",
                 )
             raise AttributeError(name)
 
@@ -366,7 +366,7 @@ class TestAStubProviderCanDriveCoordinare:
                 "advocate_handled_label": "advocate-handled",
                 "advocate_escalation_label": "needs-human",
                 "advocate_history": set(),
-            }
+            },
         )
 
         assert result["phase"] == "dispatching"

@@ -73,7 +73,7 @@ class HealthResult:
 
 
 def gate(
-    target: TargetDescriptor, status: HealthStatus, reason: str | None
+    target: TargetDescriptor, status: HealthStatus, reason: str | None,
 ) -> HealthResult:
     """Pure gating decision (no probe, no network) — the FR-078-5 state machine.
 
@@ -113,7 +113,7 @@ _ANTHROPIC_PROBE_BODY = {
             "name": "ping",
             "description": "Health probe. Call this with no arguments.",
             "input_schema": {"type": "object", "properties": {}},
-        }
+        },
     ],
 }
 
@@ -219,7 +219,7 @@ def _has_anthropic_tool_use(body: dict[str, Any]) -> bool:
 
 
 def _translate_round_trip_has_tool_use(
-    target: TargetDescriptor, openai_body: dict[str, Any]
+    target: TargetDescriptor, openai_body: dict[str, Any],
 ) -> bool:
     """Run the upstream OpenAI reply through the full response path and check it.
 
@@ -363,14 +363,14 @@ async def check_health(
                 # normalized completion; tool-call mode is unchanged.
                 if target.health_probe == "completion":
                     if isinstance(payload, dict) and _has_nonempty_completion(
-                        target, payload
+                        target, payload,
                     ):
                         status, reason = "healthy", None
                     else:
                         status = "unhealthy"
                         reason = "probe response carried no usable completion"
                 elif isinstance(payload, dict) and _has_structured_tool_call(
-                    target, payload
+                    target, payload,
                 ):
                     status, reason = "healthy", None
                 else:

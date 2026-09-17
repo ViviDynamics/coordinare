@@ -30,7 +30,7 @@ def test_full_utilization_validates() -> None:
         "role_utilization": [
             {"role": "implementing", "active": 2, "max": 3, "queued": 1},
             {"role": "reviewing", "active": 1, "max": 1, "queued": 0},
-        ]
+        ],
     }
     jsonschema.validate(data, schema)
 

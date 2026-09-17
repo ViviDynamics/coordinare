@@ -39,13 +39,13 @@ def changed_files():
 
 
 def finding(**over) -> Finding:
-    base = dict(path="src/calc.py", line=6, category="logic_error", problem="division by zero is unguarded",
-                why_blocking="div(1, 0) raises", evidence="return a / b", origin="model")
+    base = {"path": "src/calc.py", "line": 6, "category": "logic_error", "problem": "division by zero is unguarded",
+                "why_blocking": "div(1, 0) raises", "evidence": "return a / b", "origin": "model"}
     base.update(over)
     return Finding(**base)
 
 
 def prior(**over) -> PriorComment:
-    base = dict(id="c1", path="src/calc.py", line=6, body="Guard against b == 0")
+    base = {"id": "c1", "path": "src/calc.py", "line": 6, "body": "Guard against b == 0"}
     base.update(over)
     return PriorComment(**base)

@@ -71,7 +71,7 @@ def test_required_base_failure_blocks_naming_check_and_url() -> None:
                 required=True,
                 url="https://github.com/o/r/runs/42",
             ),
-        ]
+        ],
     )
     d = evaluate_base_gate(rollup, now=NOW)
     assert d.decision == "BLOCK"
@@ -97,7 +97,7 @@ def test_block_lists_only_the_offending_required_check() -> None:
             _check("ci/test", "completed", "failure", required=True),
             _check("build", "completed", "success", required=True),
             _check("lint", "completed", "success", required=True),
-        ]
+        ],
     )
     d = evaluate_base_gate(rollup, now=NOW)
     assert d.decision == "BLOCK"
@@ -112,7 +112,7 @@ def test_all_green_required_base_proceeds() -> None:
         [
             _check("ci/test", "completed", "success", required=True),
             _check("build", "completed", "success", required=True),
-        ]
+        ],
     )
     d = evaluate_base_gate(rollup, now=NOW)
     assert d.decision == "PROCEED"
@@ -125,7 +125,7 @@ def test_non_required_base_failure_proceeds() -> None:
         [
             _check("ci/test", "completed", "success", required=True),
             _check("optional-coverage", "completed", "failure", required=False),
-        ]
+        ],
     )
     d = evaluate_base_gate(rollup, now=NOW)
     assert d.decision == "PROCEED"
@@ -144,7 +144,7 @@ def test_pending_required_base_does_not_block() -> None:
         [
             _check("ci/test", "in_progress", required=True),
             _check("build", "completed", "success", required=True),
-        ]
+        ],
     )
     d = evaluate_base_gate(rollup, now=NOW)
     assert d.decision == "PROCEED"
@@ -213,7 +213,7 @@ def test_evaluate_base_gate_is_deterministic() -> None:
         [
             _check("ci/test", "completed", "failure", required=True, url="https://x/1"),
             _check("build", "completed", "success", required=True),
-        ]
+        ],
     )
     first = evaluate_base_gate(rollup, now=NOW)
     for _ in range(50):
@@ -234,7 +234,7 @@ def test_persona_check_map_narrows_required_set() -> None:
         [
             _check("ci/test", "completed", "failure", required=True),
             _check("build", "completed", "success", required=True),
-        ]
+        ],
     )
     persona_check_map = {"implementer": {"any": ["build"]}}
     d = evaluate_base_gate(rollup, None, persona_check_map=persona_check_map, now=NOW)
