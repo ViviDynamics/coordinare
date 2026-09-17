@@ -14,6 +14,7 @@ make help          # list all targets, grouped (dev / test / build / run / relea
 make test          # unit tests (env-unset applied automatically)
 make test-all      # the WHOLE tests/ tree (default markers apply) — run before pushing
 make lint          # ruff check src/ tests/   (make fmt = auto-fix)
+make typecheck     # mypy -p coordinare (strict; per-module allowlist in pyproject, 433 ratchet)
 make ci            # full CI parity — exactly what `bin/build --all` runs
 make run           # start the daemon (sources .env first, or fails loudly)
 ```

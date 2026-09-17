@@ -76,6 +76,9 @@ run "Lint (ruff)" \
 run "Ruff baseline (432 ratchet)" \
   uv run --no-sync python scripts/ruff_baseline.py
 
+run "Typecheck (433 ratchet)" \
+  uv run --no-sync mypy -p coordinare
+
 run "Coordinare tests" \
   "${PYTEST[@]}" tests/ -q
 

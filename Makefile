@@ -13,9 +13,10 @@ SHELL := /bin/bash
 # target can accidentally omit it. `make ci` uses bin/build for exact CI parity.
 PYTEST := env -u COORDINARE_INFERENCE_MAX_TOKENS -u HERMES_CONTEXT_WINDOW .venv/bin/pytest
 RUFF   := .venv/bin/ruff
+MYPY   := .venv/bin/mypy
 
 .PHONY: help \
-        lint fmt lint-fix \
+        lint fmt lint-fix typecheck \
         test test-unit test-contract test-all test-js require-node \
         build e2e docker ci build-all \
         run start stop performer-logs \
@@ -60,6 +61,9 @@ fmt: require-venv ## ruff auto-fix over src/ and tests/
 	$(RUFF) check --fix src tests
 
 lint-fix: fmt ## alias for `fmt`
+
+typecheck: require-venv ## strict mypy over the coordinare package (433 ratchet)
+	$(MYPY) -p coordinare
 
 ##@ Test
 test: test-unit ## alias for `test-unit`
