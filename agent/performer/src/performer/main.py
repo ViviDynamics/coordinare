@@ -1866,10 +1866,16 @@ async def handle_status(
 ) -> PerformerResponse:
     """Return the current session state."""
     if perf is None or msg.session_id != perf.session_id:
+        # 412 round 46: a stale request while another session is still being
+        # served is an error for that request only -- the run loop keeps
+        # serving the active session, so the transport must not clear and
+        # reap the live process. active_session separates the no-session
+        # exit (process-exiting) from the mismatch (not).
         return PerformerResponse(
             status="session_expired",
             session_id=msg.session_id,
             reason="No active performance with that session ID",
+            active_session=perf is not None,
         )
 
     # FR-015: enforce per-session wall-clock timeout
@@ -2358,7 +2364,7 @@ async def handle_status(
             # path returns for that outcome and skip the prose post. Without the
             # report key the prose path below is untouched (FR-015).
             _rr = _extract_json(review_raw) if isinstance(review_raw, str) else review_raw
-            if isinstance(_rr, dict) and isinstance(_rr.get("review"), dict) and _rr["review"].get("verdict") in ("approved", "changes_requested", "env_blocked"):
+            if isinstance(_rr, dict) and isinstance(_rr.get("review"), dict) and _rr["review"].get("verdict") in ("approved", "changes_requested", "env_blocked", "nothing_to_review"):
                 _review = _rr["review"]
                 _verdict = str(_review.get("verdict") or "")
                 _findings = [f for f in (_review.get("findings") or []) if isinstance(f, dict)]
@@ -2397,6 +2403,18 @@ async def handle_status(
                         status="changes_requested", session_id=perf.session_id, comments=_comments,
                         body=f"{len(_findings)} blocking finding(s) from the reviewer workflow", report=_rr,
                     )
+                if _verdict == "nothing_to_review":
+                    # 412: the parsed diff was empty. Advance with the note in
+                    # the report; never "approved", since there is no diff to
+                    # approve. The settled head rides along so the coordinare
+                    # can record the verdict slot and skip a re-dispatch.
+                    perf.state = "nothing_to_review"
+                    _head = None
+                    try:
+                        _head = await get_head_sha(perf.stand)
+                    except Exception as exc:
+                        log.warning("nothing_to_review.head_after_failed", error=str(exc))
+                    return PerformerResponse(status="nothing_to_review", session_id=perf.session_id, report=_rr, head_after=_head)
                 _reason = str(_review.get("post_error") or "")
                 if not _reason:
                     _unread = _review.get("unread_files") or []
@@ -2611,7 +2629,7 @@ async def handle_status(
             # prose post-processing (committed report, advisory comments). Without
             # the report key the prose path below is untouched.
             _sr = _extract_json(sec_raw) if isinstance(sec_raw, str) else sec_raw
-            if isinstance(_sr, dict) and isinstance(_sr.get("security"), dict) and _sr["security"].get("verdict") in ("security_passed", "security_failed", "env_blocked"):
+            if isinstance(_sr, dict) and isinstance(_sr.get("security"), dict) and _sr["security"].get("verdict") in ("security_passed", "security_failed", "env_blocked", "nothing_to_scan", "not_applicable"):
                 _sec = _sr["security"]
                 _verdict = str(_sec.get("verdict") or "")
                 _blocking = [f for f in (_sec.get("blocking") or []) if isinstance(f, dict)]
@@ -2656,6 +2674,19 @@ async def handle_status(
                     return PerformerResponse(
                         status="security_failed", session_id=perf.session_id, findings=perf.security_findings, report=_sr,
                     )
+                if _verdict in ("nothing_to_scan", "not_applicable"):
+                    # 412: advance-with-note. Nothing statically scannable
+                    # changed, decided in code from the file list -- recorded
+                    # as its own verdict, not a pass, so the operator sees it.
+                    # The settled head rides along so the coordinare can record
+                    # the verdict slot and skip a re-dispatch.
+                    perf.state = _verdict
+                    _head = None
+                    try:
+                        _head = await get_head_sha(perf.stand)
+                    except Exception as exc:
+                        log.warning("security_advance.head_after_failed", error=str(exc))
+                    return PerformerResponse(status=_verdict, session_id=perf.session_id, report=_sr, head_after=_head)
                 _reason = str(_sec.get("hold_reason") or _sec.get("post_error") or "")
                 if not _reason:
                     _reason = "the security review could not complete: " + ", ".join(str(u) for u in (_sec.get("unread_files") or [])[:10])
@@ -3348,10 +3379,13 @@ async def handle_relay_feedback(
 ) -> PerformerResponse:
     """Deliver feedback to the running backend."""
     if perf is None or msg.session_id != perf.session_id:
+        # 412 round 46: see handle_status -- active_session marks the
+        # mismatch case so the transport keeps the live process.
         return PerformerResponse(
             status="session_expired",
             session_id=msg.session_id,
             reason="No active performance with that session ID",
+            active_session=perf is not None,
         )
     # Coordinare sends {"pr_url": "...", "comments": [{"body": "..."}, ...]}.
     # Accept that shape as well as a plain {"feedback": "..."} string for tests.
@@ -3464,7 +3498,7 @@ async def run_loop() -> None:
         except asyncio.TimeoutError:
             log.warning("session watchdog fired — stopping backend",
                         session_id=perf.session_id if perf else "")
-            if perf is not None and perf.state not in ("pr_opened", "plan_committed", "approved", "changes_requested", "security_passed", "security_failed", "qa_passed", "qa_failed", "qa_env_blocked", "env_blocked", "docs_committed", "error"):
+            if perf is not None and perf.state not in ("pr_opened", "plan_committed", "approved", "nothing_to_review", "changes_requested", "security_passed", "nothing_to_scan", "not_applicable", "security_failed", "qa_passed", "qa_failed", "qa_env_blocked", "env_blocked", "docs_committed", "error"):
                 perf.state = "error"
                 perf.error_reason = (
                     f"watchdog: session exceeded {settings.AGENT_TIMEOUT:.0f}s"
@@ -3567,8 +3601,12 @@ async def run_loop() -> None:
 
         _write_response(resp)
 
-        # Terminal states exit the loop
-        if resp.status in ("pr_opened", "plan_committed", "approved", "changes_requested", "security_passed", "security_failed", "qa_passed", "qa_failed", "qa_env_blocked", "env_blocked", "docs_committed", "error") and msg.action != "health":
+        # Terminal states exit the loop. 412 round 34: "blocked" joins the
+        # break set -- the transport treats it as process-exiting (the
+        # session is capped and the next dispatch is fresh), so the loop
+        # must actually exit and run the graceful cleanup below instead of
+        # idling until the transport's SIGTERM reaps it uncleanly.
+        if resp.status in ("pr_opened", "plan_committed", "approved", "nothing_to_review", "changes_requested", "security_passed", "nothing_to_scan", "not_applicable", "security_failed", "qa_passed", "qa_failed", "qa_env_blocked", "env_blocked", "docs_committed", "error", "blocked") and msg.action != "health":
             break
         # session_expired with no active session means nothing will ever start
         if resp.status == "session_expired" and perf is None:

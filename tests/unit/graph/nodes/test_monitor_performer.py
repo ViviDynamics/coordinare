@@ -283,7 +283,10 @@ def test_terminal_success_states_contains_expected_members() -> None:
         "pr_opened",
         "plan_committed",
         "approved",
+        "nothing_to_review",
         "security_passed",
+        "nothing_to_scan",
+        "not_applicable",
         "qa_passed",
         "docs_committed",
         "assessment_complete",
@@ -1343,126 +1346,104 @@ async def test_security_failed_routes_architecture_findings_to_architect() -> No
     assert _strip_ledger_keys(result.get("relay_feedback")) == findings
 
 
-# ---------------------------------------------------------------------------
-# 083 — coordinare-authoritative static-analysis floor (security stage)
-# ---------------------------------------------------------------------------
-
-
-def _sec_state(*, response: dict, scanner_findings: list[dict] | None) -> dict:
-    """Build a security-stage monitor state with dispatch-stashed scanner findings."""
+@pytest.mark.asyncio
+async def test_security_failed_halt_findings_block_the_card() -> None:
+    """083 fail-closed, restored in 412 round 12: a routing=halt finding --
+    e.g. the floor's scanner_unavailable -- blocks the card for operator
+    triage instead of routing it to a performer."""
     state = initial_state()
-    svc = _Performer(response=response)
+    findings = [
+        {
+            "severity": "critical",
+            "category": "scanner_unavailable",
+            "routing": "halt",
+            "description": "security scanner unavailable: scanner failed",
+        },
+        {"severity": "high", "category": "injection", "routing": "implementer"},
+    ]
+    svc = _Performer(response={"status": "security_failed", "findings": findings})
     state["performer_services"] = {"security": svc}
     state["performer_stage"] = "security"
-    # A stage AFTER security so a clean pass visibly *advances* (to "qa"),
-    # distinguishing "verdict stands" from a floor override (-> "implementing").
     state["lifecycle_sequence"] = ["implementing", "security", "qa"]
     state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
     state["agent_dispatch"] = {"session_id": "s1"}
-    if scanner_findings is not None:
-        state["scanner_findings"] = scanner_findings  # type: ignore[typeddict-unknown-key]
-    return state
-
-
-@pytest.mark.asyncio
-async def test_scanner_critical_overrides_model_pass() -> None:
-    """082 regression: a critical scanner finding forces security_failed even
-    when the model reported security_passed; the finding is relayed."""
-    scanner = [{
-        "severity": "critical", "category": "78",
-        "description": "semgrep:dangerous-system-call",
-        "file": "src/app/vuln.py", "line": 3, "routing": "implementer",
-    }]
-    state = _sec_state(
-        response={"status": "security_passed", "findings": []},
-        scanner_findings=scanner,
-    )
-
-    result = await monitor_performer(state)
-
-    # Overridden: routed back to the implementer, NOT advanced to qa.
-    assert result["performer_stage"] == "implementing"
-    assert result["phase"] == "dispatching"
-    assert scanner[0] in _strip_ledger_keys(result.get("relay_feedback") or [])
-
-
-@pytest.mark.asyncio
-async def test_scanner_medium_does_not_override_model_pass() -> None:
-    """A medium/low scanner finding is below the gating floor: the model's
-    security_passed verdict stands and the stage advances."""
-    scanner = [{
-        "severity": "medium", "category": "hashlib",
-        "description": "bandit:B324", "file": "src/app/h.py",
-        "line": 9, "routing": "implementer",
-    }]
-    state = _sec_state(
-        response={"status": "security_passed", "findings": []},
-        scanner_findings=scanner,
-    )
-
-    result = await monitor_performer(state)
-
-    assert result["performer_stage"] == "qa"
-
-
-@pytest.mark.asyncio
-async def test_clean_scanner_lets_model_pass_stand() -> None:
-    """No scanner findings → security_passed stands and the stage advances."""
-    state = _sec_state(
-        response={"status": "security_passed", "findings": []},
-        scanner_findings=[],
-    )
-
-    result = await monitor_performer(state)
-
-    assert result["performer_stage"] == "qa"
-
-
-@pytest.mark.asyncio
-async def test_scanner_unavailable_fails_closed_to_halt() -> None:
-    """A synthetic scanner_unavailable (routing=halt) critical finding forces
-    security_failed and blocks the card fail-closed instead of routing."""
-    scanner = [{
-        "severity": "critical", "category": "scanner_unavailable",
-        "description": "security scanner unavailable: scanner failed",
-        "file": "", "line": 0, "routing": "halt",
-    }]
-    state = _sec_state(
-        response={"status": "security_passed", "findings": []},
-        scanner_findings=scanner,
-    )
 
     result = await monitor_performer(state)
 
     assert result["phase"] == "blocked"
-    assert result["performer_stage"] != "qa"
-    assert scanner[0] in _strip_ledger_keys(result.get("relay_feedback") or [])
+    assert result["system_error_reason"] == "security scan floor unavailable — fail-closed halt"
+    assert result["agent_dispatch"] == {}
+
+
+# ---------------------------------------------------------------------------
+# 412 — advance-with-note security/reviewer verdicts (coordinare floor removed)
+# ---------------------------------------------------------------------------
+
+
+def _sec_state(*, response: dict) -> dict:
+    """Build a security-stage monitor state around a performer response."""
+    state = initial_state()
+    svc = _Performer(response=response)
+    state["performer_services"] = {"security": svc}
+    state["performer_stage"] = "security"
+    # A stage AFTER security so a terminal verdict visibly *advances* (to "qa").
+    state["lifecycle_sequence"] = ["implementing", "security", "qa"]
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+    return state
 
 
 @pytest.mark.asyncio
-async def test_scanner_findings_merge_with_model_findings() -> None:
-    """When the model itself reports security_failed, the dispatch-stashed
-    scanner findings are merged into relay_feedback (no re-scan)."""
-    model_finding = {
-        "severity": "high", "category": "injection",
-        "description": "model-found", "file": "src/app/m.py",
-        "line": 1, "routing": "implementer",
-    }
-    scanner = [{
-        "severity": "critical", "category": "78",
-        "description": "semgrep:dangerous-system-call",
-        "file": "src/app/vuln.py", "line": 3, "routing": "implementer",
-    }]
-    state = _sec_state(
-        response={"status": "security_failed", "findings": [model_finding]},
-        scanner_findings=scanner,
-    )
+async def test_security_passed_advances() -> None:
+    """The plain pass: security_passed stands and the stage advances."""
+    state = _sec_state(response={"status": "security_passed", "findings": []})
 
     result = await monitor_performer(state)
 
-    relayed = result.get("relay_feedback") or []
-    assert model_finding in _strip_ledger_keys(relayed)
-    assert scanner[0] in _strip_ledger_keys(relayed)
+    assert result["performer_stage"] == "qa"
+
+
+@pytest.mark.asyncio
+async def test_nothing_to_scan_advances_and_records_slot() -> None:
+    """412: nothing_to_scan is terminal-success for the security stage; the
+    verdict slot records it so the same head is not re-scanned."""
+    state = _sec_state(response={"status": "nothing_to_scan", "head_sha": "abc123"})
+
+    result = await monitor_performer(state)
+
+    assert result["performer_stage"] == "qa"
+    assert result["stage_verdicts"]["security"]["verdict"] == "nothing_to_scan"
+    assert result["stage_verdicts"]["security"]["head_sha"] == "abc123"
+
+
+@pytest.mark.asyncio
+async def test_not_applicable_advances_and_records_slot() -> None:
+    """412: a no-scannable-source diff ends the security stage with a note,
+    not a pass."""
+    state = _sec_state(response={"status": "not_applicable", "head_sha": "def456"})
+
+    result = await monitor_performer(state)
+
+    assert result["performer_stage"] == "qa"
+    assert result["stage_verdicts"]["security"]["verdict"] == "not_applicable"
+
+
+@pytest.mark.asyncio
+async def test_nothing_to_review_advances_and_records_slot() -> None:
+    """412: an empty parsed diff ends the reviewing stage with its own
+    verdict; never 'approved'."""
+    state = initial_state()
+    svc = _Performer(response={"status": "nothing_to_review", "head_sha": "abc123"})
+    state["performer_services"] = {"reviewing": svc}
+    state["performer_stage"] = "reviewing"
+    state["lifecycle_sequence"] = ["implementing", "reviewing", "security"]
+    state["current_card"] = {"id": "ITEM_1", "status": "IN_PROGRESS"}
+    state["agent_dispatch"] = {"session_id": "s1"}
+
+    result = await monitor_performer(state)
+
+    assert result["performer_stage"] == "security"
+    assert result["stage_verdicts"]["reviewing"]["verdict"] == "nothing_to_review"
 
 
 # ---------------------------------------------------------------------------

@@ -29,6 +29,9 @@ SECURITY_CATEGORIES = (
     "weak_crypto",
     "missing_hardening",
     "information_leak",
+    "vulnerable_dependency",
+    "supply_chain",
+    "insecure_configuration",
     "other_insecure_pattern",
 )
 
@@ -39,13 +42,19 @@ CATEGORY_TABLE: dict[str, str] = {
     "insecure_deserialization": "high",
     "path_traversal": "high",
     "ssrf": "high",
+    "vulnerable_dependency": "high",
+    "supply_chain": "high",
+    "insecure_configuration": "high",
     "weak_crypto": "medium",
     "missing_hardening": "medium",
     "information_leak": "medium",
     "other_insecure_pattern": "medium",
 }
 
-ROUTING: dict[str, str] = {"broken_authorization": "architect"}
+ROUTING: dict[str, str] = {
+    "broken_authorization": "architect",
+    "insecure_configuration": "architect",
+}
 
 BLOCKING = frozenset({"critical", "high"})
 
@@ -113,11 +122,18 @@ class SecurityRecord(_Bounded):
     findings_dropped: Annotated[list[SecurityFinding], Field(default_factory=list, max_length=30)]  # Unanchored, dropped
     findings_after_anchor_recheck: Annotated[list[SecurityFinding], Field(default_factory=list, max_length=30)]  # Reprompted
     scanner_findings: Annotated[list[SecurityFinding], Field(default_factory=list, max_length=200)]  # Rule findings after category mapping
+    #: 412 round 18: unanchored tool findings -- pre-existing issues at
+    #: unchanged lines. Reported, never blocking, never dropped.
+    baseline_scanner_findings: Annotated[list[SecurityFinding], Field(default_factory=list, max_length=200)]  # Unanchored tool findings: reported, never blocking
     blocking: Annotated[list[SecurityFinding], Field(default_factory=list, max_length=230)]  # Surviving, severity in BLOCKING
     advisory: Annotated[list[SecurityFinding], Field(default_factory=list, max_length=230)]  # Surviving, medium or low
     coverage_pass_ran: bool = False
     coverage_pass_output: str = ""
-    verdict: Literal["security_passed", "security_failed", "env_blocked"]
+    #: 412: nothing_to_scan (the parsed diff carried no files) and
+    #: not_applicable (no statically scannable source, decided from file
+    #: types by code) are explicit advance-with-note verdicts the coordinare
+    #: records; they are neither a pass nor a hold.
+    verdict: Literal["security_passed", "security_failed", "env_blocked", "nothing_to_scan", "not_applicable"]
     hold_reason: str | None = None  # Scanner tool/reason, unread files, or post error
     covered_files: list[str]
     post_error: str | None = None

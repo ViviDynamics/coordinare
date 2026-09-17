@@ -26,7 +26,7 @@ def test_pr_number_parsing():
 
 def test_request_changes_puts_hunk_findings_inline_and_the_rest_in_the_body():
     fs = [finding(), finding(line=40, evidence="deep"), finding(path="", line=0, category="unaddressed_feedback", evidence="", origin="rule")]
-    event, body, inline = build_review(fs, changed_files(), fixed_ids=["c9"], covered=2, header="<!-- h -->")
+    event, body, inline = build_review(fs, [], changed_files(), fixed_ids=["c9"], covered=2, header="<!-- h -->")
     assert event == "REQUEST_CHANGES"
     assert [(c["path"], c["line"]) for c in inline] == [("src/calc.py", 6)]
     assert "logic_error" in inline[0]["body"] and "return a / b" in inline[0]["body"]
@@ -37,7 +37,7 @@ def test_request_changes_puts_hunk_findings_inline_and_the_rest_in_the_body():
 
 
 def test_a_clean_review_is_one_comment_with_a_short_body():
-    event, body, inline = build_review([], changed_files(), fixed_ids=[], covered=2, header="<!-- h -->")
+    event, body, inline = build_review([], [], changed_files(), fixed_ids=[], covered=2, header="<!-- h -->")
     assert event == "COMMENT" and inline == []
     assert "APPROVED" in body and "2 changed file(s) covered" in body and "human reviewer" in body
 
@@ -60,7 +60,7 @@ async def test_post_review_calls_the_reviews_api_once_and_returns_the_url():
         posted.append((owner, repo, number, event, len(comments), token))
         return {"html_url": "https://github.com/o/r/pull/7#pullrequestreview-1"}
 
-    out = await post_review(_score(), [finding()], changed_files(), [], 2, poster=poster)
+    out = await post_review(_score(), [finding()], [], changed_files(), [], 2, poster=poster)
     assert out.ok and out.url.endswith("review-1") and out.event == "REQUEST_CHANGES" and out.inline == 1
     assert posted == [("o", "r", 7, "REQUEST_CHANGES", 1, "tok")]
 
@@ -70,9 +70,9 @@ async def test_post_failure_and_missing_pr_url_are_errors_not_exceptions():
     async def boom(*a, **k):
         raise RuntimeError("422 Unprocessable")
 
-    out = await post_review(_score(), [finding()], changed_files(), [], 2, poster=boom)
+    out = await post_review(_score(), [finding()], [], changed_files(), [], 2, poster=boom)
     assert not out.ok and "422" in out.error
-    missing = await post_review(_score(pr_url=""), [], changed_files(), [], 2, poster=boom)
+    missing = await post_review(_score(pr_url=""), [], [], changed_files(), [], 2, poster=boom)
     assert not missing.ok and "pr_url" in missing.error
 
 

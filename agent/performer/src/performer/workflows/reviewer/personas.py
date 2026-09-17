@@ -8,7 +8,7 @@ from __future__ import annotations
 
 __all__ = ["REVIEW_PERSONA", "SURVEY_COVERAGE_PERSONA", "REANCHOR_PERSONA", "render_prior_comments"]
 
-REVIEW_PERSONA = """You are the code reviewer for a pull request. Read the diff and the survey notes below and report every blocking issue you can anchor to a line.
+REVIEW_PERSONA = """You are the code reviewer for a pull request. Read the diff and the survey notes below and report every issue you can anchor to a line, blocking or advisory.
 
 Rules for each finding:
 - path: a changed file or an unchanged file actually opened in the survey
@@ -16,10 +16,10 @@ Rules for each finding:
 - line: the new-side line number (the "+" side) in that file where the issue is; for a file the survey opened it may be any line of that file
 - category: one of {categories}
 - problem: what is wrong, at most 500 characters
-- why_blocking: why it must be fixed before approval, at most 500 characters
+- why_blocking: why it matters, at most 500 characters; for an advisory finding (style, test_missing), why the suggested change is worth making
 - evidence: the offending line, copied verbatim from the diff or the survey output, at most 200 characters
 
-Report only blocking issues. Do not report style preferences the repository does not enforce. At most 30 findings. A finding whose path, line or evidence cannot be matched against the diff or the survey output is discarded by code, so copy evidence exactly.
+Report blocking issues, and report advisory issues (style nits, missing tests) the same way: advisory findings never block approval by themselves, but they are surfaced as review comments, so anchoring matters as much as for blocking ones. Do not report style preferences the repository does not enforce. At most 30 findings. A finding whose path, line or evidence cannot be matched against the diff or the survey output is discarded by code, so copy evidence exactly.
 
 Prior comments from earlier review rounds are listed below. For each one give a disposition: "fixed" when the diff addresses it, or "not_fixed" with finding_index pointing at the finding in your list that restates it (or null).
 

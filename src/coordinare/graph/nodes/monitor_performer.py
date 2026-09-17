@@ -147,6 +147,14 @@ TERMINAL_SUCCESS_STATES: frozenset[str] = frozenset({
     "qa_passed",
     "docs_committed",
     "assessment_complete",
+    # 412: explicit advance-with-note verdicts. The reviewer parsed an empty
+    # diff; the security stage found no statically scannable source. They end
+    # their stage and are recorded, but are deliberately NOT expected markers
+    # for a stage's primary pass -- re-running the stage on the same head is
+    # what skips below.
+    "nothing_to_review",
+    "nothing_to_scan",
+    "not_applicable",
 })
 # 125: verdict stages whose passing terminal marker is recorded as a
 # stage-verdict slot ({head_sha, verdict, recorded_at}) so dispatch can skip
@@ -155,15 +163,22 @@ TERMINAL_SUCCESS_STATES: frozenset[str] = frozenset({
 # recorded). The marker↔stage map guards against a cross-wired response (e.g.
 # a stray "approved" while the stage is qa) minting a verdict for the wrong
 # stage.
+# 412: values are frozensets. A stage's accepted markers include the
+# advance-with-note verdicts (412) beside the primary pass, so a recorded
+# ``nothing_to_scan`` skips re-scanning the same head instead of re-running
+# the whole stage it just completed.
 VERDICT_STAGES: frozenset[str] = frozenset(
     {"reviewing", "security", "qa", "documenting", "closing_review"}
 )
-EXPECTED_STAGE_MARKER: dict[str, str] = {
-    "reviewing": "approved",
-    "security": "security_passed",
-    "qa": "qa_passed",
-    "documenting": "docs_committed",
-    "closing_review": "approved",
+EXPECTED_STAGE_MARKER: dict[str, frozenset[str]] = {
+    "reviewing": frozenset({"approved", "nothing_to_review"}),
+    "security": frozenset({"security_passed", "nothing_to_scan", "not_applicable"}),
+    "qa": frozenset({"qa_passed"}),
+    "documenting": frozenset({"docs_committed"}),
+    # 412 round 8: the reviewer workflow can answer an empty-diff closing
+    # review with nothing_to_review -- without it in the expected set the
+    # verdict advances but is never recorded, so the same head re-dispatches.
+    "closing_review": frozenset({"approved", "nothing_to_review"}),
 }
 
 # 072: performer stages for which a trailing partial_progress sentinel is
@@ -684,7 +699,7 @@ def _record_stage_verdict(
     mismatches, or failure markers.
     """
     stage = str(state.get("performer_stage") or "")
-    if stage not in VERDICT_STAGES or EXPECTED_STAGE_MARKER.get(stage) != marker:
+    if stage not in VERDICT_STAGES or marker not in EXPECTED_STAGE_MARKER.get(stage, frozenset()):
         return
     head_raw = status.get("head_after") or status.get("head_sha")
     head = head_raw.strip() if isinstance(head_raw, str) else ""
@@ -3897,6 +3912,9 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
         # 170: when the report carries a "security" key (workflow report), skip
         # the 083 floor merge because the workflow already ran its floor inside
         # the performer.
+        # 412 round 10: restored for NON-workflow security roles — the example
+        # config promises "remove the workflow line to restore the prose path
+        # exactly", so the prose path keeps its coordinare-side scan gate.
         if stage == "security" and marker != "working":
             _workflow_report = status.get("report") if isinstance(status.get("report"), dict) else {}
             if not isinstance(_workflow_report.get("security"), dict):
@@ -4020,7 +4038,7 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
             _lift_review_findings(state, _review_report, stage)
 
         # 164: stash the QA repair brief for the next implementer dispatch,
-        # mirroring how scanner_findings already travels. Reports what failed
+        # mirroring how review findings already travel. Reports what failed
         # and how to reproduce it; never prescribes a fix (FR-014). Lifted on
         # BOTH terminal verdicts: a failing QA is the one whose brief the
         # implementer actually needs, and lifting only on qa_passed dropped it.
@@ -4621,7 +4639,7 @@ async def _monitor_performer_body(state: CoordinareState) -> CoordinareState:
             # 126 (contract D2): a verdict stage passing while its disputes
             # were pending withdraws the demand — the dispute round resolves
             # accepted.
-            if stage in VERDICT_STAGES and marker == EXPECTED_STAGE_MARKER.get(stage):
+            if stage in VERDICT_STAGES and marker in EXPECTED_STAGE_MARKER.get(stage, frozenset()):
                 _resolve_dispute_round(state, stage, passed=True)
 
             updates = _advance_stage(state, status)

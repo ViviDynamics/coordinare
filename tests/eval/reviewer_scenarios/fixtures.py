@@ -101,8 +101,11 @@ PRIOR_FEEDBACK = Fixture(
 TRUNCATED = Fixture(
     name="truncated", diff=TRUNCATED_DIFF, relay_feedback=[], brief={}, replies=[SURVEY, OPEN_EXTRA, NO_FINDINGS],
     survey_output={"sed -n '1,40p' src/extra.py": "import os\nX = 1\n"},
-    expect=Expectation(verdict="approved", min_findings=0, max_findings=0, review_event="COMMENT", coverage_pass=True,
-                       live_verdicts=("approved", "changes_requested", "env_blocked")),
+    # 412 round 12: the bare truncation note accounts for nothing, so the
+    # unopenable phantom holds the review even though the coverage pass
+    # opened every visible file.
+    expect=Expectation(verdict="env_blocked", min_findings=0, max_findings=0, review_event=None, coverage_pass=True,
+                       live_verdicts=("env_blocked",)),
 )
 
 DOCS_BY_IMPLEMENTER = Fixture(

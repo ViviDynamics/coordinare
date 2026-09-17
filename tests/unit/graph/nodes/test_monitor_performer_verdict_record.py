@@ -46,10 +46,10 @@ def test_reviewing_approved_records_head_after() -> None:
 
 def test_all_verdict_stages_record_their_matching_marker() -> None:
     for stage in VERDICT_STAGES:
-        state = _state(stage)
-        marker = EXPECTED_STAGE_MARKER[stage]
-        _record_stage_verdict(state, marker, {"head_after": "abc123"})
-        assert state["stage_verdicts"][stage]["verdict"] == marker
+        for marker in EXPECTED_STAGE_MARKER[stage]:
+            state = _state(stage)
+            _record_stage_verdict(state, marker, {"head_after": "abc123"})
+            assert state["stage_verdicts"][stage]["verdict"] == marker
 
 
 def test_head_sha_fallback_when_head_after_missing() -> None:

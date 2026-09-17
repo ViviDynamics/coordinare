@@ -320,7 +320,7 @@ async def test_a_security_env_blocked_hold_names_the_scanners_not_the_local_test
     from coordinare.graph.nodes.monitor_performer import monitor_performer
     from tests.unit.graph.nodes.test_monitor_performer import _sec_state
 
-    state = _sec_state(response={"status": "env_blocked", "reason": "semgrep: binary not found", "report": {"security": {"verdict": "env_blocked"}}}, scanner_findings=[])
+    state = _sec_state(response={"status": "env_blocked", "reason": "semgrep: binary not found", "report": {"security": {"verdict": "env_blocked"}}})
     result = await monitor_performer(state)
     assert result["phase"] == "blocked"
     text = " ".join(result["open_questions"]) + result["system_error_reason"]

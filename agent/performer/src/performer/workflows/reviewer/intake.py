@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from performer.workflows.reviewer.diffparse import detect_truncation, diff_lines, parse_unified_diff
+from performer.workflows.reviewer.diffparse import detect_truncation, diff_lines, parse_unified_diff, unread_beyond_truncation, unread_overflow_from_note
 from performer.workflows.reviewer.models import ChangedFile, PriorComment
 
 __all__ = ["Intake", "build_intake", "normalise_prior_comments"]
@@ -25,9 +25,11 @@ class Intake:
     diff_truncated: bool
     prior_comments: list[PriorComment]
     brief: dict[str, Any]
+    pr_diff_status: str = ""
     title: str = ""
     description: str = ""
     pr_url: str = ""
+    unread_overflow: int = 0
 
     @property
     def brief_present(self) -> bool:
@@ -81,16 +83,17 @@ def build_intake(score: Any) -> Intake:
     diff_text = str(getattr(score, "pr_diff", "") or "")
     truncated = detect_truncation(diff_text)
     files = parse_unified_diff(diff_text)
-    if truncated and files:
-        # The sanitizer cuts the tail: the last file is the one it cut through.
-        last = files[-1]
-        files[-1] = last.model_copy(update={"fully_in_diff": False})
+    if truncated:
+        files = unread_beyond_truncation(files, diff_text)
+    overflow = unread_overflow_from_note(diff_text)
     brief = getattr(score, "implementation_brief", None)
     return Intake(
         changed_files=files,
         diff_text=diff_text,
         diff_truncated=truncated,
+        unread_overflow=overflow,
         prior_comments=normalise_prior_comments(getattr(score, "relay_feedback", None)),
+        pr_diff_status=str(getattr(score, "pr_diff_status", "") or ""),
         brief=dict(brief) if isinstance(brief, dict) and brief else {},
         title=str(getattr(score, "title", "") or ""),
         description=str(getattr(score, "description", "") or ""),

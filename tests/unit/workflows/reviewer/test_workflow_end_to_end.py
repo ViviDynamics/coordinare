@@ -131,11 +131,15 @@ async def test_prior_comments_need_dispositions_or_become_findings():
 
 
 @pytest.mark.asyncio
-async def test_a_truncated_diff_runs_the_coverage_pass_before_approval():
+async def test_a_truncated_diff_runs_the_coverage_pass_and_still_holds_on_a_bare_note():
+    # 412 round 12: the bare truncation note accounts for nothing, so the
+    # unopenable phantom holds the review even after the coverage pass opens
+    # every visible file -- approval needs a note that names the tail.
     _, record, gh, events, state = await _run([SURVEY, OPEN_EXTRA, {"findings": [], "dispositions": []}], _score(pr_diff=TRUNCATED_DIFF))
     assert record.diff_truncated and record.coverage_pass_ran
-    assert "src/extra.py" in record.covered_files and record.unread_files == []
-    assert record.verdict == "approved" and gh.reviews[0]["event"] == "COMMENT"
+    assert "src/extra.py" in record.covered_files
+    assert record.unread_files == ["<unnamed files beyond the truncated diff>"]
+    assert record.verdict == "env_blocked" and gh.reviews == []
     assert "reviewer.coverage" in [e.text for e in events]
     assert any("src/extra.py" in c for c in state["commands"])
 
@@ -143,7 +147,7 @@ async def test_a_truncated_diff_runs_the_coverage_pass_before_approval():
 @pytest.mark.asyncio
 async def test_unread_files_after_the_coverage_pass_hold_instead_of_approving():
     _, record, gh, _, _ = await _run([SURVEY, SURVEY, {"findings": [], "dispositions": []}], _score(pr_diff=TRUNCATED_DIFF))
-    assert record.verdict == "env_blocked" and record.unread_files == ["src/extra.py"]
+    assert record.verdict == "env_blocked" and record.unread_files == ["src/extra.py", "<unnamed files beyond the truncated diff>"]
     assert gh.reviews == [], "no review is posted on a hold"
 
 

@@ -1,82 +1,212 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "coordinare/protocol-message/v1",
-  "title": "ProtocolMessage",
-  "description": "A structured command sent by the coordinare to an agent via any transport. Transport-agnostic; serialised as JSON to stdin of the agent process (SubprocessTransport) or equivalent.",
-  "type": "object",
-  "required": ["action", "session_id", "payload"],
-  "additionalProperties": false,
   "properties": {
     "action": {
-      "type": "string",
-      "enum": ["dispatch", "status", "relay_feedback", "health"],
-      "description": "The operation to perform."
+      "enum": [
+        "dispatch",
+        "status",
+        "relay_feedback",
+        "health"
+      ],
+      "title": "Action",
+      "type": "string"
     },
     "session_id": {
-      "type": "string",
-      "description": "Identifies the agent session. Empty string on initial dispatch; must be the session_id returned in the dispatch response for status, relay_feedback, and health actions.",
-      "default": ""
+      "default": "",
+      "title": "Session Id",
+      "type": "string"
     },
     "payload": {
-      "type": "object",
-      "description": "Action-specific data. Shape varies by action (see dispatch_payload and relay_feedback_payload schemas). Empty object for status and health.",
-      "default": {}
+      "title": "Payload",
+      "description": "Action-specific data. Shape varies by action (see dispatch_payload, relay_feedback_payload and status_payload schemas).",
+      "default": {},
+      "type": "object"
     }
   },
+  "required": [
+    "action",
+    "session_id",
+    "payload"
+  ],
+  "title": "ProtocolMessage",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "coordinare/protocol-message/v1",
+  "description": "A structured command sent by the coordinare to an agent via any transport. Transport-agnostic; serialised as JSON to stdin of the agent process (SubprocessTransport) or equivalent.",
+  "additionalProperties": false,
   "$defs": {
     "dispatch_payload": {
       "title": "DispatchPayload",
-      "description": "Payload for action=dispatch. Contains the full card context.",
+      "description": "Payload for action=dispatch: one of the dispatch variants (card, env-bootstrap job, wiki-init).",
       "type": "object",
-      "required": ["title", "description", "acceptance_criteria", "board_card_id", "column"],
-      "properties": {
-        "title": {
-          "type": "string",
-          "minLength": 1
+      "anyOf": [
+        {
+          "title": "CardDispatchPayload",
+          "description": "Card dispatch. Contains the full card context from the board pickup.",
+          "type": "object",
+          "required": [
+            "id",
+            "title",
+            "description",
+            "acceptance_criteria",
+            "status"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "Board item node ID (e.g. PVT_kwDOABCDEF)"
+            },
+            "title": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": {
+              "type": "string"
+            },
+            "acceptance_criteria": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "status": {
+              "type": "string",
+              "description": "Board column name at time of dispatch (e.g. 'In Progress')"
+            },
+            "previous_status": {
+              "type": "string"
+            },
+            "issue_id": {
+              "type": "string"
+            },
+            "issue_number": {
+              "type": "integer"
+            },
+            "issue_url": {
+              "type": "string"
+            },
+            "github_token": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "GitHub token for the performer to act with."
+            },
+            "assigned_agent": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null
+            }
+          }
         },
-        "description": {
-          "type": "string"
+        {
+          "title": "BootstrapDispatchPayload",
+          "description": "Env-bootstrap job dispatch (coordinare/models/env_cache.py: BootstrapJobPayload).",
+          "type": "object",
+          "required": [
+            "job_type",
+            "symphony_name",
+            "symphony_org",
+            "symphony_repo"
+          ],
+          "properties": {
+            "job_type": {
+              "type": "string",
+              "const": "env_bootstrap"
+            },
+            "symphony_name": {
+              "type": "string"
+            },
+            "symphony_org": {
+              "type": "string"
+            },
+            "symphony_repo": {
+              "type": "string"
+            },
+            "env_spec_files": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "env_spec_contents": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "cache_mount_path": {
+              "type": "string"
+            },
+            "last_failure": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
         },
-        "acceptance_criteria": {
-          "type": "array",
-          "items": { "type": "string" }
-        },
-        "board_card_id": {
-          "type": "string",
-          "description": "Board item node ID (e.g. PVT_kwDOABCDEF)"
-        },
-        "column": {
-          "type": "string",
-          "description": "Board column name at time of dispatch (e.g. 'In Progress')"
-        },
-        "assigned_agent": {
-          "type": ["string", "null"],
-          "default": null
+        {
+          "title": "WikiInitDispatchPayload",
+          "description": "Cardless wiki-init dispatch (daemon._execute_wiki_init_dispatch).",
+          "type": "object",
+          "required": [
+            "card_id",
+            "title",
+            "description"
+          ],
+          "properties": {
+            "card_id": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            },
+            "description": {
+              "type": "string"
+            },
+            "role": {
+              "type": "string"
+            },
+            "doc_mode": {
+              "type": "string"
+            },
+            "repo_url": {
+              "type": "string"
+            },
+            "branch": {
+              "type": "string"
+            },
+            "base_branch": {
+              "type": "string"
+            }
+          }
         }
-      }
+      ]
     },
     "relay_feedback_payload": {
       "title": "RelayFeedbackPayload",
-      "description": "Payload for action=relay_feedback.",
+      "description": "Payload for action=relay_feedback. The session ID rides the outer message (412 round 17: aligned with the transport caller). The cancellation path sends no PR context, so only ``comments`` is required and ``pr_url`` accepts the empty string the serializer produces (412 round 32).",
       "type": "object",
-      "required": ["session_id", "pr_url", "reviews"],
+      "required": [
+        "comments"
+      ],
       "properties": {
-        "session_id": {
-          "type": "string",
-          "description": "The session ID from the original dispatch response."
-        },
         "pr_url": {
           "type": "string",
-          "format": "uri",
-          "description": "URL of the pull request under review."
+          "description": "URL of the pull request under review; empty for the cancellation relay."
         },
-        "reviews": {
+        "comments": {
           "type": "array",
           "items": {
             "type": "object",
-            "required": ["reviewer", "body"],
+            "required": [
+              "author_login",
+              "body"
+            ],
             "properties": {
-              "reviewer": {
+              "author_login": {
                 "type": "string",
                 "description": "Identity of the reviewer (e.g. 'copilot', 'human:jdoe')"
               },
@@ -85,12 +215,18 @@
                 "description": "Comment text."
               },
               "file": {
-                "type": ["string", "null"],
+                "type": [
+                  "string",
+                  "null"
+                ],
                 "default": null,
                 "description": "File path the comment applies to, if applicable."
               },
               "line": {
-                "type": ["integer", "null"],
+                "type": [
+                  "integer",
+                  "null"
+                ],
                 "default": null,
                 "description": "Line number the comment applies to, if applicable."
               }
@@ -98,6 +234,84 @@
           }
         }
       }
+    },
+    "status_payload": {
+      "title": "StatusPayload",
+      "description": "Payload for action=status and action=health: empty, or a mid-session token refresh.",
+      "type": "object",
+      "properties": {
+        "github_token": {
+          "type": "string",
+          "description": "Optional fresh GitHub token for the performer to re-authenticate with (App tokens expire)."
+        }
+      },
+      "additionalProperties": false
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "dispatch"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/dispatch_payload"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "relay_feedback"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/relay_feedback_payload"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "status"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/status_payload"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "health"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/status_payload"
+          }
+        }
+      }
+    }
+  ]
 }

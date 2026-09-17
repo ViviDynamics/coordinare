@@ -89,26 +89,44 @@ def scanner_to_findings(raw: list[dict[str, Any]]) -> list[SecurityFinding]:
     keeping it here is what stops a reading from calling a SQL injection "low".
     A category outside the allowed set cannot dodge that by being unrecognised;
     it lands in the fallback and is still scored.
+
+    412: one malformed row (an unparseable line number, an oversize evidence
+    field) is skipped or clamped, never fatal -- a scanner that prints a
+    minified line cannot crash the gate into an unhandled ValidationError.
     """
     allowed = set(SECURITY_CATEGORIES)
     out: list[SecurityFinding] = []
     for r in raw:
         if not isinstance(r, dict):
             continue
-        tool = str(r.get("tool") or "scanner")[:64]
-        category = str(r.get("category") or "")
-        if category not in allowed:
-            category = _FALLBACK_CATEGORY
-        description = str(r.get("description") or r.get("problem") or "")
-        path = normalise_tool_path(str(r.get("file") or r.get("path") or ""))
-        severity = severity_for(category)
-        out.append(SecurityFinding(
-            path=path, line=max(int(r.get("line") or 0), 0), category=category,
-            problem=(description or f"{tool} finding")[:500],
-            why_blocking=f"reported by {tool} as {category}"[:500],
-            evidence=str(r.get("evidence") or "")[:500], origin="rule", severity=severity,
-            routing=routing_for(category), introduced_by=path, tool=tool,
-        ))
+        try:
+            tool = str(r.get("tool") or "scanner")[:64]
+            category = str(r.get("category") or "")
+            if category not in allowed:
+                category = _FALLBACK_CATEGORY
+            description = str(r.get("description") or r.get("problem") or "")
+            path = normalise_tool_path(str(r.get("file") or r.get("path") or ""))
+            try:
+                raw_line = r.get("line")
+                if raw_line is None or raw_line == "":
+                    line = 0
+                else:
+                    # 412 round 8: a malformed line is a malformed ROW, not a
+                    # line-0 anchor -- anchor_ok_security would otherwise pin
+                    # a high-severity finding anywhere the file was surveyed.
+                    line = max(int(raw_line), 0)
+            except (TypeError, ValueError):
+                continue
+            severity = severity_for(category)
+            out.append(SecurityFinding(
+                path=path, line=line, category=category,
+                problem=(description or f"{tool} finding")[:500],
+                why_blocking=f"reported by {tool} as {category}"[:500],
+                evidence=str(r.get("evidence") or "")[:200], origin="rule", severity=severity,
+                routing=routing_for(category), introduced_by=path, tool=tool,
+            ))
+        except Exception:  # noqa: BLE001 - a bad row is skipped, not fatal
+            continue
     return out
 
 
@@ -156,6 +174,10 @@ class GateOutcome:
     unread_files: list[str]
     covered_files: list[str]
     scanner_findings: list[SecurityFinding] = field(default_factory=list)
+    #: 412 round 18: tool findings whose line does not anchor to the diff --
+    #: pre-existing issues at unchanged lines inside changed files. Reported
+    #: but never blocking (FR-011: never dropped).
+    baseline_findings: list[SecurityFinding] = field(default_factory=list)
 
 
 def run_gate(
@@ -175,17 +197,41 @@ def run_gate(
     # blocking ones happened to land after position 200 lost them, and the
     # verdict passed. Order by blocking first, so the bound can only ever drop
     # findings that were not going to fail the round.
+    # 412 round 18: argv scoping to the changed files still lets a
+    # pre-existing finding at an unchanged line inside a changed file block
+    # the merge. A tool finding is introduced-evidence only when its line
+    # anchors to the diff (or the survey opened the file); anything else
+    # moves to the baseline bucket -- reported, never dropped, never
+    # blocking.
+    scanner_list = scanner_to_findings(scanner_raw)
+    changed_paths = {c.path for c in changed_files}
+    anchored, baseline = [], []
+    for f in scanner_list:
+        # 412 round 18, corrected round 27: a scanner finding is
+        # introduced-evidence only when its line anchors to the diff. The
+        # survey opening the file cannot establish that an unchanged line
+        # was introduced by this PR -- the surveyed anchor stays for the
+        # model findings, which reason over context. Unchanged-line findings
+        # report in the baseline bucket: reported, never dropped, never
+        # blocking.
+        if f.introduced_by in changed_paths and anchor_in_hunks(f, changed_files):
+            anchored.append(f)
+        else:
+            baseline.append(f)
     scanner = sorted(
-        scanner_to_findings(scanner_raw),
+        anchored,
         key=lambda f: f.severity not in BLOCKING,
     )[:MAX_SCANNER_FINDINGS]
     # The model's survivors are capped by their own bound.
     merged = merge_scanner_findings(kept[:MAX_MODEL_SURVIVORS], scanner)
     blocking, advisory = split_blocking(merged)
     coverage_ok = full_coverage(changed_files, truncated, coverage_pass_ran)
-    unread = [c.path for c in changed_files if not (c.fully_in_diff or c.opened_by_survey)]
-    covered = [c.path for c in changed_files if c.fully_in_diff or c.opened_by_survey]
+    # 412 round 8: a deleted file is absent from the worktree -- it can never
+    # be opened, so it is never unread (its content is in the diff as removals).
+    unread = [c.path for c in changed_files if not (c.fully_in_diff or c.opened_by_survey or c.deleted)]
+    covered = [c.path for c in changed_files if c.fully_in_diff or c.opened_by_survey or c.deleted]
     return GateOutcome(
         blocking=blocking, advisory=advisory, dropped=dropped, verdict=verdict(blocking, coverage_ok),
         unread_files=unread if not coverage_ok else [], covered_files=covered, scanner_findings=scanner,
+        baseline_findings=baseline,
     )

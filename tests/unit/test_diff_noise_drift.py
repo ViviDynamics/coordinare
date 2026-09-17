@@ -26,3 +26,14 @@ def test_diff_filter_markers_are_dir_anchored() -> None:
     # Agent-dir markers use a trailing slash so they match a directory path.
     for d in AGENT_CONFIG_DIRS:
         assert f"{d}/" in _DIFF_NOISE_PATH_MARKERS
+
+
+def test_performer_sanitizer_markers_mirror_the_coordinare_filter() -> None:
+    """412 round 31: the performer classifies which changed paths the
+    sanitizer deliberately omitted (the empty-diff verdict advances on
+    them instead of holding), so its marker set must equal the
+    coordinare's drop list exactly -- a path one side drops and the other
+    does not is a verdict inconsistency."""
+    from performer.noise_paths import DIFF_NOISE_PATH_MARKERS
+
+    assert set(DIFF_NOISE_PATH_MARKERS) == set(_DIFF_NOISE_PATH_MARKERS)

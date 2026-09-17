@@ -40,6 +40,9 @@ class TestSecurityCategories:
             "weak_crypto",
             "missing_hardening",
             "information_leak",
+            "vulnerable_dependency",
+            "supply_chain",
+            "insecure_configuration",
             "other_insecure_pattern",
         )
 
@@ -51,6 +54,9 @@ class TestSecurityCategories:
             "insecure_deserialization": "high",
             "path_traversal": "high",
             "ssrf": "high",
+            "vulnerable_dependency": "high",
+            "supply_chain": "high",
+            "insecure_configuration": "high",
             "weak_crypto": "medium",
             "missing_hardening": "medium",
             "information_leak": "medium",
@@ -58,7 +64,7 @@ class TestSecurityCategories:
         }
 
     def test_routing_table_only_architect(self):
-        assert ROUTING == {"broken_authorization": "architect"}
+        assert ROUTING == {"broken_authorization": "architect", "insecure_configuration": "architect"}
 
     def test_blocking_set(self):
         assert frozenset({"critical", "high"}) == BLOCKING

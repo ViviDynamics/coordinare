@@ -108,6 +108,117 @@ rename to src/new_name.py
         assert len(files) == 1
         assert files[0].path == "src/new_name.py"
 
+    def test_quoted_plus_plus_payload_is_decoded(self):
+        """412 round 17: git quotes and escapes the +++ payload it cannot
+        emit raw -- the quotes must not just be stripped off the raw escape
+        spelling."""
+        diff = (
+            'diff --git "a/caf\\303\\251 menu.py" "b/caf\\303\\251 menu.py"\n'
+            '--- "a/caf\\303\\251 menu.py"\n'
+            '+++ "b/caf\\303\\251 menu.py"\n'
+            "@@ -1,1 +1,2 @@\n"
+            "+new\n"
+        )
+        files = parse_unified_diff(diff)
+        assert [f.path for f in files] == ["café menu.py"]
+
+    def test_quoted_rename_to_metadata_is_decoded(self):
+        """412 round 17: a quoted rename-to target is git-escaped -- decode
+        it rather than stripping the quotes around the raw escapes. The
+        metadata is the authoritative post-image, not the header b-side."""
+        diff = (
+            'diff --git "a/old.py" "b/old.py"\n'
+            "similarity index 100%\n"
+            "rename from old.py\n"
+            'rename to "caf\\303\\251 2.py"\n'
+        )
+        files = parse_unified_diff(diff)
+        assert [f.path for f in files] == ["café 2.py"]
+
+    def test_quoted_payload_with_escaped_tab_keeps_the_filename(self):
+        """412 round 18: the timestamp split happens before the decode --
+        a quoted payload's escaped tab is filename content, not a separator
+        (decoding first turned ta\\tb.py into the truncated path ta)."""
+        diff = (
+            'diff --git "a/ta\\tb.py" "b/ta\\tb.py"\n'
+            '--- "a/ta\\tb.py"\n'
+            '+++ "b/ta\\tb.py"\n'
+            "@@ -1,1 +1,2 @@\n"
+            "+new\n"
+        )
+        files = parse_unified_diff(diff)
+        assert [f.path for f in files] == ["ta\tb.py"]
+
+    def test_quoted_payload_with_escaped_newline_stays_single_line(self):
+        """412 round 19: line-structure escapes stay escaped -- a decoded
+        newline would break the one-path-per-line machine metadata, and the
+        parsed name could no longer be matched or reported exactly."""
+        diff = (
+            'diff --git "a/ta\\nb.py" "b/ta\\nb.py"\n'
+            '--- "a/ta\\nb.py"\n'
+            '+++ "b/ta\\nb.py"\n'
+            "@@ -1,1 +1,2 @@\n"
+            "+new\n"
+        )
+        files = parse_unified_diff(diff)
+        assert [f.path for f in files] == ["ta\\nb.py"]
+
+    def test_quoted_payload_with_control_escapes_decode_verbatim(self):
+        """412 round 24: git quotes the other control bytes as \\a \\b \\v \\f
+        too -- the fallback branch must not drop the backslash and change the
+        parsed filename."""
+        diff = (
+            'diff --git "a/ta\\ab.py" "b/ta\\ab.py"\n'
+            '--- "a/ta\\ab.py"\n'
+            '+++ "b/ta\\ab.py"\n'
+            "@@ -1,1 +1,2 @@\n"
+            "+new\n"
+        )
+        files = parse_unified_diff(diff)
+        assert [f.path for f in files] == ["ta\x07b.py"]
+
+    def test_quoted_and_unquoted_plus_plus_with_timestamp_suffix(self):
+        """412 round 18: a real tab separates an optional timestamp suffix;
+        it is split off before any quoted payload is decoded."""
+        unquoted = (
+            "diff --git a/name.py b/name.py\n"
+            "--- a/name.py\n"
+            "+++ b/name.py\t2026-09-16 08:00:00.000000000 +0000\n"
+            "@@ -1,1 +1,2 @@\n"
+            "+new\n"
+        )
+        files = parse_unified_diff(unquoted)
+        assert [f.path for f in files] == ["name.py"]
+
+    def test_empty_file_deletion_reads_as_deleted(self):
+        """412 round 18: deletion is section metadata, not hunk presence --
+        an empty-file deletion has no hunks, and reading it as unread held
+        the round on nothing."""
+        diff = (
+            "diff --git a/empty.py b/empty.py\n"
+            "deleted file mode 100644\n"
+            "--- a/empty.py\n"
+            "+++ /dev/null\n"
+        )
+        files = parse_unified_diff(diff)
+        assert [(f.path, f.deleted, f.fully_in_diff) for f in files] == [("empty.py", True, False)]
+
+    def test_delete_only_quoted_filename_keeps_edge_spaces(self):
+        """412 round 45: git quotes filenames with leading or trailing
+        spaces precisely so the quoted payload is byte-exact -- the old
+        post-decode trim changed the name, and coverage matching referred
+        to a file git does not name."""
+        diff = (
+            'diff --git "a/foo.py " "b/foo.py "\n'
+            "deleted file mode 100644\n"
+            '--- "a/foo.py "\n'
+            "+++ /dev/null\n"
+            "@@ -1,1 +0,0 @@\n"
+            "-line\n"
+        )
+        files = parse_unified_diff(diff)
+        assert [f.path for f in files] == ["foo.py "]
+
     def test_hunk_without_counts(self):
         """Parse a hunk header without count (defaults to 1)."""
         diff = """diff --git a/src/foo.py b/src/foo.py

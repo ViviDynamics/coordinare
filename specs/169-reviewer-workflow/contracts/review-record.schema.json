@@ -50,6 +50,16 @@
             "type": "boolean",
             "description": "True if entire file is in the injected diff text"
           },
+          "deleted": {
+            "type": "boolean",
+            "description": "True if the diff removes the file; deletions are exempt from the coverage gates",
+            "default": false
+          },
+          "deleted_before_cut": {
+            "type": "boolean",
+            "description": "412 round 20: true when the truncation cut through a removal section -- the cut clears `deleted` so the coverage gates hold the file unread, and this records the hunk-header truth so the scan argv still excludes the missing file",
+            "default": false
+          },
           "opened_by_survey": {
             "type": "boolean",
             "description": "True if survey ran a command on this file",
@@ -118,6 +128,13 @@
       "maxItems": 30,
       "items": {"$ref": "#/definitions/finding"}
     },
+    "advisory_findings": {
+      "type": "array",
+      "description": "Surviving but advisory: posted as review comments, never blocking on their own",
+      "default": [],
+      "maxItems": 30,
+      "items": {"$ref": "#/definitions/finding"}
+    },
     "findings_before_gate": {
       "type": "array",
       "description": "Model's raw findings before validation",
@@ -174,8 +191,8 @@
     },
     "verdict": {
       "type": "string",
-      "enum": ["approved", "changes_requested", "env_blocked"],
-      "description": "Final verdict from the workflow"
+      "enum": ["approved", "changes_requested", "env_blocked", "nothing_to_review"],
+      "description": "Final verdict from the workflow; nothing_to_review is the explicit advance-with-note verdict for an empty parsed change set"
     },
     "covered_files": {
       "type": "array",

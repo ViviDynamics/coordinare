@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from coordinare.protocol import ProtocolMessage
+from coordinare.protocol import ProtocolMessage, ProtocolResponse
 from coordinare.transport.base import TransportError, TransportTimeoutError
 from coordinare.transport.subprocess_transport import (
     SubprocessTransport,
@@ -143,6 +143,131 @@ async def test_proc_cleared_after_terminal_status() -> None:
     assert r1.status == "pr_opened"
     assert r2.status == "accepted"
     assert mock_asyncio.create_subprocess_exec.await_count == 2
+
+
+@pytest.mark.parametrize("status", ["nothing_to_review", "nothing_to_scan", "not_applicable", "blocked", "session_expired"])
+@pytest.mark.asyncio
+async def test_proc_cleared_after_advance_with_note_status(status) -> None:
+    """412: the advance-with-note verdicts exit the performer's run loop and a
+    review-cycle block caps the session -- the transport must not hand the
+    next dispatch a process that is exiting or already at its cycle limit."""
+    transport = SubprocessTransport("/usr/bin/agent", timeout=30)
+    payload = f'{{"status":"{status}","session_id":"s1"}}\n'
+    proc1 = _make_persistent_proc(payload.encode())
+    proc2 = _make_persistent_proc(b'{"status":"accepted","session_id":"s2"}\n')
+
+    with patch("coordinare.transport.subprocess_transport.asyncio") as mock_asyncio:
+        mock_asyncio.create_subprocess_exec = AsyncMock(side_effect=[proc1, proc2])
+        mock_asyncio.create_task = _mock_create_task
+        mock_asyncio.subprocess = asyncio.subprocess
+        mock_asyncio.wait_for = _await_coro
+
+        r1 = await transport.send(_make_msg("status"))
+        r2 = await transport.send(_make_msg("dispatch"))
+
+    assert r1.status == status
+    assert r2.status == "accepted"
+    assert mock_asyncio.create_subprocess_exec.await_count == 2, "a fresh process replaces the one that exited"
+
+
+@pytest.mark.asyncio
+async def test_proc_kept_when_session_expired_while_another_session_active() -> None:
+    """412 round 46: session_expired answered while another session is still
+    being served (active_session=true) is an error for the stale request only
+    -- the live process must not be cleared or reaped."""
+    transport = SubprocessTransport("/usr/bin/agent", timeout=30)
+    proc = _make_persistent_proc()
+    proc.stdout.readline = AsyncMock(side_effect=[
+        b'{"status":"session_expired","session_id":"stale","active_session":true}\n',
+        b'{"status":"accepted","session_id":"s2"}\n',
+    ])
+
+    with patch("coordinare.transport.subprocess_transport.asyncio") as mock_asyncio:
+        mock_asyncio.create_subprocess_exec = AsyncMock(return_value=proc)
+        mock_asyncio.create_task = _mock_create_task
+        mock_asyncio.subprocess = asyncio.subprocess
+        mock_asyncio.wait_for = _await_coro
+
+        r1 = await transport.send(_make_msg("status"))
+        r2 = await transport.send(_make_msg("dispatch"))
+
+    assert r1.status == "session_expired"
+    assert r1.active_session is True
+    assert r2.status == "accepted"
+    assert mock_asyncio.create_subprocess_exec.await_count == 1, "the live process is kept for the active session"
+
+
+@pytest.mark.asyncio
+async def test_discarded_process_exits_cleanly_within_the_grace_window() -> None:
+    """412 round 12: the reap lets the performer's cleanup path (backend stop,
+    proxy shutdown, workspace cleanup) run to completion -- no SIGTERM when the
+    process exits on its own."""
+    transport = SubprocessTransport("/usr/bin/agent", timeout=30)
+    proc = MagicMock(returncode=None)
+    proc.wait = AsyncMock(return_value=0)
+
+    transport._schedule_reap(proc)
+    await asyncio.sleep(0.01)
+
+    proc.terminate.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_discarded_process_is_terminated_after_the_grace_window(monkeypatch) -> None:
+    """412 round 12: a process that never exits on its own -- session_expired
+    answered by a handler while a performance is still active -- is
+    terminated once the bounded grace window passes."""
+    from coordinare.transport import subprocess_transport
+
+    monkeypatch.setattr(subprocess_transport, "_REAP_GRACE_SECONDS", 0.01)
+    transport = SubprocessTransport("/usr/bin/agent", timeout=30)
+    proc = MagicMock(returncode=None)
+    stopped = asyncio.Event()
+
+    async def _wait() -> None:
+        await stopped.wait()
+
+    proc.wait = _wait
+    proc.terminate.side_effect = lambda: stopped.set()
+
+    transport._schedule_reap(proc)
+    await asyncio.sleep(0.05)
+
+    proc.terminate.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_next_start_serializes_behind_the_grace_window_reap(monkeypatch) -> None:
+    """412 round 13: the next performer must not start beside the discarded
+    predecessor's cleanup -- the start waits for the grace-window reap."""
+    from coordinare.transport import subprocess_transport
+
+    monkeypatch.setattr(subprocess_transport, "_REAP_GRACE_SECONDS", 0.01)
+    transport = SubprocessTransport("/usr/bin/agent", timeout=30)
+    proc = MagicMock(returncode=None)
+    reaped = asyncio.Event()
+
+    async def _wait() -> None:
+        await reaped.wait()
+
+    proc.wait = _wait
+    proc.terminate.side_effect = lambda: reaped.set()
+    transport._schedule_reap(proc)
+
+    start_order: list[str] = []
+
+    async def _fake_start(drain_stderr: bool):
+        start_order.append("reaped" if reaped.is_set() else "overlapped")
+        return _make_persistent_proc()
+
+    async def _fake_exchange(p, message, timeout):
+        return ProtocolResponse(status="accepted", session_id="s1")
+
+    monkeypatch.setattr(transport, "_start", _fake_start)
+    monkeypatch.setattr(transport, "_exchange", _fake_exchange)
+
+    await transport.send(_make_msg("dispatch"))
+    assert start_order == ["reaped"], "the start must wait for the reap, not overlap it"
 
 
 @pytest.mark.asyncio

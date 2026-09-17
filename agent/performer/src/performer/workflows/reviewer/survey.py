@@ -52,17 +52,32 @@ _TOKEN_SPLIT = re.compile(r"""[\s;|&()'"`<>]+""")
 def command_names_path(command: str, path: str) -> bool:
     """True when *path* is a whole argument of the command: exact, ``./``-prefixed,
     or the object of a ``git show REV:path``. A substring is not enough:
-    ``tests/test.py`` must not count as opening ``test.py`` (FR-009)."""
-    for token in _TOKEN_SPLIT.split(command):
-        if not token:
-            continue
+    ``tests/test.py`` must not count as opening ``test.py`` (FR-009).
+
+    412: shell-aware tokenization, so ``cat 'my docs/a.md'`` opens the quoted
+    path instead of shattering into fragments; an unterminated quote falls
+    back to the conservative splitter.
+    """
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|")
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError:
+        tokens = [t for t in _TOKEN_SPLIT.split(command) if t]
+    for token in tokens:
         if token == path or token == f"./{path}" or token.endswith(f":{path}"):
             return True
     return False
 
 
 def mark_opened(changed_files: list[ChangedFile], survey: Survey) -> list[ChangedFile]:
-    """A changed file is opened when an admitted command that ran names its path as an argument."""
+    """A changed file is opened when an admitted command that ran names its path as an argument.
+
+    412: this is the COVERAGE definition -- loose on purpose, because "the
+    model put the file in front of itself" is enough to have seen its shape.
+    Anchoring uses the strict ``opened_paths`` (an explicit content read); the
+    two answer different questions and are documented, not contradictory.
+    """
     commands = [r.command for r in survey.records if r.allowed and r.exit_code == 0]
     out = []
     for f in changed_files:
@@ -72,7 +87,10 @@ def mark_opened(changed_files: list[ChangedFile], survey: Survey) -> list[Change
 
 
 def unread_files(changed_files: list[ChangedFile]) -> list[str]:
-    return [f.path for f in changed_files if not (f.fully_in_diff or f.opened_by_survey)]
+    # 412 round 8: a deleted file has nothing to open -- its content is in the
+    # diff as removals and it is absent from the worktree, so it is never
+    # unread, and the coverage pass must not chase it.
+    return [f.path for f in changed_files if not (f.fully_in_diff or f.opened_by_survey or f.deleted)]
 
 
 def survey_output_lines(records) -> list[str]:
@@ -102,7 +120,13 @@ async def run_reviewer_survey(toolkit, intake: Intake, workspace: Path, budget: 
 
 
 def opened_paths(records, paths) -> set[str]:
-    """Verify explicit content reads; listings/status and command chains are insufficient."""
+    """Verify explicit content reads; listings/status and command chains are insufficient.
+
+    412: this is the ANCHORING definition -- a finding's evidence must come
+    from content a command actually printed, so only content reads count here.
+    ``mark_opened`` (loose) drives coverage; this drives anchoring, including
+    the security workflow's unchanged-path sinks.
+    """
     opened: set[str] = set()
     for record in records:
         if not record.allowed or record.exit_code != 0:
@@ -121,8 +145,15 @@ def opened_paths(records, paths) -> set[str]:
                 reads = path in argv[1:] or f"./{path}" in argv[1:]
             elif program == "git":
                 git_args = argv[1:]
-                if git_args and git_args[0] == "--no-pager":
+                # 412 round 24: flag forms between ``git`` and its subcommand
+                # keep the ``show`` window open (mirroring the security
+                # workflow's candidate parser) -- a value-taking ``-c``
+                # consumes its value too. Any other non-flag token closes it.
+                while git_args and git_args[0] != "show" and git_args[0].startswith("-"):
+                    value_flag = git_args[0] == "-c"
                     git_args = git_args[1:]
+                    if value_flag and git_args:
+                        git_args = git_args[1:]
                 safe_flags = {"--no-pager", "--no-color", "--color=never", "--no-ext-diff", "--no-textconv"}
                 show_args = [arg for arg in git_args[1:] if arg not in safe_flags]
                 reads = bool(git_args and git_args[0] == "show" and len(show_args) == 1

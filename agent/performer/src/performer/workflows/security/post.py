@@ -38,7 +38,46 @@ def _line(f: SecurityFinding) -> str:
     return f"- **{f.severity} {f.category}**{tool} at {where}, introduced by `{f.introduced_by}`: {f.problem}\n  Why blocking: {f.why_blocking}{ev}{down}"
 
 
-def build_security_review(blocking: list[SecurityFinding], advisory: list[SecurityFinding], changed_files: list[ChangedFile], header: str) -> tuple[str, str, list[dict]]:
+def _baseline_line(f: SecurityFinding) -> str:
+    """412 round 25: baseline findings are pre-existing -- they have no
+    blocking reason to give, and this PR did not introduce them."""
+    where = f"`{f.path}:{f.line}`" if f.path else "(pull request)"
+    tool = "" if f.tool == "model" else f" (reported by {f.tool})"
+    ev = f"\n  Evidence: `{f.evidence[:200]}`" if f.evidence else ""
+    return f"- **{f.severity} {f.category}**{tool} at {where}: {f.problem}{ev}"
+
+
+#: 412 round 29: GitHub review bodies are size-capped, and a scan-heavy
+#: baseline can otherwise blow past the cap and turn a non-blocking report
+#: into a failed post (surfacing as env_blocked). The rendered section is
+#: bounded by total characters; the persisted record keeps every finding.
+MAX_BASELINE_RENDER_CHARS = 6000
+
+
+def _baseline_section(baseline: list[SecurityFinding]) -> str:
+    """412 round 25: baseline findings are pre-existing -- they have no
+    blocking reason to give, and this PR did not introduce them. 412 round
+    29: the section renders at most MAX_BASELINE_RENDER_CHARS of finding
+    text and summarizes the remainder, so the body stays postable."""
+    if not baseline:
+        return ""
+    lines: list[str] = []
+    used = 0
+    for f in baseline:
+        line = _baseline_line(f)
+        if used + len(line) > MAX_BASELINE_RENDER_CHARS and lines:
+            lines.append(
+                f"- (+{len(baseline) - len(lines)} more pre-existing findings omitted from this report;"
+                " the full list is in the persisted record)"
+            )
+            break
+        lines.append(line)
+        used += len(line)
+    return ("\n\nBaseline scanner findings (pre-existing, not introduced by this PR):\n" + "\n".join(lines))
+
+
+def build_security_review(blocking: list[SecurityFinding], advisory: list[SecurityFinding], changed_files: list[ChangedFile], header: str, baseline: list[SecurityFinding] | None = None) -> tuple[str, str, list[dict]]:
+    baseline = baseline or []
     inline: list[dict] = []
     in_body: list[SecurityFinding] = []
     for f in blocking:
@@ -52,22 +91,23 @@ def build_security_review(blocking: list[SecurityFinding], advisory: list[Securi
         else:
             in_body.append(f)
     adv = ("\n\nAdvisories:\n" + "\n".join(_line(f) for f in advisory)) if advisory else ""
+    base = _baseline_section(baseline)
     if blocking:
         body = f"{header}\n\n**Bot Security Review: FAILED**\n\n{len(blocking)} blocking finding(s); {len(inline)} inline."
         if in_body:
             body += "\n\n" + "\n".join(_line(f) for f in in_body)
-        return "REQUEST_CHANGES", body + adv, inline
+        return "REQUEST_CHANGES", body + adv + base, inline
     body = f"{header}\n\n**Bot Security Review: PASSED**\n\nNo blocking findings; {len(advisory)} advisory finding(s)."
-    return "COMMENT", body + adv, []
+    return "COMMENT", body + adv + base, []
 
 
-async def post_security_review(score: Any, blocking: list[SecurityFinding], advisory: list[SecurityFinding], changed_files: list[ChangedFile], poster: Poster | None = None) -> PostOutcome:
+async def post_security_review(score: Any, blocking: list[SecurityFinding], advisory: list[SecurityFinding], changed_files: list[ChangedFile], poster: Poster | None = None, baseline: list[SecurityFinding] | None = None) -> PostOutcome:
     if poster is None:
         from performer.github import post_pull_request_review as poster  # noqa: PLC0415 - keeps the workflow importable without network deps
     number = pr_number_from_url(getattr(score, "pr_url", "") or "")
     if number <= 0:
         return PostOutcome(error=f"pr_url is missing or invalid ({getattr(score, 'pr_url', None)!r})")
-    event, body, inline = build_security_review(blocking, advisory, changed_files, attribution_header(score))
+    event, body, inline = build_security_review(blocking, advisory, changed_files, attribution_header(score), baseline)
     try:
         owner, repo = score.owner_repo
         token = score.effective_github_token

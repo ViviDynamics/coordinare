@@ -28,9 +28,12 @@ def test_intake_parses_files_hunks_and_new_side_ranges():
 def test_a_truncated_diff_marks_the_cut_file_unread():
     intake = build_intake(_score(pr_diff=TRUNCATED_DIFF))
     assert intake.diff_truncated is True
-    assert intake.changed_paths[-1] == "src/extra.py"
+    # 412 round 12: the bare note's unaccounted tail rides along as an
+    # unopenable phantom so the gates hold on the hidden remainder.
+    assert intake.changed_paths[-1] == "<unnamed files beyond the truncated diff>"
+    assert intake.changed_paths[-2] == "src/extra.py"
     assert intake.changed_files[-1].fully_in_diff is False
-    assert all(f.fully_in_diff for f in intake.changed_files[:-1])
+    assert all(f.fully_in_diff for f in intake.changed_files[:-2])
     assert "truncated" in intake.as_text()
 
 

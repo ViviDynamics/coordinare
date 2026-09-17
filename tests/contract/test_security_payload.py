@@ -65,27 +65,16 @@ def _prose_security_card_context() -> dict[str, Any]:
         "persona_instructions": "Review for security issues.",
         "pr_url": "https://github.com/org/repo/pull/100",
         "pr_node_id": "PR_kwDO123457",
-        # 083: scanner_findings from coordinare floor (prose path, no workflow)
-        "scanner_findings": [
-            {
-                "severity": "high",
-                "category": "injection",
-                "description": "SQL injection vulnerability",
-                "file": "app.py",
-                "line": 42,
-                "routing": "implementer",
-            },
-            {
-                "severity": "medium",
-                "category": "weak_crypto",
-                "description": "Weak cryptographic hash",
-                "file": "auth.py",
-                "line": 15,
-                "routing": "implementer",
-            },
-        ],
+        # 412: no scanner_findings here -- the floor findings (below) relay
+        # verbatim on the prose path.
         # No pr_diff for prose security (083 fetches it itself)
         # No workflow for prose path
+        # 412 round 27: the prose path relays the floor findings verbatim
+        # (the workflow path is where they are emptied) -- keep a non-empty
+        # finding here so the relay preservation is actually verified.
+        "scanner_findings": [
+            {"severity": "high", "path": "app.py", "line": 3, "category": "sql_injection", "message": "tainted query"},
+        ],
         # Backend selection
         "backend": "claude_code",
         "model": "claude-opus-4-1-20250805",
@@ -120,7 +109,8 @@ class TestSecurityWorkflowPayload:
 
     @pytest.mark.asyncio
     async def test_prose_security_scanner_findings_survive(self) -> None:
-        """When security role runs prose path (no workflow), scanner_findings survive."""
+        """412: the coordinare floor is gone on the workflow path, but the
+        prose path relays its floor findings verbatim through dispatch."""
         transport = _CaptureTransport()
         service = AgentService(transport)
         card_context = _prose_security_card_context()
@@ -128,11 +118,11 @@ class TestSecurityWorkflowPayload:
         await service.dispatch_card(card_context)
 
         payload = transport.captured_payload
-        # scanner_findings should be present with findings from 083 floor
+        # 412 round 27: a non-empty floor finding must survive the dispatch
+        # boundary -- an empty-list assertion here would be vacuous.
         assert "scanner_findings" in payload, "scanner_findings was dropped"
-        assert len(payload["scanner_findings"]) == 2
-        assert payload["scanner_findings"][0]["category"] == "injection"
-        assert payload["scanner_findings"][1]["category"] == "weak_crypto"
+        assert payload["scanner_findings"] == card_context["scanner_findings"]
+        assert payload["scanner_findings"], "fixture must carry a non-empty finding"
 
         # pr_diff should not be present for prose security
         assert "pr_diff" not in payload

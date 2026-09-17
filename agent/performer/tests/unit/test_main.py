@@ -170,6 +170,21 @@ class TestHandleStatus:
         resp = await handle_status(_msg("status", session_id="unknown"), None)
         assert resp.status == "session_expired"
 
+    async def test_stale_session_while_another_active_is_not_process_exiting(self) -> None:
+        """412 round 46: a mismatched session id while another session is being
+        served is an error for that request only -- active_session=true tells
+        the transport the live process must not be cleared or reaped."""
+        resp = await handle_status(_msg("status", session_id="unknown"), _make_perf(session_id="sid"))
+        assert resp.status == "session_expired"
+        assert resp.active_session is True
+
+    async def test_no_session_expiry_is_process_exiting(self) -> None:
+        """412 round 46: session_expired with no active session at all is the
+        process-exiting case -- active_session stays false."""
+        resp = await handle_status(_msg("status", session_id="unknown"), None)
+        assert resp.status == "session_expired"
+        assert resp.active_session is False
+
     async def test_working_returns_working_with_metrics(self) -> None:
         perf = _make_perf(session_id="sid")
         resp = await handle_status(_msg("status", session_id="sid"), perf)
@@ -482,6 +497,14 @@ class TestHandleRelayFeedback:
         resp = await handle_relay_feedback(msg, None)
         assert resp.status == "session_expired"
 
+    async def test_stale_feedback_while_another_active_is_not_process_exiting(self) -> None:
+        """412 round 46: same distinction as handle_status -- a mismatched
+        session id must not read as process-exiting to the transport."""
+        msg = _msg("relay_feedback", session_id="x", feedback="go ahead")
+        resp = await handle_relay_feedback(msg, _make_perf(session_id="sid"))
+        assert resp.status == "session_expired"
+        assert resp.active_session is True
+
     async def test_calls_backend_relay_and_returns_acknowledged(self) -> None:
         perf = _make_perf(session_id="sid")
         msg = _msg("relay_feedback", session_id="sid", feedback="use GitHub Actions")
@@ -782,6 +805,46 @@ class TestRunLoop:
         assert responses[0].status == "session_expired"
         # Only one response — loop exited after session_expired
         assert len(responses) == 1
+
+    async def test_blocked_response_exits_the_loop_and_cleans_up(self) -> None:
+        """412 round 34: the transport treats ``blocked`` as process-exiting
+        (the session is capped and the next dispatch is fresh), so the loop
+        must break on the response and run the graceful cleanup inside the
+        reap grace instead of idling until the transport's SIGTERM."""
+        mock_backend = MagicMock()
+        mock_backend.stop = AsyncMock()
+
+        stand = MagicMock()
+        stand.path = Path("/tmp/test-stand")
+
+        perf = MagicMock()
+        perf.session_id = "sid"
+        perf.backend = mock_backend
+        perf.stand = stand
+        perf.started_at = datetime.now(UTC)  # fresh — watchdog won't fire
+
+        with (
+            patch("performer.main.handle_dispatch", new=AsyncMock(return_value=(
+                PerformerResponse(status="accepted", session_id="sid"),
+                perf,
+            ))),
+            patch("performer.main.handle_status", new=AsyncMock(
+                return_value=PerformerResponse(status="blocked", session_id="sid")
+            )),
+            patch("performer.main.cleanup_stand") as mock_cleanup,
+        ):
+            responses = await _run_loop_with([
+                _make_line(action="dispatch", title="T", repo_url="https://github.com/org/repo",
+                           branch="feat/x", github_token="tok"),
+                _make_line(action="status", session_id="sid"),
+                # This line must never be processed: blocked exits the loop.
+                _make_line(action="health"),
+            ])
+
+        assert responses[-1].status == "blocked"
+        assert len(responses) == 2, "the loop exited on the blocked response"
+        mock_backend.stop.assert_called_once()
+        mock_cleanup.assert_called_once_with(stand)
 
     async def test_dispatch_validation_error_reports_field_names_only(self) -> None:
         """ValidationError from Score(**payload) returns field names without values."""

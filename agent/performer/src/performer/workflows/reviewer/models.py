@@ -31,6 +31,14 @@ class ChangedFile(_Bounded):
     hunks: list[Hunk]  # Parsed hunks from the diff
     fully_in_diff: bool  # True if entire file is in injected text
     opened_by_survey: bool = False  # True if survey ran a command on this file
+    # 412 round 8: "+++ /dev/null" -- the file is gone from the worktree, so
+    # it is not a scannable target (though it still counts for coverage).
+    deleted: bool = False
+    # 412 round 20: a truncation cut clears ``deleted`` so a cut-through
+    # deletion holds as unread rather than passing as covered -- but the
+    # file still does not exist on disk, and the scan argv must keep
+    # excluding it. Records what the diff header said before the cut.
+    deleted_before_cut: bool = False
 
 
 # Categories per spec 169 data-model.md
@@ -43,6 +51,11 @@ DEFAULT_CATEGORIES = (
     "documentation_by_implementer",
     "unaddressed_feedback",
 )
+
+#: 412: advisory categories report but never block. A refactor, docs or
+#: dep-bump PR gets a near-certain ``test_missing`` hit; that must not hold
+#: the card. Everything else in DEFAULT_CATEGORIES is blocking.
+ADVISORY_CATEGORIES = frozenset({"style", "test_missing"})
 
 
 class Finding(_Bounded):
@@ -83,7 +96,8 @@ class ReviewRecord(_Bounded):
     survey_commands: Annotated[list[dict[str, Any]], Field(default_factory=list)]  # Commands run
     survey_refusals: Annotated[list[dict[str, Any]], Field(default_factory=list)]  # Refused commands
 
-    findings: Annotated[list[Finding], Field(default_factory=list, max_length=30)]  # Surviving findings after the gate (the canonical list coordinare lifts)
+    findings: Annotated[list[Finding], Field(default_factory=list, max_length=30)]  # Surviving blocking findings after the gate (the canonical list coordinare lifts)
+    advisory_findings: Annotated[list[Finding], Field(default_factory=list, max_length=30)]  # Surviving but advisory: posted, not blocking
     findings_before_gate: Annotated[list[Finding], Field(default_factory=list, max_length=30)]  # Model's raw findings
     findings_dropped: Annotated[list[Finding], Field(default_factory=list, max_length=30)]  # Unanchored findings, dropped
     findings_after_anchor_recheck: Annotated[list[Finding], Field(default_factory=list, max_length=30)]  # Reprompted findings
@@ -93,7 +107,9 @@ class ReviewRecord(_Bounded):
     coverage_pass_ran: bool = False  # True if coverage pass was needed
     coverage_pass_output: str = ""  # Model's coverage report
 
-    verdict: Literal["approved", "changes_requested", "env_blocked"]
+    #: 412: nothing_to_review is the explicit verdict for an empty parsed
+    #: diff -- advance-with-note for the coordinare, never "approved".
+    verdict: Literal["approved", "changes_requested", "env_blocked", "nothing_to_review"]
     covered_files: list[str]  # Changed files that were in diff or surveyed
 
     post_error: str | None = None  # If post failed, the error message
@@ -161,4 +177,5 @@ __all__ = [
     "ModelDisposition",
     "model_findings_schema",
     "DEFAULT_CATEGORIES",
+    "ADVISORY_CATEGORIES",
 ]

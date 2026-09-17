@@ -496,6 +496,66 @@ def _column_candidates(status: str) -> list[str]:
     return [label for label, mapped in BOARD_COLUMN_TO_STATUS.items() if mapped == status]
 
 
+def _decode_git_quoted_path(payload: str, *, keep_line_escapes: bool = True) -> str:
+    """Decode git's quoted-path escapes into the real path.
+
+    412 round 15: git quotes a header path it cannot emit raw (embedded
+    quotes, non-ASCII under core.quotePath) and escapes the payload --
+    ``\\"`` for a quote, ``\\\\`` for a backslash, ``\\t``/``\\n`` for
+    whitespace, and one-to-three octal digits for a single UTF-8 byte. The
+    escape sequences spell bytes, so decoding assembles UTF-8 from the octal
+    runs rather than substituting Latin-1 characters.
+
+    412 round 19: ``\\n``/``\\r`` stay escaped -- a decoded newline breaks
+    the line-oriented machine metadata (one coordinare-cut/coordinare-unread
+    line per path) and the parsed name can no longer be matched or reported
+    exactly, which would let a truncated section read as fully covered.
+    """
+    data = bytearray()
+    i = 0
+    while i < len(payload):
+        char = payload[i]
+        if char != "\\" or i + 1 >= len(payload):
+            data += char.encode("utf-8")
+            i += 1
+            continue
+        escape = payload[i + 1 : i + 2]
+        if escape in ('"', "\\"):
+            data += escape.encode("utf-8")
+            i += 2
+        elif escape in ("n", "r"):
+            # Line-structure characters stay escaped: the parsed name must
+            # survive a round trip through single-line metadata verbatim.
+            # 412 round 42: this escaped spelling is canonical everywhere --
+            # the changed-file list and the diff parser (diffparse.py keeps
+            # the same escapes) now agree with the sanitizer's machine-note
+            # metadata, so every consumer of a changed-path spelling sees
+            # one representation. The list is never opened from disk --
+            # its consumers are classification and machine-note matching,
+            # which the escaped spelling serves.
+            if keep_line_escapes:
+                data += b"\\" + escape.encode("utf-8")
+            else:
+                data += b"\n" if escape == "n" else b"\r"
+            i += 2
+        elif escape in ("a", "b", "v", "f"):
+            # 412 round 24: git's C-style quoting covers the other control
+            # bytes too -- the fallback branch would drop the backslash and
+            # change the parsed filename.
+            data += b"\a" if escape == "a" else b"\b" if escape == "b" else b"\v" if escape == "v" else b"\f"
+            i += 2
+        elif escape == "t":
+            data += b"\t"
+            i += 2
+        elif octal := re.match(r"[0-7]{1,3}", payload[i + 1 : i + 4]):
+            data.append(int(octal.group(0), 8))
+            i += 1 + len(octal.group(0))
+        else:
+            data += escape.encode("utf-8")
+            i += 2
+    return data.decode("utf-8", "replace")
+
+
 class GitHubService(CardIdentityMap):
     """Async GitHub GraphQL service with field and option caching."""
 
@@ -1406,13 +1466,63 @@ class GitHubService(CardIdentityMap):
     def _parse_diff_paths(raw_diff: str) -> list[str]:
         """Extract post-image (``b/``) paths from a unified diff's git headers."""
         paths: list[str] = []
+        pending_index: int | None = None
         for line in raw_diff.splitlines():
             if not line.startswith("diff --git "):
+                # 412 round 13: git does not quote spaces in the header, so a
+                # rename whose a-side contains " b/" is ambiguous in the
+                # header alone ("a/old b/name.py b/new b/name.py"). The
+                # section's rename-to metadata is the authoritative post-image.
+                # 412 round 14: copy-only sections carry "copy to" instead.
+                if pending_index is not None and (line.startswith("rename to ") or line.startswith("copy to ")):
+                    target = line.split(" ", 2)[2].strip()
+                    if target.startswith('"') and target.endswith('"'):
+                        # 412 round 17: a quoted metadata target is
+                        # git-escaped; decode it like the quoted headers.
+                        # 412 round 34: the post-image name must be real.
+                        target = _decode_git_quoted_path(target[1:-1])
+                    paths[pending_index] = target
+                    pending_index = None
                 continue
-            # "diff --git a/<path> b/<path>" — take the b-side path.
+            body = line[len("diff --git "):]
+            # 412 round 14: git quotes header paths it cannot emit raw
+            # (embedded quotes, non-ASCII); each side is a quoted string.
+            # 412 round 15: git escapes the quoted payload (\" for a quote,
+            # octal for non-ASCII bytes), so spans allow backslash escapes
+            # and the captured payload is decoded, not taken literally.
+            if body.startswith('"'):
+                parts = re.findall(r'"((?:[^"\\]|\\.)*)"', body)
+                if len(parts) == 2 and parts[1].startswith("b/"):
+                    # 412 round 34: real control characters -- this list feeds
+                    # the changed-file match, not one-line metadata.
+                    paths.append(_decode_git_quoted_path(parts[1][2:]))
+                    pending_index = len(paths) - 1
+                else:
+                    pending_index = None
+                continue
+            # 412 round 12: a path containing " b/" defeats a greedy split
+            # ("a/docs/foo b/bar.md b/docs/foo b/bar.md" -> "bar.md"). Header
+            # sides are the same path outside renames, so the exact form is
+            # "a/<X> b/<X>": verify the two fields agree and take X; the
+            # greedy match remains the fallback for renames.
+            body = line[len("diff --git "):]
+            if body.startswith("a/"):
+                rest = body[2:]
+                exact = None
+                for i in range(len(rest) - 2):
+                    if rest[i:i + 3] == " b/" and rest[:i] == rest[i + 3:]:
+                        exact = rest[i + 3:]
+                        break
+                if exact is not None:
+                    paths.append(exact)
+                    pending_index = len(paths) - 1
+                    continue
             dm = re.match(r"diff --git a/(.+?) b/(.+)$", line)
             if dm:
                 paths.append(dm.group(2))
+                pending_index = len(paths) - 1
+            else:
+                pending_index = None
         return paths
 
     async def branch_exists(self, branch_name: str) -> bool:

@@ -52,9 +52,29 @@ def test_qa_gets_only_criteria_and_summary():
     assert "milestones" not in ctx["verification_brief"] and "docs" not in ctx["verification_brief"]
 
 
-@pytest.mark.parametrize("role", ["assessing", "architecting", "reviewing", "security", "closing_review", None])
+@pytest.mark.parametrize("role", ["assessing", "architecting", "security", "closing_review", None])
 def test_other_roles_get_no_brief(role):
     assert _ctx(role) == {}
+
+
+def test_reviewer_gets_the_implementation_brief():
+    """412 round 15: the reviewer's FR-008 gate distinguishes a docs-scoped
+    brief from a code-scoped one, so the reviewing role must receive the
+    implementation brief -- not the {} that left the gate unreachable.
+    412 round 18: the map is keyed by the ROLE dispatch actually passes
+    ("reviewer", via _STAGE_TO_ROLE) -- the stage name never reaches it.
+    412 round 32: the reviewer's slice carries the blueprint's ``docs`` list
+    too -- a docs-scoped blueprint may have ``modules: []``, and the docs
+    list is the affirmative evidence the gate reads. The implementer and QA
+    keep the spec-165 invariant (docs never reach them)."""
+    ctx = _ctx("reviewer")
+    brief = ctx["implementation_brief"]
+    assert set(brief) == {"summary", "milestones", "modules", "data_model", "interfaces", "risks", "size", "docs"}
+    assert "documentation_brief" not in ctx and "verification_brief" not in ctx
+    assert _ctx("reviewing") == {}, "the stage name is not a role key"
+
+    for role, key in (("implementing", "implementation_brief"), ("qa", "verification_brief")):
+        assert "docs" not in _ctx(role)[key], f"docs must not reach {role}"
 
 
 def test_no_blueprint_means_no_keys_at_all():

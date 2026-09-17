@@ -20,7 +20,7 @@ import structlog
 from coordinare.graph.state import _set_current_card
 from coordinare.services.board_provider import board_of, move_card_or_warn
 from coordinare.services.env_cache import verify_env_cache_clean
-from coordinare.services.github import PermanentGitHubError
+from coordinare.services.github import PermanentGitHubError, _decode_git_quoted_path
 from coordinare.services.persona_service import get_effective_instructions, load_personas_hot
 from coordinare.services.security_scanner import ScannerError, scan_diff
 from coordinare.transport.base import TransportError
@@ -136,8 +136,9 @@ def _role_runs_workflow(state: Any, role: str | None, workflow_name: str) -> boo
 
     Returns True only when the role's config carries a workflow field matching
     the given name. Guards every attribute access to tolerate missing config.
-    Used to gate coordinare's floor logic: when a role runs a workflow, the
-    workflow runs its own floor and coordinare must not run the legacy floor.
+    Used to shape the dispatch payload: a role running a workflow receives the
+    raw PR diff its intake parses; a non-workflow security role does not need
+    it injected (the 083 floor fetches the diff itself).
     """
     if role is None:
         return False
@@ -174,6 +175,66 @@ def _scanner_unavailable_finding(reason: str) -> dict[str, Any]:
     }
 
 
+async def _run_security_floor(
+    state: CoordinareState, card: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """083 US1 — Fetch the PR diff and run the scanner once (Contract 3).
+
+    412 round 10: restored for NON-workflow security roles — the example
+    config promises "remove the workflow line to restore the prose path
+    exactly", and the prose path carries the 083 dispatch-time scan. A role
+    configured with ``workflow: security`` skips it: the workflow runs its own
+    scanner inside the performer and is the single source of security truth.
+
+    Returns the normalized findings list. On *any* diff-fetch or scanner error
+    returns a single synthetic ``scanner_unavailable`` critical finding so the
+    gate fails closed (FR-008). INFO logging is summary-only (counts), never raw
+    diff text or finding messages (FR-011).
+    """
+    github = state.get("github_service")
+    pr_url = str(card.get("pr_url") or "").strip()
+    card_id = str(card.get("id", ""))
+
+    if github is None or not hasattr(github, "get_pr_diff") or not pr_url:
+        logger.error(
+            "security_floor.diff_unavailable",
+            card_id=card_id,
+            has_github=github is not None,
+            has_pr_url=bool(pr_url),
+        )
+        return [_scanner_unavailable_finding("PR diff source unavailable")]
+
+    try:
+        _raw_diff, changed_files = await github.get_pr_diff(pr_url)
+    except Exception as exc:
+        logger.error(
+            "security_floor.diff_fetch_failed",
+            card_id=card_id,
+            error_type=type(exc).__name__,
+        )
+        return [_scanner_unavailable_finding("diff fetch failed")]
+
+    repo_root = state.get("workspace_path")
+    try:
+        findings = scan_diff(changed_files, repo_root)
+    except ScannerError as exc:
+        logger.error(
+            "security_floor.scan_failed",
+            card_id=card_id,
+            error_type=type(exc).__name__,
+        )
+        return [_scanner_unavailable_finding("scanner failed")]
+
+    gating = sum(1 for f in findings if f.get("severity") in ("critical", "high"))
+    logger.info(
+        "security_floor.complete",
+        card_id=card_id,
+        file_count=len(changed_files),
+        finding_count=len(findings),
+        gating_count=gating,
+    )
+    return findings
+
 
 def inject_qa_findings(
     card_context: dict[str, Any], state: Any, *, role: str | None
@@ -207,10 +268,23 @@ _IMPLEMENTATION_BRIEF_FIELDS: tuple[str, ...] = (
 )
 _DOCUMENTATION_BRIEF_FIELDS: tuple[str, ...] = ("summary", "docs", "modules")
 _VERIFICATION_BRIEF_FIELDS: tuple[str, ...] = ("summary", "criteria")
+# 412 round 32: the reviewer's docs-scope check reads the blueprint's
+# ``docs`` list as affirmative evidence (a docs-scoped blueprint may carry
+# ``modules: []``), so the reviewer's slice adds it to the implementation
+# fields. The spec-165 invariant is unchanged for every other reader: docs
+# never reach the implementer or QA.
+_REVIEWER_BRIEF_FIELDS: tuple[str, ...] = (*_IMPLEMENTATION_BRIEF_FIELDS, "docs")
 _BRIEF_FOR_ROLE: dict[str, tuple[str, tuple[str, ...]]] = {
     "implementing": ("implementation_brief", _IMPLEMENTATION_BRIEF_FIELDS),
     "documenting": ("documentation_brief", _DOCUMENTATION_BRIEF_FIELDS),
     "qa": ("verification_brief", _VERIFICATION_BRIEF_FIELDS),
+    # 412 round 15: the reviewer's FR-008 gate distinguishes a docs-scoped
+    # brief from a code-scoped one, so the reviewer must actually receive the
+    # implementation brief -- absent this mapping Score.brief stayed {} and
+    # the docs-scoped exception was unreachable in production.
+    # 412 round 18: inject_briefs receives the ROLE ("reviewer", from
+    # _STAGE_TO_ROLE), not the stage -- key it by the value actually passed.
+    "reviewer": ("implementation_brief", _REVIEWER_BRIEF_FIELDS),
 }
 
 
@@ -388,66 +462,11 @@ def documenter_side_run_wanted(blueprint: dict[str, Any] | None) -> bool:
     return isinstance(blueprint, dict) and bool(blueprint.get("docs"))
 
 
-async def _run_security_floor(
-    state: CoordinareState, card: dict[str, Any]
-) -> list[dict[str, Any]]:
-    """083 US1 — Fetch the PR diff and run the scanner once (Contract 3).
-
-    Returns the normalized findings list. On *any* diff-fetch or scanner error
-    returns a single synthetic ``scanner_unavailable`` critical finding so the
-    gate fails closed (FR-008). INFO logging is summary-only (counts), never raw
-    diff text or finding messages (FR-011).
-    """
-    github = state.get("github_service")
-    pr_url = str(card.get("pr_url") or "").strip()
-    card_id = str(card.get("id", ""))
-
-    if github is None or not hasattr(github, "get_pr_diff") or not pr_url:
-        logger.error(
-            "security_floor.diff_unavailable",
-            card_id=card_id,
-            has_github=github is not None,
-            has_pr_url=bool(pr_url),
-        )
-        return [_scanner_unavailable_finding("PR diff source unavailable")]
-
-    try:
-        _raw_diff, changed_files = await github.get_pr_diff(pr_url)
-    except Exception as exc:
-        logger.error(
-            "security_floor.diff_fetch_failed",
-            card_id=card_id,
-            error_type=type(exc).__name__,
-        )
-        return [_scanner_unavailable_finding("diff fetch failed")]
-
-    repo_root = state.get("workspace_path")
-    try:
-        findings = scan_diff(changed_files, repo_root)
-    except ScannerError as exc:
-        logger.error(
-            "security_floor.scan_failed",
-            card_id=card_id,
-            error_type=type(exc).__name__,
-        )
-        return [_scanner_unavailable_finding("scanner failed")]
-
-    gating = sum(1 for f in findings if f.get("severity") in ("critical", "high"))
-    logger.info(
-        "security_floor.complete",
-        card_id=card_id,
-        file_count=len(changed_files),
-        finding_count=len(findings),
-        gating_count=gating,
-    )
-    return findings
-
-
 # Persona roles that issue a verdict on an *existing* PR's code and therefore
 # need the raw diff to assess it. The diff is injected into card_context so a
 # model that does not proactively fetch it (observed: gpt-oss:120b rejecting a
 # PR with "no code changes were supplied for review") still sees the changes.
-# ``security`` is excluded: it runs its own diff fetch via the scanner floor.
+# ``security`` is excluded: its workflow intake parses the injected diff itself.
 _DIFF_REVIEW_ROLES: frozenset[str] = frozenset(
     {"reviewer", "closer", "qa", "tech_writer"}
 )
@@ -462,6 +481,17 @@ _DIFF_REVIEW_ROLES: frozenset[str] = frozenset(
 # because noise paths like `.codex/` sort BEFORE the real change, so a blind
 # head-cut would keep the junk and drop the actual diff.
 _DIFF_INJECT_MAX_CHARS = 60_000
+#: 412: budget for the per-path unread/cut machine lines. A huge PR could
+#: otherwise append hundreds of KB of names behind the max_chars slice; the
+#: overflow is declared on a ``coordinare-unread-overflow:`` line and the
+#: workflows hold on it rather than guessing coverage.
+_UNREAD_META_BUDGET_CHARS = 4096
+#: 412 round 39: the changed-path list rides the dispatch payload uncapped
+#: from the raw GitHub diff (a mega-refactor can carry thousands of headers),
+#: so it is sliced to this many entries and the overflow is declared on a
+#: ``pr_changed_paths_overflow`` flag. The security workflow holds on the
+#: flag instead of classifying a partial list.
+_MAX_DISPATCH_CHANGED_PATHS = 512
 # 131: agent tool-config dirs + build/vcs noise. Kept as a literal (NOT a runtime
 # import of the performer package — it need not be importable in the coordinare
 # daemon process). Canonical source of truth is
@@ -476,9 +506,92 @@ _DIFF_NOISE_PATH_MARKERS: tuple[str, ...] = (
 
 
 def _diff_section_path(section: str) -> str:
-    """Best-effort a/-side path from a ``diff --git a/PATH b/PATH`` header line."""
-    m = re.match(r"diff --git a/(.+?) b/", section.split("\n", 1)[0])
-    return m.group(1) if m else ""
+    """Best-effort b/-side path from a diff section.
+
+    412: prefer the ``+++ b/`` line -- it names the target exactly, so a path
+    containing `` b/`` (``docs/foo b/bar.md``) cannot fool the split. Rename-
+    only sections have no ``+++`` line, so the ``rename to`` path is next; the
+    ``diff --git`` header is the last resort. For pure deletions (``+++``
+    /dev/null) the exact ``--- a/<path>`` line beats the greedy header split;
+    the quoted header form is unambiguous and parsed before the greedy
+    unquoted one.
+    """
+    header = section.split("\n", 1)[0]
+    # 412 round 17: quoted payloads carry git escape sequences -- the spans
+    # are parsed independently (a quoted rename's sides differ) and the
+    # b-side is decoded, matching the performer parser's spelling.
+    quoted = re.match(r'^diff --git "a/(?:[^"\\]|\\.)*" "b/((?:[^"\\]|\\.)*)"$', header)
+    if quoted:
+        fallback = _decode_git_quoted_path(quoted.group(1))
+    else:
+        m = re.match(r"diff --git a/(.+) b/(.+)$", header)
+        if m:
+            # 412 round 10: mode-only sections have only the header, and the
+            # greedy split reduces a path containing " b/" to its tail. The
+            # mode-only sides are the SAME path: verify "a/<X> b/<X>" and
+            # take X.
+            body = header[len("diff --git "):]
+            rest = body[2:] if body.startswith("a/") else ""
+            verified = None
+            if rest:
+                for i in range(len(rest) - 2):
+                    if rest[i:i + 3] == " b/" and rest[:i] == rest[i + 3:]:
+                        verified = rest[i + 3:]
+                        break
+            fallback = verified if verified is not None else m.group(2)
+        else:
+            fallback = ""
+    source = ""
+    for line in section.split("\n", 8):
+        if line.startswith("@@"):
+            break
+        if line.startswith("--- "):
+            # The a/-side metadata line -- the exact source path, unlike the
+            # header's greedy split (round 9).
+            source = line[4:].strip()
+            continue
+        if line.startswith("+++ "):
+            # 412 round 18: the timestamp split happens before the decode --
+            # a real tab separates an optional timestamp suffix, and a quoted
+            # payload's escaped tab only becomes real during the decode.
+            rest = line[4:].strip().split("\t")[0].strip()
+            if rest == "/dev/null":
+                # A delete-only section: prefer the exact "--- a/<path>" over
+                # the greedy header split. "/dev/null" on both sides (created
+                # and deleted within one range) keeps the header fallback.
+                if source and source != "/dev/null":
+                    # 412 round 18: timestamp split before the decode (same
+                    # reasoning as the +++ branch).
+                    source = source.split("\t")[0].strip()
+                    if source.startswith('"') and source.endswith('"'):
+                        source = _decode_git_quoted_path(source[1:-1])
+                    if source.startswith("a/"):
+                        source = source[2:]
+                    # 412 round 45: no trim after the decode -- the quoted
+                    # payload is byte-exact and metadata whitespace was
+                    # trimmed pre-decode, matching the performer parser.
+                    if source:
+                        return source
+                return fallback
+            if rest.startswith('"') and rest.endswith('"'):
+                # 412 round 17: git escapes the quoted payload -- decode it,
+                # matching the performer parser's spelling.
+                rest = _decode_git_quoted_path(rest[1:-1])
+            if rest.startswith("b/"):
+                rest = rest[2:]
+            if rest:
+                return rest
+        if line.startswith("rename to ") or line.startswith("copy to "):
+            # 412 round 14: copy-only sections carry "copy to" instead of a
+            # "+++" line -- the metadata is the authoritative post-image.
+            # 412 round 17: a quoted metadata target is git-escaped; decode
+            # it rather than stripping the quotes around the raw escapes.
+            target = line.split(" ", 2)[2].strip()
+            if target.startswith('"') and target.endswith('"'):
+                target = _decode_git_quoted_path(target[1:-1])
+            if target:
+                return target
+    return fallback
 
 
 def _sanitize_pr_diff(raw_diff: str, *, max_chars: int = _DIFF_INJECT_MAX_CHARS) -> str:
@@ -487,17 +600,20 @@ def _sanitize_pr_diff(raw_diff: str, *, max_chars: int = _DIFF_INJECT_MAX_CHARS)
     Keeps any preamble before the first ``diff --git`` header. Appends a short
     ``[coordinare: …]`` note when anything was omitted/truncated so the model
     knows the diff is partial (the persona already instructs fetching the full
-    diff via ``gh pr diff`` when needed).
+    diff via ``gh pr diff`` when needed). 412: when the cap hits, the note names
+    the file cut through and every file entirely beyond it, so the reviewer's
+    coverage check holds those files unread instead of passing on the visible
+    subset.
     """
     sections = re.split(r"(?m)^(?=diff --git )", raw_diff)
-    kept: list[str] = []
+    kept: list[tuple[str, str]] = []
     dropped_noise = 0
     dropped_binary = 0
     for sec in sections:
         if not sec.strip():
             continue
         if not sec.startswith("diff --git "):
-            kept.append(sec)  # preamble before the first file header
+            kept.append(("", sec))  # preamble before the first file header
             continue
         path = _diff_section_path(sec)
         if path and any(mk in path for mk in _DIFF_NOISE_PATH_MARKERS):
@@ -506,11 +622,23 @@ def _sanitize_pr_diff(raw_diff: str, *, max_chars: int = _DIFF_INJECT_MAX_CHARS)
         if "\nBinary files " in sec:
             dropped_binary += 1
             continue
-        kept.append(sec)
-    filtered = "".join(kept)
+        kept.append((path, sec))
+    filtered = "".join(text for _, text in kept)
     truncated = len(filtered) > max_chars
+    cut_through: list[str] = []
+    unread: list[str] = []
     if truncated:
         filtered = filtered[:max_chars]
+        offset = 0
+        for path, text in kept:
+            start = offset
+            offset += len(text)
+            if not path:
+                continue
+            if start < max_chars < offset:
+                cut_through.append(path)
+            elif start >= max_chars:
+                unread.append(path)
     notes: list[str] = []
     if dropped_noise or dropped_binary:
         notes.append(
@@ -522,14 +650,41 @@ def _sanitize_pr_diff(raw_diff: str, *, max_chars: int = _DIFF_INJECT_MAX_CHARS)
             f"diff truncated to {max_chars} chars — run `gh pr diff <pr_url>` "
             f"for the full changes"
         )
+        if unread:
+            notes.append(f"unread beyond this point: {len(unread)} file(s)")
+        if cut_through:
+            notes.append(f"cut off inside: {len(cut_through)} file(s)")
     if notes:
         filtered = filtered.rstrip() + "\n\n[coordinare: " + "; ".join(notes) + "]\n"
+        if truncated:
+            # 412: one path per machine line, exact to the newline -- a path
+            # may contain commas, semicolons or " b/", so a prose list would
+            # be ambiguous for the parser and the model alike. The parser is
+            # diffparse.unread_names_from_note; keep the two in sync. The
+            # block is bounded: paths beyond the budget are declared by count
+            # on the overflow line, and the workflows hold on it -- unnamed
+            # files cannot be held unread by name.
+            used = 0
+            overflow = 0
+            lines: list[str] = []
+            for kind, paths in (("unread", unread), ("cut", cut_through)):
+                for path in paths:
+                    line = f"coordinare-{kind}: {path}"
+                    cost = len(line) + 1  # the joining newline
+                    if used + cost > _UNREAD_META_BUDGET_CHARS:
+                        overflow += 1
+                        continue
+                    lines.append(line)
+                    used += cost
+            filtered += "".join(f"{line}\n" for line in lines)
+            if overflow:
+                filtered += f"coordinare-unread-overflow: {overflow}\n"
     return filtered
 
 
 async def _fetch_pr_data(
     state: CoordinareState, card: dict[str, Any]
-) -> tuple[str | None, list[str] | None]:
+) -> tuple[str | None, list[str] | None, str]:
     """125 US3 (F1/F2): the single PR-diff fetch per dispatch evaluation.
 
     Returns ``(sanitized_diff, changed_files)`` from ONE ``get_pr_diff`` call;
@@ -538,11 +693,17 @@ async def _fetch_pr_data(
     that each discarded half the result).
 
     Best-effort, per-consumer failure semantics preserved: any failure returns
-    ``(None, None)`` so the gate fails open (dispatch) and the inline diff is
-    omitted — the hardened review persona instructs the model to fetch the
-    diff itself as a fallback, so dispatch must never be blocked by this.
+    ``(None, None, status)`` so the gate fails open (dispatch) and the inline
+    diff is omitted — the hardened review persona instructs the model to fetch
+    the diff itself as a fallback, so dispatch must never be blocked by this.
     An empty diff still yields the (possibly empty) ``changed_files`` list —
     the 123 gate treats "no textual changes" as skippable.
+
+    412: the third element tells the workflow roles why the diff is absent —
+    ``"empty"`` when the fetch succeeded and produced no reviewable diff, and
+    ``"unavailable"``/``"failed"`` when it could not be fetched at all. The
+    workflows must not read an outage as an empty diff: an advance verdict on
+    a diff that was never seen is a vacuous pass.
 
     FR-011: the raw diff text is NEVER logged (only length summaries at the
     injection site and an error type on failure).
@@ -552,7 +713,7 @@ async def _fetch_pr_data(
     card_id = str(card.get("id", ""))
 
     if github is None or not hasattr(github, "get_pr_diff") or not pr_url:
-        return None, None
+        return None, None, "unavailable"
 
     try:
         raw_diff, changed_files = await github.get_pr_diff(pr_url)
@@ -562,18 +723,18 @@ async def _fetch_pr_data(
             card_id=card_id,
             error_type=type(exc).__name__,
         )
-        return None, None
+        return None, None, "failed"
 
     raw_diff = raw_diff or ""
     files = [str(f) for f in (changed_files or [])]
     if not raw_diff.strip():
-        return None, files
+        return None, files, "empty"
 
     # Filter noise + cap so a bloated diff can't overflow the model context.
     sanitized = _sanitize_pr_diff(raw_diff)
     if not sanitized.strip():
-        return None, files
-    return sanitized, files
+        return None, files, "empty"
+    return sanitized, files, "injected"
 
 
 def _pending_disputes(state: CoordinareState, stage: str) -> list[dict[str, Any]]:
@@ -645,7 +806,7 @@ async def _verdict_cache_check(
     if not isinstance(record, dict):
         return False, None
     recorded_head = str(record.get("head_sha") or "").strip()
-    if not recorded_head or record.get("verdict") != EXPECTED_STAGE_MARKER.get(stage):
+    if not recorded_head or record.get("verdict") not in EXPECTED_STAGE_MARKER.get(stage, frozenset()):
         return False, None
     # V4: compare against the LIVE remote head — never coordinare's own
     # bookkeeping, so an out-of-band push can never be skipped over.
@@ -1220,7 +1381,7 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
     # nothing can be fetched, dispatch — never skip on an unknown diff.
     # ``pr_data`` is the shared single fetch (125 US3): the gate's fallback and
     # the review-role diff injection below both consume it.
-    pr_data: tuple[str | None, list[str] | None] | None = None
+    pr_data: tuple[str | None, list[str] | None, str] | None = None
     if performer_stage == "documenting" and not state.get("relay_feedback"):
         sha_gate = await _documenting_sha_gate(state, card, live_head)
         skip_doc = False
@@ -1655,26 +1816,17 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
         if card_clarifications:
             card_context["clarifications"] = [dict(c) for c in card_clarifications if isinstance(c, dict)]
 
-    # 083 US1: coordinare-authoritative static-analysis floor. For the security
-    # role ONLY, fetch the PR diff and run the scanner exactly once here at
-    # dispatch. Findings are stashed on state (consumed by the monitor floor,
-    # no re-scan) and injected into card_context as an advisory ceiling. Any
-    # diff-fetch or scanner failure is fail-closed: a synthetic critical
-    # ``scanner_unavailable`` finding (routing: halt) is stashed instead, so the
-    # gate never silently passes on a broken scanner (FR-008).
-    # 170: when the security role runs the workflow, skip this floor: the
+    # 170: when the security role runs the workflow, skip the 083 floor: the
     # workflow runs its own scanner inside the performer. Set scanner_findings
     # to [] so the monitor floor merge is skipped (it checks for a report key
     # instead), and inject pr_diff since the workflow's intake needs it.
+    # 412 round 10: WITHOUT the workflow, the 083 floor is back — the example
+    # config promises "remove the workflow line to restore the prose path
+    # exactly", and the prose path's static scan is the floor.
     if role == "security":
         if _role_runs_workflow(state, role, "security"):
             state["scanner_findings"] = []
             card_context["scanner_findings"] = []
-            logger.info(
-                "dispatch_performer.security_floor_skipped",
-                card_id=card_id,
-                reason="workflow",
-            )
         else:
             scanner_findings = await _run_security_floor(state, card)
             state["scanner_findings"] = scanner_findings
@@ -1712,6 +1864,18 @@ async def _dispatch_performer_body(state: CoordinareState) -> CoordinareState:
         if pr_data is None:
             pr_data = await _fetch_pr_data(state, card)
         pr_diff_text = pr_data[0]
+        # 412: the workflow decides "empty" from a delivered-and-empty diff.
+        # An outage ("failed"/"unavailable") is not an empty diff — the status
+        # rides along so the workflow holds instead of advancing on nothing.
+        card_context["pr_diff_status"] = pr_data[2]
+        # 412 round 25: the GitHub-side changed-path list survives
+        # sanitization, so the security workflow can tell a binary-only
+        # change set (all paths non-scannable → not_applicable) from content
+        # it never saw (a scannable path → hold).
+        if pr_data[1]:
+            card_context["pr_changed_paths"] = pr_data[1][:_MAX_DISPATCH_CHANGED_PATHS]
+            if len(pr_data[1]) > _MAX_DISPATCH_CHANGED_PATHS:
+                card_context["pr_changed_paths_overflow"] = True
         if pr_diff_text:
             card_context["pr_diff"] = pr_diff_text
             logger.info(
